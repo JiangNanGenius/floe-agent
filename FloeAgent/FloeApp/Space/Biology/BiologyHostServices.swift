@@ -52,7 +52,8 @@ import FloeBiologyHostAdapter
         self.root = root.standardizedFileURL; self.jobs = jobs; self.registry = registry
         self.hooks = hooks; self.nativeRuntime = nativeRuntime
         let access = try BiologyHostAccess(environment: environment)
-        let store = try BiologyProjectStore(root: root.appendingPathComponent("Projects", isDirectory: true))
+        let store = try BiologyProjectStore(root: root.appendingPathComponent("Projects", isDirectory: true),
+            ownedFilesRoot: root.appendingPathComponent("OriginalFiles", isDirectory: true))
         let files = BiologyHostFiles(root: root.appendingPathComponent("OriginalFiles", isDirectory: true), access: access)
         let contexts = BiologyExecutionContexts()
         let service = try BiologyService(store: store, fileAccess: files, authorize: { operation in try await access.permit(operation) })
@@ -449,6 +450,9 @@ import FloeBiologyHostAdapter
             await nativeRuntime?.closeConsoleOwner(projectID: id)
             return saved.revision
         }
+    }
+    func requireNoPermanentDeletionOwners(_ ids: Set<UUID>) throws {
+        guard !nativeOwners.values.contains(where: { ids.contains($0.projectID) }) else { throw BiologyHostError.workerNotStopped }
     }
     func trashPrepared(id: UUID, expectedRevision: UInt64) async throws {
         try await store.trash(id, expectedRevision: expectedRevision)

@@ -490,11 +490,16 @@ protocol VolcengineDataProManaging: AnyObject {
     func setEnabled(_ enabled: Bool, serverID: UUID)
     func currentServer(serverID: UUID) -> MCPServerConfiguration?
     func state(serverID: UUID) -> VolcengineDataProState
+    func connectionFailure(serverID: UUID) -> MCPConnectionFailurePresentation?
     func refresh(serverID: UUID) async
     func observeState(
         serverID: UUID,
         onChange: @escaping @MainActor (VolcengineDataProState) -> Void
     ) -> VolcengineDataProObservation
+}
+
+extension VolcengineDataProManaging {
+    func connectionFailure(serverID: UUID) -> MCPConnectionFailurePresentation? { nil }
 }
 
 #if canImport(UIKit)
@@ -526,6 +531,10 @@ final class MCPSettingsCenterDataProManager: VolcengineDataProManaging {
 
     func state(serverID: UUID) -> VolcengineDataProState {
         Self.map(center.stateByServerID[serverID])
+    }
+
+    func connectionFailure(serverID: UUID) -> MCPConnectionFailurePresentation? {
+        center.connectionFailure(serverID: serverID)
     }
 
     func refresh(serverID: UUID) async {
@@ -729,6 +738,11 @@ struct VolcengineSearchEditor: View {
                             }
                             .buttonStyle(.borderless)
                             .disabled(dataProState == .connecting)
+                        }
+                        if let failure = dataProFailure {
+                            DisclosureGroup(MCPConnectionFailurePresentation.diagnosticsTitle) {
+                                MCPConnectionDiagnosticText(failure: failure)
+                            }
                         }
                     }
                 } footer: {
@@ -978,9 +992,15 @@ struct VolcengineSearchEditor: View {
         case .connecting: FloeL10n.l("skills.skills_view.reading_tools")
         case .ready(let count):
             FloeL10n.plural("skills.skills_view.tools_available", count: count)
-        case .failed(let message):
-            FloeL10n.l("skills.skills_view.connection_failed", message)
+        case .failed:
+            dataProFailure?.localizedMessage ?? MCPConnectionFailurePresentation(legacyDiagnostic: "").localizedMessage
         }
+    }
+
+    private var dataProFailure: MCPConnectionFailurePresentation? {
+        guard case .failed(let legacy) = dataProState else { return nil }
+        if let current = try? draft.configuration(), let failure = center.dataProFailure(for: current) { return failure }
+        return MCPConnectionFailurePresentation(legacyDiagnostic: legacy, credential: credential)
     }
 
     private func modeLabel(_ mode: VolcengineConfigurationMode) -> String {

@@ -131,6 +131,7 @@ public enum MCPClientError: Error, LocalizedError, Sendable {
     case remoteError(code: Int, message: String)
     case responseTooLarge(Int)
     case authenticationRequired
+    case unsupportedProtocolVersion
     /// The user disabled/removed the server or the client was torn down.
     case disconnected
     /// The request was cancelled (task cancellation or session teardown).
@@ -152,6 +153,8 @@ public enum MCPClientError: Error, LocalizedError, Sendable {
             "MCP response exceeds the \(bytes)-byte limit"
         case .authenticationRequired:
             "MCP server credential is missing"
+        case .unsupportedProtocolVersion:
+            "The MCP server and client have no mutually supported protocol version"
         case .disconnected:
             "MCP server is disconnected"
         case .cancelled:
@@ -184,6 +187,12 @@ final class MCPNoRedirectSessionDelegate: NSObject, URLSessionTaskDelegate, @unc
 public actor MCPRemoteClient {
     public static let protocolVersion = "2026-07-28"
     public static let legacyProtocolVersion = "2025-11-25"
+    private static let supportedLegacyProtocolVersions = [
+        "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"
+    ]
+    private struct LegacyVersionRejection: Error {
+        let offered: Set<String>
+    }
     public static let maximumResponseBytes = 2 * 1_024 * 1_024
     public static let maximumCredentialBytes = 16 * 1_024
     public static let maximumMirroredHeaderCount = 64
@@ -217,6 +226,7 @@ public actor MCPRemoteClient {
     private var transportEra = TransportEra.unknown
     private var sessionID: String?
     private var legacyInitialized = false
+    private var negotiatedLegacyProtocolVersion: String?
     private var nextRequestID = 1
     private var headerBindingsByToolName: [String: [HeaderBinding]] = [:]
     /// Set by `disconnect()`; all further calls fail closed and no state is kept.
@@ -277,6 +287,7 @@ public actor MCPRemoteClient {
         transportEra = .unknown
         sessionID = nil
         legacyInitialized = false
+        negotiatedLegacyProtocolVersion = nil
         headerBindingsByToolName = [:]
         disconnectGeneration += 1
         // Only a session we created may be invalidated: an injected session can
@@ -516,16 +527,48 @@ public actor MCPRemoteClient {
     private func ensureLegacyInitialized() async throws {
         guard !legacyInitialized else { return }
         let generation = disconnectGeneration
-        _ = try await legacyRequest(method: "initialize", params: [
-            "protocolVersion": Self.legacyProtocolVersion,
-            "capabilities": ["roots": ["listChanged": false]],
-            "clientInfo": ["name": "Floe Agent", "version": "1"]
-        ], requiresInitialization: false)
-        try await legacyNotify(method: "notifications/initialized", params: [:])
-        guard !disconnected, generation == disconnectGeneration else {
-            throw MCPClientError.disconnected
+        var requested = Self.legacyProtocolVersion
+        var attempted = Set<String>()
+        while attempted.insert(requested).inserted {
+            try Task.checkCancellation()
+            sessionID = nil
+            negotiatedLegacyProtocolVersion = nil
+            do {
+                let result = try await legacyRequest(method: "initialize", params: [
+                    "protocolVersion": requested,
+                    "capabilities": ["roots": ["listChanged": false]],
+                    "clientInfo": ["name": "Floe Agent", "version": "1"]
+                ], requiresInitialization: false)
+                guard let initialized = result as? [String: Any],
+                      let selected = initialized["protocolVersion"] as? String,
+                      Self.supportedLegacyProtocolVersions.contains(selected) else {
+                    throw MCPClientError.unsupportedProtocolVersion
+                }
+                try Task.checkCancellation()
+                guard !disconnected, generation == disconnectGeneration else {
+                    throw MCPClientError.disconnected
+                }
+                negotiatedLegacyProtocolVersion = selected
+                try await legacyNotify(method: "notifications/initialized", params: [:])
+                guard !disconnected, generation == disconnectGeneration else {
+                    throw MCPClientError.disconnected
+                }
+                legacyInitialized = true
+                return
+            } catch {
+                sessionID = nil
+                negotiatedLegacyProtocolVersion = nil
+                // Retry only an explicitly rejected initialization version.
+                // Tool calls, authentication failures and unrelated HTTP400s
+                // never enter this bounded negotiation loop.
+                guard let offered = Self.offeredVersions(for: error) else { throw error }
+                guard let next = Self.supportedLegacyProtocolVersions.first(where: {
+                    !attempted.contains($0) && (offered.isEmpty || offered.contains($0))
+                }) else { throw MCPClientError.unsupportedProtocolVersion }
+                requested = next
+            }
         }
-        legacyInitialized = true
+        throw MCPClientError.unsupportedProtocolVersion
     }
 
     private func request(
@@ -639,19 +682,30 @@ public actor MCPRemoteClient {
         ]
         let (data, response) = try await send(
             payload: payload,
-            protocolVersion: Self.legacyProtocolVersion,
+            // The version header belongs to requests AFTER initialization.
+            // Older SDKs reject an unknown header before they can negotiate
+            // the version carried by InitializeRequest/InitializeResult.
+            protocolVersion: requiresInitialization ? negotiatedLegacyProtocolVersion : nil,
             method: nil,
             name: nil,
             mirroredHeaders: [:],
             requestID: id
         )
+        let result: Any?
+        do { result = try Self.result(from: data, expectedRequestID: id) }
+        catch {
+            if !requiresInitialization, let offered = Self.offeredVersions(in: data) {
+                throw LegacyVersionRejection(offered: offered)
+            }
+            throw error
+        }
         if let newSessionID = response.value(forHTTPHeaderField: "Mcp-Session-Id"), !newSessionID.isEmpty {
             // Guard against a late response repopulating session state after a
             // disconnect/injected-session teardown.
             guard !disconnected else { throw MCPClientError.disconnected }
             sessionID = newSessionID
         }
-        return try Self.result(from: data, expectedRequestID: id)
+        return result
     }
 
     private static func result(from data: Data, expectedRequestID: Int) throws -> Any? {
@@ -676,7 +730,7 @@ public actor MCPRemoteClient {
         let payload: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
         _ = try await send(
             payload: payload,
-            protocolVersion: Self.legacyProtocolVersion,
+            protocolVersion: negotiatedLegacyProtocolVersion,
             method: nil,
             name: nil,
             mirroredHeaders: [:],
@@ -687,7 +741,7 @@ public actor MCPRemoteClient {
 
     private func send(
         payload: [String: Any],
-        protocolVersion: String,
+        protocolVersion: String?,
         method: String?,
         name: String?,
         mirroredHeaders: [String: String],
@@ -703,14 +757,14 @@ public actor MCPRemoteClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version")
+        if let protocolVersion { request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version") }
         if protocolVersion == Self.protocolVersion {
             if let method { request.setValue(method, forHTTPHeaderField: "Mcp-Method") }
             if let name { request.setValue(Self.encodedHeaderValue(name), forHTTPHeaderField: "Mcp-Name") }
             for (header, value) in mirroredHeaders {
                 request.setValue(value, forHTTPHeaderField: header)
             }
-        } else if let sessionID {
+        } else if protocolVersion != nil, let sessionID {
             request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
         }
         switch configuration.authentication {
@@ -816,6 +870,9 @@ public actor MCPRemoteClient {
     }
 
     private static func shouldFallBackToLegacy(_ error: MCPClientError) -> Bool {
+        if let supported = offeredVersions(for: error) {
+            return supported.isEmpty || supportedLegacyProtocolVersions.contains(where: supported.contains)
+        }
         guard case .httpError(let status, let body) = error,
               [400, 404, 405].contains(status) else { return false }
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
@@ -830,13 +887,41 @@ public actor MCPRemoteClient {
         let supported = (dataObject?["supported"] as? [String])
             ?? (dataObject?["supportedVersions"] as? [String])
             ?? []
-        if supported.contains(Self.legacyProtocolVersion) { return true }
+        if supportedLegacyProtocolVersions.contains(where: supported.contains) { return true }
         let advertisesVersions = !supported.isEmpty
         let recognizedModern = code == -32_020 || code == -32_601 || advertisesVersions
             || message.contains("unsupportedprotocolversion")
             || message.contains("missingrequiredclientcapability")
             || message.contains("header mismatch")
         return !recognizedModern
+    }
+
+    private static func offeredVersions(for error: Error) -> Set<String>? {
+        if let rejection = error as? LegacyVersionRejection { return rejection.offered }
+        guard let error = error as? MCPClientError,
+              case .httpError(let status, let body) = error,
+              status == 400, let data = body.data(using: .utf8) else { return nil }
+        return offeredVersions(in: data)
+    }
+
+    private static func offeredVersions(in data: Data) -> Set<String>? {
+        guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = envelope["error"] as? [String: Any],
+              let message = error["message"] as? String else { return nil }
+        let text = message.lowercased()
+        guard text.contains("unsupported protocol version") || text.contains("unsupportedprotocolversion") else { return nil }
+        if let details = error["data"] as? [String: Any],
+           let versions = (details["supported"] as? [String]) ?? (details["supportedVersions"] as? [String]) {
+            return Set(versions.prefix(32))
+        }
+        // Some deployed SDKs return the offered versions only in this error
+        // sentence, including an id such as "server-error" rather than the
+        // request id. Read only its bounded version list, never instructions.
+        if let range = text.range(of: "supported versions:") {
+            return Set(text[range.upperBound...].split(whereSeparator: { !$0.isNumber && $0 != "-" })
+                .prefix(32).map(String.init))
+        }
+        return []
     }
 
     private static func isHeaderMismatch(_ error: MCPClientError) -> Bool {

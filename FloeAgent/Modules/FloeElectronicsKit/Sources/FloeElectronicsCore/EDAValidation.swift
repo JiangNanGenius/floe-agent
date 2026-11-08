@@ -54,10 +54,17 @@ public enum EDAValidation {
             }
             try graphics(definition.graphics)
         }
+        var polygonPadWork = 0
         for definition in project.footprints {
             try unique(definition.pads.map(\.id), "pad IDs")
             for pad in definition.pads {
                 try points([pad.position]); try finite(pad.angle); try positive(pad.size.x); try positive(pad.size.y)
+                if let vertices = pad.polygon {
+                    guard vertices.count <= EDAPolygonPadGeometry.maximumVertices else { throw EDAError.invalid("polygon pad vertex budget") }
+                    polygonPadWork += vertices.count * vertices.count
+                    guard polygonPadWork <= 20_000_000 else { throw EDAError.invalid("polygon pad validation budget") }
+                }
+                try EDAPolygonPadGeometry.validate(pad)
                 guard !pad.layers.isEmpty else { throw EDAError.invalid("pad layers") }
                 if let drill = pad.drill { try positive(drill) }
                 if pad.drill == nil && pad.drillPlated != nil { throw EDAError.invalid("pad plating without drill") }

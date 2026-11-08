@@ -101,7 +101,7 @@ public struct MFEMSimulationDriver: SimulationNativeDriver, SimulationBackend {
 }
 
 #if canImport(FloeFieldsNative)
-private final class MFEMSession: @unchecked Sendable {
+final class MFEMSession: @unchecked Sendable {
     // The immutable handle stays alive through the cancellation handler. Only
     // cancel() crosses threads; its native state is an atomic flag.
     let pointer: OpaquePointer

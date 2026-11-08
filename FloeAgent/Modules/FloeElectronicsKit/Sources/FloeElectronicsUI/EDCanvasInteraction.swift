@@ -91,7 +91,9 @@ enum EDCanvasInteraction {
             case .schematic:
                 if item.oriented || items.count > 1 { allowed.insert(.flip) }
                 if case .link = item { allowed.remove(.duplicate) }
-            case .symbol, .footprint: break // No library-side/mirror field exists.
+            case .footprint:
+                if case .pad(let pad) = item, pad.shape == .polygon { allowed.insert(.flip) }
+            case .symbol: break // No symbol-library mirror field exists.
             }
             result.formIntersection(allowed)
         }
@@ -129,6 +131,9 @@ enum EDCanvasInteraction {
                 }
                 value = value.mapped(point: { .init(2 * pivot.x - $0.x, $0.y) }, angle: { normalized(-$0) })
                 if case .placement(var placed) = value { placed.mirrored.toggle(); value = .placement(placed) }
+                if case .pad(var pad) = value, let vertices = pad.polygon {
+                    pad.polygon = vertices.map { .init(-$0.x, $0.y) }; value = .pad(pad)
+                }
                 if case .zone(var zone) = value, var relief = zone.thermalRelief {
                     relief.spokeAngleDegrees = normalized(relief.spokeAngleDegrees + 180); zone.thermalRelief = relief; value = .zone(zone)
                 }
@@ -332,10 +337,13 @@ enum EDCanvasInteraction {
     private static func boundaryDistance(_ point: EDAPoint, _ polygon: [EDAPoint]) -> Double {
         EDAGeometry.edges(polygon).map { EDAGeometry.pointDistance(point, to: $0.0, $0.1) }.min() ?? .infinity
     }
-    private static func padDistance(_ point: EDAPoint, _ pad: EDAPad) -> Double {
+    static func padDistance(_ point: EDAPoint, _ pad: EDAPad) -> Double {
         let p = inverse(point, origin: pad.position, angle: pad.angle), a = pad.size.x / 2, b = pad.size.y / 2
         guard a > 0, b > 0 else { return .infinity }
         switch pad.shape {
+        case .polygon:
+            guard let vertices=pad.polygon else{return .infinity}
+            return EDAPolygonPadGeometry.localDistance(p,vertices:vertices)
         case .rectangle: return hypot(max(0, abs(p.x) - a), max(0, abs(p.y) - b))
         case .oval:
             let r = min(a, b), end = EDAPoint(a > b ? a - r : 0, a > b ? 0 : b - r)

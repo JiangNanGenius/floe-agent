@@ -49,6 +49,21 @@ import FloeExecution
 import FloeSkills
 import FloeTools
 
+// Shared artifact-only mechanics; no capture/OAuth contract is fabricated.
+private protocol SkillKnownRuntimeArtifact: Sendable {
+    var componentID: String { get }
+    var componentVersion: String { get }
+    var target: SkillRuntimeDependencyDescriptor.Target { get }
+    var artifact: SkillRuntimeDependencyDescriptor.Artifact { get }
+    var engineFileName: String { get }
+}
+extension SkillRuntimeDependencyDescriptor: SkillKnownRuntimeArtifact {
+    fileprivate var engineFileName: String { SkillRuntimeDependency.frozenEngineFileName }
+}
+extension SkillOAuthRuntimeDependencyDescriptor: SkillKnownRuntimeArtifact {
+    fileprivate var engineFileName: String { SkillOAuthRuntimeDependency.frozenEngineFileName }
+}
+
 // MARK: - Authority (constructed only by SkillsCenter from verified facts)
 
 /// Live authority facts for one component-bearing skill. Built ONLY by
@@ -412,6 +427,280 @@ actor SkillRuntimeComponentCenter {
         lateBindings.publish(transport: transport, authorization: authorization)
     }
 
+    struct OAuthNativeOperation: Sendable {
+        let operationID: UUID
+        let environmentID: String
+        let cancellation: CancellationToken
+        /// Read-only validation of an existing native operation/install/guest
+        /// approval lease. Must not fabricate a chat run, bundle or allow.
+        let isCurrentAndApproved: @Sendable (UUID, String, SkillRuntimeComponentAuthority, CancellationToken) async -> Bool
+    }
+    struct OAuthProbeRequest: Sendable {
+        let operationID: UUID
+        let environmentID: String
+        let executableGuestPath: String
+        let executableSHA256: String
+        let handshakeBytes: Data
+        let cancellation: CancellationToken
+    }
+    struct OAuthProbeResult: Sendable {
+        let initializeResult: Data
+        let toolsListResult: Data
+        let workerStopped: Bool
+    }
+    typealias OAuthProbe = @Sendable (OAuthProbeRequest) async throws -> OAuthProbeResult
+    struct OAuthPrepared: Sendable {
+        let operationID: UUID
+        let environmentID: String
+        let environmentEpoch: UUID
+        let executableGuestPath: String
+        let launchGeneration: UInt64
+        let descriptor: SkillOAuthRuntimeDependencyDescriptor
+        let metadata: SkillOAuthRuntimeDependency.Metadata
+        let authority: SkillRuntimeComponentAuthority
+    }
+    enum OAuthFailure: Error, Sendable { case unavailable, cancelled, authority, approval, environment, metadata, probe, stopUnconfirmed }
+    private struct OAuthPreparation: Sendable {
+        let environmentID: String
+        let generation: UUID
+        let authority: SkillRuntimeComponentAuthority
+        let token: CancellationToken
+        let task: Task<OAuthPrepared, Error>
+    }
+    private var oauthPreparations: [UUID: OAuthPreparation] = [:]
+    private var oauthEnvironmentEpochs: [String: UUID] = [:]
+    private var oauthEnvironmentReleases: [String: Int] = [:]
+
+    /// Native settings operation only; not an agent read plan or model tool.
+    /// Missing real approval/lifecycle or private probe composition fails closed.
+    func prepareOAuthRuntime(authority: SkillRuntimeComponentAuthority,
+                             nativeOperation operation: OAuthNativeOperation?, probe: OAuthProbe?) async throws -> OAuthPrepared {
+        guard let operation, let probe, oauthEnvironmentReleases[operation.environmentID, default: 0] == 0,
+              !operation.environmentID.isEmpty, !Self.isFenced(operation.cancellation) else { throw OAuthFailure.unavailable }
+        let epoch = oauthEnvironmentEpochs[operation.environmentID] ?? UUID()
+        oauthEnvironmentEpochs[operation.environmentID] = epoch
+        let entry: OAuthPreparation
+        if let running = oauthPreparations[operation.operationID] {
+            guard running.environmentID == operation.environmentID, running.authority == authority,
+                  running.token === operation.cancellation, !running.token.isCancelled else { throw OAuthFailure.authority }
+            entry = running
+        } else {
+            let generation = UUID()
+            let task = Task { () throws -> OAuthPrepared in
+                defer {
+                    if self.oauthPreparations[operation.operationID]?.generation == generation {
+                        self.oauthPreparations[operation.operationID] = nil
+                    }
+                }
+                return try await self.performOAuthPreparation(authority: authority, operation: operation,
+                                                              generation: generation, environmentEpoch: epoch, probe: probe)
+            }
+            entry = OAuthPreparation(environmentID: operation.environmentID, generation: generation,
+                                     authority: authority, token: operation.cancellation, task: task)
+            oauthPreparations[operation.operationID] = entry
+        }
+        do {
+            return try await withTaskCancellationHandler {
+                try await entry.task.value
+            } onCancel: {
+                entry.token.cancel(); entry.task.cancel()
+            }
+        } catch {
+            // The owned task joins its private probe before settling. Global
+            // content-keyed downloads retain their independent service owner.
+            if Self.isFenced(entry.token) { throw OAuthFailure.cancelled }
+            throw error
+        }
+    }
+
+    func cancelOAuthRuntimeOperation(_ operationID: UUID) async {
+        guard let entry = oauthPreparations[operationID] else { return }
+        entry.token.cancel(); entry.task.cancel()
+        _ = await entry.task.result
+        if oauthPreparations[operationID]?.generation == entry.generation { oauthPreparations[operationID] = nil }
+    }
+
+    private func validateOAuthOperation(_ operation: OAuthNativeOperation,
+                                        authority: SkillRuntimeComponentAuthority) async throws {
+        guard !Self.isFenced(operation.cancellation), oauthEnvironmentReleases[operation.environmentID, default: 0] == 0,
+              ["floe-google-auth", "floe-microsoft-auth"].contains(authority.skillID),
+              Self.isFormallyValid(authority),
+              FloeDigest.sha256Hex(authority.descriptorBytes) == authority.descriptorSHA256,
+              let current = await lateBindings.authorization?(authority.skillID), current == authority else {
+            throw OAuthFailure.authority
+        }
+        guard await operation.isCurrentAndApproved(operation.operationID, operation.environmentID, authority, operation.cancellation) else {
+            throw OAuthFailure.approval
+        }
+        guard !Self.isFenced(operation.cancellation), oauthEnvironmentReleases[operation.environmentID, default: 0] == 0 else {
+            throw OAuthFailure.cancelled
+        }
+    }
+
+    private func performOAuthPreparation(authority: SkillRuntimeComponentAuthority,
+                                          operation: OAuthNativeOperation, generation: UUID,
+                                          environmentEpoch: UUID,
+                                          probe: @escaping OAuthProbe) async throws -> OAuthPrepared {
+        try await validateOAuthOperation(operation, authority: authority)
+        let descriptor = try SkillOAuthRuntimeDependency.decode(authority.descriptorBytes)
+        guard SkillRuntimeDependency.isCompatible(minimumAppVersion: descriptor.minimumAppVersion,
+                                                  appVersion: appVersion()) else { throw OAuthFailure.unavailable }
+        let environmentID = operation.environmentID
+        guard let environment = await environmentResolver(environmentID), environment.isActive, environment.isLinuxVM,
+              let layer = environment.layerURL, let map = await pathMapping(environmentID),
+              let shared = map.hostPath(forGuestPath: LinuxGuestMountPoint.environment),
+              shared.resolvingSymlinksInPath().standardizedFileURL == layer.resolvingSymlinksInPath().standardizedFileURL else {
+            throw OAuthFailure.environment
+        }
+        setState(environmentID, descriptor.componentID) {
+            $0.componentID = descriptor.componentID; $0.componentVersion = descriptor.componentVersion
+            $0.sourceAuthorized = true; $0.probed = false
+        }
+        let cached = try await ensureCachedArtifact(descriptor: descriptor,
+            publicationCommit: authority.publicationCommit, auditedSourceCommit: authority.auditedSourceCommit,
+            catalogSHA256: authority.catalogSHA256, token: operation.cancellation)
+        let artifact = try oauthBoundedFile(cached, cap: descriptor.artifact.size)
+        try SkillOAuthRuntimeDependency.verifyArtifact(artifact, descriptor: descriptor)
+        let metadata = try await oauthMetadata(descriptor: descriptor, authority: authority, token: operation.cancellation)
+        try await validateOAuthOperation(operation, authority: authority)
+        guard let latest = await environmentResolver(environmentID), latest == environment,
+              let latestMap = await pathMapping(environmentID),
+              latestMap.hostPath(forGuestPath: LinuxGuestMountPoint.environment)?.resolvingSymlinksInPath().standardizedFileURL
+                == shared.resolvingSymlinksInPath().standardizedFileURL,
+              oauthPreparations[operation.operationID]?.generation == generation else { throw OAuthFailure.environment }
+        setState(environmentID, descriptor.componentID) { $0.cacheVerified = true }
+        // Native approval has just been re-read; the synchronous shared stage
+        // helper retains token/inode/hash/mode and atomic-rename safeguards.
+        let staged = try stageKnownArtifact(descriptor: descriptor, layerURL: layer, pathMap: latestMap, token: operation.cancellation)
+        try await validateOAuthOperation(operation, authority: authority)
+        guard let launch = await launchGenerationProvider(environmentID) else { throw OAuthFailure.environment }
+        setState(environmentID, descriptor.componentID) { $0.stagedVerified = true }
+        let request = OAuthProbeRequest(operationID: operation.operationID, environmentID: environmentID,
+            executableGuestPath: staged.guestPath, executableSHA256: descriptor.artifact.sha256,
+            handshakeBytes: metadata.handshakeBytes, cancellation: operation.cancellation)
+        let probeTask = Task { try await probe(request) }
+        let result: OAuthProbeResult
+        do {
+            result = try await Self.cancellableWait(token: operation.cancellation) { try await probeTask.value }
+        } catch {
+            probeTask.cancel(); _ = await probeTask.result
+            throw OAuthFailure.cancelled
+        }
+        guard result.workerStopped else { throw OAuthFailure.stopUnconfirmed }
+        try SkillOAuthRuntimeDependency.verifyProbe(initializeResult: result.initializeResult,
+                                                    toolsListResult: result.toolsListResult, metadata: metadata)
+        try await validateOAuthOperation(operation, authority: authority)
+        guard await launchGenerationProvider(environmentID) == launch,
+              let currentEnvironment = await environmentResolver(environmentID), currentEnvironment == environment,
+              let currentMap = await pathMapping(environmentID),
+              currentMap.hostPath(forGuestPath: staged.guestPath)?.standardizedFileURL == staged.url.standardizedFileURL,
+              staged.url.resolvingSymlinksInPath().standardizedFileURL == staged.url.standardizedFileURL,
+              oauthEnvironmentEpochs[environmentID] == environmentEpoch,
+              !Self.isFenced(operation.cancellation),
+              try verified(file: staged.url, size: descriptor.artifact.size,
+                           sha256: descriptor.artifact.sha256, token: operation.cancellation) else { throw OAuthFailure.environment }
+        setState(environmentID, descriptor.componentID) { $0.probed = true; $0.deferredReason = nil }
+        return OAuthPrepared(operationID: operation.operationID, environmentID: environmentID,
+            environmentEpoch: environmentEpoch,
+            executableGuestPath: staged.guestPath, launchGeneration: launch,
+            descriptor: descriptor, metadata: metadata, authority: authority)
+    }
+
+    /// Revalidate the prepared value before the actual grant worker opens;
+    /// the value itself is not an enduring permission/ready token.
+    func validateOAuthPreparedForUse(_ prepared: OAuthPrepared, operation: OAuthNativeOperation) async throws {
+        guard prepared.operationID == operation.operationID, prepared.environmentID == operation.environmentID,
+              oauthEnvironmentEpochs[operation.environmentID] == prepared.environmentEpoch else {
+            throw OAuthFailure.authority
+        }
+        try await validateOAuthOperation(operation, authority: prepared.authority)
+        guard try SkillOAuthRuntimeDependency.decode(prepared.authority.descriptorBytes) == prepared.descriptor else {
+            throw OAuthFailure.authority
+        }
+        _ = try SkillOAuthRuntimeDependency.verifyMetadata(contract: prepared.metadata.contract,
+            handshake: prepared.metadata.handshakeBytes, distribution: prepared.metadata.distributionBytes,
+            descriptor: prepared.descriptor)
+        guard await launchGenerationProvider(operation.environmentID) == prepared.launchGeneration,
+              let environment = await environmentResolver(operation.environmentID), environment.isLinuxVM, environment.isActive,
+              let layer = environment.layerURL, let map = await pathMapping(operation.environmentID),
+              let shared = map.hostPath(forGuestPath: LinuxGuestMountPoint.environment),
+              shared.resolvingSymlinksInPath().standardizedFileURL == layer.resolvingSymlinksInPath().standardizedFileURL,
+              let host = map.hostPath(forGuestPath: prepared.executableGuestPath),
+              host.standardizedFileURL == Self.stagedComponentURL(layerURL: shared, descriptor: prepared.descriptor).standardizedFileURL,
+              host.resolvingSymlinksInPath().standardizedFileURL == host.standardizedFileURL,
+              try verified(file: host, size: prepared.descriptor.artifact.size,
+                           sha256: prepared.descriptor.artifact.sha256, token: operation.cancellation) else { throw OAuthFailure.environment }
+    }
+
+    private func oauthMetadata(descriptor: SkillOAuthRuntimeDependencyDescriptor,
+                                authority: SkillRuntimeComponentAuthority, token: CancellationToken) async throws -> SkillOAuthRuntimeDependency.Metadata {
+        guard let cache = cacheFileURL(for: descriptor) else { throw OAuthFailure.unavailable }
+        let directory = cache.deletingLastPathComponent().appendingPathComponent("oauth-metadata", isDirectory: true)
+            .appendingPathComponent(descriptor.oauthContract.sha256, isDirectory: true)
+        let names = ["oauth-contract.v1.json", "mcp-handshake.v1.json", "distribution.v1.json"]
+        func read(_ index: Int, cap: Int) throws -> Data {
+            let url = directory.appendingPathComponent(names[index])
+            guard !SkillWorkspaceResourceStager.isSymbolicLink(url),
+                  let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int,
+                  size <= cap else { throw OAuthFailure.metadata }
+            return try oauthBoundedFile(url, cap: cap)
+        }
+        if (try? oauthMetadataDirectory(descriptor: descriptor, create: false)) != nil,
+           let contractBytes = try? read(0, cap: 65_536),
+           let contract = try? SkillOAuthRuntimeDependency.decodeContract(contractBytes, descriptor: descriptor),
+           let handshake = try? read(1, cap: 65_536), let distribution = try? read(2, cap: 1_048_576),
+           let metadata = try? SkillOAuthRuntimeDependency.verifyMetadata(contract: contract, handshake: handshake,
+                                                                         distribution: distribution, descriptor: descriptor) {
+            return metadata
+        }
+        guard !Self.isFenced(token) else { throw CancellationError() }
+        guard let transport = lateBindings.transport else { throw OAuthFailure.unavailable }
+        let contractBytes = try await transport(CuratedSkillHub.owner, CuratedSkillHub.repository,
+            authority.publicationCommit, SkillOAuthRuntimeDependency.contractPath)
+        let contract = try SkillOAuthRuntimeDependency.decodeContract(contractBytes, descriptor: descriptor)
+        guard !Self.isFenced(token) else { throw CancellationError() }
+        let handshake = try await transport(CuratedSkillHub.owner, CuratedSkillHub.repository,
+            authority.publicationCommit, contract.handshake.path)
+        guard !Self.isFenced(token) else { throw CancellationError() }
+        let distribution = try await transport(CuratedSkillHub.owner, CuratedSkillHub.repository,
+            authority.publicationCommit, contract.distribution.path)
+        let metadata = try SkillOAuthRuntimeDependency.verifyMetadata(contract: contract, handshake: handshake,
+                                                                      distribution: distribution, descriptor: descriptor)
+        guard !Self.isFenced(token) else { throw CancellationError() }
+        _ = try oauthMetadataDirectory(descriptor: descriptor, create: true)
+        for (index, data) in [contractBytes, handshake, distribution].enumerated() {
+            guard !Self.isFenced(token) else { throw CancellationError() }
+            try data.write(to: directory.appendingPathComponent(names[index]), options: .atomic)
+        }
+        return metadata
+    }
+
+    private func oauthMetadataDirectory(descriptor: SkillOAuthRuntimeDependencyDescriptor, create: Bool) throws -> URL {
+        guard var current = cacheRoot else { throw OAuthFailure.unavailable }
+        let components = [descriptor.componentID, descriptor.componentVersion, descriptor.target.triple,
+                          "oauth-metadata", descriptor.oauthContract.sha256]
+        let steps: [String?] = [nil] + components.map(Optional.some)
+        for component in steps {
+            if let component { current.appendPathComponent(component, isDirectory: true) }
+            if !FileManager.default.fileExists(atPath: current.path), create, component != nil {
+                try FileManager.default.createDirectory(at: current, withIntermediateDirectories: false)
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: current.path, isDirectory: &isDirectory), isDirectory.boolValue,
+                  !SkillWorkspaceResourceStager.isSymbolicLink(current) else { throw OAuthFailure.metadata }
+        }
+        return current
+    }
+
+    private func oauthBoundedFile(_ url: URL, cap: Int) throws -> Data {
+        guard !SkillWorkspaceResourceStager.isSymbolicLink(url), cap > 0, cap <= 16_777_216 else { throw OAuthFailure.metadata }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: cap + 1) ?? Data()
+        guard data.count <= cap else { throw OAuthFailure.metadata }
+        return data
+    }
+
     // MARK: - Plan recording (verified exact read; never executes)
 
     /// Record an immutable plan from a verified exact `skill.read`. Refusals
@@ -658,6 +947,19 @@ actor SkillRuntimeComponentCenter {
     /// for other environments — its slot is removed only when the actual
     /// shared task settles and its result is a verified cache fact.
     func releaseEnvironment(_ environmentID: String) async {
+        // This hook also runs for stop/migration. Fence old prepared values
+        // permanently, while allowing a fresh native lease after a restart.
+        oauthEnvironmentEpochs[environmentID] = UUID()
+        oauthEnvironmentReleases[environmentID, default: 0] += 1
+        defer {
+            let remaining = oauthEnvironmentReleases[environmentID, default: 1] - 1
+            oauthEnvironmentReleases[environmentID] = remaining == 0 ? nil : remaining
+        }
+        let oauthOwned = oauthPreparations.filter { $0.value.environmentID == environmentID }
+        for (_, entry) in oauthOwned { entry.token.cancel(); entry.task.cancel() }
+        for (operationID, entry) in oauthOwned {
+            if oauthPreparations[operationID]?.generation == entry.generation { oauthPreparations[operationID] = nil }
+        }
         // Fence first: with the plans gone, no NEW preparation can start for
         // this environment while the owned ones are cancelled + joined
         // (prepareBindings requires a recorded plan, and subscription is
@@ -681,6 +983,7 @@ actor SkillRuntimeComponentCenter {
             // cancellation without touching the independent global transfer.
             _ = await entry.task.value
         }
+        for (_, entry) in oauthOwned { _ = await entry.task.result }
         // Purge the observed facts only AFTER the joins, so no joined
         // preparation can write state for this environment post-purge.
         readiness = readiness.filter { $0.key.environmentID != environmentID }
@@ -797,9 +1100,9 @@ actor SkillRuntimeComponentCenter {
 
     /// Pure path construction for the reserved staged component location. It
     /// never creates a directory and never follows a caller-supplied path.
-    private static func stagedComponentURL(
+    private static func stagedComponentURL<D: SkillKnownRuntimeArtifact>(
         layerURL: URL,
-        descriptor: SkillRuntimeDependencyDescriptor
+        descriptor: D
     ) -> URL {
         var url = layerURL
         for component in reservedLayerComponents {
@@ -808,7 +1111,7 @@ actor SkillRuntimeComponentCenter {
         url.appendPathComponent(descriptor.componentID, isDirectory: true)
         url.appendPathComponent(descriptor.componentVersion, isDirectory: true)
         url.appendPathComponent(descriptor.target.triple, isDirectory: true)
-        url.appendPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        url.appendPathComponent(descriptor.engineFileName, isDirectory: false)
         return url
     }
 
@@ -1219,9 +1522,14 @@ actor SkillRuntimeComponentCenter {
     /// between the hash and the mode commit are refused without being
     /// mutated. Both final concurrent-publisher branches (after a copy and in
     /// the error recovery) call this exact helper.
-    func adoptVerifiedArtifact(
+    func adoptVerifiedArtifact(at target: URL, descriptor: SkillRuntimeDependencyDescriptor,
+                               token: CancellationToken) throws {
+        try adoptKnownVerifiedArtifact(at: target, descriptor: descriptor, token: token)
+    }
+
+    private func adoptKnownVerifiedArtifact<D: SkillKnownRuntimeArtifact>(
         at target: URL,
-        descriptor: SkillRuntimeDependencyDescriptor,
+        descriptor: D,
         token: CancellationToken
     ) throws {
         guard let identity = Self.regularFileIdentity(
@@ -1244,13 +1552,13 @@ actor SkillRuntimeComponentCenter {
         let reason: String
     }
 
-    private func cacheFileURL(for descriptor: SkillRuntimeDependencyDescriptor) -> URL? {
+    private func cacheFileURL<D: SkillKnownRuntimeArtifact>(for descriptor: D) -> URL? {
         guard let cacheRoot else { return nil }
         return cacheRoot
             .appendingPathComponent(descriptor.componentID, isDirectory: true)
             .appendingPathComponent(descriptor.componentVersion, isDirectory: true)
             .appendingPathComponent(descriptor.target.triple, isDirectory: true)
-            .appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+            .appendingPathComponent(descriptor.engineFileName, isDirectory: false)
     }
 
     /// Coalesced, service-owned download into the app-owned cache namespace.
@@ -1274,8 +1582,8 @@ actor SkillRuntimeComponentCenter {
     /// Same cache contract for the install-boundary prefetch: it needs only
     /// the authorized descriptor and its immutable publication commit, never
     /// a task environment, plan or staged bundle.
-    private func ensureCachedArtifact(
-        descriptor: SkillRuntimeDependencyDescriptor,
+    private func ensureCachedArtifact<D: SkillKnownRuntimeArtifact>(
+        descriptor: D,
         publicationCommit: String,
         auditedSourceCommit: String?,
         catalogSHA256: String,
@@ -1353,6 +1661,22 @@ actor SkillRuntimeComponentCenter {
         authority: SkillRuntimeComponentAuthority,
         cancellation: CancellationToken? = nil
     ) async -> String {
+        if let descriptor = try? SkillOAuthRuntimeDependency.decode(authority.descriptorBytes) {
+            guard Self.isFormallyValid(authority),
+                  authority.descriptorSHA256 == FloeDigest.sha256Hex(authority.descriptorBytes),
+                  SkillRuntimeDependency.isCompatible(minimumAppVersion: descriptor.minimumAppVersion,
+                                                       appVersion: appVersion()) else { return "rejected: authorization" }
+            do {
+                let token = cancellation ?? CancellationToken()
+                let cached = try await ensureCachedArtifact(descriptor: descriptor,
+                    publicationCommit: authority.publicationCommit, auditedSourceCommit: authority.auditedSourceCommit,
+                    catalogSHA256: authority.catalogSHA256, token: token)
+                try SkillOAuthRuntimeDependency.verifyArtifact(try oauthBoundedFile(cached, cap: descriptor.artifact.size),
+                                                                descriptor: descriptor)
+                return "verified: \(descriptor.componentID)@\(descriptor.componentVersion)"
+            } catch is CancellationError { return "cancelled" }
+            catch { return "unavailable: OAuth runtime cache" }
+        }
         guard Self.isFormallyValid(authority),
               authority.descriptorSHA256 == FloeDigest.sha256Hex(authority.descriptorBytes),
               let descriptor = try? SkillRuntimeDependency.decode(authority.descriptorBytes) else {
@@ -1386,8 +1710,8 @@ actor SkillRuntimeComponentCenter {
         }
     }
 
-    private func downloadAndCommitToCache(
-        descriptor: SkillRuntimeDependencyDescriptor,
+    private func downloadAndCommitToCache<D: SkillKnownRuntimeArtifact>(
+        descriptor: D,
         publicationCommit: String,
         auditedSourceCommit: String?,
         catalogSHA256: String,
@@ -1501,21 +1825,19 @@ actor SkillRuntimeComponentCenter {
     }
 
     private func ensureStagedArtifact(
-        plan: SkillRuntimeComponentPlan,
-        layerURL: URL,
-        pathMap: LinuxGuestPathMap,
-        token: CancellationToken,
-        prepKey: PrepKey,
-        prepGeneration: UUID
+        plan: SkillRuntimeComponentPlan, layerURL: URL, pathMap: LinuxGuestPathMap,
+        token: CancellationToken, prepKey: PrepKey, prepGeneration: UUID
     ) async throws -> (url: URL, guestPath: String) {
-        // Token + demand fences as the FIRST synchronous statements: this
-        // body has no suspension points, so the checks and every filesystem
-        // effect below run as ONE actor region — the staging phase's
-        // linearization point. No staging byte moves and no directory is
-        // created for a cancelled preparation or a fully departed demand.
         guard !Self.isFenced(token) else { throw CancellationError() }
         guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { throw CancellationError() }
-        let descriptor = plan.descriptor
+        return try stageKnownArtifact(descriptor: plan.descriptor, layerURL: layerURL,
+                                      pathMap: pathMap, token: token)
+    }
+
+    private func stageKnownArtifact<D: SkillKnownRuntimeArtifact>(
+        descriptor: D, layerURL: URL, pathMap: LinuxGuestPathMap, token: CancellationToken
+    ) throws -> (url: URL, guestPath: String) {
+        guard !Self.isFenced(token) else { throw CancellationError() }
         guard let reservedRoot = Self.preparedLayerRoot(under: layerURL) else {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.existingRootConflict)
         }
@@ -1540,7 +1862,7 @@ actor SkillRuntimeComponentCenter {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.cacheUnavailable)
         }
 
-        let target = directory.appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        let target = directory.appendingPathComponent(descriptor.engineFileName, isDirectory: false)
         guard let guestPath = pathMap.guestPath(forHostPath: target.path),
               guestPath.hasPrefix(LinuxGuestMountPoint.environment + "/"),
               !guestPath.split(separator: "/").contains("..") else {
@@ -1551,7 +1873,7 @@ actor SkillRuntimeComponentCenter {
             // Reuse is granted ONLY by full byte verification; a foreign,
             // damaged, symlinked or oversized entry stays exactly as found.
             // Verified reuse also repairs the host mode on that same inode.
-            try adoptVerifiedArtifact(at: target, descriptor: descriptor, token: token)
+            try adoptKnownVerifiedArtifact(at: target, descriptor: descriptor, token: token)
             Self.pruneStaleComponentTemps(in: directory)
             return (target, guestPath)
         }
@@ -1580,7 +1902,7 @@ actor SkillRuntimeComponentCenter {
                 // A concurrent publisher committed meanwhile: adopt only a
                 // fully verifying tree (and commit the mode on its inode),
                 // never overwrite. A symlink/corrupt entry is preserved.
-                try adoptVerifiedArtifact(at: target, descriptor: descriptor, token: token)
+                try adoptKnownVerifiedArtifact(at: target, descriptor: descriptor, token: token)
                 try? FileManager.default.removeItem(at: temporary)
             } else {
                 try FileManager.default.moveItem(at: temporary, to: target)
@@ -1597,7 +1919,7 @@ actor SkillRuntimeComponentCenter {
                 do {
                     // A concurrent publisher won: only its verified bytes
                     // and inode may be adopted; anything else stays put.
-                    try adoptVerifiedArtifact(at: target, descriptor: descriptor, token: token)
+                    try adoptKnownVerifiedArtifact(at: target, descriptor: descriptor, token: token)
                 } catch {
                     throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.writeFailed)
                 }

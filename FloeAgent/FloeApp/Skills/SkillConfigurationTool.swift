@@ -85,17 +85,20 @@ struct SkillConfigurationTool: AgentTool {
     private let skillStore: SQLiteSkillStore
     private let service: SkillConfigurationService
     private let targetResolver: SkillConfigurationTargetResolver?
+    private let beginConfigurationMutation: (@Sendable (String, Set<String>?) async throws -> SkillConfigurationMutationLease?)?
     private let onConfigurationMutated: (@Sendable (String, Set<String>?) async -> Void)?
 
     init(
         skillStore: SQLiteSkillStore,
         service: SkillConfigurationService,
         targetResolver: SkillConfigurationTargetResolver? = nil,
+        beginConfigurationMutation: (@Sendable (String, Set<String>?) async throws -> SkillConfigurationMutationLease?)? = nil,
         onConfigurationMutated: (@Sendable (String, Set<String>?) async -> Void)? = nil
     ) {
         self.skillStore = skillStore
         self.service = service
         self.targetResolver = targetResolver
+        self.beginConfigurationMutation = beginConfigurationMutation
         self.onConfigurationMutated = onConfigurationMutated
     }
 
@@ -311,15 +314,20 @@ struct SkillConfigurationTool: AgentTool {
             )
             return Self.output(try Self.outcomeJSON(outcome))
         default:
-            let outcome = try await service.unconfigure(
-                skillID: skillID,
-                profile: profile,
-                target: target,
-                fieldKeys: args.fields,
-                requirements: requirements,
-                expectedRevision: args.revision
-            )
-            return Self.output(try Self.outcomeJSON(outcome))
+            let mutation = try await beginConfigurationMutation?(skillID, args.fields.map { Set($0) })
+            do {
+                try context.cancellation.throwIfCancelled()
+                let outcome = try await service.unconfigure(
+                    skillID: skillID,
+                    profile: profile,
+                    target: target,
+                    fieldKeys: args.fields,
+                    requirements: requirements,
+                    expectedRevision: args.revision
+                )
+                await mutation?.finish()
+                return Self.output(try Self.outcomeJSON(outcome))
+            } catch { await mutation?.finish(); throw error }
         }
     }
 

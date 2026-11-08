@@ -21,6 +21,8 @@ struct PersonalLibraryTrashEntry: Codable, Hashable, Identifiable, Sendable {
     var projectID: UUID?
     var contentKind: PersonalContentKind?
     var folderID: UUID?
+    /// Future tombstones bind the directory, not just its reused pathname.
+    var resourceIdentity: String?
 }
 
 /// One atomic metadata file hides originals in place. It grants no filesystem
@@ -57,7 +59,11 @@ enum PersonalLibraryTrashStore {
         guard info.isRegularFile == true, info.isSymbolicLink != true, (info.fileSize ?? Int.max) <= 4 * 1_024 * 1_024 else {
             throw PersonalContentError.invalidProject
         }
-        let value = try JSONDecoder().decode(State.self, from: Data(contentsOf: file))
+        return try decode(Data(contentsOf: file))
+    }
+    static func decode(_ bytes: Data) throws -> State {
+        guard bytes.count <= 4 * 1_024 * 1_024 else { throw PersonalContentError.invalidProject }
+        let value = try JSONDecoder().decode(State.self, from: bytes)
         guard value.version == 1, value.entries.count <= 10_000,
               Set(value.entries.map(\.id)).count == value.entries.count else { throw PersonalContentError.invalidProject }
         for entry in value.entries {

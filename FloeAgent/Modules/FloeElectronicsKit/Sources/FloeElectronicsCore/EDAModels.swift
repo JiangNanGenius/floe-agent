@@ -189,7 +189,7 @@ public struct EDASheet: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
-public enum EDAPadShape: String, Codable, CaseIterable, Sendable { case circle, rectangle, oval, roundRectangle }
+public enum EDAPadShape: String, Codable, CaseIterable, Sendable { case circle, rectangle, oval, roundRectangle, polygon }
 public struct EDAPad: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var number: String
@@ -197,15 +197,17 @@ public struct EDAPad: Codable, Hashable, Identifiable, Sendable {
     public var size: EDAPoint
     public var angle: Double
     public var shape: EDAPadShape
+    /// Polygon-only local mm vertices, implicitly closed; nil for older shapes.
+    public var polygon: [EDAPoint]?
     public var drill: Double?
     /// Nil means plating has not been specified. Never infer it from copper layers.
     public var drillPlated: Bool?
     public var layers: [String]
     public init(id: UUID = UUID(), number: String, position: EDAPoint, size: EDAPoint = .init(1.5, 1.5),
                 angle: Double = 0, shape: EDAPadShape = .circle, drill: Double? = nil,
-                layers: [String] = ["F.Cu"], drillPlated: Bool? = nil) {
+                layers: [String] = ["F.Cu"], drillPlated: Bool? = nil, polygon: [EDAPoint]? = nil) {
         self.id = id; self.number = number; self.position = position; self.size = size
-        self.angle = angle; self.shape = shape; self.drill = drill; self.layers = layers; self.drillPlated = drillPlated
+        self.angle = angle; self.shape = shape; self.polygon = polygon; self.drill = drill; self.layers = layers; self.drillPlated = drillPlated
     }
 }
 

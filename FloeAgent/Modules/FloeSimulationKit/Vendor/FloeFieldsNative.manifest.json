@@ -12,8 +12,8 @@
       "exceptions": true,
       "openmp": false,
       "mpi": false,
-      "bridgeSHA256": "97e0fb2d62f5e3cf51f66d7dbcf6493fc9b06003565f6c292df483b90cc81778",
-      "headerSHA256": "bd2c194f07c0e31eb71a84faff9b2358b40edef9236cd1835338339d645f4c33"
+      "bridgeSHA256": "6b0bfc24e4cd3a02109912d8fea9becebece4e9a7b03c65ce921528cd3f0c733",
+      "headerSHA256": "06375409ca2322e9fe107a39306df9919ebb3c8696adbd8a7e8032ab94572c31"
     },
     "ios": {
       "upstream": "MFEM 4.8",
@@ -24,8 +24,8 @@
       "exceptions": true,
       "openmp": false,
       "mpi": false,
-      "bridgeSHA256": "97e0fb2d62f5e3cf51f66d7dbcf6493fc9b06003565f6c292df483b90cc81778",
-      "headerSHA256": "bd2c194f07c0e31eb71a84faff9b2358b40edef9236cd1835338339d645f4c33"
+      "bridgeSHA256": "6b0bfc24e4cd3a02109912d8fea9becebece4e9a7b03c65ce921528cd3f0c733",
+      "headerSHA256": "06375409ca2322e9fe107a39306df9919ebb3c8696adbd8a7e8032ab94572c31"
     },
     "simulator": {
       "upstream": "MFEM 4.8",
@@ -36,23 +36,54 @@
       "exceptions": true,
       "openmp": false,
       "mpi": false,
-      "bridgeSHA256": "97e0fb2d62f5e3cf51f66d7dbcf6493fc9b06003565f6c292df483b90cc81778",
-      "headerSHA256": "bd2c194f07c0e31eb71a84faff9b2358b40edef9236cd1835338339d645f4c33"
+      "bridgeSHA256": "6b0bfc24e4cd3a02109912d8fea9becebece4e9a7b03c65ce921528cd3f0c733",
+      "headerSHA256": "06375409ca2322e9fe107a39306df9919ebb3c8696adbd8a7e8032ab94572c31"
     }
   },
   "files": {
     "Info.plist": "1aaad1b1e83cf6a725e6e855fefe94001d711b3ace216cf18cb6175f193ae5ab",
-    "ios-arm64-simulator/FloeFieldsNative.framework/FloeFieldsNative": "f0dfdd46cb4ac957735ee291a14d8a140db3dd89926369ca4ad25216ea7aa712",
-    "ios-arm64-simulator/FloeFieldsNative.framework/Info.plist": "84e58ab3a664530d046f9f2afebf8f572e671a1b5ff06c1faa9bb61ce528937f",
-    "ios-arm64-simulator/FloeFieldsNative.framework/Headers/FloeFieldsMFEM.h": "bd2c194f07c0e31eb71a84faff9b2358b40edef9236cd1835338339d645f4c33",
+    "ios-arm64-simulator/FloeFieldsNative.framework/FloeFieldsNative": "eadfdd6b77232f0676e47ffd5db1bef25533aa10894cf0078dd901111d1c9de2",
+    "ios-arm64-simulator/FloeFieldsNative.framework/Info.plist": "f74c38064fa279d03dd93c9486ef322427b1868834b71ac6fe05a997cb143307",
+    "ios-arm64-simulator/FloeFieldsNative.framework/Headers/FloeFieldsMFEM.h": "06375409ca2322e9fe107a39306df9919ebb3c8696adbd8a7e8032ab94572c31",
     "ios-arm64-simulator/FloeFieldsNative.framework/Modules/module.modulemap": "b55420ee2c12ea6cd7ab78e7d10d2faf4ecad247d8a06f55db4fd5664a046f00",
-    "macos-arm64/FloeFieldsNative.framework/FloeFieldsNative": "722f133599f93cd0e83bf1b0db4c39d17671dab03db70b60e02cdd21c700d6b4",
-    "macos-arm64/FloeFieldsNative.framework/Info.plist": "6d6f7610be1dab020a3b99bca44720a8c8e4cc3204b0f816b20bb9d15f670571",
-    "macos-arm64/FloeFieldsNative.framework/Headers/FloeFieldsMFEM.h": "bd2c194f07c0e31eb71a84faff9b2358b40edef9236cd1835338339d645f4c33",
+    "macos-arm64/FloeFieldsNative.framework/FloeFieldsNative": "2c508313bc877f2be8583333623eadd009b43fb39099ff5b5a3b17f56c474a3c",
+    "macos-arm64/FloeFieldsNative.framework/Info.plist": "5eab2a3b3338fe6eb3ddf04ea4fbd8d093108837a6d9310cbe59d93bedbecf10",
+    "macos-arm64/FloeFieldsNative.framework/Headers/FloeFieldsMFEM.h": "06375409ca2322e9fe107a39306df9919ebb3c8696adbd8a7e8032ab94572c31",
     "macos-arm64/FloeFieldsNative.framework/Modules/module.modulemap": "b55420ee2c12ea6cd7ab78e7d10d2faf4ecad247d8a06f55db4fd5664a046f00",
-    "ios-arm64/FloeFieldsNative.framework/FloeFieldsNative": "9c3a3f9955966a86bfb59b7ce1f19ab6add2af819d1050d247e786e485291f36",
-    "ios-arm64/FloeFieldsNative.framework/Info.plist": "84e58ab3a664530d046f9f2afebf8f572e671a1b5ff06c1faa9bb61ce528937f",
-    "ios-arm64/FloeFieldsNative.framework/Headers/FloeFieldsMFEM.h": "bd2c194f07c0e31eb71a84faff9b2358b40edef9236cd1835338339d645f4c33",
+    "ios-arm64/FloeFieldsNative.framework/FloeFieldsNative": "895b2316de8d9e8bc46b1d3a930f59924cc3bbbf2bedc7308ba3aef4b08675af",
+    "ios-arm64/FloeFieldsNative.framework/Info.plist": "f74c38064fa279d03dd93c9486ef322427b1868834b71ac6fe05a997cb143307",
+    "ios-arm64/FloeFieldsNative.framework/Headers/FloeFieldsMFEM.h": "06375409ca2322e9fe107a39306df9919ebb3c8696adbd8a7e8032ab94572c31",
     "ios-arm64/FloeFieldsNative.framework/Modules/module.modulemap": "b55420ee2c12ea6cd7ab78e7d10d2faf4ecad247d8a06f55db4fd5664a046f00"
+  },
+  "heatCandidate": {
+    "scope": "Private bridge-only ABI3 candidate; pinned upstream object bytes reused after removing only old bridge member. All three new bridge objects compiled, macOS actual packaged-artifact contracts passed. No App/UI acceptance.",
+    "sourceSHA256": "6b0bfc24e4cd3a02109912d8fea9becebece4e9a7b03c65ce921528cd3f0c733",
+    "headerSHA256": "06375409ca2322e9fe107a39306df9919ebb3c8696adbd8a7e8032ab94572c31",
+    "platforms": {
+      "macos": {
+        "triple": "arm64-apple-macos15.0",
+        "baseLibrarySHA256": "722f133599f93cd0e83bf1b0db4c39d17671dab03db70b60e02cdd21c700d6b4",
+        "removedOnlyBridgeMemberSHA256": "eb31f4b33cbf2cd24befbfcdfc59141ef941ccc91ae8d6ed608c0c7641a5b7fb",
+        "newBridgeSHA256": "d07b578ca17ec9f060a6afb08c254fb127bdcf0a771204617d31d5e532ad4547",
+        "newLibrarySHA256": "2c508313bc877f2be8583333623eadd009b43fb39099ff5b5a3b17f56c474a3c",
+        "objectBuildVersion": "/Users/jiangnangenius/Library/Caches/CodexBuild/FloeSimulation/0dd039b5b74b/xcode-27B52/r4-thermal05/macos/bridge.o:\nLoad command 1\n      cmd LC_BUILD_VERSION\n  cmdsize 24\n platform MACOS\n    minos 15.0\n      sdk 27.2\n   ntools 0\n"
+      },
+      "ios": {
+        "triple": "arm64-apple-ios26.0",
+        "baseLibrarySHA256": "9c3a3f9955966a86bfb59b7ce1f19ab6add2af819d1050d247e786e485291f36",
+        "removedOnlyBridgeMemberSHA256": "33ccb7dc3783b8935278267e3d02d03b1653555eedb35ddb9bd0ba46b56080d4",
+        "newBridgeSHA256": "7d1bf7890e7d53539675011f60379f0d5db6aea0dab59b2307fd58b8ed850f58",
+        "newLibrarySHA256": "895b2316de8d9e8bc46b1d3a930f59924cc3bbbf2bedc7308ba3aef4b08675af",
+        "objectBuildVersion": "/Users/jiangnangenius/Library/Caches/CodexBuild/FloeSimulation/0dd039b5b74b/xcode-27B52/r4-thermal05/ios/bridge.o:\nLoad command 1\n      cmd LC_BUILD_VERSION\n  cmdsize 24\n platform IOS\n    minos 26.0\n      sdk 27.2\n   ntools 0\n"
+      },
+      "simulator": {
+        "triple": "arm64-apple-ios26.0-simulator",
+        "baseLibrarySHA256": "f0dfdd46cb4ac957735ee291a14d8a140db3dd89926369ca4ad25216ea7aa712",
+        "removedOnlyBridgeMemberSHA256": "58d3c2fb65daaccf5ca7c2edbf7e0af021efd85b59251cbba44e3b3fb50a93d7",
+        "newBridgeSHA256": "3e9bb881e9982f906d20517108041285600e463772195f9fea589a24a557e404",
+        "newLibrarySHA256": "eadfdd6b77232f0676e47ffd5db1bef25533aa10894cf0078dd901111d1c9de2",
+        "objectBuildVersion": "/Users/jiangnangenius/Library/Caches/CodexBuild/FloeSimulation/0dd039b5b74b/xcode-27B52/r4-thermal05/simulator/bridge.o:\nLoad command 1\n      cmd LC_BUILD_VERSION\n  cmdsize 24\n platform IOSSIMULATOR\n    minos 26.0\n      sdk 27.2\n   ntools 0\n"
+      }
+    }
   }
 }

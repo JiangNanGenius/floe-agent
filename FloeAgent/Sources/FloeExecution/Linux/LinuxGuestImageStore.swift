@@ -654,6 +654,17 @@ public struct LinuxGuestImageMirror: Sendable, Equatable {
 /// public mirrors that are contacted *only* after a bounded availability
 /// failure of every earlier source. Every source serves the exact same bytes:
 /// they all verify against one shared `archiveSHA512`.
+/// Exact public release identity for the existing pinned VM archive. A
+/// distribution index may locate these bytes, never replace these pins.
+public struct LinuxGuestImageAssetPin: Sendable, Equatable {
+    public let githubAssetID: Int64
+    public let bytes: Int64
+    public let sha256: String
+    public init(githubAssetID: Int64, bytes: Int64, sha256: String) {
+        self.githubAssetID = githubAssetID; self.bytes = bytes; self.sha256 = sha256
+    }
+}
+
 public struct LinuxGuestTrustedImage: Sendable, Equatable {
     public var id: String
     /// Trust-bearing primary archive URL (GitHub Releases).
@@ -662,6 +673,7 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
     /// network/server-availability error.
     public var mirrors: [LinuxGuestImageMirror]
     public var archiveSHA512: String
+    public var assetPin: LinuxGuestImageAssetPin?
     public var provenance: LinuxGuestImageProvenance
 
     public init(
@@ -669,12 +681,14 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
         archiveURL: URL,
         mirrors: [LinuxGuestImageMirror] = [],
         archiveSHA512: String,
+        assetPin: LinuxGuestImageAssetPin? = nil,
         provenance: LinuxGuestImageProvenance
     ) {
         self.id = id
         self.archiveURL = archiveURL
         self.mirrors = mirrors
         self.archiveSHA512 = archiveSHA512
+        self.assetPin = assetPin
         self.provenance = provenance
     }
 }
@@ -692,6 +706,8 @@ public enum LinuxGuestImageDistributionCatalog {
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-20261105.2/floe-linux-guest-floe-debian13-arm64-basic-resident-20261105-v2.zip")!,
             mirrors: [],
             archiveSHA512: "8fc26f56804e29e03cfcfd10af621e223879544ee3a3fbdc9438b39ebae9750c99812ee8cf55d26f5b5d3d1c0d473ad5879b1f9a277751ef5765188e534fd3c2",
+            assetPin: LinuxGuestImageAssetPin(githubAssetID: 711699889, bytes: 328697349,
+                sha256: "2b10d5ed5a2535a47f91c7a9a6d1d375033faeb1518a6711f060c31397df398e"),
             provenance: LinuxGuestImageProvenance(
                 sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.2",
                 buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/tree/floe-linux-arm64-20261105.2/FloeAgent/LinuxGuest/image/arm64",

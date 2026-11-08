@@ -61,7 +61,7 @@ enum EDCanvasTool: String, CaseIterable, Identifiable {
 }
 
 enum EDLibraryTool: String, CaseIterable, Identifiable {
-    case select, line, rectangle, circle, pin, pad, erase
+    case select, line, rectangle, circle, arc, pin, pad, erase
     var id: Self { self }
     var title: String {
         switch self {
@@ -69,6 +69,7 @@ enum EDLibraryTool: String, CaseIterable, Identifiable {
         case .line: edText("线段", "Line")
         case .rectangle: edText("矩形", "Rectangle")
         case .circle: edText("圆", "Circle")
+        case .arc: edText("圆弧", "Arc")
         case .pin: edText("引脚", "Pin")
         case .pad: edText("焊盘", "Pad")
         case .erase: edText("擦除", "Erase")
@@ -80,13 +81,14 @@ enum EDLibraryTool: String, CaseIterable, Identifiable {
         case .line: "slash"
         case .rectangle: "rectangle"
         case .circle: "circle"
+        case .arc: "arrow.up.right.circle"
         case .pin: "pin.fill"
         case .pad: "square.fill"
         case .erase: "eraser"
         }
     }
-    static let symbolTools: [Self] = [.select, .line, .rectangle, .circle, .pin, .erase]
-    static let footprintTools: [Self] = [.select, .pad, .line, .rectangle, .circle, .erase]
+    static let symbolTools: [Self] = [.select, .line, .rectangle, .circle, .arc, .pin, .erase]
+    static let footprintTools: [Self] = [.select, .pad, .line, .rectangle, .circle, .arc, .erase]
 }
 
 enum EDCanvasMode: Equatable {
@@ -115,6 +117,9 @@ public struct EDWorkbenchView: View {
     @State private var libraryTool = EDLibraryTool.select
     @State private var labelName = "NET"
     @State private var activeLayer = "F.Cu"
+    @State private var graphicStroke = 0.2
+    @State private var graphicLayerID = "F.Fab"
+    @State private var arcClockwise = false
     @State private var wireWidth = 0.25
     @State private var holeDiameter = 3.2
     @State private var netID = ""
@@ -124,6 +129,11 @@ public struct EDWorkbenchView: View {
     @State private var reload = false
     @State private var viewportWidth: CGFloat = 0
     @State private var focusNavigationToken: UUID?
+    @State private var crossProbeRequest: EDACrossProbeRequest?
+    @State private var crossProbeMessage = ""
+    @State private var showCrossProbeMessage = false
+    @State private var crossProbeTask: Task<Void, Never>?
+    @State private var locatingComponent = false
 
     public init(session: EDWorkbenchSession, onAssistant: (() -> Void)? = nil,
                 onExportPreview: ((EDAExchangeFile, UInt64) -> Void)? = nil) {
@@ -198,6 +208,14 @@ public struct EDWorkbenchView: View {
             .presentationDetents([.medium, .large])
             .presentationBackground(.background)
         }
+        .sheet(item: $crossProbeRequest) { request in
+            EDCrossProbePicker(request: request, busy: locatingComponent,
+                select: { target in locate(request, targetID: target.id) }, cancel: { crossProbeRequest = nil })
+        }
+        .alert(edText("无法定位", "Cannot locate component"), isPresented: $showCrossProbeMessage) {
+            Button(edText("好", "OK"), role: .cancel) { }
+        } message: { Text(crossProbeMessage) }
+        .onDisappear { crossProbeTask?.cancel(); crossProbeTask = nil }
         .confirmationDialog(edText("放弃未保存的修改并重新载入？", "Discard unsaved changes and reload?"), isPresented: $reload, titleVisibility: .visible) {
             Button(edText("重新载入", "Reload"), role: .destructive) { Task { do { try await session.refresh(discardChanges: true) } catch { session.report(error) } } }
         }
@@ -253,7 +271,9 @@ public struct EDWorkbenchView: View {
                                            layer: activeLayer, width: wireWidth, netID: netID, holeDiameter: holeDiameter,
                                            showGrid: showGrid, placementAngle: $placementAngle, placementFlipped: $placementFlipped,
                                            onCancel: { tool = .select; libraryTool = .select }, onProperties: showProperties,
-                                           onWireToolRequested: { tool = .wire })
+                                           onWireToolRequested: { tool = .wire }, graphicStroke: graphicStroke,
+                                           graphicLayer: tab == .footprints ? EDAGraphicLayers.standardAssignments.first { $0.layerID == graphicLayerID } : nil,
+                                           arcClockwise: arcClockwise)
                         } else { ContentUnavailableView(edText("选择图页或库项目", "Select a sheet or library item"), systemImage: "square.dashed") }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     if !compactPanels && inspectorVisible {
@@ -269,6 +289,18 @@ public struct EDWorkbenchView: View {
                 .accessibilityLabel(edText("项目导航", "Project navigator"))
             Text(canvasTitle).font(.subheadline.weight(.medium)).lineLimit(1)
             Spacer(minLength: 0)
+            if session.canReturnFromCrossProbe {
+                Button { returnFromCrossProbe() } label: { Image(systemName: "arrow.uturn.backward.circle").frame(width:44,height:44).contentShape(Rectangle()) }
+                    .accessibilityLabel(edText("返回定位前的位置", "Return to previous location"))
+                    .accessibilityIdentifier("electronics.crossProbe.return").disabled(locatingComponent)
+            }
+            if tab == .schematic || tab == .board {
+                Button { beginCrossProbe() } label: { Image(systemName: "arrow.left.arrow.right.square").frame(width:44,height:44).contentShape(Rectangle()) }
+                    .accessibilityLabel(tab == .schematic ? edText("在 PCB 中定位", "Select on PCB") : edText("在原理图中定位", "Select on schematic"))
+                    .help(tab == .schematic ? edText("在 PCB 中定位", "Select on PCB") : edText("在原理图中定位", "Select on schematic"))
+                    .accessibilityIdentifier("electronics.crossProbe.locate")
+                    .disabled(locatingComponent || session.busy || session.isClosed || session.selection.context != context || !EDACrossProbe.isComponentSelection(session.project, selection: session.selection))
+            }
             Button(action: showProperties) { Image(systemName: "slider.horizontal.3").frame(width:44,height:44).contentShape(Rectangle()) }
                 .accessibilityLabel(edText("所选对象属性", "Selection properties"))
                 .disabled(session.selection.objectIDs.isEmpty)
@@ -332,6 +364,24 @@ public struct EDWorkbenchView: View {
                 HStack(spacing: 8) { optionControls; Spacer(minLength: 0) }
                 ScrollView(.horizontal) { HStack(spacing: 8) { optionControls } }.scrollIndicators(.hidden)
             }.padding(.horizontal, 10).frame(minHeight: 44).background(.bar)
+        } else if libraryTool == .arc {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { arcControls; Spacer(minLength: 0) }
+                ScrollView(.horizontal) { HStack(spacing: 8) { arcControls } }.scrollIndicators(.hidden)
+            }.padding(.horizontal, 10).frame(minHeight: 44).background(.bar)
+        }
+    }
+    @ViewBuilder private var arcControls: some View {
+        Button { arcClockwise.toggle() } label: {
+            Label(arcClockwise ? edText("顺时针", "Clockwise") : edText("逆时针", "Counterclockwise"), systemImage: arcClockwise ? "arrow.clockwise" : "arrow.counterclockwise")
+        }.frame(minHeight: 44).accessibilityIdentifier("electronics.arc.direction")
+        TextField(edText("线宽（毫米）", "Stroke width in millimetres"), value: $graphicStroke, format: .number)
+            .textFieldStyle(.roundedBorder).frame(width: 64).accessibilityIdentifier("electronics.arc.width")
+        Text("mm").font(.caption).foregroundStyle(.secondary)
+        if tab == .footprints {
+            Picker(edText("图层", "Layer"), selection: $graphicLayerID) {
+                ForEach(EDAGraphicLayers.standardAssignments, id: \.layerID) { Text($0.layerID).tag($0.layerID) }
+            }.fixedSize().accessibilityIdentifier("electronics.arc.layer")
         }
     }
     @ViewBuilder private var optionControls: some View {
@@ -394,6 +444,34 @@ public struct EDWorkbenchView: View {
     }
     private var navigator: some View {
         EDProjectNavigator(session: session, tab: tab, sheetID: $sheetID, boardID: $boardID, symbolID: $symbolID, footprintID: $footprintID) { panel = nil }
+    }
+    private func beginCrossProbe() {
+        do {
+            let request = try session.makeCrossProbeRequest()
+            if request.resolution.targets.count == 1 { locate(request) }
+            else { crossProbeRequest = request }
+        } catch { crossProbeFailed(error) }
+    }
+    private func locate(_ request: EDACrossProbeRequest, targetID: String? = nil) {
+        locatingComponent = true
+        crossProbeTask = Task { @MainActor in
+            defer { locatingComponent = false; crossProbeTask = nil }
+            do { try await session.crossProbe(request, targetID: targetID); crossProbeRequest = nil }
+            catch { crossProbeRequest = nil; crossProbeFailed(error) }
+        }
+    }
+    private func returnFromCrossProbe() {
+        locatingComponent = true
+        crossProbeTask = Task { @MainActor in
+            defer { locatingComponent = false; crossProbeTask = nil }
+            do { try await session.returnFromCrossProbe() }
+            catch { crossProbeFailed(error) }
+        }
+    }
+    private func crossProbeFailed(_ error: any Error) {
+        if error is CancellationError || (error as? EDAError) == .cancelled { return }
+        crossProbeMessage = (error as? EDACrossProbeError)?.message ?? edText("无法定位，请检查工程是否仍打开且原件未改变。", "Could not locate the component. Check that the project is still open and the original has not changed.")
+        showCrossProbeMessage = true
     }
     private func updateBoard() {
         guard let id = currentBoard?.id else { return }

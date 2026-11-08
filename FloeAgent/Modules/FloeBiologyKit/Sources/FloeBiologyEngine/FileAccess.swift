@@ -52,6 +52,13 @@ public actor BiologyWorkspaceFiles:BiologyFileAccessing {
     public nonisolated let environmentID:String
     private let authorize:@Sendable (BiologyFileContext,Bool) async throws -> Void
     private let maximumBytes:UInt64
+    private var permanentDeletionFences = Set<UUID>()
+    /// Trusted host lifecycle only; never a model file-authorization endpoint.
+    public func beginPermanentDeletion(projectID: UUID) { permanentDeletionFences.insert(projectID) }
+    public func endPermanentDeletion(projectID: UUID) { permanentDeletionFences.remove(projectID) }
+    private func requireNotPurging(_ id: UUID) throws {
+        guard !permanentDeletionFences.contains(id) else { throw BiologyError.unavailable("This original is being permanently removed.") }
+    }
     public init(root:URL,environmentID:String,maximumBytes:UInt64=8*1024*1024*1024,authorize:@escaping @Sendable (BiologyFileContext,Bool) async throws -> Void) throws {
         guard !environmentID.isEmpty,maximumBytes>0,maximumBytes<=512*1024*1024*1024 else {throw BiologyError.invalid("Invalid file-store configuration.")}
         self.root=root.standardizedFileURL;self.environmentID=environmentID;self.maximumBytes=maximumBytes;self.authorize=authorize
@@ -98,7 +105,7 @@ public actor BiologyWorkspaceFiles:BiologyFileAccessing {
         return fd
     }
     @discardableResult public func register(trustedSourceURL:URL,fileName:String,context:BiologyFileContext) async throws -> BiologyFileReference {
-        try await authorize(context,true)
+        try requireNotPurging(context.projectID); try await authorize(context,true); try requireNotPurging(context.projectID)
         guard !fileName.isEmpty,fileName.utf8.count<=4096 else {throw BiologyError.invalid("Invalid file name.")}
         let fd=open(trustedSourceURL.path,O_RDONLY|O_NOFOLLOW)
         guard fd>=0 else {throw BiologyError.unavailable("The authorized source file could not be opened.")};defer{close(fd)}
@@ -106,6 +113,7 @@ public actor BiologyWorkspaceFiles:BiologyFileAccessing {
         return try copy(fd:fd,byteCount:UInt64(info.st_size),fileName:fileName,projectID:context.projectID)
     }
     private func copy(fd:Int32,byteCount:UInt64,fileName:String,projectID:UUID) throws -> BiologyFileReference {
+        try requireNotPurging(projectID)
         var before=stat();guard fstat(fd,&before)==0 else {throw BiologyError.corrupt("Unable to inspect the source file.")}
         let dir=try directory(projectID),id=UUID()
         let staged=dir.appendingPathComponent(".pending-"+id.uuidString.lowercased())
@@ -138,17 +146,17 @@ public actor BiologyWorkspaceFiles:BiologyFileAccessing {
         return reference
     }
     public func resolve(_ fileID:UUID,context:BiologyFileContext) async throws -> BiologyFileReference {
-        try await authorize(context,false);return try metadata(fileID,projectID:context.projectID)
+        try requireNotPurging(context.projectID); try await authorize(context,false); try requireNotPurging(context.projectID);return try metadata(fileID,projectID:context.projectID)
     }
     public func read(_ reference:BiologyFileReference,offset:UInt64,length:Int,context:BiologyFileContext) async throws -> Data {
-        try await authorize(context,false)
+        try requireNotPurging(context.projectID); try await authorize(context,false); try requireNotPurging(context.projectID)
         guard length>=0,length<=2*1024*1024,offset<=reference.byteCount,UInt64(length)<=reference.byteCount-offset else {throw BiologyError.invalid("Choose a bounded range within the authorized file.")}
         let fd=try validatedFD(reference,projectID:context.projectID);defer{close(fd)}
         guard lseek(fd,off_t(offset),SEEK_SET)>=0 else {throw BiologyError.corrupt("Unable to select the file range.")}
         return try Self.readFD(fd,count:length)
     }
     public func export(_ data:Data,fileName:String,context:BiologyFileContext) async throws -> BiologyExportReceipt {
-        try await authorize(context,true)
+        try requireNotPurging(context.projectID); try await authorize(context,true); try requireNotPurging(context.projectID)
         guard !data.isEmpty,data.count<=BiologyProjectStore.maximumProjectBytes else {throw BiologyError.invalid("Empty or oversized output.")}
         let dir=try directory(context.projectID),temp=dir.appendingPathComponent(".export-"+UUID().uuidString.lowercased())
         try data.write(to:temp,options:.atomic);defer{try? FileManager.default.removeItem(at:temp)}
@@ -156,7 +164,7 @@ public actor BiologyWorkspaceFiles:BiologyFileAccessing {
         return BiologyExportReceipt(reference:try copy(fd:fd,byteCount:UInt64(data.count),fileName:fileName,projectID:context.projectID))
     }
     public func export(_ reference:BiologyFileReference,fileName:String,context:BiologyFileContext) async throws -> BiologyExportReceipt {
-        try await authorize(context,true)
+        try requireNotPurging(context.projectID); try await authorize(context,true); try requireNotPurging(context.projectID)
         let fd=try validatedFD(reference,projectID:context.projectID);defer{close(fd)}
         let result=try copy(fd:fd,byteCount:reference.byteCount,fileName:fileName,projectID:context.projectID)
         guard result.sha256==reference.sha256 else {
@@ -167,7 +175,7 @@ public actor BiologyWorkspaceFiles:BiologyFileAccessing {
         return BiologyExportReceipt(reference:result)
     }
     public func prepareNativeExport(_ reference:BiologyFileReference,context:BiologyFileContext) async throws -> BiologyNativeFileExport {
-        try await authorize(context,true)
+        try requireNotPurging(context.projectID); try await authorize(context,true); try requireNotPurging(context.projectID)
         let fd=try validatedFD(reference,projectID:context.projectID);defer{close(fd)}
         let exports=root.appendingPathComponent(".native-exports",isDirectory:true)
         try Self.directory(exports)
@@ -206,7 +214,7 @@ public actor BiologyWorkspaceFiles:BiologyFileAccessing {
     /// Trusted bridge use only. Relative to this configured workspace, derived
     /// from UUIDs after authorization; never a path decoded from a model.
     public func relativePath(_ reference:BiologyFileReference,context:BiologyFileContext) async throws -> String {
-        try await authorize(context,false)
+        try requireNotPurging(context.projectID); try await authorize(context,false); try requireNotPurging(context.projectID)
         let fd=try validatedFD(reference,projectID:context.projectID);close(fd)
         return reference.projectID.uuidString.lowercased()+"/"+reference.id.uuidString.lowercased()+".bin"
     }

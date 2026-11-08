@@ -137,7 +137,8 @@ struct EDInspectorPreviewScene {
     }
     private static func padPoints(_ pads: [EDAPad]) -> [EDAPoint] {
         pads.flatMap { pad in
-            [EDAPoint(-pad.size.x/2, -pad.size.y/2), .init(pad.size.x/2, -pad.size.y/2), .init(pad.size.x/2, pad.size.y/2), .init(-pad.size.x/2, pad.size.y/2)].map { $0.transformed(origin: pad.position, angle: pad.angle) }
+            if pad.shape == .polygon { return EDAPolygonPadGeometry.vertices(pad) ?? [] }
+            return [EDAPoint(-pad.size.x/2, -pad.size.y/2), .init(pad.size.x/2, -pad.size.y/2), .init(pad.size.x/2, pad.size.y/2), .init(-pad.size.x/2, pad.size.y/2)].map { $0.transformed(origin: pad.position, angle: pad.angle) }
         }
     }
     private static func graphicPoints(_ values: [EDAGraphic]) -> [EDAPoint] {

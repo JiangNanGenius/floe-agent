@@ -61,7 +61,10 @@ extension AppEnvironment {
     func makeSkillConfigurationService() -> SkillConfigurationService {
         SkillConfigurationService(
             store: skillConfigurationStore, vault: credentialVault,
-            validators: [IOSBridgeSkillConnectionValidator()],
+            validators: [IOSBridgeSkillConnectionValidator(), NativeExternalOAuthConnectionValidator(authorize: { [weak self] request, payload in
+                guard let self else { throw FloeError.unauthorized }
+                try await self.nativeExternalOAuthIntegration.validateValidationRequest(request, payload: payload)
+            })],
             runtimeUseAuthorizer: AppSkillRuntimeUseAuthorizer(environment: self)
         )
     }
@@ -103,6 +106,9 @@ extension AppEnvironment {
     }
 
     func skillConfigurationUIScope(for skill: PersistedSkill) -> SkillConfigurationUIScope {
+        if requiresExternalOAuthConnection(skill) {
+            return .init(profile: "default", target: SkillConfigurationTargets.localLinux)
+        }
         if (try? requiresLocalIOSConnection(skill)) == true {
             return .init(profile: "default", target: SkillConfigurationTargets.localIOS)
         }
@@ -119,9 +125,15 @@ extension AppEnvironment {
             service: skillConfigurationService, credentials: credentialStore,
             configurations: skillConfigurationStore,
             scope: { [weak self] skill in self?.skillConfigurationUIScope(for: skill) ?? .init(target: "unavailable") },
-            connectionKinds: LocalBridgePlatform.current.supportsIOSAutomation ? ["ios.bridge.local"] : [],
+            connectionKinds: Set([NativeExternalOAuthAppIntegration.connectionKind])
+                .union(LocalBridgePlatform.current.supportsIOSAutomation ? ["ios.bridge.local"] : []),
             supportsNativeNavigation: true,
+            beginMutation: { [weak self] skillID, fields in
+                guard let self else { throw FloeError.unauthorized }
+                return try await self.nativeExternalOAuthIntegration.beginMutation(skillID: skillID, fields: fields)
+            },
             configurationMutated: { [weak self] skillID, fields in
+                await self?.nativeExternalOAuthIntegration.configurationDidMutate(skillID: skillID, fields: fields)
                 await self?.iosBridgeIntegration.skillConfigurationDidMutate(skillID: skillID, fieldKeys: fields)
             },
             uninstall: { [weak self] skill, scope, disposition in

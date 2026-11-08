@@ -242,6 +242,13 @@ public enum TypedMutationContract {
                     whenAbsent: .required, storeKey: nativeStudioLibraryStoreKey))
             }
             return stores
+        case "studio.library":
+            guard arguments["action"] as? String == "permanentlyDelete" else { return [] }
+            var stores: [TypedOutputSpec] = [.init(argument: "projectID", role: .sourceWrite, whenAbsent: .required, storeKey: nativeStudioLibraryStoreKey)]
+            if arguments["expectedBiologyIdentity"] != nil {
+                stores.append(.init(argument: "projectID", role: .sourceWrite, whenAbsent: .required, storeKey: nativeBiologyStoreKey))
+            }
+            return stores
         case "studio.create", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining", "studio.simulation":
             return nativeStudioSpecs(toolName:toolName,arguments:arguments)
         case "document.pdf.edit":
@@ -648,6 +655,17 @@ public enum TypedMutationContract {
             if storeKey == nativeStudioLibraryStoreKey {
                 guard let container = nativeStudioContainerPath(serviceStorePaths:serviceStorePaths) else { return nil }
                 return .some(TypedMutableTarget(path:container,role:spec.role))
+            }
+            if storeKey == nativeBiologyStoreKey, toolName == "studio.library",
+               arguments["action"] as? String == "permanentlyDelete" {
+                // This action removes both Projects/<UUID> and all owned
+                // OriginalFiles namespaces. A media JSON filename cannot
+                // represent that actual native write extent.
+                guard let raw = serviceStorePaths[storeKey], (raw as NSString).isAbsolutePath, !raw.contains("\0"),
+                      let rawID = stringArgument(spec.argument, in: arguments), UUID(uuidString: rawID.trimmingCharacters(in: .whitespacesAndNewlines)) != nil else { return nil }
+                let path = URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
+                guard path != "/" else { return nil }
+                return .some(TypedMutableTarget(path: path, role: spec.role))
             }
             guard let storeRoot = serviceStorePaths[storeKey],
                   !storeRoot.isEmpty else { return nil }

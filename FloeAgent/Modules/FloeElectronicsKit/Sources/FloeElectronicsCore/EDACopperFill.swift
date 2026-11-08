@@ -84,6 +84,7 @@ public enum EDACopperFill {
         let shape: EDADRCShape
         let size: EDAPoint
         let position: EDAPoint
+        let isPolygon: Bool
     }
     private struct Copper {
         let id: UUID
@@ -201,7 +202,7 @@ public enum EDACopperFill {
                     }
                     let net = fp.padNets[pad.number].flatMap { $0.isEmpty ? nil : $0 }
                     pads.append(.init(footprintID: fp.id, id: pad.id, net: net, layers: resolved,
-                                      shape: shape, size: pad.size, position: fp.point(pad.position)))
+                                      shape: shape, size: pad.size, position: fp.point(pad.position), isPolygon: pad.shape == .polygon))
                     guard pads.count + copper.count <= 10_000 else { throw EDAError.invalid("copper fill copper-object budget") }
                 }
                 for key in fp.padNets.keys where !def.pads.contains(where: { $0.number == key }) {
@@ -305,6 +306,9 @@ public enum EDACopperFill {
                     for pad in pads where pad.layers.contains(zone.layer) && same(pad.net, zone.netID) {
                         let realPad = try clipper.solid(pad.shape)
                         guard EDACopperClipper.area(try clipper.intersection(result, realPad)) > EDAGeometry.tolerance else { continue }
+                        guard !pad.isPolygon else {
+                            throw fail("polygon_pad_thermal_unsupported", zone: zone, object: pad.id, path: "zone.thermal/pad.polygon", position: pad.position)
+                        }
                         guard relief.spokeWidth + EDACopperClipper.safety < min(pad.size.x, pad.size.y) else {
                             throw fail("thermal_spoke_too_wide_for_pad", zone: zone, object: pad.id, path: "zone.thermalRelief.spokeWidth", position: pad.position)
                         }

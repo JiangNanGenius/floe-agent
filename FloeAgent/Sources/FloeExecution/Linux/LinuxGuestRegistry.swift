@@ -321,6 +321,14 @@ public actor LinuxGuestRegistry {
     /// `.internalSyntheticTesting(provenance:)` policy — never an env var or
     /// manifest claim, and never assembled by the app.
     private let releasePolicy: GuestReleaseShapePolicy
+    private struct OAuthPrivateProcessBinding {
+        let receipt: LinuxGuestOAuthProcessReceipt
+        let channel: LinuxGuestCommandChannel
+        let handle: LinuxGuestSessionHandle
+    }
+    private var oauthPrivateProcesses: [UUID: OAuthPrivateProcessBinding] = [:]
+    private var oauthPrivateClosed: Set<UUID> = []
+
     private struct Session {
         var descriptor: LinuxGuestEnvironmentDescriptor
         var image: LinuxGuestImage
@@ -4423,5 +4431,103 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
     /// samples; nil means "not measured", never zero.
     public func emulatorThreadCPUSample(environmentID: String) async -> LinuxGuestEmulatorCPUSample? {
         await registry.emulatorThreadCPUSample(environmentID: environmentID)
+    }
+}
+
+// Appended to LinuxGuestRegistry.swift in the private source overlay, so
+// private session/admission/accounting state remains owned by that registry.
+extension LinuxGuestRegistry: LinuxGuestOAuthPrivateHosting {
+    public func oauthPrivateGeneration(environmentID: String) async throws -> UInt64 {
+        do {
+            return try await runningSessionForNewWork(environmentID: environmentID).generation
+        } catch { throw LinuxGuestOAuthPrivateError.unavailable }
+    }
+
+    public func runOAuthPrivate(environmentID: String, generation: UInt64, argv: [String],
+        standardInput: Data?, deadline: ShellExecutionDeadline, maxOutputBytes: Int,
+        cancellation: CancellationToken?) async throws -> LinuxGuestOAuthPrivateCommandResult {
+        guard (standardInput?.count ?? 0) <= 65_536,
+              standardInput == nil || String(data: standardInput!, encoding: .utf8) != nil else {
+            throw LinuxGuestOAuthPrivateError.protocolViolation
+        }
+        let session: Session
+        do { session = try await runningSessionForNewWork(environmentID: environmentID) }
+        catch { throw LinuxGuestOAuthPrivateError.unavailable }
+        guard session.generation == generation else { throw LinuxGuestOAuthPrivateError.staleRuntime }
+        beginActiveCommand(environmentID: environmentID)
+        defer { endActiveCommand(environmentID: environmentID) }
+        do {
+            let result = try await session.channel.run(argv: argv, workingDirectory: nil,
+                standardInput: standardInput.map { String(decoding: $0, as: UTF8.self) },
+                deadline: deadline, maxOutputBytes: min(65_536, max(128, maxOutputBytes)), cancellation: cancellation)
+            guard sessions[environmentID]?.generation == generation else {
+                throw LinuxGuestOAuthPrivateError.staleRuntime
+            }
+            return LinuxGuestOAuthPrivateCommandResult(stdout: Data(result.stdout.utf8), exitCode: result.exitCode)
+        } catch {
+            // Channel trace contains only phase/IDs/exit. Its timeout's
+            // partialStdout/stderr are discarded HERE, before lastErrors or
+            // an ordinary logger/receipt can inspect the thrown object.
+            let safe: LinuxGuestOAuthPrivateError = (Task.isCancelled || cancellation?.isCancelled == true) ? .cancelled : .unavailable
+            lastErrors[environmentID] = safe.errorDescription
+            if await session.channel.isPoisoned { await stop(environmentID: environmentID) }
+            throw safe
+        }
+    }
+
+    public func spawnOAuthPrivateWorker(environmentID: String, generation: UInt64, argv: [String],
+        cancellation: CancellationToken?) async throws -> LinuxGuestOAuthProcessReceipt {
+        let session: Session
+        do { session = try await runningSessionForNewWork(environmentID: environmentID) }
+        catch { throw LinuxGuestOAuthPrivateError.unavailable }
+        guard session.generation == generation else { throw LinuxGuestOAuthPrivateError.staleRuntime }
+        beginActiveCommand(environmentID: environmentID)
+        defer { endActiveCommand(environmentID: environmentID) }
+        do {
+            let pid = try await session.channel.spawnService(argv: argv, workingDirectory: nil,
+                logPath: "/dev/null", timeout: 30, cancellation: cancellation)
+            let receipt = LinuxGuestOAuthProcessReceipt(reference: UUID(), environmentID: environmentID,
+                generation: generation, pid: pid)
+            oauthPrivateProcesses[receipt.reference] = OAuthPrivateProcessBinding(receipt: receipt,
+                channel: session.channel, handle: session.handle)
+            if let current = sessions[environmentID], current.channel === session.channel {
+                spawnedServices[environmentID, default: []].insert(pid)
+            }
+            return receipt
+        } catch {
+            let safe: LinuxGuestOAuthPrivateError = cancellation?.isCancelled == true ? .cancelled : .unavailable
+            lastErrors[environmentID] = safe.errorDescription
+            throw safe
+        }
+    }
+
+    public func stopOAuthPrivateWorker(_ receipt: LinuxGuestOAuthProcessReceipt) async -> Bool {
+        guard let binding = oauthPrivateProcesses[receipt.reference] else {
+            return oauthPrivateClosed.contains(receipt.reference)
+        }
+        guard binding.receipt == receipt else { return false }
+        var confirmed = !(await binding.handle.isRunning())
+        if !confirmed {
+            confirmed = (try? await binding.channel.killService(pid: receipt.pid, timeout: 15)) == true
+            if !confirmed { confirmed = !(await binding.handle.isRunning()) }
+        }
+        if !confirmed { return oauthPrivateClosed.contains(receipt.reference) }
+        oauthPrivateProcesses[receipt.reference] = nil
+        oauthPrivateClosed.insert(receipt.reference)
+        if oauthPrivateClosed.count > 1_024, let oldest = oauthPrivateClosed.first { oauthPrivateClosed.remove(oldest) }
+        if let current = sessions[receipt.environmentID], current.channel === binding.channel {
+            spawnedServices[receipt.environmentID]?.remove(receipt.pid)
+            if spawnedServices[receipt.environmentID]?.isEmpty == true { spawnedServices[receipt.environmentID] = nil }
+        }
+        return true
+    }
+}
+
+extension LinuxGuestCommandService: LinuxGuestOAuthPrivateWorkerManaging {
+    public func openOAuthPrivateWorker(configuration: LinuxGuestOAuthPrivateWorkerConfiguration) async throws -> any LinuxGuestOAuthPrivateWorker {
+        try await LinuxGuestOAuthPipeWorker.open(host: registry, supervisor: localServices, configuration: configuration)
+    }
+    public func stopOAuthPrivateWorkers(environmentID: String, ownershipKey: String) async -> Bool {
+        await localServices.stopOAuthPrivateWorkers(environmentID: environmentID, ownershipKey: ownershipKey)
     }
 }

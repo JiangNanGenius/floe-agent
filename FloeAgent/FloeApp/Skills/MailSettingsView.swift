@@ -4,77 +4,6 @@ import FloeCore
 import FloeExecution
 import FloeSecurity
 
-@MainActor
-final class MailSettingsCenter: ObservableObject {
-    static let shared = MailSettingsCenter()
-    @Published private(set) var accounts: [MailAccount] = []
-    @Published var error: String?
-    private let defaults: UserDefaults
-    private let keychain: any KeychainProbeStore
-    private var loadFailed = false
-    private let settingsKey = "floe.mail.accounts.v1"
-    init(defaults: UserDefaults = .standard, keychain: any KeychainProbeStore = KeychainStore(service: "org.floeagent.mail", synchronizable: false)) {
-        self.defaults = defaults; self.keychain = keychain
-        if let data = defaults.data(forKey: settingsKey) {
-            do { accounts = try JSONDecoder().decode([MailAccount].self, from: data) }
-            catch { self.loadFailed = true; self.error = String(localized: "mail.settings.load_error") }
-        }
-    }
-    func password(for account: MailAccount, outgoing: Bool) throws -> String {
-        let data = try keychain.read(account: key(account.id, outgoing))
-        guard let value = String(data: data, encoding: .utf8), !value.isEmpty else { throw MailFailure.authenticationFailed }
-        return value
-    }
-    private func key(_ id: UUID, _ outgoing: Bool) -> String { "\(id.uuidString).\(outgoing ? "smtp" : "incoming")" }
-    func save(_ account: MailAccount, incomingPassword: String, outgoingPassword: String) throws {
-        try account.validate()
-        guard !loadFailed else { throw MailFailure.invalidConfiguration }
-        guard accounts.count < 20 || accounts.contains(where: { $0.id == account.id }) else { throw MailFailure.invalidConfiguration }
-        let previous = accounts.first { $0.id == account.id }
-        // A changed endpoint must not silently receive a previous server's secret.
-        guard (!incomingPassword.isEmpty || previous?.incoming == account.incoming),
-              (!outgoingPassword.isEmpty || previous?.outgoing == account.outgoing) else { throw MailFailure.authenticationFailed }
-        let incoming = incomingPassword.isEmpty ? try password(for: account, outgoing: false) : incomingPassword
-        let outgoing = outgoingPassword.isEmpty ? try password(for: account, outgoing: true) : outgoingPassword
-        guard incoming.utf8.count <= 1024, outgoing.utf8.count <= 1024,
-              !incoming.contains(where: { $0.isNewline || $0 == "\0" }),
-              !outgoing.contains(where: { $0.isNewline || $0 == "\0" }) else { throw MailFailure.invalidConfiguration }
-        // A new immutable ID on every edit keeps the old profile/credentials
-        // usable if saving either new credential fails halfway through.
-        var saved = account
-        if previous != nil { saved.id = UUID() }
-        var updated = accounts.filter { $0.id != account.id }; updated.append(saved)
-        let encoded = try JSONEncoder().encode(updated)
-        do {
-            try keychain.store(account: key(saved.id, false), secret: Data(incoming.utf8))
-            try keychain.store(account: key(saved.id, true), secret: Data(outgoing.utf8))
-        } catch {
-            try? keychain.delete(account: key(saved.id, false))
-            try? keychain.delete(account: key(saved.id, true))
-            throw error
-        }
-        defaults.set(encoded, forKey: settingsKey)
-        accounts = updated
-        if saved.id != account.id { try? keychain.delete(account: key(account.id, false)); try? keychain.delete(account: key(account.id, true)) }
-    }
-    func remove(_ account: MailAccount) throws {
-        let updated = accounts.filter { $0.id != account.id }
-        let encoded = try JSONEncoder().encode(updated)
-        // Retain the profile until both deletions succeed so a locked/failing
-        // Keychain leaves a retryable account, not unreachable stored secrets.
-        try keychain.delete(account: key(account.id, false)); try keychain.delete(account: key(account.id, true))
-        defaults.set(encoded, forKey: settingsKey); accounts = updated
-    }
-    func account(_ id: UUID) throws -> MailAccount {
-        guard let account = accounts.first(where: { $0.id == id }) else { throw MailFailure.invalidConfiguration }
-        return account
-    }
-    static func errorText(_ error: Error) -> String {
-        guard let failure = error as? MailFailure else { return String(localized: "mail.settings.credentials_error") }
-        let key = "mail.error." + failure.rawValue
-        return String(localized: String.LocalizationValue(key))
-    }
-}
 
 struct MailSettingsView: View {
     @ObservedObject var center: MailSettingsCenter = .shared
@@ -98,6 +27,7 @@ struct MailSettingsView: View {
             if let error = center.error { Text(error).foregroundStyle(.red) }
         }
         .navigationTitle("mail.settings.title")
+        .task { await center.refreshOAuthConnections?() }
         .sheet(item: $editing) { account in MailAccountEditor(center: center, initial: account) }
         .alert("mail.settings.remove", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             Button("action.cancel", role: .cancel) { removing = nil }
@@ -125,10 +55,32 @@ private struct MailAccountEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                MailIdentitySection(address: $account.address, incomingProtocol: $account.incomingProtocol)
+                MailIdentitySection(address: $account.address, incomingProtocol: $account.incomingProtocol, usesOAuth: account.oauthConnection != nil)
                     .onChange(of: account.incomingProtocol, updateIncomingPort)
-                MailServerSection(title: "mail.settings.incoming", server: $account.incoming, password: $incomingPassword)
-                MailServerSection(title: "mail.settings.outgoing", server: $account.outgoing, password: $outgoingPassword)
+                    .onChange(of: account.oauthConnection) { if account.oauthConnection != nil { account.incomingProtocol = .imap } }
+                Section {
+                    Picker("mail.settings.authentication", selection: Binding(get: { account.oauthConnection == nil ? "password" : "oauth" }, set: { mode in
+                        incomingPassword = ""; outgoingPassword = ""
+                        if mode == "password" { account.oauthConnection = nil }
+                        else if let first = center.oauthConnections.first { account.oauthConnection = first.reference }
+                    })) {
+                        Text("mail.settings.password").tag("password")
+                        if !center.oauthConnections.isEmpty || account.oauthConnection != nil { Text("mail.settings.connected_account").tag("oauth") }
+                    }
+                    if account.oauthConnection != nil {
+                        Picker("mail.settings.connected_account", selection: Binding(get: { selectedConnectionID }, set: { id in
+                            if let choice = center.oauthConnections.first(where: { $0.id == id }) { account.oauthConnection = choice.reference }
+                        })) {
+                            if let current = account.oauthConnection, !center.oauthConnections.contains(where: { $0.reference == current }) {
+                                Text("mail.settings.connection_unavailable").tag("unavailable")
+                            }
+                            ForEach(center.oauthConnections) { choice in Text(choice.title).tag(choice.id) }
+                        }
+                        Text("mail.settings.oauth_address_detail").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                MailServerSection(title: "mail.settings.incoming", server: $account.incoming, password: $incomingPassword, usesOAuth: account.oauthConnection != nil)
+                MailServerSection(title: "mail.settings.outgoing", server: $account.outgoing, password: $outgoingPassword, usesOAuth: account.oauthConnection != nil)
                 Section {
                     Button("mail.settings.test") { test() }
                     if busy { ProgressView() }
@@ -146,6 +98,9 @@ private struct MailAccountEditor: View {
             }
         }
         .onDisappear { testTask?.cancel(); incomingPassword = ""; outgoingPassword = "" }
+    }
+    private var selectedConnectionID: String {
+        center.oauthConnections.first(where: { $0.reference == account.oauthConnection })?.id ?? "unavailable"
     }
     private func updateIncomingPort() {
         switch (account.incomingProtocol, account.incoming.tls) {
@@ -167,6 +122,15 @@ private struct MailAccountEditor: View {
             defer { busy = false }
             do {
                 try account.validate()
+                if account.oauthConnection != nil {
+                    let incoming = try await center.credential(for: account, outgoing: false, use: .settingsTest)
+                    try await MailClient.shared.test(server: account.incoming, protocolName: account.incomingProtocol.rawValue, credential: incoming)
+                    try Task.checkCancellation()
+                    let outgoing = try await center.credential(for: account, outgoing: true, use: .settingsTest)
+                    try await MailClient.shared.test(server: account.outgoing, protocolName: "smtp", credential: outgoing)
+                    if !Task.isCancelled { result = String(localized: "mail.settings.test_success") }
+                    return
+                }
                 let incoming = incomingPassword.isEmpty ? try center.password(for: account, outgoing: false) : incomingPassword
                 let outgoing = outgoingPassword.isEmpty ? try center.password(for: account, outgoing: true) : outgoingPassword
                 // Do not resolve a saved password for an edited server during testing.
@@ -186,12 +150,13 @@ private struct MailAccountEditor: View {
 private struct MailIdentitySection: View {
     @Binding var address: String
     @Binding var incomingProtocol: MailIncomingProtocol
+    var usesOAuth = false
     var body: some View {
         Section("mail.settings.identity") {
             TextField("mail.settings.address", text: $address).keyboardType(.emailAddress)
             Picker("mail.settings.protocol", selection: $incomingProtocol) {
                 Text("IMAP").tag(MailIncomingProtocol.imap)
-                Text("POP3").tag(MailIncomingProtocol.pop3)
+                if !usesOAuth { Text("POP3").tag(MailIncomingProtocol.pop3) }
             }
         }
     }
@@ -201,6 +166,7 @@ private struct MailServerSection: View {
     let title: LocalizedStringKey
     @Binding var server: MailServer
     @Binding var password: String
+    var usesOAuth = false
     var body: some View {
         Section(title) {
             TextField("mail.settings.host", text: $server.host).keyboardType(.URL)
@@ -210,7 +176,7 @@ private struct MailServerSection: View {
                 Text("STARTTLS").tag(MailTLSMode.startTLS)
             }
             TextField("mail.settings.username", text: $server.username)
-            SecureField("mail.settings.password", text: $password)
+            if !usesOAuth { SecureField("mail.settings.password", text: $password) }
         }
     }
 }

@@ -416,7 +416,9 @@ enum LinuxGuestBackendAssembly {
         let officialTemplates = RuntimeV2OfficialTemplateService(
             store: store,
             importer: LinuxGuestImageTemplateAvailabilityAdapter(service: imageService),
-            downloader: LinuxGuestImageHTTPDownloader()
+            downloader: LinuxGuestImageHTTPDownloader(mirrorPolicy: { waitForRefresh in
+                await FloePlatformServices.shared.linuxImageMirrorPolicy(waitForRefresh: waitForRefresh)
+            })
         )
         let officialTemplateRuntime = LinuxOfficialTemplateRuntime(
             registerPinnedEnvironment: { environmentID, name, templateID, version in

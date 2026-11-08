@@ -54958,13 +54958,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Authentication failed. Check the app password and provider policy; OAuth-only accounts are unsupported."
+            "value": "Authentication failed. Check the password or reconnect the selected account in Mail settings."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "认证失败，请检查授权码和服务商策略；不支持仅允许 OAuth 的邮箱。"
+            "value": "认证失败，请检查密码，或在邮件设置中重新连接所选账户。"
           }
         }
       }
@@ -55247,13 +55247,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "IMAP + SMTP by default; POP3 is also supported. Passwords or app passwords stay in this device's Keychain. OAuth-only accounts are unsupported."
+            "value": "Use passwords or select a connected Google/Microsoft account for IMAP + SMTP. Password accounts also support POP3. Credentials stay in this device’s secure storage."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "默认 IMAP＋SMTP，也支持 POP3。密码或邮箱授权码仅存本机钥匙串。不支持仅允许 OAuth 的账号。"
+            "value": "IMAP＋SMTP 可使用密码或已连接的 Google／Microsoft 账户。密码账户也支持 POP3。凭据仅存本机安全存储。"
           }
         }
       }
@@ -55451,13 +55451,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Only connects and authenticates. Does not send, read or delete messages. Re-enter the password when changing a server."
+            "value": "Only connects and authenticates. Does not send, read or delete messages. Re-enter the password when changing a password account’s server."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅连接并验证账号，不发送、读取或删除邮件。更换服务器时需重新输入密码。"
+            "value": "仅连接并验证账号，不发送、读取或删除邮件。更换密码账户的服务器时需重新输入密码。"
           }
         }
       }
@@ -101825,13 +101825,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Supports standard Streamable HTTP. Remote tools still go through Floe's local permissions and approval; canvases cannot use MCP by default."
+            "value": "Connect to use this service’s tools. Canvas access can be enabled separately."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "支持标准 Streamable HTTP。远程工具仍经过 Floe 的本地权限与审批；画布默认不能使用 MCP。"
+            "value": "连接后可使用此服务的工具。画布访问可另行开启。"
           }
         }
       }
@@ -145309,6 +145309,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "绘图平面"
+          }
+        }
+      }
+    },
+    "mail.settings.authentication": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentication"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "认证方式"
+          }
+        }
+      }
+    },
+    "mail.settings.connected_account": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connected account"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已连接账户"
+          }
+        }
+      }
+    },
+    "mail.settings.connection_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接暂不可用"
+          }
+        }
+      }
+    },
+    "mail.settings.oauth_address_detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter the mailbox address and servers below."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在下方填写邮箱地址和服务器。"
+          }
+        }
+      }
+    },
+    "mail.error.oauthServerMismatch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the selected provider’s supported mail server, port and encryption mode."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请使用所选服务商支持的邮箱服务器、端口和加密方式。"
+          }
+        }
+      }
+    },
+    "environment.packages.language.not_running": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start this environment to manage its packages."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动此环境后可管理软件包。"
           }
         }
       }

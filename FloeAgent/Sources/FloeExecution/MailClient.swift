@@ -175,7 +175,11 @@ public final class MailClient: @unchecked Sendable {
     private let lock = NSLock()
     private var running = false
     private let queue = DispatchQueue(label: "org.floeagent.mail", qos: .utility)
-    public init() {}
+    private let wireFactory: @Sendable (MailServer, @escaping @Sendable () -> Bool) throws -> any MailWire
+    public init() { wireFactory = { try MailStreamWire(server: $0, cancelled: $1) } }
+    init(wireFactory: @escaping @Sendable (MailServer, @escaping @Sendable () -> Bool) throws -> any MailWire) {
+        self.wireFactory = wireFactory
+    }
 
     private func acquire() -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -191,7 +195,7 @@ public final class MailClient: @unchecked Sendable {
                 queue.async { [self] in
                     defer { release() }
                     do {
-                        let wire = try MailStreamWire(server: server, cancelled: { cancellation.isCancelled || cancelled() })
+                        let wire = try wireFactory(server, { cancellation.isCancelled || cancelled() })
                         defer { wire.close() }
                         continuation.resume(returning: try operation(MailProtocolSession(wire: wire)))
                     } catch let error as MailFailure { continuation.resume(throwing: error) }
@@ -200,31 +204,33 @@ public final class MailClient: @unchecked Sendable {
             }
         } onCancel: { cancellation.cancel() }
     }
-    public func test(server: MailServer, protocolName: String, password: String) async throws {
+    public func test(server: MailServer, protocolName: String, credential: MailCredential) async throws {
+        try credential.validate(server: server, protocolName: protocolName)
         try await perform(server: server, cancelled: { false }) { session in
             switch protocolName {
-            case "smtp": try session.loginSMTP(server: server, password: password)
-            case "imap": try session.loginIMAP(server: server, password: password)
-            case "pop3": try session.loginPOP(server: server, password: password)
+            case "smtp": try session.loginSMTP(server: server, credential: credential)
+            case "imap": try session.loginIMAP(server: server, credential: credential)
+            case "pop3": try session.loginPOP(server: server, credential: credential)
             default: throw MailFailure.invalidConfiguration
             }
         }
     }
-    public func folders(account: MailAccount, password: String, cancelled: @escaping @Sendable () -> Bool = { false }) async throws -> [String] {
-        try await foldersWithAttributes(account: account, password: password, cancelled: cancelled)
+    public func folders(account: MailAccount, credential: MailCredential, cancelled: @escaping @Sendable () -> Bool = { false }) async throws -> [String] {
+        try await foldersWithAttributes(account: account, credential: credential, cancelled: cancelled)
             .map(\.name)
     }
 
     /// LISTS folders with their attributes, used to resolve special-use
     /// folders (archive/trash) without guessing. POP3 exposes only INBOX.
-    public func foldersWithAttributes(account: MailAccount, password: String, cancelled: @escaping @Sendable () -> Bool = { false }) async throws -> [MailFolderInfo] {
+    public func foldersWithAttributes(account: MailAccount, credential: MailCredential, cancelled: @escaping @Sendable () -> Bool = { false }) async throws -> [MailFolderInfo] {
         try account.validate()
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         return try await perform(server: account.incoming, cancelled: cancelled) { session in
             if account.incomingProtocol == .pop3 {
-                try session.loginPOP(server: account.incoming, password: password)
+                try session.loginPOP(server: account.incoming, credential: credential)
                 return [MailFolderInfo(name: "INBOX", attributes: [])]
             }
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             return try Self.folderInfos(session: session)
         }
     }
@@ -250,14 +256,15 @@ public final class MailClient: @unchecked Sendable {
             return MailFolderInfo(name: name, attributes: flags)
         }
     }
-    public func list(account: MailAccount, password: String, folder: String = "INBOX", afterUID: UInt32 = 0,
+    public func list(account: MailAccount, credential: MailCredential, folder: String = "INBOX", afterUID: UInt32 = 0,
                      limit: Int = 20, beforeMessageID: String? = nil, cancelled: @escaping @Sendable () -> Bool = { false }) async throws -> MailListing {
         try account.validate()
         guard (1...50).contains(limit), afterUID < UInt32.max else { throw MailFailure.invalidConfiguration }
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         return try await perform(server: account.incoming, cancelled: cancelled) { session in
             if account.incomingProtocol == .pop3 {
                 guard folder == "INBOX", afterUID == 0 else { throw MailFailure.invalidConfiguration }
-                try session.loginPOP(server: account.incoming, password: password)
+                try session.loginPOP(server: account.incoming, credential: credential)
                 let ids = try Self.popIDs(session)
                 let sizes = try session.popLines("LIST").map { line -> (Int, Int) in
                     let parts = line.split(separator: " "); guard parts.count == 2, let index = Int(parts[0]), index > 0, let size = Int(parts[1]), size >= 0 else { throw MailFailure.protocolRejected }
@@ -266,7 +273,7 @@ public final class MailClient: @unchecked Sendable {
                 return try Self.popPage(ids: ids, sizes: sizes, before: beforeMessageID, limit: limit)
             }
             guard beforeMessageID == nil else { throw MailFailure.invalidConfiguration }
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             let selected = try session.imap("EXAMINE \(MailProtocolSession.quoted(folder))")
             let version = try Self.uidValidity(selected)
             let search = try session.imap("UID SEARCH UID \(afterUID + 1):*")
@@ -297,7 +304,7 @@ public final class MailClient: @unchecked Sendable {
     /// POP3 reports an explicit unsupported failure, never an empty list.
     public func search(
         account: MailAccount,
-        password: String,
+        credential: MailCredential,
         folder: String = "INBOX",
         criteria: MailSearchCriteria,
         cursor: String? = nil,
@@ -310,8 +317,9 @@ public final class MailClient: @unchecked Sendable {
         // The cursor binds folder + UIDVALIDITY + last UID; the caller repeats
         // the same criteria so the re-evaluated search stays identical.
         guard !criteria.isEmpty else { throw MailFailure.invalidConfiguration }
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         return try await perform(server: account.incoming, cancelled: cancelled) { session in
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             return try Self.performSearch(
                 session: session,
                 accountID: account.id,
@@ -386,14 +394,14 @@ public final class MailClient: @unchecked Sendable {
     /// honestly instead of inventing one.
     public func specialFolder(
         account: MailAccount,
-        password: String,
+        credential: MailCredential,
         kind: MailSpecialFolder,
         cancelled: @escaping @Sendable () -> Bool = { false }
     ) async throws -> String? {
         guard account.incomingProtocol == .imap else { throw MailFailure.unsupportedForPOP3 }
         let folders = try await foldersWithAttributes(
             account: account,
-            password: password,
+            credential: credential,
             cancelled: cancelled
         )
         if let flagged = folders.first(where: {
@@ -414,7 +422,7 @@ public final class MailClient: @unchecked Sendable {
     /// reconcile before retrying.
     public func move(
         account: MailAccount,
-        password: String,
+        credential: MailCredential,
         requestID: UUID,
         uid: String,
         folder: String,
@@ -428,8 +436,9 @@ public final class MailClient: @unchecked Sendable {
               !folder.isEmpty, !destination.isEmpty,
               folder.utf8.count <= 1024, destination.utf8.count <= 1024,
               folder != destination else { throw MailFailure.invalidConfiguration }
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         return try await perform(server: account.incoming, cancelled: cancelled) { session in
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             return try Self.performMove(
                 session: session,
                 requestID: requestID,
@@ -550,7 +559,7 @@ public final class MailClient: @unchecked Sendable {
     /// reconciled without repeating COPY/MOVE/DELETE.
     public func messageIdentity(
         account: MailAccount,
-        password: String,
+        credential: MailCredential,
         folder: String,
         uid: String,
         mailboxVersion: String,
@@ -562,8 +571,9 @@ public final class MailClient: @unchecked Sendable {
               !folder.isEmpty, folder.utf8.count <= 1024 else {
             throw MailFailure.invalidConfiguration
         }
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         return try await perform(server: account.incoming, cancelled: cancelled) { session in
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             let selected = try session.imap("EXAMINE \(MailProtocolSession.quoted(folder))")
             guard try Self.uidValidity(selected) == mailboxVersion else {
                 throw MailFailure.mailboxChanged
@@ -612,7 +622,7 @@ public final class MailClient: @unchecked Sendable {
     ///    UIDVALIDITY changed, copy present but source intact); never repeat.
     public func reconcileMove(
         account: MailAccount,
-        password: String,
+        credential: MailCredential,
         provenance: MailMutationJournal.Provenance,
         cancelled: @escaping @Sendable () -> Bool = { false }
     ) async throws -> MailMoveReconciliation {
@@ -624,8 +634,9 @@ public final class MailClient: @unchecked Sendable {
               provenance.destination.utf8.count <= 1024 else {
             throw MailFailure.invalidConfiguration
         }
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         return try await perform(server: account.incoming, cancelled: cancelled) { session in
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             return try Self.performReconcileMove(
                 session: session,
                 uid: numericUID,
@@ -937,20 +948,21 @@ public final class MailClient: @unchecked Sendable {
         ])
     }
 
-    public func message(account: MailAccount, password: String, id: String, folder: String = "INBOX", mailboxVersion: String?,
+    public func message(account: MailAccount, credential: MailCredential, id: String, folder: String = "INBOX", mailboxVersion: String?,
                         cancelled: @escaping @Sendable () -> Bool = { false }) async throws -> Data {
         try account.validate()
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         return try await perform(server: account.incoming, cancelled: cancelled) { session in
             if account.incomingProtocol == .pop3 {
                 guard folder == "INBOX" else { throw MailFailure.invalidConfiguration }
-                try session.loginPOP(server: account.incoming, password: password)
+                try session.loginPOP(server: account.incoming, credential: credential)
                 guard let index = try Self.popIDs(session).first(where: { $0.value == id })?.key else { throw MailFailure.messageNotFound }
                 let sizeLine = try session.pop("LIST \(index)")
                 guard let size = Int(sizeLine.split(separator: " ").last ?? ""), size <= 16_000_000 else { throw MailFailure.responseTooLarge }
                 return try session.popMessage(index)
             }
             guard let uid = UInt32(id), uid > 0, let mailboxVersion else { throw MailFailure.invalidConfiguration }
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             guard try Self.uidValidity(session.imap("EXAMINE \(MailProtocolSession.quoted(folder))")) == mailboxVersion else { throw MailFailure.mailboxChanged }
             let reply = try session.imap("UID FETCH \(uid) (BODY.PEEK[])")
             let returnedUIDs = Self.matches(#"\bUID (\d+)"#, reply.lines.joined(separator: " ")).compactMap(\.first)
@@ -958,12 +970,13 @@ public final class MailClient: @unchecked Sendable {
             return reply.literals[0]
         }
     }
-    public func setRead(account: MailAccount, password: String, id: String, folder: String, mailboxVersion: String, read: Bool,
+    public func setRead(account: MailAccount, credential: MailCredential, id: String, folder: String, mailboxVersion: String, read: Bool,
                         cancelled: @escaping @Sendable () -> Bool = { false }) async throws {
         try account.validate()
         guard account.incomingProtocol == .imap, let uid = UInt32(id), uid > 0 else { throw MailFailure.invalidConfiguration }
+        try credential.validate(server: account.incoming, protocolName: account.incomingProtocol.rawValue)
         try await perform(server: account.incoming, cancelled: cancelled) { session in
-            try session.loginIMAP(server: account.incoming, password: password)
+            try session.loginIMAP(server: account.incoming, credential: credential)
             guard try Self.uidValidity(session.imap("SELECT \(MailProtocolSession.quoted(folder))")) == mailboxVersion else { throw MailFailure.mailboxChanged }
             try session.setRead(uid: uid, read: read)
             // Socket close, not CLOSE/EXPUNGE: never commit unrelated deleted mail.
@@ -981,11 +994,12 @@ public final class MailClient: @unchecked Sendable {
         let more = remaining.count > limit
         return MailListing(folder: "INBOX", mailboxVersion: nil, messages: entries, hasMore: more, nextBeforeMessageID: more ? entries.last?.id : nil)
     }
-    public func send(account: MailAccount, password: String, draft: MailDraft, messageID: UUID,
+    public func send(account: MailAccount, credential: MailCredential, draft: MailDraft, messageID: UUID,
                      cancelled: @escaping @Sendable () -> Bool = { false }) async throws {
         try account.validate(); try draft.validate()
+        try credential.validate(server: account.outgoing, protocolName: "smtp")
         try await perform(server: account.outgoing, cancelled: cancelled) { session in
-            try session.loginSMTP(server: account.outgoing, password: password)
+            try session.loginSMTP(server: account.outgoing, credential: credential)
             try session.send(from: account.address, draft: draft, messageID: messageID)
         }
     }

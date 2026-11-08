@@ -196,6 +196,83 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         changed(entry.projectID ?? entry.id)
     }
 
+    /// One confirmation source for UI and the existing task-bound tool. The
+    /// canonical Biology coordinator adds real native CAS snapshots as needed.
+    static func permanentDeletionPlans(_ entries: [PersonalLibraryTrashEntry], environment: AppEnvironment?,
+        library suppliedLibrary: PersonalContentLibrary? = nil) async throws -> [PersonalPermanentDeletePlan] {
+        let library: PersonalContentLibrary
+        if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
+        let proposals = try await library.permanentDeletionProposals(entries)
+        guard proposals.contains(where: { $0.members.contains(where: { $0.kind == .biology }) }) else { return proposals }
+        guard let environment else { throw PersonalContentError.storageUnavailable }
+        let lifecycle = try await environment.biologyComposition.libraryLifecycle()
+        return try await lifecycle.permanentDeletionPlans(proposals, library: library)
+    }
+
+    /// Only already-trashed originals, with the confirmation's exact entry/tree
+    /// snapshots. The existing owner/session barriers stay held through commit.
+    static func permanentlyDelete(_ plan: PersonalPermanentDeletePlan, environment: AppEnvironment?,
+        library suppliedLibrary: PersonalContentLibrary? = nil,
+        validateSource: @escaping @MainActor @Sendable () async throws -> Void = {}) async throws -> PersonalPermanentDeleteReceipt {
+        let library: PersonalContentLibrary
+        if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
+        let root = await library.root
+        let locations = plan.protectedRelativePaths.map { root.appendingPathComponent($0).standardizedFileURL }
+        var ids = Set(plan.members.map(\.id)); if let id = plan.entry.projectID { ids.insert(id) }
+        guard active.isDisjoint(with: ids), ids.allSatisfy({ uses[$0]?.isEmpty != false }),
+              !locations.contains(where: { location in
+                  folderBarriers.values.contains { location.path == $0.path || location.path.hasPrefix($0.path + "/") || $0.path.hasPrefix(location.path + "/") }
+                    || uses.values.flatMap({ $0.values }).contains { $0.path == location.path || $0.path.hasPrefix(location.path + "/") }
+              }) else { throw PersonalFileActionError.closeFirst }
+        active.formUnion(ids)
+        let barriers = locations.map { location -> UUID in let id = UUID(); folderBarriers[id] = location; return id }
+        defer { active.subtract(ids); for id in barriers { folderBarriers.removeValue(forKey: id) } }
+        try await validateSource(); try Task.checkCancellation()
+        if plan.requiresPreparation {
+            for record in plan.members {
+                try await prepareForDeletion(record, directory: root.appendingPathComponent(record.relativePath), environment: environment)
+            }
+        } else {
+            // The owned journal was created only after preparation. Deleted
+            // originals cannot gain a new usage lease; still check services
+            // whose background ownership is independent of a visible editor.
+            for record in plan.members {
+                switch record.kind {
+                case .printing: try PrintProjectSession.requireIdleForDeletion(id: record.id)
+                case .manufacturing: try ManufacturingSessions.requireIdleForDeletion(id: record.id)
+                case .music: try MusicProjectSession.requireIdleForDeletion(id: record.id)
+                case .image, .drawing, .video: try MediaV2Session.requireIdleForDeletion(id: record.id)
+                case .document:
+                    try PersonalTextDocument.requireClosedForFileAction(projectID: record.id)
+                    try PersonalOfficeDocument.requireClosedForFileAction(projectID: record.id)
+                default: break
+                }
+            }
+        }
+        try await validateSource(); try Task.checkCancellation()
+        let receipt: PersonalPermanentDeleteReceipt
+        if plan.members.contains(where: { $0.kind == .biology }) {
+            guard let environment else { throw PersonalContentError.storageUnavailable }
+            let lifecycle = try await environment.biologyComposition.libraryLifecycle()
+            receipt = try await lifecycle.permanentlyDeleteUnderHeldBarrier(plan, library: library)
+        } else { receipt = try await library.permanentlyDelete(plan) }
+        // Once actual removal committed, do not turn it into a cancellation.
+        for id in receipt.projectIDs { changed(id) }; changed(receipt.entryID)
+        return receipt
+    }
+    static func permanentlyDeleteBatch(_ plans: [PersonalPermanentDeletePlan], environment: AppEnvironment?,
+        library: PersonalContentLibrary? = nil) async -> PersonalPermanentDeleteBatchResult {
+        var result = PersonalPermanentDeleteBatchResult()
+        for plan in plans {
+            do { result.deleted.append(try await permanentlyDelete(plan, environment: environment, library: library)) }
+            catch {
+                let code = (error as? PersonalPermanentDeleteError)?.rawValue ?? (error is CancellationError ? "cancelled" : "unavailable")
+                result.failed.append(.init(entryID: plan.id, code: code, message: error.localizedDescription))
+            }
+        }
+        return result
+    }
+
     /// Batch deletion reuses the same guarded per-item operations instead of a
     /// fused path: revision/active-document/task/sidecar checks stay identical
     /// to single deletion. Failures never abort the remaining items and never

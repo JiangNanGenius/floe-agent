@@ -309,7 +309,8 @@ extension PersonalContentLibrary {
             guard info.isRegularFile == true, info.isSymbolicLink != true else { throw PersonalContentError.changedDocument }
             var state = try PersonalLibraryTrashStore.read(root: root)
             let entry = PersonalLibraryTrashEntry(kind: .work, title: value.record.title, relativePath: value.record.relativePath,
-                projectID: value.record.id, contentKind: value.record.kind)
+                projectID: value.record.id, contentKind: value.record.kind,
+                resourceIdentity: try PersonalLibraryPurgeIO.resourceIdentity(root: root, path: value.record.relativePath))
             state.entries.append(entry)
             try PersonalLibraryTrashStore.write(state, root: root)
             return entry
@@ -326,7 +327,8 @@ extension PersonalContentLibrary {
             guard Set(members.map(\.id)) == expectedProjectIDs else { throw PersonalContentError.changedDocument }
             var state = try PersonalLibraryTrashStore.read(root: root)
             let entry = PersonalLibraryTrashEntry(kind: .folder, title: selection.name, relativePath: selection.relativePath,
-                folderID: try PersonalLibraryTrashStore.marker(at: value.url, create: true))
+                folderID: try PersonalLibraryTrashStore.marker(at: value.url, create: true),
+                resourceIdentity: try PersonalLibraryPurgeIO.resourceIdentity(root: root, path: selection.relativePath))
             state.entries.append(entry)
             try PersonalLibraryTrashStore.write(state, root: root)
             return entry
@@ -335,6 +337,7 @@ extension PersonalContentLibrary {
 
     func restore(_ eventID: UUID) throws {
         try PersonalLibraryTrashStore.locked(root: root) {
+            try PersonalLibraryPurgeIO.requireNoJournal(root: root, entryID: eventID)
             var state = try PersonalLibraryTrashStore.read(root: root)
             guard let entry = state.entries.first(where: { $0.id == eventID }) else { throw PersonalContentError.changedDocument }
             let components = try PersonalLibraryTrashStore.components(entry.relativePath)

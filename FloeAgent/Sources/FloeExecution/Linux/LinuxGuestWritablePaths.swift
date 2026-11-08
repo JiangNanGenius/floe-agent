@@ -1,17 +1,14 @@
 // FloeExecution — one source of truth for guest-writable /floe/env paths.
 //
-// Every Linux guest command inherits environment variables that point temp
-// and cache locations at the persistent environment layer instead of the
-// guest's RAM-backed root partition (/tmp is a small tmpfs and the root
-// filesystem is compact by design). This enum is the Swift authority for
-// those paths; the matching C definitions live in the runner
-// (LinuxGuest/runner/floe_exec.c) and must stay aligned — a comment there
-// points back here.
+// Temp uses the resolved environment's disk-backed overlay; caches and final
+// installations stay on its persistent shared write layer. The App prepares
+// and exports temp at the existing command channel, including for older guest
+// runners whose boot default is still /floe/env/tmp. Their old files remain.
 //
-// Lifecycle: the guest runner creates each directory (with the mode below)
-// at boot, so native apt/pip/npm/gem work without per-tool configuration.
-// Nothing here is ever deleted automatically: caches survive a guest
-// restart and are user data Floe does not garbage-collect.
+// Lifecycle: the existing channel prepares scratch in the admitted guest's
+// namespace before exec. Existing runner boot preparation still owns caches.
+// Scratch follows the project/VM disk lifecycle; this adds no cache deletion
+// or background cleanup, and old shared /floe/env/tmp files are preserved.
 
 import Foundation
 
@@ -22,7 +19,7 @@ public enum LinuxGuestWritablePaths {
     /// Scratch/temp directory. Used for TMPDIR, TMP and TEMP: Python source
     /// builds (e.g. Pillow when no riscv64 wheel exists), gcc/ld intermediate
     /// files and gem native extensions all build here.
-    public static let tmp = root + "/tmp"
+    public static let tmp = LinuxGuestProcessEnvironment.scratchDirectory
 
     /// XDG_CACHE_HOME: generic per-user caches that follow the XDG base-dir
     /// spec (many CLI tools write below ~/.cache).
@@ -34,19 +31,19 @@ public enum LinuxGuestWritablePaths {
     /// npm_config_cache: npm/pnpm's package and tarball cache.
     public static let npmCache = root + "/cache/npm"
 
-    /// Directory the runner prepares at boot with its POSIX mode. `tmp` is a
-    /// world-writable sticky directory; cache dirs are root-owned but writable
-    /// (the guest runs its commands as root inside the VM).
+    /// The App prepares private disk scratch at command admission. Existing
+    /// runner boot preparation owns the cache directories; guest commands run
+    /// as root inside their resolved environment namespace.
     public static let bootDirectories: [(path: String, mode: UInt16)] = [
-        (tmp, 0o1777),
+        (tmp, 0o700),
         (xdgCache, 0o755),
         (pipCache, 0o755),
         (npmCache, 0o755)
     ]
 
     /// The environment variables every guest command inherits once the boot
-    /// directories exist. Values are guest-absolute paths inside the
-    /// environment share; callers may still override them explicitly.
+    /// directories exist. Values are guest-absolute paths; callers may still
+    /// override them explicitly.
     public static func environmentVariables() -> [String: String] {
         [
             "TMPDIR": tmp,

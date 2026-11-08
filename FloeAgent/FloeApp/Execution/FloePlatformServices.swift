@@ -82,6 +82,19 @@ final class FloePlatformServices: @unchecked Sendable {
     private var baseSliceURL: URL?
     private var management: EnvironmentManagementService?
     private var languageManagement: EnvironmentLanguagePackageService?
+    private var linuxImageMirrorPolicyProvider: LinuxGuestImageHTTPDownloader.MirrorPolicy?
+
+    // Receives the App's existing authenticated policy owner, never a new
+    // cache/discovery root. Installing this closure does not perform I/O.
+    func setLinuxImageMirrorPolicyProvider(_ provider: @escaping LinuxGuestImageHTTPDownloader.MirrorPolicy) {
+        lock.withLock { linuxImageMirrorPolicyProvider = provider }
+    }
+
+    func linuxImageMirrorPolicy(waitForRefresh: Bool) async -> LinuxGuestImageMirrorPolicy {
+        let provider = lock.withLock { linuxImageMirrorPolicyProvider }
+        return await provider?(waitForRefresh) ?? .unavailable
+    }
+
     private var configured = false
 
     func configure(
@@ -1060,7 +1073,9 @@ final class FloePlatformServices: @unchecked Sendable {
                 do {
                     image = try await images.installTrustedImage(
                         id: imageID,
-                        downloader: LinuxGuestImageHTTPDownloader(),
+                        downloader: LinuxGuestImageHTTPDownloader(mirrorPolicy: { waitForRefresh in
+                            await self.linuxImageMirrorPolicy(waitForRefresh: waitForRefresh)
+                        }),
                         forceDownload: forceDownload,
                         onProgress: reportProgress,
                         onPhase: reportPhase,

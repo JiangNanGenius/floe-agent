@@ -18,7 +18,9 @@ struct SkillNativeConnectionDestination: View {
 
     var body: some View {
         Group {
-            if let center = environment.iosBridgeIntegration.connectionCenter(for: request) {
+            if let center = environment.nativeExternalOAuthIntegration.connectionCenter(for: request) {
+                NativeExternalOAuthConnectionView(center: center)
+            } else if let center = environment.iosBridgeIntegration.connectionCenter(for: request) {
                 IOSBridgeConnectionView(center: center)
                     .task { validateIfReady(center) }
                     .onChange(of: center.status) { _, status in

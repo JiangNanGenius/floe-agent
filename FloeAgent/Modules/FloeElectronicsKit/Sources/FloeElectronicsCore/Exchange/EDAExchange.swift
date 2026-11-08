@@ -165,6 +165,8 @@ public enum EDAExchange {
                     let polygon:[EDAPoint]
                     switch pad.shape {
                     case .rectangle,.roundRectangle:polygon=[.init(-w,-h),.init(w,-h),.init(w,h),.init(-w,h)]
+                    case .polygon:
+                        guard let vertices=pad.polygon else{throw EDAError.missing("pad.polygon")};polygon=vertices
                     case .circle:polygon=(0...48).map{let a=Double($0)*2*Double.pi/48;return .init(cos(a)*w,sin(a)*h)}
                     case .oval:let r=min(w,h),a=EDAPoint(w>h ? w-r:0,w>h ? 0:h-r);polygon=(0...48).map{let angle=Double($0)*2*Double.pi/48,c=cos(angle),s=sin(angle);return .init(c*r+(c>=0 ? a.x:-a.x),s*r+(s>=0 ? a.y:-a.y))}
                     }

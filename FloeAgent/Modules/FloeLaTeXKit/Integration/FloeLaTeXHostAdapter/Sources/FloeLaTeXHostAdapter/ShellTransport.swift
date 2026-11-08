@@ -28,19 +28,32 @@ public actor LaTeXShellTransport:LaTeXEnvironmentTransport {
         self.validateOwner=validateOwner
         owner = .init(taskID:context.conversationID!,runID:context.runID,environmentID:context.environmentID)
     }
-    public static func create(context:ToolContext,binding:RuntimeAuthorityBinding?,jobs:BackgroundJobService,environments:EnvironmentRegistry,lifetime:LaTeXHostProject,registry:ToolRunnerRegistry = .shared,validateOwner:(@Sendable (ToolContext) async throws -> Void)?=nil) async throws -> LaTeXShellTransport {
+    public static func create(context:ToolContext,binding:RuntimeAuthorityBinding?,jobs:BackgroundJobService,environments:EnvironmentRegistry,lifetime:LaTeXHostProject,registry:ToolRunnerRegistry = .shared,routing:ToolEnvironmentRouting = .shared,validateOwner:(@Sendable (ToolContext) async throws -> Void)?=nil) async throws -> LaTeXShellTransport {
         guard !context.temporaryReadOnly,!context.publicWebOnly,context.conversationID != nil,context.workspaceRootURL != nil,
               context.allowedToolNames?.contains("exec.shell") != false,context.frozenEffectiveCatalogNames?.contains("exec.shell") != false,
               registry.runner(named:"exec.shell") != nil,context.approvalGrantID != nil,
-              context.runtimeAuthority==nil || binding != nil,let id=context.environmentID,context.environment?.id==id,
+              context.runtimeAuthority==nil || binding != nil,let id=context.environmentID,
+              context.environment==nil || context.environment?.id==id,
               let record=await environments.record(id:id),record.state != .deleting,!record.requiresRebuild,record.pendingRuntimeResetID==nil,
               record.effectiveExecutionBackend == .linuxVM || (record.effectiveExecutionBackend == .remoteSSH && record.operatingSystem?.lowercased()=="linux") else {throw LaTeXError.unavailable("An authorized, resolved Linux exec.shell environment is required for the LaTeX toolchain.")}
         if record.kind == .session,record.ownerID?.lowercased() != context.conversationID?.uuidString.lowercased() {throw LaTeXError.unavailable("The selected environment belongs to another task.")}
-        let lease=try await ToolEnvironmentRouting.shared.acquire(context)
+        try await validateOwner?(context)
+        // The approved LaTeX call owns a native document service. Resolve its
+        // already-allowed shell dependency by that dependency's routing rule:
+        // routing the native caller again intentionally yields no Linux layer.
+        // Only the real leased environment is carried back. Call identity,
+        // catalog ceilings, approval and runtime authority remain the caller's.
+        var shellContext=context
+        shellContext.executionToolName="exec.shell"
+        let lease=try await routing.acquire(shellContext)
         do {
-            guard lease.context.environmentID==context.environmentID,lease.context.environment?.id==context.environmentID,
-                  lease.context.runID==context.runID,lease.context.conversationID==context.conversationID else {throw LaTeXError.unavailable("The typesetting environment lease changed its owner.")}
-            let value=LaTeXShellTransport(context:lease.context,binding:binding,jobs:jobs,environments:environments,registry:registry,isLocal:record.effectiveExecutionBackend == .linuxVM,validateOwner:validateOwner)
+            guard lease.context.environmentID==id,lease.context.environment?.id==id,
+                  lease.context.runID==context.runID,lease.context.conversationID==context.conversationID,
+                  lease.context.executionBindingGeneration==context.executionBindingGeneration,
+                  lease.context.workspaceRootURL==context.workspaceRootURL,lease.context.scope==context.scope else {throw LaTeXError.unavailable("The typesetting environment lease changed its owner.")}
+            var resolved=context
+            resolved.environment=lease.context.environment
+            let value=LaTeXShellTransport(context:resolved,binding:binding,jobs:jobs,environments:environments,registry:registry,isLocal:record.effectiveExecutionBackend == .linuxVM,validateOwner:validateOwner)
             try await value.validate();lifetime.retain(EnvironmentLifetime(lease:lease));return value
         }catch {await lease.finish();throw error}
     }

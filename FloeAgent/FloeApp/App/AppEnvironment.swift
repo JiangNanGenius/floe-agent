@@ -119,6 +119,9 @@ final class AppEnvironment: ObservableObject {
     /// Optional same-device automation. The integration owns one native client
     /// per profile and the bounded task/background lifecycle hooks.
     lazy var iosBridgeIntegration: IOSBridgeIntegration = IOSBridgeIntegration(environment: self)
+    lazy var nativeExternalOAuthIntegration = makeNativeExternalOAuthIntegration()
+    lazy var nativeMailOAuthConsumer = makeNativeMailOAuthConsumer()
+    var nativeMailOAuthRefreshGeneration = UUID()
     let configurationStore: ModelConfigurationStore
     let configurationSync: ConfigSyncEngine
     let credentialStore: CredentialStore
@@ -1441,6 +1444,22 @@ final class AppEnvironment: ObservableObject {
 
         // All stored properties are initialized above. Registrations below
         // may now safely resolve lazy centers that retain this environment.
+        // A real image transfer lazily reads/refreshes the same signed Hub
+        // policy owner used by ordinary GitHub transport. No launch/view network.
+        let imageMirrorPolicies = githubTransportMirrors
+        FloePlatformServices.shared.setLinuxImageMirrorPolicyProvider { waitForRefresh in
+            let download: @Sendable () async throws -> GitHubTransportMirrorPolicyStore.Downloaded = {
+                try await SourceControlCenter.downloadGitHubTransportManifest()
+            }
+            let snapshot = if waitForRefresh {
+                await imageMirrorPolicies.policyForTransfer(download: download)
+            } else {
+                await imageMirrorPolicies.policyRefreshingIfNeeded(download: download)
+            }
+            return LinuxGuestImageMirrorPolicy(
+                generation: snapshot.usesBundledDefaults ? nil : snapshot.generation,
+                mirrorIDs: snapshot.roles.releaseAssets.map(\.rawValue))
+        }
         browserCenter.ownerReleaseHook = { [previewCenter] owner in
             previewCenter.releasePreview(for: owner)
         }
@@ -1924,7 +1943,12 @@ final class AppEnvironment: ObservableObject {
             skillStore: skillStore,
             service: skillConfigurationService,
             targetResolver: skillConfigurationTargetResolver,
+            beginConfigurationMutation: { [weak self] skillID, fields in
+                guard let self else { throw FloeError.unauthorized }
+                return try await self.nativeExternalOAuthIntegration.beginMutation(skillID: skillID, fields: fields)
+            },
             onConfigurationMutated: { [weak self] skillID, fieldKeys in
+                await self?.nativeExternalOAuthIntegration.configurationDidMutate(skillID: skillID, fields: fieldKeys)
                 await self?.iosBridgeIntegration.skillConfigurationDidMutate(
                     skillID: skillID,
                     fieldKeys: fieldKeys
@@ -2185,6 +2209,7 @@ final class AppEnvironment: ObservableObject {
         BrowserCookieProviderRegistry.shared.install(browserCenter)
         ToolCatalog.register(LinuxPortTool.self)
         ToolRunnerRegistry.shared.register(LinuxPortTool())
+        installNativeMailOAuth()
         registerMailTools()
         // Local preview server.
         registerPreviewTools(environment: previewCenter)

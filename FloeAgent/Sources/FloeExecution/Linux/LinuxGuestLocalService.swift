@@ -310,6 +310,10 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
     /// await can detect that its guest is gone (or replaced) and must not
     /// publish a handle for it.
     private var serviceStartEpochs: [String: UInt64] = [:]
+    private var oauthPrivateWorkers: [UUID: LinuxGuestOAuthPrivateWorkerHandle] = [:]
+    private var oauthPrivateTeardowns: [UUID: @Sendable () async -> Void] = [:]
+    private var oauthPrivatePreparing: Set<String> = []
+    private var oauthPrivateClosed: Set<UUID> = []
     /// Starts currently crossing their awaits, per environment, so an
     /// environment stop can wait for them to settle (and clean up their
     /// spawned process/forward) before the VM teardown proceeds.
@@ -322,7 +326,7 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
     public private(set) var emittedLifecycleEventCount = 0
     public var lifecycleObserverCount: Int { lifecycleObservers.count }
     /// Handles currently owned (running or not yet confirmed exited).
-    public var activeServiceCount: Int { active.count }
+    public var activeServiceCount: Int { active.count + oauthPrivateWorkers.count }
     /// Observed ends waiting for a consumer acknowledgement.
     public var pendingTerminalEventCount: Int { pendingTerminalEvents.count }
 
@@ -913,6 +917,7 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         for handle in owned {
             await stopLocalService(handle)
         }
+        await stopOAuthPrivateWorkers(environmentID: environmentID)
     }
 
     /// Called by the environment stop path after the VM is really gone.
@@ -927,10 +932,12 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         for handle in owned {
             await stopLocalService(handle)
         }
+        await stopOAuthPrivateWorkers(environmentID: environmentID)
     }
 
     public func activeLocalServiceCount(environmentID: String) async -> Int {
         active.values.lazy.filter { $0.environmentID == environmentID }.count
+            + oauthPrivateWorkers.values.lazy.filter { $0.environmentID == environmentID }.count
     }
 
     /// Used on app teardown: every guest is about to be destroyed.
@@ -945,6 +952,7 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         for handle in owned {
             await stopLocalService(handle)
         }
+        await stopOAuthPrivateWorkers(environmentID: nil)
     }
 
     /// `env KEY=VALUE …` prefix. Keys are validated so a hostile environment
@@ -972,5 +980,71 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         let data = (try? handle.readToEnd()) ?? Data()
         let redacted = SecretRedactor.redact(String(decoding: data, as: UTF8.self))
         return LogTail(text: redacted, bytes: size, truncated: size > Int64(maxBytes))
+    }
+}
+
+// Appended to LinuxGuestLocalService.swift in the private overlay; these
+// methods reuse the real supervisor's epoch, pending-start and stop lifecycle.
+extension LinuxGuestLocalServiceSupervisor {
+    public func startOAuthPrivateWorker(environmentID: String, generation: UInt64, ownershipKey: String,
+        argv: [String], prepareForStop: @escaping @Sendable () async -> Void,
+        cancellation: CancellationToken?) async throws -> LinuxGuestOAuthPrivateWorkerHandle {
+        guard let privateHost = host as? any LinuxGuestOAuthPrivateHosting,
+              !oauthPrivatePreparing.contains(ownershipKey),
+              !oauthPrivateWorkers.values.contains(where: { $0.ownershipKey == ownershipKey }) else {
+            throw LinuxGuestOAuthPrivateError.busy
+        }
+        let id = UUID()
+        let epoch = beginServiceStart(environmentID: environmentID, token: id)
+        oauthPrivatePreparing.insert(ownershipKey)
+        defer {
+            oauthPrivatePreparing.remove(ownershipKey)
+            finishServiceStart(environmentID: environmentID, token: id)
+        }
+        guard !Task.isCancelled, cancellation?.isCancelled != true else { throw LinuxGuestOAuthPrivateError.cancelled }
+        let process = try await privateHost.spawnOAuthPrivateWorker(environmentID: environmentID,
+            generation: generation, argv: argv, cancellation: cancellation)
+        let handle = LinuxGuestOAuthPrivateWorkerHandle(id: id, ownershipKey: ownershipKey, process: process)
+        // Register before any more suspension. Even a failed cleanup keeps
+        // this owner visible and blocks the same native connection key.
+        oauthPrivateWorkers[id] = handle
+        oauthPrivateTeardowns[id] = prepareForStop
+        if serviceStartEpoch(environmentID: environmentID) != epoch || Task.isCancelled || cancellation?.isCancelled == true {
+            _ = await stopOAuthPrivateWorker(handle)
+            throw LinuxGuestOAuthPrivateError.cancelled
+        }
+        return handle
+    }
+
+    public func stopOAuthPrivateWorker(_ handle: LinuxGuestOAuthPrivateWorkerHandle) async -> Bool {
+        guard let owned = oauthPrivateWorkers[handle.id] else { return oauthPrivateClosed.contains(handle.id) }
+        guard owned == handle, let privateHost = host as? any LinuxGuestOAuthPrivateHosting else { return false }
+        await oauthPrivateTeardowns[handle.id]?()
+        let confirmed = await privateHost.stopOAuthPrivateWorker(handle.process)
+        if confirmed {
+            oauthPrivateWorkers[handle.id] = nil
+            oauthPrivateTeardowns[handle.id] = nil
+            oauthPrivateClosed.insert(handle.id)
+            if oauthPrivateClosed.count > 1_024, let oldest = oauthPrivateClosed.first { oauthPrivateClosed.remove(oldest) }
+        }
+        return confirmed || oauthPrivateClosed.contains(handle.id)
+    }
+
+    private func stopOAuthPrivateWorkers(environmentID: String?) async {
+        let owned = Array(oauthPrivateWorkers.values).filter { environmentID == nil || $0.environmentID == environmentID }
+        for handle in owned { _ = await stopOAuthPrivateWorker(handle) }
+    }
+
+    public func stopOAuthPrivateWorkers(environmentID: String, ownershipKey: String) async -> Bool {
+        guard !oauthPrivatePreparing.contains(ownershipKey),
+              !oauthPrivateWorkers.values.contains(where: {
+                  $0.ownershipKey == ownershipKey && $0.environmentID != environmentID
+              }) else { return false }
+        let owned = Array(oauthPrivateWorkers.values).filter {
+            $0.environmentID == environmentID && $0.ownershipKey == ownershipKey
+        }
+        for handle in owned { _ = await stopOAuthPrivateWorker(handle) }
+        return !oauthPrivatePreparing.contains(ownershipKey)
+            && !oauthPrivateWorkers.values.contains(where: { $0.ownershipKey == ownershipKey })
     }
 }

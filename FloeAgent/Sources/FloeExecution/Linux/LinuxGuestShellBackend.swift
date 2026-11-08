@@ -510,7 +510,10 @@ extension LinuxGuestShellBackend {
         var total = 4
         total += 4 + (workingDirectory?.utf8.count ?? 0)
         total += 4 + (standardInput?.utf8.count ?? 0)
-        for field in argv { total += 4 + field.utf8.count }
+        // The real channel adds its fixed owned-scratch wrapper. Count the
+        // complete ordinary form here; sensitive TEMP overrides only reduce
+        // that overhead, so staging never underestimates the actual wire.
+        for field in LinuxGuestProcessEnvironment.preparedArgv(argv) { total += 4 + field.utf8.count }
         return total
     }
 

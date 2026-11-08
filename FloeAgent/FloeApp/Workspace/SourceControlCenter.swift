@@ -459,7 +459,7 @@ final class SourceControlCenter: ObservableObject {
 
     /// One immutable discovery snapshot, using compiled routes only. It
     /// never calls the policy store and cannot recursively trust a mirror.
-    private nonisolated static func downloadGitHubTransportManifest() async throws
+    nonisolated static func downloadGitHubTransportManifest() async throws
         -> GitHubTransportMirrorPolicyStore.Downloaded {
         guard let atomURL = SkillHubPublicTransport.mainAtomURL(
             owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository) else {

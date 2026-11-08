@@ -242,7 +242,7 @@ struct EnvironmentLanguagePackagesView: View {
             error = nil
         } catch {
             if let guestError = error as? LinuxGuestError, case .notRunning = guestError {
-                self.error = String(localized: "environment.packages.linux.not_running")
+                self.error = String(localized: "environment.packages.language.not_running")
             } else {
                 self.error = error.localizedDescription
             }

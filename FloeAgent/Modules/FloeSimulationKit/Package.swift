@@ -23,7 +23,7 @@ let package = Package(
         .binaryTarget(name:"FloeMeshingNative",path:"Vendor/FloeMeshingNative.xcframework"),
         .target(name: "FloeSimulationGeometry", dependencies: ["FloeSimulationCore","FloeMeshingNative",.product(name:"FloeOCCTKernel",package:"FloeCADKit",condition:.when(platforms:[.iOS]))],linkerSettings:[.linkedLibrary("c++"),.linkedLibrary("z")]),
         .binaryTarget(name: "FloeFieldsNative", path: "Vendor/FloeFieldsNative.xcframework"),
-        .target(name: "FloeSimulationFields", dependencies: ["FloeSimulationCore", "FloeSimulationGeometry", "FloeFieldsNative"], linkerSettings:[.linkedLibrary("c++")]),
+        .target(name: "FloeSimulationFields", dependencies: ["FloeSimulationCore", "FloeSimulationGeometry", "FloeSimulationEngineering", "FloeFieldsNative"], linkerSettings:[.linkedLibrary("c++")]),
         .binaryTarget(name: "FloeRapierNative", path: "Vendor/FloeRapierNative.xcframework"),
         .target(name: "FloeSimulationPhysics", dependencies: ["FloeSimulationCore", "FloeRapierNative"]),
         .target(name: "FloeSimulationAnimation", dependencies: ["FloeSimulationCore"]),

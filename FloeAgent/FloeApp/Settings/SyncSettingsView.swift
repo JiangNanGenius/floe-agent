@@ -16,7 +16,7 @@ struct SyncSettingsView: View {
     /// `SettingsCenter` value is refreshed on load; iCloud Keychain secrets
     /// can still land afterwards, so the status row follows the engine's
     /// arrival re-checks instead of freezing on a stale "waiting" state.
-    @State private var liveConfigSyncStatus: SyncStatus?
+    @State private var liveConfigSnapshot: ConfigSyncSnapshot?
     /// Bumped on every SettingsCenter publication so a suspended poll can
     /// detect that a newer pause/error/toggle value landed while it was
     /// awaiting the engine and must not be applied afterwards.
@@ -65,7 +65,7 @@ struct SyncSettingsView: View {
                     VStack(alignment: .trailing, spacing: 3) {
                         Text(syncStatusText)
                             .foregroundStyle(syncStatusColor)
-                        if let lastSync = center.configSyncLastSyncAt {
+                        if let lastSync = liveConfigSnapshot?.lastSyncAt ?? center.configSyncLastSyncAt {
                             Text(lastSync, style: .relative)
                                 .font(FloeTheme.Typography.metadata)
                                 .foregroundStyle(.secondary)
@@ -73,6 +73,12 @@ struct SyncSettingsView: View {
                     }
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
+
+                if let failure = effectiveConfigSyncFailure {
+                    Text(failure.message(chinese: FloeL10n.isChinese))
+                        .font(.footnote).foregroundStyle(FloeTheme.pending)
+                        .accessibilityIdentifier("settings.sync.configuration.failure")
+                }
 
                 Button {
                     Task {
@@ -153,7 +159,7 @@ struct SyncSettingsView: View {
             // re-check, so a resolved-then-re-waiting cycle can never freeze
             // the row even though the .task chain already started once.
             configStatusPublicationGeneration += 1
-            liveConfigSyncStatus = nil
+            liveConfigSnapshot = nil
             newlyPublishedWaiting = newValue == .waitingForSecret
         }
     }
@@ -177,9 +183,10 @@ struct SyncSettingsView: View {
         // promotes a cached `.waitingForSecret`; other lifecycle states are
         // returned unchanged.
         let entryGeneration = configStatusPublicationGeneration
-        let entryStatus = await engine.refreshStatusIfWaiting()
+        _ = await engine.refreshStatusIfWaiting()
+        let entry = await engine.configurationSnapshot()
         if entryGeneration == configStatusPublicationGeneration {
-            liveConfigSyncStatus = entryStatus
+            liveConfigSnapshot = entry
         }
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(2))
@@ -187,20 +194,25 @@ struct SyncSettingsView: View {
             let recheck = newlyPublishedWaiting
             newlyPublishedWaiting = false
             let cycleGeneration = configStatusPublicationGeneration
-            let latest: SyncStatus
-            if recheck {
-                latest = await engine.refreshStatusIfWaiting()
-            } else {
-                latest = await engine.status
-            }
+            if recheck { _ = await engine.refreshStatusIfWaiting() }
+            let latest = await engine.configurationSnapshot()
             if cycleGeneration == configStatusPublicationGeneration {
-                liveConfigSyncStatus = latest
+                liveConfigSnapshot = latest
             }
         }
     }
 
     private var effectiveConfigSyncStatus: SyncStatus {
-        liveConfigSyncStatus ?? center.configSyncStatus
+        liveConfigSnapshot?.status ?? center.configSyncStatus
+    }
+    private var effectiveConfigSyncFailure: ConfigSyncFailure? {
+        guard center.overallSyncEnabled, center.configurationSyncEnabled else { return nil }
+        switch effectiveConfigSyncStatus {
+        case .error, .paused:
+            if let liveConfigSnapshot { return liveConfigSnapshot.failure }
+            return center.configSyncFailure
+        default: return nil
+        }
     }
 
     private var syncStatusText: String {

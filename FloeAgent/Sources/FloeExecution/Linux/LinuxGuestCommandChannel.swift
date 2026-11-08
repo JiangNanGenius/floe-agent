@@ -2555,8 +2555,10 @@ public actor LinuxGuestCommandChannel {
         // point), while the full envelope is capped by the guest runner's
         // fixed MAX_PAYLOAD reassembly ceiling. An oversized stdin must never
         // be reported as an oversized command.
+        let launchArgv = LinuxGuestProcessEnvironment.preparedArgv(
+            argv, excludingTemporaryNames: Set(sensitive?.names ?? []))
         let commandBytes = LinuxGuestFraming.payload(
-            of: argv,
+            of: launchArgv,
             workingDirectory: workingDirectory,
             standardInput: nil
         ).count
@@ -2576,7 +2578,7 @@ public actor LinuxGuestCommandChannel {
             }
         }
         let payload = LinuxGuestFraming.payload(
-            of: argv,
+            of: launchArgv,
             workingDirectory: workingDirectory,
             standardInput: standardInput,
             environmentEntries: sensitive?.wireEntries
@@ -2752,7 +2754,7 @@ public actor LinuxGuestCommandChannel {
         guard argv.allSatisfy({ !$0.contains("\u{0}") }), !logPath.contains("\u{0}") else {
             throw LinuxGuestError.invalidConfiguration("service argv and log path must not contain NUL bytes")
         }
-        let payload = LinuxGuestFraming.servicePayload(of: argv, workingDirectory: workingDirectory, logPath: logPath)
+        let payload = LinuxGuestFraming.servicePayload(of: LinuxGuestProcessEnvironment.preparedArgv(argv), workingDirectory: workingDirectory, logPath: logPath)
         guard payload.count <= limits.maxCommandBytes else {
             throw LinuxGuestError.invalidConfiguration(
                 "service start command exceeds the \(limits.maxCommandBytes)-byte guest command envelope; start a short launcher that runs a script file already present in the workspace"
@@ -2978,8 +2980,10 @@ public actor LinuxGuestCommandChannel {
             }
         }
 
+        let launchArgv = LinuxGuestProcessEnvironment.preparedArgv(
+            argv, excludingTemporaryNames: Set(sensitive?.names ?? []))
         let payload = LinuxGuestFraming.sessionPayload(
-            argv: argv,
+            argv: launchArgv,
             workingDirectory: workingDirectory,
             columns: columns,
             rows: rows,
@@ -2993,7 +2997,7 @@ public actor LinuxGuestCommandChannel {
         // sensitive environment is a separate bounded field, never counted
         // as command text.
         let commandPayload = LinuxGuestFraming.sessionPayload(
-            argv: argv,
+            argv: launchArgv,
             workingDirectory: workingDirectory,
             columns: columns,
             rows: rows

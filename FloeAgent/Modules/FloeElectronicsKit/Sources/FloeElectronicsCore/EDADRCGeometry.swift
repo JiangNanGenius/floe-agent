@@ -161,6 +161,9 @@ enum EDADRCGeometry {
             let halfLine = abs(sx - sy) / 2
             outer = sx >= sy ? .capsule(point(.init(-halfLine, 0)), point(.init(halfLine, 0)), sy / 2)
                 : .capsule(point(.init(0, -halfLine)), point(.init(0, halfLine)), sx / 2)
+        case .polygon:
+            guard let vertices = EDAPolygonPadGeometry.vertices(pad, in: footprint) else { return nil }
+            outer = .polygon(vertices)
         case .roundRectangle: return nil // No corner radius in the source model.
         }
         return .init(outer: outer, hole: pad.drill.map { (center, $0 / 2) })

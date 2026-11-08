@@ -720,6 +720,16 @@ final class WebSearchSettingsCenter: ObservableObject {
         return dataProManager.state(serverID: serverID)
     }
 
+    /// Diagnostics stay scoped to the exact feature-owned account/server,
+    /// with the MCP center enforcing its current refresh generation.
+    func dataProFailure(for configuration: WebSearchProviderConfiguration) -> MCPConnectionFailurePresentation? {
+        guard configuration.kind == .volcengine, let dataProManager,
+              let options = try? VolcengineSearchOptions(options: configuration.options), options.interface == .agentPlan else { return nil }
+        let serverID = VolcengineDataProPlan.serverID(for: configuration)
+        guard let server = dataProManager.currentServer(serverID: serverID), VolcengineDataProPlan.matchesOwnedServer(server) else { return nil }
+        return dataProManager.connectionFailure(serverID: serverID)
+    }
+
     /// Observe the existing MCP center's published state for this feature's
     /// owned server. The callback is fenced to the Agent Plan interface, the
     /// provider-derived server ID and the feature's exact server identity.
@@ -1238,7 +1248,7 @@ private struct ProfessionalSearchSettingsView: View {
                         set: { center.setEnabled($0, serverID: serverID) }
                     ))
                     LabeledContent("websearch.professional.account", value: accountName)
-                    Text(FloeL10n.l(statusKey)).foregroundStyle(.secondary)
+                    Text(center.connectionFailure(serverID: serverID)?.localizedMessage ?? FloeL10n.l(statusKey)).foregroundStyle(.secondary)
                     Button("websearch.volcengine.dataPro.retry") {
                         Task { await center.refresh(serverID: serverID) }
                     }
@@ -1262,8 +1272,9 @@ private struct ProfessionalSearchSettingsView: View {
                         Text(server.endpoint.absoluteString).textSelection(.enabled)
                         Text("web.search · source=professional").textSelection(.enabled)
                         Text(VolcengineProfessionalSearch.remoteName).textSelection(.enabled)
-                        if case .failed(let message) = center.stateByServerID[serverID] {
-                            Text(message).foregroundStyle(.secondary)
+                        if let failure = center.connectionFailure(serverID: serverID) {
+                            Text(MCPConnectionFailurePresentation.diagnosticsTitle).font(.caption).foregroundStyle(.secondary)
+                            MCPConnectionDiagnosticText(failure: failure)
                         }
                     }
                 }

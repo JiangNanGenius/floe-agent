@@ -6,10 +6,18 @@ import Darwin
 public actor BiologyProjectStore {
     public nonisolated let root: URL
     public static let maximumProjectBytes = 64 * 1024 * 1024
-    private let fm = FileManager.default
+    let ownedFilesRoot: URL?
+    let fm = FileManager.default
     private struct Head: Codable { var revision: UInt64; var digest: String }
-    public init(root: URL) throws {
+    public init(root: URL, ownedFilesRoot: URL? = nil) throws {
         self.root = root.standardizedFileURL
+        if let ownedFilesRoot {
+            guard self.root.lastPathComponent == "Projects",
+                  ownedFilesRoot.standardizedFileURL.path == self.root.deletingLastPathComponent().appendingPathComponent("OriginalFiles", isDirectory: true).path else {
+                throw BiologyError.invalid("Native original files must use the configured sibling store.")
+            }
+        }
+        self.ownedFilesRoot = ownedFilesRoot?.standardizedFileURL
         try Self.ensureDirectory(self.root)
         try Self.ensureDirectory(self.root.appendingPathComponent("Trash"))
     }
@@ -22,8 +30,12 @@ public actor BiologyProjectStore {
         } else { try fm.createDirectory(at:url,withIntermediateDirectories:true) }
         guard url.resolvingSymlinksInPath().standardizedFileURL==url.standardizedFileURL else { throw BiologyError.corrupt("Project storage must not traverse symbolic links.") }
     }
-    private func directory(_ id:UUID) throws -> URL { try Self.ensureDirectory(root);return root.appendingPathComponent(id.uuidString.lowercased(),isDirectory:true) }
-    private func locked<T>(_ body:()throws->T) throws -> T {
+    private func directory(_ id:UUID, allowingPermanentDeletion:Bool = false) throws -> URL {
+        try Self.ensureDirectory(root)
+        if !allowingPermanentDeletion { try BiologyPurgeIO.requireAvailable(root: root, id: id) }
+        return root.appendingPathComponent(id.uuidString.lowercased(),isDirectory:true)
+    }
+    func locked<T>(_ body:()throws->T) throws -> T {
         try Self.ensureDirectory(root)
         let fd=open(root.appendingPathComponent(".store.lock").path,O_RDWR|O_CREAT|O_NOFOLLOW,0o600)
         guard fd>=0 else { throw BiologyError.corrupt("Unable to acquire project storage.") }
@@ -31,7 +43,7 @@ public actor BiologyProjectStore {
         guard flock(fd,LOCK_EX)==0 else { throw BiologyError.corrupt("Unable to lock project storage.") }
         return try body()
     }
-    private func read(_ url:URL,maximum:Int = BiologyProjectStore.maximumProjectBytes) throws -> Data {
+    func read(_ url:URL,maximum:Int = BiologyProjectStore.maximumProjectBytes) throws -> Data {
         let fd=open(url.path,O_RDONLY|O_NOFOLLOW)
         guard fd>=0 else { throw BiologyError.corrupt("A saved project file is missing or unsafe.") };defer{close(fd)}
         var info=stat()
@@ -47,8 +59,8 @@ public actor BiologyProjectStore {
         }
         return data
     }
-    private func current(_ id:UUID) throws -> BiologyProject {
-        let dir=try directory(id)
+    func current(_ id:UUID, allowingPermanentDeletion:Bool = false) throws -> BiologyProject {
+        let dir=try directory(id, allowingPermanentDeletion:allowingPermanentDeletion)
         guard fm.fileExists(atPath:dir.path) else { throw BiologyError.unavailable("Project does not exist.") }
         try Self.ensureDirectory(dir)
         let head=try JSONDecoder().decode(Head.self,from:read(dir.appendingPathComponent("HEAD.json"),maximum:4096))
@@ -191,7 +203,7 @@ public actor BiologyProjectStore {
     public func load(_ id:UUID) throws -> BiologyProject {try locked {let p=try current(id);guard p.deletedAt==nil else {throw BiologyError.unavailable("Project is in Recently Deleted.")};return p}}
     public func list() throws -> [BiologyProject] {
         try locked {
-            try fm.contentsOfDirectory(at:root,includingPropertiesForKeys:nil).filter{UUID(uuidString:$0.lastPathComponent) != nil}.map { try current(UUID(uuidString:$0.lastPathComponent)!) }.filter{$0.deletedAt==nil}.sorted{$0.modifiedAt>$1.modifiedAt}
+            try fm.contentsOfDirectory(at:root,includingPropertiesForKeys:nil).filter{UUID(uuidString:$0.lastPathComponent) != nil}.filter{try !BiologyPurgeIO.isFenced(root:root,id:UUID(uuidString:$0.lastPathComponent)!)}.map { try current(UUID(uuidString:$0.lastPathComponent)!) }.filter{$0.deletedAt==nil}.sorted{$0.modifiedAt>$1.modifiedAt}
         }
     }
     public func update(_ id:UUID,expectedRevision:UInt64? = nil,_ change:@Sendable (inout BiologyProject)throws->Void) throws -> BiologyProject {
@@ -264,7 +276,7 @@ public actor BiologyProjectStore {
     public func deletedProjects() throws -> [BiologyDeletedProject] {
         try locked {
             let trash=root.appendingPathComponent("Trash");try Self.ensureDirectory(trash)
-            let modern=try fm.contentsOfDirectory(at:root,includingPropertiesForKeys:nil).filter{UUID(uuidString:$0.lastPathComponent) != nil}.map{try current(UUID(uuidString:$0.lastPathComponent)!)}.filter{$0.deletedAt != nil}.map{BiologyDeletedProject(id:$0.id.uuidString.lowercased(),projectID:$0.id,title:$0.title,revision:$0.revision)}
+            let modern=try fm.contentsOfDirectory(at:root,includingPropertiesForKeys:nil).filter{UUID(uuidString:$0.lastPathComponent) != nil}.filter{try !BiologyPurgeIO.isFenced(root:root,id:UUID(uuidString:$0.lastPathComponent)!)}.map{try current(UUID(uuidString:$0.lastPathComponent)!)}.filter{$0.deletedAt != nil}.map{BiologyDeletedProject(id:$0.id.uuidString.lowercased(),projectID:$0.id,title:$0.title,revision:$0.revision)}
             let legacy=try fm.contentsOfDirectory(at:trash,includingPropertiesForKeys:nil).filter{$0.lastPathComponent.count==73 && UUID(uuidString:String($0.lastPathComponent.prefix(36))) != nil && UUID(uuidString:String($0.lastPathComponent.suffix(36))) != nil}.map {dir in
                 try Self.ensureDirectory(dir)
                 let head=try JSONDecoder().decode(Head.self,from:read(dir.appendingPathComponent("HEAD.json"),maximum:4096))
@@ -279,6 +291,7 @@ public actor BiologyProjectStore {
     }
     public func restoreDeleted(_ trashID:String,projectID:UUID,identity:BiologyMutationIdentity? = nil) throws -> BiologyProject {
         try locked {
+            try BiologyPurgeIO.requireAvailable(root:root,id:projectID)
             if trashID==projectID.uuidString.lowercased() {
                 var p=try current(projectID)
                 if let identity,let receipt=p.mutationReceipts?.first(where:{$0.identity.owner==identity.owner && $0.identity.requestID==identity.requestID}) {

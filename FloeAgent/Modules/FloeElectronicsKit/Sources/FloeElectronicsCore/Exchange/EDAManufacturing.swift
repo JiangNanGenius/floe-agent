@@ -189,19 +189,22 @@ enum EDAManufacturing {
                     let axis = fp.point(EDAPoint(1, 0).transformed(origin: pad.position, angle: pad.angle)) - center
                     let angle = number(normalAngle(atan2(axis.y, axis.x) * 180 / .pi), decimals: 9)
                     let w = try dimension(pad.size.x, path: "pad.size.x", id: pad.id), h = try dimension(pad.size.y, path: "pad.size.y", id: pad.id)
-                    let aperture: Aperture
+                    let artwork: Copper
                     switch pad.shape {
                     case .circle:
                         guard abs(pad.size.x - pad.size.y) <= EDAGeometry.tolerance else { throw failure("circle_pad_not_round", "pad.size", pad.id) }
-                        aperture = .circle(w)
-                    case .rectangle: aperture = .rectangle(w, h, angle)
-                    case .oval: aperture = .oval(w, h, angle)
+                        artwork = .flash(.circle(w), center)
+                    case .rectangle: artwork = .flash(.rectangle(w, h, angle), center)
+                    case .oval: artwork = .flash(.oval(w, h, angle), center)
+                    case .polygon:
+                        guard let vertices = EDAPolygonPadGeometry.vertices(pad, in: fp) else { throw failure("polygon_pad_geometry_missing", "pad.polygon", pad.id) }
+                        artwork = .region(vertices)
                     case .roundRectangle: throw failure("round_rectangle_radius_missing", "pad.shape", pad.id)
                     }
                     if let drill = pad.drill, drill + EDAGeometry.tolerance >= min(pad.size.x, pad.size.y) {
                         throw failure("pad_drill_exceeds_copper", "pad.drill", pad.id)
                     }
-                    for layer in copper { objects[layer, default: []].append(.flash(aperture, center)) }
+                    for layer in copper { objects[layer, default: []].append(artwork) }
                 }
             }
             for track in board.tracks.sorted(by: uuidOrder) {
@@ -369,14 +372,17 @@ enum EDAManufacturing {
                     let center=fp.point(pad.position),axis=fp.point(EDAPoint(1,0).transformed(origin:pad.position,angle:pad.angle))-center
                     let angle=number(normalAngle(atan2(axis.y,axis.x)*180 / .pi),decimals:9)
                     let w=try dimension(pad.size.x,path:path+".size.x",id:pad.id),h=try dimension(pad.size.y,path:path+".size.y",id:pad.id)
-                    let aperture:Aperture
+                    let artwork:Copper
                     switch pad.shape {
-                    case .circle:guard abs(pad.size.x-pad.size.y)<=EDAGeometry.tolerance else{throw failure("circle_pad_not_round",path+".size",pad.id)};aperture = .circle(w)
-                    case .rectangle:aperture = .rectangle(w,h,angle)
-                    case .oval:aperture = .oval(w,h,angle)
+                    case .circle:guard abs(pad.size.x-pad.size.y)<=EDAGeometry.tolerance else{throw failure("circle_pad_not_round",path+".size",pad.id)};artwork = .flash(.circle(w),center)
+                    case .rectangle:artwork = .flash(.rectangle(w,h,angle),center)
+                    case .oval:artwork = .flash(.oval(w,h,angle),center)
+                    case .polygon:
+                        guard let vertices=EDAPolygonPadGeometry.vertices(pad,in:fp) else{throw failure("polygon_pad_geometry_missing",path+".polygon",pad.id)}
+                        artwork = .region(vertices)
                     case .roundRectangle:throw failure("round_rectangle_radius_missing",path+".shape",pad.id)
                     }
-                    for layer in generated{try add(.flash(aperture,center),to:layer)}
+                    for layer in generated{try add(artwork,to:layer)}
                 }
                 try source(.init(ownerID:pad.id,footprintID:fp.id,path:path,declaredLayers:pad.layers,resolvedLayers:resolved,generatedLayers:generated,status:generated.isEmpty ? "no_requested_aperture_declared":"rendered_zero_expansion"))
             }

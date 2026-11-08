@@ -150,6 +150,22 @@ int floe_fields_mfem_solve_acoustic(FloeFieldsMFEMSession *session,
 void floe_fields_mfem_mesh_sizes(const FloeFieldsMFEMSession *session,
                                  int *nodeCount, int *elementCount);
 
+/* Additive ABI 3: isotropic tet4 transient heat, SI, backward Euler.
+ rhoCp is volumetric heat capacity (J/(m^3 K)); heat sources are W/m^3.
+ Flux is positive OUT of the domain; convection uses h (W/(m^2 K)), ambient K.
+ Set mesh/media/constant boundaries before begin. Begin projects prescribed
+ vertex temperatures into the initial state; step advances only after success.
+ Output arrays, when non-NULL, have nodeCount temperatures and tetCount*3 fluxes.
+ Energy is J relative to zero Kelvin; boundaryInW is positive INTO the domain.
+ A failed/cancelled step retains the last accepted state; rebuild after edits.
+ No standalone process, ambient paths, new upstream dependencies or MPI. */
+int floe_fields_mfem_add_thermal_material(FloeFieldsMFEMSession *,const char *,double k,double rhoCp,double sourceWPerM3);
+int floe_fields_mfem_add_thermal_temperature(FloeFieldsMFEMSession *,int node,double kelvin);
+int floe_fields_mfem_add_thermal_flux(FloeFieldsMFEMSession *,const char *,double outwardWPerM2);
+int floe_fields_mfem_add_thermal_convection(FloeFieldsMFEMSession *,const char *,double h,double ambientK);
+int floe_fields_mfem_thermal_begin(FloeFieldsMFEMSession *,double initialKelvin,double *temperature,double *heatFlux,double *energyJ);
+int floe_fields_mfem_thermal_step(FloeFieldsMFEMSession *,double stepSeconds,double relativeTolerance,int maximumIterations,double *temperature,double *heatFlux,double *energyJ,double *sourceW,double *boundaryInW,double *energyResidualW,double *relativeResidual,double *solveSeconds);
+
 #ifdef __cplusplus
 }
 #endif

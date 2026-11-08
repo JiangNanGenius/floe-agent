@@ -278,9 +278,111 @@ struct MCPRemoteToolSourceTests {
         let requests = MCPStubURLProtocol.capturedRequests()
         #expect(requests.count == 4)
         #expect(requests[0].value(forHTTPHeaderField: "Mcp-Method") == "tools/list")
-        #expect(requests[1].value(forHTTPHeaderField: "MCP-Protocol-Version") == "2025-11-25")
+        #expect(requests[1].value(forHTTPHeaderField: "MCP-Protocol-Version") == nil)
+        #expect(requests[2].value(forHTTPHeaderField: "MCP-Protocol-Version") == "2025-11-25")
         #expect(requests[2].value(forHTTPHeaderField: "Mcp-Session-Id") == "session-1")
         #expect(requests[3].value(forHTTPHeaderField: "Mcp-Session-Id") == "session-1")
+    }
+
+    @Test("Initialization omits the version header and adopts the server's supported version")
+    func negotiatesJuneVersionWithoutPrematureHeader() async throws {
+        MCPStubURLProtocol.prepare([
+            .init(status: 400, headers: [:], body: Data("legacy endpoint".utf8)),
+            .init(status: 200, headers: ["Mcp-Session-Id": "june-session"], body: Data(#"{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}"#.utf8)),
+            .init(status: 202, headers: [:], body: Data()),
+            .init(status: 200, headers: [:], body: Data(#"{"jsonrpc":"2.0","id":3,"result":{"tools":[]}}"#.utf8)),
+            .init(status: 200, headers: [:], body: Data(#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"ok"}]}}"#.utf8))
+        ])
+        let client = try MCPRemoteClient(configuration: .init(displayName: "June SDK", endpoint: URL(string: "https://june.example.test/mcp")!), credential: nil, session: session())
+        #expect(try await client.discoverTools().isEmpty)
+        _ = try await client.callTool(name: "read", argumentsJSON: Data("{}".utf8))
+        let requests = MCPStubURLProtocol.capturedRequests()
+        #expect(requests.count == 5)
+        #expect(requests[1].value(forHTTPHeaderField: "MCP-Protocol-Version") == nil)
+        #expect(requests[1].value(forHTTPHeaderField: "Mcp-Session-Id") == nil)
+        for request in requests.dropFirst(2) {
+            #expect(request.value(forHTTPHeaderField: "MCP-Protocol-Version") == "2025-06-18")
+            #expect(request.value(forHTTPHeaderField: "Mcp-Session-Id") == "june-session")
+            #expect(request.value(forHTTPHeaderField: "Mcp-Method") == nil)
+        }
+    }
+
+    @Test("The reported HTTP400 text negotiates the highest shared version only during initialize")
+    func negotiatesReportedUnsupportedVersionResponse() async throws {
+        let rejection = Data(#"{"jsonrpc":"2.0","id":"server-error","error":{"code":-32600,"message":"Bad Request: Unsupported protocol version: 2025-11-25. Supported versions: 2024-11-05, 2025-03-26, 2025-06-18"}}"#.utf8)
+        MCPStubURLProtocol.prepare([
+            .init(status: 400, headers: [:], body: Data("legacy endpoint".utf8)),
+            .init(status: 400, headers: [:], body: rejection),
+            .init(status: 200, headers: ["Mcp-Session-Id": "selected-session"], body: Data(#"{"jsonrpc":"2.0","id":3,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}"#.utf8)),
+            .init(status: 202, headers: [:], body: Data()),
+            .init(status: 200, headers: [:], body: Data(#"{"jsonrpc":"2.0","id":4,"result":{"tools":[]}}"#.utf8))
+        ])
+        let client = try MCPRemoteClient(configuration: .init(displayName: "Reported SDK", endpoint: URL(string: "https://reported.example.test/mcp")!), credential: nil, session: session())
+        #expect(try await client.discoverTools().isEmpty)
+        let requests = MCPStubURLProtocol.capturedRequests()
+        #expect(requests.count == 5)
+        for index in [1, 2] { #expect(requests[index].value(forHTTPHeaderField: "MCP-Protocol-Version") == nil) }
+        let firstBody = try #require(requests[1].httpBody)
+        let secondBody = try #require(requests[2].httpBody)
+        let first = try #require(JSONSerialization.jsonObject(with: firstBody) as? [String: Any])
+        let second = try #require(JSONSerialization.jsonObject(with: secondBody) as? [String: Any])
+        #expect((first["params"] as? [String: Any])?["protocolVersion"] as? String == "2025-11-25")
+        #expect((second["params"] as? [String: Any])?["protocolVersion"] as? String == "2025-06-18")
+        #expect(requests[3].value(forHTTPHeaderField: "MCP-Protocol-Version") == "2025-06-18")
+        #expect(requests[4].value(forHTTPHeaderField: "Mcp-Session-Id") == "selected-session")
+    }
+
+    @Test("Unsupported negotiated versions cannot initialize or dispatch tools")
+    func refusesUnknownNegotiatedVersionBeforeToolDispatch() async throws {
+        MCPStubURLProtocol.prepare([
+            .init(status: 400, headers: [:], body: Data("legacy endpoint".utf8)),
+            .init(status: 200, headers: ["Mcp-Session-Id": "must-not-use"], body: Data(#"{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"1900-01-01","capabilities":{}}}"#.utf8))
+        ])
+        let client = try MCPRemoteClient(configuration: .init(displayName: "Unknown SDK", endpoint: URL(string: "https://unknown.example.test/mcp")!), credential: nil, session: session())
+        var refused = false
+        do { _ = try await client.discoverTools() }
+        catch MCPClientError.unsupportedProtocolVersion { refused = true }
+        #expect(refused)
+        #expect(MCPStubURLProtocol.capturedRequests().count == 2)
+    }
+
+    @Test("An unrelated initialization HTTP400 is not a version retry")
+    func unrelatedInitializationFailureDoesNotTryOtherVersions() async throws {
+        MCPStubURLProtocol.prepare([
+            .init(status: 400, headers: [:], body: Data("legacy endpoint".utf8)),
+            .init(status: 400, headers: [:], body: Data(#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"Bad Request: account is unavailable"}}"#.utf8))
+        ])
+        let client = try MCPRemoteClient(configuration: .init(displayName: "Account error", endpoint: URL(string: "https://account.example.test/mcp")!), credential: nil, session: session())
+        var refused = false
+        do { _ = try await client.discoverTools() }
+        catch MCPClientError.httpError(let status, _) { refused = status == 400 }
+        #expect(refused)
+        #expect(MCPStubURLProtocol.capturedRequests().count == 2)
+    }
+
+    @Test("A version-looking business error never repeats a tool call")
+    func toolFailureNeverRenegotiatesOrReplaysTheCall() async throws {
+        MCPStubURLProtocol.prepare([
+            .init(status: 400, headers: [:], body: Data("legacy endpoint".utf8)),
+            .init(status: 200, headers: [:], body: Data(#"{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}"#.utf8)),
+            .init(status: 202, headers: [:], body: Data()),
+            .init(status: 200, headers: [:], body: Data(#"{"jsonrpc":"2.0","id":3,"result":{"tools":[]}}"#.utf8)),
+            .init(status: 400, headers: [:], body: Data(#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"Unsupported protocol version. Supported versions: 2025-03-26"}}"#.utf8))
+        ])
+        let client = try MCPRemoteClient(configuration: .init(displayName: "Call error", endpoint: URL(string: "https://call.example.test/mcp")!), credential: nil, session: session())
+        _ = try await client.discoverTools()
+        var refused = false
+        do { _ = try await client.callTool(name: "write", argumentsJSON: Data("{}".utf8)) }
+        catch MCPClientError.httpError(let status, _) { refused = status == 400 }
+        #expect(refused)
+        let requests = MCPStubURLProtocol.capturedRequests()
+        #expect(requests.count == 5)
+        let calls = try requests.compactMap { request -> String? in
+            guard let data = request.httpBody else { return nil }
+            return (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["method"] as? String
+        }
+        #expect(calls.filter { $0 == "tools/call" }.count == 1)
+        #expect(calls.filter { $0 == "initialize" }.count == 1)
     }
 
     @Test("Tool calls mirror validated x-mcp-header parameters and encode non-ASCII")

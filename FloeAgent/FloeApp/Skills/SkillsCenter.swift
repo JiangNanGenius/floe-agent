@@ -3180,10 +3180,15 @@ final class SkillsCenter: ObservableObject {
             return now.timeIntervalSince(skill.updatedAt) > 90 * 24 * 60 * 60
         }
         for skill in stale {
+            var mutation: SkillConfigurationMutationLease?
             do {
+                mutation = try await environment.nativeExternalOAuthIntegration.beginMutation(skillID: skill.id, fields: nil)
                 try await environment.skillStore.setEnabled(false, id: skill.id)
+                await mutation?.finish()
+                await environment.nativeExternalOAuthIntegration.configurationDidMutate(skillID: skill.id, fields: nil)
                 await environment.iosBridgeIntegration.skillStateDidChange(skillID: skill.id)
             } catch {
+                await mutation?.finish()
                 // A failed durable disable must not be reported as applied.
                 continue
             }
@@ -3583,6 +3588,19 @@ final class SkillsCenter: ObservableObject {
         if request.action == .remove, skillIsPreinstalled(skill.id) {
             throw FloeError.validationFailed("Preinstalled guides ship with the app; disable them instead of removing")
         }
+        let changing = request.action == .remove || request.action == .update
+            || (request.action == .setEnabled && request.enabled == false)
+        let mutation = changing
+            ? try await environment.nativeExternalOAuthIntegration.beginMutation(skillID: skill.id, fields: nil) : nil
+        do {
+            let result = try await manageSkillAfterNativeFence(request, skill: skill)
+            await mutation?.finish()
+            await environment.nativeExternalOAuthIntegration.configurationDidMutate(skillID: skill.id, fields: nil)
+            return result
+        } catch { await mutation?.finish(); throw error }
+    }
+
+    private func manageSkillAfterNativeFence(_ request: SkillManageTool.Arguments, skill: PersistedSkill) async throws -> String {
         let packageURL = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
         switch request.action {
         case .checkUpdates, .updatePackage, .rollback, .prepareDependencies:

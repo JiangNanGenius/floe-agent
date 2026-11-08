@@ -250,3 +250,88 @@ final class MailProtocolSession {
         catch { throw MailFailure.deliveryUnknown }
     }
 }
+
+extension MailProtocolSession {
+    func loginIMAP(server: MailServer, credential: MailCredential) throws {
+        try credential.validate(server: server, protocolName: "imap")
+        if let password = credential.passwordValue { return try loginIMAP(server: server, password: password) }
+        guard try wire.line().uppercased().hasPrefix("* OK") else { throw MailFailure.protocolRejected }
+        if server.tls == .startTLS { _ = try imap("STARTTLS"); try wire.secure() }
+        do {
+            let capabilities = try MailClient.capabilities(self)
+            guard capabilities.contains("AUTH=XOAUTH2") else { throw MailFailure.authenticationFailed }
+            let response = try credential.xoauth2Response(server: server, service: .imap)
+            tag += 1; let prefix = "F\(tag)"
+            var sent = capabilities.contains("SASL-IR"), rejected = false, total = 0
+            try wire.command("\(prefix) AUTHENTICATE XOAUTH2" + (sent ? " " + response : ""))
+            for _ in 0..<64 {
+                let line = try wire.line(); total += line.utf8.count
+                guard total <= 65_536 else { throw MailFailure.responseTooLarge }
+                if line.hasPrefix(prefix + " ") {
+                    let status = line.dropFirst(prefix.count + 1).split(separator: " ").first?.uppercased()
+                    guard sent, !rejected, status == "OK" else { throw MailFailure.authenticationFailed }
+                    return
+                }
+                if line == "+" || line.hasPrefix("+ ") {
+                    if !sent { try wire.command(response); sent = true }
+                    else if !rejected {
+                        // XOAUTH2 error challenges need an empty response,
+                        // never another bearer or an echoed provider error.
+                        try wire.command(""); rejected = true
+                    } else { throw MailFailure.authenticationFailed }
+                } else if !line.hasPrefix("* ") || line.uppercased().hasPrefix("* BYE") {
+                    throw MailFailure.authenticationFailed
+                }
+            }
+            throw MailFailure.responseTooLarge
+        } catch MailFailure.protocolRejected { throw MailFailure.authenticationFailed }
+    }
+
+    func loginPOP(server: MailServer, credential: MailCredential) throws {
+        guard let password = credential.passwordValue else { throw MailFailure.unsupportedForPOP3 }
+        try loginPOP(server: server, password: password)
+    }
+
+    func loginSMTP(server: MailServer, credential: MailCredential) throws {
+        try credential.validate(server: server, protocolName: "smtp")
+        if let password = credential.passwordValue { return try loginSMTP(server: server, password: password) }
+        _ = try smtp(expecting: 220)
+        var features = try smtp("EHLO floe.local", expecting: 250)
+        if server.tls == .startTLS {
+            guard features.contains(where: { $0.dropFirst(4).uppercased() == "STARTTLS" }) else { throw MailFailure.tlsFailed }
+            _ = try smtp("STARTTLS", expecting: 220); try wire.secure()
+            features = try smtp("EHLO floe.local", expecting: 250)
+        }
+        let mechanisms = Set(features.flatMap { line -> [String] in
+            let fields = line.dropFirst(4).uppercased().split(separator: " ").map(String.init)
+            guard let first = fields.first else { return [] }
+            if first == "AUTH" { return Array(fields.dropFirst()) }
+            if first.hasPrefix("AUTH=") { return [String(first.dropFirst(5))] + Array(fields.dropFirst()) }
+            return []
+        })
+        guard mechanisms.contains("XOAUTH2") else { throw MailFailure.authenticationFailed }
+        let response = try credential.xoauth2Response(server: server, service: .smtp)
+        try wire.command("AUTH XOAUTH2 " + response)
+        let code = try oauthSMTPReply()
+        if code == 235 { return }
+        if code == 334 { try wire.command(""); _ = try oauthSMTPReply() }
+        throw MailFailure.authenticationFailed
+    }
+
+    /// Do not interpret or publish provider-controlled SASL error payloads.
+    private func oauthSMTPReply() throws -> Int {
+        var expected: Int?, total = 0
+        for _ in 0..<100 {
+            let line = try wire.line(); total += line.utf8.count
+            guard total <= 65_536 else { throw MailFailure.responseTooLarge }
+            let bytes = Array(line.utf8.prefix(4))
+            guard bytes.count == 4, bytes.prefix(3).allSatisfy({ $0 >= 48 && $0 <= 57 }),
+                  bytes[3] == 32 || bytes[3] == 45 else { throw MailFailure.authenticationFailed }
+            let code = Int(bytes[0] - 48) * 100 + Int(bytes[1] - 48) * 10 + Int(bytes[2] - 48)
+            if let expected, expected != code { throw MailFailure.authenticationFailed }
+            expected = code
+            if bytes[3] == 32 { return code }
+        }
+        throw MailFailure.responseTooLarge
+    }
+}

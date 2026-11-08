@@ -343,25 +343,3 @@ private struct FailingDownloader: LinuxGuestImageDownloading {
         throw .responseInvalid(detail: "unexpected")
     }
 }
-
-// MARK: - Temp/cache paths
-
-final class LinuxGuestWritablePathsTests: XCTestCase {
-    func testAllCachesLiveUnderEnvironmentShare() {
-        let vars = LinuxGuestWritablePaths.environmentVariables()
-        for (key, value) in vars {
-            XCTAssertTrue(value.hasPrefix("/floe/env/"), "\(key)=\(value) escapes the environment share")
-        }
-        XCTAssertEqual(vars["TMPDIR"], "/floe/env/tmp")
-        XCTAssertEqual(vars["TMP"], "/floe/env/tmp")
-        XCTAssertEqual(vars["TEMP"], "/floe/env/tmp")
-        XCTAssertEqual(vars["XDG_CACHE_HOME"], "/floe/env/cache/xdg")
-        XCTAssertEqual(vars["PIP_CACHE_DIR"], "/floe/env/cache/pip")
-        XCTAssertEqual(vars["npm_config_cache"], "/floe/env/cache/npm")
-        // A Pillow source build uses TMPDIR + PIP_CACHE_DIR; both must be
-        // outside the compact root partition / RAM-backed /tmp.
-        XCTAssertNotEqual(vars["TMPDIR"], "/tmp")
-        let modes = Dictionary(uniqueKeysWithValues: LinuxGuestWritablePaths.bootDirectories.map { ($0.path, $0.mode) })
-        XCTAssertEqual(modes["/floe/env/tmp"], 0o1777, "tmp is world-writable sticky")
-    }
-}

@@ -40,6 +40,7 @@ struct SkillConfigurationUIAccess: Sendable {
     var scope: @MainActor @Sendable (PersistedSkill) -> SkillConfigurationUIScope = { _ in .init() }
     var connectionKinds: Set<String> = []
     var supportsNativeNavigation = false
+    var beginMutation: (@MainActor @Sendable (String, Set<String>?) async throws -> SkillConfigurationMutationLease?)?
     var configurationMutated: (@MainActor @Sendable (String, Set<String>?) async -> Void)?
     var openConnection: (@MainActor @Sendable (SkillConfigurationConnectionRequest) -> Void)?
     /// Must uninstall first, then clean the selected dormant profile. A failed
@@ -216,13 +217,16 @@ final class SkillConfigurationCenter {
         guard canEdit else { return }
         isMutating = true
         defer { isMutating = false }
+        var mutation: SkillConfigurationMutationLease?
         do {
+            mutation = try await access.beginMutation?(skill.id, [field.key])
             accept(try await access.service.unconfigure(skillID: skill.id, profile: scope.profile,
                 target: scope.target, fieldKeys: [field.key], requirements: manifestRequirements,
                 expectedRevision: status?.revision))
+            await mutation?.finish()
             await access.configurationMutated?(skill.id, [field.key])
             await refreshBoundMetadata()
-        } catch { errorMessage = Self.safeError(error) }
+        } catch { await mutation?.finish(); errorMessage = Self.safeError(error) }
     }
 
     func validateConnections() async {

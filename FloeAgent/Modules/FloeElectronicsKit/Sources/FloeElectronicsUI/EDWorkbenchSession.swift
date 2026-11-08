@@ -20,9 +20,12 @@ public struct EDAFocusRequest: Hashable, Sendable {
     public var positionMillimetres: EDAPoint
     public var objectIDs: Set<UUID>
     public var token: UUID
-    public init(context: EDADocumentContext, positionMillimetres: EDAPoint, objectIDs: Set<UUID> = []) {
+    public var fitBounds: EDAViewBounds?
+    public var viewport: EDACanvasViewport?
+    public init(context: EDADocumentContext, positionMillimetres: EDAPoint, objectIDs: Set<UUID> = [],
+                fitBounds: EDAViewBounds? = nil, viewport: EDACanvasViewport? = nil) {
         self.context = context; self.positionMillimetres = positionMillimetres
-        self.objectIDs = objectIDs; token = UUID()
+        self.objectIDs = objectIDs; token = UUID(); self.fitBounds = fitBounds; self.viewport = viewport
     }
 }
 public struct EDWorkbenchFailure: Error, Hashable, Sendable {
@@ -63,6 +66,14 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
     @ObservationIgnored private var routeTask: Task<EDATrack, Error>?
     public var selection = EDASelection.none
     public private(set) var focusRequest: EDAFocusRequest?
+    @ObservationIgnored private let crossProbeOwnerID = UUID()
+    @ObservationIgnored private var canvasViewports: [EDADocumentContext: EDACanvasViewport] = [:]
+    @ObservationIgnored private var appliedFocusTokens: [EDADocumentContext: UUID] = [:]
+    private var crossProbeReturn: EDACrossProbeReturn?
+    public var canReturnFromCrossProbe: Bool {
+        guard let point = crossProbeReturn else { return false }
+        return !isClosed && !closing && !busy && point.source.id == project.id && point.source.revision == revision
+    }
     public var onSaved: (@MainActor (EDAStoredProject) -> Void)?
     public var onChange: (@MainActor () -> Void)?
     public var fingerDrawingEnabled = false
@@ -316,6 +327,67 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
     public func cancelRouting() { routeTask?.cancel() }
     public func requestFocus(_ request: EDAFocusRequest) {
         focusRequest = request; selection = .init(context: request.context, objectIDs: request.objectIDs)
+    }
+    public func canvasViewport(for context: EDADocumentContext) -> EDACanvasViewport? { canvasViewports[context] }
+    public func rememberCanvasViewport(_ viewport: EDACanvasViewport, for context: EDADocumentContext) {
+        guard !isClosed, !closing, viewport.isValid else { return }
+        canvasViewports[context] = viewport
+    }
+    /// A focus event is applied once, so reopening a tab preserves later pan/zoom.
+    public func consumeFocusRequest(for context: EDADocumentContext) -> EDAFocusRequest? {
+        guard !isClosed, !closing, let request = focusRequest, request.context == context,
+              appliedFocusTokens[context] != request.token else { return nil }
+        appliedFocusTokens[context] = request.token
+        return request
+    }
+    public func makeCrossProbeRequest(variant: String? = nil) throws -> EDACrossProbeRequest {
+        try requireOpen()
+        guard !isDirty, !conflictWithOriginal else { throw EDACrossProbeError.sourceChanged }
+        return .init(resolution: try EDACrossProbe.resolve(project, selection: selection, variant: variant),
+            ownerID: crossProbeOwnerID, source: project, digest: try savedDigest(), selection: selection)
+    }
+    private func validateCrossProbe(_ request: EDACrossProbeRequest) throws {
+        guard request.ownerID == crossProbeOwnerID else { throw EDACrossProbeError.ownerChanged }
+        try requireOpen()
+        guard request.source == project, !isDirty, !conflictWithOriginal else { throw EDACrossProbeError.sourceChanged }
+        guard request.selection == selection else { throw EDACrossProbeError.selectionChanged }
+        try Task.checkCancellation()
+    }
+    /// Read-only navigation: the actual saved original is fenced before selection
+    /// or focus changes. No save, revision, undo, annotation or onSaved callback.
+    @discardableResult public func crossProbe(_ request: EDACrossProbeRequest,
+                                              targetID: String? = nil) async throws -> EDACrossProbeTarget {
+        try validateCrossProbe(request)
+        let target: EDACrossProbeTarget
+        if let targetID {
+            guard let chosen = request.resolution.targets.first(where: { $0.id == targetID }) else {
+                throw EDACrossProbeError.invalidTarget
+            }
+            target = chosen
+        } else {
+            guard request.resolution.targets.count == 1 else { throw EDACrossProbeError.chooseTarget }
+            target = request.resolution.targets[0]
+        }
+        let saved = try await store.load()
+        try validateCrossProbe(request)
+        guard saved.digest == request.digest, saved.project == request.source else { throw EDACrossProbeError.sourceChanged }
+        crossProbeReturn = .init(source: request.source, digest: request.digest, selection: request.selection,
+            viewport: request.selection.context.flatMap { canvasViewports[$0] }, position: request.resolution.sourcePosition)
+        requestFocus(.init(context: target.context, positionMillimetres: target.bounds.center,
+            objectIDs: [target.objectID], fitBounds: target.bounds))
+        return target
+    }
+    public func returnFromCrossProbe() async throws {
+        try requireOpen(); try Task.checkCancellation()
+        guard let point = crossProbeReturn, let context = point.selection.context else { throw EDACrossProbeError.noReturnPoint }
+        guard point.source == project, !isDirty, !conflictWithOriginal else { throw EDACrossProbeError.sourceChanged }
+        let saved = try await store.load()
+        try requireOpen(); try Task.checkCancellation()
+        guard crossProbeReturn?.id == point.id, point.source == project, !isDirty, !conflictWithOriginal,
+              saved.digest == point.digest, saved.project == point.source else { throw EDACrossProbeError.sourceChanged }
+        requestFocus(.init(context: context, positionMillimetres: point.viewport?.center ?? point.position,
+            objectIDs: point.selection.objectIDs, viewport: point.viewport))
+        crossProbeReturn = nil
     }
     public func cancelCheck() {checkTask?.cancel()}
     public func runCheck(boardID: UUID? = nil) async {

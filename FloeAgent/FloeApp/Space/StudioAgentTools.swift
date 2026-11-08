@@ -210,7 +210,7 @@ enum StudioToolOutput {
             audioSources: audioSources, liveSelection: liveSelection,
             musicCapabilities: musicDocument.map { StudioMusicEditingContract.capabilities(sampleRate: $0.tempoMap.sampleRate) },
             electronicsCapabilities: try electronicsProject.map { try StudioElectronicsContract.capabilities($0) },
-            electronicsSelection: value.record.kind == .electronics ? try StudioElectronicsRuntime.selection(id: id, directory: value.url) : nil,
+            electronicsSelection: value.record.kind == .electronics ? try StudioElectronicsRuntime.selection(id: id, directory: value.url, savedProject: electronicsProject) : nil,
             hostToolIDs: value.record.kind == .geography ? GISProductionHost.names.sorted() : value.record.kind == .music ? StudioMediaSourceContracts.musicHostToolIDs.sorted()
                 : [.image, .drawing, .video].contains(value.record.kind) ? StudioMediaSourceContracts.hostToolIDs.sorted() : []))
     }

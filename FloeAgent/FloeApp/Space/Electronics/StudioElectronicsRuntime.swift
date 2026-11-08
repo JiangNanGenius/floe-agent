@@ -10,6 +10,14 @@ import FloeElectronicsCore
 import FloeElectronicsUI
 
 @MainActor enum StudioElectronicsRuntime {
+    struct CrossProbeTarget: Encodable, Sendable {
+        let context: String
+        let contextID: UUID
+        let objectID: UUID
+        let componentID: UUID
+        let unit: Int?
+        let contextName: String
+    }
     struct Selection: Encodable, Sendable {
         let status: String
         let nativeRevision: String?
@@ -19,11 +27,15 @@ import FloeElectronicsUI
         let contextID: UUID?
         let objectIDs: [UUID]
         let objectIDsTruncated: Bool
+        let crossProbeStatus: String
+        let crossProbeTargets: [CrossProbeTarget]
+        let crossProbeTargetsTruncated: Bool
     }
-    static func selection(id: UUID, directory: URL) throws -> Selection {
+    static func selection(id: UUID, directory: URL, savedProject: EDAProject? = nil) throws -> Selection {
         guard let session = try ElectronicsProjectSession.existing(id: id, directory: directory) else {
             return .init(status: "noExistingNativeSession", nativeRevision: nil, hasUnsavedChanges: false, conflictsWithOriginal: false,
-                context: nil, contextID: nil, objectIDs: [], objectIDsTruncated: false)
+                context: nil, contextID: nil, objectIDs: [], objectIDsTruncated: false,
+                crossProbeStatus: "noExistingNativeSession", crossProbeTargets: [], crossProbeTargetsTruncated: false)
         }
         let value = session.workbench
         let kind: String?, contextID: UUID?
@@ -35,9 +47,34 @@ import FloeElectronicsUI
         case nil: kind = nil; contextID = nil
         }
         let ids = value.selection.objectIDs.sorted { $0.uuidString < $1.uuidString }
+        let probeStatus: String
+        var probeTargets: [CrossProbeTarget] = []
+        var probeTruncated = false
+        if value.isClosed {
+            probeStatus = "sessionClosed"
+        } else if value.isDirty || value.conflictWithOriginal || savedProject.map({ $0 != value.project }) == true {
+            probeStatus = "savedOriginalDiffersFromNativeSession"
+        } else {
+            do {
+                let resolved = try EDACrossProbe.resolve(value.project, selection: value.selection)
+                probeStatus = "availableReadOnlyTargets"
+                probeTruncated = resolved.targets.count > 500
+                probeTargets = resolved.targets.prefix(500).compactMap { target in
+                    let kind: String, contextID: UUID
+                    switch target.context {
+                    case .board(let id): kind = "board"; contextID = id
+                    case .schematic(let id): kind = "schematic"; contextID = id
+                    default: return nil
+                    }
+                    return .init(context: kind, contextID: contextID, objectID: target.objectID,
+                        componentID: target.componentID, unit: target.unit, contextName: target.contextName)
+                }
+            } catch { probeStatus = String(describing: error) }
+        }
         return .init(status: "existingNativeSession", nativeRevision: String(value.revision), hasUnsavedChanges: value.isDirty,
             conflictsWithOriginal: value.conflictWithOriginal, context: kind, contextID: contextID,
-            objectIDs: Array(ids.prefix(500)), objectIDsTruncated: ids.count > 500)
+            objectIDs: Array(ids.prefix(500)), objectIDsTruncated: ids.count > 500,
+            crossProbeStatus: probeStatus, crossProbeTargets: probeTargets, crossProbeTargetsTruncated: probeTruncated)
     }
     private struct Receipt: Encodable {
         let projectID: UUID

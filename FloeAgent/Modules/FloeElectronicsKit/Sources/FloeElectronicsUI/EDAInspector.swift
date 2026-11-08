@@ -332,10 +332,15 @@ private struct EDInspectorPadFields: View {
                 HStack {
                     EDInspectorNumberField(edText("宽度 (mm)", "Width (mm)"), value: $value.size.x)
                     EDInspectorNumberField(edText("高度 (mm)", "Height (mm)"), value: $value.size.y)
+                }.disabled(value.shape == .polygon)
+                if value.shape == .polygon {
+                    Text(edText("尺寸由轮廓确定。可在画布中重绘轮廓。", "The outline sets the size. Redraw it on the canvas to change it.")).font(.caption).foregroundStyle(.secondary)
                 }
-                Picker(edText("形状", "Shape"), selection: $value.shape) { ForEach(EDAPadShape.allCases, id: \.self) { Text(edaPadShapeTitle($0)).tag($0) } }
+                Picker(edText("形状", "Shape"), selection: Binding(get: { value.shape }, set: { shape in
+                    value.shape = shape; if shape != .polygon { value.polygon = nil }
+                })) { ForEach(EDAPadShape.allCases.filter { $0 != .polygon || value.polygon != nil }, id: \.self) { Text(edaPadShapeTitle($0)).tag($0) } }
                 EDInspectorNumberField(edText("旋转 (°)", "Rotation (°)"), value: $value.angle)
-                Toggle(edText("通孔", "Through hole"), isOn: Binding(get: { value.drill != nil }, set: { value.drill = $0 ? 0.8 : nil; if !$0 { value.drillPlated = nil } }))
+                Toggle(edText("通孔", "Through hole"), isOn: Binding(get: { value.drill != nil }, set: { value.drill = $0 ? 0.8 : nil; if !$0 { value.drillPlated = nil } })).disabled(value.shape == .polygon)
                 if value.drill != nil {
                     EDInspectorNumberField(edText("孔径 (mm)", "Drill (mm)"), value: Binding(get: { value.drill ?? 0.8 }, set: { value.drill = $0 }))
                     EDPlatingPicker(title: edText("孔壁电镀", "Hole plating"), value: $value.drillPlated)
@@ -470,7 +475,7 @@ private struct EDPadOpeningFields:View {
             Toggle(edText("背面阻焊","Back solder mask"),isOn:opening("B.Mask"))
             Toggle(edText("正面钢网","Front solder paste"),isOn:opening("F.Paste"))
             Toggle(edText("背面钢网","Back solder paste"),isOn:opening("B.Paste"))
-            Text(edText("开窗与焊盘同尺寸。","Openings match the pad size.")).font(.caption).foregroundStyle(.secondary)
+            Text(value.shape == .polygon ? edText("开窗沿实际轮廓；需与铜同面。","Openings follow the actual outline on the same side as copper.") : edText("开窗与焊盘同尺寸。","Openings match the pad size.")).font(.caption).foregroundStyle(.secondary)
         }
     }
 }

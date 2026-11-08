@@ -343,7 +343,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 // cut here destroys the JSON and its continuation cursor.
                 maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
                     (["user.ask", "skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
-                        (["conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control", "chat.content.list"].contains(call.toolName) ? 98_304 : 4096)),
+                        (["conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control", "chat.content.list", "latex.create", "latex.inspect", "latex.edit", "latex.typeset", "latex.restore", "latex.export"].contains(call.toolName) ? 98_304 : 4096)),
                 capturedOutput: output.capturedOutput ?? output.summary,
                 capturedOutputTruncated: output.capturedOutput == nil
                     ? output.summaryTruncated : output.capturedOutputTruncated,

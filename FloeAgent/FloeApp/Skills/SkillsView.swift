@@ -964,6 +964,7 @@ final class MCPSettingsCenter: ObservableObject {
     private let keychain: KeychainStore
     private var clients: [UUID: MCPRemoteClient] = [:]
     private var refreshGenerationByServerID: [UUID: UInt64] = [:]
+    private var failuresByServerID: [UUID: MCPConnectionFailureRecord] = [:]
     private var activated = false
 
     init(
@@ -1028,6 +1029,7 @@ final class MCPSettingsCenter: ObservableObject {
         if server.enabled {
             await refresh(serverID: server.id)
         } else {
+            invalidateRefresh(serverID: server.id)
             MCPRemoteToolSource.unregister(configuration: server)
             if let client = clients.removeValue(forKey: server.id) {
                 Task { await client.disconnect() }
@@ -1089,9 +1091,11 @@ final class MCPSettingsCenter: ObservableObject {
         stateByServerID[serverID] = .connecting
         errorMessage = nil
         let previousClient = clients[serverID]
+        var credentialForRedaction: String?
         do {
             let credentialData = try? keychain.read(account: credentialAccount(server))
             let credential = credentialData.map { String(decoding: $0, as: UTF8.self) }
+            credentialForRedaction = credential
             let client = try MCPRemoteClient(configuration: server, credential: credential)
             let tools = try await client.discoverTools()
             guard refreshGenerationByServerID[serverID] == generation,
@@ -1109,7 +1113,8 @@ final class MCPSettingsCenter: ObservableObject {
                 await previousClient.disconnect()
             }
         } catch {
-            guard refreshGenerationByServerID[serverID] == generation else { return }
+            guard refreshGenerationByServerID[serverID] == generation,
+                  servers.first(where: { $0.id == serverID }) == server else { return }
             MCPRemoteToolSource.unregister(configuration: server)
             clients.removeValue(forKey: serverID)
             // A failed refresh must not leave its half-open client or a prior
@@ -1117,9 +1122,28 @@ final class MCPSettingsCenter: ObservableObject {
             if let previousClient {
                 await previousClient.disconnect()
             }
-            stateByServerID[serverID] = .failed(error.localizedDescription)
-            errorMessage = "\(server.displayName)：\(error.localizedDescription)"
+            // Disconnect may suspend while the user disables/replaces this
+            // source or starts a newer attempt. Never publish that old failure.
+            guard refreshGenerationByServerID[serverID] == generation,
+                  servers.first(where: { $0.id == serverID }) == server else { return }
+            if Task.isCancelled || MCPConnectionFailurePresentation.isCancellation(error) {
+                failuresByServerID.removeValue(forKey: serverID)
+                stateByServerID[serverID] = .inactive
+                return
+            }
+            let failure = MCPConnectionFailurePresentation(error: error, credential: credentialForRedaction)
+            failuresByServerID[serverID] = .init(server: server, generation: generation, presentation: failure)
+            stateByServerID[serverID] = .failed(failure.localizedMessage)
+            errorMessage = "\(server.displayName)：\(failure.localizedMessage)"
         }
+    }
+
+    func connectionFailure(serverID: UUID) -> MCPConnectionFailurePresentation? {
+        guard case .failed = stateByServerID[serverID],
+              let server = servers.first(where: { $0.id == serverID }),
+              let record = failuresByServerID[serverID],
+              record.matches(server: server, generation: refreshGenerationByServerID[serverID] ?? 0) else { return nil }
+        return record.presentation
     }
 
     func hasStoredCredential(serverID: UUID) -> Bool {
@@ -1167,11 +1191,13 @@ final class MCPSettingsCenter: ObservableObject {
     private func beginRefresh(serverID: UUID) -> UInt64 {
         let next = (refreshGenerationByServerID[serverID] ?? 0) &+ 1
         refreshGenerationByServerID[serverID] = next
+        failuresByServerID.removeValue(forKey: serverID)
         return next
     }
 
     private func invalidateRefresh(serverID: UUID) {
         refreshGenerationByServerID[serverID] = (refreshGenerationByServerID[serverID] ?? 0) &+ 1
+        failuresByServerID.removeValue(forKey: serverID)
     }
 
     /// Bind secret lookup to both the stable server identity and its network
@@ -1230,9 +1256,6 @@ private struct MCPServersView: View {
             } footer: {
                 Text("skills.skills_view.supports_standard_streamable_http_remote_tools")
             }
-            if let error = center.errorMessage {
-                Text(error).foregroundStyle(.red).font(.footnote)
-            }
         }
         .navigationTitle("connectors.mcp.title")
         .toolbar {
@@ -1254,7 +1277,7 @@ private struct MCPServersView: View {
         case .inactive, nil: FloeL10n.l("skills.skills_view.not_connected")
         case .connecting: FloeL10n.l("skills.skills_view.reading_tools")
         case .ready(let count): FloeL10n.plural("skills.skills_view.tools_available", count: count)
-        case .failed(let message): FloeL10n.l("skills.skills_view.connection_failed", message)
+        case .failed(let message): message
         }
     }
 
@@ -1354,11 +1377,20 @@ private struct MCPServerEditor: View {
                         }
                     }
                 }
+                if center.servers.first(where: { $0.id == server.id }) == server,
+                   endpointText == server.endpoint.absoluteString,
+                   let failure = center.connectionFailure(serverID: server.id) {
+                    Section {
+                        DisclosureGroup(MCPConnectionFailurePresentation.diagnosticsTitle) {
+                            MCPConnectionDiagnosticText(failure: failure)
+                        }
+                    }
+                }
                 if let validationMessage {
                     Text(validationMessage).foregroundStyle(.red)
                 }
             }
-            .navigationTitle(server.displayName.isEmpty ? "skills.skills_view.add_mcp" : server.displayName)
+            .navigationTitle(server.displayName.isEmpty ? FloeL10n.l("skills.skills_view.add_mcp") : server.displayName)
             .disabled(isSaving)
             .overlay { if isSaving { ProgressView() } }
             .toolbar {

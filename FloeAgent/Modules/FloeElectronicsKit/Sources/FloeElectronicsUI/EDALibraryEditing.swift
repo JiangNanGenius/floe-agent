@@ -36,7 +36,10 @@ enum EDLibraryEditing {
             if let current = best, current.0 < distance { return }
             best = (distance, hit)
         }
-        for pad in definition.pads { consider(point.distance(to: pad.position), .pad(pad.id)) }
+        for pad in definition.pads {
+            let distance = pad.shape == .polygon ? EDCanvasInteraction.padDistance(point,pad) : point.distance(to:pad.position)
+            consider(distance,.pad(pad.id))
+        }
         for (index, graphic) in definition.graphics.enumerated() {
             consider(distance(point, to: graphic), .graphic(index))
         }
@@ -57,8 +60,17 @@ enum EDLibraryEditing {
             return min(segment(a, c), segment(c, b), segment(b, d), segment(d, a))
         case .circle(let center, let radius, _):
             return abs(point.distance(to: center) - radius)
-        case .arc(let center, let radius, _, _, _):
-            return abs(point.distance(to: center) - radius)
+        case .arc(let center, let radius, let start, let sweep, let width):
+            guard point.isValid, center.isValid, radius.isFinite, radius > 0,
+                  start.isFinite, sweep.isFinite, width.isFinite, width > 0 else { return .infinity }
+            let delta = point - center, angle = atan2(delta.y, delta.x) * 180 / .pi
+            var offset = (sweep >= 0 ? angle - start : start - angle).truncatingRemainder(dividingBy: 360)
+            if offset < 0 { offset += 360 }
+            let radial = abs(delta.length - radius)
+            let a = EDAPoint(radius, 0).transformed(origin: center, angle: start)
+            let b = EDAPoint(radius, 0).transformed(origin: center, angle: start + sweep)
+            let distance = abs(sweep) >= 360 || offset <= abs(sweep) ? radial : min(point.distance(to: a), point.distance(to: b))
+            return max(0, distance - width / 2)
         case .text(_, let position, _, _): return point.distance(to: position)
         case .dimension(let a, let b, _): return segment(a, b)
         }
@@ -136,6 +148,7 @@ func edaPadShapeTitle(_ shape: EDAPadShape) -> String {
     case .rectangle: return edText("矩形", "Rectangle")
     case .oval: return edText("椭圆形", "Oval")
     case .roundRectangle: return edText("圆角矩形", "Rounded rectangle")
+    case .polygon: return edText("自定义多边形", "Custom polygon")
     }
 }
 

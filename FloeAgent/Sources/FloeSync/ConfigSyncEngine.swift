@@ -43,6 +43,10 @@ public actor ConfigSyncEngine {
         }
     }
     public private(set) var lastSyncAt: Date?
+    public private(set) var lastFailure: ConfigSyncFailure?
+    public func configurationSnapshot() -> ConfigSyncSnapshot {
+        .init(status: status, failure: lastFailure, lastSyncAt: lastSyncAt)
+    }
     public private(set) var synchronizationEnabled = true
     /// Record ids of remote records rejected by canonical validation during
     /// fetch batches. A non-empty set is a REAL partial failure: valid records
@@ -91,6 +95,10 @@ public actor ConfigSyncEngine {
 
     public func markPaused(reason: String) {
         _ = reason
+        #if canImport(CloudKit)
+        invalidateConfigurationPreparation()
+        #endif
+        lastFailure = nil
         status = .paused
     }
 
@@ -167,8 +175,12 @@ public actor ConfigSyncEngine {
     /// Pauses or resumes CloudKit traffic without discarding locally queued
     /// metadata. Changes made while paused are uploaded after re-enabling.
     public func setSynchronizationEnabled(_ enabled: Bool) {
+        #if canImport(CloudKit)
+        if synchronizationEnabled != enabled { invalidateConfigurationPreparation() }
+        #endif
         synchronizationEnabled = enabled
         if !enabled {
+            lastFailure = nil
             status = .paused
             #if canImport(CloudKit)
             scheduledSync?.cancel()
@@ -183,6 +195,25 @@ public actor ConfigSyncEngine {
     private var zoneID: CKRecordZone.ID?
     private var scheduledSync: Task<Void, Never>?
     private var isSynchronizing = false
+    private var configurationLifecycle: UInt64 = 0
+    private struct ConfigurationAttempt {
+        let id: UUID
+        let generation: UInt64
+        let task: Task<Void, Error>
+    }
+    private var configurationAttempt: ConfigurationAttempt?
+    /// Only bridges the SQLite snapshot suspension to the synchronous engine
+    /// publication. SQLite remains the sole durable pending queue.
+    private struct ConfigurationPendingHandoff {
+        let generation: UInt64
+        var changes: [String: ConfigSyncPendingAction] = [:]
+        var overflowed = false
+    }
+    private var configurationPendingHandoff: ConfigurationPendingHandoff?
+    private static let maximumConfigurationHandoffChanges = 10_000
+    // Internal visibility gives deterministic tests an actual waiter rendezvous,
+    // without CloudKit calls, timers or a substitute engine implementation.
+    private(set) var configurationWaiterCount = 0
     /// Engine-owned observation of independent iCloud Keychain arrivals while
     /// the honest `.waitingForSecret` state is shown. Actor-owned (not view
     /// owned), cancelled by any other status transition. Bounded exponential
@@ -326,55 +357,177 @@ public actor ConfigSyncEngine {
     }
 
     public func configure(container: CKContainer) async throws {
-        guard let metadataStore else {
-            throw FloeError.invalidConfiguration("ConfigSyncEngine requires a metadata store")
+        try Task.checkCancellation()
+        guard synchronizationEnabled else { lastFailure = nil; status = .paused; return }
+        if configurationAttempt == nil, syncEngine != nil { return }
+        try await runConfigurationAttempt { [self] generation in
+            try await prepareCloudKitConfiguration(container: container, generation: generation)
         }
+    }
 
+    /// One service-owned attempt. Concurrent callers await its actual outcome;
+    /// a caller's cancellation never cancels another caller's configuration.
+    /// Pause/account changes cancel and invalidate the owned attempt instead.
+    func runConfigurationAttempt(_ operation: @escaping @Sendable (UInt64) async throws -> Void) async throws {
+        try Task.checkCancellation()
+        configurationWaiterCount += 1; defer { configurationWaiterCount -= 1 }
+        let callerGeneration = configurationLifecycle
+        while true {
+            guard callerGeneration == configurationLifecycle else { throw CancellationError() }
+            guard synchronizationEnabled else { lastFailure = nil; status = .paused; return }
+            let attempt: ConfigurationAttempt
+            if let current = configurationAttempt { attempt = current }
+            else {
+                let generation = configurationLifecycle, id = UUID()
+                let task = Task { [self] in
+                    do {
+                        try requireCurrentConfiguration(generation)
+                        lastFailure = nil; status = .syncing
+                        try await operation(generation)
+                        try requireCurrentConfiguration(generation)
+                    } catch {
+                        publishConfigurationFailure(error, phase: .configuration, generation: generation)
+                        throw error
+                    }
+                }
+                attempt = .init(id: id, generation: generation, task: task)
+                configurationAttempt = attempt
+            }
+            do {
+                try await attempt.task.value
+                if configurationAttempt?.id == attempt.id { configurationAttempt = nil }
+                try Task.checkCancellation()
+                guard callerGeneration == configurationLifecycle else { throw CancellationError() }
+                // A new attempt may start only after the obsolete task joined.
+                if attempt.generation != configurationLifecycle { continue }
+                return
+            } catch {
+                if configurationAttempt?.id == attempt.id { configurationAttempt = nil }
+                try Task.checkCancellation()
+                guard callerGeneration == configurationLifecycle else { throw CancellationError() }
+                if attempt.generation != configurationLifecycle { continue }
+                throw error
+            }
+        }
+    }
+
+    private func invalidateConfigurationPreparation() {
+        configurationLifecycle &+= 1
+        configurationAttempt?.task.cancel()
+        configurationPendingHandoff = nil
+    }
+    func configurationAccountDidChange() {
+        invalidateConfigurationPreparation()
+        lastFailure = nil; status = .paused
+    }
+    private func requireCurrentConfiguration(_ generation: UInt64) throws {
+        try Task.checkCancellation()
+        guard synchronizationEnabled, configurationLifecycle == generation else { throw CancellationError() }
+    }
+    private func publishConfigurationFailure(_ error: Error, phase: ConfigSyncFailure.Phase, generation: UInt64) {
+        guard synchronizationEnabled, configurationLifecycle == generation else { return }
+        if ConfigSyncFailure.isCancellation(error) { lastFailure = nil; status = .paused; return }
+        let failure = ConfigSyncFailure(error: error, phase: phase)
+        lastFailure = failure; status = .error(failure.reason.rawValue)
+    }
+    private func publishConfigurationStatus(_ value: SyncStatus, generation: UInt64, completed: Bool = false) {
+        guard synchronizationEnabled, configurationLifecycle == generation else { return }
+        if completed { lastSyncAt = Date() }
+        if case .error = value { lastFailure = .init(reason: .synchronizationFailed, phase: .synchronization) }
+        else { lastFailure = nil }
+        status = value
+    }
+
+    private func prepareCloudKitConfiguration(container: CKContainer, generation: UInt64) async throws {
+        try requireCurrentConfiguration(generation)
+        // A fully published engine may have completed just before a pause;
+        // its waiter was invalidated, but resuming must not create a second one.
+        if syncEngine != nil { return }
+        guard let metadataStore else { throw FloeError.invalidConfiguration("ConfigSyncEngine requires a metadata store") }
         let accountStatus = try await container.accountStatus()
+        try requireCurrentConfiguration(generation)
         guard accountStatus == .available else {
+            lastFailure = .init(reason: accountStatus == .noAccount ? .signInRequired : .temporarilyUnavailable, phase: .configuration)
             status = .paused
             return
         }
-
         let zoneID = CKRecordZone.ID(zoneName: Self.zoneName, ownerName: CKCurrentUserDefaultName)
-        let serialization: CKSyncEngine.State.Serialization?
-        if let stateData = try await metadataStore.engineState() {
-            serialization = try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: stateData)
-        } else {
-            serialization = nil
-        }
-
-        let delegate = EngineDelegate(owner: self)
-        let configuration = CKSyncEngine.Configuration(
-            database: container.privateCloudDatabase,
-            stateSerialization: serialization,
-            delegate: delegate
-        )
-        let engine = CKSyncEngine(configuration)
-        self.delegate = delegate
-        self.syncEngine = engine
-        self.zoneID = zoneID
-        engine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))])
-        // Writes made while signed out/offline are durable in SQLite. Restore
-        // them into CKSyncEngine whenever an account becomes available.
-        for metadata in try await metadataStore.pending(limit: 10_000) {
-            let recordID = CKRecord.ID(recordName: metadata.recordID, zoneID: zoneID)
-            switch metadata.pendingAction {
-            case .save:
-                engine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
-            case .delete:
-                engine.state.add(pendingRecordZoneChanges: [.deleteRecord(recordID)])
-            case nil:
-                break
-            }
-        }
-        // A previous launch may have received dependency-sensitive records in
-        // separate CloudKit pages. Retry them from durable SQLite state before
-        // presenting configuration as synchronized.
+        let stateData = try await metadataStore.engineState()
+        try requireCurrentConfiguration(generation)
+        let serialization = stateData.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
+        // Finish every throwing/suspending preparation BEFORE publishing a
+        // runner. A failed SQLite/deferred read cannot leave a half-configured
+        // CKSyncEngine behind or consume/remove its durable pending queue.
         try await retryDeferredRecords()
-        // Configuration is not a completed sync. Keep the UI honest until
-        // CloudKit has accepted the zone and the first fetch/send cycle.
-        status = synchronizationEnabled ? .syncing : .paused
+        try requireCurrentConfiguration(generation)
+        try await withConfigurationPendingHandoff(generation: generation,
+            readPending: { try await metadataStore.pending(limit: 10_000) }
+        ) { owner, changes in
+            // No await between the merged handoff and publication. Writes
+            // resumed later see this real engine and use the normal enqueue.
+            let delegate = EngineDelegate(owner: owner)
+            let configuration = CKSyncEngine.Configuration(database: container.privateCloudDatabase,
+                stateSerialization: serialization, delegate: delegate)
+            let engine = CKSyncEngine(configuration)
+            engine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))])
+            for (id, action) in changes {
+                let recordID = CKRecord.ID(recordName: id, zoneID: zoneID)
+                switch action {
+                case .save: engine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                case .delete: engine.state.add(pendingRecordZoneChanges: [.deleteRecord(recordID)])
+                }
+            }
+            owner.delegate = delegate; owner.syncEngine = engine; owner.zoneID = zoneID
+            owner.lastFailure = nil; owner.status = .syncing
+        }
+    }
+
+    /// A synchronous publishing tail closes the actor reentrancy gap after
+    /// reading pending metadata. The real preparation and deterministic
+    /// SQLite tests use this same boundary; it never waits on its own task.
+    func withConfigurationPendingHandoff<T: Sendable>(
+        generation: UInt64,
+        readPending: @Sendable () async throws -> [ConfigSyncMetadata],
+        publish: @Sendable (isolated ConfigSyncEngine, [String: ConfigSyncPendingAction]) -> T
+    ) async throws -> T {
+        try requireCurrentConfiguration(generation)
+        guard configurationPendingHandoff == nil else {
+            throw FloeError.internalError("Configuration pending snapshot is already active")
+        }
+        configurationPendingHandoff = .init(generation: generation)
+        defer {
+            if configurationPendingHandoff?.generation == generation { configurationPendingHandoff = nil }
+        }
+        let pending = try await readPending()
+        try requireCurrentConfiguration(generation)
+        guard let handoff = configurationPendingHandoff, handoff.generation == generation else {
+            throw CancellationError()
+        }
+        guard !handoff.overflowed else {
+            // Local writes already succeeded and remain durable. Refuse only
+            // this configuration attempt; never drop a buffered identity.
+            throw FloeError.invalidConfiguration("Configuration pending snapshot changed too much; retry sync")
+        }
+        var changes: [String: ConfigSyncPendingAction] = [:]
+        for metadata in pending {
+            if let action = metadata.pendingAction { changes[metadata.recordID] = action }
+        }
+        // These commits occurred after/beside the snapshot: latest same-ID
+        // save/delete always wins over its older snapshot action.
+        changes.merge(handoff.changes) { _, later in later }
+        return publish(self, changes)
+    }
+
+    private func capturePendingConfigurationChange(id: String, action: ConfigSyncPendingAction) {
+        guard synchronizationEnabled,
+              configurationPendingHandoff?.generation == configurationLifecycle,
+              configurationPendingHandoff?.overflowed == false else { return }
+        if configurationPendingHandoff?.changes[id] == nil,
+           (configurationPendingHandoff?.changes.count ?? 0) >= Self.maximumConfigurationHandoffChanges {
+            configurationPendingHandoff?.overflowed = true
+            return
+        }
+        configurationPendingHandoff?.changes[id] = action
     }
 
     public func saveProvider(_ provider: ProviderProfile, changedFields: Set<String>? = nil) async throws {
@@ -518,35 +671,38 @@ public actor ConfigSyncEngine {
         return rejectedRemoteRecordIDs.isEmpty
     }
 
-    public func synchronize() async throws {
-        guard synchronizationEnabled else {
-            status = .paused
-            return
-        }
-        guard let syncEngine else {
-            throw FloeError.invalidConfiguration("CloudKit sync is not configured")
-        }
+    public func synchronize(container: CKContainer? = nil) async throws {
+        guard synchronizationEnabled else { lastFailure = nil; status = .paused; return }
         guard !isSynchronizing else { return }
-        isSynchronizing = true
-        defer { isSynchronizing = false }
+        isSynchronizing = true; defer { isSynchronizing = false }
+        let generation = configurationLifecycle
         scheduledSync = nil
-        status = .syncing
         do {
-            // A brand-new account has no custom zone yet. Sending database
-            // changes first creates it; fetching first can fail with
-            // CKError.zoneNotFound and previously prevented every later send.
+            try requireCurrentConfiguration(generation)
+            if syncEngine == nil, let container { try await configure(container: container) }
+            try requireCurrentConfiguration(generation)
+            guard let syncEngine else { throw FloeError.invalidConfiguration("CloudKit sync is not configured") }
+            lastFailure = nil; status = .syncing
+            // Establish the zone before fetching; preserve the same real
+            // send/fetch/stage/send cycle and durable metadata/replay path.
             try await syncEngine.sendChanges()
+            try requireCurrentConfiguration(generation)
             try await syncEngine.fetchChanges()
-            // Upgrade installs may contain real local configuration created
-            // before CloudKit was wired. Stage only records that were not
-            // fetched from the cloud and preserve their original timestamps.
+            try requireCurrentConfiguration(generation)
             try await stageUntrackedLocalConfiguration()
-            // Remote merges may enqueue a conflict-resolving save.
+            try requireCurrentConfiguration(generation)
             try await syncEngine.sendChanges()
-            lastSyncAt = Date()
-            status = await batchCompletionStatus()
+            try requireCurrentConfiguration(generation)
+            let completion = await batchCompletionStatus()
+            try requireCurrentConfiguration(generation)
+            publishConfigurationStatus(completion, generation: generation, completed: true)
         } catch {
-            status = .error(String(describing: error))
+            if synchronizationEnabled, configurationLifecycle == generation,
+               !ConfigSyncFailure.isCancellation(error), let preparation = lastFailure, syncEngine == nil {
+                // Keep the actual preparation reason (including account not
+                // ready), instead of replacing it with the later nil guard.
+                status = .error(preparation.reason.rawValue)
+            } else { publishConfigurationFailure(error, phase: syncEngine == nil ? .configuration : .synchronization, generation: generation) }
             throw error
         }
     }
@@ -575,6 +731,7 @@ public actor ConfigSyncEngine {
         metadata.deletedAt = nil
         metadata.updatedAt = now
         try await metadataStore.save(metadata)
+        capturePendingConfigurationChange(id: id, action: .save)
 
         guard synchronizationEnabled, let syncEngine, let zoneID else {
             status = .paused
@@ -597,6 +754,7 @@ public actor ConfigSyncEngine {
         metadata.deletedAt = now
         metadata.updatedAt = now
         try await metadataStore.save(metadata)
+        capturePendingConfigurationChange(id: id, action: .delete)
 
         guard synchronizationEnabled, let syncEngine, let zoneID else {
             status = .paused
@@ -717,6 +875,7 @@ public actor ConfigSyncEngine {
     }
 
     fileprivate func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
+        let generation = configurationLifecycle
         do {
             switch event {
             case .stateUpdate(let update):
@@ -724,8 +883,14 @@ public actor ConfigSyncEngine {
                 let data = try JSONEncoder().encode(update.stateSerialization)
                 try await metadataStore.saveEngineState(data)
 
-            case .accountChange:
-                status = .paused
+            case .accountChange(let change):
+                // A freshly constructed engine reports its initial sign-in.
+                // That is the same account availability just prepared above,
+                // not an obsolete runner returning after an account switch.
+                if case .signIn = change.changeType,
+                   let attempt = configurationAttempt, attempt.generation == configurationLifecycle,
+                   let current = self.syncEngine, current === syncEngine { break }
+                configurationAccountDidChange()
 
             case .fetchedRecordZoneChanges(let changes):
                 // CloudKit does not promise dependency order. Providers must
@@ -742,10 +907,10 @@ public actor ConfigSyncEngine {
                     try await applyRemoteDeletion(recordID: deletion.recordID, recordType: deletion.recordType)
                 }
                 try await retryDeferredRecords()
-                lastSyncAt = Date()
                 // Preserve an honest partial-failure status for the batch:
                 // a rejected record must never be masked by .synced.
-                status = await batchCompletionStatus()
+                let completion = await batchCompletionStatus()
+                publishConfigurationStatus(completion, generation: generation, completed: true)
 
             case .sentRecordZoneChanges(let sent):
                 for record in sent.savedRecords { try await acknowledge(record) }
@@ -767,25 +932,25 @@ public actor ConfigSyncEngine {
                     }
                 }
                 if recoveredConflict {
-                    status = .syncing
-                    scheduleSynchronization()
+                    publishConfigurationStatus(.syncing, generation: generation)
+                    if generation == configurationLifecycle { scheduleSynchronization() }
                 } else if let firstFailure = sent.failedRecordSaves.first?.error {
-                    status = .error(firstFailure.localizedDescription)
+                    publishConfigurationFailure(firstFailure, phase: .synchronization, generation: generation)
                 } else if let firstFailure = sent.failedRecordDeletes.values.first {
-                    status = .error(firstFailure.localizedDescription)
+                    publishConfigurationFailure(firstFailure, phase: .synchronization, generation: generation)
                 } else {
-                    lastSyncAt = Date()
-                    status = await batchCompletionStatus()
+                    let completion = await batchCompletionStatus()
+                    publishConfigurationStatus(completion, generation: generation, completed: true)
                 }
 
             case .didFetchRecordZoneChanges(let result):
-                if let error = result.error { status = .error(error.localizedDescription) }
+                if let error = result.error { publishConfigurationFailure(error, phase: .synchronization, generation: generation) }
 
             default:
                 break
             }
         } catch {
-            status = .error(String(describing: error))
+            publishConfigurationFailure(error, phase: .synchronization, generation: generation)
         }
     }
 

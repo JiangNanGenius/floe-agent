@@ -7,6 +7,12 @@ import FloeSecurity
 import FloeTools
 import FloeWorkspace
 
+private func nativeMailUse(_ context: ToolContext, operation: NativeMailOAuthUse.Operation) -> NativeMailOAuthUse {
+    .init(operation: operation, runID: context.runID, conversationID: context.conversationID,
+          approvalGrantID: context.approvalGrantID,
+          checkCancellation: { try context.cancellation.throwIfCancelled() }, toolContext: context)
+}
+
 private enum MailToolReply {
     static func output<T: Encodable>(_ object: T, exitStatus: Int32 = 0, needsUser: Bool = false) throws -> ToolExecutionOutput {
         let data = try JSONEncoder().encode(object)
@@ -34,7 +40,7 @@ private enum MailToolReply {
 struct MailAccountsTool: AgentTool {
     struct Arguments: Decodable, Sendable {}
     static let name = "mail.accounts"
-    static let toolDescription = "List configured generic mail accounts (IMAP/POP3 + SMTP) and exact IDs. No credentials are returned. Manage account servers/passwords only in Skills > Connectors > Mail. OAuth-only providers are unsupported."
+    static let toolDescription = "List configured generic mail accounts (IMAP/POP3 + SMTP) and exact IDs. No credentials are returned. Manage servers and passwords or select an existing native Google/Microsoft connection in Skills > Connectors > Mail. No tokens are returned. A configured address is not a provider-verified identity."
     static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -69,13 +75,13 @@ struct MailReadTool: AgentTool {
         try validate(args); try context.cancellation.throwIfCancelled()
         do {
             let account = try MailSettingsCenter.shared.account(args.accountID)
-            let password = try MailSettingsCenter.shared.password(for: account, outgoing: false)
+            let credential = try await MailSettingsCenter.shared.credential(for: account, outgoing: false, use: nativeMailUse(context, operation: .read))
             let cancel: @Sendable () -> Bool = { context.cancellation.isCancelled }
             switch args.action {
-            case "folders": return try MailToolReply.output(await MailClient.shared.folders(account: account, password: password, cancelled: cancel))
-            case "list": return try MailToolReply.output(await MailClient.shared.list(account: account, password: password, folder: args.folder ?? "INBOX", afterUID: args.afterUID ?? 0, limit: args.limit ?? 20, beforeMessageID: args.beforeMessageID, cancelled: cancel))
+            case "folders": return try MailToolReply.output(await MailClient.shared.folders(account: account, credential: credential, cancelled: cancel))
+            case "list": return try MailToolReply.output(await MailClient.shared.list(account: account, credential: credential, folder: args.folder ?? "INBOX", afterUID: args.afterUID ?? 0, limit: args.limit ?? 20, beforeMessageID: args.beforeMessageID, cancelled: cancel))
             default:
-                let data = try await MailClient.shared.message(account: account, password: password, id: args.messageID!, folder: args.folder ?? "INBOX", mailboxVersion: args.mailboxVersion, cancelled: cancel)
+                let data = try await MailClient.shared.message(account: account, credential: credential, id: args.messageID!, folder: args.folder ?? "INBOX", mailboxVersion: args.mailboxVersion, cancelled: cancel)
                 let message = try MailMIME.decode(data)
                 let binding = MailBodyPaging.Binding(
                     accountID: args.accountID,
@@ -130,7 +136,7 @@ struct MailSetReadTool: AgentTool {
         guard context.approvalGrantID != nil else { throw FloeError.validationFailed("Mail mutation requires approval") }
         do {
             let account = try MailSettingsCenter.shared.account(args.accountID)
-            try await MailClient.shared.setRead(account: account, password: MailSettingsCenter.shared.password(for: account, outgoing: false),
+            try await MailClient.shared.setRead(account: account, credential: try await MailSettingsCenter.shared.credential(for: account, outgoing: false, use: nativeMailUse(context, operation: .modify)),
                 id: args.messageID, folder: args.folder, mailboxVersion: args.mailboxVersion, read: args.read, cancelled: { context.cancellation.isCancelled })
             return try MailToolReply.output(["status": "ok", "messageID": args.messageID, "read": String(args.read)])
         } catch { return try MailToolReply.failure(error) }
@@ -154,7 +160,7 @@ struct MailDownloadTool: AgentTool {
         guard !FileManager.default.fileExists(atPath: url.path) else { throw FloeError.validationFailed("Destination already exists") }
         do {
             let account = try MailSettingsCenter.shared.account(args.accountID)
-            let data = try await MailClient.shared.message(account: account, password: MailSettingsCenter.shared.password(for: account, outgoing: false),
+            let data = try await MailClient.shared.message(account: account, credential: try await MailSettingsCenter.shared.credential(for: account, outgoing: false, use: nativeMailUse(context, operation: .read)),
                 id: args.messageID, folder: args.folder ?? "INBOX", mailboxVersion: args.mailboxVersion, cancelled: { context.cancellation.isCancelled })
             guard MailToolReply.digest(data) == args.messageSHA256 else { throw MailFailure.mailboxChanged }
             let message = try MailMIME.decode(data)
@@ -235,12 +241,12 @@ struct MailSearchTool: AgentTool {
         do {
             let account = try MailSettingsCenter.shared.account(args.accountID)
             guard account.incomingProtocol == .imap else { throw MailFailure.unsupportedForPOP3 }
-            let password = try MailSettingsCenter.shared.password(for: account, outgoing: false)
+            let credential = try await MailSettingsCenter.shared.credential(for: account, outgoing: false, use: nativeMailUse(context, operation: .read))
             let criteria = try Self.criteria(args)
             let folder = args.folder ?? "INBOX"
             let page = try await MailClient.shared.search(
                 account: account,
-                password: password,
+                credential: credential,
                 folder: folder,
                 criteria: criteria,
                 cursor: args.cursor,
@@ -338,6 +344,7 @@ struct MailMoveTool: AgentTool {
         guard context.approvalGrantID != nil else {
             throw FloeError.validationFailed("Mail mutation requires approval")
         }
+        let credentialUse = nativeMailUse(context, operation: .modify)
         let account: MailAccount
         do { account = try MailSettingsCenter.shared.account(args.accountID) }
         catch { return try MailToolReply.failure(error) }
@@ -358,7 +365,7 @@ struct MailMoveTool: AgentTool {
                     identity: { operation in
                         let identity = try await MailClient.shared.messageIdentity(
                             account: account,
-                            password: try await Self.incomingPassword(for: account),
+                            credential: try await Self.incomingCredential(for: account, use: credentialUse),
                             folder: operation.sourceFolder,
                             uid: operation.uid,
                             mailboxVersion: operation.mailboxVersion,
@@ -372,7 +379,7 @@ struct MailMoveTool: AgentTool {
                     reconcile: { provenance in
                         switch try await MailClient.shared.reconcileMove(
                             account: account,
-                            password: try await Self.incomingPassword(for: account),
+                            credential: try await Self.incomingCredential(for: account, use: credentialUse),
                             provenance: provenance,
                             cancelled: cancel
                         ) {
@@ -403,13 +410,13 @@ struct MailMoveTool: AgentTool {
                 preparation = try await orchestration.prepare(request) { request in
                     // Reached by a first archive/trash request, and once to
                     // rebind a terminal legacy archive/trash receipt: both
-                    // need the account password to ask the server for its
+                    // need the account credential to ask the server for its
                     // special-use folder.
-                    let password = try await Self.incomingPassword(for: account)
+                    let credential = try await Self.incomingCredential(for: account, use: credentialUse)
                     let kind: MailSpecialFolder = request.action == "archive" ? .archive : .trash
                     guard let resolved = try await MailClient.shared.specialFolder(
                         account: account,
-                        password: password,
+                        credential: credential,
                         kind: kind,
                         cancelled: cancel
                     ) else {
@@ -449,7 +456,7 @@ struct MailMoveTool: AgentTool {
                 do {
                     result = try await MailClient.shared.move(
                         account: account,
-                        password: try await Self.incomingPassword(for: account),
+                        credential: try await Self.incomingCredential(for: account, use: credentialUse),
                         requestID: args.requestID,
                         uid: operation.uid,
                         folder: operation.sourceFolder,
@@ -530,12 +537,12 @@ struct MailMoveTool: AgentTool {
         } catch { return try MailToolReply.failure(error) }
     }
 
-    /// Lazily reads the incoming password. Ordinary replay/uncertain paths
+    /// Lazily resolves the incoming credential. Ordinary replay/uncertain paths
     /// never call this: MailTools only invokes it inside the network seams
     /// and the special-folder resolver (a first request or the one legacy
     /// terminal rebind).
-    @MainActor private static func incomingPassword(for account: MailAccount) throws -> String {
-        try MailSettingsCenter.shared.password(for: account, outgoing: false)
+    @MainActor private static func incomingCredential(for account: MailAccount, use: NativeMailOAuthUse) async throws -> MailCredential {
+        try await MailSettingsCenter.shared.credential(for: account, outgoing: false, use: use)
     }
 
     /// Failures that prove the server never accepted a mutating command.
@@ -544,7 +551,7 @@ struct MailMoveTool: AgentTool {
         case .invalidConfiguration, .invalidAddress, .connectionFailed, .tlsFailed,
              .timedOut, .authenticationFailed, .protocolRejected, .invalidMessage,
              .messageNotFound, .mailboxChanged, .cancelled, .busy, .unsupportedForPOP3,
-             .cursorMismatch:
+             .cursorMismatch, .oauthServerMismatch:
             return true
         case .responseTooLarge, .deliveryUnknown, .mutationUnknown:
             return false
@@ -595,13 +602,13 @@ struct MailSendTool: AgentTool {
         let metadata = try encoder.encode(["account": account.id.uuidString, "to": args.to.joined(separator: "\n"), "subject": args.subject, "body": args.body,
                                           "attachments": attachments.map { $0.filename + ":" + MailToolReply.digest($0.data) }.joined(separator: "\n")])
         let digest = MailToolReply.digest(metadata)
-        let password = try MailSettingsCenter.shared.password(for: account, outgoing: true)
         let journal = try Self.deliveryJournal()
         if let state = try journal.reserve(requestID: args.requestID, digest: digest) {
             return try MailToolReply.output(["status": state.rawValue, "requestID": args.requestID.uuidString, "replayed": "true", "retryAutomatically": "false"], needsUser: state != .acceptedByServer)
         }
         do {
-            try await MailClient.shared.send(account: account, password: password, draft: draft, messageID: args.requestID, cancelled: { context.cancellation.isCancelled })
+            let credential = try await MailSettingsCenter.shared.credential(for: account, outgoing: true, use: nativeMailUse(context, operation: .send))
+            try await MailClient.shared.send(account: account, credential: credential, draft: draft, messageID: args.requestID, cancelled: { context.cancellation.isCancelled })
             try journal.finish(requestID: args.requestID, digest: digest, state: .acceptedByServer)
             return try MailToolReply.output(["status": "acceptedByServer", "delivered": "unverified", "requestID": args.requestID.uuidString])
         } catch {

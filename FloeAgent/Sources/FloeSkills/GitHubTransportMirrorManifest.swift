@@ -148,6 +148,7 @@ public actor GitHubTransportMirrorPolicyStore {
     private var lastAttempt: Date?
     private var diagnostic: GitHubTransportManifestFailure?
     private var flight: Flight?
+    private var transferWaiters: [UUID: (flightID: UUID, continuation: CheckedContinuation<Snapshot, Never>)] = [:]
 
     public init(persistenceURL: URL?, mode: CuratedSkillTrustMode = .production,
                 clock: @escaping @Sendable () -> Date = { Date() }) {
@@ -191,6 +192,35 @@ public actor GitHubTransportMirrorPolicyStore {
         return current
     }
 
+    /// An availability-failed transfer may wait for this owner's existing
+    /// refresh. Normal discovery reads stay nonblocking. Cancelling one
+    /// transfer only removes its waiter, never another consumer's refresh.
+    public func policyForTransfer(
+        download: @escaping @Sendable () async throws -> Downloaded
+    ) async -> Snapshot {
+        let current = policyRefreshingIfNeeded(download: download)
+        guard current.usesBundledDefaults, let pending = flight else { return current }
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: snapshot()); return }
+                transferWaiters[waiterID] = (pending.id, continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelTransferWaiter(waiterID) }
+        }
+    }
+
+    private func cancelTransferWaiter(_ id: UUID) {
+        transferWaiters.removeValue(forKey: id)?.continuation.resume(returning: snapshot())
+    }
+
+    private func finishTransferWaiters(flightID: UUID) {
+        let matching = transferWaiters.filter { $0.value.flightID == flightID }.map(\.key)
+        let current = snapshot()
+        for id in matching { transferWaiters.removeValue(forKey: id)?.continuation.resume(returning: current) }
+    }
+
     public func cancelRefresh() async {
         guard let current = flight else { return }
         current.task.cancel()
@@ -198,7 +228,12 @@ public actor GitHubTransportMirrorPolicyStore {
         if flight?.id == current.id { flight = nil }
     }
 
-    deinit { flight?.task.cancel() }
+    deinit {
+        flight?.task.cancel()
+        let cancelled = Snapshot(roles: .bundled, generation: nil, highestGeneration: highestGeneration,
+                                 usesBundledDefaults: true, diagnostic: .cancelled)
+        for waiter in transferWaiters.values { waiter.continuation.resume(returning: cancelled) }
+    }
 
     // Internal qualification hook; production reads do not wait on refresh.
     func waitForRefresh() async { await flight?.task.value }
@@ -232,7 +267,7 @@ public actor GitHubTransportMirrorPolicyStore {
 
     private func finish(id: UUID, bytes: Downloaded) {
         guard flight?.id == id else { return }
-        defer { flight = nil }
+        defer { flight = nil; finishTransferWaiters(flightID: id) }
         guard !Task.isCancelled else { diagnostic = .cancelled; return }
         do {
             let item = try GitHubTransportMirrorManifest.verify(payload: bytes.payload,
@@ -266,5 +301,6 @@ public actor GitHubTransportMirrorPolicyStore {
     private func fail(id: UUID, failure: GitHubTransportManifestFailure) {
         guard flight?.id == id else { return }
         flight = nil; diagnostic = failure
+        finishTransferWaiters(flightID: id)
     }
 }

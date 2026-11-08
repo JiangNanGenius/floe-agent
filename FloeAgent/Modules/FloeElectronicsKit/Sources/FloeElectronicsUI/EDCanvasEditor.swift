@@ -19,6 +19,9 @@ struct EDCanvasEditor:View {
     let onCancel:()->Void
     let onProperties:()->Void
     var onWireToolRequested:(()->Void)?=nil
+    var graphicStroke:Double=0.2
+    var graphicLayer:EDAGraphicLayerAssignment?=nil
+    var arcClockwise=false
     @State private var bounds:CGRect?
     @State private var center:EDAPoint?
     @State private var zoom=1.0
@@ -27,6 +30,7 @@ struct EDCanvasEditor:View {
     @State private var dragStart:EDAPoint?
     @State private var dragEnd:EDAPoint?
     @State private var pointer:EDAPoint?
+    @State private var busSelectionOrigin:(sheetID:UUID,busID:UUID,points:[EDAPoint],point:EDAPoint)?
     @State private var polygon:[EDAPoint]=[]
     @State private var draftRevision:UInt64?
     @State private var movingIDs:Set<UUID>=[]
@@ -35,6 +39,9 @@ struct EDCanvasEditor:View {
     @State private var ownedEdit:Task<Void,Never>?
     @State private var pendingBusUnfold:EDBusUnfoldDraft?
     @State private var busDrawing:EDBusDrawingDraft?
+    @State private var arcDrawing:EDLibraryArcDraft?
+    @State private var customPadDrawing:EDCustomPadDrawingDraft?
+    @State private var customPadMessage:String?
     @State private var choosingBusMember=false
     private var editingEnabled:Bool{!committing && !session.busy && !session.isRouting && !session.isFilling && !session.isClosed}
     private var tool:EDCanvasTool {
@@ -62,7 +69,7 @@ struct EDCanvasEditor:View {
         VStack(spacing:0){
             gestureStatus
             drawing
-            if !session.selection.objectIDs.isEmpty && session.selection.context==context {selectionActions}
+            if !session.selection.objectIDs.isEmpty && session.selection.context==context && customPadDrawing == nil {selectionActions}
         }.popover(isPresented:$choosingBusMember){if let bus=selectedBus{EDBusMemberPicker(bus:bus){beginBusUnfold($0)}}}
 
     }
@@ -75,6 +82,15 @@ struct EDCanvasEditor:View {
                     let offset=tool == .select && !movingIDs.isEmpty ? (dragEnd ?? .zero)-(dragStart ?? .zero):.zero
                     EDAPlot.draw(project:session.project,context:context,projection:projection,selected:session.selection.objectIDs,selectionOffset:offset,in:&canvas)
                     if let previewGraphic{EDAPlot.drawPreview(previewGraphic,projection:projection,in:&canvas)}
+                    if let draft=customPadDrawing,!draft.points.isEmpty{
+                        var preview=draft.points+(pointer.map{[$0]} ?? [])
+                        if preview.count>=3,let first=draft.points.first{preview.append(first)}
+                        EDAPlot.drawPolylinePreview(preview,projection:projection,in:&canvas)
+                    }
+                    if let draft=arcDrawing {
+                        if let graphic=draft.preview(toward:pointer,clockwise:arcClockwise,width:graphicStroke){EDAPlot.drawPreview(graphic,projection:projection,in:&canvas)}
+                        if let center=draft.points.first,let pointer{EDAPlot.drawPolylinePreview([center,pointer],projection:projection,in:&canvas)}
+                    }
                     if tool == .place,!isLibraryContext{EDAPlot.drawPlacement(project:session.project,context:context,definitionID:placementDefinitionID,position:pointer ?? projection.center,angle:placementAngle,flipped:placementFlipped,projection:projection,in:&canvas)}
                     if let draft=pendingBusUnfold,let tip=anchor ?? pointer{EDAPlot.drawPolylinePreview([draft.busPosition,tip],projection:projection,in:&canvas)}
                     if let anchor,let pointer{
@@ -93,8 +109,8 @@ struct EDCanvasEditor:View {
                     hover:{pointer=snapped(projection.world($0))},
                     select:{select(projection.world($0),tolerance:Self.hitTolerance(for:projection))},
                     cancel:{resetGesture()},command:{command($0)},canCommand:{canCommand($0)},
-                    pan:{delta in center = projection.center - .init(delta.width/projection.scale,-delta.height/projection.scale)},
-                    zoom:{zoom=min(50,max(0.05,zoom*Double($0)))})
+                    pan:{delta in center = projection.center - .init(delta.width/projection.scale,-delta.height/projection.scale);rememberViewport()},
+                    zoom:{zoom=min(50,max(0.05,zoom*Double($0)));rememberViewport()})
 #else
                 Color.clear.contentShape(Rectangle()).gesture(DragGesture(minimumDistance:0).onChanged{value in
                     if dragStart == nil{stroke(projection.world(value.startLocation),tolerance:Self.hitTolerance(for:projection))}
@@ -104,22 +120,31 @@ struct EDCanvasEditor:View {
                 }).onContinuousHover{phase in if case .active(let point)=phase{pointer=snapped(projection.world(point))}}
 #endif
                 HStack(spacing:0){
-                    Button{zoom=max(0.05,zoom/1.5)}label:{Image(systemName:"minus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("缩小","Zoom out"))
+                    Button{zoom=max(0.05,zoom/1.5);rememberViewport()}label:{Image(systemName:"minus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("缩小","Zoom out"))
                     Button{fit()}label:{Text(edText("适合画面","Fit")).frame(minWidth:56,minHeight:44).contentShape(Rectangle())}
-                    Button{zoom=min(50,zoom*1.5)}label:{Image(systemName:"plus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("放大","Zoom in"))}
+                    Button{zoom=min(50,zoom*1.5);rememberViewport()}label:{Image(systemName:"plus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("放大","Zoom in"))}
                     .buttonStyle(.plain).background(.regularMaterial,in:RoundedRectangle(cornerRadius:10)).padding(8)
             }
-            .onAppear{fit();if let request=session.focusRequest,request.context==context{center=request.positionMillimetres}}
-            .onChange(of:context){_,_ in fit();resetGesture();if let request=session.focusRequest,request.context==context{center=request.positionMillimetres}}
-            .onChange(of:mode){_,newMode in if pendingBusUnfold != nil,case .schematic(.wire)=newMode{return};resetGesture()}.onChange(of:layer){_,_ in anchor=nil}
+            .onAppear{restoreViewport();applyFocus(size:geometry.size)}
+            .onChange(of:context){_,_ in resetGesture();restoreViewport();applyFocus(size:geometry.size)}
+            .onChange(of:mode){_,newMode in if customPadDrawing != nil,case .footprint(.select)=newMode{return};if pendingBusUnfold != nil,case .schematic(.wire)=newMode{return};resetGesture()}.onChange(of:layer){_,_ in anchor=nil}
             .onChange(of:session.fingerDrawingEnabled){_,_ in resetGesture()}
             .onDisappear{resetGesture()}
-            .onChange(of:session.focusRequest){_,request in if let request,request.context==context{center=request.positionMillimetres}}
+            .onChange(of:session.focusRequest){_,_ in applyFocus(size:geometry.size)}
         }
     }
     private var placementDefinitionID:UUID?{if case .board=context{return footprintID};return symbolID}
     private var drawingInstruction:String{
+        if let customPadMessage{return customPadMessage}
+        if customPadDrawing != nil{return edText("沿焊盘中心周围逐点绘制，最后点完成","Draw around the pad center point by point, then Finish")}
         if let draft=pendingBusUnfold{return draft.member + " · " + (anchor == nil ? edText("点选引出端，再继续连线","Choose the entry tip, then continue the wire"):edText("继续点按连线；取消放弃本次展开","Continue the wire; cancel to discard this unfold"))}
+        if libraryTool == .arc{
+            switch arcDrawing?.points.count ?? 0{
+            case 0:return edText("点选圆心，再选起点和终点","Choose the center, then the start and endpoint")
+            case 1:return edText("点选起点，确定半径","Choose the start to set the radius")
+            default:return edText("点选终点方向，完成圆弧","Choose the endpoint direction to finish the arc")
+            }
+        }
         if isLibraryContext{return edText("直接绘制或拖动；选中后可调整属性","Draw or drag; select to adjust properties")}
         switch tool{
         case .select:return edText("点选对象，拖动移动","Select an object; drag to move")
@@ -144,6 +169,15 @@ struct EDCanvasEditor:View {
                 }
             }.font(.caption).foregroundStyle(.secondary).lineLimit(2)
             Spacer(minLength:0)
+            if let draft=customPadDrawing{
+                Button{customPadDrawing?.undoLastPoint();customPadMessage=nil}label:{Image(systemName:"arrow.uturn.backward").frame(minWidth:44,minHeight:44).contentShape(Rectangle())}
+                    .disabled(!editingEnabled || draft.points.isEmpty).accessibilityLabel(edText("撤销上一点","Undo last point")).accessibilityIdentifier("electronics.customPad.undoPoint")
+                Button(edText("完成","Finish")){finishCustomPad()}.disabled(!draft.canFinish || !editingEnabled).frame(minHeight:44).accessibilityIdentifier("electronics.customPad.finish")
+            }
+            if let draft=arcDrawing,!draft.points.isEmpty{
+                Button{arcDrawing?.undoLastPoint()}label:{Image(systemName:"arrow.uturn.backward").frame(minWidth:44,minHeight:44).contentShape(Rectangle())}
+                    .disabled(!editingEnabled).accessibilityLabel(edText("撤销上一点","Undo last point")).accessibilityIdentifier("electronics.arc.undoPoint")
+            }
             if let draft=busDrawing{
                 Button{undoBusPoint()}label:{Image(systemName:"arrow.uturn.backward").frame(minWidth:44,minHeight:44).contentShape(Rectangle())}
                     .disabled(!editingEnabled).accessibilityLabel(edText("撤销上一点","Undo last point")).accessibilityIdentifier("electronics.undoBusPoint")
@@ -153,8 +187,8 @@ struct EDCanvasEditor:View {
                 Button{polygon.removeLast()}label:{Image(systemName:"arrow.uturn.backward").frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.accessibilityLabel(edText("撤销上一点","Undo last point"))
                 Button(edText("完成","Finish")){finishPolygon()}.disabled(polygon.count<3 || committing).frame(minHeight:44).accessibilityIdentifier("electronics.finishPolygon")
             }
-            if tool != .select || libraryTool.map({$0 != .select}) == true{
-                Button{resetGesture();onCancel()}label:{Image(systemName:"xmark").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("取消当前工具","Cancel current tool")).disabled(tool == .bus && committing)
+            if customPadDrawing != nil || tool != .select || libraryTool.map({$0 != .select}) == true{
+                Button{resetGesture();onCancel()}label:{Image(systemName:"xmark").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("取消当前工具","Cancel current tool")).disabled((tool == .bus || libraryTool == .arc || customPadDrawing != nil) && committing)
             }
         }.padding(.horizontal,10).frame(minHeight:36).background(.bar)
     }
@@ -167,6 +201,10 @@ struct EDCanvasEditor:View {
             Button{editSelection(.flip)}label:{Image(systemName:"arrow.left.and.right.righttriangle.left.righttriangle.right").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("翻转","Flip"))
                 .disabled(!selectionCapabilities.contains(.flip))
             Menu{
+                if selectedLibraryPad != nil{
+                    Button(edText("重绘自定义焊盘轮廓…","Redraw custom pad outline…"),systemImage:"point.topleft.down.to.point.bottomright.curvepath"){beginCustomPad()}
+                        .accessibilityIdentifier("electronics.customPad.begin")
+                }
                 if selectedBus != nil{Button(edText("展开成员…","Unfold member…"),systemImage:"arrow.up.right"){choosingBusMember=true}.disabled(onWireToolRequested == nil)}
                 Button(edText("复制","Duplicate"),systemImage:"plus.square.on.square"){editSelection(.duplicate)}
                     .disabled(!selectionCapabilities.contains(.duplicate))
@@ -177,9 +215,10 @@ struct EDCanvasEditor:View {
     }
     private var selectionCapabilities:Set<EDCanvasInteraction.Action>{EDCanvasInteraction.availableActions(project:session.project,context:context,objectIDs:session.selection.objectIDs)}
     private func canCommand(_ value:EDCanvasCommand)->Bool{
+        if customPadDrawing != nil && value != .cancel{return false}
         if value != .cancel && value != .properties && !editingEnabled{return false}
         switch value{
-        case .cancel:return !(tool == .bus && committing)
+        case .cancel:return !((tool == .bus || libraryTool == .arc || customPadDrawing != nil) && committing)
         case .properties:return !session.selection.objectIDs.isEmpty
         case .rotate:return tool == .place || selectionCapabilities.contains(.rotate)
         case .flip:return tool == .place || selectionCapabilities.contains(.flip)
@@ -203,7 +242,7 @@ struct EDCanvasEditor:View {
         case .delete:editSelection(.delete)
         }
     }
-    private func resetGesture(){ownedEdit?.cancel();anchor=nil;dragStart=nil;dragEnd=nil;pointer=nil;polygon=[];busDrawing?.cancel();busDrawing=nil;movingIDs=[];draftRevision=nil;pendingBusUnfold=nil;choosingBusMember=false;gestureGeneration=UUID()}
+    private func resetGesture(){ownedEdit?.cancel();anchor=nil;dragStart=nil;dragEnd=nil;pointer=nil;busSelectionOrigin=nil;polygon=[];busDrawing?.cancel();busDrawing=nil;arcDrawing?.cancel();arcDrawing=nil;customPadDrawing?.cancel();customPadDrawing=nil;customPadMessage=nil;movingIDs=[];draftRevision=nil;pendingBusUnfold=nil;choosingBusMember=false;gestureGeneration=UUID()}
     private var selectedBus:EDABus?{
         guard case .schematic(let sheet)=context,session.selection.objectIDs.count==1 else{return nil}
         return session.project.sheets.first(where:{$0.id==sheet})?.buses.first{session.selection.objectIDs.contains($0.id)}
@@ -211,14 +250,32 @@ struct EDCanvasEditor:View {
     private func beginBusUnfold(_ member:String){
         guard editingEnabled,case .schematic(let sheet)=context,let bus=selectedBus else{return}
         do{
-            let draft=try EDBusUnfoldDraft(project:session.project,sheetID:sheet,busID:bus.id,member:member,at:pointer ?? bus.points.first ?? .zero)
+            let selectedPoint=busSelectionOrigin.flatMap{origin in origin.sheetID==sheet && origin.busID==bus.id && origin.points==bus.points ? origin.point:nil}
+            let draft=try EDBusUnfoldDraft(project:session.project,sheetID:sheet,busID:bus.id,member:member,at:selectedPoint ?? pointer ?? bus.points.first ?? .zero)
             resetGesture();pendingBusUnfold=draft;draftRevision=draft.source.revision;onWireToolRequested?()
         }catch{session.report(error)}
     }
-    private func fit(){bounds=EDAPlot.bounds(session.project,context:context);center=nil;zoom=1}
+    private func rememberViewport(){
+        let rectangle=bounds ?? EDAPlot.bounds(session.project,context:context)
+        session.rememberCanvasViewport(.init(bounds:.init(rectangle),center:center ?? .init(rectangle.midX,rectangle.midY),zoom:zoom),for:context)
+    }
+    private func fit(){bounds=EDAPlot.bounds(session.project,context:context);center=nil;zoom=1;rememberViewport()}
+    private func restoreViewport(){
+        if let value=session.canvasViewport(for:context){bounds=value.bounds.rect;center=value.center;zoom=value.zoom}
+        else{fit()}
+    }
+    private func applyFocus(size:CGSize){
+        guard let request=session.consumeFocusRequest(for:context) else{return}
+        if let value=request.viewport,value.isValid{bounds=value.bounds.rect;center=value.center;zoom=value.zoom}
+        else if let value=request.fitBounds,value.isValid{let fitted=EDACrossProbe.fittingViewport(value,size:size);bounds=fitted.bounds.rect;center=fitted.center;zoom=fitted.zoom}
+        else{center=request.positionMillimetres}
+        rememberViewport()
+    }
     private func snapped(_ point:EDAPoint)->EDAPoint{session.snapToGrid ? point.snapped(to:session.gridSizeMillimetres):point}
     private func nearest(_ point:EDAPoint,tolerance:Double)->UUID?{EDCanvasInteraction.hit(project:session.project,context:context,at:point,tolerance:tolerance)}
     private func select(_ point:EDAPoint,tolerance:Double){
+        if customPadDrawing != nil{return}
+        busSelectionOrigin=nil
         if isLibraryContext{
             var object:UUID?
             if case .symbol(let id)=context,let definition=session.project.symbols.first(where:{$0.id==id}),case .pin(let pin)=EDLibraryEditing.hitSymbol(definition,at:point,tolerance:tolerance){object=pin}
@@ -226,6 +283,9 @@ struct EDCanvasEditor:View {
             session.selection = .init(context:context,objectIDs:Set(object.map{[$0]} ?? []));return
         }
         session.selection = .init(context:context,objectIDs:Set(nearest(point,tolerance:tolerance).map{[$0]} ?? []))
+        if case .schematic(let sheet)=context,let bus=selectedBus{
+            busSelectionOrigin=(sheet,bus.id,bus.points,point)
+        }
     }
     private func tap(_ raw:EDAPoint,tolerance:Double){let p=snapped(raw)
         guard editingEnabled else{return}
@@ -287,6 +347,7 @@ struct EDCanvasEditor:View {
     private func stroke(_ raw:EDAPoint,tolerance:Double){
         let point=snapped(raw)
         pointer=point
+        if customPadDrawing != nil{return}
         guard shapeTool != nil || tool == .select || libraryTool == .select else{return}
         if dragStart == nil{
             dragStart=point;draftRevision=session.revision
@@ -364,6 +425,14 @@ struct EDCanvasEditor:View {
     }
     // MARK: - Symbol / footprint library canvas actions
     private func libraryTap(_ p:EDAPoint,tolerance:Double){
+        if var draft=customPadDrawing{
+            do{
+                if draft.canFinish,let first=draft.points.first,first.distance(to:p)<=EDAGeometry.tolerance{finishCustomPad();return}
+                try draft.append(p);customPadDrawing=draft;pointer=p;customPadMessage=nil
+            }catch{customPadMessage=EDCustomPadDrawingDraft.message(for:error)}
+            return
+        }
+        if libraryTool == .arc{appendArcPoint(p);return}
         switch mode {
         case .symbol:
             guard case .symbol(let tool)=mode,case .symbol(let id)=context,var definition=session.project.symbols.first(where:{$0.id==id}) else{return}
@@ -409,7 +478,49 @@ struct EDCanvasEditor:View {
         default:break
         }
     }
+    private var selectedLibraryPad:(definitionID:UUID,padID:UUID)?{
+        guard case .footprint(let id)=context,session.selection.context==context,session.selection.objectIDs.count==1,
+              let pad=session.project.footprints.first(where:{$0.id==id})?.pads.first(where:{session.selection.objectIDs.contains($0.id)}) else{return nil}
+        return (id,pad.id)
+    }
+    private func beginCustomPad(){
+        guard editingEnabled,let selected=selectedLibraryPad else{return}
+        do{
+            let draft=try EDCustomPadDrawingDraft(project:session.project,definitionID:selected.definitionID,padID:selected.padID)
+            resetGesture();customPadDrawing=draft;onCancel()
+        }catch{customPadMessage=EDCustomPadDrawingDraft.message(for:error);session.report(error)}
+    }
+    private func finishCustomPad(){
+        guard editingEnabled,let draft=customPadDrawing else{return}
+        do{
+            let plan=try draft.plan(),generation=gestureGeneration;committing=true
+            ownedEdit=Task{
+                defer{committing=false;ownedEdit=nil}
+                do{try await plan.apply(to:session);if generation==gestureGeneration{customPadDrawing=nil;customPadMessage=nil;pointer=nil;session.selection=plan.selection}}
+                catch{customPadMessage=EDCustomPadDrawingDraft.message(for:error);session.report(error)}
+            }
+        }catch{customPadMessage=EDCustomPadDrawingDraft.message(for:error)}
+    }
+    private func appendArcPoint(_ point:EDAPoint){
+        guard editingEnabled else{return}
+        do{
+            var draft=try arcDrawing ?? EDLibraryArcDraft(project:session.project,context:context)
+            if draft.canFinish{draft.undoLastPoint()}
+            try draft.append(point);arcDrawing=draft;pointer=point;session.selection = .none
+            guard draft.canFinish else{return}
+            let plan=try draft.plan(clockwise:arcClockwise,width:graphicStroke,layer:graphicLayer),generation=gestureGeneration
+            // Only the third accepted point enters the existing atomic save.
+            // Completed arcs use the same undo and original CAS as every edit.
+            committing=true
+            ownedEdit=Task{
+                defer{committing=false;ownedEdit=nil}
+                do{try await plan.apply(to:session);if generation==gestureGeneration{arcDrawing=nil;pointer=nil}}
+                catch{session.report(error)}
+            }
+        }catch{session.report(error)}
+    }
     private func libraryMove(_ from:EDAPoint,_ to:EDAPoint,tolerance:Double){
+        if customPadDrawing != nil{return}
         defer{dragStart=nil;dragEnd=nil;draftRevision=nil;movingIDs=[]}
         let start=snapped(from),end=snapped(to)
         if let tool=shapeTool{

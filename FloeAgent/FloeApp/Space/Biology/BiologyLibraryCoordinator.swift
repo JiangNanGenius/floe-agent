@@ -30,6 +30,8 @@ import FloeBiologyEngine
         guard let environment, let host else { throw BiologyHostError.unavailable }
         return (environment, host)
     }
+    /// Trusted same-service seam for the permanent-deletion coordinator.
+    func permanentDeletionHost() throws -> BiologyHostServices { try services().1 }
     private struct Journal: Codable {
         enum Action: String, Codable { case attach, delete, restore, rename }
         enum Phase: String, Codable { case prepared, nativeCommitted, committed, rolledBack, needsRecovery }

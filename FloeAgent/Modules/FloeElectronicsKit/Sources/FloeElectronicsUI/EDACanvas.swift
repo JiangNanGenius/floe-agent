@@ -29,7 +29,9 @@ enum EDAPlot {
         switch self.context(project, context) {
         case .board(let id):
             if let board=project.boards.first(where:{$0.id==id}) {
-                points=board.outline+board.tracks.flatMap(\.points)+board.footprints.map(\.position)
+                points=board.outline+board.tracks.flatMap(\.points)+board.footprints.flatMap { instance in
+                    [instance.position] + (project.footprints.first(where:{$0.id==instance.definitionID})?.pads.filter{$0.shape == .polygon}.flatMap{EDAPolygonPadGeometry.vertices($0,in:instance) ?? []} ?? [])
+                }
             }
         case .schematic(let id):
             if let sheet=project.sheets.first(where:{$0.id==id}) {
@@ -38,7 +40,9 @@ enum EDAPlot {
                 points += sheet.buses.flatMap { ($0.entries ?? []).flatMap { [$0.busPosition,$0.wirePosition] } }
             }
         case .symbol(let id): points=project.symbols.first(where:{$0.id==id})?.pins.map(\.position) ?? []
-        case .footprint(let id): points=project.footprints.first(where:{$0.id==id})?.pads.map(\.position) ?? []
+        case .footprint(let id): points=project.footprints.first(where:{$0.id==id})?.pads.flatMap { pad in
+            pad.shape == .polygon ? (EDAPolygonPadGeometry.vertices(pad) ?? []) : [pad.position]
+        } ?? []
         case nil: break
         }
         guard let first=points.first else { return CGRect(x:-25,y:-20,width:50,height:40) }
@@ -95,6 +99,8 @@ enum EDAPlot {
             let center=world(pad.position),w=pad.size.x/2,h=pad.size.y/2
             func transform(_ q:EDAPoint)->EDAPoint {world(q.transformed(origin:pad.position,angle:pad.angle))}
             switch pad.shape {
+            case .polygon:
+                if let vertices=pad.polygon{line(vertices.map(transform),color,0.12,closed:true,fill:true)}
             case .circle:
                 let points=(0...32).map { i in transform(.init(cos(Double(i)*2*Double.pi/32)*w,sin(Double(i)*2*Double.pi/32)*h)) }
                 line(points,color,0.12,closed:true,fill:true)

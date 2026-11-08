@@ -163,7 +163,7 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "1a7c679ce44cd996da2620c60392b3a6608c2887f1bd2f9f0b5285a9f8af03bc"
+      "sha256": "d20604adfc3d6ba78497620e3e0ec63e0e27c02966bcdc70998c095c2e112775"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
@@ -458,6 +458,18 @@
       "name": "Guarded SP memory tier and bound-MMU fast check",
       "scope": "Source/src/jit/predecode.c/.h and Source/src/mmu.c/.h; live aligned-SP dispatch to existing handlers, misaligned-SP decoder fallback, per-hart lazy allocator retained. No JIT, synchronization, interrupt or ticket-policy changes.",
       "qualification": "Private actual macOS arm64 build: 1056 stack/FP/alignment and192 MMU/fault comparisons;10 normal components;30-TU ThreadSanitizer build with12 component passes. Original stale fixture and selector failures retained. One actual Linux PBKDF2/zlib pair improved4.14%/1.74%; synthetic stack gains are not whole-VM or iPad claims. Integrated Swift6 App/test build and52 audio/CAD contracts passed on canonical iPad Simulator. Physical iPad performance and listening remain separate."
+    },
+    {
+      "name": "Preserve opened 9P inode attributes and renameat source-fid paths",
+      "scope": "Source/src/devices/virtio_9p.c GetAttr and renameat only; opened file/directory attributes use their live descriptor; successful source renames update same-generation source/descendant paths after bounded preflight. Unchanged mount, cache, synthetic ownership, path and readonly policy.",
+      "files": [
+        {
+          "path": "Source/src/devices/virtio_9p.c",
+          "baseSHA256": "1a7c679ce44cd996da2620c60392b3a6608c2887f1bd2f9f0b5285a9f8af03bc",
+          "sha256": "d20604adfc3d6ba78497620e3e0ec63e0e27c02966bcdc70998c095c2e112775"
+        }
+      ],
+      "qualification": "Actual macOS arm64 object/link and eight real Linux syscall guards passed: unlink, rename plus old-name replacement, descendants and directory fd, same-inode no-op, failed rename, symlink node, readonly descriptor and independent mount. Existing generation fences retained. Complete App and physical-device acceptance remain separate."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",

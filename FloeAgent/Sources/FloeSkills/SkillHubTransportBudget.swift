@@ -24,16 +24,22 @@ public enum SkillHubTransportBudget {
             return 8_388_608
         }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
-        if parts.count == 6,
-           parts[0] == "engines", parts[1] == "impeccable", parts[2] == "dist",
-           parts[3].hasPrefix("impeccable-"),
-           parts[4] == SkillRuntimeDependency.frozenTargetTriple, parts[5] == "floe-impeccable" {
-            let version = parts[3].dropFirst("impeccable-".count)
-            let safeVersion = !version.isEmpty && version.utf8.allSatisfy {
-                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
-                    || $0 == 46 || $0 == 43 || $0 == 45
+        if parts.count == 6, parts[0] == "engines", parts[2] == "dist",
+           parts[4] == SkillRuntimeDependency.frozenTargetTriple {
+            let prefix: String?
+            switch (parts[1], parts[5]) {
+            case ("impeccable", "floe-impeccable"): prefix = "impeccable-"
+            case ("ortie", "floe-ortie"): prefix = "ortie-"
+            default: prefix = nil
             }
-            if safeVersion { return 16_777_216 }
+            if let prefix, parts[3].hasPrefix(prefix) {
+                let version = parts[3].dropFirst(prefix.count)
+                let safeVersion = !version.isEmpty && version.utf8.allSatisfy {
+                    (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+                        || $0 == 46 || $0 == 43 || $0 == 45
+                }
+                if safeVersion { return 16_777_216 }
+            }
         }
         return 2_097_152
     }

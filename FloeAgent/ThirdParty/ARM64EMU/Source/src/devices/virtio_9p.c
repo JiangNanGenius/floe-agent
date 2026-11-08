@@ -512,7 +512,16 @@ static u32 h_getattr(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     P9Fid *f = fid_find_live(v, fid);
     if (!f) return mk_lerror(v, tag, errno, cap);
     struct stat st;
-    if (p9_stat(v, f->path, &st)) return mk_lerror(v, tag, errno, cap);
+    /* An open fid pins its inode, including after unlink/rename. Never
+     * rediscover an opened file through a replacement path. Unopened fids
+     * keep the contained link-node lookup; fid_find_live retains its fence. */
+    if (f->fd >= 0) {
+        if (fstat(f->fd, &st)) return mk_lerror(v, tag, errno, cap);
+    } else if (f->dir) {
+        if (fstat(dirfd(f->dir), &st)) return mk_lerror(v, tag, errno, cap);
+    } else {
+        if (p9_stat(v, f->path, &st)) return mk_lerror(v, tag, errno, cap);
+    }
     Cur o = resp_begin(v, P9_RGETATTR, tag, cap);
     p_u64(&o, P9_STATS_BASIC);
     p_qid(&o, qid_type(st.st_mode), 0, qid_mix((u64)st.st_dev, (u64)st.st_ino));
@@ -919,6 +928,34 @@ static u32 h_rename(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     return resp_finish(&o, v, tag, cap);
 }
 
+/* renameat names the object through directory fids, so other cached fids
+ * do not appear in the request. Preserve their source-object paths, including
+ * descendants, before the old name can be reused for a different inode.
+ * Preflight runs before the host rename; commit cannot truncate a fid path. */
+static int p9_rename_source_fids(VirtIO9P *v, const char *old_path,
+                                 const char *new_path, bool commit) {
+    size_t old_len = strlen(old_path), new_len = strlen(new_path);
+    for (u32 bucket = 0; bucket < FID_BUCKETS; bucket++) {
+        for (P9Fid *f = v->fids[bucket]; f; f = f->next) {
+            if (!p9s_fid_live(&v->share, f->gen) ||
+                strncmp(f->path, old_path, old_len) != 0 ||
+                (f->path[old_len] != '\0' && f->path[old_len] != '/')) continue;
+            size_t suffix_len = strlen(f->path + old_len);
+            if (new_len + suffix_len >= sizeof(f->path)) {
+                errno = ENAMETOOLONG;
+                return -1;
+            }
+            if (commit) {
+                char updated[PATH_MAX];
+                memcpy(updated, new_path, new_len);
+                memcpy(updated + new_len, f->path + old_len, suffix_len + 1);
+                memcpy(f->path, updated, new_len + suffix_len + 1);
+            }
+        }
+    }
+    return 0;
+}
+
 static u32 h_renameat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     u32 od = c_u32(in);
     char oldn[P9_NAME_MAX]; c_str(in, oldn, sizeof(oldn));
@@ -933,10 +970,27 @@ static u32 h_renameat(VirtIO9P *v, Cur *in, u16 tag, u32 cap) {
     if (ofd < 0) return mk_lerror(v, tag, errno, cap);
     int nfd = p9_open_dir_fd(v, nf->path);
     if (nfd < 0) { int error = errno; close(ofd); return mk_lerror(v, tag, error, cap); }
+    char old_path[PATH_MAX], new_path[PATH_MAX];
+    if (!p9_path_child(of->path, oldn, old_path, sizeof(old_path)) ||
+        !p9_path_child(nf->path, newn, new_path, sizeof(new_path))) {
+        close(ofd); close(nfd);
+        return mk_lerror(v, tag, ENAMETOOLONG, cap);
+    }
+    /* A rename onto another hard link of the same inode is a POSIX no-op. */
+    struct stat source_st, target_st;
+    bool same_inode = fstatat(ofd, oldn, &source_st, AT_SYMLINK_NOFOLLOW) == 0 &&
+                      fstatat(nfd, newn, &target_st, AT_SYMLINK_NOFOLLOW) == 0 &&
+                      source_st.st_dev == target_st.st_dev && source_st.st_ino == target_st.st_ino;
+    if (!same_inode && p9_rename_source_fids(v, old_path, new_path, false)) {
+        int error = errno;
+        close(ofd); close(nfd);
+        return mk_lerror(v, tag, error, cap);
+    }
     int result = renameat(ofd, oldn, nfd, newn);
     int error = errno;
     close(ofd); close(nfd);
     if (result) return mk_lerror(v, tag, error, cap);
+    if (!same_inode) (void)p9_rename_source_fids(v, old_path, new_path, true);
     Cur o = resp_begin(v, P9_RRENAMEAT, tag, cap);
     return resp_finish(&o, v, tag, cap);
 }

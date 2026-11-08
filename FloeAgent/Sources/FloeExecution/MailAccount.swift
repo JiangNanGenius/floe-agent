@@ -28,13 +28,20 @@ public struct MailAccount: Codable, Sendable, Equatable, Identifiable {
     public var incomingProtocol: MailIncomingProtocol
     public var incoming: MailServer
     public var outgoing: MailServer
+    public var oauthConnection: ExternalOAuthConnectionReference?
     public init(id: UUID = UUID(), address: String = "", incomingProtocol: MailIncomingProtocol = .imap,
-                incoming: MailServer = .init(port: 993), outgoing: MailServer = .init(port: 465)) {
+                incoming: MailServer = .init(port: 993), outgoing: MailServer = .init(port: 465), oauthConnection: ExternalOAuthConnectionReference? = nil) {
         self.id = id; self.address = address; self.incomingProtocol = incomingProtocol
-        self.incoming = incoming; self.outgoing = outgoing
+        self.incoming = incoming; self.outgoing = outgoing; self.oauthConnection = oauthConnection
     }
     public func validate() throws {
         try Self.validateAddress(address); try incoming.validate(); try outgoing.validate()
+        if let oauthConnection {
+            let provider = try MailOAuthProvider(reference: oauthConnection)
+            guard incomingProtocol == .imap else { throw MailFailure.unsupportedForPOP3 }
+            try MailOAuthPolicy.validate(server: incoming, provider: provider, service: .imap)
+            try MailOAuthPolicy.validate(server: outgoing, provider: provider, service: .smtp)
+        }
     }
     public static func validateAddress(_ value: String) throws {
         // Deliberately support bare ASCII addr-spec, not raw header or SMTP syntax.
@@ -50,7 +57,7 @@ public struct MailAccount: Codable, Sendable, Equatable, Identifiable {
 /// Never include server-controlled text, command arguments or credentials in errors.
 public enum MailFailure: String, Error, Sendable, LocalizedError {
     case invalidConfiguration, invalidAddress, connectionFailed, tlsFailed, timedOut
-    case authenticationFailed, protocolRejected, responseTooLarge, invalidMessage
+    case authenticationFailed, oauthServerMismatch, protocolRejected, responseTooLarge, invalidMessage
     case messageNotFound, mailboxChanged, deliveryUnknown, cancelled, busy
     /// The operation requires IMAP; POP3 cannot express it. Returned instead
     /// of a silent empty result.
@@ -68,7 +75,8 @@ public enum MailFailure: String, Error, Sendable, LocalizedError {
         case .connectionFailed: "Mail connection failed. Check the configured server and network."
         case .tlsFailed: "Secure mail connection failed. Certificate validation cannot be disabled."
         case .timedOut: "Mail operation timed out."
-        case .authenticationFailed: "Mail authentication failed. Check the app password and provider policy; OAuth-only accounts are not supported."
+        case .authenticationFailed: "Mail authentication failed. Check the password or reconnect the selected account in Mail settings."
+        case .oauthServerMismatch: "Use the selected provider’s supported mail server, port and encryption mode."
         case .protocolRejected: "The mail server rejected the operation or does not support it."
         case .responseTooLarge: "Mail response exceeds the safety limit. Narrow the query or choose a smaller message."
         case .invalidMessage: "Invalid mail message or attachment."

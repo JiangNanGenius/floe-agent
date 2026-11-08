@@ -18,7 +18,8 @@ namespace {
 constexpr double epsilon0 = 8.8541878128e-12; // CODATA 2018, pinned SI value.
 constexpr double pi = 3.14159265358979323846;
 struct Failure : std::runtime_error { int status; Failure(int s,const std::string &m):std::runtime_error(m),status(s){} };
-struct Medium { double epsilon=0,mu=0,sigma=0,rho=0,c=0,loss=0; bool em=false,acoustic=false; };
+struct Medium { double epsilon=0,mu=0,sigma=0,rho=0,c=0,loss=0,k=0,rhoCp=0,q=0; bool em=false,acoustic=false,thermal=false; };
+struct ThermalState;
 struct Boundary { int kind=-1; std::complex<double> value=0; };
 std::mutex kernelMutex;
 void require(bool ok,const char *message) { if(!ok) throw Failure(kFloeFieldsErrInvalidInput,message); }
@@ -33,6 +34,9 @@ struct FloeFieldsMFEMSession {
     std::vector<std::string> regionIDs,boundaryIDs;
     std::vector<Medium> materials;
     std::map<int,Boundary> em,acoustic;
+    std::map<int,double> thermalFixed,thermalFlux;
+    std::map<int,std::pair<double,double>> thermalConvection;
+    std::unique_ptr<ThermalState> thermal;
     double referencePressure=20e-6;
     void check() const { if(cancelled.load()) throw Failure(kFloeFieldsErrCancelled,"The native solve was cancelled."); }
     int region(const char *id) const { for(size_t i=0;i<regionIDs.size();++i) if(id && regionIDs[i]==id) return int(i); throw Failure(kFloeFieldsErrInvalidInput,"Unknown material region."); }
@@ -90,12 +94,58 @@ void essential(mfem::Mesh &mesh,const std::map<int,Boundary> &boundaries,bool em
     marker.SetSize(mesh.bdr_attributes.Size()?mesh.bdr_attributes.Max():0);marker=0;
     for(auto &[tag,bc]:boundaries) if((em&&(bc.kind==0||bc.kind==4))||(!em&&bc.kind==1)) marker[tag]=1;
 }
+// Tet4, isotropic conduction with a consistent heat-capacity matrix. All SI.
+// Owned by one session; the same kernelMutex as electrostatics/acoustics guards MFEM.
+struct ThermalState {
+    FloeFieldsMFEMSession &owner;
+    std::unique_ptr<mfem::Mesh> mesh;
+    mfem::H1_FECollection collection{1,3};
+    mfem::FiniteElementSpace space;
+    mfem::Vector conductivity,capacity,source;
+    mfem::PWConstCoefficient k,rhoCp,q;
+    BoundaryCoefficient h,boundaryInput;
+    mfem::BilinearForm mass,stiffness;
+    mfem::LinearForm volumeLoad,boundaryLoad;
+    mfem::GridFunction temperature;
+    std::map<int,double> fixedDofs;
+    double time=0;
+
+    ThermalState(FloeFieldsMFEMSession &s,double initial):owner(s),mesh(makeMesh(s,1,false)),space(mesh.get(),&collection),
+        conductivity(int(s.materials.size())),capacity(int(s.materials.size())),source(int(s.materials.size())),
+        k(int(s.materials.size())),rhoCp(int(s.materials.size())),q(int(s.materials.size())),
+        h(*mesh,[&s](int tag,int){auto it=s.thermalConvection.find(tag);return it==s.thermalConvection.end()?0:it->second.first;}),
+        boundaryInput(*mesh,[&s](int tag,int){auto c=s.thermalConvection.find(tag);auto f=s.thermalFlux.find(tag);return (c==s.thermalConvection.end()?0:c->second.second)-(f==s.thermalFlux.end()?0:f->second);}),
+        mass(&space),stiffness(&space),volumeLoad(&space),boundaryLoad(&space),temperature(&space) {
+        validateDofs(space);
+        for(int i=0;i<int(s.materials.size());++i) {auto &m=s.materials[i];conductivity[i]=m.k;capacity[i]=m.rhoCp;source[i]=m.q;}
+        // PWConstCoefficient copies its input, so populate each copied coefficient.
+        k.UpdateConstants(conductivity);rhoCp.UpdateConstants(capacity);q.UpdateConstants(source);
+        mass.AddDomainIntegrator(new mfem::MassIntegrator(rhoCp));mass.Assemble();mass.Finalize();s.check();
+        stiffness.AddDomainIntegrator(new mfem::DiffusionIntegrator(k));stiffness.AddBoundaryIntegrator(new mfem::MassIntegrator(h));
+        stiffness.Assemble();stiffness.Finalize();s.check();
+        volumeLoad.AddDomainIntegrator(new mfem::DomainLFIntegrator(q));volumeLoad.Assemble();
+        boundaryLoad.AddBoundaryIntegrator(new mfem::BoundaryLFIntegrator(boundaryInput));boundaryLoad.Assemble();s.check();
+        temperature=initial;
+        for(auto &[node,value]:s.thermalFixed) {mfem::Array<int> dofs;space.GetVertexDofs(node,dofs);require(dofs.Size()==1,"Transient heat requires one H1 DOF per vertex.");fixedDofs[dofs[0]]=value;temperature[dofs[0]]=value;}
+    }
+    double energy(const mfem::Vector &values) const {mfem::Vector stored(space.GetVSize());mass.SpMat().Mult(values,stored);return stored.Sum();}
+    void output(const mfem::GridFunction &field,double *values,double *flux) {
+        outputVertices(field,values);
+        if(flux) for(int element=0;element<mesh->GetNE();++element) {
+            if((element&255)==0)owner.check();
+            auto *tr=mesh->GetElementTransformation(element);tr->SetIntPoint(&mfem::Geometries.GetCenter(mesh->GetElementBaseGeometry(element)));
+            mfem::Vector gradient(3);field.GetGradient(*tr,gradient);
+            for(int axis=0;axis<3;++axis) {double value=-conductivity[mesh->GetAttribute(element)-1]*gradient[axis];require(validNumber(value),"The heat flux is not finite.");flux[3*element+axis]=value;}
+        }
+    }
+};
+
 }
 
 extern "C" {
 FloeFieldsMFEMSession *floe_fields_mfem_create(void) { try { return new FloeFieldsMFEMSession; } catch(...) { return nullptr; } }
 void floe_fields_mfem_destroy(FloeFieldsMFEMSession *s) { delete s; }
-const char *floe_fields_mfem_version(void) { return "MFEM 4.8.0 / floe-fields 2 / serial CPU"; }
+const char *floe_fields_mfem_version(void) { return "MFEM 4.8.0 / floe-fields 3 / serial CPU"; }
 void floe_fields_mfem_last_error(const FloeFieldsMFEMSession *s,char *buffer,int capacity) {
     if(!buffer||capacity<=0)return;const std::string message=s?s->error:"Missing native session.";size_t n=std::min(message.size(),size_t(capacity-1));std::memcpy(buffer,message.data(),n);buffer[n]=0;
 }
@@ -114,6 +164,7 @@ int floe_fields_mfem_set_mesh(FloeFieldsMFEMSession *s,const double *xyz,int nn,
         for(int e=0;e<ne;++e){auto p=[&](int i,int axis){return xyz[tet[4*e+i]*3+axis]-xyz[tet[4*e]*3+axis];};double d=p(1,0)*(p(2,1)*p(3,2)-p(2,2)*p(3,1))-p(1,1)*(p(2,0)*p(3,2)-p(2,2)*p(3,0))+p(1,2)*(p(2,0)*p(3,1)-p(2,1)*p(3,0));require(validNumber(d)&&d>0,"Tetrahedron Jacobians must be positive.");}
         std::vector<std::string> r,b;for(int i=0;i<nr;++i){require(regionIDs[i]&&*regionIDs[i],"Empty material identity.");r.emplace_back(regionIDs[i]);}for(int i=0;i<nb;++i){require(boundaryIDs[i]&&*boundaryIDs[i],"Empty boundary identity.");b.emplace_back(boundaryIDs[i]);}
         require(std::set<std::string>(r.begin(),r.end()).size()==r.size()&&std::set<std::string>(b.begin(),b.end()).size()==b.size(),"Duplicate region or boundary identity.");
+        s->thermal.reset();s->thermalFixed.clear();s->thermalFlux.clear();s->thermalConvection.clear();
         s->xyz.assign(xyz,xyz+nn*3);s->tets.assign(tet,tet+ne*4);s->regions.assign(regions,regions+ne);s->triangles.assign(tri,tri+nt*3);s->tags.assign(tags,tags+nt);s->regionIDs=std::move(r);s->boundaryIDs=std::move(b);s->materials.assign(nr,Medium{});s->em.clear();s->acoustic.clear();
     });
 }
@@ -183,4 +234,57 @@ int floe_fields_mfem_solve_acoustic(FloeFieldsMFEMSession *s,double frequency,in
         if(seconds)*seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();s->check();
     });
 }
+
+int floe_fields_mfem_add_thermal_material(FloeFieldsMFEMSession *s,const char *id,double k,double rhoCp,double q) {
+    return guarded(s,[&]{require(!s->thermal,"Set heat media before starting the time process.");require(validNumber(k)&&k>0&&validNumber(rhoCp)&&rhoCp>0&&validNumber(q),"Heat media need positive conductivity/capacity and finite sources.");auto &m=s->materials[s->region(id)];m.k=k;m.rhoCp=rhoCp;m.q=q;m.thermal=true;});
+}
+int floe_fields_mfem_add_thermal_temperature(FloeFieldsMFEMSession *s,int node,double kelvin) {
+    return guarded(s,[&]{require(!s->thermal&&node>=0&&size_t(node)<s->xyz.size()/3&&validNumber(kelvin)&&kelvin>=0,"Invalid prescribed temperature or active heat process.");auto it=s->thermalFixed.find(node);require(it==s->thermalFixed.end()||it->second==kelvin,"Two prescribed temperatures conflict at one node.");s->thermalFixed[node]=kelvin;});
+}
+int floe_fields_mfem_add_thermal_flux(FloeFieldsMFEMSession *s,const char *id,double outwardWPerM2) {
+    return guarded(s,[&]{require(!s->thermal&&validNumber(outwardWPerM2),"Invalid outward heat flux or active heat process.");auto &value=s->thermalFlux[s->boundary(id)];require(validNumber(value+outwardWPerM2),"The accumulated heat flux overflowed.");value+=outwardWPerM2;});
+}
+int floe_fields_mfem_add_thermal_convection(FloeFieldsMFEMSession *s,const char *id,double h,double ambientK) {
+    return guarded(s,[&]{require(!s->thermal&&validNumber(h)&&h>0&&validNumber(ambientK)&&ambientK>=0&&validNumber(h*ambientK),"Invalid convection or active heat process.");auto &value=s->thermalConvection[s->boundary(id)];require(validNumber(value.first+h)&&validNumber(value.second+h*ambientK),"The accumulated convection overflowed.");value.first+=h;value.second+=h*ambientK;});
+}
+int floe_fields_mfem_thermal_begin(FloeFieldsMFEMSession *s,double initialK,double *temperature,double *heatFlux,double *energyJ) {
+    return guarded(s,[&]{std::lock_guard<std::mutex> lock(kernelMutex);require(!s->thermal&&validNumber(initialK)&&initialK>=0&&!s->materials.empty(),"Invalid initial temperature or active heat process.");for(auto &m:s->materials)require(m.thermal,"Assign heat conductivity and capacity to every region.");auto next=std::make_unique<ThermalState>(*s,initialK);next->output(next->temperature,temperature,heatFlux);double energy=next->energy(next->temperature);require(validNumber(energy),"The initial heat energy is not finite.");s->check();s->thermal=std::move(next);if(energyJ)*energyJ=energy;});
+}
+int floe_fields_mfem_thermal_step(FloeFieldsMFEMSession *s,double dt,double tolerance,int maximum,double *temperature,double *heatFlux,double *energyJ,double *sourceW,double *boundaryInW,double *energyResidualW,double *relativeResidual,double *seconds) {
+    return guarded(s,[&]{
+        std::lock_guard<std::mutex> lock(kernelMutex);auto started=std::chrono::steady_clock::now();s->check();
+        require(s->thermal&&validNumber(dt)&&dt>0&&validNumber(1/dt)&&validNumber(tolerance)&&tolerance>0&&tolerance<1&&maximum>0,"Start heat and choose positive finite step/solver settings.");
+        auto &v=*s->thermal;require(validNumber(v.time+dt)&&v.time+dt>v.time,"The heat time step cannot advance this clock.");
+        // Solve the increment: (M/dt + K) dT = f - K*T_old. This avoids
+        // subtracting large absolute-temperature capacity terms in the RHS.
+        mfem::Vector rhs(v.space.GetVSize()),stiffnessOld(v.space.GetVSize());v.stiffness.SpMat().Mult(v.temperature,stiffnessOld);
+        rhs=v.volumeLoad;rhs+=v.boundaryLoad;rhs-=stiffnessOld;
+        std::unique_ptr<mfem::SparseMatrix> a(mfem::Add(1/dt,v.mass.SpMat(),1.0,v.stiffness.SpMat()));
+        for(auto &[dof,value]:v.fixedDofs)a->EliminateRowCol(dof,0.0,rhs);
+        mfem::GSSmoother preconditioner(*a);mfem::CGSolver solver;Monitor monitor(*s);solver.SetMonitor(monitor);solver.SetPrintLevel(-1);solver.SetRelTol(tolerance);solver.SetAbsTol(0);solver.SetMaxIter(maximum);solver.SetOperator(*a);solver.SetPreconditioner(preconditioner);
+        mfem::GridFunction increment(&v.space);increment=0.0;solver.Mult(rhs,increment);s->check();
+        if(!solver.GetConverged())throw Failure(kFloeFieldsErrSolver,"The transient heat step did not converge.");
+        mfem::GridFunction next(&v.space);next=v.temperature;next+=increment;
+        for(int i=0;i<next.Size();++i)require(validNumber(next[i])&&next[i]>=0,"A heat step produced a non-finite or negative Kelvin temperature.");
+        mfem::Vector residual(rhs.Size());a->Mult(increment,residual);residual-=rhs;double relative=residual.Norml2()/std::max(rhs.Norml2(),1e-300);
+        require(validNumber(relative)&&relative<=std::max(tolerance*10,1e-11),"The heat linear residual failed read-back.");
+        mfem::Vector massDelta(rhs.Size()),stiffnessNext(rhs.Size()),delta(next);delta-=v.temperature;v.mass.SpMat().Mult(delta,massDelta);v.stiffness.SpMat().Mult(next,stiffnessNext);
+        mfem::Vector fullResidual(massDelta);fullResidual/=dt;fullResidual+=stiffnessNext;fullResidual-=v.volumeLoad;fullResidual-=v.boundaryLoad;
+        // The mass/dt part can dominate a linear residual while the requested
+        // temperature increment is below floating-point resolution. Recheck
+        // the actual differential heat equation before accepting the step.
+        mfem::Vector freeResidual(fullResidual),diagonal(v.space.GetVSize());for(auto &[dof,value]:v.fixedDofs)freeResidual[dof]=0;
+        v.stiffness.SpMat().GetDiag(diagonal);
+        double physicalScale=std::max({diagonal.Normlinf()*next.Normlinf(),v.volumeLoad.Normlinf(),v.boundaryLoad.Normlinf(),massDelta.Normlinf()/dt,1e-300});
+        if(!validNumber(physicalScale)||freeResidual.Normlinf()>std::max(tolerance*10,1e-8)*physicalScale)throw Failure(kFloeFieldsErrSolver,"The heat step cannot resolve its differential balance. Increase the time step or tighten the solve tolerance.");
+        double dirichletIn=0;for(auto &[dof,value]:v.fixedDofs)dirichletIn+=fullResidual[dof];
+        double energy=v.energy(next),volumePower=v.volumeLoad.Sum();
+        double boundaryPower=v.boundaryLoad.Sum()-stiffnessNext.Sum()+dirichletIn;
+        double energyBalance=massDelta.Sum()/dt-volumePower-boundaryPower;
+        require(validNumber(energy)&&validNumber(boundaryPower)&&validNumber(energyBalance),"The heat energy balance is not finite.");
+        v.output(next,temperature,heatFlux);s->check();v.temperature=next;v.time+=dt;
+        if(energyJ)*energyJ=energy;if(sourceW)*sourceW=volumePower;if(boundaryInW)*boundaryInW=boundaryPower;if(energyResidualW)*energyResidualW=energyBalance;if(relativeResidual)*relativeResidual=relative;if(seconds)*seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+    });
+}
+
 }

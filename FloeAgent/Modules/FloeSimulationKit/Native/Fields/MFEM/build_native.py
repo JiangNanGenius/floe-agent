@@ -77,7 +77,7 @@ def package():
         shutil.copy2(CACHE/platform/"libFloeFieldsNative.a",framework/"FloeFieldsNative")
         shutil.copy2(native/"include/FloeFieldsMFEM.h",framework/"Headers/FloeFieldsMFEM.h")
         (framework/"Modules/module.modulemap").write_text('framework module FloeFieldsNative { umbrella header "FloeFieldsMFEM.h" export * module * { export * } }\n')
-        (framework/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"com.floe.simulation.fields.native","CFBundleName":"FloeFieldsNative","CFBundleExecutable":"FloeFieldsNative","CFBundlePackageType":"FMWK","CFBundleVersion":"2","CFBundleShortVersionString":"2.0","MinimumOSVersion":"15.0" if platform=="macos" else "26.0"}))
+        (framework/"Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier":"com.floe.simulation.fields.native","CFBundleName":"FloeFieldsNative","CFBundleExecutable":"FloeFieldsNative","CFBundlePackageType":"FMWK","CFBundleVersion":"3","CFBundleShortVersionString":"3.0","MinimumOSVersion":"15.0" if platform=="macos" else "26.0"}))
         args += ["-framework",framework]
     run(args+["-output",staging])
     if output.exists(): raise RuntimeError("Preserve existing framework before replacing it")

@@ -11,6 +11,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import CloudKit
 import SwiftUI
 import FloeCore
 import FloeEnvironments
@@ -124,6 +125,7 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var iCloudDrive: CapabilityState = .unknown
     @Published private(set) var configSyncStatus: SyncStatus = .paused
     @Published private(set) var configSyncLastSyncAt: Date?
+    @Published private(set) var configSyncFailure: ConfigSyncFailure?
     @Published private(set) var overallSyncEnabled = true
     @Published private(set) var configurationSyncEnabled = true
     @Published private(set) var savedCredentialsSyncEnabled = false
@@ -270,8 +272,10 @@ final class SettingsCenter: ObservableObject {
         databaseUserVersion = await version
         remoteHostCount = await hosts
         activeRemoteSessionCount = await activeSessions
-        configSyncStatus = await environment.configurationSync.status
-        configSyncLastSyncAt = await environment.configurationSync.lastSyncAt
+        let configurationSnapshot = await environment.configurationSync.configurationSnapshot()
+        configSyncStatus = configurationSnapshot.status
+        configSyncLastSyncAt = configurationSnapshot.lastSyncAt
+        configSyncFailure = configurationSnapshot.failure
 
         let providerList = await providers
         let modelList = await models
@@ -291,13 +295,15 @@ final class SettingsCenter: ObservableObject {
     /// turned into a false "Synced" result.
     func synchronizeConfiguration() async {
         do {
-            try await environment.configurationSync.synchronize()
+            try await environment.configurationSync.synchronize(container: CKContainer.default())
             await environment.conversationCenter.reload()
         } catch {
             // ConfigSyncEngine owns the redacted, user-presentable error state.
         }
-        configSyncStatus = await environment.configurationSync.status
-        configSyncLastSyncAt = await environment.configurationSync.lastSyncAt
+        let configurationSnapshot = await environment.configurationSync.configurationSnapshot()
+        configSyncStatus = configurationSnapshot.status
+        configSyncLastSyncAt = configurationSnapshot.lastSyncAt
+        configSyncFailure = configurationSnapshot.failure
     }
 
     // MARK: - Runtime inventory
@@ -971,6 +977,12 @@ final class SettingsCenter: ObservableObject {
         lines.append("build: \(info?["CFBundleVersion"] as? String ?? "unknown")")
         lines.append("database_user_version: \(databaseUserVersion)")
         lines.append("sync_status: \(configSyncStatus)")
+        if let failure = configSyncFailure {
+            lines.append("configuration_sync_failure_phase: \(failure.phase.rawValue)")
+            lines.append("configuration_sync_failure_reason: \(failure.reason.rawValue)")
+            if let domain = failure.errorDomain { lines.append("configuration_sync_failure_domain: \(domain)") }
+            if let code = failure.errorCode { lines.append("configuration_sync_failure_code: \(code)") }
+        }
         lines.append("providers: \(capabilitySummary.providerCount)")
         lines.append("models: \(capabilitySummary.modelCount)")
         lines.append("catalog_tools: \(capabilitySummary.toolCount)")

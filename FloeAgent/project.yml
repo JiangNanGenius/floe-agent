@@ -1731,6 +1731,25 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeAppTests/NativeExternalOAuthConnectionTests.swift
+      - path: Tests/FloeAppTests/NativeMailOAuthConsumerTests.swift
+      - path: Tests/FloeAppTests/LibraryPermanentDeletionTests.swift
+      - path: Tests/FloeAppTests/LibraryPermanentDeletionContractTests.swift
+      - path: Tests/FloeAppTests/BiologyPermanentDeletionTests.swift
+      - path: Tests/FloeAppTests/MCPConnectionFailurePresentationTests.swift
+      - path: Tests/FloeAppTests/ConfigSyncRecoveryTests.swift
+      - path: Tests/FloeAppTests/LinuxGuestImageWebsiteFallbackTests.swift
+      - path: Tests/FloeSkillsTests/GitHubTransportMirrorTransferWaitTests.swift
+      - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/TransientHeat05Tests.swift
+      - path: Tests/FloeToolsTests/MCPRemoteToolSourceTests.swift
+      - path: Tests/FloeExecutionTests/MailOAuthProtocolTests.swift
+      - path: Tests/FloeAppTests/ElectronicsCrossProbeReadTests.swift
+      - path: Tests/FloeAppTests/ElectronicsLibraryArcContractTests.swift
+      - path: Tests/FloeAppTests/ElectronicsPolygonPadContractTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsCoreTests/EDAPolygonPadTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDCustomPadDrawingTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDACrossProbeTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDLibraryArcDrawingTests.swift
       - path: Tests/FloeAppTests/LaTeXStructuredReceiptTests.swift
       - path: Tests/FloeSkillsTests/SkillHubMirrorTransportTests.swift
       - path: Tests/FloeSkillsTests/GitHubTransportMirrorManifestTests.swift
@@ -1887,6 +1906,10 @@ targets:
       - path: Tests/FloeAppTests/CadNativeObservationTests.swift
     dependencies:
       - target: FloeAgent
+      - package: FloeAgentPackages
+        product: FloeSync
+      - package: FloeAgentPackages
+        product: FloeSyncCore
       - package: FloeAgentPackages
         product: FloeWorkbench
       - package: FloeCADKit
