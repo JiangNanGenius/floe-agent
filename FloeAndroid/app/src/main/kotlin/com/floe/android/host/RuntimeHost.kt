@@ -118,6 +118,10 @@ class RuntimeHost internal constructor(
     internal val externalEdits by lazy {
         com.floe.android.host.externaledit.ExternalEditController(appContext, this)
     }
+    private val externalEditToolsDelegate = lazy {
+        com.floe.android.host.externaledit.ExternalEditToolHostPump(this)
+    }
+    internal val externalEditTools get() = externalEditToolsDelegate.value
     internal val browser = BrowserHostController(this)
     internal val workspaceGit = G04GitHostController(this)
     internal val workspaceActions = G04ActionsHostController(this)
@@ -782,6 +786,14 @@ class RuntimeHost internal constructor(
     internal suspend fun prepareFontsForRootStop(): Boolean =
         if (fontToolsDelegate.isInitialized()) fontTools.stopAndJoin() else true
 
+    internal suspend fun prepareExternalEditToolsForRootStop(): Boolean =
+        if (externalEditToolsDelegate.isInitialized()) externalEditTools.stopAndJoin() else true
+
+    internal fun resumeExternalEditToolsAfterRefusedStop() {
+        if (externalEditToolsDelegate.isInitialized() && nativeRootEpoch() != null)
+            externalEditTools.resumeAfterRefusedStop()
+    }
+
     internal fun resumeFontsAfterRefusedStop() {
         if (fontToolsDelegate.isInitialized() && nativeRootEpoch()?.let { it > 0L } == true) {
             fontTools.resumeAfterRefusedStop()
@@ -923,6 +935,7 @@ class RuntimeHost internal constructor(
         if (!started.compareAndSet(false, true)) return
         platformExtension?.onHostStarted(this)
         if (appContextOrNull != null) fontTools.start()
+        if (appContextOrNull != null) externalEditTools.start()
         observationJob = scope.launch(ioDispatcher) { observeCapabilities() }
         providers.start()
         conversations.start()
@@ -944,6 +957,7 @@ class RuntimeHost internal constructor(
     suspend fun stop() {
         if (linuxDesktopOwner.isInitialized() && !linuxDesktopOwner.value.stopAndJoin()) return
         if (!prepareC07DataExchangeForRootStop()) return
+        if (!prepareExternalEditToolsForRootStop()) return
         if (!prepareFontsForRootStop()) return
         // C03 voice owns real microphone/TTS/cloud operations; fence and join
         // them before the native root retires.

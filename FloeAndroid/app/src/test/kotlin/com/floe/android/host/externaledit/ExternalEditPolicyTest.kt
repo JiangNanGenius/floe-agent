@@ -50,6 +50,32 @@ class ExternalEditPolicyTest {
             ExternalEditPolicy.decide(base, current, base))
     }
 
+    @Test fun untouchedCheckIsNotSavedButAnEarlierVerifiedCommitStaysSaved() {
+        val row = linuxSaved().copy(baselineSHA256 = base, initialSHA256 = base,
+            phase = ExternalEditPhase.EDITING, hasCommittedChanges = false)
+        assertEquals(ExternalEditPhase.EDITING, ExternalEditPolicy.unchangedPhase(row, false))
+        assertEquals(ExternalEditPhase.SAVED,
+            ExternalEditPolicy.unchangedPhase(row.copy(hasCommittedChanges = true), false))
+        assertEquals(ExternalEditPhase.SOURCE_PENDING, ExternalEditPolicy.unchangedPhase(row, true))
+        assertTrue(ExternalEditPolicy.canFinishLinux(row, base, 20, current, 30))
+        assertFalse(ExternalEditPolicy.canFinishLinux(row, edited, 20, edited, 20))
+    }
+
+    @Test fun journalKeepsRealSaveHistoryAndDoesNotTrustOldUnchangedSavedLabel() {
+        val row = linuxSaved().copy(baselineSHA256 = base, initialSHA256 = base,
+            hasCommittedChanges = true)
+        val encoded = ExternalEditJournal.encode(row)
+        assertTrue(ExternalEditJournal.decode(encoded).hasCommittedChanges)
+        val legacy = kotlinx.serialization.json.JsonObject(encoded.filterKeys { it != "hasCommittedChanges" })
+        val restored = ExternalEditJournal.decode(legacy)
+        assertFalse(restored.hasCommittedChanges)
+        assertEquals(ExternalEditPhase.EDITING, ExternalEditPolicy.unchangedPhase(restored, false))
+        val earlierSaved = linuxSaved()
+        val earlierLegacy = kotlinx.serialization.json.JsonObject(
+            ExternalEditJournal.encode(earlierSaved).filterKeys { it != "hasCommittedChanges" })
+        assertTrue(ExternalEditJournal.decode(earlierLegacy).hasCommittedChanges)
+    }
+
     @Test fun nativeCommitBeforeProcessDeathIsRecognizedWithoutRepeatingWrite() {
         assertEquals(ExternalEditPolicy.Decision.ALREADY_COMMITTED,
             ExternalEditPolicy.decide(base, edited, edited))
@@ -89,6 +115,20 @@ class ExternalEditPolicyTest {
             file.writeText(original)
             assertThrows(IllegalArgumentException::class.java) { ExternalEditJournal(directory).load() }
             assertEquals(original, file.readText())
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun unconfirmedLaunchSurvivesRestartAndCannotBeReissuedByAnotherModelCall() {
+        val directory = Files.createTempDirectory("external-edit-launch").toFile()
+        try {
+            val row = linuxSaved().copy(linuxWorkingPath = null, toolLaunchKey = "first-run:first-call",
+                toolLaunchConfirmed = false)
+            ExternalEditJournal(directory).save(row)
+            val recovered = ExternalEditJournal(directory).load().single()
+            assertEquals("first-run:first-call", recovered.toolLaunchKey)
+            assertFalse(ExternalEditPolicy.canIssueToolLaunch(recovered))
+            assertTrue(ExternalEditPolicy.canIssueToolLaunch(recovered.copy(toolLaunchConfirmed = true)))
+            assertTrue(ExternalEditPolicy.canIssueToolLaunch(recovered.copy(toolLaunchKey = null)))
         } finally { directory.deleteRecursively() }
     }
 }

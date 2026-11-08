@@ -52,7 +52,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV23.version
                 || requestVersion == BridgeV25.version
                 || requestVersion == BridgeV27.version
-                || requestVersion == BridgeV28.version else {
+                || requestVersion == BridgeV28.version
+                || requestVersion == BridgeV29.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -432,6 +433,9 @@ public enum AndroidBridge {
         }
         if requestVersion == BridgeV27.version {
             return response(FontHostMailbox.handle(request), stampVersion: BridgeV27.version)
+        }
+        if requestVersion == BridgeV29.version {
+            return response(ExternalEditHostMailbox.shared.handle(request), stampVersion: BridgeV29.version)
         }
         if requestVersion == BridgeV28.version {
             // Additive trusted-host channel for CONVERSATION-OWNED agent media

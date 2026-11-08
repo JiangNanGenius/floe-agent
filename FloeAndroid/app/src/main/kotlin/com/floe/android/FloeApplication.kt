@@ -635,6 +635,7 @@ class FloeApplication : Application() {
                 // native Root epoch retires.
                 (runtimeHost?.prepareC06SystemServicesForRootStop() != false) &&
                 (runtimeHost?.prepareC07DataExchangeForRootStop() != false) &&
+                (runtimeHost?.prepareExternalEditToolsForRootStop() != false) &&
                 // C07 rollback may still need the font mailbox. Retire it
                 // only after every actual data-exchange operation settled.
                 (runtimeHost?.prepareFontsForRootStop() != false) &&
@@ -647,7 +648,10 @@ class FloeApplication : Application() {
                 (runtimeHost?.preparePlatformForRootStop() != false) &&
                 // The network lane remains the LAST drain clause.
                 (runtimeHost?.prepareNetworkForRootStop() != false)
-            if (!drained) runtimeHost?.resumeFontsAfterRefusedStop()
+            if (!drained) {
+                runtimeHost?.resumeFontsAfterRefusedStop()
+                runtimeHost?.resumeExternalEditToolsAfterRefusedStop()
+            }
             drained
         }
         runtimeCoordinator.start()
@@ -891,11 +895,13 @@ class FloeApplication : Application() {
     internal fun onPlatformActivityResumed(activity: android.app.Activity) {
         runCatching { runtimeHost?.platformExtension?.onActivityResumed(activity) }
         runtimeHost?.c06SystemServices?.setCurrentActivity(activity)
+        runtimeHost?.externalEditTools?.setActivity(activity)
     }
 
     internal fun onPlatformActivityPaused() {
         runCatching { runtimeHost?.platformExtension?.onActivityPaused() }
         runtimeHost?.c06SystemServices?.setCurrentActivity(null)
+        runtimeHost?.externalEditTools?.setActivity(null)
     }
 
     private suspend fun startBrowserLane(epoch: Long) {

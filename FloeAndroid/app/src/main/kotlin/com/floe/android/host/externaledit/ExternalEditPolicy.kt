@@ -37,6 +37,9 @@ internal data class ExternalEditRecord(
     val updatedAt: Long = System.currentTimeMillis(),
     val initialSHA256: String = baselineSHA256,
     val linuxWorkingPath: String? = null,
+    val hasCommittedChanges: Boolean = baselineSHA256 != initialSHA256,
+    val toolLaunchKey: String? = null,
+    val toolLaunchConfirmed: Boolean = false,
 ) {
     init {
         require(ExternalEditOwner.validUUID(id))
@@ -53,6 +56,8 @@ internal data class ExternalEditRecord(
         require((pendingSHA256 == null) == (pendingBytes == null))
         require(conflictSHA256 == null || ExternalEditPolicy.validSHA(conflictSHA256))
         require(editedSHA256 == null || ExternalEditPolicy.validSHA(editedSHA256))
+        require(toolLaunchKey == null || (toolLaunchKey.length in 1..256 && toolLaunchKey.none { it.code < 32 }))
+        require(!toolLaunchConfirmed || toolLaunchKey != null)
     }
 }
 
@@ -62,11 +67,25 @@ internal object ExternalEditPolicy {
     const val MAX_ACTIVE = 16
     enum class Decision { UNCHANGED, ALREADY_COMMITTED, REPLACE, CONFLICT }
 
+    /** Checking an untouched copy is not a save receipt. A previous real
+     * commit remains visible even after later checks find no new edits. */
+    fun unchangedPhase(row: ExternalEditRecord, sourcePending: Boolean): ExternalEditPhase = when {
+        sourcePending -> ExternalEditPhase.SOURCE_PENDING
+        row.hasCommittedChanges -> ExternalEditPhase.SAVED
+        else -> ExternalEditPhase.EDITING
+    }
+
+    /** A different model call cannot overwrite a launch whose OS outcome
+     * was lost. Explicit manual recovery remains available. */
+    fun canIssueToolLaunch(row: ExternalEditRecord): Boolean =
+        row.toolLaunchKey == null || row.toolLaunchConfirmed
+
     /** After the guest closes, its export must not have undone a saved edit.
      * An unchanged copy can retire even when another writer advanced the original. */
     fun canFinishLinux(row: ExternalEditRecord, copySHA: String, copyBytes: Long,
         currentSHA: String, currentBytes: Long): Boolean =
-        row.linuxWorkingPath != null && row.phase == ExternalEditPhase.SAVED &&
+        row.linuxWorkingPath != null && (row.phase == ExternalEditPhase.SAVED ||
+            (row.phase == ExternalEditPhase.EDITING && !row.hasCommittedChanges && copySHA == row.initialSHA256)) &&
             row.pendingSHA256 == null && row.errorCode == null &&
             copySHA == row.baselineSHA256 && copyBytes == row.baselineBytes &&
             ((currentSHA == copySHA && currentBytes == copyBytes) || copySHA == row.initialSHA256)

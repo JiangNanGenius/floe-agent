@@ -21,6 +21,7 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import org.json.JSONObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -87,7 +88,7 @@ internal class ExternalEditController(private val context: Context, private val 
         val current = {
             host.nativeRootEpoch() == epoch && host.commandClient.generation() == generation &&
                 host.readiness.value.storeReady &&
-                host.conversations.entryFor(owner.taskID)?.isTemporary == false
+                host.conversations.entryFor(owner.taskID)?.isTemporary != true
         }
         val client = G04WorkspaceBridgeClient.bindExisting(host, owner.taskID, current)
         if (!client.workspaceID.equals(owner.workspaceID, true) || !current()) throw Failure("ownerChanged")
@@ -254,7 +255,7 @@ internal class ExternalEditController(private val context: Context, private val 
      * Unsettled edits remain reachable through recovery; never discard a copy. */
     suspend fun finishLinuxAfterStop(id: String) = lock.withLock {
         val row = records[id] ?: return@withLock
-        if (row.linuxWorkingPath == null || row.phase != ExternalEditPhase.SAVED ||
+        if (row.linuxWorkingPath == null || row.phase !in setOf(ExternalEditPhase.SAVED, ExternalEditPhase.EDITING) ||
             row.pendingSHA256 != null || row.errorCode != null) return@withLock
         try {
             val binding = bind(row.owner)
@@ -313,31 +314,69 @@ internal class ExternalEditController(private val context: Context, private val 
     /** Android first. No external handler is an actionable result, not a fake Linux launch. */
     fun openAndroid(activity: Activity, owner: ExternalEditOwner, path: String, existingID: String? = null,
         forceChooser: Boolean = false) {
-        if (!launchClaim.compareAndSet(false, true)) return
+        host.scope.launch(host.ioDispatcher) {
+            try { openAndroidOwned(activity, owner, path, existingID, forceChooser) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Durable record/state already carries the failure. */ }
+        }
+    }
+
+    private suspend fun openAndroidOwned(activity: Activity, owner: ExternalEditOwner, path: String,
+        existingID: String? = null, forceChooser: Boolean = false, toolKey: String? = null,
+        allowed: () -> Boolean = { true }): ExternalEditRecord {
+        if (!launchClaim.compareAndSet(false, true)) throw Failure("editorBusy")
         mutableState.value = mutableState.value.copy(preparing = true,
             failure = if (journal == null) mutableState.value.failure else null)
         val weakActivity = WeakReference(activity)
-        host.scope.launch(host.ioDispatcher) {
             var row: ExternalEditRecord? = null
+            var launchIssued = false
             try {
-                row = if (existingID == null) prepare(owner, path) else lock.withLock {
+                if (!allowed()) throw Failure("cancelled")
+                if (toolKey != null) lock.withLock {
+                    records.values.firstOrNull { it.toolLaunchKey == toolKey }?.let { existing ->
+                        if (!sameOwner(existing.owner, owner) || existing.logicalPath != path) throw Failure("ownerChanged")
+                        if (!existing.toolLaunchConfirmed) throw Failure("launchUnconfirmed")
+                        bind(existing.owner)
+                        return existing // Lost acknowledgements never launch a second editor.
+                    }
+                }
+                val prepared = if (existingID == null) prepare(owner, path) else lock.withLock {
                     val existing = records[existingID] ?: throw Failure("copyUnavailable")
-                    if (!sameOwner(existing.owner, owner) || existing.linuxWorkingPath != null ||
+                    if (!sameOwner(existing.owner, owner) || existing.logicalPath != path || existing.linuxWorkingPath != null ||
                         existing.phase !in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED)) {
                         throw Failure("ownerChanged")
                     }
                     measured(working(existing))
                     existing
                 }
-                val binding = bind(row.owner)
-                val launch = intent(row, true)
+                row = prepared
+                val binding = bind(prepared.owner)
+                val launch = intent(prepared, true)
                 if (context.packageManager.queryIntentActivities(launch, 0)
                         .none { it.activityInfo.packageName != context.packageName }) throw Failure("noEditor")
-                withContext(Dispatchers.Main) {
-                    val target = weakActivity.get()?.takeIf { !it.isFinishing && !it.isDestroyed }
-                        ?: throw Failure("activityUnavailable")
-                    if (!binding.current()) throw Failure("ownerChanged")
-                    target.startActivity(if (forceChooser) Intent.createChooser(launch, null) else launch)
+                if (!allowed() || !binding.current()) throw Failure("cancelled")
+                return lock.withLock {
+                    val latest = records[prepared.id] ?: throw Failure("sessionMissing")
+                    if (latest.phase !in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED))
+                        throw Failure("ownerChanged")
+                    if (toolKey != null && !ExternalEditPolicy.canIssueToolLaunch(latest)) throw Failure("launchUnconfirmed")
+                    if (toolKey != null) save(latest.copy(toolLaunchKey = toolKey,
+                        toolLaunchConfirmed = false, errorCode = null))
+                    withContext(Dispatchers.Main) {
+                        val target = weakActivity.get()?.takeIf { !it.isFinishing && !it.isDestroyed }
+                            ?: throw Failure("activityUnavailable")
+                        if (!binding.current() || !allowed()) throw Failure("cancelled")
+                        if (toolKey != null &&
+                            ((target.application as? com.floe.android.FloeApplication)?.isActivityInForeground() != true ||
+                            !host.conversations.currentVisibleConversationId().equals(owner.taskID, true)))
+                            throw Failure("foregroundRequired")
+                        launchIssued = true
+                        target.startActivity(if (forceChooser) Intent.createChooser(launch, null) else launch)
+                    }
+                    (records[prepared.id] ?: throw Failure("sessionMissing")).copy(errorCode = null,
+                        toolLaunchKey = toolKey ?: latest.toolLaunchKey,
+                        toolLaunchConfirmed = toolKey != null || latest.toolLaunchKey != null,
+                        updatedAt = System.currentTimeMillis()).also(::save)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -345,13 +384,84 @@ internal class ExternalEditController(private val context: Context, private val 
                     ?: (error as? WorkspaceOfficeSnapshotStager.Failure)?.code ?: "operationFailed"
                 logFailure("open", code)
                 lock.withLock {
-                    row?.let { records[it.id] }?.let { save(it.copy(errorCode = code, updatedAt = System.currentTimeMillis())) }
+                    row?.let { records[it.id] }?.let { save(it.copy(errorCode = code,
+                        toolLaunchKey = if (!launchIssued && it.toolLaunchKey == toolKey) null else it.toolLaunchKey,
+                        toolLaunchConfirmed = if (!launchIssued && it.toolLaunchKey == toolKey) false else it.toolLaunchConfirmed,
+                        updatedAt = System.currentTimeMillis())) }
                         ?: run { mutableState.value = mutableState.value.copy(failure = code) }
                 }
+                throw Failure(code)
             } finally {
                 launchClaim.set(false)
                 mutableState.value = mutableState.value.copy(preparing = false)
             }
+    }
+
+    /** Model seam over the same durable edits, source CAS and recovery store.
+     * A ticket's caller supplies only native-derived ownership. Activity and
+     * file-result truth are observed here; neither is inferred from a model. */
+    suspend fun toolOperation(activity: Activity?, owner: ExternalEditOwner, action: String, path: String,
+        sessionID: String?, chooseApplication: Boolean, launchKey: String,
+        allowed: () -> Boolean): JSONObject {
+        fun failure(code: String) = JSONObject().put("ok", false).put("error", code)
+        try {
+            if (!allowed()) return failure("cancelled")
+            if (action == "open") {
+                val target = activity?.takeIf { !it.isFinishing && !it.isDestroyed }
+                    ?: return failure("foregroundRequired")
+                val row = openAndroidOwned(target, owner, path, sessionID, chooseApplication, launchKey, allowed)
+                return JSONObject().put("ok", true).put("sessionID", row.id).put("path", row.logicalPath)
+                    .put("state", row.phase.name.lowercase()).put("launched", row.toolLaunchConfirmed)
+                    .put("saved", false).put("completed", false)
+            }
+            val id = sessionID?.takeIf { ExternalEditOwner.validUUID(it) } ?: return failure("sessionMissing")
+            lock.withLock {
+                val row = records[id] ?: throw Failure("sessionMissing")
+                if (!sameOwner(row.owner, owner) || row.logicalPath != path || row.linuxWorkingPath != null)
+                    throw Failure("ownerChanged")
+                bind(owner)
+                if (action == "cancel") {
+                    if (!allowed()) return failure("cancelled")
+                    finishLocked(row)
+                    return JSONObject().put("ok", true).put("sessionID", id).put("path", path)
+                        .put("state", "cancelled").put("recoveryRetained", true)
+                        .put("changesPreviouslySaved", row.hasCommittedChanges).put("completed", false)
+                }
+            }
+            if (action !in setOf("status", "finish")) return failure("invalidAction")
+            if (!allowed()) return failure("cancelled")
+            reconcile(id)
+            return lock.withLock {
+                var row = records[id] ?: throw Failure("sessionMissing")
+                val binding = bind(owner)
+                val original = snapshot(row, binding)
+                try {
+                    if (!allowed() || !binding.current()) return@withLock failure("cancelled")
+                    val copy = measured(working(row))
+                    val pending = row.pendingSHA256 != null || row.errorCode != null ||
+                        row.phase in setOf(ExternalEditPhase.COMMITTING, ExternalEditPhase.SOURCE_PENDING,
+                            ExternalEditPhase.CONFLICT, ExternalEditPhase.PAUSED)
+                    val saved = row.hasCommittedChanges && !pending && original.sha256 == row.baselineSHA256 &&
+                        original.bytes == row.baselineBytes
+                    val stableCopy = copy == (row.baselineSHA256 to row.baselineBytes)
+                    if (action == "finish" && !pending && stableCopy) {
+                        finishLocked(row); row = records[id] ?: throw Failure("sessionMissing")
+                    }
+                    JSONObject().put("ok", !pending && (action != "finish" || stableCopy))
+                        .put("sessionID", id).put("path", path).put("state", row.phase.name.lowercase())
+                        .put("saved", saved).put("changed", row.hasCommittedChanges)
+                        .put("completed", row.phase == ExternalEditPhase.FINISHED)
+                        .put("sha256", original.sha256).put("byteCount", original.bytes)
+                        .put("sourcePending", row.phase == ExternalEditPhase.SOURCE_PENDING)
+                        .put("recoveryRetained", true).apply {
+                            if (pending || !stableCopy) put("error", row.errorCode ?: "savePending")
+                        }
+                } finally { releaseSnapshot(original) }
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            return failure((error as? Failure)?.code ?: (error as? G04WorkspaceBridgeClient.Failure)?.code
+                ?: (error as? WorkspaceOfficeSnapshotStager.Failure)?.code ?: "operationFailed")
         }
     }
 
@@ -411,6 +521,7 @@ internal class ExternalEditController(private val context: Context, private val 
                             (row.phase == ExternalEditPhase.PAUSED && row.baselineSHA256 != row.initialSHA256))
                     if (row.pendingSHA256 != null && current.sha256 == row.pendingSHA256 && current.bytes == row.pendingBytes) {
                         row = row.copy(baselineSHA256 = current.sha256, baselineBytes = current.bytes,
+                            hasCommittedChanges = true,
                             phase = if (row.sourceID != null) ExternalEditPhase.SOURCE_PENDING else ExternalEditPhase.SAVED,
                             pendingSHA256 = null, pendingBytes = null)
                         save(row)
@@ -419,8 +530,7 @@ internal class ExternalEditController(private val context: Context, private val 
                     val (candidate, edited) = preserve(working(row), id, "candidates")
                     when (ExternalEditPolicy.decide(row.baselineSHA256, current.sha256, edited.first)) {
                         ExternalEditPolicy.Decision.UNCHANGED -> {
-                            save(row.copy(phase = if (needsSourceSync) ExternalEditPhase.SOURCE_PENDING
-                                else ExternalEditPhase.SAVED, errorCode = null,
+                            save(row.copy(phase = ExternalEditPolicy.unchangedPhase(row, needsSourceSync), errorCode = null,
                                 pendingSHA256 = null, pendingBytes = null, updatedAt = System.currentTimeMillis()))
                             if (needsSourceSync) syncProvider(row, binding)
                             return@withExternalMutation
@@ -450,6 +560,7 @@ internal class ExternalEditController(private val context: Context, private val 
                     }
                     if (!binding.current()) throw Failure("ownerChanged")
                     row = row.copy(baselineSHA256 = edited.first, baselineBytes = edited.second,
+                        hasCommittedChanges = true,
                         pendingSHA256 = null, pendingBytes = null, conflictSHA256 = null,
                         editedSHA256 = null,
                         phase = if (row.sourceID != null) ExternalEditPhase.SOURCE_PENDING else ExternalEditPhase.SAVED,

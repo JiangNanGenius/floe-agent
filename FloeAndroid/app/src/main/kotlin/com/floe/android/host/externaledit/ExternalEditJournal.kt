@@ -10,6 +10,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -68,6 +69,9 @@ internal class ExternalEditJournal(val root: File) {
             put("updatedAt", row.updatedAt)
             put("initialSHA256", row.initialSHA256)
             row.linuxWorkingPath?.let { put("linuxWorkingPath", it) }
+            put("hasCommittedChanges", row.hasCommittedChanges)
+            row.toolLaunchKey?.let { put("toolLaunchKey", it) }
+            put("toolLaunchConfirmed", row.toolLaunchConfirmed)
         }
 
         /** Single versioned decoder; unknown/corrupt entries are retained, never erased. */
@@ -76,6 +80,12 @@ internal class ExternalEditJournal(val root: File) {
                 ?.takeIf { it.isString }?.contentOrNull
             fun number(key: String): Long? = (value[key] as? JsonPrimitive)
                 ?.takeIf { !it.isString }?.longOrNull
+            val saved = value["hasCommittedChanges"]?.let {
+                requireNotNull((it as? JsonPrimitive)?.takeIf { primitive -> !primitive.isString }?.booleanOrNull)
+            } ?: (text("initialSHA256")?.let { it != text("baselineSHA256") } ?: false)
+            val launched = value["toolLaunchConfirmed"]?.let {
+                requireNotNull((it as? JsonPrimitive)?.takeIf { primitive -> !primitive.isString }?.booleanOrNull)
+            } ?: false
             require(number("version") == 1L)
             return ExternalEditRecord(
                 id = requireNotNull(text("id")),
@@ -91,6 +101,8 @@ internal class ExternalEditJournal(val root: File) {
                 errorCode = text("errorCode"), updatedAt = requireNotNull(number("updatedAt")),
                 initialSHA256 = text("initialSHA256") ?: requireNotNull(text("baselineSHA256")),
                 linuxWorkingPath = text("linuxWorkingPath"),
+                hasCommittedChanges = saved,
+                toolLaunchKey = text("toolLaunchKey"), toolLaunchConfirmed = launched,
             )
         }
     }

@@ -117,6 +117,7 @@ public actor G04WorkspaceFacade {
     /// this generation — and retired inside `beginRetirement`, so discovery
     /// never advertises a runner the retired generation cannot execute.
     private var gitToolsHandle: G04GitToolBindings.Handle? = nil
+    private let externalEditToolsLive = G04GitToolLiveness(false)
 
     init(epoch: UInt64, installed: G02InstalledComposition,
          runDomain: FacadeRunDomain, access: any G04WorkspaceAccessPort) {
@@ -143,6 +144,20 @@ public actor G04WorkspaceFacade {
     /// after construction; double calls are ignored.
     public func bindGitTools() {
         guard gitToolsHandle == nil else { return }
+        externalEditToolsLive.set(true)
+        G04ExternalEditTool.install(routing: G04ExternalEditRouting(epoch: epoch,
+            isLive: { [installed, epoch, live = externalEditToolsLive] in
+                live.get() && epoch == G02NativeRootEpoch.readback()
+                    && G02RuntimeComposition.shared.installedComposition === installed
+            }, resolveOwner: { [cluster = installed.cluster, epoch] taskID in
+                guard let conversation = try? await cluster.conversationStore.conversation(id: taskID),
+                      conversation.purpose == .ordinary,
+                      let workspaceID = try? await cluster.workspaceStore.workspaceID(conversationID: taskID),
+                      let record = try? await cluster.workspaceStore.workspace(id: workspaceID),
+                      record.kind == .privateTask || C01ProjectRootLayout.isManagedProject(record),
+                      G02NativeRootEpoch.readback() == epoch else { return nil }
+                return G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
+            }, access: access))
         self.gitToolsHandle = G04GitToolBindings.install(routing: G04GitToolRouting(
             epoch: epoch,
             isLive: { [installed] in
@@ -926,6 +941,7 @@ public actor G04WorkspaceFacade {
     /// and nothing is silently dropped or falsely declared durable.
     @discardableResult
     public func beginRetirement() async -> Bool {
+        externalEditToolsLive.set(false)
         // Stop advertising the frozen fourteen runners for THIS generation
         // first, then retire the Git/Actions service and recovery RAM.
         gitToolsHandle?.retire()

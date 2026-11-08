@@ -16,7 +16,9 @@ The exact main candidate was installed with ADB, preserving the old task list. I
 
 The active edit’s finish/check controls stayed visible; completed history was folded and the phone sheet used shared compact typography and translucent material. Other screens, the irrelevant Design action in a plain-text editor and broader tablet refinement remain follow-ups.
 
-The Samsung Linux runtime and actual project-software scenarios continue separately. Host tests prove explicit project dependency-layer reuse across two task identities, different-project separation and invalid/conflicting-scope refusal; they do not prove that every graphical application ran on the phone. Existing task software is preserved and is not silently copied into the project layer.
+Subsequent Samsung qualification installed runtime82 through the actual system installer; its bytes matched the runtime embedded in the immutable APK and both original UIDs were retained. A project-scoped PCManFM session started and displayed the real project files. After stopping it through the App and confirming guest-process quiescence, a different task in the same project started a fresh graphical session with missing-component installation disabled. The same project environment and a new VNC endpoint were observed. This qualifies the graphical base and PCManFM reuse, not every professional editor or future upgrade. Existing task software is preserved and is not silently copied into the project layer.
+
+A fresh Ark `ark-code-latest` continuation discovered and executed the real workspace read and metadata tools. It retrieved the external editor's exact20-byte file and matching SHA-256; the expected marker was absent from the prompt. Three tool receipts and terminal run state were exported. This verifies model access to the saved original, not automated external-app editing. The model-to-editor handoff remains next-candidate work.
 
 ## Updates and public read-back
 
@@ -34,4 +36,4 @@ N01–N08 remains active: model-facing external editor handoff, authorized phone
 
 ---
 
-Alpha56/code82已公开，精确源、原生生产、签名、公开字节和更新发现已核对。三星经ADB更新主包，旧任务保留；空文件→X-plore编辑保存→Floe原件重开通过。5项原生宿主及25项JVM用例通过，未以此代替模型跨App、运行组件或全部项目软件验收。55→56补丁在宿主真实重建；在线安装复用未改升级组件的55实机证据。清理保留当前／回退、原失败、源码和符号；整轮目标继续。
+Alpha56/code82已公开，精确源、原生生产、签名、公开字节和更新发现已核对。三星经ADB更新主包，旧任务保留；空文件→X-plore编辑保存→Floe原件重开，以及模型实际读取20字节原件和摘要均通过。运行组件82经系统安装并匹配内嵌字节；同项目另一个任务在前会话停止、进程退出且禁止补装后，真实启动PCManFM并复用项目环境。此证据不代替自动跨App或全部专业软件验收。5项原生宿主及25项JVM用例通过；55→56补丁在宿主真实重建，在线安装复用未改升级组件的55实机证据。清理保留当前／回退、原失败、源码和符号；整轮目标继续。
