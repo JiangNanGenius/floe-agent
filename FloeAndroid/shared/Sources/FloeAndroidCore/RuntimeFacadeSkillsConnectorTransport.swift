@@ -178,7 +178,11 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
             throw SkillsConnectorFetchFailure.officialHubSourceRefused
         }
         guard let token = try await leasedToken() else {
-            return try await anonymousTransport.resolveCommit(source)
+            do {
+                return try await anonymousTransport.resolveCommit(source)
+            } catch {
+                throw Self.anonymousFailure(error)
+            }
         }
         let url = try Self.endpoint(
             base: apiBase, owner: source.owner, repository: source.repository,
@@ -217,7 +221,11 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
             throw SkillsConnectorFetchFailure.officialHubSourceRefused
         }
         guard let token = try await leasedToken() else {
-            return try await anonymousTransport.fetch(source, commit: commit, path: path)
+            do {
+                return try await anonymousTransport.fetch(source, commit: commit, path: path)
+            } catch {
+                throw Self.anonymousFailure(error)
+            }
         }
         guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else {
             throw SkillUpgradeError.invalidCommit
@@ -304,6 +312,21 @@ public struct WebToolsSkillsConnectorTransport: SkillsRemoteTransport {
     /// re-read during routing nor retained on the transport.
     private static func authorizedHeaders(accept: String, token: String) -> [String: String] {
         ["Accept": accept, "Authorization": "Bearer \(token)"]
+    }
+
+    /// The anonymous community path has the same actionable access failure.
+    /// Preserve every other original error and never retry or infer privacy.
+    private static func anonymousFailure(_ error: any Error) -> any Error {
+        let status: Int?
+        switch error {
+        case WebToolsSkillsRemoteTransport.TransportError.status(let value): status = value
+        case AndroidHubMirrorTransport.Failure.httpStatus(let value): status = value
+        default: status = nil
+        }
+        if let status, [401, 403, 404].contains(status) {
+            return SkillsConnectorFetchFailure.accessDenied(status)
+        }
+        return error
     }
 
     // MARK: - URL building (iOS connector-identical encoding)

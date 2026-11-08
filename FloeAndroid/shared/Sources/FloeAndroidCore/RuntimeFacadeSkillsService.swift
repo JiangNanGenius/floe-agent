@@ -777,7 +777,7 @@ public actor SkillsDomain {
             if let metadata = try? validator.parseSkillMarkdown(Data(row.skillMarkdown.utf8)) {
                 descriptionText = String(metadata.description.prefix(1_024))
             }
-            let object: [String: Any] = [
+            var object: [String: Any] = [
                 "id": row.id,
                 "name": row.name,
                 "version": row.version,
@@ -792,6 +792,9 @@ public actor SkillsDomain {
                 "description": descriptionText,
                 "rollbackAvailable": rollbackIDs.contains(row.id),
             ]
+            if let source = Self.gitHubBinding(for: row)?.source {
+                object["savedSource"] = Self.sourceProjection(source)
+            }
             projections.append(object)
         }
         // Repeated non-paged fields are part of the exact whole-reply
@@ -1750,6 +1753,71 @@ public actor SkillsDomain {
 
     // MARK: skills.install — setEnabled (original digest CAS)
 
+    /// Source intent is configuration, never proof of where installed bytes
+    /// originated. Fixed iOS SkillGitHubBinding separates it from the commit
+    /// and digest evidence created only by a verified upgrade.
+    public func configureUpdateSource(skillID: String, revision: ConfigRevision,
+                                      source: GitHubSkillSource?) async throws -> sending [String: Any] {
+        _ = try requireBinding()
+        try SkillManageTool.validateID(skillID)
+        guard !OfficialSkillHub.skillIDs.contains(skillID),
+              !BundledDomainSkills.all.contains(where: { $0.id == skillID }) else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "fixedSkillSource")
+        }
+        guard inflightSkills.insert(skillID).inserted else {
+            throw ConfigDomainError(code: .duplicateInFlight, reason: "skillOperationActive")
+        }
+        defer { inflightSkills.remove(skillID) }
+        let lease: ConfigOwnedWorkLease
+        switch ownedWork.begin(kind: .tool, ownerID: skillID) {
+        case .success(let value): lease = value
+        case .failure(let error): throw Self.ownedWorkAttachError(error)
+        }
+        defer { ownedWork.settle(lease) }
+        guard let row = try await store.skill(id: skillID) else {
+            throw ConfigDomainError(code: .notFound, reason: "skillRowMissing")
+        }
+        try Self.checkRevision(existing: row, revision: revision,
+                               createIntent: false, skillID: skillID)
+        guard row.rewriteModelID != "curated-hub",
+              row.sourceURL?.contains("floe-skill-hub") != true else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "fixedSkillSource")
+        }
+        let json = try source.map { value in
+            let binding = try SkillGitHubBinding(source: value, installedCommit: nil,
+                                                 installedContentDigest: nil)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return String(decoding: try encoder.encode(binding), as: UTF8.self)
+        }
+        _ = try requireBinding()
+        do {
+            try await store.setSourceTracking(json, id: skillID, expectedDigest: revision.version,
+                                               isCurrent: { [ownedWork] in ownedWork.isHeld(lease) })
+        } catch is SkillStoreConflict {
+            throw ConfigDomainError(code: .staleRevision, reason: "skillCAS")
+        } catch {
+            throw ConfigDomainError(code: .persistenceUnavailable, reason: "skillSourceWrite")
+        }
+        // A source change retires staged candidates from the former intent.
+        let obsolete = reviews.values.filter { $0.skillID == skillID }.map(\.token)
+        for token in obsolete { retireReview(token) }
+        var result: [String: Any] = ["state": "applied", "skillID": skillID,
+                                    "savedSource": NSNull()]
+        if let source { result["savedSource"] = Self.sourceProjection(source) }
+        return result
+    }
+
+    private static func gitHubBinding(for row: PersistedSkill) -> SkillGitHubBinding? {
+        guard let text = row.sourceTrackingJSON, text.utf8.count <= 16_384 else { return nil }
+        return try? JSONDecoder().decode(SkillGitHubBinding.self, from: Data(text.utf8))
+    }
+
+    private static func sourceProjection(_ source: GitHubSkillSource) -> [String: String] {
+        ["owner": source.owner, "repository": source.repository,
+         "ref": source.ref, "path": source.path]
+    }
+
     public func setEnabled(skillID: String, revision: ConfigRevision,
                            enabled: Bool) async throws -> sending [String: Any] {
         _ = try requireBinding()
@@ -2253,7 +2321,7 @@ public actor SkillsDomain {
                     code: .needsConfiguration,
                     reason: "curatedReceiptVerificationFailed")
             } else {
-                guard let source else {
+                guard let source = source ?? Self.gitHubBinding(for: row)?.source else {
                     throw ConfigDomainError(code: .notFound, reason: "upgradeSourceMissing")
                 }
                 // Community source: the domain-bound router selects the
@@ -2716,6 +2784,16 @@ public actor SkillsDomain {
         let markdownText = Self.text(at: stagedPackageDirectory
             .appendingPathComponent("SKILL.md"), fileManager: fileManager)
         let now = Date()
+        let trackingJSON: String?
+        if let verifiedUpgrade, rewriteModelID != "curated-hub",
+           !OfficialSkillHub.skillIDs.contains(package.manifest.id) {
+            let binding = try SkillGitHubBinding(source: verifiedUpgrade.source,
+                                                 installedCommit: verifiedUpgrade.commit,
+                                                 installedContentDigest: package.canonicalSHA256)
+            trackingJSON = String(decoding: try JSONEncoder().encode(binding), as: UTF8.self)
+        } else {
+            trackingJSON = nil
+        }
         let skill = PersistedSkill(
             id: package.manifest.id,
             name: package.metadata.name,
@@ -2733,7 +2811,8 @@ public actor SkillsDomain {
             sourceDigest: sourceDigest,
             rewrittenDigest: package.canonicalSHA256,
             rewriteModelID: rewriteModelID,
-            compatibilityReportJSON: compatibility)
+            compatibilityReportJSON: compatibility,
+            sourceTrackingJSON: trackingJSON)
         let staging = SkillInstallStagingService(
             installationRoot: installationRoot,
             validator: validator,

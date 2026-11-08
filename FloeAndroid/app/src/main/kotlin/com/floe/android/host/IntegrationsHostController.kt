@@ -62,6 +62,7 @@ import com.floe.android.host.mcpsetup.McpSetupHostController
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -1448,10 +1449,13 @@ class IntegrationsHostController internal constructor(
         }
     }
 
-    private fun skillInstallMessage(code: String, reason: String): String =
-        if (reason == "githubConnectorAccess") {
-            host.appContext.getString(com.floe.android.feature.integrations.R.string.skills_update_connector_access)
-        } else code
+    private fun skillInstallMessage(code: String, reason: String): String = when (reason) {
+        "githubConnectorAccess" -> host.appContext.getString(
+            com.floe.android.feature.integrations.R.string.skills_update_connector_access)
+        "upgradeSourceShape", "upgradeSourceInvalid" -> host.appContext.getString(
+            com.floe.android.feature.integrations.R.string.skills_update_source_invalid)
+        else -> code
+    }
 
     override fun setSkillEnabled(
         skillId: String,
@@ -1794,7 +1798,7 @@ class IntegrationsHostController internal constructor(
                     skillName = row.name,
                     installedVersion = row.version,
                     isOfficial = row.sourceKind == SkillSourceKindUi.OFFICIAL_HUB,
-                    savedSource = null,
+                    savedSource = row.savedSource,
                     // F-S7: candidate from the ACTUAL catalog diff projected
                     // into the row (never hardcoded null); a staged check
                     // result then refines it with the review reply.
@@ -1832,6 +1836,9 @@ class IntegrationsHostController internal constructor(
         updateDestination { state ->
             if (state.upgrade?.skillId == skillId) state else state.copy(upgrade = seed)
         }
+        if (!seed.isOfficial && source != null && source != row.savedSource) {
+            return persistUpgradeSource(skillId, source, checkAfterSave = true)
+        }
         markCheckInFlight(skillId, true)
         host.trackOperation(
             HostCommandRequest(
@@ -1868,6 +1875,96 @@ class IntegrationsHostController internal constructor(
             )
         }
         return true
+    }
+
+    override fun clearUpgradeSource(skillId: String): Boolean =
+        persistUpgradeSource(skillId, source = null, checkAfterSave = false)
+
+    private fun persistUpgradeSource(
+        skillId: String,
+        source: GitHubSourceFieldsUi?,
+        checkAfterSave: Boolean,
+    ): Boolean {
+        if (!admitted()) return false
+        val row = destinationState.value.skills.installed.firstOrNull { it.skillId == skillId }
+            ?: return false
+        if (row.revision.isEmpty() || row.sourceKind == SkillSourceKindUi.OFFICIAL_HUB) return false
+        markCheckInFlight(skillId, true)
+        host.trackOperation(
+            HostCommandRequest(
+                command = "skills.install",
+                scope = HostScope.ApplicationConfiguration("skills"),
+                stateful = true,
+                correlationID = client().correlationID("ssrc"),
+                revision = HostRevision("skill.$skillId", row.revision),
+                payload = JsonObject(mapOf(
+                    "operation" to JsonPrimitive("source.set"),
+                    "skillId" to JsonPrimitive(skillId),
+                    "source" to (source?.let { JsonObject(mapOf(
+                        "owner" to JsonPrimitive(it.owner),
+                        "repository" to JsonPrimitive(it.repository),
+                        "ref" to JsonPrimitive(it.ref),
+                        "path" to JsonPrimitive(it.path),
+                    )) } ?: JsonNull),
+                )),
+            ),
+        ) { outcome ->
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val result = outcome.value as? JsonObject
+                    val confirmed = result?.get("savedSource")?.let(IntegrationsWire::decodeGitHubSource)
+                    if (result == null || result["state"] != JsonPrimitive("applied") ||
+                        result["skillID"] != JsonPrimitive(skillId) ||
+                        (source != null && confirmed == null) ||
+                        (source == null && result["savedSource"] != JsonNull)) {
+                        sourceSaveFailed(skillId, "invalidProjection")
+                        return@trackOperation
+                    }
+                    stagedUpgrades.remove(skillId)
+                    updateDestination { state ->
+                        state.copy(
+                            skills = state.skills.copy(installed = state.skills.installed.map {
+                                if (it.skillId == skillId && it.revision == row.revision) {
+                                    it.copy(savedSource = confirmed)
+                                } else it
+                            }),
+                            upgrade = state.upgrade?.let {
+                                if (it.skillId == skillId) it.copy(
+                                    savedSource = confirmed, candidateVersion = null,
+                                    commit = null, releaseNotes = null, changedFiles = emptyList(),
+                                    addedCapabilities = emptyList(), addedTools = emptyList(),
+                                    isLatest = false, checkInFlight = false, errorMessage = null,
+                                    lastEffect = null,
+                                ) else it
+                            },
+                        )
+                    }
+                    val stillCurrent = destinationState.value.skills.installed.any {
+                        it.skillId == skillId && it.revision == row.revision && it.savedSource == confirmed
+                    }
+                    if (checkAfterSave && confirmed != null && stillCurrent &&
+                        destinationState.value.upgrade?.skillId == skillId) {
+                        // Omit the source: the real backend must read the committed intent.
+                        checkUpgrade(skillId, null)
+                    }
+                    refreshSkills()
+                }
+                is HostOperationOutcome.Rejected -> sourceSaveFailed(
+                    skillId, skillInstallMessage(outcome.code, outcome.reason))
+                is HostOperationOutcome.Failed -> sourceSaveFailed(
+                    skillId, skillInstallMessage(outcome.code, outcome.reason))
+                HostOperationOutcome.Cancelled -> sourceSaveFailed(skillId, "cancelled")
+                else -> Unit
+            }
+        }
+        return true
+    }
+
+    private fun sourceSaveFailed(skillId: String, message: String) {
+        updateDestination { state ->
+            val sheet = state.upgrade?.takeIf { it.skillId == skillId } ?: return@updateDestination state
+            state.copy(upgrade = sheet.copy(checkInFlight = false, errorMessage = message))
+        }
     }
 
     /** Check-in-flight flips on the sheet that OWNS the dispatch (the
@@ -3352,6 +3449,20 @@ internal object IntegrationsWire {
         val nextCursor: String?,
     )
 
+    fun decodeGitHubSource(value: JsonElement): GitHubSourceFieldsUi? {
+        val obj = value as? JsonObject ?: return null
+        if (obj.keys != setOf("owner", "repository", "ref", "path")) return null
+        fun field(key: String): String? = (obj[key] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.content
+            ?.takeIf { it.isNotEmpty() && it.length <= 512 && it.none(Char::isISOControl) }
+        return GitHubSourceFieldsUi(
+            owner = field("owner") ?: return null,
+            repository = field("repository") ?: return null,
+            ref = field("ref") ?: return null,
+            path = field("path") ?: return null,
+        )
+    }
+
     fun decodeSkillsSnapshot(value: JsonElement): SkillsSnapshotPage? {
         val root = value as? JsonObject ?: return null
         val installed = (root["skills"] as? JsonArray)?.mapNotNull { element ->
@@ -3396,6 +3507,7 @@ internal object IntegrationsWire {
                 isBundledReadOnlyGuide = obj.bool("bundledSeedSuppressed") == true,
                 rollbackAvailable = obj.bool("rollbackAvailable") == true,
                 installStage = null,
+                savedSource = obj["savedSource"]?.let(::decodeGitHubSource),
             )
         } ?: return null
         val catalog = root["catalog"] as? JsonObject

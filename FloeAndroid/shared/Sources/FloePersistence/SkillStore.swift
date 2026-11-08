@@ -15,6 +15,7 @@ public struct PersistedSkill: Codable, Sendable, Hashable, Identifiable {
     public var rewrittenDigest: String
     public var rewriteModelID: String?
     public var compatibilityReportJSON: String
+    public var sourceTrackingJSON: String?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -23,7 +24,7 @@ public struct PersistedSkill: Codable, Sendable, Hashable, Identifiable {
         skillMarkdown: String, manifestJSON: String,
         declaredCapabilitiesJSON: String = "[]", effectiveCapabilitiesJSON: String = "[]",
         sourceURL: String? = nil, sourceDigest: String? = nil, rewrittenDigest: String,
-        rewriteModelID: String? = nil, compatibilityReportJSON: String = "{}",
+        rewriteModelID: String? = nil, compatibilityReportJSON: String = "{}", sourceTrackingJSON: String? = nil,
         createdAt: Date = Date(), updatedAt: Date = Date()
     ) {
         self.id = id; self.name = name; self.version = version; self.status = status
@@ -33,6 +34,7 @@ public struct PersistedSkill: Codable, Sendable, Hashable, Identifiable {
         self.sourceURL = sourceURL; self.sourceDigest = sourceDigest
         self.rewrittenDigest = rewrittenDigest; self.rewriteModelID = rewriteModelID
         self.compatibilityReportJSON = compatibilityReportJSON
+        self.sourceTrackingJSON = sourceTrackingJSON
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 }
@@ -93,6 +95,7 @@ public actor SQLiteSkillStore {
                             permission.scopeJSON, permission.grantedAt, permission.expiresAt])
                 }
             }
+            try Self.persistSourceTracking(skill.sourceTrackingJSON, id: skill.id, db: db)
         }
     }
 
@@ -107,7 +110,33 @@ public actor SQLiteSkillStore {
 
     public func all() async throws -> [PersistedSkill] {
         try await database.reader { db in
-            try Row.fetchAll(db, sql: "SELECT * FROM skills ORDER BY name COLLATE NOCASE").map(Self.row)
+            try Row.fetchAll(db, sql: """
+                SELECT skills.*, app_settings.value_json AS source_tracking_json
+                FROM skills LEFT JOIN app_settings ON app_settings.key = ? || skills.id
+                ORDER BY skills.name COLLATE NOCASE
+                """, arguments: [Self.sourceTrackingPrefix]).map(Self.row)
+        }
+    }
+
+    public func skill(id: String) async throws -> PersistedSkill? {
+        try await database.reader { db in
+            try Row.fetchOne(db, sql: """
+                SELECT skills.*, app_settings.value_json AS source_tracking_json
+                FROM skills LEFT JOIN app_settings ON app_settings.key = ? || skills.id
+                WHERE skills.id = ?
+                """, arguments: [Self.sourceTrackingPrefix, id]).map(Self.row)
+        }
+    }
+
+    /// Fixed iOS 2ce48570a storage contract: non-secret source intent uses
+    /// existing app_settings, in the SAME transaction as the skill CAS.
+    /// No schema change or second settings/file store is needed.
+    public func setSourceTracking(_ json: String?, id: String, expectedDigest: String,
+                                  isCurrent: @escaping @Sendable () -> Bool = { true }) async throws {
+        try await database.writer { db in
+            guard isCurrent() else { throw SkillStoreConflict.changedOrMissing }
+            try Self.checkDigest(db, id: id, expected: expectedDigest)
+            try Self.persistSourceTracking(json, id: id, db: db)
         }
     }
 
@@ -127,6 +156,7 @@ public actor SQLiteSkillStore {
                     arguments: ["skills.userRemoved." + id, Self.date(Date())])
             }
             try db.execute(sql: "DELETE FROM skills WHERE id = ?", arguments: [id])
+            try Self.persistSourceTracking(nil, id: id, db: db)
         }
     }
 
@@ -193,11 +223,29 @@ public actor SQLiteSkillStore {
             effectiveCapabilitiesJSON: row["effective_capabilities_json"], sourceURL: row["source_url"],
             sourceDigest: row["source_digest"], rewrittenDigest: row["rewritten_digest"],
             rewriteModelID: row["rewrite_model_id"], compatibilityReportJSON: row["compatibility_report_json"],
+            sourceTrackingJSON: row["source_tracking_json"],
             createdAt: parseDate(row["created_at"]), updatedAt: parseDate(row["updated_at"])
         )
     }
 
     private static func date(_ value: Date) -> String { ISO8601DateFormatter().string(from: value) }
+    private static let sourceTrackingPrefix = "skills.update_source."
+
+    private static func persistSourceTracking(_ json: String?, id: String, db: Database) throws {
+        let key = sourceTrackingPrefix + id
+        guard let json else {
+            try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: [key])
+            return
+        }
+        guard json.utf8.count <= 16_384,
+              (try? JSONSerialization.jsonObject(with: Data(json.utf8))) is [String: Any] else {
+            throw SkillStoreConflict.changedOrMissing
+        }
+        try db.execute(sql: """
+            INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
+            """, arguments: [key, json, date(Date())])
+    }
     private static func parseDate(_ value: String) -> Date { ISO8601DateFormatter().date(from: value) ?? .distantPast }
 }
 

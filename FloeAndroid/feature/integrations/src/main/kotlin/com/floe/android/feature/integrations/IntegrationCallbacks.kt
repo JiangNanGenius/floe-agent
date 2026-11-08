@@ -184,6 +184,7 @@ interface IntegrationUiCallbacks {
     /** [source] null for official skills (hub source fixed); typed fields
      * for community sources (⇄ GitHubSkillSource validation is the host's). */
     fun checkUpgrade(skillId: String, source: GitHubSourceFieldsUi?): Boolean
+    fun clearUpgradeSource(skillId: String): Boolean = false
 
     /** Apply the reviewed candidate. True = started; [effectToken] echoes in
      * SkillUpgradeUi.lastEffect so a late result cannot act on a new sheet. */

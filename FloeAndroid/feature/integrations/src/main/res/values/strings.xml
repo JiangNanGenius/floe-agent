@@ -80,6 +80,9 @@
     <string name="skills_update_installed">Installed version</string>
     <string name="skills_update_available">New version</string>
     <string name="skills_update_check">Check for updates</string>
+    <string name="skills_update_save_check">Save and check</string>
+    <string name="skills_update_clear_source">Clear saved source</string>
+    <string name="skills_update_source_invalid">Check the repository, branch or commit, and file path.</string>
     <string name="skills_update_now">Update now</string>
     <string name="skills_update_details">Details</string>
     <string name="skills_update_hide_details">Hide details</string>

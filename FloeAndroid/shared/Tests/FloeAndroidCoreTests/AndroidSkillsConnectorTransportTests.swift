@@ -168,6 +168,25 @@ final class AndroidSkillsConnectorTransportTests: XCTestCase, @unchecked Sendabl
 
     // MARK: - Credentialed route: synthetic token only on the official API
 
+    func testTokenlessAccessFailuresRemainActionableWithoutRetry() async throws {
+        for status in [401, 403, 404] {
+            let anonymous = RecordingTransport()
+            anonymous.resolveResult = .failure(WebToolsSkillsRemoteTransport.TransportError.status(status))
+            anonymous.entryBody = .failure(AndroidHubMirrorTransport.Failure.httpStatus(status))
+            let (connector, _) = makeConnector(anonymous: anonymous)
+            let source = try communitySource()
+            do {
+                _ = try await connector.resolveCommit(source)
+                XCTFail("an inaccessible anonymous source must not become a resolved commit")
+            } catch SkillsConnectorFetchFailure.accessDenied(status) {}
+            do {
+                _ = try await connector.fetch(source, commit: pin, path: source.path)
+                XCTFail("an inaccessible anonymous source must not become content")
+            } catch SkillsConnectorFetchFailure.accessDenied(status) {}
+            XCTAssertEqual(anonymous.snapshot().map(\.kind), ["resolve", "fetch"])
+        }
+    }
+
     func testCredentialedResolveSendsBearerExactlyOnceAndNeverInURL() async throws {
         let server = try ScriptedLoopbackFixture()
         let source = try communitySource(ref: "feature/next")

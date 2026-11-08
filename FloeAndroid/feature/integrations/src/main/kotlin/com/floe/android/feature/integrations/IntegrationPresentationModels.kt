@@ -244,6 +244,8 @@ data class SkillInstalledRowUi(
     val rollbackAvailable: Boolean = false,
     /** Non-null only while a host service is staging this skill's install. */
     val installStage: SkillInstallStageUi? = null,
+    /** Validated, non-secret update intent persisted with this installation. */
+    val savedSource: GitHubSourceFieldsUi? = null,
 )
 
 /** One official-catalog card in the Discover segment (⇄ plugins.official). */

@@ -97,6 +97,7 @@ enum SkillsInstallOperation: String, Sendable, CaseIterable {
     case finderImport = "finder.import"            // installFromFinder
     case folderImport = "folder.import"            // importStagedPackage (host receipt)
     case upgradeCheck = "upgrade.check"            // checkUpgrade
+    case sourceSet = "source.set"                  // configure/clear update source (digest CAS)
     case upgradeApply = "upgrade.apply"            // applyUpgrade
     case upgradeDiscard = "upgrade.discard"        // cancelUpgrade
     case upgradeRollback = "upgrade.rollback"      // rollbackUpgrade
@@ -417,6 +418,18 @@ public actor SkillsCommandRouter {
             }
             let projection = try await domain.importStagedFolder(token: token)
             return CapabilitiesReplies.completed(projection.jsonObject())
+        case .sourceSet:
+            try ConfigJSON.closed(payload,
+                                  allowed: ["operation", "skillId", "source", "cursor"],
+                                  required: ["skillId", "source"], context: "skillSourceSet")
+            guard !createIntent, let revision,
+                  let skillID = payload["skillId"] as? String else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "skillSourceInputs")
+            }
+            let source = try Self.updateSource(payload["source"])
+            return CapabilitiesReplies.completed(
+                try await domain.configureUpdateSource(skillID: skillID,
+                                                         revision: revision, source: source))
         case .upgradeCheck:
             try ConfigJSON.closed(payload,
                                   allowed: ["operation", "skillId", "source", "cursor"],
@@ -425,29 +438,7 @@ public actor SkillsCommandRouter {
             guard !createIntent, let skillID = payload["skillId"] as? String else {
                 throw ConfigDomainError(code: .invalidEnvelope, reason: "upgradeCheckInputs")
             }
-            let source: GitHubSkillSource?
-            if let sourceObject = payload["source"] as? [String: Any] {
-                try ConfigJSON.closed(sourceObject,
-                                      allowed: ["owner", "repository", "ref", "path"],
-                                      required: ["owner", "repository", "ref", "path"],
-                                      context: "upgradeSource")
-                guard let owner = sourceObject["owner"] as? String,
-                      let repository = sourceObject["repository"] as? String,
-                      let ref = sourceObject["ref"] as? String,
-                      let path = sourceObject["path"] as? String else {
-                    throw ConfigDomainError(code: .invalidEnvelope, reason: "upgradeSourceShape")
-                }
-                // ORIGINAL validation (GitHubSkillSource.init throws on
-                // every unsafe component/ref/path form).
-                do {
-                    source = try GitHubSkillSource(owner: owner, repository: repository,
-                                                   ref: ref, path: path)
-                } catch {
-                    throw ConfigDomainError(code: .invalidEnvelope, reason: "upgradeSourceInvalid")
-                }
-            } else {
-                source = nil
-            }
+            let source = try Self.updateSource(payload["source"])
             let projection = try await domain.checkUpgrade(skillID: skillID, source: source)
             return CapabilitiesReplies.completed(projection.jsonObject())
         case .upgradeApply:
@@ -500,6 +491,26 @@ public actor SkillsCommandRouter {
             return CapabilitiesReplies.completed(
                 try await domain.setAutoScriptedUpdates(enabled: enabled,
                                                         revision: revision))
+        }
+    }
+
+    private static func updateSource(_ value: Any?) throws -> GitHubSkillSource? {
+        guard let value, !(value is NSNull) else { return nil }
+        guard let object = value as? [String: Any] else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "upgradeSourceShape")
+        }
+        try ConfigJSON.closed(object, allowed: ["owner", "repository", "ref", "path"],
+                              required: ["owner", "repository", "ref", "path"], context: "upgradeSource")
+        guard let owner = object["owner"] as? String,
+              let repository = object["repository"] as? String,
+              let ref = object["ref"] as? String,
+              let path = object["path"] as? String else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "upgradeSourceShape")
+        }
+        do {
+            return try GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
+        } catch {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "upgradeSourceInvalid")
         }
     }
 

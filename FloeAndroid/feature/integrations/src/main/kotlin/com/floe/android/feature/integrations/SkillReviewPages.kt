@@ -150,16 +150,18 @@ fun SkillUpgradePage(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var detailsOpen by remember(upgrade.skillId) { mutableStateOf(false) }
+    var detailsOpen by remember(upgrade.skillId) {
+        mutableStateOf(!upgrade.isOfficial && upgrade.savedSource == null)
+    }
     var rollbackConfirm by remember(upgrade.skillId) { mutableStateOf(false) }
     // Local (non-secret) source fields, seeded from the saved community
     // source; official skills use the fixed hub source (fields hidden).
-    var owner by remember(upgrade.skillId) { mutableStateOf(upgrade.savedSource?.owner.orEmpty()) }
-    var repository by remember(upgrade.skillId) {
+    var owner by remember(upgrade.skillId, upgrade.savedSource) { mutableStateOf(upgrade.savedSource?.owner.orEmpty()) }
+    var repository by remember(upgrade.skillId, upgrade.savedSource) {
         mutableStateOf(upgrade.savedSource?.repository.orEmpty())
     }
-    var ref by remember(upgrade.skillId) { mutableStateOf(upgrade.savedSource?.ref ?: "main") }
-    var path by remember(upgrade.skillId) {
+    var ref by remember(upgrade.skillId, upgrade.savedSource) { mutableStateOf(upgrade.savedSource?.ref ?: "main") }
+    var path by remember(upgrade.skillId, upgrade.savedSource) {
         mutableStateOf(upgrade.savedSource?.path ?: "SKILL.md")
     }
 
@@ -174,7 +176,9 @@ fun SkillUpgradePage(
     Column(modifier = modifier.fillMaxSize().testTag("skills.upgrade")) {
         IntegrationEditorToolbar(
             confirmLabel = if (upgrade.candidateVersion == null) {
-                stringResource(R.string.skills_update_check)
+                stringResource(if (source != null && source != upgrade.savedSource) {
+                    R.string.skills_update_save_check
+                } else R.string.skills_update_check)
             } else {
                 stringResource(R.string.skills_update_now)
             },
@@ -307,10 +311,19 @@ fun SkillUpgradePage(
                             keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
                         )
                         FloeActionRow(
-                            label = stringResource(R.string.skills_update_check),
+                            label = stringResource(if (source != upgrade.savedSource) {
+                                R.string.skills_update_save_check
+                            } else R.string.skills_update_check),
                             onClick = { holder.checkUpgrade(upgrade.skillId, source) },
                             enabled = !inFlight,
                         )
+                        if (upgrade.savedSource != null) {
+                            FloeActionRow(
+                                label = stringResource(R.string.skills_update_clear_source),
+                                onClick = { holder.clearUpgradeSource(upgrade.skillId) },
+                                enabled = !inFlight,
+                            )
+                        }
                     }
                 }
                 TextRow(

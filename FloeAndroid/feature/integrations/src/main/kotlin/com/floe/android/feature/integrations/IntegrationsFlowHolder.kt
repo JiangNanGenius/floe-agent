@@ -460,6 +460,10 @@ class IntegrationsFlowHolder(
         if (host.checkUpgrade(skillId, source)) IntegrationsFlowResult.Accepted
         else rejected(RejectedReason.HOST_UNAVAILABLE)
 
+    fun clearUpgradeSource(skillId: String): IntegrationsFlowResult =
+        if (host.clearUpgradeSource(skillId)) IntegrationsFlowResult.Accepted
+        else rejected(RejectedReason.HOST_UNAVAILABLE)
+
     /** Apply/rollback dispatches stamp a fresh effect token; only THAT
      * token's outcome is honoured. */
     fun dispatchUpgradeEffect(
