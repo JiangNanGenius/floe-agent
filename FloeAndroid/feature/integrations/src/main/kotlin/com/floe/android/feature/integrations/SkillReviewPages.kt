@@ -166,17 +166,19 @@ fun SkillUpgradePage(
     }
 
     val inFlight = upgrade.applyInFlight || upgrade.checkInFlight
-    val canApply = upgrade.candidateVersion != null && !upgrade.isLatest && !inFlight
     val source = if (upgrade.isOfficial) {
         null
     } else {
         GitHubSourceFieldsUi(owner = owner, repository = repository, ref = ref, path = path)
     }
+    val sourceEdited = source != null && source != upgrade.savedSource
+    val needsCheck = sourceEdited || upgrade.candidateVersion == null
+    val canApply = !sourceEdited && upgrade.candidateVersion != null && !upgrade.isLatest && !inFlight
 
     Column(modifier = modifier.fillMaxSize().testTag("skills.upgrade")) {
         IntegrationEditorToolbar(
-            confirmLabel = if (upgrade.candidateVersion == null) {
-                stringResource(if (source != null && source != upgrade.savedSource) {
+            confirmLabel = if (needsCheck) {
+                stringResource(if (sourceEdited) {
                     R.string.skills_update_save_check
                 } else R.string.skills_update_check)
             } else {
@@ -184,10 +186,10 @@ fun SkillUpgradePage(
             },
             cancelLabel = stringResource(R.string.action_cancel),
             inFlight = inFlight,
-            confirmEnabled = if (upgrade.candidateVersion == null) !inFlight else canApply,
+            confirmEnabled = if (needsCheck) !inFlight else canApply,
             onCancel = onClose,
             onConfirm = {
-                if (upgrade.candidateVersion == null) {
+                if (needsCheck) {
                     holder.checkUpgrade(upgrade.skillId, source)
                 } else {
                     holder.dispatchUpgradeEffect(
@@ -198,7 +200,7 @@ fun SkillUpgradePage(
                     )
                 }
             },
-            confirmTag = if (upgrade.candidateVersion == null) {
+            confirmTag = if (needsCheck) {
                 "skills.upgradeCheck"
             } else {
                 "skills.upgradeApply"

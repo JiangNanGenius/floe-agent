@@ -4,9 +4,47 @@ import com.floe.android.feature.integrations.GitHubSourceFieldsUi
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SkillUpdateSourceProjectionTest {
+    @Test
+    fun catalogNameCollisionCannotRedirectACommunityInstallation() {
+        for (official in listOf(false, true)) {
+            val value = Json.parseToJsonElement("""
+                {"skills":[{"id":"same-name","version":"1.0.0","official":$official,
+                  "revision":{"version":"digest"}}]}
+            """)
+            val row = checkNotNull(IntegrationsWire.decodeSkillsSnapshot(value)).installed.single()
+            assertEquals(if (official) "1.0.1" else null,
+                IntegrationsWire.catalogUpdateVersion(row, "1.0.1"))
+            assertNull(IntegrationsWire.catalogUpdateVersion(row, "1.0.0"))
+        }
+    }
+
+    @Test
+    fun sameVersionWithRealFileChangesStillRequiresReview() {
+        val review = checkNotNull(IntegrationsWire.decodeReview(Json.parseToJsonElement("""
+            {"reviewToken":"fixture","skillID":"fixture","version":"1.0.0","committed":false,
+             "changedFiles":["SKILL.md","examples/update.md"],"addedCapabilities":[],"addedTools":[]}
+        """)))
+        assertEquals("1.0.0", review.version)
+        assertTrue(review.hasChanges)
+        assertEquals(listOf("SKILL.md", "examples/update.md"), review.scriptPaths)
+    }
+
+    @Test
+    fun anUnchangedReviewIsDistinctFromNewPermissions() {
+        for (capabilities in listOf("[]", "[\"remoteExecution\"]")) {
+            val review = checkNotNull(IntegrationsWire.decodeReview(Json.parseToJsonElement("""
+                {"reviewToken":"fixture","skillID":"fixture","version":"1.0.0","committed":false,
+                 "changedFiles":[],"addedCapabilities":$capabilities,"addedTools":[]}
+            """)))
+            if (capabilities == "[]") assertFalse(review.hasChanges) else assertTrue(review.hasChanges)
+        }
+    }
+
     @Test
     fun persistedSourceReachesTheInstalledRowUsedToReopenTheSheet() {
         val value = Json.parseToJsonElement("""

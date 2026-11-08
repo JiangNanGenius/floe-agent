@@ -4,6 +4,9 @@ import FloeCore
 
 public struct SkillPackageValidator: Sendable {
     public var limits: SkillValidationLimits
+    private static let rootDocuments: Set<String> = [
+        "LICENSE", "LICENSE.txt", "LICENSE.md", "NOTICE", "NOTICE.txt", "NOTICE.md",
+    ]
 
     public init(limits: SkillValidationLimits = SkillValidationLimits()) {
         self.limits = limits
@@ -188,7 +191,7 @@ public struct SkillPackageValidator: Sendable {
                 throw SkillValidationError.symbolicLink(relativePath)
             }
             if values.isDirectory == true {
-                if relativePath == "SKILL.md" || relativePath == "floe.json" {
+                if relativePath == "SKILL.md" || relativePath == "floe.json" || Self.rootDocuments.contains(relativePath) {
                     throw SkillValidationError.unsupportedFile(relativePath)
                 }
                 let forbiddenDirectoryExtensions: Set<String> = ["app", "framework", "bundle", "xcframework"]
@@ -200,7 +203,7 @@ public struct SkillPackageValidator: Sendable {
             guard values.isRegularFile == true else {
                 throw SkillValidationError.unsupportedFile(relativePath)
             }
-            if ["references", "assets", "scripts", "agents"].contains(relativePath) {
+            if ["references", "assets", "scripts", "agents", "examples"].contains(relativePath) {
                 throw SkillValidationError.unsupportedFile(relativePath)
             }
 
@@ -240,8 +243,8 @@ public struct SkillPackageValidator: Sendable {
             throw SkillValidationError.unsafePath(relativePath)
         }
         let topLevel = relativePath.split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
-        let allowedRoots: Set<String> = ["SKILL.md", "floe.json", "references", "assets", "scripts", "agents"]
-        guard allowedRoots.contains(topLevel),
+        let allowedRoots: Set<String> = ["SKILL.md", "floe.json", "references", "assets", "scripts", "agents", "examples"]
+        guard allowedRoots.contains(topLevel) || Self.rootDocuments.contains(relativePath),
               !(["SKILL.md", "floe.json"].contains(topLevel) && relativePath != topLevel)
         else {
             throw SkillValidationError.unsupportedFile(relativePath)

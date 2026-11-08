@@ -72,6 +72,7 @@
     <string name="skills_update_available">新版本</string>
     <string name="skills_update_check">检查更新</string>
     <string name="skills_update_save_check">保存并检查</string>
+    <string name="skills_update_package_invalid">无法验证技能包，请检查目录结构、文件类型和大小。已保留当前安装版本。</string>
     <string name="skills_update_clear_source">清除已保存来源</string>
     <string name="skills_update_source_invalid">请检查仓库、分支或提交，以及文件路径。</string>
     <string name="skills_catalog_refresh">刷新目录</string>

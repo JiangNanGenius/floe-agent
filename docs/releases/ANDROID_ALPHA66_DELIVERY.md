@@ -4,11 +4,15 @@
 
 点击已安装技能进入更新／来源管理；进入插件页会加载目录，并提供手动刷新入口。刷新中的重复请求和旧运行代际回调受到约束。
 
+本地技能不会因与目录同名而被提示替换；更新必须先完成实际检查。同版本的真实文件修改仍可审阅更新。许可证、声明文件及示例随目录保留，传统技能的派生清单贯穿安装和保存后校验，不改写上游文件。
+
 匿名资源下载保留原始二进制字节；目录更新包含脚本、资源及清单，并验证同一提交下的Git文件摘要。传统技能没有`floe.json`时派生Android清单，执行继续使用任务Linux环境中的`exec.shell`。来源备份恢复跟随新技能ID，不携带凭据、安装证据或执行授权。
 
 This GitHub prerelease adds persistent GitHub skill sources, actionable access errors, byte-exact anonymous resources and complete directory updates. Traditional packages derive Android metadata and continue using the task environment through `exec.shell`. Backup source intent follows restored skill identities without credentials, installed-package claims or execution grants.
 
 Installed rows open update/source management. The plugin page loads the catalog and provides an explicit refresh action, with duplicate-request and stale-root guards.
+
+Catalog name matches cannot redirect local installations. Applying an update requires a real staged check, including same-version file changes. License/notice documents and examples stay in the verified package; derived manifests remain sidecars through installation and post-verification.
 
 ## Known issues / 已知问题
 

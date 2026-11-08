@@ -2402,6 +2402,11 @@ public actor SkillsDomain {
             try Self.canonicalData(try journal.jsonObject())
                 .write(to: journalDirectory.appendingPathComponent("transaction.json"),
                        options: .atomic)
+            // Traditional packages keep their derived manifest outside the
+            // upstream bytes. Carry that same validated sidecar through
+            // installation and post-verification, preserving the digest.
+            let derivedManifest = Self.hasFloeJSON(at: stagingRoot.appendingPathComponent("package"))
+                ? nil : candidate.snapshot.package.manifest
             let record = try await commitInstalledPackage(
                 stagedPackageDirectory: stagingRoot.appendingPathComponent("package"),
                 canonicalSHA256: candidate.snapshot.package.canonicalSHA256,
@@ -2409,13 +2414,14 @@ public actor SkillsDomain {
                 sourceDigest: candidate.expectedInstalledDigest,
                 rewriteModelID: OfficialSkillHub.skillIDs.contains(skillID)
                     ? "official-hub" : "github-upgrade",
-                manifestOverride: nil,
+                manifestOverride: derivedManifest,
                 initialStatus: current.status,
                 replaceExisting: true, verifiedUpgrade: candidate)
             // Post-verify (original :229): snapshot at the NEW digest.
             _ = try SkillContentSnapshot(
                 root: Self.packageDirectory(installationRoot: installationRoot, id: skillID),
-                expectedDigest: record.canonicalSHA256)
+                expectedDigest: record.canonicalSHA256,
+                manifestOverride: derivedManifest)
             // A curated upgrade is not dependency-authorized until the new
             // receipt is durably written. If that write fails, the journal
             // restoration below puts the previous version back instead of

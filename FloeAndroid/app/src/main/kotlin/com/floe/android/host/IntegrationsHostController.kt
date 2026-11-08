@@ -821,8 +821,7 @@ class IntegrationsHostController internal constructor(
                 curatedCardAccumulated.associate { it.id to it.version }
         return rows.map { row ->
             val entry = catalogVersionById[row.skillId]
-            val newer = entry != null && IntegrationsWire.isNewerVersion(entry, row.version)
-            row.copy(updateAvailableVersion = if (newer) entry else null)
+            row.copy(updateAvailableVersion = IntegrationsWire.catalogUpdateVersion(row, entry))
         }
     }
 
@@ -1388,7 +1387,7 @@ class IntegrationsHostController internal constructor(
                                         candidateVersion = review.version,
                                         checkInFlight = false,
                                         applyInFlight = sheet.applyInFlight,
-                                        isLatest = review.version.isNotEmpty() &&
+                                        isLatest = !review.hasChanges && review.version.isNotEmpty() &&
                                             review.version == sheet.installedVersion,
                                         releaseNotes = review.releaseNotesLocalized,
                                         addedCapabilities = review.requestedCapabilities,
@@ -1453,11 +1452,13 @@ class IntegrationsHostController internal constructor(
         }
     }
 
-    private fun skillInstallMessage(code: String, reason: String): String = when (reason) {
-        "githubConnectorAccess" -> host.appContext.getString(
+    private fun skillInstallMessage(code: String, reason: String): String = when {
+        reason == "githubConnectorAccess" -> host.appContext.getString(
             com.floe.android.feature.integrations.R.string.skills_update_connector_access)
-        "upgradeSourceShape", "upgradeSourceInvalid" -> host.appContext.getString(
+        reason in setOf("upgradeSourceShape", "upgradeSourceInvalid") -> host.appContext.getString(
             com.floe.android.feature.integrations.R.string.skills_update_source_invalid)
+        reason.startsWith("package.") -> host.appContext.getString(
+            com.floe.android.feature.integrations.R.string.skills_update_package_invalid)
         else -> code
     }
 
@@ -1803,16 +1804,15 @@ class IntegrationsHostController internal constructor(
                     installedVersion = row.version,
                     isOfficial = row.sourceKind == SkillSourceKindUi.OFFICIAL_HUB,
                     savedSource = row.savedSource,
-                    // F-S7: candidate from the ACTUAL catalog diff projected
-                    // into the row (never hardcoded null); a staged check
-                    // result then refines it with the review reply.
-                    candidateVersion = row.updateAvailableVersion,
+                    // Catalog metadata is an update hint, not a staged
+                    // review. Only a completed check can enable Apply.
+                    candidateVersion = null,
                     commit = null,
                     releaseNotes = null,
                     addedCapabilities = emptyList(),
                     addedTools = emptyList(),
                     changedFiles = emptyList(),
-                    isLatest = row.updateAvailableVersion == null,
+                    isLatest = false,
                     checkInFlight = false,
                     applyInFlight = false,
                     // F-S6: honest journal existence from the snapshot row
@@ -3727,7 +3727,13 @@ internal object IntegrationsWire {
         val tools: List<String>,
         val scriptPaths: List<String>,
         val releaseNotesLocalized: String?,
-    )
+    ) {
+        // Community repositories can change package contents without a
+        // version bump. The native diff, rather than version equality,
+        // decides whether there is anything to review and apply.
+        val hasChanges: Boolean
+            get() = scriptPaths.isNotEmpty() || requestedCapabilities.isNotEmpty() || tools.isNotEmpty()
+    }
 
     fun decodeReview(value: JsonElement): Review? {
         val root = value as? JsonObject ?: return null
@@ -3900,6 +3906,13 @@ internal object IntegrationsWire {
             nextCursor = nextCursor,
         )
     }
+
+    /** A catalog name match cannot take ownership of a local/community
+     * installation. The native snapshot verifies Hub provenance. */
+    fun catalogUpdateVersion(row: SkillInstalledRowUi, candidate: String?): String? =
+        candidate?.takeIf {
+            row.sourceKind == SkillSourceKindUi.OFFICIAL_HUB && isNewerVersion(it, row.version)
+        }
 
     /** Dot-separated numeric comparison mirroring the ORIGINAL
      *  SkillUpgradeCandidate version ordering (major.minor.patch; non-

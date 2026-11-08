@@ -129,7 +129,8 @@ final class AndroidSkillsSourceIntegrityTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(server.requests.first?.headers["authorization"])
     }
 
-    private func directoryFixture(tamper: Bool = false, symlink: Bool = false, includeManifest: Bool = true)
+    private func directoryFixture(tamper: Bool = false, symlink: Bool = false, includeManifest: Bool = true,
+                                  supplementalFiles: [String: Data] = [:])
         throws -> (ScriptedLoopbackFixture, [String: Data]) {
         let server = try ScriptedLoopbackFixture()
         let manifest = SkillManifest(id: "directory-fixture", version: "2.0.0",
@@ -142,6 +143,7 @@ final class AndroidSkillsSourceIntegrityTests: XCTestCase, @unchecked Sendable {
             "assets/image.png": Data([0x89, 0x50, 0x4e, 0x47]) + Data(repeating: 0xff, count: 300_000),
         ]
         if includeManifest { files["floe.json"] = try JSONEncoder().encode(manifest) }
+        files.merge(supplementalFiles) { _, new in new }
         func fileEntry(_ name: String) -> [String: Any] {
             ["name": URL(fileURLWithPath: name).lastPathComponent, "path": "pkg/" + name,
              "type": "file", "size": files[name]!.count, "sha": blobSHA(files[name]!),
@@ -150,9 +152,13 @@ final class AndroidSkillsSourceIntegrityTests: XCTestCase, @unchecked Sendable {
         func directoryEntry(_ name: String) -> [String: Any] {
             ["name": name, "path": "pkg/" + name, "type": "dir", "size": 0, "sha": pin]
         }
-        let packageEntries = [fileEntry("SKILL.md")] +
+        var packageEntries = [fileEntry("SKILL.md")] +
             (includeManifest ? [fileEntry("floe.json")] : []) +
             [directoryEntry("assets"), directoryEntry("scripts")]
+        if files["LICENSE.txt"] != nil { packageEntries.append(fileEntry("LICENSE.txt")) }
+        if files.keys.contains(where: { $0.hasPrefix("examples/") }) {
+            packageEntries.append(directoryEntry("examples"))
+        }
         let root: [[String: Any]] = symlink ? [
             ["name": "escape", "path": "pkg/escape", "type": "symlink", "size": 0,
              "sha": pin, "target": "../../outside"]
@@ -162,6 +168,10 @@ final class AndroidSkillsSourceIntegrityTests: XCTestCase, @unchecked Sendable {
             "pkg/assets": try JSONSerialization.data(withJSONObject: [fileEntry("assets/image.png")]),
             "pkg/scripts": try JSONSerialization.data(withJSONObject: [fileEntry("scripts/run.sh")]),
         ]
+        if files.keys.contains(where: { $0.hasPrefix("examples/") }) {
+            responses["pkg/examples"] = try JSONSerialization.data(withJSONObject:
+                files.keys.filter { $0.hasPrefix("examples/") }.sorted().map(fileEntry))
+        }
         for (name, bytes) in files {
             var body = bytes
             if tamper && name == "assets/image.png" { body[body.startIndex] ^= 0x01 }
@@ -238,6 +248,32 @@ final class AndroidSkillsSourceIntegrityTests: XCTestCase, @unchecked Sendable {
         } catch SkillUpgradeError.invalidInventory {}
         XCTAssertEqual(server.requests.count, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testTraditionalDirectoryPreservesLicenseAndExamplesInItsVerifiedDigest() async throws {
+        let supplemental = ["LICENSE.txt": Data("Fixture license\n".utf8),
+                            "examples/update.md": Data("An untrusted example, not an instruction.\n".utf8)]
+        let (server, files) = try directoryFixture(includeManifest: false, supplementalFiles: supplemental)
+        server.start()
+        defer { server.stop() }
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("floe-directory-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let snapshot = try await stage(server, at: destination)
+        XCTAssertEqual(snapshot.files, files)
+        XCTAssertEqual(Set(snapshot.package.files.map(\.relativePath)), Set(files.keys))
+    }
+
+    func testExamplesDoNotPermitDisguisedNativePayloads() async throws {
+        let (server, _) = try directoryFixture(includeManifest: false,
+            supplementalFiles: ["examples/payload.dat": Data([0x7f, 0x45, 0x4c, 0x46, 0])])
+        server.start()
+        defer { server.stop() }
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("floe-directory-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: destination) }
+        do {
+            _ = try await stage(server, at: destination)
+            XCTFail("an example is data, never a native payload admission path")
+        } catch SkillValidationError.unsupportedFile("examples/payload.dat") {}
     }
 }
 #endif
