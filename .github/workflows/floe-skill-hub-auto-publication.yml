@@ -84,7 +84,7 @@ env:
   HUB_ORIGIN: https://github.com/JiangNanGenius/floe-skill-hub.git
   # One-time Root-rendered literal (40 lowercase hex). The preflight refuses
   # anything else; the template never runs with this placeholder.
-  HUB_ANCHOR_COMMIT: "9b8d79af0a1c9f1c4946c0f4adee38f23ca95884"
+  HUB_ANCHOR_COMMIT: "71207f407a4d9ab493f31270b5bfd398866cbccd"
   RELAY_BRANCH: skill-hub-signing-relay
   CONTROL_BRANCH: auto-state
   PYTHON_VERSION: "3.11"

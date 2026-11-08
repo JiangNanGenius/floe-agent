@@ -1,0 +1,163 @@
+name: floe-transport-mirror-renewal
+# App-repository template. Main reviews/renders the one literal pin; no key
+# or cross-repository token is added. A dedicated public DATA relay is not an
+# App working branch. Ordinary Skill signing uses its existing relay intact.
+on:
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Verify and plan only; never read the key or publish
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: floe-skill-hub-signing
+  cancel-in-progress: false
+env:
+  TOOLING_COMMIT: d423eabd2e374973ad0f27d50f36e8a430437850
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main' && (vars.FLOE_TRANSPORT_MIRROR_RENEWAL == 'enabled' || inputs.dry_run == true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      signed: ${{ steps.sign.outputs.signed }}
+      base: ${{ steps.base.outputs.commit }}
+    steps:
+      - name: Require the reviewed immutable tooling pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TOOLING_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: JiangNanGenius/floe-skill-hub
+          ref: ${{ env.TOOLING_COMMIT }}
+          path: tooling
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - run: python3 -m pip install --disable-pip-version-check cryptography==46.0.6
+      - name: Resolve one immutable official Hub base without a token
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --quiet "$RUNNER_TEMP/base"
+          git -C "$RUNNER_TEMP/base" remote add origin https://github.com/JiangNanGenius/floe-skill-hub.git
+          git -C "$RUNNER_TEMP/base" -c core.hooksPath=/dev/null fetch --no-tags origin refs/heads/main
+          git -C "$RUNNER_TEMP/base" -c core.hooksPath=/dev/null checkout --quiet --detach FETCH_HEAD
+          base=$(git -C "$RUNNER_TEMP/base" rev-parse HEAD)
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
+          echo "commit=$base" >> "$GITHUB_OUTPUT"
+      - name: Verify the signed baseline and determine whether renewal is due
+        id: plan
+        env:
+          BASE: ${{ steps.base.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/transport_renewal.py" plan \
+            --root "$RUNNER_TEMP/base" --base "$BASE" \
+            --tooling "$GITHUB_WORKSPACE/tooling" --tooling-commit "$TOOLING_COMMIT" \
+            --out "$RUNNER_TEMP/renewal-plan"
+          action=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["action"])' "$RUNNER_TEMP/renewal-plan/status.json")
+          [[ "$action" == 'renew' || "$action" == 'not-due' ]]
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+      - name: Isolated same-role signing (only this step sees the existing key)
+        id: sign
+        if: vars.FLOE_TRANSPORT_MIRROR_RENEWAL == 'enabled' && inputs.dry_run != true && steps.plan.outputs.action == 'renew'
+        env:
+          BASE: ${{ steps.base.outputs.commit }}
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/transport_renewal.py" sign \
+            --root "$RUNNER_TEMP/base" --base "$BASE" \
+            --tooling "$GITHUB_WORKSPACE/tooling" --tooling-commit "$TOOLING_COMMIT" \
+            --out "$RUNNER_TEMP/renewal-signed"
+          echo 'signed=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.sign.outputs.signed == 'true'
+        with:
+          name: transport-mirror-renewal-signed
+          path: ${{ runner.temp }}/renewal-signed
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: transport-mirror-renewal-plan
+          path: ${{ runner.temp }}/renewal-plan
+          if-no-files-found: warn
+          retention-days: 7
+  relay:
+    needs: sign
+    if: needs.sign.outputs.signed == 'true' && vars.FLOE_TRANSPORT_MIRROR_RENEWAL == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      BASE: ${{ needs.sign.outputs.base }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: app
+          sparse-checkout: .github
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: JiangNanGenius/floe-skill-hub
+          ref: ${{ env.TOOLING_COMMIT }}
+          path: tooling
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - run: python3 -m pip install --disable-pip-version-check cryptography==46.0.6
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: transport-mirror-renewal-signed
+          path: ${{ runner.temp }}/renewal-signed
+      - name: Verify four metadata files and construct the data-only relay commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BASE" =~ ^[0-9a-f]{40}$ ]]
+          git -C tooling fetch --no-tags origin "$BASE"
+          branch=refs/heads/transport-mirror-signing-relay
+          if git -C app ls-remote --exit-code origin "$branch" > "$RUNNER_TEMP/relay-ref"; then
+            parent=$(cut -f1 "$RUNNER_TEMP/relay-ref")
+            git -C app fetch --no-tags origin "$parent"
+          else
+            rc=$?
+            if [[ "$rc" != 2 ]]; then exit "$rc"; fi
+            empty=$(git -C app hash-object -t tree /dev/null)
+            parent=$(git -C app -c user.name=floe-transport-renewal \
+              -c user.email=automation@users.noreply.github.com commit-tree "$empty" -m 'transport relay: empty data root [skip ci]')
+          fi
+          [[ "$parent" =~ ^[0-9a-f]{40}$ ]]
+          python3 -I "$GITHUB_WORKSPACE/tooling/scripts/transport_renewal.py" relay \
+            --root "$GITHUB_WORKSPACE/app" --base "$parent" \
+            --tooling "$GITHUB_WORKSPACE/tooling" --tooling-commit "$TOOLING_COMMIT" \
+            --bundle "$RUNNER_TEMP/renewal-signed" --out "$RUNNER_TEMP/relay-plan"
+      - name: Push only the fixed public data relay (no key in this job)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RUNNER_TEMP/relay-plan/status.json")
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          git -C app -c credential.helper= -c credential.helper='!gh auth git-credential' \
+            push origin "$commit:refs/heads/transport-mirror-signing-relay"
