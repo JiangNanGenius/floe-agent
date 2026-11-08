@@ -66,7 +66,7 @@ struct ToolboxHistorySection: View {
                 Text(runsImmediately ? text("点选后再次运行。", "Tap a record to run it again.")
                      : ([ToolboxTool.http, .webSocket].contains(tool)
                         ? text("仅保留服务器地址，请补全请求地址后连接。认证信息、路径和查询参数不会保存。", "Only the server address is retained. Complete the URL before connecting. Credentials, paths and query parameters are not saved.")
-                        : text("仅填入设置，请确认后连接。账号、认证信息与设备选择不会保存。", "Fills settings only. Confirm before connecting. Accounts, credentials and device selections are not saved.")))
+                        : text("仅填入设置，请确认后连接。", "Fills settings only. Confirm before connecting.")))
             }
             .accessibilityIdentifier("toolbox.history.\(tool.rawValue)")
             .confirmationDialog(text("清空此工具的历史记录？", "Clear this tool’s history?"), isPresented: $confirmingClear, titleVisibility: .visible) {

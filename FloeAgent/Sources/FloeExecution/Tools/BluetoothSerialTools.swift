@@ -34,7 +34,7 @@ public struct BluetoothSerialOpenTool: AgentTool {
         public var timeoutSeconds: Double?
     }
     public static let name = "bluetooth.serial.open"
-    public static let toolDescription = "Open a run-scoped BLE GATT serial session. Use a saved device connection or explicit identifiers the user supplied. Explicit details are temporary, never saved or synced, and the session automatically closes after 30 minutes."
+    public static let toolDescription = "Open a run-scoped BLE serial session for a user-selected peripheralID or saved connection. Omit service/write/notify UUIDs to discover exact supported UART profiles automatically. If channelSelectionRequired is returned, ask the user to choose a returned channel, then reuse its exact endpoint fields; never guess UUIDs or send probe bytes. Success includes the actual resolved endpoint. Authentication is system-owned, not proof of pairing. Temporary details are never saved or synced; sessions expire after 30 minutes."
     public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string"},"connectionID":{"type":"string"},"peripheralID":{"type":"string"},"serviceUUID":{"type":"string"},"writeCharacteristicUUID":{"type":"string"},"notifyCharacteristicUUID":{"type":"string"},"timeoutSeconds":{"type":"number","minimum":1,"maximum":30}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.networkAccess]
     public static let isSideEffecting = true
@@ -56,25 +56,62 @@ public struct BluetoothSerialOpenTool: AgentTool {
                 throw FloeError.validationFailed("Saved BLE connection requires UUID hostID and connectionID")
             }
         } else {
-            guard args.peripheralID.flatMap(UUID.init(uuidString:)) != nil,
-                  args.serviceUUID?.isEmpty == false,
-                  args.writeCharacteristicUUID?.isEmpty == false else {
-                throw FloeError.validationFailed("Temporary BLE serial requires peripheral, service and write characteristic UUIDs")
+            guard args.peripheralID.flatMap(UUID.init(uuidString:)) != nil else {
+                throw FloeError.validationFailed("Temporary BLE serial requires a selected peripheralID")
             }
+            try Self.explicitEndpoint(args, peripheralID: UUID(uuidString: args.peripheralID!)!)?.validate()
+        }
+        if let timeout = args.timeoutSeconds, !timeout.isFinite || !(1...30).contains(timeout) {
+            throw FloeError.validationFailed("timeoutSeconds must be finite and between 1 and 30")
         }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        let endpoint = try await resolve(args)
-        let sessionID = try await service.open(
-            runID: context.runID,
-            endpoint: endpoint,
-            timeout: min(max(args.timeoutSeconds ?? 15, 1), 30)
-        )
-        return bluetoothOutput("sessionID=\(sessionID.uuidString) peripheralID=\(endpoint.peripheralID.uuidString) persisted=false")
+        try context.cancellation.throwIfCancelled()
+        try validate(args)
+        let selection = try await resolve(args)
+        try context.cancellation.throwIfCancelled()
+        do {
+            let opened = try await BluetoothSerialConnector.open(service: service, runID: context.runID,
+                peripheralID: selection.id, endpoint: selection.endpoint, timeout: args.timeoutSeconds ?? 15)
+            if context.cancellation.isCancelled {
+                await service.close(runID: context.runID, sessionID: opened.sessionID)
+                throw FloeError.cancelled
+            }
+            struct Receipt: Encodable {
+                let sessionID: UUID
+                let peripheralID: UUID
+                let endpoint: BluetoothSerialEndpoint
+                let persisted: Bool
+            }
+            let data = try JSONEncoder().encode(Receipt(sessionID: opened.sessionID,
+                peripheralID: selection.id, endpoint: opened.endpoint, persisted: false))
+            return bluetoothOutput(String(decoding: data, as: UTF8.self))
+        } catch BluetoothSerialError.channelSelectionRequired(let channels) {
+            try context.cancellation.throwIfCancelled()
+            struct ChoiceReceipt: Encodable {
+                let status = "channelSelectionRequired"
+                let peripheralID: UUID
+                let channels: [BluetoothSerialChannel]
+                let persisted = false
+            }
+            let data = try JSONEncoder().encode(ChoiceReceipt(peripheralID: selection.id, channels: channels))
+            return bluetoothOutput(String(decoding: data, as: UTF8.self))
+        }
     }
 
-    private func resolve(_ args: Arguments) async throws -> BluetoothSerialEndpoint {
+    private static func explicitEndpoint(_ args: Arguments, peripheralID: UUID) throws -> BluetoothSerialEndpoint? {
+        guard args.serviceUUID != nil || args.writeCharacteristicUUID != nil || args.notifyCharacteristicUUID != nil else { return nil }
+        guard let service = args.serviceUUID, let write = args.writeCharacteristicUUID else {
+            throw FloeError.validationFailed("An explicit BLE channel requires both serviceUUID and writeCharacteristicUUID")
+        }
+        let endpoint = BluetoothSerialEndpoint(peripheralID: peripheralID, serviceUUID: service,
+            writeCharacteristicUUID: write, notifyCharacteristicUUID: args.notifyCharacteristicUUID)
+        try endpoint.validate()
+        return endpoint
+    }
+
+    private func resolve(_ args: Arguments) async throws -> (id: UUID, endpoint: BluetoothSerialEndpoint?) {
         if let hostID = args.hostID.flatMap(UUID.init(uuidString:)),
            let connectionID = args.connectionID.flatMap(UUID.init(uuidString:)) {
             guard let stored = try await store.host(id: hostID),
@@ -86,19 +123,13 @@ public struct BluetoothSerialOpenTool: AgentTool {
                   let writeUUID = connection.bluetoothWriteCharacteristicUUID else {
                 throw FloeError.notFound("Saved BLE serial connection")
             }
-            return BluetoothSerialEndpoint(
-                peripheralID: peripheralID,
-                serviceUUID: serviceUUID,
-                writeCharacteristicUUID: writeUUID,
-                notifyCharacteristicUUID: connection.bluetoothNotifyCharacteristicUUID
-            )
+            let endpoint = BluetoothSerialEndpoint(peripheralID: peripheralID, serviceUUID: serviceUUID,
+                writeCharacteristicUUID: writeUUID, notifyCharacteristicUUID: connection.bluetoothNotifyCharacteristicUUID)
+            try endpoint.validate()
+            return (peripheralID, endpoint)
         }
-        return BluetoothSerialEndpoint(
-            peripheralID: UUID(uuidString: args.peripheralID!)!,
-            serviceUUID: args.serviceUUID!,
-            writeCharacteristicUUID: args.writeCharacteristicUUID!,
-            notifyCharacteristicUUID: args.notifyCharacteristicUUID
-        )
+        let id = UUID(uuidString: args.peripheralID!)!
+        return (id, try Self.explicitEndpoint(args, peripheralID: id))
     }
 }
 

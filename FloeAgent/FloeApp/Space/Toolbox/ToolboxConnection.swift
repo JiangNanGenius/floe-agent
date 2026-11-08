@@ -12,16 +12,22 @@ import FloeToolboxWorkbenches
 import FloeToolboxUSB
 
 nonisolated enum ToolboxConnectionInputIssue: Error, LocalizedError, Equatable, Sendable {
-    enum Field: String, Sendable { case address, port }
+    enum Field: String, Sendable { case address, port, bluetooth }
     case addressRequired, webSocketURLRequired, invalidWebSocketURL, invalidHost, portRequired, invalidPort
+    case bluetoothDeviceRequired, invalidBluetoothChannel
     var field: Field {
         switch self {
         case .portRequired, .invalidPort: .port
+        case .bluetoothDeviceRequired, .invalidBluetoothChannel: .bluetooth
         default: .address
         }
     }
     var errorDescription: String? {
         switch self {
+        case .bluetoothDeviceRequired:
+            IDELanguageRunText.t("请选择蓝牙设备。", "Choose a Bluetooth device.")
+        case .invalidBluetoothChannel:
+            IDELanguageRunText.t("请检查高级通道设置。", "Check the advanced channel settings.")
         case .addressRequired:
             IDELanguageRunText.t("请输入服务器主机名或 IP 地址。", "Enter the server hostname or IP address.")
         case .webSocketURLRequired:
@@ -49,6 +55,7 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     var useTLS = false
     var serial = SerialAssistantConfiguration()
     var bluetooth: BluetoothSerialEndpoint?
+    var bluetoothPeripheralID: UUID?
     var mqttVersion = MQTTVersion.v5
     var username = ""
     var password = ""
@@ -58,6 +65,10 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     /// journal or persisted capture is created for these input errors.
     func inputIssues(for tool: ToolboxTool) -> [ToolboxConnectionInputIssue] {
         switch tool {
+        case .serialAssistant where serial.connection == .bluetooth:
+            guard let id = bluetoothPeripheralID ?? bluetooth?.peripheralID else { return [.bluetoothDeviceRequired] }
+            if let bluetooth, bluetooth.peripheralID != id || (try? bluetooth.validate()) == nil { return [.invalidBluetoothChannel] }
+            return []
         case .webSocket:
             guard !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [.webSocketURLRequired] }
             guard let url = URL(string: address), let host = url.host,
@@ -102,6 +113,7 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     let redactor: CaptureRedactor
     @Published private(set) var active = true
     private(set) var serial: SerialSession?
+    private(set) var bluetoothEndpoint: BluetoothSerialEndpoint?
     private(set) var modbus: ModbusClient?
     private(set) var mqtt: MQTTClient?
     private(set) var http: HTTPDebugSession?
@@ -123,7 +135,8 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     }
     static func open(tool: ToolboxTool, setup: ToolboxConnectionSetup, environment: AppEnvironment,
                      workbenchModels: Bool = true,
-                     onUSBFailure: (@MainActor @Sendable (ToolboxUSBFailure) -> Void)? = nil) async throws -> ToolboxConnection {
+                     onUSBFailure: (@MainActor @Sendable (ToolboxUSBFailure) -> Void)? = nil,
+                     onBluetoothFailure: (@MainActor @Sendable (any Error) -> Void)? = nil) async throws -> ToolboxConnection {
         // USB serial is deferred from this candidate until its distribution
         // permission is granted and the driver is included in an App build.
         if tool == .serialAssistant, setup.serial.connection == .usb {
@@ -210,11 +223,22 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
                         title: request.title, kind: tool.rawValue)
                     try await journal.append([CaptureEvent(bytes: Data(), direction: .observation, notes: [request.captureDescription])])
                 } else if setup.serial.connection == .bluetooth {
-                    guard let bluetooth = setup.bluetooth else { throw ClientError.invalidConfiguration }
+                    guard let peripheralID = setup.bluetoothPeripheralID ?? setup.bluetooth?.peripheralID else { throw ToolboxConnectionInputIssue.bluetoothDeviceRequired }
+                    let opened = try await ToolboxBluetoothBridge.openResolved(service: environment.bluetoothSerialService,
+                        runID: lease.ownerID, peripheralID: peripheralID, endpoint: setup.bluetooth,
+                        onFailure: { [weak owner] error in
+                            await MainActor.run {
+                                guard let owner, owner.active else { return }
+                                owner.invalidate(); onBluetoothFailure?(error)
+                            }
+                        })
+                    owner.transport = opened.connection // Own before any later endpoint/session failure.
+                    let bluetooth = opened.endpoint
+                    owner.bluetoothEndpoint = bluetooth
                     endpoint = try SerialEndpoint(title: "Bluetooth", transport: .bluetooth, wireProtocol: wire,
                         peripheralID: bluetooth.peripheralID, serviceUUID: bluetooth.serviceUUID,
                         writeCharacteristicUUID: bluetooth.writeCharacteristicUUID, notifyCharacteristicUUID: bluetooth.notifyCharacteristicUUID)
-                    connection = try await ToolboxBluetoothBridge.open(service: environment.bluetoothSerialService, runID: lease.ownerID, endpoint: bluetooth)
+                    connection = opened.connection
                 } else {
                     guard setup.serial.connection != .usb, let port = UInt16(setup.port), port > 0 else { throw ClientError.unsupported }
                     endpoint = try SerialEndpoint(title: setup.address, transport: setup.serial.connection.transport,

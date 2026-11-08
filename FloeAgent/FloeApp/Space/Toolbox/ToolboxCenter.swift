@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import Foundation
 import SwiftUI
+import FloeExecution
 import FloePersistence
 import FloeTools
 import FloeEnvironments
@@ -19,6 +20,7 @@ import FloeToolboxWorkbenches
         ToolboxWebSocketSendAction.name, ToolboxWebSocketReceiveAction.name, ToolboxSessionTool.name, ToolboxNetworkObserveTool.name]
     @Published private(set) var connections: [ToolboxTool: ToolboxConnection] = [:]
     @Published private(set) var connecting: Set<ToolboxTool> = []
+    @Published private(set) var bluetoothChannels: [BluetoothSerialChannel] = []
     @Published private(set) var failures: [ToolboxTool: String] = [:]
     @Published private(set) var failureDetails: [ToolboxTool: String] = [:]
     private weak var environment: AppEnvironment?
@@ -44,6 +46,7 @@ import FloeToolboxWorkbenches
         usbDevices.refresh()
     }
     func resetUSBDevices() { usbStorage?.reset() }
+    func clearBluetoothChannels() { bluetoothChannels = []; failures[.serialAssistant] = nil; failureDetails[.serialAssistant] = nil }
     func reportUSBFailure(_ error: Error) {
         let failure = ToolboxUSBFailure.from(error)
         failures[.serialAssistant] = failure.errorDescription
@@ -57,6 +60,7 @@ import FloeToolboxWorkbenches
             failures[tool] = issue.localizedDescription
             return
         }
+        if tool == .serialAssistant { bluetoothChannels = [] }
         operations.removeValue(forKey: tool)?.cancel()
         history.finish(historyAttempts.removeValue(forKey: tool), outcome: .cancelled)
         let previous = connections.removeValue(forKey: tool)
@@ -72,18 +76,30 @@ import FloeToolboxWorkbenches
                         guard let self, self.generations[tool] == generation else { return }
                         self.reportUSBFailure(failure)
                         self.disconnectNow(tool)
+                    }, onBluetoothFailure: { [weak self] error in
+                        guard let self, self.generations[tool] == generation else { return }
+                        self.disconnectNow(tool)
+                        self.failures[tool] = ToolboxBluetoothPresentation.message(error)
+                        self.failureDetails[tool] = error.localizedDescription
                     })
                 guard let self, self.generations[tool] == generation, !Task.isCancelled else {
                     await connection.close(); return
                 }
                 self.connections[tool] = connection
-                self.history.finish(generation, outcome: .ready)
+                self.history.finish(generation, outcome: .ready, resolvedBluetooth: connection.bluetoothEndpoint)
             } catch {
                 guard let self, self.generations[tool] == generation else { return }
                 self.history.finish(generation, outcome: error is CancellationError ? .cancelled : .failed)
                 if !(error is CancellationError) {
                     if tool == .serialAssistant, setup.serial.connection == .usb { self.reportUSBFailure(error) }
-                    else {
+                    else if tool == .serialAssistant, setup.serial.connection == .bluetooth {
+                        if let failure = error as? BluetoothSerialError, case .channelSelectionRequired(let channels) = failure {
+                            let id = setup.bluetoothPeripheralID ?? setup.bluetooth?.peripheralID
+                            self.bluetoothChannels = channels.filter { $0.endpoint.peripheralID == id }
+                        }
+                        self.failures[tool] = ToolboxBluetoothPresentation.message(error)
+                        self.failureDetails[tool] = error.localizedDescription
+                    } else {
                     self.failures[tool] = (error as? ToolboxConnectionInputIssue)?.errorDescription
                         ?? ([ToolboxTool.webSocket, .mqtt].contains(tool)
                             ? IDELanguageRunText.t("未能连接，请检查服务器、网络或连接设置后重试。", "Unable to connect. Check the server, network or connection settings, then retry.")
@@ -100,7 +116,7 @@ import FloeToolboxWorkbenches
         generations[tool] = UUID()
         operations.removeValue(forKey: tool)?.cancel()
         connecting.remove(tool)
-        if tool == .serialAssistant { resetUSBDevices() }
+        if tool == .serialAssistant { resetUSBDevices(); bluetoothChannels = [] }
         let connection = connections.removeValue(forKey: tool)
         connection?.invalidate()
         if let connection {

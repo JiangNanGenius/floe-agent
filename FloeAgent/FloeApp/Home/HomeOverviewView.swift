@@ -275,18 +275,19 @@ struct HomeOverviewView: View {
                     .accessibilityIdentifier("taskCenter.manageArchived")
                 }
             }
-        }
-        .listStyle(.insetGrouped)
-        .disabled(selection.busy)
-        .overlay {
             if overviewIsEmpty && !viewModel.isLoading {
                 ContentUnavailableView {
                     Label("tab.workbench", systemImage: "rectangle.grid.2x2")
                 } description: {
                     Text("home.overview.empty")
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityIdentifier("taskCenter.empty")
             }
         }
+        .listStyle(.insetGrouped)
+        .disabled(selection.busy)
         .navigationTitle("tab.workbench")
         .searchable(text: $searchText, prompt: "home.home_overview_view.search_tasks")
         .toolbar {
@@ -420,10 +421,8 @@ struct HomeOverviewView: View {
         }
     }
 
-    /// The empty-state overlay must never hide actionable rows: a pending
-    /// cleanup reminder (often the ONLY leftover after the plan itself was
-    /// deleted) keeps the overview non-empty so its inline row — and the
-    /// popup surface built on the same list — stays reachable.
+    /// Archived tasks and cleanup reminders remain actionable content.
+    /// Keep the empty state in the list's layout, below the work-session row.
     private var overviewIsEmpty: Bool {
         runningTasks.isEmpty
             && viewModel.pendingApprovals.isEmpty
@@ -432,6 +431,7 @@ struct HomeOverviewView: View {
             && schedules.isEmpty
             && cleanupReminders.isEmpty
             && authoring.taskCenterRecords.isEmpty
+            && archivedTasks.isEmpty
     }
 
     private var filteredConversations: [ConversationRecord] {

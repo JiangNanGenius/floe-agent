@@ -1348,25 +1348,10 @@ struct RootView: View {
             let drawerProgress = 1 - abs(interactiveOffset / drawerWidth)
             ZStack(alignment: .leading) {
                 contentColumn
-                    // Allocate space outside the destination's own navigation
-                    // bar. A floating leading button covered its Back/Cancel
-                    // item and long titles on compact screens.
-                    .safeAreaInset(edge: .top, spacing: 0) {
-                        HStack(spacing: 0) {
-                            Button { withAnimation(.snappy) { isPhoneSidebarOpen = true } } label: {
-                                Image(systemName: "sidebar.left").frame(width: 44, height: 44)
-                            }
-                            .opacity(drawerProgress == 0 ? 1 : 0)
-                            .allowsHitTesting(drawerProgress == 0)
-                            .accessibilityHidden(drawerProgress != 0)
-                            .accessibilityLabel("app.floe_agent_app.open_task_list")
-                            .accessibilityIdentifier("phone.sidebar.open")
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 44)
-                        .background(.bar)
-                    }
+                    .environment(\.phoneSidebarAction, {
+                        withAnimation(.snappy) { isPhoneSidebarOpen = true }
+                    })
+                    .accessibilityHidden(drawerProgress > 0)
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .scaleEffect(1 - drawerProgress * 0.025, anchor: .trailing)
                     .offset(x: drawerProgress * 18)
@@ -1977,13 +1962,16 @@ struct RootView: View {
         case .workbench(let selection):
             switch selection {
             case .overview:
-                HomeOverviewView(center: environment.conversationCenter)
+                PhoneRootNavigationContainer {
+                    HomeOverviewView(center: environment.conversationCenter)
+                }
             case .newTask(let workspaceID):
                 NavigationStack {
                     HomeLaunchpadView(
                         center: environment.conversationCenter,
                         workspaceID: workspaceID
                     )
+                    .modifier(PhoneRootNavigationToolbar())
                 }
             case .workspace(let workspaceID):
                 NavigationStack {
@@ -1991,6 +1979,7 @@ struct RootView: View {
                         center: environment.conversationCenter,
                         workspaceID: workspaceID
                     )
+                    .modifier(PhoneRootNavigationToolbar())
                 }
             case .conversation(let conversationID):
                 NavigationStack {
@@ -1998,17 +1987,30 @@ struct RootView: View {
                         conversationID: conversationID,
                         center: environment.conversationCenter
                     )
+                    .modifier(PhoneRootNavigationToolbar())
                 }
                 .id(conversationID)
             }
         case .primary(let destination):
             if destination == .home || destination == .chat {
-                HomeOverviewView(center: environment.conversationCenter)
+                PhoneRootNavigationContainer {
+                    HomeOverviewView(center: environment.conversationCenter)
+                }
             } else {
-                PrimaryDestinationView(destination, environment: environment)
+                PhoneRootNavigationContainer {
+                    PrimaryDestinationView(destination, environment: environment)
+                }
             }
         case .more(let sub):
-            MoreListView(selection: sub)
+            switch sub {
+            case .notes, .skills, .memory, .settings:
+                // These destinations already own their navigation shell.
+                MoreListView(selection: sub)
+            default:
+                PhoneRootNavigationContainer {
+                    MoreListView(selection: sub)
+                }
+            }
         }
     }
 
@@ -2338,10 +2340,12 @@ private struct MoreDestinationView: View {
         case .skills:
             NavigationStack {
                 SkillsView(center: environment.skillsCenter)
+                    .modifier(PhoneRootNavigationToolbar())
             }
         case .memory:
             NavigationStack {
                 MemoryView(center: environment.memoryCenter)
+                    .modifier(PhoneRootNavigationToolbar())
             }
         case .settings:
             SettingsRootView(environment: environment)

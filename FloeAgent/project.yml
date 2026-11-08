@@ -1737,6 +1737,8 @@ targets:
       - path: Tests/FloeAppTests/LibraryPermanentDeletionContractTests.swift
       - path: Tests/FloeAppTests/BiologyPermanentDeletionTests.swift
       - path: Tests/FloeAppTests/MCPConnectionFailurePresentationTests.swift
+      - path: Tests/FloeAppTests/BluetoothSerialAutoConnectionTests.swift
+      - path: Tests/FloeAppTests/BluetoothAutoConnectionAppContractTests.swift
       - path: Tests/FloeAppTests/ConfigSyncRecoveryTests.swift
       - path: Tests/FloeAppTests/LinuxGuestImageWebsiteFallbackTests.swift
       - path: Tests/FloeSkillsTests/GitHubTransportMirrorTransferWaitTests.swift
@@ -1954,6 +1956,8 @@ targets:
         product: FloeWorkspace
       - package: FloeAgentPackages
         product: FloeExecution
+      - package: FloeAgentPackages
+        product: FloeToolboxHost
       - package: FloeAgentPackages
         product: FloeMedia
       - package: FloeAgentPackages

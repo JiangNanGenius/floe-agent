@@ -108,6 +108,7 @@ struct SettingsRootView: View {
                 }
                 .accessibilityIdentifier("settings.sections")
                 .navigationTitle(FloeL10n.l("settings.title"))
+                .modifier(PhoneRootNavigationToolbar())
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("action.done") { dismiss() }
@@ -146,6 +147,7 @@ struct SettingsRootView: View {
                 }
                 .accessibilityIdentifier("settings.sections")
                 .navigationTitle(FloeL10n.l("settings.title"))
+                .modifier(PhoneRootNavigationToolbar())
                 .navigationDestination(for: SettingsSection.self) { section in
                     detailView(for: section)
                 }

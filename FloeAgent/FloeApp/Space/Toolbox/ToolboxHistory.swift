@@ -2,12 +2,14 @@
 #if canImport(UIKit)
 import Foundation
 import SwiftUI
+import FloeExecution
 import FloeToolboxCore
 import FloeToolboxClients
 import FloeToolboxDiagnostics
 import FloeToolboxWorkbenches
 
-/// A whitelist of reusable input, never a capture, credential, or selected device.
+/// A whitelist of reusable input; never credentials, payloads or implicit execution.
+/// A BLE channel is retained only after a real connection succeeds.
 nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
     let toolName: String
     var target = ""
@@ -18,6 +20,7 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
     var interval: Double = 1
     var useTLS = false
     var serial = SerialAssistantConfiguration()
+    var bluetooth: BluetoothSerialEndpoint?
     var mqttVersion: UInt8 = 5
     var usbBaud = "115200"
     var usbDataBits: UInt8 = 8
@@ -69,7 +72,12 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
                 guard let host = host(setup.address), let port = UInt16(setup.port), port > 0 else { return nil }
                 value.target = host; value.port = String(port)
                 value.useTLS = setup.serial.connection == .tcp && setup.useTLS
-            case .bluetooth: break // A new explicit device selection is always required.
+            case .bluetooth:
+                if let endpoint = setup.bluetooth {
+                    guard (try? endpoint.validate()) != nil,
+                          setup.bluetoothPeripheralID == nil || setup.bluetoothPeripheralID == endpoint.peripheralID else { return nil }
+                    value.bluetooth = endpoint
+                }
             case .usb:
                 guard (try? setup.usbSettings()) != nil else { return nil }
                 value.usbBaud = setup.usbBaud; value.usbDataBits = setup.usbDataBits
@@ -86,7 +94,10 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
         setup.serial = serial; setup.mqttVersion = MQTTVersion(rawValue: mqttVersion) ?? .v5
         setup.usbBaud = usbBaud; setup.usbDataBits = usbDataBits
         setup.usbStopBits = usbStopBits; setup.usbParity = usbParity
-        // No username, password, payload, Bluetooth endpoint, or USB request is restored.
+        setup.bluetooth = bluetooth
+        setup.bluetoothPeripheralID = bluetooth?.peripheralID
+        // Filling the form never connects; the user must press Connect.
+        // No username, password, payload or USB request is restored.
         return setup
     }
     @MainActor func apply(to model: DiagnosticWorkbenchModel) {
@@ -140,7 +151,7 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
 nonisolated struct ToolboxHistoryEntry: Codable, Identifiable, Equatable, Sendable {
     enum Outcome: String, Codable, Sendable { case started, ready, completed, failed, cancelled, interrupted }
     let id: UUID
-    let configuration: ToolboxHistoryConfiguration
+    var configuration: ToolboxHistoryConfiguration
     var attemptID: UUID
     var usedAt: Date
     var outcome: Outcome
@@ -201,9 +212,15 @@ nonisolated struct ToolboxHistoryEntry: Codable, Identifiable, Equatable, Sendab
         }
         save(); return attemptID
     }
-    func finish(_ attemptID: UUID?, outcome: ToolboxHistoryEntry.Outcome) {
+    func finish(_ attemptID: UUID?, outcome: ToolboxHistoryEntry.Outcome, resolvedBluetooth: BluetoothSerialEndpoint? = nil) {
         guard let attemptID, outcome != .started,
               let index = entries.firstIndex(where: { $0.attemptID == attemptID && $0.outcome == .started }) else { return }
+        if outcome == .ready, let resolvedBluetooth,
+           entries[index].configuration.tool == .serialAssistant,
+           entries[index].configuration.serial.connection == .bluetooth,
+           (try? resolvedBluetooth.validate()) != nil {
+            entries[index].configuration.bluetooth = resolvedBluetooth
+        }
         entries[index].outcome = outcome; save()
     }
     func togglePin(_ id: UUID) {

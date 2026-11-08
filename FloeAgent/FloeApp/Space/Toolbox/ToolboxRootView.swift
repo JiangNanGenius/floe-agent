@@ -126,7 +126,10 @@ private struct ToolboxConnectionPage: View {
     @State private var writeUUID = ""
     @State private var notifyUUID = ""
     @State private var scanning = false
-    @State private var scanFailed = false
+    @State private var scanFailure: String?
+    @State private var scanGeneration = UUID()
+    @State private var scanTask: Task<Void, Never>?
+    @State private var manualBluetooth = false
     @State private var packetFailure: String?
     @State private var confirmingConfiguration = false
     @MainActor init(tool: ToolboxTool, center: ToolboxCenter, onSave: @escaping (URL) -> Void, onExport: @escaping (Data) -> Void) {
@@ -182,23 +185,7 @@ private struct ToolboxConnectionPage: View {
             }
             Section(IDELanguageRunText.t("连接", "Connection")) {
                 if tool == .serialAssistant, setup.serial.connection == .bluetooth {
-                    Button(IDELanguageRunText.t("查找蓝牙设备", "Find Bluetooth devices")) {
-                        guard !scanning else { return }; scanning = true; scanFailed = false
-                        Task {
-                            defer { scanning = false }
-                            do { peripherals = try await environment.bluetoothSerialService.scan(duration: 5) }
-                            catch { scanFailed = true }
-                        }
-                    }.disabled(scanning)
-                    if scanning { ProgressView() }
-                    if scanFailed { Text(IDELanguageRunText.t("未能搜索，请检查蓝牙权限和设备。", "Unable to search. Check Bluetooth permission and the device.")) }
-                    Picker(IDELanguageRunText.t("设备", "Device"), selection: $selectedPeripheral) {
-                        Text(IDELanguageRunText.t("请选择", "Choose")).tag(UUID?.none)
-                        ForEach(peripherals, id: \.id) { Text(($0.name ?? IDELanguageRunText.t("未命名设备", "Unnamed device")) + " · \($0.rssi) dBm").tag(Optional($0.id)) }
-                    }
-                    TextField(IDELanguageRunText.t("服务 UUID", "Service UUID"), text: $serviceUUID)
-                    TextField(IDELanguageRunText.t("写入特征 UUID", "Write characteristic UUID"), text: $writeUUID)
-                    TextField(IDELanguageRunText.t("通知特征 UUID（可选）", "Notify characteristic UUID (optional)"), text: $notifyUUID)
+                    bluetoothFields
                 } else if tool == .serialAssistant, setup.serial.connection == .usb {
                     ToolboxUSBSetupView(devices: usbDevices, setup: $setup,
                         busy: center.connecting.contains(tool), find: center.refreshUSBDevices)
@@ -229,12 +216,9 @@ private struct ToolboxConnectionPage: View {
                 }
                 Button(IDELanguageRunText.t("连接", "Connect")) {
                     attemptedConnection = true
-                    guard setup.inputIssues(for: tool).isEmpty else { return }
-                    var value = setup
-                    if let selectedPeripheral {
-                        value.bluetooth = BluetoothSerialEndpoint(peripheralID: selectedPeripheral, serviceUUID: serviceUUID,
-                            writeCharacteristicUUID: writeUUID, notifyCharacteristicUUID: notifyUUID.isEmpty ? nil : notifyUUID)
-                    }
+                    var value = connectionInput
+                    guard value.inputIssues(for: tool).isEmpty else { return }
+                    cancelBluetoothScan()
                     do {
                         if tool == .serialAssistant, value.serial.connection == .usb {
                             value.usbRequest = try usbDevices.request(settings: value.usbSettings())
@@ -249,18 +233,108 @@ private struct ToolboxConnectionPage: View {
             }
             ToolboxHistorySection(tool: tool, history: center.history, busy: center.connecting.contains(tool)) { configuration in
                 guard let restored = configuration.connectionSetup() else { return }
-                setup = restored; attemptedConnection = false; selectedPeripheral = nil
-                peripherals = []; serviceUUID = ""; writeUUID = ""; notifyUUID = ""
+                cancelBluetoothScan()
+                setup = restored; attemptedConnection = false
+                selectedPeripheral = restored.bluetooth?.peripheralID; manualBluetooth = false
+                peripherals = []; serviceUUID = restored.bluetooth?.serviceUUID ?? ""
+                writeUUID = restored.bluetooth?.writeCharacteristicUUID ?? ""; notifyUUID = restored.bluetooth?.notifyCharacteristicUUID ?? ""
+                center.clearBluetoothChannels()
                 center.resetUSBDevices()
             }
         }
         .onChange(of: setup.serial.connection) { _, value in
             if value != .tcp { setup.useTLS = false }
             if value != .usb { center.resetUSBDevices() }
+            if value != .bluetooth { cancelBluetoothScan(); center.clearBluetoothChannels() }
         }
+        .onDisappear { cancelBluetoothScan() }
+    }
+    private var connectionInput: ToolboxConnectionSetup {
+        var value = setup
+        if tool == .serialAssistant, setup.serial.connection == .bluetooth {
+            value.bluetoothPeripheralID = selectedPeripheral
+            if let selectedPeripheral, manualBluetooth {
+                value.bluetooth = .init(peripheralID: selectedPeripheral, serviceUUID: serviceUUID,
+                    writeCharacteristicUUID: writeUUID, notifyCharacteristicUUID: notifyUUID.isEmpty ? nil : notifyUUID)
+            } else if value.bluetooth?.peripheralID != selectedPeripheral { value.bluetooth = nil }
+        }
+        return value
     }
     private var inputIssues: [ToolboxConnectionInputIssue] {
-        attemptedConnection ? setup.inputIssues(for: tool) : []
+        attemptedConnection ? connectionInput.inputIssues(for: tool) : []
+    }
+    private func cancelBluetoothScan() {
+        scanGeneration = UUID(); scanTask?.cancel(); scanTask = nil; scanning = false
+    }
+    private var bluetoothFields: some View {
+        Group {
+            Button(IDELanguageRunText.t("查找蓝牙设备", "Find Bluetooth devices")) {
+                guard !scanning else { return }; scanning = true; scanFailure = nil
+                let generation = UUID(); scanGeneration = generation
+                scanTask = Task {
+                    defer { if scanGeneration == generation { scanning = false; scanTask = nil } }
+                    do {
+                        let result = try await environment.bluetoothSerialService.scan(duration: 5)
+                        try Task.checkCancellation()
+                        guard scanGeneration == generation else { return }; peripherals = result
+                    } catch is CancellationError { }
+                    catch { if scanGeneration == generation { scanFailure = ToolboxBluetoothPresentation.message(error) } }
+                }
+            }.disabled(scanning)
+            if scanning { ProgressView() }
+            if let scanFailure { Text(scanFailure).foregroundStyle(.secondary) }
+            Picker(IDELanguageRunText.t("设备", "Device"), selection: Binding(get: { selectedPeripheral }, set: {
+                selectedPeripheral = $0; setup.bluetooth = nil; attemptedConnection = false
+                center.clearBluetoothChannels()
+            })) {
+                Text(IDELanguageRunText.t("请选择", "Choose")).tag(UUID?.none)
+                if let selectedPeripheral, !peripherals.contains(where: { $0.id == selectedPeripheral }) {
+                    Text(IDELanguageRunText.t("上次使用的设备", "Previously used device")).tag(Optional(selectedPeripheral))
+                }
+                ForEach(peripherals, id: \.id) {
+                    Text(($0.name ?? IDELanguageRunText.t("未命名设备", "Unnamed device")) + " · \($0.rssi) dBm").tag(Optional($0.id))
+                }
+            }.accessibilityIdentifier("toolbox.bluetooth.device")
+            inputError(.bluetooth)
+            if !manualBluetooth, setup.bluetooth != nil {
+                Text(IDELanguageRunText.t("使用上次选择的通道", "Using the previously selected channel")).foregroundStyle(.secondary)
+                Button(IDELanguageRunText.t("重新识别通道", "Detect channels again")) {
+                    setup.bluetooth = nil; center.clearBluetoothChannels()
+                }
+            }
+            let channels = center.bluetoothChannels.filter { $0.endpoint.peripheralID == selectedPeripheral }
+            if !manualBluetooth, !channels.isEmpty {
+                ForEach(channels.indices, id: \.self) { index in
+                    Button {
+                        setup.bluetooth = channels[index].endpoint
+                        var value = setup; value.bluetoothPeripheralID = selectedPeripheral
+                        center.connect(tool, setup: value)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(ToolboxBluetoothPresentation.title(channels[index], index: index), systemImage: "arrow.up.arrow.down")
+                            Text(channels[index].recognition == .unverified
+                                ? IDELanguageRunText.t("仅在确认为设备的数据通道时选择", "Choose only if this is your device's data channel")
+                                : IDELanguageRunText.t("发送与接收", "Send and receive"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.accessibilityIdentifier("toolbox.bluetooth.channel.\(index)")
+                }
+            }
+            DisclosureGroup(IDELanguageRunText.t("高级设置", "Advanced settings")) {
+                Toggle(IDELanguageRunText.t("手动指定通道", "Specify channel manually"), isOn: Binding(get: { manualBluetooth }, set: {
+                    manualBluetooth = $0; setup.bluetooth = nil; center.clearBluetoothChannels()
+                }))
+                if manualBluetooth {
+                    TextField(IDELanguageRunText.t("服务 UUID", "Service UUID"), text: $serviceUUID)
+                    TextField(IDELanguageRunText.t("写入特征 UUID", "Write characteristic UUID"), text: $writeUUID)
+                    TextField(IDELanguageRunText.t("通知特征 UUID（可选）", "Notify characteristic UUID (optional)"), text: $notifyUUID)
+                }
+                if let endpoint = setup.bluetooth {
+                    Text("\(endpoint.serviceUUID)\n\(endpoint.writeCharacteristicUUID)\n\(endpoint.notifyCharacteristicUUID ?? "")")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                }
+            }.textInputAutocapitalization(.never).autocorrectionDisabled()
+        }.disabled(center.connecting.contains(tool))
     }
     @ViewBuilder private func inputError(_ field: ToolboxConnectionInputIssue.Field) -> some View {
         if let issue = inputIssues.first(where: { $0.field == field }) {

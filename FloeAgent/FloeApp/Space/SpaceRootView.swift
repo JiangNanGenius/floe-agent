@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 /// One personal library above the existing Notes editor. Visiting another
 /// location never changes the selected task's workspace or execution route.
 struct SpaceRootView: View {
+    @Environment(\.phoneSidebarAction) private var openPhoneSidebar
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
@@ -102,12 +103,28 @@ struct SpaceRootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker(IDELanguageRunText.t("空间", "Space"), selection: $section) {
-                ForEach(SpaceSection.allCases) { value in Text(value.title).tag(value) }
+            if openPhoneSidebar != nil {
+                // Space already owns this section row above Notes/library/
+                // Toolbox stacks. Share it instead of adding a second bar
+                // or nesting another root stack around those destinations.
+                HStack(spacing: 8) {
+                    PhoneSidebarButton()
+                    Picker(IDELanguageRunText.t("空间", "Space"), selection: $section) {
+                        ForEach(SpaceSection.allCases) { value in Text(value.title).tag(value) }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                    .accessibilityIdentifier("space.sections")
+                }
+                .padding(.horizontal).padding(.vertical, 10)
+            } else {
+                Picker(IDELanguageRunText.t("空间", "Space"), selection: $section) {
+                    ForEach(SpaceSection.allCases) { value in Text(value.title).tag(value) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal).padding(.vertical, 10)
+                .accessibilityIdentifier("space.sections")
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal).padding(.vertical, 10)
-            .accessibilityIdentifier("space.sections")
             Divider()
             if section == .notes {
                 NotesRootView()
