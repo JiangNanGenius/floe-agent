@@ -2,7 +2,7 @@
 """Read-only gate proving a published GitHub App release is an installable delivery.
 
 Every public App release must be a published stable (draft=false, prerelease=false)
-release on the immutable tag, marked latest, carrying the verified unsigned device
+release on the immutable tag, carrying the verified unsigned device
 IPA plus its checksum sidecar. A source archive alone is never an installable
 delivery: the historical source-only fallback (v1.7.34, build 275) is a recorded
 exception, not a precedent. AltStore/Feather feed freshness depends on exactly
@@ -25,6 +25,12 @@ binary renamed to the canonical unsigned asset therefore cannot pass even when
 its version/build identity and digest match. Every failure is fail-closed and
 lists the exact attach/repair actions for the existing published release; the
 tag is never moved.
+
+Normal publication must own latest. Explicit historical publication instead
+requires complete before/after snapshots proving the newer stable release,
+its tag source and every asset identity stayed unchanged. This changes no
+attestation/source trust rule; a historical target still needs the full staged
+device audit and expected IPA digest.
 
 The source binding is taken from the Git objects, not from filenames: the tag
 ref itself must be ``refs/tags/<expected tag>``; for an annotated tag the tag
@@ -279,9 +285,54 @@ def classify_names(index: dict, *, violations: list, tag: str) -> list:
     return sorted(index)
 
 
+def latest_snapshot_identity(snapshot: dict) -> dict:
+    """Bind the protected pointer to real release/tag objects, not a tag label."""
+    require(isinstance(snapshot, dict) and snapshot.get('schemaVersion') == 1,
+            'Expected a complete latest-pointer snapshot')
+    release = snapshot.get('release', {})
+    require(isinstance(release, dict) and isinstance(snapshot.get('tagRef'), dict)
+            and isinstance(snapshot.get('tagObject'), dict), 'Latest snapshot needs release/ref/object JSON')
+    tag = release.get('tag_name')
+    require(isinstance(tag, str) and re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag),
+            'Protected latest must be a stable App tag')
+    require(type(release.get('id')) is int and release['id'] > 0
+            and release.get('draft') is False and release.get('prerelease') is False
+            and release.get('published_at'), 'Protected latest must be a published stable release')
+    commit, _ = peel_tag_commit(snapshot.get('tagRef', {}), snapshot.get('tagObject', {}), tag)
+    index = asset_index(release.get('assets'))
+    violations = []
+    names = classify_names(index, violations=violations, tag=tag)
+    require(not violations and all(len(index[n]) == 1 for n in names),
+            'Protected latest has unsafe or duplicate assets')
+    ipas = [n for n in names if ASSET_NAME_RE.fullmatch(n)]
+    require(len(ipas) == 1, 'Protected latest must retain one canonical IPA')
+    name = ipas[0]
+    require(all(not n.endswith('.ipa') or n == name for n in names),
+            'Protected latest contains an unexpected IPA')
+    match = ASSET_NAME_RE.fullmatch(name)
+    require('v' + match[1] == tag and int(match[2]) > 0 and name + '.sha256' in index,
+            'Protected latest IPA/version/checksum pair is incomplete')
+    for asset_name in (name, name + '.sha256'):
+        asset = index[asset_name][0]
+        require(asset.get('state') == 'uploaded' and type(asset.get('size')) is int
+                and asset['size'] > 0 and DIGEST_RE.fullmatch(str(asset.get('digest', '')))
+                and type(asset.get('id')) is int and asset['id'] > 0,
+                'Protected latest has incomplete uploaded asset identity')
+        require(asset.get('browser_download_url') ==
+                f'https://github.com/JiangNanGenius/floe-agent/releases/download/{tag}/{asset_name}',
+                'Protected latest asset URL is not the bound canonical release')
+    identities = [{key: index[n][0].get(key) for key in
+                   ('name', 'id', 'state', 'size', 'digest', 'browser_download_url')}
+                  for n in names]
+    return {'tag': tag, 'releaseId': release['id'], 'sourceCommit': commit,
+            'build': match[2], 'publishedAt': release['published_at'], 'assets': identities}
+
+
 def verify_app_publish(*, release: dict, tag_ref: dict, tag_object: dict, latest: dict,
                       expect: dict, staged_dir: Path | None,
-                      allow_prerelease: bool, prerelease_reason: str) -> dict:
+                      allow_prerelease: bool, prerelease_reason: str,
+                      preserve_latest_before: dict | None = None,
+                      preserve_latest_after: dict | None = None) -> dict:
     violations: list = []
     require(release.get('tag_name') == expect['tag'],
             f"Release JSON is for tag {release.get('tag_name')!r}, expected {expect['tag']!r}")
@@ -348,7 +399,20 @@ def verify_app_publish(*, release: dict, tag_ref: dict, tag_object: dict, latest
                 violations.append(f'staged IPA bytes {staged["bytes"]} != published remote size '
                                   f'{ipa_remote.get("size")}')
 
-    if allow_prerelease:
+    historical = preserve_latest_before is not None or preserve_latest_after is not None
+    if historical:
+        require(not allow_prerelease and staged_dir is not None
+                and re.fullmatch(r'[0-9a-f]{64}', str(expect.get('ipa_sha256', ''))),
+                'Historical publication needs stable mode, staged device bytes and the expected IPA digest')
+        before = latest_snapshot_identity(preserve_latest_before)
+        after = latest_snapshot_identity(preserve_latest_after)
+        require(before == after, 'Historical publication changed the protected latest release/source/assets')
+        require(latest_snapshot_identity(dict(preserve_latest_after, release=latest)) == after,
+                'Latest readback and protected snapshot disagree')
+        require(expect['tag'] != before['tag'] and int(expect['build']) < int(before['build']),
+                'Historical target must be older than the protected latest build')
+        latest_state = {'required': True, 'mode': 'preserved', **after}
+    elif allow_prerelease:
         latest_state: dict = {'required': False, 'reason': prerelease_reason}
     else:
         require(isinstance(latest, dict) and latest.get('tag_name'),
@@ -423,6 +487,10 @@ def verify_source_only_publish(*, release: dict, tag_ref: dict | None,
 
 def run(args: argparse.Namespace) -> dict:
     release = load_json(args.release_json, 'release')
+    historical = args.preserve_latest_before_json is not None or args.preserve_latest_after_json is not None
+    if historical and (args.mode != MODE_APP or args.allow_prerelease
+                       or args.preserve_latest_before_json is None or args.preserve_latest_after_json is None):
+        raise UsageError('Historical mode requires both preserved-latest snapshots and stable App mode')
     if args.mode == MODE_APP:
         for label, path in (('tag-ref', args.tag_ref_json), ('tag-object', args.tag_object_json)):
             if path is None:
@@ -459,7 +527,9 @@ def run(args: argparse.Namespace) -> dict:
             expect=expect,
             staged_dir=args.staged_dir,
             allow_prerelease=args.allow_prerelease,
-            prerelease_reason=args.prerelease_reason or '')
+            prerelease_reason=args.prerelease_reason or '',
+            preserve_latest_before=load_json(args.preserve_latest_before_json, 'latest-before') if historical else None,
+            preserve_latest_after=load_json(args.preserve_latest_after_json, 'latest-after') if historical else None)
     # source-only mode is reserved for explicitly non-App artifacts.
     if _direct.TAG_RE.fullmatch(args.expect_tag):
         raise UsageError(f'--mode source-only cannot classify the App-shaped tag {args.expect_tag!r}; '
@@ -486,6 +556,10 @@ def main(argv=None) -> int:
                         help='gh api repos/<repo>/git/tags/<object-sha> JSON dump')
     parser.add_argument('--latest-json', type=Path,
                         help='gh api repos/<repo>/releases/latest JSON dump')
+    parser.add_argument('--preserve-latest-before-json', type=Path,
+                        help='Explicit historical mode: complete stable latest snapshot taken before publication')
+    parser.add_argument('--preserve-latest-after-json', type=Path,
+                        help='Matching complete stable latest snapshot taken after publication')
     parser.add_argument('--expect-tag', required=True)
     parser.add_argument('--expect-version')
     parser.add_argument('--expect-build')

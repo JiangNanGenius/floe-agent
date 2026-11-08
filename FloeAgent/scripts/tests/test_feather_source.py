@@ -53,6 +53,7 @@ class FeatherSourceTests(unittest.TestCase):
         first = self.generate()
         self.assertEqual(first, self.generate(previous=first))
         old = dict(first["apps"][0]["versions"][0], buildVersion="166")
+        old['downloadURL'] = old['downloadURL'].replace('build167-', 'build166-')
         first["apps"][0]["versions"].append(old)
         self.assertEqual(self.generate(previous=first)["apps"][0]["versions"][1], old)
 
@@ -60,6 +61,7 @@ class FeatherSourceTests(unittest.TestCase):
         self.write_ipa()
         previous = self.generate()
         previous["apps"][0]["versions"][0]["buildVersion"] = "168"
+        previous["apps"][0]["versions"][0]['downloadURL'] = previous['apps'][0]['versions'][0]['downloadURL'].replace('build167-', 'build168-')
         with self.assertRaises(ValueError):
             self.generate(previous=previous)
         with self.assertRaises(ValueError):

@@ -9,6 +9,16 @@ on:
         description: Published Floe app release tag
         required: true
         type: string
+      historical_release:
+        description: Insert a verified older build into the primary feed without replacing its newer head
+        required: false
+        default: false
+        type: boolean
+      preserve_latest_tag:
+        description: Exact newer stable GitHub/feed tag to preserve during historical insertion
+        required: false
+        default: ''
+        type: string
   # The normal release workflow calls this same file synchronously so a feed
   # failure fails the release run instead of only a detached run. It keeps the
   # one generator, permissions, concurrency group and live readback; no parallel
@@ -18,6 +28,16 @@ on:
       tag:
         description: Published Floe app release tag
         required: true
+        type: string
+      historical_release:
+        description: Insert a verified older build into the primary feed without replacing its newer head
+        required: false
+        default: false
+        type: boolean
+      preserve_latest_tag:
+        description: Exact newer stable GitHub/feed tag to preserve during historical insertion
+        required: false
+        default: ''
         type: string
 
 concurrency:
@@ -38,6 +58,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      HISTORICAL_RELEASE: ${{ inputs.historical_release || false }}
+      PRESERVE_LATEST_TAG: ${{ inputs.preserve_latest_tag }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -50,6 +72,14 @@ jobs:
           git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" > "$RUNNER_TEMP/feather-source-sha.txt"
           gh release view "$RELEASE_TAG" --json tagName,isDraft,publishedAt > "$RUNNER_TEMP/feather-release.json"
           jq -e --arg tag "$RELEASE_TAG" '.tagName == $tag and .isDraft == false and .publishedAt != null' "$RUNNER_TEMP/feather-release.json"
+          if [[ "${HISTORICAL_RELEASE:-false}" == true ]]; then
+            test "$PRESERVE_LATEST_TAG" != "$RELEASE_TAG"
+            python3 FloeAgent/scripts/snapshot_github_latest.py \
+              --repo "$GITHUB_REPOSITORY" --expected-tag "$PRESERVE_LATEST_TAG" \
+              --output "$RUNNER_TEMP/feather-protected-latest.json"
+          else
+            test -z "${PRESERVE_LATEST_TAG:-}"
+          fi
       - name: Require a public unsigned-only asset set
         run: |
           set -euo pipefail
@@ -105,11 +135,15 @@ jobs:
           set -euo pipefail
           previous=()
           if test -f feather.json; then previous=(--previous-source feather.json); fi
+          mode=()
+          if [[ "${HISTORICAL_RELEASE:-false}" == true ]]; then
+            mode=(--historical --preserve-latest-tag "$PRESERVE_LATEST_TAG")
+          fi
           python3 FloeAgent/scripts/generate_feather_source.py \
             --ipa "$(cat "$RUNNER_TEMP/FeatherInput/ipa-path.txt")" \
             --tag "$RELEASE_TAG" --source-sha "$(cat "$RUNNER_TEMP/feather-source-sha.txt")" \
             --released-at "$(jq -r .publishedAt "$RUNNER_TEMP/feather-release.json")" \
-            --output feather.json "${previous[@]}"
+            --output feather.json "${previous[@]+"${previous[@]}"}" "${mode[@]+"${mode[@]}"}"
           python3 -m unittest discover -s FloeAgent/scripts/tests -p test_feather_source.py
       - name: Publish the stable source URL
         run: |
@@ -131,7 +165,7 @@ jobs:
           # release asset. A cached/stale response must be retried until it
           # matches the expected build; only then is the refresh considered done,
           # and a feed that never converges fails this step instead of silently
-          # leaving users on an older build.
+          # leaving a historical target undiscoverable or changing the newer head.
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/feather-readback-release.json"
           cat > "$RUNNER_TEMP/check_feed.py" <<'PY'
           import json
@@ -153,7 +187,11 @@ jobs:
           assert published.get('published_at'), 'the requested release has no published_at'
 
           want_app = generated['apps'][0]
-          want = want_app['versions'][0]
+          prefix = f'https://github.com/JiangNanGenius/floe-agent/releases/download/{expected_tag}/'
+          targets = [entry for entry in want_app['versions']
+                     if entry.get('downloadURL', '').startswith(prefix)]
+          assert len(targets) == 1, 'generated feed must contain exactly one requested release'
+          want = targets[0]
           expected_version = expected_tag[1:].split('-beta.')[0]
           assert want.get('version') == expected_version, (
               'generated feed version does not match the tag',
@@ -167,10 +205,17 @@ jobs:
           assert live_app is not None, 'live feed lost the Floe app entry'
           entries = live_app.get('versions', [])
           assert entries, 'live feed has no versions'
-          assert entries[0].get('buildVersion') == want['buildVersion'], (
-              'live feed newest entry is not the freshly published build',
-              entries[0].get('buildVersion'), want['buildVersion'])
-          entry = entries[0]
+          assert entries == want_app['versions'], 'live feed history/order differs from the verified generated feed'
+          builds = [int(item['buildVersion']) for item in entries]
+          assert builds == sorted(set(builds), reverse=True), 'live feed builds must be unique and descending'
+          head = entries[0]
+          for app_key, version_key in (('version', 'version'), ('versionDate', 'date'),
+                                       ('size', 'size'), ('downloadURL', 'downloadURL')):
+              assert want_app.get(app_key) == head.get(version_key), 'generated legacy projection does not match the newest build'
+              assert live_app.get(app_key) == head.get(version_key), 'live legacy projection changed or became stale'
+          matches = [entry for entry in entries if entry.get('downloadURL', '').startswith(prefix)]
+          assert len(matches) == 1, 'the requested historical release is not discoverable in the primary feed'
+          entry = matches[0]
           for key in ('version', 'buildVersion', 'downloadURL', 'size', 'sha256', 'sourceCommit'):
               assert entry.get(key) == want.get(key), (key, entry.get(key), want.get(key))
           name = entry['downloadURL'].rsplit('/', 1)[-1]

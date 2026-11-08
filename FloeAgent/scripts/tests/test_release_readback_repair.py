@@ -52,6 +52,8 @@ BASH = '/bin/bash' if Path('/bin/bash').exists() else shutil.which('bash')
 # selector and dependency list. The focused test below proves the fallback added
 # only the route-gate dependency on legacy roots: every selector and every other
 # job key and step is byte-identical.
+# 2026-11-08: local-publish/feather-local-release body hashes alone include
+# the reviewed historical mode; all other legacy job checkpoints are unchanged.
 LEGACY_JOB_BASELINE = {'developer-recovery': ("${{ inputs.local_artifact_sha256 == '' && github.event_name == "
                         "'workflow_dispatch' && inputs.recover_developer_build191 && inputs.tag == "
                         "'v1.7.0-beta.48' && inputs.publish && !inputs.direct_testflight && "
@@ -159,10 +161,10 @@ LEGACY_JOB_BASELINE = {'developer-recovery': ("${{ inputs.local_artifact_sha256 
                    '!inputs.recover_developer_build191 && !inputs.recover_build_156 && '
                    '!inputs.build191_ui_waiver }}',
                    None,
-                   '191ac9a9872e6cb631992281bc67ebd4be64a5a92d8b0b74201cd06ffbaba990'),
+                   '265fffa710adecf6a447f23988abad730f6530658bab44abc1158531cd7a1c0d'),
  'feather-local-release': ("needs.local-publish.result == 'success'",
                            ['local-publish'],
-                           '2cc3a0efbc34f16327218d60400f89a5815676ebf23b12305cf61cfcbf39980b')}
+                           '71eeb007f4256003e0839ec79b0ba71565833d551302c0c38afdaf3fce062cf1')}
 
 OLD_INPUT_ORDER = [
     'tag', 'local_artifact_sha256', 'transport_tag', 'direct_testflight',
@@ -213,7 +215,7 @@ class BashOptionalArrayExpansionTests(unittest.TestCase):
         self.assertNotIn('${{', run)
         return run
 
-    def execute(self, run: str, *, tag: str, prerelease: bool):
+    def execute(self, run: str, *, tag: str, prerelease: bool, historical=False):
         root = Path(tempfile.mkdtemp(prefix='floe-readback-bash3-'))
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         fixtures = root / 'fixtures'
@@ -261,6 +263,8 @@ class BashOptionalArrayExpansionTests(unittest.TestCase):
             'HOME': str(root),
             'RELEASE_TAG': tag,
             'RELEASE_PRERELEASE': 'true' if prerelease else 'false',
+            'HISTORICAL_RELEASE': 'true' if historical else 'false',
+            'PRESERVE_LATEST_TAG': 'v1.8.5' if historical else '',
             'GITHUB_REPOSITORY': 'JiangNanGenius/floe-agent',
             'RUNNER_TEMP': str(root / 'temp'),
             # The real jobs receive these from their release/prepare steps.
@@ -277,6 +281,16 @@ class BashOptionalArrayExpansionTests(unittest.TestCase):
                                 text=True, capture_output=True)
         args = captured.read_text().splitlines() if captured.exists() else []
         return result, args
+
+    def test_historical_readback_passes_both_pointer_snapshots_on_bash3(self):
+        result, args = self.execute(self.prepared_run('local-publish'),
+                                    tag='v1.7.39', prerelease=False, historical=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--latest-json', args)
+        self.assertIn('--preserve-latest-before-json', args)
+        self.assertIn('--preserve-latest-after-json', args)
+        self.assertNotIn('--allow-prerelease', args)
+        self.assertNotIn('', args)
 
     def test_readback_steps_survive_bash3_with_empty_optional_arrays(self):
         for job, tag, prerelease, required, forbidden, has_digest in self.CASES:
@@ -555,7 +569,7 @@ class RegisteredEntryRecoveryRouteTests(unittest.TestCase):
         self.assertEqual(self.digest(old), OLD_INPUTS_SHA256)
         self.assertEqual(list(self.inputs)[len(OLD_INPUT_ORDER):],
                          ['published_readback_only', 'expected_source_sha',
-                          'expected_ipa_sha256'])
+                          'expected_ipa_sha256', 'historical_release', 'preserve_latest_tag'])
         selector = self.inputs['published_readback_only']
         self.assertEqual(selector['required'], False)
         self.assertIs(selector['default'], False)
@@ -607,18 +621,18 @@ class RegisteredEntryRecoveryRouteTests(unittest.TestCase):
                 self.assertTrue(reaches_gate(name),
                                 f'{name} does not depend on {GATE_JOB}')
 
-    def test_route_gate_is_selected_only_by_the_recovery_flag(self):
-        self.assertEqual(self.gate['if'], '${{ !inputs.published_readback_only }}')
+    def test_route_gate_rejects_incompatible_historical_recovery_inputs(self):
+        self.assertEqual(self.gate['if'], '${{ !inputs.published_readback_only || inputs.historical_release || inputs.preserve_latest_tag != \'\' }}')
         self.assertEqual(self.gate['runs-on'], 'ubuntu-latest')
         self.assertEqual(self.gate.get('timeout-minutes'), 2)
         self.assertNotIn('uses', self.gate)
         self.assertEqual(len(self.gate.get('steps', [])), 1)
-        self.assertIn('legacy release routing is enabled',
+        self.assertIn('original source/attestation gates remain mandatory',
                       self.gate['steps'][0]['run'])
         self.assertNotIn('uses', self.gate['steps'][0])
-        # The gate is exactly !published_readback_only. Its default false keeps
-        # the normal no-op gate selected; true skips it and the skip propagates
-        # through every legacy dependency edge proven below.
+        # With historical inputs at their defaults, the original readback-only
+        # skip propagates unchanged. Conflicting historical inputs now run the
+        # guard and fail before any publisher or recovery module may execute.
         self.assertIs(self.inputs['published_readback_only']['default'], False)
 
     def test_only_the_registered_recovery_job_calls_the_module(self):
@@ -633,7 +647,7 @@ class RegisteredEntryRecoveryRouteTests(unittest.TestCase):
     def test_recovery_job_calls_the_same_strict_module_at_the_same_commit(self):
         self.assertEqual(
             self.recovery['if'],
-            "${{ github.event_name == 'workflow_dispatch' && inputs.published_readback_only }}")
+            "${{ github.event_name == 'workflow_dispatch' && inputs.published_readback_only && !inputs.historical_release && inputs.preserve_latest_tag == '' }}")
         self.assertEqual(self.recovery['uses'],
                          './.github/workflows/repair-release-readback.yml')
         self.assertEqual(self.recovery['with'], {

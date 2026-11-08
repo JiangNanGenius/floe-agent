@@ -940,10 +940,13 @@ class PublicationReadbackContractTests(unittest.TestCase):
         url = (f'https://github.com/JiangNanGenius/floe-agent/releases/download/'
                f'{tag}/{name}')
         entry = {'version': version, 'buildVersion': build, 'downloadURL': url,
-                 'size': 1234, 'sha256': 'b' * 64, 'sourceCommit': source}
-        live_app = {'bundleIdentifier': 'org.floeagent.ios', 'versions': [entry]}
+                 'size': 1234, 'sha256': 'b' * 64, 'sourceCommit': source,
+                 'date': '2026-10-18T00:00:00Z'}
+        legacy = {'version': version, 'versionDate': entry['date'],
+                  'size': entry['size'], 'downloadURL': url}
+        live_app = {'bundleIdentifier': 'org.floeagent.ios', 'versions': [entry], **legacy}
         generated = {'apps': [{'bundleIdentifier': 'org.floeagent.ios',
-                               'versions': [dict(entry)]}]}
+                               'versions': [dict(entry)], **legacy}]}
         published = {'tag_name': tag, 'draft': False,
                      'published_at': '2026-10-18T00:00:00Z',
                      'assets': [{'name': name, 'browser_download_url': url,

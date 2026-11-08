@@ -83,6 +83,17 @@ on:
         default: ''
         type: string
 
+      historical_release:
+        description: Normal local unsigned publish only. Explicitly insert an older stable build while preserving preserve_latest_tag; all original tag/source/attestation checks still apply
+        required: false
+        default: false
+        type: boolean
+      preserve_latest_tag:
+        description: Required with historical_release; exact newer stable tag whose source, assets and latest pointer must remain unchanged
+        required: false
+        default: ''
+        type: string
+
 permissions:
   contents: read
 
@@ -97,7 +108,7 @@ jobs:
   # It is selected only by an explicit published_readback_only dispatch.
   published-readback-recovery:
     name: Recover the published release readback through the registered entry
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.published_readback_only }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.published_readback_only && !inputs.historical_release && inputs.preserve_latest_tag == '' }}
     # A recovery is dispatched at main but must not overlap a normal release
     # for the same immutable tag, whose run holds refs/tags/<tag>. The repair
     # module and the Feather generator use their own groups, so the nested
@@ -124,12 +135,27 @@ jobs:
   # argument, need and permission keeps its previous behavior.
   published-readback-route-gate:
     name: Gate legacy release routes off a readback recovery
-    if: ${{ !inputs.published_readback_only }}
+    if: ${{ !inputs.published_readback_only || inputs.historical_release || inputs.preserve_latest_tag != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Confirm a normal release request
-        run: echo 'published_readback_only is false; legacy release routing is enabled.'
+        env:
+          REQUEST_INPUTS: ${{ toJSON(inputs) }}
+        run: |
+          python3 - <<'PYINPUT'
+          import json, os, re
+          request = json.loads(os.environ['REQUEST_INPUTS'])
+          historical = request.get('historical_release', False)
+          preserved = request.get('preserve_latest_tag', '')
+          if historical:
+              assert request.get('publish') and request.get('local_artifact_sha256') and request.get('transport_tag'), 'Historical mode requires the normal local unsigned publish route'
+              assert not any(request.get(k) for k in ('github_prerelease', 'direct_testflight', 'lean_release', 'published_readback_only', 'recover_developer_build191', 'recover_build_156', 'build191_ui_waiver', 'reuse_direct_run', 'reuse_accepted_run', 'component_recovery_run')), 'Historical mode cannot sign, rebuild, change audience or invoke a recovery exception'
+              assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', preserved) and preserved != request.get('tag'), 'Declare the exact newer stable tag to preserve'
+          else:
+              assert not preserved, 'preserve_latest_tag requires explicit historical_release'
+          print('Release route inputs validated; original source/attestation gates remain mandatory.')
+          PYINPUT
 
   developer-recovery:
     if: ${{ inputs.local_artifact_sha256 == '' && github.event_name == 'workflow_dispatch' && inputs.recover_developer_build191 && inputs.tag == 'v1.7.0-beta.48' && inputs.publish && !inputs.direct_testflight && !inputs.recover_build_156 && !inputs.build191_ui_waiver && inputs.reuse_accepted_run == '' && inputs.component_recovery_run == '' }}
@@ -2202,7 +2228,8 @@ jobs:
   # tag; the public tag can never hold the transport. This job compiles and
   # signs nothing: it re-verifies the transport digest and provenance, packages
   # the unsigned IPA from the archived .app, attests those exact bytes with the
-  # workflow identity, publishes the normal stable latest release, reads it back
+  # workflow identity, publishes the stable release (explicit historical mode
+  # preserves the newer latest pointer with before/after source/asset proof), reads it back
   # and then hands the same tag to the existing Feather workflow job. A local
   # build therefore follows the same unsigned-producer -> Actions attestation ->
   # publish -> source-update sequence as the lean route; there is no digest-only
@@ -2227,6 +2254,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_PRERELEASE: ${{ inputs.github_prerelease }}
+      HISTORICAL_RELEASE: ${{ inputs.historical_release }}
+      PRESERVE_LATEST_TAG: ${{ inputs.preserve_latest_tag }}
       EXPECTED_TRANSPORT_SHA256: ${{ inputs.local_artifact_sha256 }}
     steps:
       - name: Check out the immutable local release commit
@@ -2266,6 +2295,11 @@ jobs:
             echo "BUILD=$build"
             echo "ASSET_NAME=$asset_name"
           } >> "$GITHUB_ENV"
+          if [[ "${HISTORICAL_RELEASE:-false}" == true ]]; then
+            python3 FloeAgent/scripts/snapshot_github_latest.py \
+              --repo "$GITHUB_REPOSITORY" --expected-tag "$PRESERVE_LATEST_TAG" \
+              --output "$RUNNER_TEMP/protected-latest-before.json"
+          fi
       - name: Download the private draft transport and verify local provenance
         env:
           TRANSPORT_TAG_INPUT: ${{ inputs.transport_tag }}
@@ -2449,6 +2483,8 @@ jobs:
           set -euo pipefail
           if [[ "$RELEASE_PRERELEASE" == true ]]; then
             RELEASE_MODE_ARGS=(--prerelease --latest=false)
+          elif [[ "${HISTORICAL_RELEASE:-false}" == true ]]; then
+            RELEASE_MODE_ARGS=(--latest=false)
           else
             RELEASE_MODE_ARGS=(--latest=true)
           fi
@@ -2532,6 +2568,13 @@ jobs:
           else
             gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
             LATEST_ARGS=(--latest-json "$READBACK/latest.json")
+            if [[ "${HISTORICAL_RELEASE:-false}" == true ]]; then
+              python3 FloeAgent/scripts/snapshot_github_latest.py \
+                --repo "$GITHUB_REPOSITORY" --expected-tag "$PRESERVE_LATEST_TAG" \
+                --output "$RUNNER_TEMP/protected-latest-after.json"
+              MODE_ARGS=(--preserve-latest-before-json "$RUNNER_TEMP/protected-latest-before.json"
+                         --preserve-latest-after-json "$RUNNER_TEMP/protected-latest-after.json")
+            fi
           fi
           # The macOS runner's Bash 3.2 aborts on an empty array expansion
           # under set -u; guard both optional mode arrays explicitly.
@@ -2560,6 +2603,8 @@ jobs:
           path: |
             ${{ runner.temp }}/local-private-evidence/
             ${{ runner.temp }}/Published/Readback/report.json
+            ${{ runner.temp }}/protected-latest-before.json
+            ${{ runner.temp }}/protected-latest-after.json
           if-no-files-found: ignore
           retention-days: 30
 
@@ -2574,3 +2619,5 @@ jobs:
     uses: ./.github/workflows/publish-feather-source.yml
     with:
       tag: ${{ needs.local-publish.outputs.tag }}
+      historical_release: ${{ inputs.historical_release }}
+      preserve_latest_tag: ${{ inputs.preserve_latest_tag }}

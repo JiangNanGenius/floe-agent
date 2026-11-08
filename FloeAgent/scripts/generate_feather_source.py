@@ -25,7 +25,64 @@ DESCRIPTION = (
 )
 
 
-def generate(ipa, tag, source_sha, released_at, previous=None):
+IDENTITY_KEYS = ('version', 'buildVersion', 'downloadURL', 'size', 'minOSVersion',
+                 'sha256', 'sourceCommit')
+
+
+def checked_build(entry):
+    """Validate preserved feed identity, without claiming a new binary audit."""
+    if not isinstance(entry, dict) or not isinstance(entry.get('buildVersion'), str) \
+            or not re.fullmatch(r'[1-9][0-9]*', entry['buildVersion']):
+        raise ValueError('Previous feed contains an invalid build identity')
+    version = entry.get('version')
+    if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+        raise ValueError('Previous feed contains an invalid version')
+    name = f"Floe-Agent-{version}-build{entry['buildVersion']}-unsigned.ipa"
+    base = f'https://github.com/{REPOSITORY}/releases/download/'
+    url = entry.get('downloadURL', '')
+    if not isinstance(url, str) or not url.startswith(base):
+        raise ValueError('Previous feed has a foreign download URL')
+    path = url[len(base):].split('/')
+    if len(path) != 2 or path[1] != name or not re.fullmatch(
+            re.escape('v' + version) + r'(?:-beta\.[1-9][0-9]*)?', path[0]):
+        raise ValueError('Previous feed URL does not match its version/build')
+    if type(entry.get('size')) is not int or entry['size'] <= 0 \
+            or not re.fullmatch(r'[0-9a-f]{64}', str(entry.get('sha256', ''))) \
+            or not re.fullmatch(r'[0-9a-f]{40}', str(entry.get('sourceCommit', ''))) \
+            or not re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,2}', str(entry.get('minOSVersion', ''))):
+        raise ValueError('Previous feed has incomplete immutable binary metadata')
+    return int(entry['buildVersion'])
+
+
+def merge_versions(entry, history, *, historical=False, preserve_latest_tag=''):
+    build = checked_build(entry)
+    if not isinstance(history, list):
+        raise ValueError('Previous feed versions must be an array')
+    indexed = {}
+    for item in history:
+        number = checked_build(item)
+        if number in indexed and any(indexed[number].get(k) != item.get(k) for k in IDENTITY_KEYS):
+            raise ValueError('Previous feed has conflicting duplicate builds')
+        indexed.setdefault(number, item)
+    if build in indexed and any(indexed[build].get(k) != entry.get(k) for k in IDENTITY_KEYS):
+        raise ValueError('Refusing to replace an existing build with different source or bytes')
+    newest = max(indexed, default=build)
+    if historical:
+        if not indexed or build >= newest or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', preserve_latest_tag):
+            raise ValueError('Historical insertion needs an older build and an explicit preserved stable tag')
+        head = indexed[newest]
+        if history[0]['buildVersion'] != head['buildVersion']:
+            raise ValueError('Previous feed head is not its newest build')
+        if f'/download/{preserve_latest_tag}/' not in head['downloadURL']:
+            raise ValueError('Previous feed head does not match the preserved latest tag')
+    elif preserve_latest_tag or build < newest:
+        raise ValueError('Refusing to roll the published source back to an older build')
+    indexed[build] = entry
+    return [indexed[number] for number in sorted(indexed, reverse=True)]
+
+
+def generate(ipa, tag, source_sha, released_at, previous=None, *,
+             historical=False, preserve_latest_tag=''):
     ipa = Path(ipa)
     if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?", tag):
         raise ValueError("Expected an immutable Floe release tag")
@@ -78,17 +135,22 @@ def generate(ipa, tag, source_sha, released_at, previous=None):
         if len(apps) != 1 or apps[0].get("bundleIdentifier") != bundle:
             raise ValueError("Previous feed belongs to a different application")
         history = apps[0].get("versions", [])
-        if any(int(item["buildVersion"]) > int(build) for item in history):
-            raise ValueError("Refusing to roll the published source back to an older build")
-        history = [item for item in history if item.get("buildVersion") != build]
+        if historical and history:
+            for app_key, version_key in (('version', 'version'), ('versionDate', 'date'),
+                                         ('size', 'size'), ('downloadURL', 'downloadURL')):
+                if apps[0].get(app_key) != history[0].get(version_key):
+                    raise ValueError('Previous feed legacy fields do not match its preserved head')
+    versions = merge_versions(entry, history, historical=historical,
+                              preserve_latest_tag=preserve_latest_tag)
+    head = versions[0]
     app = {
         "name": "Floe Agent", "bundleIdentifier": bundle,
         "developerName": "JiangNanGenius", "iconURL": ICON_URL,
         "localizedDescription": DESCRIPTION, "subtitle": "AI workspace for iPad and iPhone",
-        "beta": True, "versions": [entry] + history[:9],
+        "beta": True, "versions": versions,
         # Legacy fields remain compatible with older Feather/source readers.
-        "version": version, "versionDate": released_at, "size": entry["size"],
-        "downloadURL": download,
+        "version": head['version'], "versionDate": head['date'], "size": head['size'],
+        "downloadURL": head['downloadURL'],
     }
     return {"name": "Floe Agent Beta", "identifier": "org.floeagent.source",
             "sourceURL": SOURCE_URL, "website": f"https://github.com/{REPOSITORY}",
@@ -103,14 +165,18 @@ def main():
     parser.add_argument("--released-at", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--previous-source", type=Path)
+    parser.add_argument("--historical", action='store_true',
+                        help='Insert a verified older release without changing the newest/legacy entry')
+    parser.add_argument("--preserve-latest-tag", default='')
     args = parser.parse_args()
     previous = json.loads(args.previous_source.read_text()) if args.previous_source else None
-    payload = generate(args.ipa, args.tag, args.source_sha, args.released_at, previous)
+    payload = generate(args.ipa, args.tag, args.source_sha, args.released_at, previous,
+                       historical=args.historical, preserve_latest_tag=args.preserve_latest_tag)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     temporary.replace(args.output)
-    print(f"Generated {args.output}: {payload['apps'][0]['versions'][0]['buildVersion']}")
+    print(f"Generated {args.output}: latest build {payload['apps'][0]['versions'][0]['buildVersion']}; included {args.tag}")
 
 
 if __name__ == "__main__":
