@@ -1,6 +1,14 @@
 # Floe for Android
 
-## Current delivery — Android Alpha48 (2026-11-07)
+## Current delivery — Android Alpha56 (2026-11-08)
+
+[Android 0.1.0-alpha.56](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.56), code82, is published from immutable source `2b3a473d62df94df3794e327acb739c42ca42013`. The exact Full APK, related Full/Play compilation, actual ARM64 native production, five focused native host tests and 25 related JVM tests passed. All seven anonymous public attachment bytes, tag binding and production update discovery were read back; iOS Latest is preserved.
+
+Samsung installed the exact main candidate with ADB and retained old tasks. A new empty project file was explicitly selected, edited and saved in X-plore, then reopened from Floe’s actual file list with the new text. This was a manual editor round trip. Automated cross-App, the updated runtime and project-software scenarios continue. Updater code reuses Alpha55’s actual Samsung mirror/download/system-install evidence; the 55→56 delta was reconstructed and byte-verified on the host, with no new 55→56 main-App online-install claim.
+
+当前Alpha56/code82已公开；空文件→X-plore编辑保存→Floe原件重开已在三星通过，旧任务保留。5项原生宿主与25项JVM用例通过。项目软件层代码和紧凑操作页已接入；自动跨App、运行组件及项目软件继续实测，整轮N01–N08未收口。见[交付记录](../docs/releases/ANDROID_ALPHA56_DELIVERY.md)与[推进计划](../docs/FLOE_ANDROID_NEXT_ITERATION_QA_20261106.zh-CN.md)。
+
+## Previous delivery — Android Alpha48 (2026-11-07)
 
 [Android 0.1.0-alpha.48](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.48), code67, is published from immutable source `281e06acbf5ec326e75b0b32550448da0f3d6b5e`. Full production, Play Kotlin,22 relevant focused tests on matching inputs, native binding, signing and16KiB checks passed. All seven public asset bytes and the annotated source tag were verified; iOS Latest remains unchanged.
 
