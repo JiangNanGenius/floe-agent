@@ -332,7 +332,10 @@ private fun ConversationDestination(
                 modifier = Modifier.fillMaxSize(),
                 onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
                 onAttachmentDesign = onAttachmentDesign,
-                onOpenExecutionTarget = if (temporary == null) ({ targetSheetVisible = true }) else null,
+                onOpenExecutionTarget = if (temporary == null) ({
+                    runtimeHost.executionTargets.load(conversationId)
+                    targetSheetVisible = true
+                }) else null,
                 statusContent = {
                     if (temporary == null && TaskContinuityPresentation.shouldShowBanner(continuityState)) {
                         TaskContinuityBanner(
@@ -366,6 +369,7 @@ private fun ConversationDestination(
         },
         onDismissError = { runtimeHost.executionTargets.dismissError() },
         onDismissNotice = { runtimeHost.executionTargets.dismissNotice() },
+        onDestinationChanged = { runtimeHost.executionTargets.clearPreview() },
         onRefresh = { runtimeHost.executionTargets.refresh() },
     )
     TaskContinuitySheet(

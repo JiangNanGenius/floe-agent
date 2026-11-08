@@ -6,6 +6,13 @@
 // caps read/write sizes.
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Android)
+import Android
+#endif
 
 /// Guards every file-system access against a fixed workspace root.
 ///
@@ -31,13 +38,15 @@ public struct WorkspacePathGuard: Sendable {
         maxWriteBytes: Int = 4 * 1024 * 1024,
         mounts: [String: URL] = [:]
     ) {
-        let standardized = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let standardized = (try? Self.resolveComponents(rootURL.standardizedFileURL))
+            ?? rootURL.standardizedFileURL.resolvingSymlinksInPath()
         self.rootURL = standardized
         self.rootPath = standardized.path
         self.maxReadBytes = maxReadBytes
         self.maxWriteBytes = maxWriteBytes
         self.mounts = Dictionary(uniqueKeysWithValues: mounts.map { name, url in
-            (name, url.standardizedFileURL.resolvingSymlinksInPath())
+            (name, (try? Self.resolveComponents(url.standardizedFileURL))
+                ?? url.standardizedFileURL.resolvingSymlinksInPath())
         })
     }
 
@@ -91,7 +100,7 @@ public struct WorkspacePathGuard: Sendable {
             joined = rootURL.appendingPathComponent(normalized)
             allowedRootPath = rootPath
         }
-        let resolved = joined.resolvingSymlinksInPath()
+        let resolved = try Self.resolveComponents(joined)
 
         let resolvedPath = resolved.path
         guard resolvedPath == allowedRootPath || resolvedPath.hasPrefix(allowedRootPath + "/") else {
@@ -138,7 +147,7 @@ public struct WorkspacePathGuard: Sendable {
     /// Asserts the target of a write is inside the root and not secret.
     /// Unlike `resolve`, this does not require the file to exist.
     public func assertWritable(_ url: URL) throws {
-        let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
+        let resolved = try Self.resolveComponents(url.standardizedFileURL)
         let path = resolved.path
         let allowedPaths = [rootPath] + mounts.values.map(\.path)
         guard allowedPaths.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) else {
@@ -170,6 +179,43 @@ public struct WorkspacePathGuard: Sendable {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return (attributes[.size] as? NSNumber)?.intValue
+    }
+
+    /// Foundation may leave an entire path unresolved when its final child
+    /// does not exist yet. Resolve each existing component instead, including
+    /// dangling links, before accepting a new output's namespace. No mkdir or
+    /// write occurs here; internal links and explicit mount roots still work.
+    private static func resolveComponents(_ url: URL) throws -> URL {
+        var pending = url.standardizedFileURL.pathComponents.filter { $0 != "/" && !$0.isEmpty }
+        var index = 0, links = 0
+        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        while index < pending.count {
+            let name = pending[index]; index += 1
+            if name == "." { continue }
+            if name == ".." { if current.path != "/" { current.deleteLastPathComponent() }; continue }
+            let next = current.appendingPathComponent(name)
+            var info = stat()
+            if lstat(next.path, &info) == 0 {
+                if info.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK) {
+                    links += 1
+                    guard links <= 40 else { throw WorkspaceToolError.invalidArguments("path contains too many symbolic links") }
+                    let target = try FileManager.default.destinationOfSymbolicLink(atPath: next.path)
+                    guard !target.isEmpty else { throw WorkspaceToolError.invalidArguments("empty symbolic-link target") }
+                    let tail = Array(pending[index...])
+                    pending = target.split(separator: "/", omittingEmptySubsequences: true).map(String.init) + tail
+                    index = 0
+                    if target.hasPrefix("/") { current = URL(fileURLWithPath: "/", isDirectory: true) }
+                    continue
+                }
+            } else if errno != ENOENT {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            current = next
+        }
+        // The walk already normalizes dot segments. Re-standardizing here
+        // can rewrite an existing /private/var prefix to /var while leaving
+        // a missing descendant unchanged, producing inconsistent identities.
+        return current
     }
 }
 

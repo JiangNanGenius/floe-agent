@@ -121,6 +121,81 @@ struct WorkspacePathGuardTests {
 
     // MARK: Secrets
 
+    @Test("New output below an external directory link is refused", arguments: [false, true])
+    func missingOutputBelowExternalLink(dangling: Bool) throws {
+        let (root, guardResolver) = try makeFixture()
+        defer { cleanup(root) }
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-guard-unselected-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { cleanup(outside) }
+        let destination = dangling ? outside.appendingPathComponent("absent", isDirectory: true) : outside
+        let link = root.appendingPathComponent("external")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: destination)
+
+        #expect(throws: WorkspaceToolError.self) {
+            _ = try guardResolver.resolve("external/new/report.txt")
+        }
+        #expect(throws: WorkspaceToolError.self) {
+            try guardResolver.assertWritable(link.appendingPathComponent("new/report.txt"))
+        }
+        #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("new/report.txt").path))
+    }
+
+    @Test("Relative internal links allow new children while linked secrets remain excluded")
+    func internalLinksWithMissingChildren() throws {
+        let (root, guardResolver) = try makeFixture()
+        defer { cleanup(root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("real"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("alias").path,
+            withDestinationPath: "real")
+        let output = try guardResolver.resolve("alias/new/report.txt")
+        #expect(output.path == guardResolver.rootURL.appendingPathComponent("real/new/report.txt").path)
+        try guardResolver.assertWritable(output)
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("config-alias").path,
+            withDestinationPath: "real/.env")
+        #expect(throws: WorkspaceToolError.self) {
+            _ = try guardResolver.resolve("config-alias")
+        }
+    }
+
+    @Test("Explicit mounts allow new files but cannot link into an unselected sibling")
+    func mountedMissingOutputRetainsItsGrant() throws {
+        let (root, _) = try makeFixture()
+        defer { cleanup(root) }
+        let mounted = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-guard-mount-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: mounted, withIntermediateDirectories: true)
+        defer { cleanup(mounted) }
+        let guardResolver = WorkspacePathGuard(rootURL: root, mounts: ["chosen": mounted])
+        let output = try guardResolver.resolve("Mounts/chosen/new.txt")
+        try guardResolver.assertWritable(output)
+        #expect(output.lastPathComponent == "new.txt")
+        let unselected = mounted.deletingLastPathComponent()
+            .appendingPathComponent("floe-unselected-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: mounted.appendingPathComponent("escape"),
+            withDestinationURL: unselected)
+        #expect(throws: WorkspaceToolError.self) {
+            _ = try guardResolver.resolve("Mounts/chosen/escape/new.txt")
+        }
+    }
+
+    @Test("Symbolic-link cycles fail before accepting an output")
+    func cyclicOutputRefused() throws {
+        let (root, guardResolver) = try makeFixture()
+        defer { cleanup(root) }
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("a").path,
+            withDestinationPath: "b")
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("b").path,
+            withDestinationPath: "a")
+        #expect(throws: WorkspaceToolError.self) {
+            _ = try guardResolver.resolve("a/new.txt")
+        }
+        #expect(throws: WorkspaceToolError.self) {
+            try guardResolver.assertWritable(root.appendingPathComponent("a/new.txt"))
+        }
+    }
+
     @Test("Secret-file exclusion list is enforced")
     func secretFilesRejected() throws {
         let (root, guardResolver) = try makeFixture()

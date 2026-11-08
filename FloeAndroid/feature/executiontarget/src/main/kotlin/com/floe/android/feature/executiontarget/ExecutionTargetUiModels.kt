@@ -114,6 +114,63 @@ data class C02TargetBindingReceiptUi(
     val migration: C02MigrationUi?,
 )
 
+internal data class ExecutionLocationChoice(
+    val key: String,
+    val kind: String,
+    val environmentID: String?,
+    val hostID: String?,
+    val name: String?,
+    val localKind: String?,
+    val isCurrent: Boolean,
+    val enabled: Boolean,
+)
+
+/** Presentation of the native catalog, including the current pinned location. */
+internal object ExecutionLocationChoices {
+    fun available(snapshot: C02TargetSnapshotUi): List<ExecutionLocationChoice> {
+        val current = snapshot.target
+        val local = snapshot.localEnvironments
+            .filter { it.state == "active" && !it.requiresRebuild && it.kind in setOf("project", "session") }
+            .sortedBy { if (it.kind == "project") 0 else 1 }
+            .map { environment ->
+                ExecutionLocationChoice(
+                    key = "local:${environment.id}", kind = "localLinux",
+                    environmentID = environment.id, hostID = null,
+                    name = environment.name, localKind = environment.kind,
+                    isCurrent = current?.kind == "localLinux" && current.environmentID == environment.id,
+                    enabled = true,
+                )
+            }
+        val remote = snapshot.remoteHosts
+            .filter { it.isExecutionEnvironment && it.sshConfigured }
+            .map { host ->
+                ExecutionLocationChoice(
+                    key = "ssh:${host.id}", kind = "ssh", environmentID = null,
+                    hostID = host.id, name = host.displayName, localKind = null,
+                    isCurrent = current?.kind == "ssh" && current.remoteHostID == host.id,
+                    enabled = snapshot.remoteExecutionAllowed,
+                )
+            }
+        return local + remote
+    }
+
+    fun initialKey(snapshot: C02TargetSnapshotUi): String {
+        snapshot.target?.let { target ->
+            // An unavailable pin is still the task's target. Do not select a
+            // different machine just because the current one left the catalog.
+            return if (target.kind == "ssh") "ssh:${target.remoteHostID}" else "local:${target.environmentID}"
+        }
+        val choices = available(snapshot).filter { it.enabled }
+        // Match the host's session -> project fallback. A shared project
+        // must not hide an existing but ambiguous task-session selection.
+        val sessions = choices.filter { it.localKind == "session" }
+        if (sessions.isNotEmpty()) return sessions.singleOrNull()?.key.orEmpty()
+        val projects = choices.filter { it.localKind == "project" }
+        if (projects.isNotEmpty()) return projects.singleOrNull()?.key.orEmpty()
+        return choices.singleOrNull()?.key.orEmpty()
+    }
+}
+
 data class ExecutionTargetUiState(
     val loading: Boolean = true,
     val taskID: String? = null,

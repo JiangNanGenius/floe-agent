@@ -574,6 +574,100 @@ final class C02ExecutionTargetTests: XCTestCase {
         }
     }
 
+    func testExistingTaskSessionKeepsPriorityOverItsProjectFallback() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            let owner = try await harness.ownership.ownership(taskID: harness.taskID)!
+            let sessions = try await harness.environments.localEnvironments(
+                taskID: harness.taskID, ownership: owner)
+            let project = C02LocalEnvironmentFacts(
+                id: "project-graphics", name: "Project", kind: "project", state: "active",
+                requiresRebuild: false, executionBackend: "linuxPRoot", ownerID: harness.workspaceID.uuidString)
+            await harness.environments.setLocal(Array(sessions.prefix(1)) + [project])
+            let resolved = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID)
+            XCTAssertEqual(resolved?.target.environmentID, "env-a")
+            XCTAssertEqual(resolved?.pin.environmentID, "env-a")
+        }
+    }
+
+    func testExplicitProjectPreferenceStillSelectsSharedSoftwareBeforeAnyPin() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            let owner = try await harness.ownership.ownership(taskID: harness.taskID)!
+            let sessions = try await harness.environments.localEnvironments(taskID: harness.taskID, ownership: owner)
+            await harness.environments.setLocal(sessions + [C02LocalEnvironmentFacts(
+                id: "project-graphics", name: nil, kind: "project", state: "active",
+                requiresRebuild: false, executionBackend: "linuxPRoot", ownerID: harness.workspaceID.uuidString)])
+            let resolved = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID, preferredEnvironmentID: "project-graphics")
+            XCTAssertEqual(resolved?.pin.environmentID, "project-graphics")
+        }
+    }
+
+    func testCreatingProjectGraphicsDoesNotMigrateAnExistingSessionPin() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            _ = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID, preferredEnvironmentID: "env-a")
+            let owner = try await harness.ownership.ownership(taskID: harness.taskID)!
+            let sessions = try await harness.environments.localEnvironments(taskID: harness.taskID, ownership: owner)
+            await harness.environments.setLocal(sessions + [C02LocalEnvironmentFacts(
+                id: "project-graphics", name: nil, kind: "project", state: "active",
+                requiresRebuild: false, executionBackend: "linuxPRoot", ownerID: harness.workspaceID.uuidString)])
+            let resolved = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID)
+            XCTAssertEqual(resolved?.target.environmentID, "env-a")
+            XCTAssertEqual(resolved?.target.revision, 1)
+        }
+    }
+
+    func testProjectGraphicsIsAdoptedWhenThereIsNoTaskSession() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            await harness.environments.setLocal([C02LocalEnvironmentFacts(
+                id: "project-graphics", name: nil, kind: "project", state: "active",
+                requiresRebuild: false, executionBackend: "linuxPRoot", ownerID: harness.workspaceID.uuidString)])
+            let resolved = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID)
+            XCTAssertEqual(resolved?.pin.environmentID, "project-graphics")
+        }
+    }
+
+    func testAmbiguousSessionsDoNotImplicitlyFallBackToTheProject() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            let owner = try await harness.ownership.ownership(taskID: harness.taskID)!
+            let sessions = try await harness.environments.localEnvironments(taskID: harness.taskID, ownership: owner)
+            await harness.environments.setLocal(sessions + [C02LocalEnvironmentFacts(
+                id: "project-graphics", name: nil, kind: "project", state: "active",
+                requiresRebuild: false, executionBackend: "linuxPRoot", ownerID: harness.workspaceID.uuidString)])
+            let resolved = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID)
+            XCTAssertNil(resolved)
+        }
+    }
+
+    func testAmbiguousProjectRowsNeverChooseTheFirstProjectOrAnotherTasksEnvironment() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            let projects = ["project-a", "project-b"].map { id in
+                C02LocalEnvironmentFacts(id: id, name: nil, kind: "project", state: "active",
+                    requiresRebuild: false, executionBackend: "linuxPRoot", ownerID: harness.workspaceID.uuidString)
+            }
+            await harness.environments.setLocal(projects)
+            let ambiguous = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID)
+            XCTAssertNil(ambiguous)
+            await harness.environments.setLocal([C02LocalEnvironmentFacts(
+                id: "foreign-project", name: nil, kind: "project", state: "active",
+                requiresRebuild: false, executionBackend: "linuxPRoot", ownerID: UUID().uuidString)])
+            let foreign = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID)
+            XCTAssertNil(foreign)
+        }
+    }
+
     func testTemporaryTaskCannotCreateTarget() async throws {
         try await withFixture { fixture in
             let harness = try await makeHarness(fixture: fixture, temporary: true)
@@ -733,8 +827,8 @@ final class C02ExecutionTargetTests: XCTestCase {
                     kind: .localLinux, environmentID: "env-a",
                     remoteHostID: nil, explicitUserChoice: true)
             )
-            let hostID = try XCTUnwrap(
-                try await harness.environments.remoteHosts(taskID: harness.taskID).first?.id)
+            let hosts = try await harness.environments.remoteHosts(taskID: harness.taskID)
+            let hostID = try XCTUnwrap(hosts.first?.id)
             let challenge = C02RemoteHostKeyChallenge(
                 taskID: harness.taskID,
                 hostID: hostID,
@@ -775,10 +869,38 @@ final class C02ExecutionTargetTests: XCTestCase {
             XCTAssertFalse(denied.trusted)
             let trustCountAfterDenial = await harness.trust.count()
             XCTAssertEqual(trustCountAfterDenial, 0)
-            // Re-probe with the challenge still pending: approval is explicit.
+            // Denial consumed the challenge. A later explicit approval must
+            // follow a NEW probe, not reuse an already rejected request.
+            do {
+                _ = try await harness.domain.approveHostKey(
+                    taskID: harness.taskID, challengeID: challenge.id,
+                    accept: true, replaceChanged: false, expectedFingerprint: nil)
+                XCTFail("a rejected challenge must not become trusted later")
+            } catch let error as C02ExecutionTargetError {
+                XCTAssertEqual(error, .invalidTarget("hostKeyChallengeNotFound"))
+            }
+            let renewed = C02RemoteHostKeyChallenge(
+                taskID: harness.taskID, hostID: hostID, address: challenge.address,
+                port: challenge.port, keyType: challenge.keyType,
+                fingerprintSHA256: challenge.fingerprintSHA256,
+                expectedFingerprintSHA256: nil, kind: .firstUse,
+                createdAt: Date(), expiresAt: Date().addingTimeInterval(300))
+            await harness.probe.set(.failure(.hostKeyApprovalRequired(renewed)))
+            do {
+                _ = try await harness.domain.previewMigration(
+                    taskID: harness.taskID, expectedRevision: 1,
+                    destination: C02ExecutionTargetSelection(kind: .ssh, environmentID: nil,
+                        remoteHostID: hostID, explicitUserChoice: true))
+                XCTFail("the new probe also requires explicit approval")
+            } catch let error as C02ExecutionTargetError {
+                guard case .hostKeyApprovalRequired(let pending) = error else {
+                    return XCTFail("unexpected error \(error)")
+                }
+                XCTAssertEqual(pending.id, renewed.id)
+            }
             let approved = try await harness.domain.approveHostKey(
                 taskID: harness.taskID,
-                challengeID: challenge.id,
+                challengeID: renewed.id,
                 accept: true,
                 replaceChanged: false,
                 expectedFingerprint: nil
@@ -792,8 +914,8 @@ final class C02ExecutionTargetTests: XCTestCase {
     func testSSHExecutionAuthorizationRequiresPolicyAndMatchingPin() async throws {
         try await withFixture { fixture in
             let harness = try await makeHarness(fixture: fixture)
-            let hostID = try XCTUnwrap(
-                try await harness.environments.remoteHosts(taskID: harness.taskID).first?.id)
+            let hosts = try await harness.environments.remoteHosts(taskID: harness.taskID)
+            let hostID = try XCTUnwrap(hosts.first?.id)
             _ = try await harness.domain.initialize(
                 taskID: harness.taskID,
                 selection: C02ExecutionTargetSelection(

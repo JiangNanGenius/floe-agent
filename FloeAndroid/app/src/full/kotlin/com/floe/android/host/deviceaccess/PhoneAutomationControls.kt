@@ -115,7 +115,8 @@ internal class PhoneAutomationControls(private val context: Context, private val
         overlay = null
     }
 
-    fun clear() { main.post {
+    fun clear(expectedOwner: PhoneControlOwner? = null) { main.post {
+        if (expectedOwner != null && owner != expectedOwner) return@post
         owner = null
         token = UUID.randomUUID().toString()
         removeOverlay()

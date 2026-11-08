@@ -74,6 +74,10 @@ private class FullRuntimePlatformExtension(
         device?.onActivityPaused()
     }
 
+    override fun onRunActivityChanged() {
+        device?.onRunActivityChanged()
+    }
+
     override fun close() {
         device?.close()
         device = null

@@ -4,6 +4,12 @@
     <string name="executiontarget_current">此任务运行于</string>
     <string name="executiontarget_not_set">尚未设置</string>
     <string name="executiontarget_local_kind">Linux 环境</string>
+    <string name="executiontarget_project_kind">项目 Linux</string>
+    <string name="executiontarget_session_kind">任务 Linux</string>
+    <string name="executiontarget_project_detail">复用此项目的软件和图形应用</string>
+    <string name="executiontarget_session_detail">仅供此任务使用的环境</string>
+    <string name="executiontarget_selected_location">当前运行位置</string>
+    <string name="executiontarget_choose_other">选择其他位置可迁移此任务。</string>
     <string name="executiontarget_ssh_kind">SSH 主机</string>
     <string name="executiontarget_revision">目标版本 %1$d</string>
     <string name="executiontarget_choose">选择运行位置</string>

@@ -319,10 +319,11 @@ private fun ThreadTopBar(
                             selected = false,
                             onClick = { menuExpanded = false; holder.requestManualCompaction() },
                         )
+                        val exportUnavailableMessage = stringResource(R.string.menu_export_unavailable)
                         CupertinoMenuEntry(
                             title = stringResource(if (holder.exportInFlight) R.string.menu_exporting else R.string.menu_export_structured),
                             selected = false,
-                            onClick = { menuExpanded = false; holder.exportStructured() },
+                            onClick = { menuExpanded = false; holder.exportStructured(exportUnavailableMessage) },
                         )
                         CupertinoMenuEntry(
                             title = stringResource(R.string.menu_export_text),

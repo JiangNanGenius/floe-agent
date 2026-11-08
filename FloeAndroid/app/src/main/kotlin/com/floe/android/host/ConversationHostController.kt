@@ -1005,6 +1005,7 @@ class ConversationHostController internal constructor(
             conversationId,
             initialDraft,
             initialSessionEpoch = epoch,
+            onRunActivityChanged = { host.platformExtension?.onRunActivityChanged() },
         )
         if (temporaryNativeRootEpoch >= 0L) {
             holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
@@ -4872,6 +4873,11 @@ class ConversationHostController internal constructor(
 
     private val taskExports = ConcurrentHashMap<String, Job>()
 
+    private fun refuseTaskExport(code: String): Boolean {
+        android.util.Log.w("FloeTaskExport", "refused stage=admission code=$code")
+        return false
+    }
+
     /**
      * One bounded media reconcile per conversation: the in-flight refresh job
      * owns the single admission slot, exactly like [taskExports]. A second
@@ -4881,11 +4887,14 @@ class ConversationHostController internal constructor(
     private val mediaRefreshes = ConcurrentHashMap<String, Job>()
 
     override fun exportStructuredConversation(session: ConversationSessionToken): Boolean {
-        val entry = holders[session.conversationId] ?: return false
-        val context = host.appContextOrNull ?: return false
-        val epoch = host.nativeRootEpoch() ?: return false
-        if (entry.builder.isTemporary || !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
-            taskExports.containsKey(session.conversationId)) return false
+        val entry = holders[session.conversationId] ?: return refuseTaskExport("missing_holder")
+        val context = host.appContextOrNull ?: return refuseTaskExport("context_unavailable")
+        val epoch = host.nativeRootEpoch() ?: return refuseTaskExport("runtime_unavailable")
+        if (entry.builder.isTemporary) return refuseTaskExport("temporary_task")
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
+            return refuseTaskExport("stale_holder")
+        }
+        if (taskExports.containsKey(session.conversationId)) return refuseTaskExport("already_exporting")
         val job = host.scope.launch(host.ioDispatcher, start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var file: java.io.File? = null
             var shared = false
@@ -4911,8 +4920,12 @@ class ConversationHostController internal constructor(
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 if (!shared) file?.delete()
                 throw cancelled
-            } catch (_: Exception) {
+            } catch (failure: Exception) {
                 if (!shared) file?.delete()
+                val code = (failure as? com.floe.android.host.dataexchange.C07ClientFailure)?.code
+                    ?: failure.javaClass.simpleName
+                val safeCode = code.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
+                android.util.Log.w("FloeTaskExport", "failed stage=export code=$safeCode")
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
                     if (ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
                         entry.holder.applyExportSettled(context.getString(com.floe.android.R.string.task_transcript_export_failed))

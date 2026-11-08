@@ -49,6 +49,7 @@ private data class TargetChoice(
     val title: String,
     val detail: String,
     val enabled: Boolean,
+    val isCurrent: Boolean,
 )
 
 /**
@@ -83,6 +84,7 @@ public fun ExecutionTargetSheet(
     onDismissError: () -> Unit,
     onDismissNotice: () -> Unit,
     onRefresh: () -> Unit,
+    onDestinationChanged: () -> Unit,
 ) {
     FloePageSheet(
         visible = visible,
@@ -145,13 +147,13 @@ public fun ExecutionTargetSheet(
 
             CurrentTargetCard(state)
 
-            val choices = buildChoices(snapshot, state.currentTarget)
-            var selectedKey by rememberSaveable(snapshot.taskID) {
-                mutableStateOf(initialChoiceKey(snapshot, state.currentTarget))
+            val choices = buildChoices(snapshot)
+            var selectedKey by rememberSaveable(snapshot.taskID, snapshot.target?.revision) {
+                mutableStateOf(ExecutionLocationChoices.initialKey(snapshot))
             }
-            LaunchedEffect(snapshot.taskID, snapshot.target?.revision) {
+            LaunchedEffect(snapshot.taskID, snapshot.target?.revision, choices.map { it.key }) {
                 if (choices.none { it.key == selectedKey }) {
-                    selectedKey = choices.firstOrNull()?.key ?: ""
+                    selectedKey = ExecutionLocationChoices.initialKey(snapshot)
                 }
             }
             val selected = choices.firstOrNull { it.key == selectedKey }
@@ -168,14 +170,12 @@ public fun ExecutionTargetSheet(
                         }
                         choices.forEach { choice ->
                             ChoiceRow(
-                                choice = choice,
+                                choice = choice.copy(enabled = choice.enabled && !state.busy),
                                 selected = choice.key == selectedKey,
                                 onSelect = {
-                                    selectedKey = choice.key
-                                    if (snapshot.target == null) {
-                                        // First binding uses the normal Set action.
-                                    } else {
-                                        // A changed destination invalidates the preview.
+                                    if (selectedKey != choice.key) {
+                                        selectedKey = choice.key
+                                        onDestinationChanged()
                                     }
                                 },
                             )
@@ -201,7 +201,7 @@ public fun ExecutionTargetSheet(
                         }
                     },
                 )
-            } else {
+            } else if (selected != null && !selected.isCurrent) {
                 MoveTaskSection(
                     state = state,
                     choices = choices,
@@ -216,6 +216,12 @@ public fun ExecutionTargetSheet(
                             onBeginMigration(it.kind, it.environmentID, it.hostID)
                         }
                     },
+                )
+            } else {
+                FloeText(
+                    stringResource(R.string.executiontarget_choose_other),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
                 )
             }
 
@@ -257,7 +263,7 @@ private fun CurrentTargetCard(state: ExecutionTargetUiState) {
                 } else {
                     FloeText(targetTitle(target, state), style = Floe.typography.bodyEmphasized)
                     FloeText(
-                        targetDetail(target),
+                        targetDetail(target, state),
                         style = Floe.typography.metadata,
                         color = Floe.colors.secondaryLabel,
                     )
@@ -547,77 +553,41 @@ private fun NoticeCard(notice: String, onDismiss: () -> Unit) {
     }
 }
 
+@Composable
 private fun buildChoices(
     snapshot: C02TargetSnapshotUi,
-    current: C02TargetUi?,
-): List<TargetChoice> {
-    val choices = mutableListOf<TargetChoice>()
-    snapshot.localEnvironments
-        .filter { it.state == "active" && !it.requiresRebuild }
-        .forEach { environment ->
-            if (current?.kind == "localLinux" &&
-                current.environmentID == environment.id
-            ) {
-                return@forEach
-            }
-            choices += TargetChoice(
-                key = "local:${environment.id}",
-                kind = "localLinux",
-                environmentID = environment.id,
-                hostID = null,
-                title = environment.name?.takeIf { it.isNotBlank() }
-                    ?: environment.id,
-                detail = if (current?.kind == "localLinux" &&
-                    current.environmentID == environment.id
-                ) {
-                    "Linux · current"
-                } else {
-                    "Linux"
-                },
-                enabled = true,
-            )
-        }
-    snapshot.remoteHosts
-        .filter { it.isExecutionEnvironment && it.sshConfigured }
-        .forEach { host ->
-            if (current?.kind == "ssh" && current.remoteHostID == host.id) {
-                return@forEach
-            }
-            choices += TargetChoice(
-                key = "ssh:${host.id}",
-                kind = "ssh",
-                environmentID = null,
-                hostID = host.id,
-                title = host.displayName,
-                detail = if (current?.kind == "ssh" && current.remoteHostID == host.id) {
-                    "SSH · current"
-                } else {
-                    "SSH"
-                },
-                enabled = snapshot.remoteExecutionAllowed,
-            )
-        }
-    return choices
+): List<TargetChoice> = ExecutionLocationChoices.available(snapshot).map { choice ->
+    val title = if (choice.kind == "ssh") {
+        choice.name ?: stringResource(R.string.executiontarget_ssh_kind)
+    } else {
+        val kind = localKindTitle(choice.localKind)
+        choice.name?.takeIf { it.isNotBlank() && it != choice.environmentID }
+            ?.let { "$kind · $it" } ?: kind
+    }
+    val scope = if (choice.kind == "ssh") "SSH" else localScopeDetail(choice.localKind)
+    TargetChoice(
+        key = choice.key, kind = choice.kind,
+        environmentID = choice.environmentID, hostID = choice.hostID,
+        title = title,
+        detail = if (choice.isCurrent) "$scope · ${stringResource(R.string.executiontarget_selected_location)}" else scope,
+        enabled = choice.enabled,
+        isCurrent = choice.isCurrent,
+    )
 }
 
-private fun initialChoiceKey(
-    snapshot: C02TargetSnapshotUi,
-    current: C02TargetUi?,
-): String {
-    if (current != null) {
-        return when (current.kind) {
-            "ssh" -> "ssh:${current.remoteHostID}"
-            else -> "local:${current.environmentID}"
-        }
-    }
-    snapshot.localEnvironments.firstOrNull {
-        it.state == "active" && !it.requiresRebuild
-    }?.let { return "local:${it.id}" }
-    snapshot.remoteHosts.firstOrNull {
-        it.isExecutionEnvironment && it.sshConfigured
-    }?.let { return "ssh:${it.id}" }
-    return ""
-}
+@Composable
+private fun localKindTitle(kind: String?): String = stringResource(when (kind) {
+    "project" -> R.string.executiontarget_project_kind
+    "session" -> R.string.executiontarget_session_kind
+    else -> R.string.executiontarget_local_kind
+})
+
+@Composable
+private fun localScopeDetail(kind: String?): String = stringResource(when (kind) {
+    "project" -> R.string.executiontarget_project_detail
+    "session" -> R.string.executiontarget_session_detail
+    else -> R.string.executiontarget_local_kind
+})
 
 @Composable
 private fun targetTitle(
@@ -630,12 +600,12 @@ private fun targetTitle(
         return host?.displayName ?: stringResource(R.string.executiontarget_ssh_kind)
     }
     val local = snapshot?.localEnvironments?.firstOrNull { it.id == target.environmentID }
-    return local?.name?.takeIf { it.isNotBlank() }
-        ?: stringResource(R.string.executiontarget_local_kind)
+    val kind = localKindTitle(local?.kind)
+    return local?.name?.takeIf { it.isNotBlank() && it != target.environmentID }?.let { "$kind · $it" } ?: kind
 }
 
 @Composable
-private fun targetDetail(target: C02TargetUi): String {
+private fun targetDetail(target: C02TargetUi, state: ExecutionTargetUiState): String {
     if (target.kind == "ssh") {
         val detail = listOfNotNull(target.remoteOS, target.remoteArchitecture)
             .joinToString(" · ")
@@ -645,7 +615,8 @@ private fun targetDetail(target: C02TargetUi): String {
             detail
         }
     }
-    return stringResource(R.string.executiontarget_local_kind)
+    val local = state.snapshot?.localEnvironments?.firstOrNull { it.id == target.environmentID }
+    return localScopeDetail(local?.kind)
 }
 
 @Composable

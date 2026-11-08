@@ -77,6 +77,7 @@ class ConversationFlowHolder(
     conversationId: String,
     initialDraft: ComposerDraftSeedUi? = null,
     initialSessionEpoch: Long = 0L,
+    private val onRunActivityChanged: () -> Unit = {},
 ) {
     private var conversationIdInternal: String = conversationId
 
@@ -757,7 +758,9 @@ class ConversationFlowHolder(
      * history. Used by [retireForNavigation]; a rebind re-seeds afterwards.
      */
     private fun discardPresentationPayloads() {
+        val hadSnapshot = snapshot.value != null
         snapshot.value = null
+        if (hadSnapshot) onRunActivityChanged()
         draft.value = TextFieldValue("")
         draftGenerationInternal = 0
         stagedAttachments.value = emptyList()
@@ -840,6 +843,11 @@ class ConversationFlowHolder(
         if (!echoAccepted(next.session)) return
         val previous = snapshot.value
         snapshot.value = next
+        // Background services must see this canonical transition directly;
+        // history refresh and Compose apply notifications can wait for UI.
+        if (previous?.isRunning != next.isRunning || previous?.selectedRunId != next.selectedRunId) {
+            onRunActivityChanged()
+        }
 
         // A replaced temporary incarnation (or promotion out of temporary) is
         // an ACTUAL session change even when the conversation id/epoch is
@@ -1805,12 +1813,16 @@ class ConversationFlowHolder(
 
     fun toggleChecklist() { if (retired) return; checklistExpanded = !checklistExpanded }
 
-    fun exportStructured(): ConversationFlowResult {
+    fun exportStructured(unavailableMessage: String? = null): ConversationFlowResult {
         if (exportInFlight) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
         return if (host.exportStructuredConversation(session)) {
+            actionError = null
             exportInFlight = true
             ConversationFlowResult.Accepted
-        } else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        } else {
+            if (unavailableMessage != null) applyExportSettled(unavailableMessage)
+            rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
     }
 
     /** Host echo for the bounded export job (success opens the share surface

@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 class ExecutionTargetHostController internal constructor(
     private val host: RuntimeHost,
@@ -31,10 +32,13 @@ class ExecutionTargetHostController internal constructor(
     private val mutable = MutableStateFlow(ExecutionTargetUiState())
     val state: StateFlow<ExecutionTargetUiState> = mutable.asStateFlow()
     private var job: Job? = null
+    private val requestSerial = AtomicLong()
 
+    @Synchronized
     fun load(taskID: String) {
+        val request = beginRequest()
         if (!admitted()) {
-            mutable.value = mutable.value.copy(
+            mutable.value = ExecutionTargetUiState(
                 loading = false,
                 taskID = taskID,
                 errorCode = "runtime_unavailable",
@@ -50,41 +54,49 @@ class ExecutionTargetHostController internal constructor(
             )
             return
         }
-        val epoch = host.nativeRootEpoch() ?: return
+        val epoch = host.nativeRootEpoch() ?: run {
+            mutable.value = ExecutionTargetUiState(
+                loading = false, taskID = taskID, errorCode = "runtime_unavailable",
+            )
+            return
+        }
         val generation = host.commandClient.generation()
-        mutable.value = mutable.value.copy(
+        mutable.value = (if (mutable.value.taskID == taskID) mutable.value else ExecutionTargetUiState()).copy(
             loading = true, taskID = taskID, errorCode = null,
             errorMessage = null, preview = null, notice = null,
+            busy = false, retryable = false, challenge = null,
         )
-        job?.cancel()
         job = scope.launch(host.ioDispatcher) {
             val result = runCatching { client.snapshot(taskID) }
-            if (!current(epoch, generation)) return@launch
-            result.onSuccess { snapshot ->
-                mutable.value = mutable.value.copy(
-                    loading = false,
-                    snapshot = snapshot,
-                    errorCode = null,
-                    errorMessage = null,
-                    retryable = false,
-                )
-            }.onFailure { failure ->
-                mutable.value = mutable.value.copy(
-                    loading = false,
-                    errorCode = failure.codeOrNull() ?: "targetUnavailable",
-                    errorMessage = failure.message,
-                    retryable = (failure as? C02TargetFailure)?.retryable == true,
-                    challenge = (failure as? C02TargetFailure)?.challenge,
-                )
+            withCurrent(epoch, generation, taskID, request) {
+                result.onSuccess { snapshot ->
+                    mutable.value = mutable.value.copy(
+                        loading = false,
+                        snapshot = snapshot,
+                        errorCode = null,
+                        errorMessage = null,
+                        retryable = false,
+                    )
+                }.onFailure { failure ->
+                    mutable.value = mutable.value.copy(
+                        loading = false,
+                        errorCode = failure.codeOrNull() ?: "targetUnavailable",
+                        errorMessage = failure.message,
+                        retryable = (failure as? C02TargetFailure)?.retryable == true,
+                        challenge = (failure as? C02TargetFailure)?.challenge,
+                    )
+                }
             }
         }
     }
 
+    @Synchronized
     fun refresh() {
         val taskID = mutable.value.taskID ?: return
         load(taskID)
     }
 
+    @Synchronized
     fun initialize(
         kind: String,
         environmentID: String?,
@@ -93,29 +105,31 @@ class ExecutionTargetHostController internal constructor(
         val taskID = mutable.value.taskID ?: return
         val epoch = host.nativeRootEpoch() ?: return
         val generation = host.commandClient.generation()
+        val request = beginRequest()
         mutable.value = mutable.value.copy(busy = true, errorCode = null, errorMessage = null)
-        job?.cancel()
         job = scope.launch(host.ioDispatcher) {
             val result = runCatching {
                 client.initialize(taskID, kind, environmentID, remoteHostID)
             }
-            if (!current(epoch, generation)) return@launch
-            result.onSuccess {
-                mutable.value = mutable.value.copy(busy = false, notice = "targetSet")
-                job = null
-                load(taskID)
-            }.onFailure {
-                mutable.value = mutable.value.copy(
-                    busy = false,
-                    errorCode = it.codeOrNull() ?: "targetSetFailed",
-                    errorMessage = it.message,
-                    challenge = (it as? C02TargetFailure)?.challenge,
-                    retryable = (it as? C02TargetFailure)?.retryable == true,
-                )
+            withCurrent(epoch, generation, taskID, request) {
+                result.onSuccess {
+                    mutable.value = mutable.value.copy(busy = false, notice = "targetSet")
+                    job = null
+                    load(taskID)
+                }.onFailure {
+                    mutable.value = mutable.value.copy(
+                        busy = false,
+                        errorCode = it.codeOrNull() ?: "targetSetFailed",
+                        errorMessage = it.message,
+                        challenge = (it as? C02TargetFailure)?.challenge,
+                        retryable = (it as? C02TargetFailure)?.retryable == true,
+                    )
+                }
             }
         }
     }
 
+    @Synchronized
     fun checkMigration(
         kind: String,
         environmentID: String?,
@@ -126,11 +140,11 @@ class ExecutionTargetHostController internal constructor(
         val target = snapshot.target ?: return
         val epoch = host.nativeRootEpoch() ?: return
         val generation = host.commandClient.generation()
+        val request = beginRequest()
         mutable.value = mutable.value.copy(
             busy = true, preview = null, errorCode = null,
             errorMessage = null, challenge = null,
         )
-        job?.cancel()
         job = scope.launch(host.ioDispatcher) {
             val result = runCatching {
                 client.checkMigration(
@@ -141,24 +155,26 @@ class ExecutionTargetHostController internal constructor(
                     hostID = remoteHostID,
                 )
             }
-            if (!current(epoch, generation)) return@launch
-            result.onSuccess { preview ->
-                mutable.value = mutable.value.copy(
-                    busy = false, preview = preview, challenge = preview.challenge,
-                    errorCode = null, errorMessage = null,
-                )
-            }.onFailure {
-                mutable.value = mutable.value.copy(
-                    busy = false,
-                    errorCode = it.codeOrNull() ?: "checkFailed",
-                    errorMessage = it.message,
-                    retryable = (it as? C02TargetFailure)?.retryable == true,
-                    challenge = (it as? C02TargetFailure)?.challenge,
-                )
+            withCurrent(epoch, generation, taskID, request) {
+                result.onSuccess { preview ->
+                    mutable.value = mutable.value.copy(
+                        busy = false, preview = preview, challenge = preview.challenge,
+                        errorCode = null, errorMessage = null,
+                    )
+                }.onFailure {
+                    mutable.value = mutable.value.copy(
+                        busy = false,
+                        errorCode = it.codeOrNull() ?: "checkFailed",
+                        errorMessage = it.message,
+                        retryable = (it as? C02TargetFailure)?.retryable == true,
+                        challenge = (it as? C02TargetFailure)?.challenge,
+                    )
+                }
             }
         }
     }
 
+    @Synchronized
     fun beginMigration(
         kind: String,
         environmentID: String?,
@@ -177,8 +193,8 @@ class ExecutionTargetHostController internal constructor(
         }
         val epoch = host.nativeRootEpoch() ?: return
         val generation = host.commandClient.generation()
+        val request = beginRequest()
         mutable.value = mutable.value.copy(busy = true, errorCode = null, errorMessage = null)
-        job?.cancel()
         job = scope.launch(host.ioDispatcher) {
             val result = runCatching {
                 client.beginMigration(
@@ -189,52 +205,56 @@ class ExecutionTargetHostController internal constructor(
                     hostID = remoteHostID,
                 )
             }
-            if (!current(epoch, generation)) return@launch
-            result.onSuccess {
-                mutable.value = mutable.value.copy(
-                    busy = false, preview = null, challenge = null, notice = "moved",
-                )
-                job = null
-                load(taskID)
-            }.onFailure {
-                mutable.value = mutable.value.copy(
-                    busy = false,
-                    errorCode = it.codeOrNull() ?: "moveFailed",
-                    errorMessage = it.message,
-                    retryable = (it as? C02TargetFailure)?.retryable == true,
-                    challenge = (it as? C02TargetFailure)?.challenge,
-                )
+            withCurrent(epoch, generation, taskID, request) {
+                result.onSuccess {
+                    mutable.value = mutable.value.copy(
+                        busy = false, preview = null, challenge = null, notice = "moved",
+                    )
+                    job = null
+                    load(taskID)
+                }.onFailure {
+                    mutable.value = mutable.value.copy(
+                        busy = false,
+                        errorCode = it.codeOrNull() ?: "moveFailed",
+                        errorMessage = it.message,
+                        retryable = (it as? C02TargetFailure)?.retryable == true,
+                        challenge = (it as? C02TargetFailure)?.challenge,
+                    )
+                }
             }
         }
     }
 
+    @Synchronized
     fun cancelMigration() {
         val taskID = mutable.value.taskID ?: return
         val migration = mutable.value.snapshot?.migration ?: return
         if (migration.phase == "committed" || migration.phase == "completed") return
         val epoch = host.nativeRootEpoch() ?: return
         val generation = host.commandClient.generation()
+        val request = beginRequest()
         mutable.value = mutable.value.copy(busy = true, errorCode = null)
-        job?.cancel()
         job = scope.launch(host.ioDispatcher) {
             val result = runCatching {
                 client.cancelMigration(taskID, migration.revision)
             }
-            if (!current(epoch, generation)) return@launch
-            result.onSuccess {
-                mutable.value = mutable.value.copy(busy = false, notice = "moveCancelled")
-                job = null
-                load(taskID)
-            }.onFailure {
-                mutable.value = mutable.value.copy(
-                    busy = false,
-                    errorCode = it.codeOrNull() ?: "cancelFailed",
-                    errorMessage = it.message,
-                )
+            withCurrent(epoch, generation, taskID, request) {
+                result.onSuccess {
+                    mutable.value = mutable.value.copy(busy = false, notice = "moveCancelled")
+                    job = null
+                    load(taskID)
+                }.onFailure {
+                    mutable.value = mutable.value.copy(
+                        busy = false,
+                        errorCode = it.codeOrNull() ?: "cancelFailed",
+                        errorMessage = it.message,
+                    )
+                }
             }
         }
     }
 
+    @Synchronized
     fun approveHostKey(
         challengeID: String,
         accept: Boolean,
@@ -244,8 +264,8 @@ class ExecutionTargetHostController internal constructor(
         val taskID = mutable.value.taskID ?: return
         val epoch = host.nativeRootEpoch() ?: return
         val generation = host.commandClient.generation()
+        val request = beginRequest()
         mutable.value = mutable.value.copy(busy = true, errorCode = null)
-        job?.cancel()
         job = scope.launch(host.ioDispatcher) {
             val result = runCatching {
                 client.approveHostKey(
@@ -256,51 +276,69 @@ class ExecutionTargetHostController internal constructor(
                     expectedFingerprint = expectedFingerprint,
                 )
             }
-            if (!current(epoch, generation)) return@launch
-            result.onSuccess {
-                mutable.value = mutable.value.copy(
-                    busy = false, challenge = null, notice = if (accept) "hostTrusted" else "hostRejected",
-                )
-            }.onFailure {
-                mutable.value = mutable.value.copy(
-                    busy = false,
-                    errorCode = it.codeOrNull() ?: "hostKeyFailed",
-                    errorMessage = it.message,
-                )
+            withCurrent(epoch, generation, taskID, request) {
+                result.onSuccess {
+                    mutable.value = mutable.value.copy(
+                        busy = false, challenge = null, notice = if (accept) "hostTrusted" else "hostRejected",
+                    )
+                }.onFailure {
+                    mutable.value = mutable.value.copy(
+                        busy = false,
+                        errorCode = it.codeOrNull() ?: "hostKeyFailed",
+                        errorMessage = it.message,
+                    )
+                }
             }
         }
     }
 
+    @Synchronized
     fun clearPreview() {
         mutable.value = mutable.value.copy(preview = null)
     }
 
+    @Synchronized
     fun dismissError() {
         mutable.value = mutable.value.copy(
             errorCode = null, errorMessage = null, retryable = false,
         )
     }
 
+    @Synchronized
     fun dismissNotice() {
         mutable.value = mutable.value.copy(notice = null)
     }
 
+    @Synchronized
     fun release() {
-        job?.cancel()
-        job = null
+        beginRequest()
     }
 
     private fun admitted(): Boolean =
         host.nativeRootEpoch() != null && host.readiness.value.storeReady
 
-    private fun current(epoch: Long, generation: Long): Boolean =
-        host.nativeRootEpoch() == epoch && host.commandClient.generation() == generation
+    private fun beginRequest(): Long {
+        val request = requestSerial.incrementAndGet()
+        job?.cancel()
+        job = null
+        return request
+    }
+
+    private fun withCurrent(
+        epoch: Long, generation: Long, taskID: String, request: Long, settle: () -> Unit,
+    ) = synchronized(this) {
+        if (current(epoch, generation, taskID, request)) settle()
+    }
+
+    private fun current(epoch: Long, generation: Long, taskID: String, request: Long): Boolean =
+        requestSerial.get() == request && mutable.value.taskID == taskID &&
+            host.nativeRootEpoch() == epoch && host.commandClient.generation() == generation
 
     private fun previewBelongsToTask(
         preview: C02MigrationPreviewUi,
         taskID: String,
         revision: Long,
-    ): Boolean = preview.taskID == taskID && preview.source.revision == revision
+    ): Boolean = preview.taskID.equals(taskID, ignoreCase = true) && preview.source.revision == revision
 }
 
 private fun Throwable.codeOrNull(): String? = (this as? C02TargetFailure)?.code

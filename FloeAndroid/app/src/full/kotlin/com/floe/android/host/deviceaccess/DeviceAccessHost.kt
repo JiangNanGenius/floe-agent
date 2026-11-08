@@ -214,7 +214,7 @@ internal class DeviceAccessHost(
     @Volatile private var explicitResumeOwner: PhoneControlOwner? = null
     @Volatile private var pauseStateInvalid = pauseSaved != null && phonePause.snapshot == null
     private val automationControls = PhoneAutomationControls(context, ::onAutomationControl)
-    @Volatile private var automatedOwner: PhoneControlOwner? = null
+    private val automatedOwner = java.util.concurrent.atomic.AtomicReference<PhoneControlOwner?>(null)
     private var unlockConfigured = false
     @Volatile
     private var phoneStatus: PhoneControlStatus = PhoneControlModule.statusSnapshot()
@@ -518,6 +518,10 @@ internal class DeviceAccessHost(
 
     fun onActivityPaused() = Unit
 
+    fun onRunActivityChanged() {
+        if (!closed) publish()
+    }
+
     /**
      * Explicit presentation entry: the stateless settings page was composed.
      * The presentation is a one-shot StateFlow projection, and a run can have
@@ -532,7 +536,7 @@ internal class DeviceAccessHost(
     fun close() {
         if (closed) return
         closed = true
-        automatedOwner?.let { phoneClient?.finishAutomation(it) }
+        automatedOwner.getAndSet(null)?.let { phoneClient?.finishAutomation(it) }
         automationControls.clear()
         closePairingSession()
         PairingNotificationRelay.detach(this)
@@ -1264,14 +1268,14 @@ internal class DeviceAccessHost(
     private fun publish() {
         if (closed) return
         markStoppedOwnerSettled()
-        automatedOwner?.takeUnless { isOwnerRunLive(it) }?.let { ended ->
-            automatedOwner = null
+        val ended = automatedOwner.get()?.takeUnless { isOwnerRunLive(it) }
+        if (ended != null && automatedOwner.compareAndSet(ended, null)) {
             if (explicitResumeOwner == ended) explicitResumeOwner = null
             if (armedOwner == ended) armedOwner = null
             phoneClient?.finishAutomation(ended)
-            automationControls.clear()
+            automationControls.clear(expectedOwner = ended)
         }
-        automatedOwner?.takeIf { !userStopped && isOwnerRunLive(it) }?.let {
+        automatedOwner.get()?.takeIf { !userStopped && isOwnerRunLive(it) }?.let {
             automationControls.show(it, titleFor(it), settings.floatingControls, phonePause.isPaused(it))
         }
         reconcileScreenShare()
@@ -1525,7 +1529,7 @@ internal class DeviceAccessHost(
                             return@launch
                         }
                         armedOwner = owner
-                        automatedOwner = owner
+                        automatedOwner.set(owner)
                         phoneStatus = result.value
                         userStopped = false
                         lastStoppedOwner = null
@@ -1558,7 +1562,7 @@ internal class DeviceAccessHost(
         }
     }
 
-    private fun controlOwner(): PhoneControlOwner? = armingOwner ?: phoneStatus.activeOwner ?: armedOwner ?: automatedOwner
+    private fun controlOwner(): PhoneControlOwner? = armingOwner ?: phoneStatus.activeOwner ?: armedOwner ?: automatedOwner.get()
 
     private fun clearPersistedPause(): Boolean = preferences.edit().remove(KEY_PHONE_PAUSE).commit()
 
@@ -2628,7 +2632,7 @@ internal class DeviceAccessHost(
             if (!userStopped && phonePause.resumeAfterHumanAnswer(owner, call.pauseApprovalID, call.presenceApprovedAtMillis, ::clearPersistedPause)) {
                 explicitResumeOwner = owner
             } else {
-                automatedOwner = owner
+                automatedOwner.set(owner)
                 automationControls.show(owner, titleFor(owner), settings.floatingControls, paused = true)
                 return@withLock pausedPhoneOutcome(call) ?: PlatformToolOutcome.Failure("phone_interrupted")
             }
@@ -2644,7 +2648,7 @@ internal class DeviceAccessHost(
             return@withLock PlatformToolOutcome.Failure("phone_busy")
         val keyguard = context.getSystemService(KeyguardManager::class.java)
         automationControls.show(owner, titleFor(owner), settings.floatingControls)
-        automatedOwner = owner
+        automatedOwner.set(owner)
         if (!keyguard.isKeyguardLocked && client.userIsActive() &&
             call.presenceApprovedAtMillis < client.lastUserInteractionWallMillis()) {
             return@withLock PlatformToolOutcome.Failure("phone_presence_required")

@@ -4,6 +4,12 @@
     <string name="executiontarget_current">This task runs on</string>
     <string name="executiontarget_not_set">Not set yet</string>
     <string name="executiontarget_local_kind">Linux environment</string>
+    <string name="executiontarget_project_kind">Project Linux</string>
+    <string name="executiontarget_session_kind">Task Linux</string>
+    <string name="executiontarget_project_detail">Share this project’s software and graphical apps</string>
+    <string name="executiontarget_session_detail">An environment dedicated to this task</string>
+    <string name="executiontarget_selected_location">Current location</string>
+    <string name="executiontarget_choose_other">Choose another location to move this task.</string>
     <string name="executiontarget_ssh_kind">SSH host</string>
     <string name="executiontarget_revision">Target revision %1$d</string>
     <string name="executiontarget_choose">Choose a location</string>

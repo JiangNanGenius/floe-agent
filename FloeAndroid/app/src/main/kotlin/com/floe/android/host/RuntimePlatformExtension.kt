@@ -43,6 +43,9 @@ interface RuntimePlatformExtension {
 
     fun onActivityPaused() = Unit
 
+    /** Notification only: authoritative holder activity changed, including in background. */
+    fun onRunActivityChanged() = Unit
+
     fun close() = Unit
 }
 

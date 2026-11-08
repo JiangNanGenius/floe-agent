@@ -234,6 +234,7 @@
     <string name="menu_set_goal">直接设置目标</string>
     <string name="menu_export_structured">导出完整任务（含工具结果）</string>
     <string name="menu_exporting">正在导出…</string>
+    <string name="menu_export_unavailable">暂时无法导出，请重新打开此任务后重试。</string>
     <string name="menu_export_text">分享对话文本</string>
     <string name="menu_export_markdown">分享对话 Markdown</string>
     <string name="inspector_changes">变更</string>

@@ -27,6 +27,7 @@ class RecordingHost : ConversationUiCallbacks {
     var newTaskAccepted = true
     var markdownBackendAvailable = true
     var selectModelPersisted = true
+    var exportAccepted = true
 
     /** C04 queue-body lane: default false = "the host refused the bounded
      * body read" (the interface default); calls are recorded so tests can
@@ -213,7 +214,7 @@ class RecordingHost : ConversationUiCallbacks {
     }
 
     override fun exportStructuredConversation(session: ConversationSessionToken): Boolean {
-        record("exportStructuredConversation", session); return true
+        record("exportStructuredConversation", session); return exportAccepted
     }
 
     override fun shareConversationText(session: ConversationSessionToken, asMarkdown: Boolean): Boolean {
