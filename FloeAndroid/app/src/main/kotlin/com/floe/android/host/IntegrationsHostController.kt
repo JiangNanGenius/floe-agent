@@ -790,6 +790,11 @@ class IntegrationsHostController internal constructor(
         val cards = buildCatalogCards(installedWithUpdates)
         updateDestination { state ->
             state.copy(
+                upgrade = state.upgrade?.let { sheet ->
+                    installedWithUpdates.firstOrNull { it.skillId == sheet.skillId }?.let { row ->
+                        sheet.copy(installedVersion = row.version, canRollback = row.rollbackAvailable)
+                    } ?: sheet
+                },
                 skills = state.skills.copy(
                     isLoading = false,
                     installed = installedWithUpdates,
