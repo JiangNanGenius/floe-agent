@@ -646,6 +646,7 @@ public actor FloeAgentRuntime {
     private var contextOverflowRecoveryCount = 0
     private var loopGuard = ToolLoopGuard()
     private var executionLedger = HarnessExecutionLedger()
+    private var phoneObservationReviewCache = PhoneObservationReviewCache()
     private var reminderCenter = AgentReminderCenter()
     /// Durable per-call boundaries distinguish a request that never started
     /// from one whose real-world outcome became unknown during interruption.
@@ -1171,6 +1172,7 @@ public actor FloeAgentRuntime {
     /// paused → streamingModel (via preparing replay).
     public func resumeFromPause() async {
         guard case .paused = state else { return }
+        phoneObservationReviewCache = PhoneObservationReviewCache()
         pauseTask?.cancel()
         pauseTask = nil
         // Time was intentionally allowed to pass. Treat the resumed step as
@@ -1289,6 +1291,7 @@ public actor FloeAgentRuntime {
         grants = checkpoint.approvals
         executedIdempotencyKeys = checkpoint.idempotencyKeys
         executionLedger = HarnessExecutionLedger(records: checkpoint.executionLedgerEntries ?? [])
+        phoneObservationReviewCache = PhoneObservationReviewCache()
         toolLifecycleByCallID = Dictionary(
             uniqueKeysWithValues: (checkpoint.toolLifecycleEntries ?? []).map { ($0.callID, $0) }
         )
@@ -1495,6 +1498,9 @@ public actor FloeAgentRuntime {
             committedSteps: Self.approvalCommittedSteps(
                 from: executionLedger.entries,
                 redactingSecret: credentials.apiKey
+            ),
+            observationEvidence: phoneObservationReviewCache.evidence(
+                for: waiting.toolCall, redactingSecret: credentials.apiKey
             ),
             hostAndPathScope: waiting.toolCall.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
@@ -3186,6 +3192,9 @@ public actor FloeAgentRuntime {
                 from: executionLedger.entries,
                 redactingSecret: credentials.apiKey
             ),
+            observationEvidence: phoneObservationReviewCache.evidence(
+                for: call, redactingSecret: credentials.apiKey
+            ),
             hostAndPathScope: call.scope,
             preapprovedPythonScriptSHA256: configuration.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: configuration.preapprovedPythonPackages,
@@ -4416,6 +4425,7 @@ public actor FloeAgentRuntime {
             // Capture the FULL post-redaction result BEFORE the checkpoint's
             // compact projection shrinks it. The bytes live under the task's
             // existing artifact root; `tools.readResult` can page them later.
+            phoneObservationReviewCache.record(call: call, result: result, outcomeUnknown: outcomeUnknown)
             if call.toolName != ToolResultPagingTool.name {
                 let receipt = await retainCapturedResult(call, result: result)
                 if let receipt {

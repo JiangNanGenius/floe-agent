@@ -24,6 +24,9 @@ public struct ProposedAction: Sendable, Codable {
     /// returned excerpts remain untrusted and do not prove a user's goal or
     /// external effect completed. They provide ordering context, not authority.
     public var committedSteps: [CommittedStepReceipt]
+    /// Settled phone output for the exact observation/node in this call.
+    /// Context only: never permission, freshness or proof of an effect.
+    public var observationEvidence: PhoneObservationEvidence?
     public var hostAndPathScope: ToolScope
     /// Exact source/package fingerprints audited while installed skills were
     /// activated. These values grant no general Python authority.
@@ -43,6 +46,7 @@ public struct ProposedAction: Sendable, Codable {
         recentContext: String = "",
         userRequests: [String]? = nil,
         committedSteps: [CommittedStepReceipt] = [],
+        observationEvidence: PhoneObservationEvidence? = nil,
         hostAndPathScope: ToolScope,
         preapprovedPythonScriptSHA256: Set<String> = [],
         preapprovedPythonPackages: Set<String> = [],
@@ -60,6 +64,7 @@ public struct ProposedAction: Sendable, Codable {
                 isSideEffecting: $0.isSideEffecting
             )
         }
+        self.observationEvidence = observationEvidence
         self.hostAndPathScope = hostAndPathScope
         self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
         self.preapprovedPythonPackages = preapprovedPythonPackages
@@ -68,7 +73,7 @@ public struct ProposedAction: Sendable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case toolCall, riskLabels, userGoal, recentContext, userRequests
-        case committedSteps, hostAndPathScope
+        case committedSteps, observationEvidence, hostAndPathScope
         case preapprovedPythonScriptSHA256, preapprovedPythonPackages
         case trustedContext
     }
@@ -86,6 +91,8 @@ public struct ProposedAction: Sendable, Codable {
             userRequests: try values.decodeIfPresent([String].self, forKey: .userRequests),
             committedSteps: try values.decodeIfPresent(
                 [CommittedStepReceipt].self, forKey: .committedSteps) ?? [],
+            observationEvidence: try values.decodeIfPresent(
+                PhoneObservationEvidence.self, forKey: .observationEvidence),
             hostAndPathScope: try values.decode(ToolScope.self, forKey: .hostAndPathScope),
             preapprovedPythonScriptSHA256: try values.decode(
                 Set<String>.self, forKey: .preapprovedPythonScriptSHA256),
@@ -94,6 +101,39 @@ public struct ProposedAction: Sendable, Codable {
             trustedContext: try values.decodeIfPresent(
                 TrustedExecutionContext.self, forKey: .trustedContext)
         )
+    }
+}
+
+/// A small node projection from a real settled phone result, not assistant
+/// prose. A node ref has meaning only inside its named observation. Decoding
+/// applies the same bounds; this does not widen the general receipt budget.
+public struct PhoneObservationEvidence: Sendable, Codable, Hashable {
+    public let sourceTool: String
+    public let observationID: String
+    public let pageSummary: String
+    public let nodeRef: String
+    public let nodeSummary: String
+
+    public init(sourceTool: String, observationID: String, pageSummary: String,
+                nodeRef: String, nodeSummary: String) {
+        self.sourceTool = String(sourceTool.prefix(120))
+        self.observationID = String(observationID.prefix(36))
+        self.pageSummary = String(pageSummary.prefix(240))
+        self.nodeRef = String(nodeRef.prefix(32))
+        self.nodeSummary = String(nodeSummary.prefix(256))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceTool, observationID, pageSummary, nodeRef, nodeSummary
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(sourceTool: try values.decode(String.self, forKey: .sourceTool),
+                  observationID: try values.decode(String.self, forKey: .observationID),
+                  pageSummary: try values.decode(String.self, forKey: .pageSummary),
+                  nodeRef: try values.decode(String.self, forKey: .nodeRef),
+                  nodeSummary: try values.decode(String.self, forKey: .nodeSummary))
     }
 }
 
