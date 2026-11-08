@@ -546,7 +546,7 @@
       "originalSha256": null,
       "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
       "source": "notices/source-index.json",
-      "sha256": "f96e748b716a34713834cdd02051477c5feca4feffc8d88030820e09752f92ff"
+      "sha256": "1d173897cc5b7bccd7e6c0ee3d237cfb7542c7ba677cffacb338fd7b19485380"
     },
     {
       "operation": "replace",
@@ -1054,8 +1054,8 @@
     }
   ],
   "sourceAccess": {
-    "tag": "android/v0.1.0-alpha.59",
-    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.59/floe-android-corresponding-source-0.1.0-alpha.59.tar.gz",
+    "tag": "android/v0.1.0-alpha.60",
+    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.60/floe-android-corresponding-source-0.1.0-alpha.60.tar.gz",
     "nativeSource": "https://github.com/CollaboraOnline/online.mirror/tree/2333344185931274f9c49d6c12a408cefcef6844",
     "privatePathsExcluded": true
   }
