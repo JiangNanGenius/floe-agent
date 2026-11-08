@@ -190,4 +190,8 @@
     <string name="remote_vnc_host_hint">Connect directly to a VNC server. No SSH identity is required.</string>
     <string name="remote_vnc_ssh_hint">Traffic is forwarded through this host\'s SSH connection.</string>
     <string name="open_sidebar">Open sidebar</string>
+    <string name="remote_vnc_pointer_mode">Pointer mode</string>
+    <string name="remote_vnc_direct_touch">Direct touch</string>
+    <string name="remote_vnc_trackpad">Trackpad</string>
+    <string name="remote_vnc_trackpad_hint">Slide anywhere to move the pointer. Tap to click; double tap for right click. Hold, then slide to drag. Two fingers scroll or zoom.</string>
 </resources>

@@ -20,7 +20,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -59,12 +58,17 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -83,13 +87,13 @@ import com.floe.android.design.FloeBadgePill
 import com.floe.android.design.FloeBadgeTone
 import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeDivider
+import com.floe.android.design.FloeSegmented
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.IconGlyph
-import com.floe.android.design.detectFloeTwoFingerTransforms
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -151,6 +155,17 @@ fun RemoteVncViewerPage(
     var textFieldFocused by remember(vnc.sessionID) { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val context = LocalContext.current
+    val inputPreferences = remember(context) { RemoteVncInputPreferences(context) }
+    var inputMode by remember(inputPreferences) { mutableStateOf(inputPreferences.load()) }
+    val viewConfiguration = LocalViewConfiguration.current
+    val pointer = remember(vnc.sessionID) {
+        VncTouchPointer(vnc.width, vnc.height, inputMode,
+            viewConfiguration.doubleTapTimeoutMillis, viewConfiguration.longPressTimeoutMillis,
+            viewConfiguration.touchSlop)
+    }
+    var pointerPosition by remember(pointer) { mutableStateOf(pointer.position) }
+    var inputForeground by remember(vnc.sessionID) { mutableStateOf(true) }
 
     val transform = vncTransform(
         viewWidth = viewSize.width.toFloat(),
@@ -164,18 +179,44 @@ fun RemoteVncViewerPage(
     val imageBitmap = remember(vnc.revision, vnc.bitmap) { vnc.bitmap?.asImageBitmap() }
     val currentTransform by rememberUpdatedState(transform)
 
+    fun applyPointer(actions: List<VncPointerAction>) {
+        actions.forEach { action ->
+            when (action) {
+                is VncPointerAction.Move -> onPointerMove(action.x, action.y)
+                is VncPointerAction.Button -> onPointerButton(action.button, action.down, action.x, action.y)
+            }
+        }
+        pointerPosition = pointer.position
+        if (inputMode == VncInputMode.TRACKPAD && actions.any { it is VncPointerAction.Move }) {
+            val next = vncPanToPointer(currentTransform, pointer.position,
+                viewSize.width.toFloat(), viewSize.height.toFloat(), zoom, panX, panY, 24f)
+            panX = next.first
+            panY = next.second
+        }
+    }
+    fun releaseInput() {
+        applyPointer(pointer.cancel())
+        onReleaseAll()
+        modifiers = emptySet()
+    }
+    LaunchedEffect(pointer, vnc.width, vnc.height) {
+        applyPointer(pointer.resize(vnc.width, vnc.height))
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, vnc.sessionID) {
         val lifecycle = lifecycleOwner.lifecycle
         // Dialog contexts need not be LifecycleOwners. Re-entering the viewer
         // after its software picker must resume frame delivery immediately,
         // including when the host was already started before composition.
-        onVisible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        inputForeground = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        onVisible(inputForeground)
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> onVisible(true)
+                Lifecycle.Event.ON_START -> { inputForeground = true; onVisible(true) }
                 Lifecycle.Event.ON_STOP -> {
-                    onReleaseAll()
+                    inputForeground = false
+                    releaseInput()
                     onVisible(false)
                 }
                 else -> Unit
@@ -183,7 +224,7 @@ fun RemoteVncViewerPage(
         }
         lifecycle.addObserver(observer)
         onDispose {
-            onReleaseAll()
+            releaseInput()
             onVisible(false)
             lifecycle.removeObserver(observer)
         }
@@ -217,26 +258,27 @@ fun RemoteVncViewerPage(
                         FloeToolbarIconButton(
                             icon = FloeIcons.ChevronBack,
                             contentDescription = resolvedCloseLabel,
-                            onClick = onClose,
+                            onClick = { releaseInput(); onClose() },
                         )
                     },
                     actions = {
                         VncBarTextButton(
                             label = stringResource(R.string.remote_vnc_keyboard),
                             contentDescription = stringResource(R.string.remote_vnc_keyboard),
-                            onClick = { keyboardVisible = !keyboardVisible },
+                            onClick = { releaseInput(); keyboardVisible = !keyboardVisible },
                             tint = if (keyboardVisible) Floe.colors.accent else Floe.colors.label,
                         )
                         FloeToolbarIconButton(
                             icon = FloeIcons.Ellipsis,
                             contentDescription = stringResource(R.string.remote_vnc_viewer_options),
-                            onClick = { menuOpen = true },
+                            onClick = { releaseInput(); menuOpen = true },
                             tint = if (menuOpen) Floe.colors.accent else Floe.colors.label,
                         )
                         FloeToolbarIconButton(
                             icon = FloeIcons.ChevronUp,
                             contentDescription = stringResource(R.string.remote_vnc_hide_controls),
                             onClick = {
+                                releaseInput()
                                 menuOpen = false
                                 keyboardVisible = false
                                 chromeHidden = true
@@ -259,98 +301,31 @@ fun RemoteVncViewerPage(
                 .fillMaxWidth()
                 .background(androidx.compose.ui.graphics.Color.Black)
                 .onSizeChanged { viewSize = it }
-                .pointerInput(vnc.sessionID, vnc.width, vnc.height) {
-                    detectTapGestures(
-                        onTap = { point ->
-                            vncMapPoint(currentTransform, point.x, point.y)?.let { (x, y) ->
-                                onPointerButton("left", true, x, y)
-                                onPointerButton("left", false, x, y)
-                            }
-                        },
-                        onLongPress = { point ->
-                            vncMapPoint(currentTransform, point.x, point.y)?.let { (x, y) ->
-                                onPointerButton("right", true, x, y)
-                                onPointerButton("right", false, x, y)
-                            }
-                        },
-                    )
-                }
-                .pointerInput(vnc.sessionID) {
-                    var lastPoint: Pair<Int, Int>? = null
-                    detectDragGestures(
-                        onDragStart = { point ->
-                            lastPoint = vncMapPoint(currentTransform, point.x, point.y)
-                            lastPoint?.let { (x, y) -> onPointerButton("left", true, x, y) }
-                        },
-                        onDragEnd = {
-                            lastPoint?.let { (x, y) -> onPointerButton("left", false, x, y) }
-                            lastPoint = null
-                        },
-                        onDragCancel = {
-                            lastPoint?.let { (x, y) -> onPointerButton("left", false, x, y) }
-                            lastPoint = null
-                        },
-                    ) { change, _ ->
-                        vncMapPoint(currentTransform, change.position.x, change.position.y)?.let { (x, y) ->
-                            lastPoint = x to y
-                            onPointerMove(x, y)
-                        }
-                    }
-                }
-                .pointerInput(vnc.sessionID) {
-                    detectFloeTwoFingerTransforms(onTakeover = onReleaseAll) { centroid, pan, gestureZoom ->
-                        if (zoom <= 1.001f && abs(gestureZoom - 1f) < 0.02f &&
-                            abs(pan.y) >= 1f
-                        ) {
-                            // Two-finger vertical drag at fit zoom is the
-                            // touch wheel; when zoomed it pans instead.
-                            vncMapPoint(currentTransform, centroid.x, centroid.y)?.let { point ->
-                                onWheel(
-                                    if (pan.y < 0f) "up" else "down",
-                                    minOf(20, maxOf(1, abs(pan.y).roundToInt())),
-                                    point.first,
-                                    point.second,
-                                )
+                .pointerInput(pointer, inputMode, menuOpen, chromeHidden, keyboardVisible,
+                    inputForeground, vnc.width, vnc.height, vnc.state) {
+                    if (!inputForeground || menuOpen || vnc.state != "connected" || vnc.width <= 0 || vnc.height <= 0) return@pointerInput
+                    applyPointer(pointer.changeMode(inputMode))
+                    detectVncPointerInput(
+                        pointer = pointer,
+                        transform = { currentTransform },
+                        onInput = ::applyPointer,
+                        onReleaseAll = ::releaseInput,
+                        onWheel = onWheel,
+                    ) { centroid, pan, gestureZoom ->
+                        if (zoom <= 1.001f && abs(gestureZoom - 1f) < 0.02f && abs(pan.y) >= 1f) {
+                            val point = if (inputMode == VncInputMode.TRACKPAD) pointer.position.pixel else
+                                vncMapPoint(currentTransform, centroid.x, centroid.y)
+                            point?.let {
+                                onWheel(if (pan.y < 0f) "up" else "down",
+                                    abs(pan.y).roundToInt().coerceIn(1, 20), it.first, it.second)
                             }
                         } else {
                             val nextZoom = vncClampZoom(zoom, gestureZoom)
-                            val (nextX, nextY) = vncClampPan(
-                                viewSize.width.toFloat(),
-                                viewSize.height.toFloat(),
-                                vnc.width,
-                                vnc.height,
-                                nextZoom,
-                                panX + pan.x,
-                                panY + pan.y,
-                            )
+                            val next = vncClampPan(viewSize.width.toFloat(), viewSize.height.toFloat(),
+                                vnc.width, vnc.height, nextZoom, panX + pan.x, panY + pan.y)
                             zoom = nextZoom
-                            panX = nextX
-                            panY = nextY
-                        }
-                    }
-                }
-                .pointerInput(vnc.sessionID, vnc.width, vnc.height) {
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (event.type == PointerEventType.Scroll) {
-                                val change = event.changes.firstOrNull() ?: continue
-                                val delta = change.scrollDelta.y
-                                if (abs(delta) > 0.01f) {
-                                    val point = vncMapPoint(
-                                        transform,
-                                        change.position.x,
-                                        change.position.y,
-                                    ) ?: continue
-                                    onWheel(
-                                        if (delta < 0f) "up" else "down",
-                                        minOf(20, maxOf(1, abs(delta).roundToInt())),
-                                        point.first,
-                                        point.second,
-                                    )
-                                    change.consume()
-                                }
-                            }
+                            panX = next.first
+                            panY = next.second
                         }
                     }
                 },
@@ -372,6 +347,22 @@ fun RemoteVncViewerPage(
                         ),
                         filterQuality = FilterQuality.Low,
                     )
+                    if (inputMode == VncInputMode.TRACKPAD) {
+                        val cursor = Path().apply {
+                            moveTo(0f, 0f); lineTo(0f, 18f); lineTo(4.5f, 14.5f)
+                            lineTo(8f, 22f); lineTo(11f, 20.5f); lineTo(7.5f, 13f)
+                            lineTo(14f, 13f); close()
+                        }
+                        val cursorDensity = density
+                        withTransform({
+                            translate(transform.offsetX + pointerPosition.x * transform.scale,
+                                transform.offsetY + pointerPosition.y * transform.scale)
+                            scale(cursorDensity, cursorDensity, Offset.Zero)
+                        }) {
+                            drawPath(cursor, Color.White)
+                            drawPath(cursor, Color.Black, style = Stroke(width = 1.5f))
+                        }
+                    }
                 }
             } else {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -515,12 +506,29 @@ fun RemoteVncViewerPage(
                         FloeCapsuleAction(
                             label = stringResource(R.string.remote_vnc_release_input),
                             onClick = {
-                                onReleaseAll()
+                                releaseInput()
                                 menuOpen = false
                             },
                             showHairline = false,
                         )
                     }
+                    FloeDivider()
+                    FloeText(stringResource(R.string.remote_vnc_pointer_mode),
+                        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                    FloeSegmented(
+                        options = listOf(stringResource(R.string.remote_vnc_direct_touch), stringResource(R.string.remote_vnc_trackpad)),
+                        selectedIndex = if (inputMode == VncInputMode.DIRECT) 0 else 1,
+                        onSelect = { index ->
+                            releaseInput()
+                            val next = if (index == 0) VncInputMode.DIRECT else VncInputMode.TRACKPAD
+                            applyPointer(pointer.changeMode(next))
+                            inputPreferences.save(next)
+                            inputMode = next
+                        },
+                    )
+                    FloeText(stringResource(if (inputMode == VncInputMode.TRACKPAD)
+                        R.string.remote_vnc_trackpad_hint else R.string.remote_vnc_input_hint),
+                        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                     FloeDivider()
                     Row(
                         Modifier.fillMaxWidth(),
@@ -556,12 +564,6 @@ fun RemoteVncViewerPage(
                         )
                     }
                     infoActions?.invoke(this)
-                    FloeDivider()
-                    FloeText(
-                        stringResource(R.string.remote_vnc_input_hint),
-                        style = Floe.typography.metadata,
-                        color = Floe.colors.secondaryLabel,
-                    )
                 }
             }
             }

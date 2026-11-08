@@ -190,4 +190,8 @@
     <string name="remote_vnc_host_hint">直接连接 VNC 服务器，无需 SSH 身份。</string>
     <string name="remote_vnc_ssh_hint">流量将通过此主机的 SSH 连接转发。</string>
     <string name="open_sidebar">打开侧栏</string>
+    <string name="remote_vnc_pointer_mode">鼠标操作</string>
+    <string name="remote_vnc_direct_touch">直接触屏</string>
+    <string name="remote_vnc_trackpad">触控板</string>
+    <string name="remote_vnc_trackpad_hint">滑动画面移动指针；单击确认，双击右键。长按后滑动可拖拽，双指滚动或缩放。</string>
 </resources>

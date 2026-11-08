@@ -1,6 +1,6 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
-日期：2026-11-06，实测更新至2026-11-08。当前：[Alpha60/code86已公开](releases/ANDROID_ALPHA60_DELIVERY.md)，固定App源 `351a23a918ded61a8ba54d34164cfb234afcc8a3`。三星保留数据安装后，真实项目图形窗口和显式迁移后的模型执行目标匹配；诊断命令exit2及后续VNC断连保留，未宣称新会话编辑保存通过。七附件完整公开字节与生产解析器读回完成；部分浏览直链504，同一资产的匿名官方REST路由可取得精确字节，App备用下载修复仍在下一代码批次。整轮N01–N08继续，逐项区分代码、编译、实机与交付。
+日期：2026-11-06，实测更新至2026-11-09。当前：[Alpha62/code88已公开](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.62)，固定App源 `ab48bbcec558f587e0574ac2d1f2c45e0d8769c1`。七附件完整公开字节、不可变来源和实际更新解析器读回完成；三星通过App内完整包从Alpha61升级到62，两个包的安装字节和UID已核对，原记录保留。桌面共用紧凑工具栏、隐藏／恢复及真实键盘目录切换有三星证据。Android9索尼组件故障的具体原因仍未知；新版分阶段诊断不等于该设备已修复。整轮N01–N08继续。
 
 iOS对照沿用固定视觉参照 `36f63bf4` 及原有编号。Alpha46的 `c828775b6`→`e4d334904` 仅为签名／版本／上传元数据变化；Alpha47后又登记Biology模块与独立宿主提交 `eb3bb7bca` 的51条路径，作为下一轮独立能力复核，不移动本轮范围。Alpha52候选又从 `eb3bb7bca` 对照到主集成 `9b016097d`：1481条iOS路径变化按轻量入口、网络历史、工具合同与独立重型模块分类，不等同缺失功能，详见[增量记录](FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md#2026-11-08-alpha52-候选的有界-ios-增量)。后续每个大目标结束增量核对实际iOS主线；不为小修重启全量审计。
 
@@ -679,3 +679,24 @@ English: The shared Linux/VNC viewer now uses one compact toolbar, a recoverable
 
 
 2026-11-09 组件专项代码补充：已将内置组件的原有检查失败拆为封闭的阶段码，区分读取、复制、摘要、包名／版本、证书及系统安装；取消与权限原因保留，异常原文不进入诊断。13项相关JVM检查及集成后的Full／Play Kotlin编译通过。外测索尼的具体失败点仍未证明；这批诊断改进不作为Android9故障销账或刷机依据。下一步固定源码、复用未改native23，生产并使用一份Full候选进行三星迭代。
+
+
+## 2026-11-09 双输入模式补充与Alpha62实测
+
+Alpha62已完成公开交付和三星App内完整升级，未使用adb安装主包。共用查看器的一条控制栏、选项、隐藏／恢复及真实PCManFM键盘目录切换已观察到；关闭查看器后仍可返回既有会话。固定960×1280 Linux画面在竖屏仍有黑边，系统状态栏对比度及全局UI精修继续保留，不把工具栏减少等同远程画布已自适应。
+
+用户新增的输入要求归N05／N08，接到同一个Linux／VNC查看器，不另建远程实现：
+
+| 模式 | 必须行为 |
+| --- | --- |
+| 触控板 | 整个画面相对移动指针；任意位置单击在当前指针处左键，双击只发右键，不能先误发左键；清晰显示指针 |
+| 直接触屏 | 点哪里操作哪里，保留已有拖动、左键双击与长按右键 |
+| 共用 | 菜单可切换并记住选择；保留双指滚动／缩放、键盘及取消／退出释放；多指接管取消未决点击 |
+
+本代码包由一个Normal／auto OpenCode任务推进，主负责人做相关测试、编译和三星验收，不预排依赖任务。新模式尚未包含在公开Alpha62内；后续精确代码与实际APK结果追加，不能用旧包证据宣布新手势通过。Android9报障继续保留，不要求用户先刷机。
+
+English: Alpha62 is publicly available and its full in-App Samsung upgrade, retained identities/data and compact viewer/keyboard case have been observed. Fixed-frame phone letterboxing, system-bar contrast and the reported Sony Android9 failure remain open. The next bounded shared-viewer packet adds persistent trackpad and direct-touch modes, including single-left versus double-right disambiguation; those gestures are not yet in Alpha62.
+
+Alpha62验收收尾：自建测试任务已导出并通过正常App删除，实际仅1次Ark Plan／ark-code-latest调用、0工具调用；图形窗口由手动输入验证。累计退役81个自建测试任务（三星34、模拟器47）和12个旧计划，五条原有记录与项目保留。三星常亮恢复0、无障碍未启用、无线调试0并休眠；自有Android模拟器保持关闭。构建打包副本和完成的源码／增量暂存按各自回执清理，内置盘两次实测分别增加2,714,595,328和482,295,808字节可用空间；保留当前包、回退与原始故障、符号和下一构建要用的缓存。
+
+Alpha63代码检查点：主负责人在OpenCode明确要求主线程接手后，确认原任务取消、原生会话idle且写域释放，直接补完共用查看器手势状态机、模式持久化和模式菜单。18项相关JVM检查与实际Play集成Kotlin编译通过，首次绘制接收者编译错误保留；双击不先发左键、相对小幅移动、长按拖拽和取消／切换释放等覆盖真实生产状态机。尚待精确Full APK和三星手势实测，不据单测宣布实机完成。
