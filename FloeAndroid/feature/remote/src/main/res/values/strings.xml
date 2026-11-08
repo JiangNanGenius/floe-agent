@@ -145,6 +145,12 @@
     <string name="remote_vnc_connecting">Connecting to the remote screen…</string>
     <string name="remote_vnc_input_hint">Tap to click · Long press for right click · Drag to move · Two-finger pinch to zoom</string>
     <string name="remote_vnc_keyboard">Keyboard</string>
+    <string name="remote_vnc_hide_keyboard">Hide keyboard</string>
+    <string name="remote_vnc_type_text">Type text</string>
+    <string name="remote_vnc_hide_controls">Hide controls</string>
+    <string name="remote_vnc_show_controls">Show controls</string>
+    <string name="remote_vnc_viewer_options">Viewer options</string>
+    <string name="remote_vnc_close_viewer">Close viewer</string>
     <string name="remote_vnc_fit">Fit</string>
     <string name="remote_vnc_zoom_in">Zoom in</string>
     <string name="remote_vnc_zoom_out">Zoom out</string>

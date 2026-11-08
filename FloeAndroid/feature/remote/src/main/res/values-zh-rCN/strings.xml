@@ -145,6 +145,12 @@
     <string name="remote_vnc_connecting">正在连接远程屏幕…</string>
     <string name="remote_vnc_input_hint">轻点单击 · 长按右键 · 拖动移动 · 双指捏合缩放</string>
     <string name="remote_vnc_keyboard">键盘</string>
+    <string name="remote_vnc_hide_keyboard">收起键盘</string>
+    <string name="remote_vnc_type_text">输入文本</string>
+    <string name="remote_vnc_hide_controls">隐藏控制</string>
+    <string name="remote_vnc_show_controls">显示控制</string>
+    <string name="remote_vnc_viewer_options">查看器选项</string>
+    <string name="remote_vnc_close_viewer">关闭查看器</string>
     <string name="remote_vnc_fit">适应</string>
     <string name="remote_vnc_zoom_in">放大</string>
     <string name="remote_vnc_zoom_out">缩小</string>

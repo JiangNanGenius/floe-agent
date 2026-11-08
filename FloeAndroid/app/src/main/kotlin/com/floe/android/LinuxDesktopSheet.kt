@@ -15,6 +15,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.floe.android.design.*
 import com.floe.android.feature.remote.RemoteVncViewerPage
+import com.floe.android.feature.remote.R as RemoteR
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.linux.LinuxDesktopCommands
 import com.floe.android.host.linux.LinuxDesktopDiagnosticsAction
@@ -55,41 +56,71 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
         message = stringResource(R.string.linux_desktop_stop_notice),
         confirmLabel = stringResource(R.string.linux_desktop_stop), dismissLabel = stringResource(R.string.cancel),
         onConfirm = { stopRequested = false; service.stop() }, onDismiss = { stopRequested = false })
+    // decorFitsSystemWindows=false keeps the dialog fullscreen and lets the
+    // Compose safe-drawing insets (system bars + IME) pad the content: the
+    // keyboard then shrinks the desktop area instead of panning the top of
+    // the page offscreen.
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(
-        usePlatformDefaultWidth = false, decorFitsSystemWindows = true)) {
+        usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         FloeSettingsContentDensity(compact = compact) {
             Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface).safeDrawingPadding()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween) {
-                    FloeText(stringResource(R.string.linux_desktop_title), style = Floe.typography.title)
-                    FloeCapsuleAction(stringResource(R.string.external_edit_done), onClick = onDismiss,
-                        modifier = Modifier.widthIn(min = 64.dp, max = 96.dp))
-                }
                 val owned = state.workspaceID.equals(workspaceID, true)
                 val viewer = state.vnc?.takeIf { owned }
                 if (viewer != null && !softwareVisible) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FloeCapsuleAction(selectedApp, onClick = { softwareVisible = true }, modifier = Modifier.weight(1f))
-                        if (selectedPath.isNotBlank()) FloeCapsuleAction(stringResource(R.string.linux_desktop_open_file),
-                            onClick = { filesFailed = runCatching { service.openFile(selectedApp, selectedPath, taskID, workspaceID) }.isFailure },
-                            modifier = Modifier.weight(1f))
-                        FloeCapsuleAction(stringResource(R.string.linux_desktop_stop), onClick = { stopRequested = true },
-                            modifier = Modifier.weight(1f))
-                    }
-                    if (state.phase in setOf("save_pending", "close_pending")) {
-                        FloeText(stringResource(R.string.linux_desktop_save_pending))
-                        FloeCapsuleAction(stringResource(R.string.linux_desktop_retry_return), onClick = service::stop)
-                    } else if (filesFailed || state.failure != null) FloeText(stringResource(R.string.linux_desktop_operation_failed))
+                    // The shared viewer bar is the only chrome: it closes
+                    // (hides) the viewer, never stops the session; Stop stays
+                    // an explicit, confirmed action in the options overlay.
                     Box(Modifier.weight(1f)) {
                         RemoteVncViewerPage(viewer, null, compact, onDismiss, service::setVisible,
                             { x, y -> service.input(C05VncInput.PointerMove(x, y)) },
                             { button, down, x, y -> service.input(C05VncInput.PointerButton(button, down, x, y)) },
                             { axis, steps, x, y -> service.input(C05VncInput.Wheel(axis, steps, x, y)) },
                             { key, down -> service.input(C05VncInput.Key(key, down)) },
-                            { service.input(C05VncInput.Text(it)) }, service::releaseInput, {})
+                            { service.input(C05VncInput.Text(it)) }, service::releaseInput, {},
+                            title = selectedApp,
+                            closeLabel = stringResource(RemoteR.string.remote_vnc_close_viewer),
+                            notice = {
+                                if (state.phase in setOf("save_pending", "close_pending")) {
+                                    Row(Modifier.fillMaxWidth()
+                                        .background(Floe.colors.pending.copy(alpha = 0.08f))
+                                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                        FloeText(stringResource(R.string.linux_desktop_save_pending),
+                                            style = Floe.typography.metadata, color = Floe.colors.label,
+                                            modifier = Modifier.weight(1f))
+                                        FloeCapsuleAction(stringResource(R.string.linux_desktop_retry_return),
+                                            onClick = service::stop, showHairline = false)
+                                    }
+                                } else if (filesFailed || state.failure != null) {
+                                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                                        FloeText(stringResource(R.string.linux_desktop_operation_failed),
+                                            style = Floe.typography.metadata, color = Floe.colors.destructive)
+                                    }
+                                }
+                            },
+                            infoActions = {
+                                if (selectedPath.isNotBlank()) {
+                                    FloeCapsuleAction(stringResource(R.string.linux_desktop_open_file),
+                                        onClick = {
+                                            filesFailed = runCatching {
+                                                service.openFile(selectedApp, selectedPath, taskID, workspaceID)
+                                            }.isFailure
+                                        })
+                                }
+                                FloeCapsuleAction(stringResource(R.string.linux_desktop_software),
+                                    onClick = { softwareVisible = true })
+                                FloeCapsuleAction(stringResource(R.string.linux_desktop_stop),
+                                    onClick = { stopRequested = true }, tint = Floe.colors.destructive)
+                            })
                     }
                 } else {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween) {
+                        FloeText(stringResource(R.string.linux_desktop_title), style = Floe.typography.title)
+                        FloeCapsuleAction(stringResource(R.string.external_edit_done), onClick = onDismiss,
+                            modifier = Modifier.widthIn(min = 64.dp, max = 96.dp))
+                    }
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         FloeText(stringResource(R.string.linux_desktop_description), style = Floe.typography.metadata,
@@ -102,6 +133,12 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                             "failed" -> R.string.linux_desktop_failed
                             else -> R.string.linux_desktop_stopped
                         }))
+                        if (state.phase in setOf("save_pending", "close_pending")) {
+                            FloeText(stringResource(R.string.linux_desktop_save_pending),
+                                color = Floe.colors.secondaryLabel)
+                            FloeCapsuleAction(stringResource(R.string.linux_desktop_retry_return),
+                                onClick = service::stop)
+                        }
                         FloeSegmented(options = listOf(stringResource(R.string.linux_desktop_single),
                             stringResource(R.string.linux_desktop_windows)), selectedIndex = if (desktop) 1 else 0,
                             onSelect = { desktop = it == 1 })

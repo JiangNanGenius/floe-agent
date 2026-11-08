@@ -665,3 +665,14 @@ N05独立真实查询证明工具发现与Linux状态接口可用；原零工具
 清理累计完成78个过期自建任务（三星31、模拟器47）和12个测试计划，正常／无法确认归属的记录与Office恢复副本保留。所有自有Android模拟器关闭，三星权限／常亮恢复并睡眠。另核对公开摘要和恢复地址后退役45处旧47／48／49／50／52安装产物，外盘实测回收2722897920字节；当前60、回退59、独立失败候选、原生符号、SDK/AVD和用户数据保持。
 
 English: The next source batch passes37 focused updater tests,4 real BSD socket host tests and Full/Play Kotlin compilation. Shared official asset routing also covers optional components without weakening integrity or changing the selected mirror. ARM64 production and new Samsung behavior remain pending. Existing graphics disconnect, automatic-unlock/relock, background completion, intermittent export and whole-App visual gaps remain explicit; manual four-image reporting already has matching App/server receipts. This checkpoint does not close N01–N08.
+
+
+## 2026-11-08 桌面视口收敛与Android9组件报障
+
+- Alpha61/code87为保留的本机候选，尚未公开：native23实际ARM64对象／链接及58项封装检查通过。三星新项目会话中，模型真实返回图形状态并通过一次XOpenDisplay；隐藏439秒后恢复，同一窗口通过Ctrl+L进入已有目录。原code86断连及其未明根因继续保留，不能据新用例消除原失败。
+- Linux与独立VNC共用一条52dp控制条；连接详情、缩放、软件与停止入口收进菜单，隐藏后保留呼出按钮。特殊按键合并为一条横滑键栏，真实文本输入保留；Linux窗口改用键盘内边距，关闭查看器继续只隐藏会话。Full／Play Kotlin编译通过，随后小修确保全屏下文件返回／失败恢复提示仍可见，相关模块再次编译通过。新版外观、键盘及实际动作尚待同一Full APK的三星检查，不宣称已实测通过。
+- 新外测为Android9的组件准备失败：Runtime missing、component阶段、IllegalStateException、0/-1字节。当前两个包实际最低SDK28，当前保留候选的运行时包通过SDK28签名校验；这些不是该外测设备的安装证明。正在独立核对组件校验／系统安装分支并补安全、可操作的错误信息，不依据这张图要求刷机或提高最低版本。
+- 下一候选准备使用0.1.0-alpha.62/code88；仅源码检查点，尚未冻结发行源、生产新APK、创建标签或发布。合并就绪代码后统一做相关检查和三星迭代；保留Alpha61原始字节及公共Alpha60回退，不重复未改组件矩阵。
+- 累计退役80个自建测试任务（三星33、模拟器47）及12个测试计划；原有记录、项目与恢复副本保留。自有Android模拟器均关闭，三星常亮／权限恢复并睡眠，等待新APK。
+
+English: The shared Linux/VNC viewer now uses one compact toolbar, a recoverable fullscreen handle and one special-key strip. Full/Play Kotlin and the focused final notice change compile successfully; rendered Samsung behavior is pending. The Android9 component failure remains under investigation: current minimum-SDK and signature checks do not prove installation on the reported device. Alpha61 stays a private exact-artifact precursor; planned Alpha62 is a source checkpoint, not a published APK or completion of N01–N08.

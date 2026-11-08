@@ -4,27 +4,44 @@
 // real RFB session, frame lease and input lane. This page computes the
 // fit/zoom/pan mapping, sends pointer/key/wheel events and releases pressed
 // input when the view leaves the foreground or composition.
+//
+// Chrome is a single compact control bar (close, short elided title,
+// keyboard, viewer options, hide-controls). Connection details, zoom steps,
+// the gesture help and caller-specific secondary actions live in the viewer
+// options overlay; hiding the chrome leaves the desktop in the full area
+// with one reachable handle that restores the controls. The special-key
+// strip is one horizontally scrollable row above the text bridge.
 
 package com.floe.android.feature.remote
 
 import android.view.KeyEvent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -36,8 +53,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
@@ -45,7 +64,11 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
@@ -59,11 +82,12 @@ import com.floe.android.design.Floe
 import com.floe.android.design.FloeBadgePill
 import com.floe.android.design.FloeBadgeTone
 import com.floe.android.design.FloeCapsuleAction
-import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
+import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.IconGlyph
 import com.floe.android.design.detectFloeTwoFingerTransforms
 import kotlin.math.abs
@@ -84,6 +108,15 @@ data class RemoteVncActions(
     val onDeleteEndpoint: (String, String) -> Unit,
 )
 
+/**
+ * Shared remote-desktop viewer. [title] and [closeLabel] let an embedding
+ * host restyle the chrome without forking the renderer: the standalone VNC
+ * host passes none (its close ends the owned session), while the Linux
+ * desktop sheet passes the running application and a "close viewer" label
+ * that only hides the session. [notice] renders a compact banner above the
+ * viewport (save-pending / recovery states) and [infoActions] appends host
+ * actions to the viewer-options overlay.
+ */
 @Composable
 fun RemoteVncViewerPage(
     vnc: RemoteVncUi,
@@ -98,15 +131,26 @@ fun RemoteVncViewerPage(
     onText: (String) -> Unit,
     onReleaseAll: () -> Unit,
     onDismissError: () -> Unit,
+    title: String? = null,
+    closeLabel: String? = null,
+    notice: (@Composable () -> Unit)? = null,
+    infoActions: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var zoom by remember(vnc.sessionID) { mutableFloatStateOf(1f) }
     var panX by remember(vnc.sessionID) { mutableFloatStateOf(0f) }
     var panY by remember(vnc.sessionID) { mutableFloatStateOf(0f) }
     var keyboardVisible by remember(vnc.sessionID) { mutableStateOf(false) }
+    var chromeHidden by remember(vnc.sessionID) { mutableStateOf(false) }
+    var menuOpen by remember(vnc.sessionID) { mutableStateOf(false) }
     var modifiers by remember(vnc.sessionID) { mutableStateOf(emptySet<Long>()) }
     var textField by remember(vnc.sessionID) { mutableStateOf(TextFieldValue("")) }
+    // The text bridge reports an initial unfocused state before the open
+    // effect can request focus; only a real focus loss (previously focused)
+    // may close the keyboard again.
+    var textFieldFocused by remember(vnc.sessionID) { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
 
     val transform = vncTransform(
         viewWidth = viewSize.width.toFloat(),
@@ -149,101 +193,65 @@ fun RemoteVncViewerPage(
         if (keyboardVisible) {
             runCatching { focusRequester.requestFocus() }
         } else {
+            textFieldFocused = false
             modifiers.forEach { keysym -> onKey(keysym, false) }
             modifiers = emptySet()
+            // The text bridge is a per-typing staging buffer; dropping its
+            // content on hide keeps a rebuild from replaying old text.
+            textField = TextFieldValue("")
         }
     }
 
-    Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
-        FloeToolbar(
-            title = vnc.displayName,
-            navigation = {
-                FloeCircleButton(
-                    icon = FloeIcons.ChevronBack,
-                    contentDescription = stringResource(R.string.remote_close_session),
-                    onClick = onClose,
-                )
-            },
-            actions = {
-                FloeCapsuleAction(
-                    label = stringResource(R.string.remote_vnc_fit),
-                    onClick = {
-                        zoom = 1f
-                        panX = 0f
-                        panY = 0f
+    val currentError = error ?: vnc.failure?.let { RemoteHostUiError(it.code, it.message) }
+    val resolvedTitle = title ?: vnc.displayName
+    val resolvedCloseLabel = closeLabel ?: stringResource(R.string.remote_close_session)
+
+    // The options overlay must stay inside the viewer bounds, so the page
+    // root is a Box even though the chrome itself is a plain Column.
+    Box(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
+        Column(Modifier.fillMaxSize()) {
+            if (!chromeHidden) {
+                FloeToolbar(
+                    title = resolvedTitle,
+                    navigation = {
+                        FloeToolbarIconButton(
+                            icon = FloeIcons.ChevronBack,
+                            contentDescription = resolvedCloseLabel,
+                            onClick = onClose,
+                        )
                     },
-                    showHairline = false,
+                    actions = {
+                        VncBarTextButton(
+                            label = stringResource(R.string.remote_vnc_keyboard),
+                            contentDescription = stringResource(R.string.remote_vnc_keyboard),
+                            onClick = { keyboardVisible = !keyboardVisible },
+                            tint = if (keyboardVisible) Floe.colors.accent else Floe.colors.label,
+                        )
+                        FloeToolbarIconButton(
+                            icon = FloeIcons.Ellipsis,
+                            contentDescription = stringResource(R.string.remote_vnc_viewer_options),
+                            onClick = { menuOpen = true },
+                            tint = if (menuOpen) Floe.colors.accent else Floe.colors.label,
+                        )
+                        FloeToolbarIconButton(
+                            icon = FloeIcons.ChevronUp,
+                            contentDescription = stringResource(R.string.remote_vnc_hide_controls),
+                            onClick = {
+                                menuOpen = false
+                                keyboardVisible = false
+                                chromeHidden = true
+                            },
+                        )
+                    },
+                    showHairline = true,
                 )
-                FloeCapsuleAction(
-                    label = "−",
-                    onClick = { zoom = vncClampZoom(zoom, 0.8f) },
-                    showHairline = false,
-                )
-                FloeCapsuleAction(
-                    label = "+",
-                    onClick = { zoom = vncClampZoom(zoom, 1.25f) },
-                    showHairline = false,
-                )
-                FloeCapsuleAction(
-                    label = stringResource(R.string.remote_vnc_keyboard),
-                    onClick = { keyboardVisible = !keyboardVisible },
-                    tint = if (keyboardVisible) Floe.colors.accent else Floe.colors.label,
-                )
-            },
-            showHairline = true,
-        )
 
-        val currentError = error ?: vnc.failure?.let { RemoteHostUiError(it.code, it.message) }
-        currentError?.let {
-            Row(
-                Modifier.fillMaxWidth()
-                    .background(Floe.colors.destructive.copy(alpha = 0.08f))
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconGlyph(FloeIcons.WarningTriangle, Floe.colors.destructive, 16.dp)
-                Spacer(Modifier.width(8.dp))
-                FloeText(
-                    remoteMessage(it.code),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.destructive,
-                    modifier = Modifier.weight(1f),
-                )
-                FloeCapsuleAction(
-                    label = stringResource(R.string.remote_cancel),
-                    onClick = onDismissError,
-                    showHairline = false,
-                    tint = Floe.colors.destructive,
-                )
-            }
+                currentError?.let {
+                    VncErrorBanner(error = it, onDismiss = onDismissError)
+                }
         }
-
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FloeBadgePill(
-                text = remoteVncStateLabel(vnc.state),
-                tone = when (vnc.state) {
-                    "connected" -> FloeBadgeTone.SUCCESS
-                    "failed" -> FloeBadgeTone.PENDING
-                    else -> FloeBadgeTone.SECONDARY
-                },
-            )
-            Spacer(Modifier.width(8.dp))
-            FloeText(
-                "${vnc.host}:${vnc.port}" +
-                    if (vnc.transport == "sshTunnel") " · SSH" else "",
-                style = Floe.typography.metadata,
-                color = Floe.colors.secondaryLabel,
-                modifier = Modifier.weight(1f),
-            )
-            FloeText(
-                if (vnc.width > 0) "${vnc.width}×${vnc.height}" else "—",
-                style = Floe.typography.metadata,
-                color = Floe.colors.secondaryLabel,
-            )
-        }
+        // Recovery actions remain reachable when the toolbar is collapsed.
+        notice?.invoke()
 
         Box(
             modifier = Modifier
@@ -378,63 +386,264 @@ fun RemoteVncViewerPage(
                     )
                 }
             }
+
+            if (chromeHidden) {
+                // Immersive desktop: one reachable handle restores the chrome.
+                // There is no timer and no hidden gesture; the desktop can
+                // never trap the user.
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    currentError?.let {
+                        VncErrorBanner(
+                            error = it,
+                            onDismiss = onDismissError,
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                        )
+                    }
+                    VncControlHandle(
+                        description = stringResource(R.string.remote_vnc_show_controls),
+                        onClick = { chromeHidden = false },
+                    )
+                }
+            }
         }
 
-        if (keyboardVisible) {
-            VncKeyboardBar(
-                textField = textField,
-                onTextFieldChange = { next ->
-                    vncTextDiff(textField.text, next.text).forEach { event ->
-                        when (event) {
-                            is VncTextEdit.Insert -> onText(event.text)
-                            is VncTextEdit.Backspace -> repeat(event.count) {
-                                onKey(VNC_XK_BACKSPACE, true)
-                                onKey(VNC_XK_BACKSPACE, false)
+            if (!chromeHidden && keyboardVisible) {
+                VncKeyboardBar(
+                    textField = textField,
+                    onTextFieldChange = { next ->
+                        vncTextDiff(textField.text, next.text).forEach { event ->
+                            when (event) {
+                                is VncTextEdit.Insert -> onText(event.text)
+                                is VncTextEdit.Backspace -> repeat(event.count) {
+                                    onKey(VNC_XK_BACKSPACE, true)
+                                    onKey(VNC_XK_BACKSPACE, false)
+                                }
                             }
                         }
-                    }
-                    textField = next
-                },
-                focusRequester = focusRequester,
-                modifiers = modifiers,
-                onModifier = { keysym, down ->
-                    modifiers = if (down) modifiers + keysym else modifiers - keysym
-                    onKey(keysym, down)
-                },
-                onNamedKey = { keysym ->
-                    onKey(keysym, true)
-                    onKey(keysym, false)
-                },
-                onEnter = {
-                    onKey(VNC_XK_RETURN, true)
-                    onKey(VNC_XK_RETURN, false)
-                },
-            )
-        }
-
-        FloeDivider()
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FloeText(
-                if (vnc.width > 0) {
-                    stringResource(R.string.remote_vnc_input_hint)
-                } else {
-                    stringResource(R.string.remote_vnc_connecting)
-                },
-                style = Floe.typography.metadata,
-                color = Floe.colors.secondaryLabel,
-                modifier = Modifier.weight(1f),
-            )
-            vnc.inputIssue?.let { issue ->
-                FloeText(
-                    stringResource(R.string.remote_vnc_input_issue, issue),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.destructive,
+                        textField = next
+                    },
+                    focusRequester = focusRequester,
+                    modifiers = modifiers,
+                    onModifier = { keysym, down ->
+                        modifiers = if (down) modifiers + keysym else modifiers - keysym
+                        onKey(keysym, down)
+                    },
+                    onNamedKey = { keysym ->
+                        onKey(keysym, true)
+                        onKey(keysym, false)
+                    },
+                    onEnter = {
+                        onKey(VNC_XK_RETURN, true)
+                        onKey(VNC_XK_RETURN, false)
+                    },
+                    onHideKeyboard = {
+                        keyboardVisible = false
+                        focusManager.clearFocus()
+                    },
+                    onTextFocusChanged = { focused ->
+                        if (focused) {
+                            textFieldFocused = true
+                        } else if (textFieldFocused) {
+                            textFieldFocused = false
+                            keyboardVisible = false
+                        }
+                    },
                 )
             }
         }
+
+        if (menuOpen) {
+            BackHandler { menuOpen = false }
+            Box(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Floe.colors.scrim)
+                        // Tap-outside dismisses; no ripple feedback on the scrim.
+                        .pointerInput(vnc.sessionID) {
+                            detectTapGestures { menuOpen = false }
+                        },
+                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 8.dp, end = 8.dp)
+                        .widthIn(max = 340.dp)
+                        .clip(RoundedCornerShape(FloeLayout.SettingsSheetCorner))
+                        .background(Floe.colors.chromeSurface)
+                        .border(
+                            0.5.dp,
+                            Floe.colors.chromeHairline,
+                            RoundedCornerShape(FloeLayout.SettingsSheetCorner),
+                        )
+                        .verticalScroll(rememberScrollState())
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.remote_vnc_fit),
+                            onClick = {
+                                zoom = 1f
+                                panX = 0f
+                                panY = 0f
+                            },
+                        )
+                        FloeCapsuleAction(
+                            label = "−",
+                            onClick = { zoom = vncClampZoom(zoom, 0.8f) },
+                        )
+                        FloeCapsuleAction(
+                            label = "+",
+                            onClick = { zoom = vncClampZoom(zoom, 1.25f) },
+                        )
+                        FloeText(
+                            "${(zoom * 100).roundToInt()}%",
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.remote_vnc_release_input),
+                            onClick = {
+                                onReleaseAll()
+                                menuOpen = false
+                            },
+                            showHairline = false,
+                        )
+                    }
+                    FloeDivider()
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FloeBadgePill(
+                            text = remoteVncStateLabel(vnc.state),
+                            tone = when (vnc.state) {
+                                "connected" -> FloeBadgeTone.SUCCESS
+                                "failed" -> FloeBadgeTone.PENDING
+                                else -> FloeBadgeTone.SECONDARY
+                            },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        FloeText(
+                            "${vnc.host}:${vnc.port}" +
+                                if (vnc.transport == "sshTunnel") " · SSH" else "",
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    FloeText(
+                        if (vnc.width > 0) "${vnc.width}×${vnc.height}" else "—",
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    vnc.inputIssue?.let { issue ->
+                        FloeText(
+                            stringResource(R.string.remote_vnc_input_issue, issue),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.destructive,
+                        )
+                    }
+                    infoActions?.invoke(this)
+                    FloeDivider()
+                    FloeText(
+                        stringResource(R.string.remote_vnc_input_hint),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            }
+            }
+        }
+}
+
+/** Compact text control for the viewer bar: one short label, 48dp target. */
+@Composable
+private fun VncBarTextButton(
+    label: String,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    tint: androidx.compose.ui.graphics.Color = Floe.colors.accent,
+) {
+    Box(
+        modifier = modifier
+            .heightIn(min = FloeLayout.MinimumTarget)
+            .clickable(enabled = true, role = Role.Button, onClick = onClick)
+            .semantics { this.contentDescription = contentDescription }
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        FloeText(
+            label,
+            style = Floe.typography.bodyEmphasized,
+            color = tint,
+            maxLines = 1,
+        )
+    }
+}
+
+/** Floating pill that brings the viewer chrome back in immersive mode. */
+@Composable
+private fun VncControlHandle(
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(FloeLayout.MinimumTarget)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(Floe.colors.chromeSurface.copy(alpha = 0.92f))
+            .border(0.5.dp, Floe.colors.chromeHairline, shape),
+    ) {
+        FloeToolbarIconButton(
+            icon = FloeIcons.ChevronDown,
+            contentDescription = description,
+            onClick = onClick,
+        )
+    }
+}
+
+/** Actionable connection error; stays visible over remote backgrounds. */
+@Composable
+private fun VncErrorBanner(
+    error: RemoteHostUiError,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Floe.colors.destructive.copy(alpha = 0.08f))
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconGlyph(FloeIcons.WarningTriangle, Floe.colors.destructive, 16.dp)
+        Spacer(Modifier.width(8.dp))
+        FloeText(
+            remoteMessage(error.code),
+            style = Floe.typography.metadata,
+            color = Floe.colors.destructive,
+            modifier = Modifier.weight(1f),
+        )
+        FloeCapsuleAction(
+            label = stringResource(R.string.remote_cancel),
+            onClick = onDismiss,
+            showHairline = false,
+            tint = Floe.colors.destructive,
+        )
     }
 }
 
@@ -486,6 +695,12 @@ internal fun vncKeysymForAndroidKey(keyCode: Int): Long? = when (keyCode) {
     else -> null
 }
 
+/**
+ * Compact input strip: one horizontally scrollable special-key row (held
+ * modifier semantics unchanged) above the real text bridge. Hiding the
+ * strip — button, system-keyboard back or focus loss — releases held
+ * modifiers in the page and clears the staging text so nothing is replayed.
+ */
 @Composable
 private fun VncKeyboardBar(
     textField: TextFieldValue,
@@ -495,66 +710,51 @@ private fun VncKeyboardBar(
     onModifier: (Long, Boolean) -> Unit,
     onNamedKey: (Long) -> Unit,
     onEnter: () -> Unit,
+    onHideKeyboard: () -> Unit,
+    onTextFocusChanged: (Boolean) -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    val textBridgeDescription = stringResource(R.string.remote_vnc_type_text)
+    Column(Modifier.fillMaxWidth()) {
+        FloeDivider()
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 10.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             ModifierKey(stringResource(R.string.remote_vnc_ctrl), VNC_XK_CONTROL, modifiers, onModifier)
             ModifierKey(stringResource(R.string.remote_vnc_alt), VNC_XK_ALT, modifiers, onModifier)
             ModifierKey(stringResource(R.string.remote_vnc_shift), VNC_XK_SHIFT, modifiers, onModifier)
             ModifierKey(stringResource(R.string.remote_vnc_meta), VNC_XK_META, modifiers, onModifier)
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_esc),
-                onClick = { onNamedKey(VNC_XK_ESCAPE) },
-                showHairline = false,
-            )
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_tab),
-                onClick = { onNamedKey(VNC_XK_TAB) },
-                showHairline = false,
-            )
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_enter),
-                onClick = onEnter,
-                showHairline = false,
-            )
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_backspace),
-                onClick = { onNamedKey(VNC_XK_BACKSPACE) },
-                showHairline = false,
+            VncStripDivider()
+            VncKeyChip(stringResource(R.string.remote_vnc_esc)) { onNamedKey(VNC_XK_ESCAPE) }
+            VncKeyChip(stringResource(R.string.remote_vnc_tab)) { onNamedKey(VNC_XK_TAB) }
+            VncKeyChip(stringResource(R.string.remote_vnc_enter), onClick = onEnter)
+            VncKeyChip(stringResource(R.string.remote_vnc_backspace)) { onNamedKey(VNC_XK_BACKSPACE) }
+            VncStripDivider()
+            VncKeyChip(stringResource(R.string.remote_vnc_left)) { onNamedKey(VNC_XK_LEFT) }
+            VncKeyChip(stringResource(R.string.remote_vnc_up)) { onNamedKey(VNC_XK_UP) }
+            VncKeyChip(stringResource(R.string.remote_vnc_down)) { onNamedKey(VNC_XK_DOWN) }
+            VncKeyChip(stringResource(R.string.remote_vnc_right)) { onNamedKey(VNC_XK_RIGHT) }
+            VncStripDivider()
+            FloeToolbarIconButton(
+                icon = FloeIcons.ChevronDown,
+                contentDescription = stringResource(R.string.remote_vnc_hide_keyboard),
+                onClick = onHideKeyboard,
             )
         }
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_left),
-                onClick = { onNamedKey(VNC_XK_LEFT) },
-                showHairline = false,
-            )
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_up),
-                onClick = { onNamedKey(VNC_XK_UP) },
-                showHairline = false,
-            )
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_down),
-                onClick = { onNamedKey(VNC_XK_DOWN) },
-                showHairline = false,
-            )
-            FloeCapsuleAction(
-                label = stringResource(R.string.remote_vnc_right),
-                onClick = { onNamedKey(VNC_XK_RIGHT) },
-                showHairline = false,
-            )
-        }
-        Spacer(Modifier.height(6.dp))
         BasicTextField(
             value = textField,
             onValueChange = onTextFieldChange,
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp)
                 .focusRequester(focusRequester)
+                .onFocusChanged { state ->
+                    onTextFocusChanged(state.hasFocus || state.isFocused)
+                }
                 .onPreviewKeyEvent { event ->
                     val native = event.nativeKeyEvent
                     val keysym = vncKeysymForAndroidKey(native.keyCode)
@@ -564,8 +764,13 @@ private fun VncKeyboardBar(
                     } else {
                         false
                     }
+                }
+                .semantics {
+                    contentDescription = textBridgeDescription
                 },
             textStyle = Floe.typography.body.copy(color = Floe.colors.label),
+            singleLine = true,
+            maxLines = 1,
             keyboardOptions = KeyboardOptions(
                 capitalization = KeyboardCapitalization.None,
                 autoCorrectEnabled = false,
@@ -574,6 +779,29 @@ private fun VncKeyboardBar(
             keyboardActions = KeyboardActions(onSend = { onEnter() }),
         )
     }
+}
+
+@Composable
+private fun VncStripDivider() {
+    Box(
+        Modifier
+            .padding(horizontal = 2.dp)
+            .width(0.5.dp)
+            .height(22.dp)
+            .background(Floe.colors.separator),
+    )
+}
+
+@Composable
+private fun VncKeyChip(
+    label: String,
+    onClick: () -> Unit,
+) {
+    FloeCapsuleAction(
+        label = label,
+        onClick = onClick,
+        showHairline = false,
+    )
 }
 
 @Composable
