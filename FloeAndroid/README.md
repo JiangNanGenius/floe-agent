@@ -1,6 +1,14 @@
 # Floe for Android
 
-## Current delivery — Android Alpha58 (2026-11-08)
+## Current delivery — Android Alpha59 (2026-11-08)
+
+[Alpha59/code85](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.59) is published from immutable source `29eaf7cfcb448298c2aa0cdc3f6f5b9cf4b4e803`. Exact-observation evidence fixes the old Find/Save meaning used during phone approval. Thirteen focused host tests, actual ARM64 production and packaged identity/alignment passed. Seven anonymous public asset downloads and actual production update discovery were read back; iOS Latest remains preserved. See the [delivery](../docs/releases/ANDROID_ALPHA59_DELIVERY.md).
+
+Samsung passed a fresh Ark task with12 successful real tool results and2 phone actions: empty file → X-plore input/Save → verified return/finalize → original19-byte readback. Floe’s full-screen lightweight editor reopened that original with the exact text. Temporary test permissions/settings were restored. Other editors, project graphics, scheduling and remaining N01–N08 cases continue; structured export after an external-App return may require reopening the task first.
+
+当前Alpha59/code85已公开。三星模型真实输入、保存、回传、原件读回及Floe轻量编辑器重开通过；七附件和生产更新发现已读回，临时权限／配置恢复。其余图形、定时及界面事项继续，整轮未收口。
+
+## Previous delivery — Android Alpha58 (2026-11-08)
 
 [Alpha58/code84](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.58) is published from immutable source `1474862919484ab9068d4db8ab0805777290f8b1`. Related Full/Play compilation,43 JVM checks, actual ARM64 production and package identity checks passed. Seven anonymous asset downloads and actual updater discovery were read back; iOS Latest stays preserved. See the [delivery](../docs/releases/ANDROID_ALPHA58_DELIVERY.md).
 
