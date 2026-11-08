@@ -91,6 +91,20 @@ internal class GitHubAndroidReleaseFeed(
 }
 
 /**
+ * A completed HTTP status that is not 200/206. Carrying the code lets the
+ * downloader distinguish an actionable gateway failure (5xx — worth the one
+ * official alias attempt) from a definitive refusal (4xx).
+ */
+internal class DownloadStatusException(val statusCode: Int) : IOException("http-$statusCode")
+
+/**
+ * A byte route (APK or patch) answered with a JSON document — the classic
+ * asset-metadata body a REST endpoint returns when the byte Accept header was
+ * not honoured. Never writable as package bytes.
+ */
+internal class JsonAssetBodyException : IOException("json-body-for-asset-bytes")
+
+/**
  * Redirect-aware HTTPS GET for the downloadable artifacts (APK and its
  * SHA256SUMS). Resume sends `Range` plus `If-Range` so the server decides
  * whether the staged prefix still belongs to the same artifact.
@@ -102,6 +116,8 @@ internal data class DownloadResponse(
     val contentRangeTotal: Long?,
     val etag: String?,
     val stream: InputStream,
+    /** Response Content-Type; byte routes use it to refuse JSON metadata bodies. */
+    val contentType: String? = null,
 )
 
 internal interface DownloadTransport {
@@ -180,7 +196,7 @@ internal class HttpsDownloadTransport(
                 if (cancelled.get()) throw IOException("download-cancelled")
                 val code = connection.responseCode
                 if (code != HttpURLConnection.HTTP_OK && code != 206) {
-                    throw IOException("http-$code")
+                    throw DownloadStatusException(code)
                 }
                 if (!connection.url.toString().startsWith("https://")) {
                     throw IOException("redirect-left-https")
@@ -198,6 +214,7 @@ internal class HttpsDownloadTransport(
                             try { super.close() } finally { connection.disconnect() }
                         }
                     },
+                    contentType = connection.contentType,
                 )
             } catch (failure: IOException) {
                 connection.disconnect()

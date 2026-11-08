@@ -38,7 +38,15 @@ All remaining sources are compiled in Swift 5 language mode. Android uses
    * real `cancel()` that marks cancelled, shuts down the socket and posts
      `.cancelled`;
    * lock-protected status/handler and checked socket lifetime;
-   * import full Foundation because FoundationEssentials does not export NSLock.
+   * import full Foundation because FoundationEssentials does not export NSLock;
+   * full-duplex lanes (2026-11-08): blocking reads run on a private serial
+     read queue that solely owns the retained buffer, and blocking full
+     writes run on a private serial write queue. Upstream funneled both into
+     the caller-supplied queue, so a serial embedder deadlocked when a
+     pending `recv()` starved a queued client write, and a concurrent
+     embedder let reads race on the retained buffer. Status/connect stay on
+     the caller's queue; exact accumulation, write order and one-shot
+     shutdown/close are unchanged.
 3. `SDK/Connection/VNCConnection+Handshake.swift`
    * security-type preference is `.none` → `.vnc` → `.tight` →
      `.diffieHellman` → `.ultraVNCMSLogonII`. Apple Remote Desktop asks for

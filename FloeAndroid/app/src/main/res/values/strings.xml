@@ -612,6 +612,7 @@
     <string name="linux_desktop_operation_failed">The operation could not finish. Check the terminal and installed software.</string>
     <string name="linux_desktop_installing">Preparing the graphical environment… Open session details to check its status.</string>
     <string name="app_update_delta_interrupted">The incremental update was interrupted. Download the full installer to continue.</string>
+    <string name="app_update_official_route_note">The usual download route did not respond, so this file is being fetched from GitHub’s official release address.</string>
     <string name="linux_desktop_starting">Starting the graphical session…</string>
     <string name="linux_desktop_failed">The graphical session stopped or could not start. Check the terminal before trying again.</string>
     <string name="linux_desktop_stopped">No active graphical session in this workspace.</string>

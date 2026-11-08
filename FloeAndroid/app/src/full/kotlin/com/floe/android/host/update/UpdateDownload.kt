@@ -113,6 +113,13 @@ internal data class DownloadMeta(
     val deltaPatchBytes: Long = 0L,
     val knownIssues: String = "",
     val intermediate: Boolean = false,
+    /**
+     * Validated official REST alias for [apkUrl]/[checksumsUrl] (same asset,
+     * same repository). Survives process death so an honest resume can still
+     * use the alias when the canonical route keeps failing.
+     */
+    val apkApiUrl: String? = null,
+    val checksumsApiUrl: String? = null,
 ) {
     fun forFullDownload(): DownloadMeta = if (mode == DownloadMode.FULL) this else copy(
         mode = DownloadMode.FULL, receivedBytes = 0L, etag = null,
@@ -134,6 +141,8 @@ internal data class DownloadMeta(
         put("knownIssues", knownIssues.take(ReleaseKnownIssues.MAX_CHARS))
         put("intermediate", intermediate)
         put("mode", mode.name)
+        apkApiUrl?.let { put("apkApiUrl", it) }
+        checksumsApiUrl?.let { put("checksumsApiUrl", it) }
         if (mode == DownloadMode.DELTA) {
             put("deltaBaseSha256", deltaBaseSha256 ?: "")
             put("deltaPatchName", deltaPatchName ?: "")
@@ -180,6 +189,8 @@ internal data class DownloadMeta(
                     return null
                 }
             }
+            val apkApiUrl = OfficialAssetRoute.validatedApiUrl(string("apkApiUrl"))
+            val checksumsApiUrl = OfficialAssetRoute.validatedApiUrl(string("checksumsApiUrl"))
             return DownloadMeta(
                 tag = tag,
                 versionName = versionName,
@@ -198,6 +209,8 @@ internal data class DownloadMeta(
                 deltaPatchBytes = patchBytes,
                 knownIssues = string("knownIssues").orEmpty().take(ReleaseKnownIssues.MAX_CHARS),
                 intermediate = (obj["intermediate"] as? JsonPrimitive)?.booleanOrNull ?: false,
+                apkApiUrl = apkApiUrl,
+                checksumsApiUrl = checksumsApiUrl,
             )
         }
     }
@@ -254,6 +267,14 @@ internal object DownloadPlanning {
  * `finally` or a late progress publish can never clear/overwrite a newer
  * writer. Cancellation is checked after every blocking read and before every
  * publish/persist/rename.
+ *
+ * Official alias (2026-11-08): every fetch goes to the canonical route first.
+ * Only after that route fails with an actionable gateway/transport error is
+ * the SAME asset retried once through its validated official GitHub REST
+ * address (`Accept: application/octet-stream`, no account Authorization).
+ * The alias never changes the selected mirror, never retries in a loop and
+ * never relaxes the release-integrity chain (release-bound SHA256SUMS →
+ * exact size/hash → package identity) that admits staged bytes.
  */
 internal class UpdateDownloader(
     private val scope: CoroutineScope,
@@ -437,6 +458,8 @@ internal class UpdateDownloader(
                         etag = null,
                         completed = false,
                         knownIssues = release.knownIssues, intermediate = release.intermediate,
+                        apkApiUrl = release.apk.apiUrl,
+                        checksumsApiUrl = release.checksums.apiUrl,
                     )
                 }
                 beginWriter(if (allowDelta) meta else meta.forFullDownload(), if (allowDelta) release else null)
@@ -535,7 +558,7 @@ internal class UpdateDownloader(
         prepareStaging(initial)
         val generation = generations.incrementAndGet()
         val owner = Writer(generation, AtomicBoolean(false), store.downloadSource)
-        mutableSource.value = mutableSource.value.copy(restarted = false)
+        mutableSource.value = mutableSource.value.copy(restarted = false, officialAliasUsed = false)
         val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             runWriter(owner, initial, release)
         }
@@ -590,17 +613,53 @@ internal class UpdateDownloader(
 
     private fun open(
         owner: Writer,
-        canonicalUrl: String,
+        url: String,
         rangeFrom: Long? = null,
         etag: String? = null,
-        assetBytes: Boolean = false,
     ): DownloadResponse {
         checkCancelled(owner)
-        val url = if (assetBytes) owner.source.assetUrl(canonicalUrl) else canonicalUrl
         val call = transport.newCall(url, rangeFrom, etag)
         owner.activeCall.getAndSet(call)?.cancel()
         checkCancelled(owner)
         return call.execute().also { checkCancelled(owner) }
+    }
+
+    /**
+     * Ordered routes for one logical request: the canonical URL (mapped
+     * through the SELECTED mirror for payload bytes) first, then at most one
+     * validated official GitHub REST alias for the SAME asset. The alias is
+     * offered only when the selected source is GitHub for payload routes —
+     * a chosen mirror already is the user's alternate route and is never
+     * switched back to GitHub — while release metadata stays on GitHub
+     * regardless of the payload mirror.
+     *
+     * A route that fails with an actionable gateway/transport error (5xx,
+     * connection/IO failure, or a JSON body where package bytes were
+     * expected) is retried on the alias exactly once; a definitive 4xx and
+     * cancellation never alias. Cancellation aborts the iteration instantly.
+     */
+    private suspend fun openRouted(
+        owner: Writer,
+        canonicalUrl: String,
+        aliasUrl: String?,
+        payload: Boolean,
+        rangeFrom: Long? = null,
+        etag: String? = null,
+    ): DownloadResponse {
+        val primary = if (payload) owner.source.assetUrl(canonicalUrl) else canonicalUrl
+        val alias = aliasUrl.takeUnless { payload && owner.source != UpdateDownloadSource.GITHUB }
+        return OfficialAssetRoute.open(primary, alias, payload, request = { url ->
+            checkCancelled(owner)
+            open(owner, url, rangeFrom, etag)
+        }, onAlias = { publishAliasUsed(owner) })
+    }
+
+    private fun publishAliasUsed(owner: Writer) {
+        synchronized(writerLock) {
+            if (writer === owner) {
+                mutableSource.value = mutableSource.value.copy(officialAliasUsed = true)
+            }
+        }
     }
 
     private fun publish(owner: Writer, state: AppDownloadState) {
@@ -653,7 +712,10 @@ internal class UpdateDownloader(
             existing = 0L
         }
 
-        var response = open(owner, working.apkUrl, existing.takeIf { it > 0L }, working.etag, assetBytes = true)
+        var response = openRouted(
+            owner, working.apkUrl, working.apkApiUrl, payload = true,
+            rangeFrom = existing.takeIf { it > 0L }, etag = working.etag,
+        )
         checkCancelled(owner)
         var plan = DownloadPlanning.plan(
             stagedBytes = existing,
@@ -666,14 +728,14 @@ internal class UpdateDownloader(
         )
         if (plan is ResumePlan.Restart && existing > 0L) {
             // The server answered a ranged request that cannot be appended;
-            // drop the staged prefix and issue a fresh full request.
+            // drop the staged prefix and issue a fresh full request (alias-aware).
             runCatching { response.stream.close() }
             part.delete()
             existing = 0L
             synchronized(writerLock) {
                 if (writer === owner) mutableSource.value = mutableSource.value.copy(restarted = true)
             }
-            response = open(owner, working.apkUrl, assetBytes = true)
+            response = openRouted(owner, working.apkUrl, working.apkApiUrl, payload = true)
             checkCancelled(owner)
             plan = ResumePlan.Restart
         }
@@ -776,7 +838,7 @@ internal class UpdateDownloader(
         val manifestAsset = release.delta ?: return DeltaOutcome.PROCEED_TO_FULL
         val installed = provider.read() ?: return DeltaOutcome.PROCEED_TO_FULL
         val manifestText = try {
-            val response = open(owner, manifestAsset.downloadUrl)
+            val response = openRouted(owner, manifestAsset.downloadUrl, manifestAsset.apiUrl, payload = false)
             checkCancelled(owner)
             response.stream.use {
                 readBoundedBytes(owner, it, UpdateDeltaFormat.MAX_MANIFEST_BYTES)
@@ -953,7 +1015,7 @@ internal class UpdateDownloader(
         output: File,
     ) {
         val response = try {
-            open(owner, asset.downloadUrl, assetBytes = true)
+            openRouted(owner, asset.downloadUrl, asset.apiUrl, payload = true)
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (failure: Exception) {
@@ -1179,7 +1241,7 @@ internal class UpdateDownloader(
      */
     private suspend fun fetchChecksums(owner: Writer, meta: DownloadMeta): Map<String, String> {
         val response = try {
-            open(owner, meta.checksumsUrl)
+            openRouted(owner, meta.checksumsUrl, meta.checksumsApiUrl, payload = false)
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (failure: Exception) {

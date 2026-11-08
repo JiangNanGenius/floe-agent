@@ -54,6 +54,8 @@ internal fun UpdateSourceSelector(controller: AppUpdateController, ui: AppUpdate
                 style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
             state.restarted -> FloeText(stringResource(R.string.app_update_source_restarted),
                 style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+            state.officialAliasUsed -> FloeText(stringResource(R.string.app_update_official_route_note),
+                style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
             state.selected != UpdateDownloadSource.GITHUB -> FloeText(stringResource(R.string.app_update_source_mirror),
                 style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
         }

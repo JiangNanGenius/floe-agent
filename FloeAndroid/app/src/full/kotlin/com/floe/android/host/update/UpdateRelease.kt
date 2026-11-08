@@ -8,11 +8,20 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
 
-/** One release asset, already restricted to a public HTTPS download URL. */
+/**
+ * One release asset, already restricted to a public HTTPS download URL.
+ *
+ * [apiUrl] is the asset's own validated GitHub REST address (the feed's `url`
+ * field). It is never invented and never points anywhere but the configured
+ * repository: the updater may use it, with `Accept: application/octet-stream`,
+ * as the single official alias when the canonical browser route cannot serve
+ * the SAME asset. Null means "the feed did not offer a validated alias".
+ */
 internal data class ReleaseAsset(
     val name: String,
     val sizeBytes: Long,
     val downloadUrl: String,
+    val apiUrl: String? = null,
 )
 
 /** A well-formed Android release candidate from the shared repository feed. */
@@ -114,7 +123,14 @@ internal object AndroidReleaseFeed {
         val url = asset.stringOrNull("browser_download_url") ?: return null
         if (name.isEmpty() || name.length > 160) return null
         if (!url.startsWith("https://")) return null
-        return ReleaseAsset(name = name, sizeBytes = size, downloadUrl = url)
+        return ReleaseAsset(
+            name = name,
+            sizeBytes = size,
+            downloadUrl = url,
+            // The REST alias is admitted only when it names THIS repository's
+            // asset endpoint; anything else stays a canonical-route release.
+            apiUrl = OfficialAssetRoute.validatedApiUrl(asset.stringOrNull("url")),
+        )
     }
 }
 

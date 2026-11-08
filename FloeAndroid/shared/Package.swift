@@ -807,6 +807,11 @@ let package = Package(
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeVNCTests", dependencies: [
             "FloeVNC",
+            // Test-only direct product: the BSD SocketNetworkConnection duplex
+            // fixtures must exercise the real Android transport class, which
+            // the Darwin factory would otherwise skip in favour of
+            // Network.framework. No production target/pin/platform change.
+            .product(name: "RoyalVNCKit", package: "RoyalVNCKit"),
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeRDPTests", dependencies: [
             "FloeRDP", "FloeCore",

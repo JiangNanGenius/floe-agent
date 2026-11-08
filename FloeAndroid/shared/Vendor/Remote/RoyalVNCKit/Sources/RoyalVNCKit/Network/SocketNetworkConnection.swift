@@ -21,6 +21,16 @@ import Darwin
 ///   * `cancel()` interrupts a blocked `recv()` and closes exactly once;
 ///   * connect has a bounded timeout (non-blocking connect + poll), so a
 ///     black-holed LAN endpoint surfaces `timedOut` instead of hanging.
+///
+/// Full-duplex progress (Floe port): blocking I/O never runs on the
+/// caller-supplied `queue`. The RFB stack awaits one serial receive loop and
+/// one serial send loop; if a blocked `recv()` shared a queue with `send()`,
+/// a server that waits for client input before answering could starve the
+/// very write that would unblock it, and a concurrent caller queue would let
+/// two reads race on the retained buffer. Reads own `receiveBuffer` on a
+/// private serial lane and writes run to completion on a second private
+/// serial lane, so read/write progress is independent of the caller's queue
+/// while byte order, exact accumulation and close semantics are unchanged.
 final class SocketNetworkConnection: NetworkConnection {
     let settings: NetworkConnectionSettings
 
@@ -31,8 +41,12 @@ final class SocketNetworkConnection: NetworkConnection {
     private var cancelled = false
 
     private var queue = DispatchQueue(label: "PLACEHOLDER")
-    /// Only touched on `queue`. Keeps bytes that arrived beyond the current
-    /// RFB field so the next read sees an exact byte stream.
+    /// Serial lane for blocking reads; the only owner of `receiveBuffer`.
+    private let readQueue = DispatchQueue(label: "com.floe.royalvnc.socketconnection.read")
+    /// Serial lane for blocking full writes, preserving submission order.
+    private let writeQueue = DispatchQueue(label: "com.floe.royalvnc.socketconnection.write")
+    /// Only touched on `readQueue`. Keeps bytes that arrived beyond the
+    /// current RFB field so the next read sees an exact byte stream.
     private var receiveBuffer = Data()
     private let receiveChunkSize = 16 * 1024
 
@@ -165,11 +179,12 @@ extension SocketNetworkConnection: NetworkConnectionReading {
         guard minimumLength > 0, maximumLength >= minimumLength else {
             throw VNCError.protocol(.invalidData)
         }
-        let queue = self.queue
         let socket = try currentSocket()
 
         return try await withCheckedThrowingContinuation { continuation in
-            queue.async {
+            // The blocked recv() runs on the private read lane, never on the
+            // caller's queue: a pending read must not stall a later write.
+            readQueue.async {
                 do {
                     // Drain retained bytes first, then read more until the
                     // caller's minimum is satisfied. Never return more than
@@ -200,11 +215,12 @@ extension SocketNetworkConnection: NetworkConnectionReading {
 // MARK: - Writing
 extension SocketNetworkConnection: NetworkConnectionWriting {
     func write(data: Data) async throws {
-        let queue = self.queue
         let socket = try currentSocket()
 
         return try await withCheckedThrowingContinuation { continuation in
-            queue.async {
+            // Serial full writes on the private write lane keep write order
+            // independent of any blocked read on the read lane.
+            writeQueue.async {
                 let bytesToSend = [UInt8](data)
                 var offset = 0
                 while offset < bytesToSend.count {

@@ -14,9 +14,12 @@ import com.floe.android.host.update.AndroidRelease
 import com.floe.android.host.update.AndroidReleaseFeed
 import com.floe.android.host.update.GitHubAndroidReleaseFeed
 import com.floe.android.host.update.HttpsDownloadTransport
+import com.floe.android.host.update.OfficialAssetRoute
+import com.floe.android.host.update.ReleaseAsset
 import com.floe.android.host.update.SharedPrefsUpdateStore
 import com.floe.android.host.update.Sha256Sums
 import com.floe.android.host.update.UpdateConfig
+import com.floe.android.host.update.UpdateDownloadSource
 import com.google.android.play.core.splitcompat.SplitCompat
 import java.io.File
 import java.lang.ref.WeakReference
@@ -118,7 +121,17 @@ internal class FullOptionalSplitBackend(
         val asset = checkNotNull(entry.assets[name])
         require(asset.sizeBytes in 1..600L * 1_024 * 1_024)
         val transport = HttpsDownloadTransport(onConnection = connected)
-        val checksums = transport.open(entry.checksums.downloadUrl, null, null)
+        val source = SharedPrefsUpdateStore(context).downloadSource
+        suspend fun openAsset(item: ReleaseAsset, payload: Boolean) = OfficialAssetRoute.open(
+            primaryUrl = if (payload) source.assetUrl(item.downloadUrl) else item.downloadUrl,
+            apiUrl = item.apiUrl.takeUnless { payload && source != UpdateDownloadSource.GITHUB },
+            payload = payload,
+            request = { url ->
+                currentCoroutineContext().ensureActive()
+                transport.open(url, null, null)
+            },
+        )
+        val checksums = openAsset(entry.checksums, payload = false)
         check(checksums.code == 200)
         val text = checksums.stream.use { input ->
             val output = java.io.ByteArrayOutputStream()
@@ -138,7 +151,7 @@ internal class FullOptionalSplitBackend(
         if (target.isFile && target.length() == asset.sizeBytes && hash(target, owner) == expected) return target
         val part = File(root, "${spec.module}-${BuildConfig.VERSION_CODE}.part")
         try {
-            val response = transport.open(asset.downloadUrl, null, null)
+            val response = openAsset(asset, payload = true)
             check(response.code == 200)
             val digest = MessageDigest.getInstance("SHA-256")
             var bytes = 0L
