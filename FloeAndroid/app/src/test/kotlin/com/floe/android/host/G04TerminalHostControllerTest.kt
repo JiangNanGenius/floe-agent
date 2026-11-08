@@ -1034,6 +1034,7 @@ class G04TerminalHostControllerTest {
     private fun interactiveOpenOrderingController(
         statusBeforeReplyResume: Boolean,
         root: LiveRoot,
+        onAction: (JsonObject) -> Unit = {},
         afterNativeEvents: () -> Unit = {},
     ): G04TerminalHostController {
         lateinit var controller: G04TerminalHostController
@@ -1044,6 +1045,7 @@ class G04TerminalHostControllerTest {
             nativeSubmitOverride = { descriptor, _ ->
                 val action = Json.parseToJsonElement(String(descriptor)) as JsonObject
                 assertEquals("terminalOpen", action["action"]?.jsonPrimitive?.content)
+                onAction(action)
                 val requestID = checkNotNull(action["requestID"]?.jsonPrimitive?.content)
                 controller.handleEvent(0L,
                     ("{\"type\":\"actionReply\",\"requestID\":\"" + requestID +
@@ -1063,6 +1065,22 @@ class G04TerminalHostControllerTest {
             .apply { isAccessible = true }.get(controller)
             as java.util.concurrent.atomic.AtomicBoolean).set(false)
         return controller
+    }
+
+    @Test
+    fun graphicalTabOptsIntoProjectSoftwareWithoutChangingOrdinaryTerminalWire() = runBlocking {
+        for (projectSoftware in listOf(false, true)) {
+            var sent: JsonObject? = null
+            val controller = interactiveOpenOrderingController(false, LiveRoot(7L), onAction = { sent = it })
+            val tab = controller.openTab("c1", "workspace-1", 80, 24,
+                paneVisible = false, projectSoftware = projectSoftware)
+            assertNotNull("the accepted native reply owns a real tab", tab)
+            val action = requireNotNull(sent)
+            assertEquals("c1", action["conversationID"]?.jsonPrimitive?.content)
+            assertEquals("workspace-1", action["workspaceID"]?.jsonPrimitive?.content)
+            if (projectSoftware) assertEquals("true", action["projectSoftware"]?.jsonPrimitive?.content)
+            else assertFalse("ordinary terminals retain their original payload", action.containsKey("projectSoftware"))
+        }
     }
 
     @Test
