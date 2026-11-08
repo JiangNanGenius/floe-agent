@@ -1,6 +1,6 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
-日期：2026-11-06，实测更新至2026-11-09。当前：[Alpha64/code90已公开](releases/ANDROID_ALPHA64_DELIVERY.md)，固定App源`6c82d891180badb25c0f24c2a92a1ba259a89c07`。七附件完整公开字节、不可变来源及实际生产更新解析器读回完成；三星经App公开完整包升级至主／运行组件code90，精确字节、UID及原有数据保持。真实Ark Plan／`ark-code-latest`任务取得项目Linux命令的标准输出与退出码0，未请求启动桌面。双鼠标模式沿用Alpha63已有证据。Android9索尼组件故障、原VNC断连和整轮其余缺口继续保留；以下较早记录按原日期保留，不以历史“待发布”覆盖本段状态。
+日期：2026-11-06，实测更新至2026-11-09。当前：[Alpha65/code91已公开](releases/ANDROID_ALPHA65_DELIVERY.md)，固定App源`729812f2a29ba1842b6594def5ad3cc30a07abfe`。七附件完整公开字节、来源和生产更新解析器已读回；Full／Play、14项相关检查和58项封装检查通过，复用native24。三星明确完整更新按钮已联合安装主／runtime91，字节、UID及数据保持；系统保存、取消后重开及选择位置时Activity实际重建通过。Alpha64真实CLI输出有证据，中途下载模式未捕获；双鼠标沿用Alpha63。Android9索尼、原VNC断连及其余缺口继续保留，历史记录按日期阅读。
 
 iOS对照沿用固定视觉参照 `36f63bf4` 及原有编号。Alpha46的 `c828775b6`→`e4d334904` 仅为签名／版本／上传元数据变化；Alpha47后又登记Biology模块与独立宿主提交 `eb3bb7bca` 的51条路径，作为下一轮独立能力复核，不移动本轮范围。Alpha52候选又从 `eb3bb7bca` 对照到主集成 `9b016097d`：1481条iOS路径变化按轻量入口、网络历史、工具合同与独立重型模块分类，不等同缺失功能，详见[增量记录](FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md#2026-11-08-alpha52-候选的有界-ios-增量)。后续每个大目标结束增量核对实际iOS主线；不为小修重启全量审计。
 
@@ -729,7 +729,7 @@ English: The next source batch wires CLI-first/manual-desktop guidance into ordi
 
 ## 2026-11-09 Alpha64实际交付与下一批功能收口
 
-Alpha64已经完成实际ARM64对象／链接、同源Full APK生产和58项封装检查，并完成七附件公开字节与生产更新解析器读回。三星真实App更新使用完整包，系统安装器同时更新主包与运行环境至code90；两个UID、五条原有记录和两个项目保留。真实63→64补丁重建及生产策略接纳为独立证据，本次设备没有观察到增量通路，不重复宣称设备增量通过。
+Alpha64已经完成实际ARM64对象／链接、同源Full APK生产和58项封装检查，并完成七附件公开字节与生产更新解析器读回。三星真实App默认更新完成，系统安装器同时更新主包与运行环境至code90；两个UID、五条原有记录和两个项目保留。真实63→64补丁重建及生产策略接纳为独立证据。证据限定更正：初始0/156MB不是完整包路径证明，中途模式未捕获；不声明本次设备增量或明确完整按钮通过，后者另在65测试。
 
 真实模型任务沿`environment.linuxStatus`→`exec.shell`闭环，项目环境与任务一致，`printf FLOE64_CLI`返回正确输出及退出码0；没有桌面或手机操作工具请求。模型默认CLI、桌面主要给用户手动使用的分工已进入本版实际执行上下文。较早歧义提示导致的错误命令提案从未分派，保留导出后通过App删除；没有重放该提案。
 
@@ -737,8 +737,12 @@ Alpha64已经完成实际ARM64对象／链接、同源Full APK生产和58项封�
 
 自建旧提案任务与两份已私有留存的设备导出副本已清理，累计退役83个测试任务（三星36、模拟器47）和12个旧计划。完成的CLI任务仅为紧接批次的系统保存验收暂留；原有记录、项目及原始失败保持。三星常亮0、无线调试0、无障碍未启用并休眠，未启动模拟器。图形弹窗对比度的新渲染、私有连接器取回、原VNC故障、自动解锁／条件重新锁屏与后台收尾继续在未闭合项内，整轮目标未结束。
 
-English: Alpha64 is publicly delivered and Samsung completed the actual full-package OTA for App/runtime code90 with identities/data retained. A real project-bound Ark Plan CLI task returned stdout and exit0 without requesting graphical operation. Patch production/admission and device full-package execution remain distinct. The next bounded packet adds real system-document task saving with streamed read-back verification and callback ownership; it does not replace JSONL with another archive format. One expired task and exact duplicate exports were removed,with one immediate-next-test fixture retained. Existing failures and overall N01–N08 gaps remain explicit.
+English: Alpha64 is publicly delivered and Samsung completed the actual default OTA for App/runtime code90 with identities/data retained.A real project-bound Ark Plan CLI task returned stdout and exit0 without requesting graphical operation.Patch production/admission and observed device installation remain distinct;the intermediate download mode was not captured.The next bounded packet adds real system-document task saving with streamed read-back verification and callback ownership.One expired task and exact duplicate exports were removed,with one immediate-next-test fixture retained.Existing failures and overall N01–N08 gaps remain explicit.
 
 Alpha65源码准备：系统保存代码已接到真实完整任务导出，Full／Play Kotlin与14项相关JVM检查通过（8项新回调／读回，6项原C07导出）。原OpenCode包已按交接要求取消为终态且未分配原生会话，由主负责人收回实现；没有重复排队。准备code91并同步Office来源索引／摘要，尚未据此宣称新APK或三星通过。native24的3110个实际生产输入与当前源码相符，本批仅Kotlin／资源改变，后续可复用未变原生字节而不重复原生构建。
 
 Alpha64生成物清理已完成：19处已导出构件和两处源码／增量暂存退役，17份生产根级回执先保存；两个删除窗口内置可用空间实测分别增加479,395,840和2,715,578,368字节，逻辑／分配大小另留记录，不把其他编译窗口变化归入本次。精确当前包、必要回退、符号、原始失败、SDK/AVD和紧接构建需要的缓存保留。
+
+Alpha65实际交付：七附件公开字节和生产更新解析器读回通过，iOS Latest独立保留；64→65真实补丁重建为精确目标。三星明确完整更新按钮完成非零下载、校验及联合安装，两包91、精确摘要与UID匹配。系统保存／取消重开和选择位置时Activity实际重建通过，14,458字节原任务及工具回执读回一致，没有新增模型调用。自有任务及导出副本退役，累计84任务（三星37、模拟器47）／12旧计划，五条原有记录、两个项目保持；手机设置恢复并休眠，模拟器未启动。21处完成构件／源码／增量暂存已退役，17份根级生产回执先保存，内置该删除窗口可用空间增加3,177,865,216字节；当前包、必要回退、原失败和符号保持，旧stage路径不可复用。
+
+N07私有来源调查更正：`SkillsConnectorFetchUnavailable`只是未使用的声明，实际缺口是安装／升级均接到匿名公共传输，未接已有GitHub凭据租约。唯一后续Normal／auto包基于完成的调查接真实api.github.com适配和路由；无凭据的公共社区仓库继续可用，Hub签名／镜像边界保持。来源绑定持久化另记未闭合项，不把后续代码算入冻结65。
