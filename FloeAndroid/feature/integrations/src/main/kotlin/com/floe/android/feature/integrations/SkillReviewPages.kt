@@ -205,6 +205,7 @@ fun SkillUpgradePage(
             } else {
                 "skills.upgradeApply"
             },
+            showConfirm = needsCheck,
         )
         FloeText(
             upgrade.skillName,

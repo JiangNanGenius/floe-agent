@@ -265,6 +265,16 @@ fun SkillsHubPage(
                     }
                 }
 
+                FloeSettingsSectionCard(title = null) {
+                    FloeActionRow(
+                        label = stringResource(R.string.skills_restore_bundled),
+                        enabled = !skills.isWorking,
+                        onClick = { holder.restoreBundledGuides() },
+                    )
+                }
+                IntegrationSectionFooter(stringResource(R.string.skills_restore_bundled_hint))
+                skills.bundledRestoreNotice?.let { IntegrationMetaLine(it) }
+
                 // ⇄ center.catalogError (secondary) / center.errorMessage (red)
                 skills.catalogError?.let {
                     IntegrationMetaLine(it, modifier = Modifier.testTag("skills.catalogError"))

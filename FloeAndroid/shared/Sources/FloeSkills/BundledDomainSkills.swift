@@ -27,6 +27,12 @@ public enum BundledDomainSkills {
         /// historical migration names in prose are not tool dependencies.
         /// Remaining exact references are checked against the executable catalog.
         public var toolNames: [String] {
+            // Android-bundled guides carry their exact executable surface
+            // (their markdown embeds recipe code that must not be scraped
+            // for dotted names like `image.save`); N07-platform-guides67.
+            if let explicit = AndroidBundledSkillGuides.explicitToolNames[id] {
+                return explicit
+            }
             switch id {
             case "floe-image-edit", "floe-svg": return ["exec.shell"]
             case "floe-text-edit": return ["exec.shell", "workspace.applyPatch", "workspace.writeFile"]

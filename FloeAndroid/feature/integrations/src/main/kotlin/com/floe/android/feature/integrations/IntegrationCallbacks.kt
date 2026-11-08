@@ -70,6 +70,9 @@ interface IntegrationUiCallbacks {
     /** Pull-to-refresh / explicit refresh. True = check started. */
     fun refreshCatalog(force: Boolean): Boolean
 
+    /** Explicitly restore missing app-bundled guides without resetting existing rows. */
+    fun restoreBundledGuides(): Boolean = false
+
     /** Search the complete verified catalog, including unloaded pages. */
     fun searchCatalog(query: String) {}
 

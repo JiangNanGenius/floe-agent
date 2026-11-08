@@ -959,6 +959,7 @@ data class SkillsHubUiState(
     val formOutcome: SkillsFormOutcomeUi? = null,
     val catalogHasMore: Boolean = false,
     val catalogPagingBusy: Boolean = false,
+    val bundledRestoreNotice: String? = null,
 ) {
     val installedIds: Set<String> get() = installed.mapTo(HashSet()) { it.skillId }
 }

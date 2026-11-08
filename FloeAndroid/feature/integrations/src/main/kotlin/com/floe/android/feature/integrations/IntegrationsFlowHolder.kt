@@ -133,6 +133,8 @@ class IntegrationsFlowHolder(
 
     fun refreshCatalog(force: Boolean): Boolean = host.refreshCatalog(force)
 
+    fun restoreBundledGuides(): Boolean = host.restoreBundledGuides()
+
     fun updateHubSearchQuery(value: String) {
         hubSearchQuery.value = value
         if (!showingInstalled.value) host.searchCatalog(value)

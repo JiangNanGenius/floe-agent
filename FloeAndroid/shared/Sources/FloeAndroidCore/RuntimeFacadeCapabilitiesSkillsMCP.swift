@@ -89,6 +89,7 @@ public enum CapabilityDomainCommand: String, Sendable, CaseIterable {
 /// operation discriminator is closed, unknown values are rejected before
 /// any effect (never opportunistically parsed).
 enum SkillsInstallOperation: String, Sendable, CaseIterable {
+    case bundledRestore = "bundled.restore"        // explicit app-guide restoration; no Hub fetch
     case officialInstall = "official.install"      // new (createIntent) or upgrade review
     case reviewConfirm = "review.confirm"          // confirmPendingInstallation
     case reviewDiscard = "review.discard"          // cancelPendingInstallation
@@ -314,6 +315,14 @@ public actor SkillsCommandRouter {
         // the FROZEN matrix (the wire validator enforced stateful/revision
         // presence; the domain re-checks meaning, never shape alone).
         switch operation {
+        case .bundledRestore:
+            try ConfigJSON.closed(payload, allowed: ["operation"],
+                                  required: [], context: "bundledRestore")
+            guard createIntent, revision == nil else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "bundledRestoreIntent")
+            }
+            let outcomes = await domain.seedBundledDomainGuides(restoringRemoved: true)
+            return CapabilitiesReplies.completed(["outcomes": outcomes])
         case .officialInstall:
             try ConfigJSON.closed(payload,
                                   allowed: ["operation", "skillId", "cursor"],

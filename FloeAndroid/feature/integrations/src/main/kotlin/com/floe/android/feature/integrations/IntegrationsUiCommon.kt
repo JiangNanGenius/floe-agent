@@ -100,24 +100,27 @@ fun IntegrationEditorToolbar(
     modifier: Modifier = Modifier,
     confirmTint: androidx.compose.ui.graphics.Color? = null,
     confirmTag: String = "integration.confirmAction",
+    showConfirm: Boolean = true,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 20.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         FloeCapsuleAction(
             label = cancelLabel,
             onClick = onCancel,
+            enabled = !inFlight,
             tint = Floe.colors.label,
             modifier = Modifier.testTag("integration.cancelAction"),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (inFlight) {
                 FloeActivityIndicator(description = confirmLabel)
-            } else {
+            } else if (showConfirm) {
                 FloeCapsuleAction(
                     label = confirmLabel,
                     onClick = onConfirm,

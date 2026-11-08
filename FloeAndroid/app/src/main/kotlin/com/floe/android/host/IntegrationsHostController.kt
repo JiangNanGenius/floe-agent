@@ -1251,6 +1251,42 @@ class IntegrationsHostController internal constructor(
         }
     }
 
+    override fun restoreBundledGuides(): Boolean {
+        if (!admitted() || destinationState.value.skills.isWorking) return false
+        val rootEpoch = host.nativeRootEpoch() ?: return false
+        updateDestination {
+            it.copy(skills = it.skills.copy(isWorking = true, errorMessage = null, bundledRestoreNotice = null))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "skills.install",
+                scope = HostScope.ApplicationConfiguration("skills"),
+                stateful = true,
+                createIntent = true,
+                correlationID = client().correlationID("sbuiltin"),
+                payload = JsonObject(mapOf("operation" to JsonPrimitive("bundled.restore"))),
+            ),
+        ) { outcome ->
+            if (!admitted() || host.nativeRootEpoch() != rootEpoch) return@trackOperation
+            val outcomes = ((outcome as? HostOperationOutcome.Completed)?.value as? JsonObject)
+                ?.get("outcomes") as? JsonObject
+            val complete = outcomes?.isNotEmpty() == true && outcomes.values.all {
+                (it as? JsonPrimitive)?.content in setOf("installed", "upgraded", "unchanged", "userModified", "userManaged")
+            }
+            updateDestination {
+                it.copy(skills = it.skills.copy(
+                    isWorking = false,
+                    errorMessage = if (complete) null else actionString(
+                        com.floe.android.feature.integrations.R.string.skills_restore_bundled_failed),
+                    bundledRestoreNotice = if (complete) actionString(
+                        com.floe.android.feature.integrations.R.string.skills_restore_bundled_complete) else null,
+                ))
+            }
+            refreshSkills()
+        }
+        return true
+    }
+
     override fun refreshCatalog(force: Boolean): Boolean {
         if (!admitted()) return false
         if (destinationState.value.skills.catalogChecking) return false

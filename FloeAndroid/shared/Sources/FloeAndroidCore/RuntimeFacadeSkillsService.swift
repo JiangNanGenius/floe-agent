@@ -1886,10 +1886,11 @@ public actor SkillsDomain {
                 throw ConfigDomainError(code: .persistenceUnavailable, reason: "skillBackupMove")
             }
         }
-        let official = OfficialSkillHub.skillIDs.contains(skillID)
+        let suppressSeed = OfficialSkillHub.skillIDs.contains(skillID)
+            || Self.bundledDefinition(for: row) != nil
         do {
             try await store.remove(id: skillID, expectedDigest: revision.version,
-                                   suppressBundledSeed: official)
+                                   suppressBundledSeed: suppressSeed)
         } catch is SkillStoreConflict {
             restoreBackup(backup, to: package, exists: exists)
             throw ConfigDomainError(code: .staleRevision, reason: "skillCAS")
@@ -1905,7 +1906,7 @@ public actor SkillsDomain {
         return ["state": "removed", "skillID": skillID,
                 "recoveryAvailable": exists,
                 "recoveryToken": backupToken ?? NSNull(),
-                "bundledSeedSuppressed": official]
+                "bundledSeedSuppressed": suppressSeed]
     }
 
     // MARK: skills.install — creator (direct materialization; original funnel)
@@ -2628,6 +2629,119 @@ public actor SkillsDomain {
         try? await performRestore(journal: journal, journalDirectory: journalDirectory)
     }
 
+    // MARK: bundled Android guide seeding (N07-platform-guides67)
+
+    /// Installs or upgrades the app-bundled Android guides
+    /// (`AndroidBundledSkillGuides.all`) so skill.list/skill.search/skill.read
+    /// actually surface registry-true guidance on a fresh device. This is
+    /// the Android counterpart of the iOS app's
+    /// `SkillsCenter.seedBundledDomainSkill` (fixed object 2ce48570a) with
+    /// the SAME user-intent policy, adapted to this domain's funnels:
+    ///
+    ///  * a row owned by another source (signed hub, curated, community,
+    ///    creator) is never touched;
+    ///  * a bundled row whose bytes still match is skipped; a user-edited
+    ///    copy (rewritten digest ≠ source digest, or an equal/older version
+    ///    with different bytes) is respected, never overwritten;
+    ///  * a newer bundled revision replaces ONLY an unmodified bundled row,
+    ///    preserving the user's enabled/disabled state and capability grants
+    ///    (the store upsert keeps the row identity and the staging funnel
+    ///    re-derives effective capabilities);
+    ///  * a persisted removal marker (`skills.userRemoved.<id>`, written by
+    ///    uninstall for official and app-bundled ids)
+    ///    suppresses re-installation until the user explicitly restores the
+    ///    guide through the explicit bundled.restore host operation;
+    ///  * every guide is guidance-only (`scriptRuntime: none`, no declared
+    ///    tools/capabilities, `floe-builtin://` source identity) so it can
+    ///    never mint execution authority.
+    ///
+    /// The pass is idempotent, per-guide isolated (one broken guide never
+    /// blocks the others or app startup) and never throws; it returns the
+    /// per-id outcome map for diagnostics/logging only.
+    @discardableResult
+    public func seedBundledDomainGuides(restoringRemoved: Bool = false) async -> [String: String] {
+        var outcomes: [String: String] = [:]
+        for definition in AndroidBundledSkillGuides.all {
+            let id = definition.id
+            guard inflightSkills.insert(id).inserted else {
+                outcomes[id] = "inFlight"
+                continue
+            }
+            defer { inflightSkills.remove(id) }
+            do {
+                if restoringRemoved {
+                    _ = try requireBinding()
+                    try await store.requestBundledSkillInstallation(id: id)
+                }
+                outcomes[id] = try await seedOneBundledGuide(definition)
+            } catch {
+                outcomes[id] = "failed"
+                // A single broken seed must never block startup (original
+                // iOS policy); the next pass retries the same id.
+                FloeLogger(category: .runtime).error(
+                    "Bundled guide \(id) installation failed")
+            }
+        }
+        return outcomes
+    }
+
+    private func seedOneBundledGuide(
+        _ definition: BundledDomainSkills.Definition
+    ) async throws -> String {
+        let id = definition.id
+        let source = AndroidBundledSkillGuides.sourceURL(for: id)
+        let seedRoot = try makeStagingDirectory(namespace: "bundled-seed")
+        defer { cleanup(seedRoot) }
+        let packageRoot = seedRoot.appendingPathComponent("package")
+        try fileManager.createDirectory(at: packageRoot, withIntermediateDirectories: false)
+        for (name, data) in AndroidBundledSkillGuides.seedPackageFiles(definition) {
+            try data.write(to: packageRoot.appendingPathComponent(name), options: .atomic)
+        }
+        let package = try validator.validate(packageAt: packageRoot)
+        let rows = try await store.all()
+        guard let existing = rows.first(where: { $0.id == id }) else {
+            // Fresh install — unless the user explicitly removed this guide.
+            if try await store.wasBundledSkillRemoved(id: id) { return "userRemoved" }
+            _ = try await commitInstalledPackage(
+                stagedPackageDirectory: packageRoot,
+                canonicalSHA256: package.canonicalSHA256,
+                sourceURL: source,
+                sourceDigest: package.canonicalSHA256,
+                rewriteModelID: "bundled-seed",
+                manifestOverride: nil,
+                initialStatus: "enabled",
+                replaceExisting: false,
+                verifiedUpgrade: nil,
+                bundledSeed: true)
+            return "installed"
+        }
+        // A GitHub/curated/community/creator package keeps its identity.
+        guard existing.sourceURL == source else { return "userManaged" }
+        if existing.rewrittenDigest == package.canonicalSHA256 { return "unchanged" }
+        guard Self.isBundledVersion(definition.version, newerThan: existing.version) else {
+            // Same or older bundled version with different bytes: the user
+            // revised this copy — respect it.
+            return "userModified"
+        }
+        guard existing.rewrittenDigest == existing.sourceDigest else {
+            // A local revision must be resolved explicitly, not overwritten.
+            return "userModified"
+        }
+        _ = try await commitInstalledPackage(
+            stagedPackageDirectory: packageRoot,
+            canonicalSHA256: package.canonicalSHA256,
+            sourceURL: source,
+            sourceDigest: package.canonicalSHA256,
+            rewriteModelID: "bundled-seed",
+            manifestOverride: nil,
+            // ORIGINAL policy: upgrades preserve the user's enabled state.
+            initialStatus: existing.status,
+            replaceExisting: true,
+            verifiedUpgrade: nil,
+            bundledSeed: true)
+        return "upgraded"
+    }
+
     // MARK: skills settings document (ONE canonical value + honest CAS)
 
     /// The settings document projected for `skills.list`. Its revision
@@ -2709,7 +2823,7 @@ public actor SkillsDomain {
                     relatedByTool[tool, default: []].append(row.id)
                 }
             }
-            if let definition = BundledDomainSkills.all.first(where: { $0.id == row.id }) {
+            if let definition = Self.bundledDefinition(for: row) {
                 for tool in definition.automaticallyLoadedToolNames where registered.contains(tool) {
                     allowedNames.insert(tool)
                     if !relatedByTool[tool, default: []].contains(row.id) {
@@ -2769,7 +2883,8 @@ public actor SkillsDomain {
                                         manifestOverride: SkillManifest?,
                                         initialStatus: String = "enabled",
                                         replaceExisting: Bool,
-                                        verifiedUpgrade: SkillUpgradeCandidate?) async throws
+                                        verifiedUpgrade: SkillUpgradeCandidate?,
+                                        bundledSeed: Bool = false) async throws
         -> SkillInstallationRecord {
         let package = try validator.validate(packageAt: stagedPackageDirectory,
                                              requireManifest: manifestOverride == nil,
@@ -2777,7 +2892,13 @@ public actor SkillsDomain {
         guard package.canonicalSHA256 == canonicalSHA256 else {
             throw SkillValidationError.digestMismatch
         }
-        if (BundledDomainSkills.all.contains { $0.id == package.manifest.id }
+        // The bundled-guide seeder replaces ONLY rows that carry the app's
+        // own floe-builtin:// source for this exact id (checked by the
+        // caller before reaching this funnel); user/hub-managed copies are
+        // never overwritten. The iOS original has the same exemption
+        // (installCanonicalPackage bundledSeed:, SkillsCenter 2ce48570a).
+        if !bundledSeed,
+           (BundledDomainSkills.all.contains { $0.id == package.manifest.id }
             || OfficialSkillHub.skillIDs.contains(package.manifest.id)),
            verifiedUpgrade == nil, replaceExisting {
             throw ConfigDomainError(code: .invalidEnvelope,
@@ -3021,6 +3142,33 @@ public actor SkillsDomain {
 
     static func sidecarManifest(for row: PersistedSkill) -> SkillManifest? {
         try? JSONDecoder().decode(SkillManifest.self, from: Data(row.manifestJSON.utf8))
+    }
+
+    /// The bundled-guide definition that truthfully describes a store row.
+    /// ONLY rows the app itself bundled (`floe-builtin://` source) are
+    /// augmented with `automaticallyLoadedToolNames`; the Android-authored
+    /// variant is preferred over the ported iOS bundled text so a read never
+    /// advertises iOS-only editor aliases (`document.pdf.*`, `apple.*`,
+    /// `vnc.*`, ...) that the Android registry cannot execute. Signed-hub,
+    /// curated, community and creator packages keep manifest-only discovery
+    /// — their own declared `tools` are the contract. The runtime still
+    /// intersects every surfaced name with the real registry before any
+    /// activation (N07-platform-guides67).
+    static func bundledDefinition(for row: PersistedSkill) -> BundledDomainSkills.Definition? {
+        guard AndroidBundledSkillGuides.isBundledSourceURL(row.sourceURL, id: row.id) else {
+            return nil
+        }
+        return AndroidBundledSkillGuides.definition(id: row.id)
+            ?? BundledDomainSkills.all.first(where: { $0.id == row.id })
+    }
+
+    /// Numeric dotted-version comparison ("1.10.0" > "1.4.0"); used by the
+    /// bundled-guide seeder to decide whether a newer app-bundled revision
+    /// may replace an unmodified bundled row.
+    static func isBundledVersion(_ candidate: String, newerThan installed: String) -> Bool {
+        guard let next = try? SignedContentVersion(candidate),
+              let current = try? SignedContentVersion(installed) else { return false }
+        return current < next
     }
 
     static func manifestObject(_ manifest: SkillManifest) -> sending [String: Any] {
@@ -3424,7 +3572,7 @@ extension SkillsDomain {
         for row in rows {
             if let id, row.id != id { continue }
             var required = Set(Self.sidecarManifest(for: row)?.tools ?? [])
-            if let definition = BundledDomainSkills.all.first(where: { $0.id == row.id }) {
+            if let definition = Self.bundledDefinition(for: row) {
                 required.formUnion(definition.automaticallyLoadedToolNames)
             }
             var descriptionText: String?

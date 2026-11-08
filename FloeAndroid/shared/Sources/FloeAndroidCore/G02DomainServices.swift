@@ -440,6 +440,13 @@ public final class G02InstalledComposition: @unchecked Sendable {
             hostContext: hostContext,
             registry: .shared))
         let skillsRouter = SkillsCommandRouter(domain: skillsDomain)
+        // N07-platform-guides67: install/upgrade the app-bundled Android
+        // guides so model-facing discovery/skill.read surface registry-true
+        // guidance. Non-blocking and per-guide isolated (never fails this
+        // composition); user-managed packages, user edits, enabled state,
+        // grants and explicit removal markers stay authoritative inside the
+        // domain seeder.
+        Task { await skillsDomain.seedBundledDomainGuides() }
         let mcpRouter = MCPCommandRouter(domain: mcpDomain, routeContext: routeContext)
         let capabilitiesRouter = CapabilitiesCommandRouter(domain: capabilitiesDomain)
 
