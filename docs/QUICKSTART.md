@@ -1,11 +1,11 @@
-<!-- docs-updated: 2026-11-06 -->
+<!-- docs-updated: 2026-11-08 -->
 # From installation to your first result
 
 This guide focuses on iOS / iPadOS and calls out Android differences. Check the selected release for its actual capabilities.
 
 ## Choose an installation channel
 
-Open the [release centre](https://www.floe-agent.com/en/releases) and choose Floe Agent, Mac Bridge or iOS Bridge. GitHub iOS IPAs require your own signing. [Apply on the website](https://www.floe-agent.com/en#beta) for TestFlight access; applying does not guarantee immediate eligibility. App Store availability is determined by the actual store listing.
+Open the [release centre](https://www.floe-agent.com/en/releases) and choose Floe Agent, Mac Bridge or iOS Bridge. The Floe Agent App Store listing is live (1.7.74, iOS/iPadOS 26+); update through the store. GitHub iOS IPAs require your own signing and carry newer features — the current newer-feature build is 1.8.5 (325). [Apply on the website](https://www.floe-agent.com/en#beta) for TestFlight access; applying does not guarantee immediate eligibility.
 
 On Android, download the signed APK for the selected public alpha. A complete current APK does not require installing every intermediate version. A delta needs its exact stated base. If Android reports a different signer, preserve your data rather than uninstalling just to proceed.
 
@@ -29,7 +29,7 @@ On Android, download the signed APK for the selected public alpha. A complete cu
 3. Run a small program and open its output. For an HTTP service, choose **Run as web service**, wait for a real response, then preview it.
 4. Stop the owning job or service when finished. Hiding the terminal or closing the preview does not stop background work.
 
-**If it fails:** inspect installation, startup and job output first. On Android Alpha29, if the terminal stops starting after an upgrade, update runtime components separately under Settings → Execution → Local Environment. Preserve project files before repair; do not reset or delete data as a first step. See [terminals and environments](USER_GUIDE.md#9-local-terminal-and-linux-performance).
+**If it fails:** inspect installation, startup and job output first. On the current Android alpha, if the terminal stops starting after an upgrade, update runtime components separately under Settings → Execution → Local Environment. Preserve project files before repair; do not reset or delete data as a first step. See [terminals and environments](USER_GUIDE.md#9-local-terminal-and-linux-performance).
 
 ## Create and save a 3D model
 
@@ -41,6 +41,17 @@ On Android, download the signed APK for the selected public alpha. A complete cu
 4. Export an image or supported 3D format for the intended use, then check it in the receiving tool.
 
 **If it fails:** preserve read-only imports rather than treating successful import as editable support. Undo a failed geometry change to a recoverable state. See the [native 3D manual](USER_GUIDE.md#3d-models-one-unified-workbench).
+
+## Try a work in Space (newer builds)
+
+**Prepare:** the 1.8.5 newer-feature build (GitHub, signed by you) or a TestFlight build. Space is not in the App Store 1.7.74 release.
+
+1. Open **Space** from the sidebar and switch to Files. Tap **New** and create a drawing or a document; name it.
+2. Edit the work, then close it and reopen it from Continue working to confirm it saved.
+3. Open the work's assistant and ask it to summarize or continue the work; review any proposal before accepting it.
+4. Delete the test work and restore it from Recently Deleted to learn recovery.
+
+**If it fails:** confirm the build supports Space (Settings → Diagnostics & About). See [Space and specialist workbenches](WORKSPACES_GUIDE.md) for meetings, music, printing and the toolbox.
 
 ## Choose the right Bridge
 
@@ -57,4 +68,4 @@ iOS Bridge: start with the [versioned installation instructions](https://github.
 
 Confirm saving in each Office, media or 3D editor. Save-as and export do not automatically replace the original. After Android external-editor or Linux edits, wait for writeback before reopening; preserve recovery copies when conflicts remain. Keep independent backups of important files.
 
-For support, describe the version, device, steps, expected result and actual result in the [support channel](https://github.com/JiangNanGenius/floe-agent/blob/main/SUPPORT.md). Submit only necessary diagnostics or screenshots voluntarily; never include passwords, keys or private files. Continue with the [full manual](USER_GUIDE.md).
+For support, describe the version, device, steps, expected result and actual result in the [support channel](https://github.com/JiangNanGenius/floe-agent/blob/main/SUPPORT.md). Submit only necessary diagnostics or screenshots voluntarily; never include passwords, keys or private files. Continue with the [full manual](USER_GUIDE.md) and the [workspace guide](WORKSPACES_GUIDE.md).

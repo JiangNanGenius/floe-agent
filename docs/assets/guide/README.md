@@ -12,3 +12,16 @@ Actual Floe iPad Simulator frames recorded on 2026-10-08 with synthetic workshop
 | workbench.jpg | Native Markdown editor / 原生 Markdown 编辑器 | Files recording, 36 s |
 
 The website generator copies these same image bytes beside the downloadable Markdown. / 官网生成器将相同图片与可下载 Markdown 一起发布。
+
+## Current released-App examples / 新版真实示例
+
+Captured from the frozen **v1.7.74 / build315** App on 2026-11-08 using the synthetic Stargaze Weekend sample. Native interface pixels are unchanged; no AI UI was generated. Both manual languages share the Chinese interface with translated captions. These screenshots illustrate the released App; newer workspace tutorials separately state their build requirements.
+
+2026-11-08 新增真实示例来自正式版 1.7.74（315），使用合成资料，原始界面未重绘。新版专用工作台的适用版本在教程中单独说明。
+
+| Image | Example / 示例 |
+| --- | --- |
+| home-current.png | Completed task and local web result / 已完成任务与本地网页成果 |
+| notes-current.png | Notes / 手记 |
+| canvas-current.png | Canvas with example material / 示例素材画布 |
+| workbench-current.png | Code workspace / 代码工作区 |

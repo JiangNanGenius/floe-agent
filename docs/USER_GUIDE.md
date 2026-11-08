@@ -1,6 +1,6 @@
-<!-- docs-updated: 2026-11-06 -->
+<!-- docs-updated: 2026-11-08 -->
 
-> This guide primarily describes iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). Public Android Alpha29 adds bounded static SVG preview and improves Linux graphical sessions and file writeback. If the terminal fails after upgrading, update local runtime components separately. Android uses your cloud model configuration and does not provide local-model inference. Check the [selected release notes](https://www.floe-agent.com/en/releases?platform=android) for capabilities and limits.
+> This guide primarily describes iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). The App Store release is 1.7.74; sections about Space and specialist workbenches need the newer-feature installer ([GitHub Releases](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5), unsigned — sign it yourself) or a TestFlight build. See [release and installation status](CURRENT_STATUS.md) and the [workspace guide](WORKSPACES_GUIDE.md) for what each build includes. Android is a separate public alpha: it uses your cloud model configuration, does not provide local-model inference, and its capabilities follow the [selected release notes](https://www.floe-agent.com/en/releases?platform=android).
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
@@ -9,7 +9,7 @@
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
-This guide follows the source. Check Settings for your installed version and [release and installation status](CURRENT_STATUS.md) for availability in each channel.
+This guide documents the published builds identified above. Check Settings for your installed version and [release and installation status](CURRENT_STATUS.md) for availability in each channel.
 
 ## Contents
 
@@ -43,17 +43,18 @@ This guide follows the source. Check Settings for your installed version and [re
 - [17. Skills, MCP, mail and automation](#17-skills-mcp-mail-and-automation)
 - [18. Background work, PiP, notifications and data](#18-background-work-pip-notifications-and-data)
 - [19. Temporary chat (RAM-only)](#19-temporary-chat-ram-only)
+- [22. Space and specialist workbenches](#22-space-and-specialist-workbenches)
 - [20. Troubleshooting](#20-troubleshooting)
 - [21. Useful feedback](#21-useful-feedback)
 
 <!-- doc-anchor: section-2 -->
 ## 1. Installation and first use
 
-![The iPad home screen: choose a task in the sidebar or start from the central composer.](assets/guide/home.jpg)
+![A completed task with its local web result in Floe on iPad.](assets/guide/home-current.png)
 
-*The iPad home screen: choose a task in the sidebar or start from the central composer.* Check the model and workspace before sending your first request.
+*A completed task with its local web result.* Check the model and workspace before sending your first request. Screenshots in this chapter show the App Store 1.7.74 (315); the workbench tutorials in the [workspace guide](WORKSPACES_GUIDE.md) follow the newer 1.8.5 (325) builds.
 
-1. After public release, use the App Store link provided by the [official website](https://www.floe-agent.com/) and check availability in your region. Submission for review does not mean the app is available. For a beta, use a TestFlight group you already have access to and check its build, expiry and testing notes.
+1. Install from the [App Store listing](https://apps.apple.com/app/id6801209053) linked on the [official website](https://www.floe-agent.com/); availability follows your storefront. For a beta, use a TestFlight group you already have access to and check its build, expiry and testing notes.
 2. For GitHub or Feather/AltStore delivery, follow the installation instructions on the release page. The GitHub developer IPA is unsigned and requires your own signing method; it is not a TestFlight package.
 3. Complete onboarding. Use the sidebar on iPhone and multiple columns on iPad; editors can open full screen.
 4. Core Notes, file organization and Canvas do not require an AI provider. Connect your provider before requesting AI work.
@@ -230,9 +231,9 @@ Several task clients — the parent run and its children — may share one Linux
 <!-- doc-anchor: section-10 -->
 ## 6. Files, editors and concurrent changes
 
-![A Markdown file opened beside its task and file list.](assets/guide/workbench.jpg)
+![A file open beside its task in the Floe workbench.](assets/guide/workbench-current.png)
 
-*A Markdown file opened beside its task and file list.* Open the output in the file panel, inspect its contents, then save and reopen it.
+*A file open beside its task in the workbench.* Open the output in the file panel, inspect its contents, then save and reopen it.
 
 Browse the task/project file panel, open text in the editor and save before running or sharing. Review conflicts: non-overlapping changes may merge; overlapping edits need a decision. A recovery copy does not mean the original was saved.
 
@@ -243,9 +244,9 @@ For text, resolve save errors before running. For Office, preserve and compare b
 <!-- doc-anchor: section-11 -->
 ## 7. Notes: import, search and handwriting
 
-![Notes showing a workshop PDF with handwriting and annotation controls.](assets/guide/notes.jpg)
+![A Notes document open with its annotation controls in Floe.](assets/guide/notes-current.png)
 
-*Notes showing a workshop PDF with handwriting and annotation controls.* Open Notes from the sidebar, import a sample PDF, and try a short pen stroke before editing an important document.
+*A Notes document open with its controls.* Open Notes from the sidebar, import a sample PDF, and try a short pen stroke before editing an important document.
 
 Open Notes from the sidebar, then use + to create or import. For task files, select Import from Floe Workspace, choose the project or task, then the file. Check pages, text and attachments after import. The Notes copy is independently stored, not a live mirror of the source.
 
@@ -264,6 +265,8 @@ Saving an Office document in Notes updates its automatic cover from the saved co
 **Document covers.** A Notes document can use a custom cover instead of its generated preview: open the document menu and choose **Set Cover** or **Change Cover** to use a photo or a file, or **Restore Automatic Cover** to go back. The cover is independent of the document body: setting or restoring it does not change the content revision, does not enter the undo history and never modifies the original Office/PDF content, and the previous cover image is not discarded while other data still references it. The Notes assistant has the same cover action for a document selected for that task (`notes.cover`, read / set / restore): read reports the cover state, while set and restore carry the expected document revision and cover revision from a previous read, so a stale attempt is refused instead of overwriting a newer cover, and only images referenced by the selected document or files authorized in that task's workspace can be used. Unusable images are rejected and the previous cover stays. A `.floenote` archive containing a custom cover is refused by older Floe versions that do not support covers, rather than imported incompletely.
 
 **Reading mode.** Text files and text-only Notes documents have an alternate read-only **Reading Mode** of the same file; the original is never changed and its editor stays available. Reading mode offers text size, line spacing, column width, appearance (including a warm-paper theme), a contents list and in-document search, and restores your last reading position only when the file still matches (files in a task's private workspace keep no position). It shows text only — a notebook with ink or images is read as text while those stay untouched. Encoding is detected automatically (UTF-8, UTF-16 and, when the platform provides the codec, GB18030); when detection is unclear you can choose Automatic, UTF-8, UTF-16 LE/BE or GB18030 (only when available) manually, and a choice that cannot decode the whole file is refused instead of showing replacement characters. Files over 64 MiB are refused rather than partially loaded, and very long files may stop showing line numbers once the line index is full. Other formats keep their existing native viewers (PDF, Office, CAD, images, media) — reading mode never converts them into text.
+
+**Space works (newer builds).** From the 1.8 builds, the sidebar's Space entry holds your personal files and editable works — documents, drawings/images, video, CAD, music, meetings and more — next to the Notes library. Space works belong to you, not to a chat task: deleting a chat never deletes a work, and deleting a work never touches task or project files. See [Space and specialist workbenches](WORKSPACES_GUIDE.md).
 
 [↑ Back to contents](#contents)
 
@@ -368,11 +371,11 @@ Diagnose in order: reachability, DNS, port, authentication, then command/directo
 
 Bluetooth initializes only when you explicitly scan or connect. A GATT UUID must be 4 or 8 hexadecimal digits, or a standard 128-bit UUID; malformed input returns an error before the system Bluetooth API.
 
-### Android network workbench (Alpha17)
+### Android network workbench
 
 In Android, terminal file changes appear in **Workspace Files** after the terminal session ends. **Close Session** finishes it; closing only the panel keeps the session running. After a successful close, the file list refreshes without replacing open drafts.
 
-The Android workbench under **More → Network** keeps measurements on the phone and needs neither Linux nor Root. **LAN discovery** lists DNS-SD services on Android 13 or later; on Android 9–12L it offers an explicit RFC1918 /24–/30 TCP subnet scan instead. Nothing is scanned until you start it, and results distinguish found, unresolved and lost entries. **Speed test** measures download, upload or both against an HTTPS endpoint you control, with a 1–32 MiB data cap and a 1–15 s budget per direction; redirects are not followed, upload sends generated data only, and a metered network is refused unless you explicitly allow it. **Monitoring** runs for 1 minute to 1 hour at 5–300 s intervals for connection status, Ping or TCP, shows a foreground notification with **Stop**, keeps at most 720 checks and never restarts by itself. **Report** creates a private JSON+Markdown pair; identifiers are redacted unless you choose the detailed option, and export writes only the file you select. One transfer or probe measures one endpoint and path, not your maximum bandwidth or coverage; monitoring does not use background location. First-time Linux terminal preparation in a new task is unchanged. These screens are available in Alpha17; Alpha16 does not include them.
+The Android workbench under **More → Network** keeps measurements on the phone and needs neither Linux nor Root. **LAN discovery** lists DNS-SD services on Android 13 or later; on Android 9–12L it offers an explicit RFC1918 /24–/30 TCP subnet scan instead. Nothing is scanned until you start it, and results distinguish found, unresolved and lost entries. **Speed test** measures download, upload or both against an HTTPS endpoint you control, with a 1–32 MiB data cap and a 1–15 s budget per direction; redirects are not followed, upload sends generated data only, and a metered network is refused unless you explicitly allow it. **Monitoring** runs for 1 minute to 1 hour at 5–300 s intervals for connection status, Ping or TCP, shows a foreground notification with **Stop**, keeps at most 720 checks and never restarts by itself. **Report** creates a private JSON+Markdown pair; identifiers are redacted unless you choose the detailed option, and export writes only the file you select. One transfer or probe measures one endpoint and path, not your maximum bandwidth or coverage; monitoring does not use background location. First-time Linux terminal preparation in a new task is unchanged. On iOS, the related network toolbox lives in Space (see §22) in newer builds.
 
 [↑ Back to contents](#contents)
 
@@ -415,11 +418,11 @@ For native `.floecad` work (the 3D workbench's drawing and assembly services), t
 <!-- doc-anchor: section-19 -->
 ## 15. Canvas, images, audio and video
 
-![A populated Canvas with images, text and a document in one workspace.](assets/guide/canvas.jpg)
+![A populated Canvas with images, text and a document in one workspace.](assets/guide/canvas-current.png)
 
 *A populated Canvas with images, text and a document in one workspace.* Select an object to inspect or edit it. Review each generated asset before exporting.
 
-Create a canvas in Creative Mode, add text/images/generation nodes, connect inputs and check the chosen model's capabilities. Open the generated asset from its node to preview it.
+Create a canvas in Creative Mode, add text/images/generation nodes, connect inputs and check the chosen model's capabilities. Open the generated asset from its node to preview it. In newer builds, diagram works in Space hold structured diagrams and Creative mode's mixed canvas keeps text, images, assets and documents on one board; see [Space and specialist workbenches](WORKSPACES_GUIDE.md).
 
 In the media workspace, select a file, configure crop, trim, subtitles or export format, preview and export. Play the output to check duration, audio, captions and framing. Preserve originals. Image generation, image editing, video generation and local conversion are different capabilities with different providers/quotas. See [Canvas architecture](CREATIVE_MODE_AND_ASSET_ARCHITECTURE.md).
 
@@ -481,12 +484,12 @@ See [unified 3D and design migration](FLOE_UNIFIED_DESIGN_MIGRATION.md) for the 
 
 The same design workflow (brief → spec → frozen input → candidate → adopt/reject/variant → verified export) is available without creating another workspace:
 
-1. **Creative start**: Canvas home → Quick Start. In builds up to 1.7.30 (271) this opens the design request entry; the next unreleased update replaces the type-selection menu and mandatory brief form with a natural-language start in the same task (see the note below). Saved requests, specs and candidates are preserved either way.
+1. **Creative start**: Canvas home → Quick Start. In builds up to 1.7.30 (271) this opens the design request entry; from the 1.8 builds the same entry starts in ordinary natural language in the same task (see the note below). Saved requests, specs and candidates are preserved either way.
 2. **Current file**: open a workspace file in File Preview → **Design workflow**. Live workspace files only; cloud/network copies are read-only and have no design owner.
 3. **Chat attachment**: long-press (or right-click) a file or image attachment in the message → **Design from this attachment**. The adopted result returns as a new attachment in that same original task; the original attachment is never modified.
 4. **Canvas node**: canvas view menu (⋯) → **Design workflow** — the existing Canvas panel.
 
-> **Next update (unreleased).** The next source update starts a design in ordinary natural language from the same task: describe what you want, with no type menu or mandatory goal/audience form, and continue with follow-up messages. It distinguishes three kinds of work — **create** a new result, **modify** within a frozen revision while keeping everything outside the scope, and **restructure** (which first asks what content, data, behavior and format must be preserved before anything is regenerated). Candidates are shown for preview/comparison and only adopt after you confirm; a revision conflict keeps your manual edits and never silently overwrites, and results for a chat attachment return to the original task. This update is not released; it has been built and locally verified (2026-10-14: full App build, changed App suites, a live-model design loop and the entry UI test), while fine-grained GUI acceptance is still in progress — the entry above and the checklist below describe the installed behavior.
+> **Newer builds (1.8.x).** The 1.8 builds start a design in ordinary natural language from the same task: describe what you want, with no type menu or mandatory goal/audience form, and continue with follow-up messages. It distinguishes three kinds of work — **create** a new result, **modify** within a frozen revision while keeping everything outside the scope, and **restructure** (which first asks what content, data, behavior and format must be preserved before anything is regenerated). Candidates are shown for preview/comparison and only adopt after you confirm; a revision conflict keeps your manual edits and never silently overwrites, and results for a chat attachment return to the original task. This is not in the App Store 1.7.74 build.
 
 What to check in the panel:
 
@@ -590,6 +593,8 @@ In **Task Center → Background work**, tap **Start** to process the current que
 
 **Task Live Activities** has an independent switch, off by default. Enable it to see running tasks and their stages on the Lock Screen and supported Dynamic Island. Tap a Lock Screen task to return to it. The activity ends when work finishes, is cancelled, or the switch is turned off. This choice leaves PiP, screen feedback and location settings unchanged; temporary chats do not publish task content.
 
+**Push (newer builds, off by default).** Settings → Background execution → **Push** adds unified push for scheduled and background work, with version reminders. Device enrollment and actual receipt of notifications are still being verified, and background execution remains subject to system limits — treat in-app run history and schedule history as the record of what actually ran, not a delivered notification.
+
 With enhanced background, Picture in Picture, or screen feedback enabled, active tasks can request location in the background for weather or nearby searches. Floe requests location permission on first launch and supports approximate location. Background execution settings show location status; assistance ends when all eligible tasks and Linux environments have stopped. Denying location does not affect tasks that do not need it.
 
 Large downloads and Python data jobs are durable background jobs. A task that depends on a required job shows **Waiting for background work** instead of completed, and its Progress inspector lists the job with its real stage/phase and measured units, a Cancel action and the full-output pager: read the stored output page by page (`nextOffset` until it is done) instead of treating a short preview as the whole result; the pager reports total size, explicit truncation and UTF-8 boundaries. When the job finishes, its result continues the SAME task as its next round — you can add input while it waits — and it does not open a new unsolicited conversation. The status Picture-in-Picture floats only where the system allows it, and a web service's Ready state belongs to its current process; start the service again after the App is terminated.
@@ -646,5 +651,21 @@ Use [GitHub Issues](https://github.com/JiangNanGenius/floe-agent/issues) for fea
 Include device, OS, App version/build, entry point, minimal steps, expected/actual behavior and redacted screenshots or a synthetic sample. For crashes, include diagnostics from the matching time. For save issues, state whether save completed, whether the file was reopened and whether the original changed.
 
 [Support](../SUPPORT.md) · [Security](../SECURITY.md)
+
+[↑ Back to contents](#contents)
+
+<!-- doc-anchor: section-34 -->
+## 22. Space and specialist workbenches
+
+The App Store baseline 1.7.74 covers §1–§21. Newer builds add **Space** — a personal library of files and editable works — plus dedicated workbenches. Install the newer-feature build from [GitHub Releases](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5) (unsigned; sign it yourself) or check TestFlight; per-channel availability is tracked in [CURRENT_STATUS](CURRENT_STATUS.md).
+
+- **Entry:** sidebar → **Space**. Sections: Overview (quick access, pinned works, folders, continue working), Notes (your Notes library), Files (list or thumbnails, filtered by type), Toolbox.
+- **Works:** documents, drawings/images, video, 2D/3D CAD, diagrams, music, meetings, chemistry projects, printing and manufacturing. Create from **New**, import existing files, and restore deleted items from Recently Deleted.
+- **Ownership:** works are stored on device, independent of chat task workspaces. Deleting a chat task never deletes Space works; deleting a work never touches task or project files.
+- **Assistants:** the Work assistant and the Meeting assistant answer within the current work's own conversation and keep unsent drafts; they can only write back into that work.
+- **Manufacturing and 3D printing** open from a CAD document's Manufacturing entry; previews report implemented checks only and are not a complete machine-safety certification, and native USB drivers are not included yet.
+- **Push** for scheduled/background work lives under Settings → Background execution → **Push**, off by default; enrollment and notification receipt are still being verified.
+
+Step-by-step tutorials for each workbench — first workflow, saving/reopening, exports and limits: [Space and specialist workbenches](WORKSPACES_GUIDE.md).
 
 [↑ Back to contents](#contents)

@@ -1,6 +1,8 @@
 <!-- docs-updated: 2026-10-09 -->
 # Floe 1.7.24 (265) creative tool contracts and format capability table
 
+> **历史技术参考 / Historical technical reference.** 本页固定描述 1.7.24（265）时期的工具契约和格式核验，不是当前版本能力清单。原生 3D 与后续专用工作台的现行用法请读[最新使用手册](USER_GUIDE.zh-CN.md)和[工作台教程](WORKSPACES_GUIDE.zh-CN.md)。This versioned record is not the current feature matrix; use the [current manual](USER_GUIDE.md) and [workspace walkthroughs](WORKSPACES_GUIDE.md).
+
 Status (2026-10-08): implementation merged into `main`; immutable tag `v1.7.24`
 pins `246d6c038f0a3f7ec7d7d9f7e19d074f13601bec`; version fields read 1.7.24 (265).
 The exact local Xcode 27A266a / iphoneos27.0 Release device artifact was signed

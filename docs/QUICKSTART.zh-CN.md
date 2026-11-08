@@ -1,11 +1,11 @@
-<!-- docs-updated: 2026-11-06 -->
+<!-- docs-updated: 2026-11-08 -->
 # 从安装到第一个成果
 
 本页主要面向 iOS / iPadOS；Android 的差异会单独说明。功能以所选版本的发布说明为准。
 
 ## 选择安装方式
 
-先打开[版本中心](https://www.floe-agent.com/releases)，按产品选择 Floe Agent、Mac Bridge 或 iOS Bridge。GitHub iOS IPA 需要自行签名；想使用 TestFlight，可在[官网申请](https://www.floe-agent.com/#beta)，申请不等于立即获得测试资格。App Store 是否可安装以商店实际页面为准。
+先打开[版本中心](https://www.floe-agent.com/releases)，按产品选择 Floe Agent、Mac Bridge 或 iOS Bridge。Floe Agent 的 App Store 正式版已上架（1.7.74，iOS/iPadOS 26+），可直接安装与更新。GitHub iOS IPA 需要自行签名，但包含较新功能——当前较新功能构建为 1.8.5（325）。想使用 TestFlight，可在[官网申请](https://www.floe-agent.com/#beta)，申请不等于立即获得测试资格。
 
 Android 选择对应公开测试版的签名 APK。可直接下载最新完整包，不必逐版升级；增量包只能用于其标明的精确基础版本。安装提示签名不一致时先保留数据，不要为完成安装而直接卸载。
 
@@ -29,7 +29,7 @@ Android 选择对应公开测试版的签名 APK。可直接下载最新完整�
 3. 运行一个小程序，打开生成的文件；网页服务使用“作为网页服务运行”，待实际响应后再预览。
 4. 结束时停止对应作业或服务。隐藏终端、关闭预览不等于停止后台任务。
 
-**遇到问题：** 先查看安装、启动和运行输出。Android Alpha29 升级后若终端无法启动，在“设置 → 执行环境 → 本地环境”单独更新运行组件。资源修复前保留项目文件，不随意重置或删除数据。详见[终端与运行环境](USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置)。
+**遇到问题：** 先查看安装、启动和运行输出。当前 Android 测试版升级后若终端无法启动，在“设置 → 执行环境 → 本地环境”单独更新运行组件。资源修复前保留项目文件，不随意重置或删除数据。详见[终端与运行环境](USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置)。
 
 ## 创建并保存一个 3D 模型
 
@@ -41,6 +41,17 @@ Android 选择对应公开测试版的签名 APK。可直接下载最新完整�
 4. 按用途导出图片或受支持的 3D 格式，使用接收方工具再核对。
 
 **遇到问题：** 格式只读时保留原文件，不把导入成功当作可编辑证明；几何失败先撤销到可恢复状态。详见[原生 3D 手册](USER_GUIDE.zh-CN.md#3d-模型统一工作台)。
+
+## 在空间试用一个作品（较新构建）
+
+**准备：** 1.8.5 较新功能安装包（GitHub 下载后自行签名）或 TestFlight 构建。空间不在 App Store 1.7.74 正式版中。
+
+1. 从侧栏打开**空间**，切换到“文件”。点**新建**创建一个绘画或文档作品并命名。
+2. 编辑作品后关闭，再从“继续使用”重新打开，确认保存成功。
+3. 打开该作品的助手，请它总结或继续处理；采纳前核对每项建议。
+4. 删除测试作品，再从“最近删除”恢复，熟悉恢复流程。
+
+**遇到问题：** 先确认构建支持空间（设置 → 诊断与关于）。会议、音乐、打印和工具箱见[空间与专用工作台](WORKSPACES_GUIDE.zh-CN.md)。
 
 ## 区分两种 Bridge
 
@@ -57,4 +68,4 @@ iOS Bridge：先阅读[固定版本安装说明](https://github.com/JiangNanGeni
 
 Office、媒体和 3D 成果应分别在对应编辑器确认保存；另存和导出不会自动替代原件。Android 经外部编辑器或 Linux 修改文件时，等待写回完成再重开；存在冲突时保留恢复副本。重要资料始终保留独立备份。
 
-仍有问题时，在[支持入口](https://github.com/JiangNanGenius/floe-agent/blob/main/SUPPORT.zh-CN.md)描述版本、设备、复现步骤、预期与实际结果；诊断和截图只主动提交必要部分，不附密码、Key 或私人文件。继续阅读[完整手册](USER_GUIDE.zh-CN.md)。
+仍有问题时，在[支持入口](https://github.com/JiangNanGenius/floe-agent/blob/main/SUPPORT.zh-CN.md)描述版本、设备、复现步骤、预期与实际结果；诊断和截图只主动提交必要部分，不附密码、Key 或私人文件。继续阅读[完整手册](USER_GUIDE.zh-CN.md)与[空间与专用工作台](WORKSPACES_GUIDE.zh-CN.md)。

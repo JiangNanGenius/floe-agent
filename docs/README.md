@@ -4,7 +4,7 @@
 
 ## 使用手册 / User manuals
 
-[**中文图文手册**](USER_GUIDE.zh-CN.md) · [**English illustrated manual**](USER_GUIDE.md) · [官网中文](https://www.floe-agent.com/docs/zh.html) · [Website English](https://www.floe-agent.com/docs/en.html)
+[**中文图文手册**](USER_GUIDE.zh-CN.md) · [**English illustrated manual**](USER_GUIDE.md) · [官网中文](https://www.floe-agent.com/docs/zh.html) · [Website English](https://www.floe-agent.com/docs/en.html) · [空间与专用工作台教程 / Space & workbenches](WORKSPACES_GUIDE.zh-CN.md) · [English](WORKSPACES_GUIDE.md)
 
 | 阅读主题 / Topic | 简体中文 | English |
 | --- | --- | --- |
@@ -12,6 +12,7 @@
 | 任务与文件 / Tasks & files | [阅读](USER_GUIDE.zh-CN.md#3-新建任务与选择工作区) | [Read](USER_GUIDE.md#3-tasks-and-workspace-ownership) |
 | 手记与阅读 / Notes & reading | [阅读](USER_GUIDE.zh-CN.md#7-手记导入搜索与书写) | [Read](USER_GUIDE.md#7-notes-import-search-and-handwriting) |
 | Office | [阅读](USER_GUIDE.zh-CN.md#8-office编辑批注保存和重新打开) | [Read](USER_GUIDE.md#8-office-edit-annotate-save-and-reopen) |
+| 空间与专用工作台 / Space & workbenches | [阅读](WORKSPACES_GUIDE.zh-CN.md) | [Read](WORKSPACES_GUIDE.md) |
 | 画布与媒体 / Canvas & media | [阅读](USER_GUIDE.zh-CN.md#15-画布图像音视频) | [Read](USER_GUIDE.md#15-canvas-images-audio-and-video) |
 | 图纸与 3D / Drawings & 3D | [阅读](USER_GUIDE.zh-CN.md#14-工程图纸与图纸助手) | [Read](USER_GUIDE.md#14-engineering-drawings-and-ai-review) |
 | 开发与连接 / Code & connections | [阅读](USER_GUIDE.zh-CN.md#9-本地终端与-linux-性能配置) | [Read](USER_GUIDE.md#9-local-terminal-and-linux-performance) |
@@ -37,6 +38,7 @@
 | [GIS／制谱／字体全量预研发](FLOE_GIS_SCORE_FONT_PREDEVELOPMENT.zh-CN.md) | 三个编辑器完整功能矩阵、独立原生宿主、Space／手记／任务接入与验证边界 / Full editor scope and native-host integration boundaries |
 | [音乐编辑与建筑入口检查点](qualification/music-tool-contract-20261108/README.md) | 实际 App 30 秒保存／音频导出、音色与 MIDI 操作、建筑二级导航及验证边界 / App music tools, real audio export and Building navigation evidence |
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
+| [WORKSPACES_GUIDE.md](WORKSPACES_GUIDE.md) / [WORKSPACES_GUIDE.zh-CN.md](WORKSPACES_GUIDE.zh-CN.md) | 空间与专用工作台教程：Space 文件与作品、会议、音乐、图示、加工与 3D 打印、网络工具箱、化学工程，以及下一版工作台的版本说明 / Space and specialist workbenches with build-availability labels |
 | [Skill 依赖作者规范](skills/SKILL_DEPENDENCIES_AUTHOR_GUIDE.zh-CN.md) / [English](skills/SKILL_DEPENDENCIES_AUTHOR_GUIDE.md) | 精确依赖、版本与签名覆盖；[机器 Schema](skills/dependencies.schema.json) 和[示例](skills/examples/README.md) / Exact dependencies, versioning and signed package coverage |
 | [Skill Hub artwork](SKILL_HUB_ARTWORK.md) | 商店分类原创插图的固定来源与摘要 / Immutable sources and hashes for category illustrations |
 | [聊天、语音及搜索资格记录](qualification/FLOE_CHAT_VOICE_SEARCH_20261023.md) | 288：207 项应用内测试、设备构建及菜单检查；交付状态单独记录 / App-hosted tests, device build and interface evidence |
@@ -75,12 +77,12 @@
 | [设计流程（简报到导出，中英）](FLOE_DESIGN_WORKFLOW.md) | 冻结运行、锚定反馈、修订候选、采纳/拒绝/恢复、DESIGN.md 保留、能力诚实表；含[中文版](FLOE_DESIGN_WORKFLOW.zh-CN.md) |
 | [统一 3D 与共享设计流程迁移（中英，1.7.29／270）](FLOE_UNIFIED_DESIGN_MIGRATION.md) | 底部插入菜单创建原生 `.floecad` 节点、旧版 3D 场景首次编辑转换与恢复、四个设计入口共用服务；含[中文版](FLOE_UNIFIED_DESIGN_MIGRATION.zh-CN.md)，安装状态见 CURRENT_STATUS |
 | [CAD 引擎、cad.document 与画布子工程（1.7.24／265）](FLOE_CAD_AND_DRAWING_ASSISTANT.md) | 二维 CAD 引擎能力、无界面 Worker 宿主、`cad.document` 契约、画布绑定/分支语义与图像/视频细化；文末追加 2026-10-15 未发布的绘图/装配可发现契约（安装状态见 CURRENT_STATUS） |
-| [创作工具契约与格式能力表（1.7.24／265，中英）](FLOE_1_7_24_CREATIVE_TOOLS.md) | 共享 discover→read→propose→confirm→apply→verify 契约，`cad.document`/`document.office.edit`/手记/`media.project` 模式与示例，图纸助手，以及区分已验证/引擎层待真机/不支持的 CAD 与 Office 真实格式能力表 |
+| [创作工具契约（1.7.24／265，历史技术参考）](FLOE_1_7_24_CREATIVE_TOOLS.md) | 该版共享创作工具契约、模式与示例，以及当时的 CAD 与 Office 格式能力表；为历史技术参考，**不代表当前版本格式能力矩阵**，现行能力以使用手册与所选版本发布说明为准 / Historical contract and format table for build 265, not the current capability matrix |
 | [截图档案](evidence/floe-1.7/SCREENSHOTS.md) | 界面截图与对应证据 |
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近收录的已核验交付为 [1.7.65（306）](releases/builds/FLOE_1.7.65_BUILD306_DELIVERY.md)：该日期的内部 Floe QA、公开 TestFlight、稳定无签名 Release 与 Feather 渠道状态分别见交付记录，当前安装入口见 CURRENT_STATUS。原生 3D 连续编辑与装配／图纸／简单动画随 306 交付（[发布说明](releases/notes/RELEASE_NOTES_1.7.65_BUILD_306.md)）；3D 材质、Present 与 PNG／GLB 导出由 [305（1.7.64）](releases/builds/FLOE_1.7.64_BUILD305_DELIVERY.md)交付。Latest verified delivery: 306 with native 3D continuous editing, assemblies, drawings and simple animation; 305 delivered 3D materials, Present and PNG/GLB export. See the dated delivery record and [current status](CURRENT_STATUS.md) for each installation channel.
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。当前公开渠道快照见[版本与安装状态](CURRENT_STATUS.md)：App Store 正式版 1.7.74；GitHub 最新公开较新功能安装包为 [1.8.5（325）](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5)（未签名 IPA）；Android 公开测试版、Mac Bridge 与 iOS Bridge 版本以 CURRENT_STATUS 的当日核实为准。Native 3D 连续编辑与装配／图纸／简单动画随 306 交付，3D 材质、Present 与 PNG／GLB 导出由 305 交付；较新构建（1.8 系列）把空间、会议、音乐、加工与打印、工具箱和化学工程接入 App，教程见[空间与专用工作台](WORKSPACES_GUIDE.zh-CN.md)（[English](WORKSPACES_GUIDE.md)）。Latest verified public channels: App Store 1.7.74 and the unsigned newer-feature installer 1.8.5 (325); see CURRENT_STATUS.md for Android alpha and Bridge versions. Build 306 delivered native 3D continuous editing, assemblies, drawings and simple animation; 305 delivered 3D materials, Present and PNG/GLB export. The 1.8 line integrates Space, meetings, music, manufacturing and printing, the toolbox and chemistry — see the workspace guide.
 
 ## 历史研究（结论以现行代码为准）
 
@@ -102,10 +104,6 @@
 - 已过时的结论就地加"历史"横幅，不删除（保留考古上下文）。
 
 - [Port management and linux.port / 端口管理](FLOE_PORT_MANAGEMENT.md) — 1.7.22 contract; installation availability is tracked in CURRENT_STATUS.
-
-## 任务式快速开始 / Guided quickstart
-
-[从安装到第一个成果](QUICKSTART.zh-CN.md) · [From installation to your first result](QUICKSTART.md)
 
 ## 任务式快速开始 / Guided quickstart
 

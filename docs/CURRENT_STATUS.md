@@ -1,18 +1,21 @@
-<!-- docs-updated: 2026-11-06 -->
+<!-- docs-updated: 2026-11-08 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-11-06. 当前摘要见下表，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+文档更新时间 / Document updated: 2026-11-08. 当前摘要见下表，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-## 2026-11-06 公开版本摘要 / Public release snapshot
+## 2026-11-08 公开版本摘要 / Public release snapshot
 
-| 产品 / Product | 已核实公开版本 / Verified public release | 安装与边界 / Installation and limits |
+| 产品与渠道 / Product and channel | 当前核实版本 / Verified version | 安装与边界 / Installation and limits |
 | --- | --- | --- |
-| Floe Agent · iOS / iPadOS | [1.7.74（315）](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.74) | GitHub IPA 未签名，需自行签名；不代表 App Store 或 TestFlight 已对所有人开放。Unsigned IPA requires your signing; store and beta availability are separate. |
-| Floe Agent · Android | [0.1.0-alpha.29](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.29) | 独立签名 ARM64 APK，Android 9+；完整包可跨版升级，签名须相同。终端无法启动时检查运行组件更新。Separate signed ARM64 APK; check runtime updates if Linux fails to start. |
-| Floe Bridge · Mac | [1.1.3](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.3) | 同一台 Mac 上的终端、文件与 MCP 伴随程序；不是 iPad 远程 Mac 服务。Same-Mac companion, not an iPad-to-Mac remote service. |
-| Floe iOS Bridge | [1.0.0（18）](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-ios-bridge-v1.0.0) | 独立本机自动化桥，签名需 Network Extension 能力；该版不接入主 App。Standalone local automation bridge with specific signing requirements. |
+| Floe Agent · App Store · iOS / iPadOS | [1.7.74](https://apps.apple.com/app/id6801209053) | 正式版可通过商店安装和更新，iOS/iPadOS 26+。已核实美国、澳大利亚及中国商店产品信息；以你的商店显示为准。Install and update through the store; availability follows your storefront. |
+| Floe Agent · GitHub / Feather | [1.8.5（325）](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5) | 新功能安装包为未签名 IPA，需自己的签名方式；与 App Store 版本独立。Unsigned newer-feature installer; requires your own signing. |
+| Floe Agent · Android | [0.1.0-alpha.59（85）](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.59) | Android 9+ ARM64 独立测试版；应用协作、项目软件与编辑保存按发布说明核对，不提供本地模型推理。Separate Android alpha; follow release-specific limits. |
+| Floe Bridge · Mac | [1.1.3](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.3) | 同一台 Mac 上的终端、文件与 MCP 伴随程序，不是 iPad 远程 Mac 服务。Same-Mac companion. |
+| Floe iOS Bridge | [1.0.0（18）](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-ios-bridge-v1.0.0) | 独立本机自动化桥；需具备 Network Extension 能力的签名，该版不接入主 App。Standalone bridge with specific signing requirements. |
 
-最新记录请查看[官网版本中心](https://www.floe-agent.com/releases)。GitHub 发布状态不等于 App Store/TestFlight 审核结果；申请内测可从[官网表单](https://www.floe-agent.com/#beta)进入。Latest versions appear in the release centre; GitHub publication does not establish Apple channel availability.
+App Store、TestFlight、GitHub 和安装源分别更新。GitHub 已公开的 IPA 不代表公开 TestFlight 已开放，历史发布说明中当时的内部测试安排也不代替当前渠道状态。申请测试见[官网表单](https://www.floe-agent.com/#beta)，最新 GitHub 版本见[官网版本中心](https://www.floe-agent.com/releases)。App Store, TestFlight and unsigned downloads are separate channels.
+
+本轮教程以已发布 **1.8.5（325）** 的新工作台为较新功能基线；正式版用户请先查看教程的版本说明。主线后续编辑器修复、原生图片生产者、选区回写、GIS 与 PCB 持续开发不等于已进入该安装包。较早记录保留在下方，不据旧快照判断最新版本。See the [workspace guide](WORKSPACES_GUIDE.md) for build-specific workflows; newer source changes are not automatically part of the published installer.
 
 **下方为历史快照，保留当时记录，不用于判断当前最新状态。** The following dated snapshots are historical.
 
