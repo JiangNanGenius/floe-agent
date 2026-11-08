@@ -1,12 +1,20 @@
 # Floe for Android
 
-## Current delivery — Android Alpha57 (2026-11-08)
+## Current delivery — Android Alpha58 (2026-11-08)
+
+[Alpha58/code84](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.58) is published from immutable source `1474862919484ab9068d4db8ab0805777290f8b1`. Related Full/Play compilation,43 JVM checks, actual ARM64 production and package identity checks passed. Seven anonymous asset downloads and actual updater discovery were read back; iOS Latest stays preserved. See the [delivery](../docs/releases/ANDROID_ALPHA58_DELIVERY.md).
+
+Samsung verified long-thread Jump to latest and real model input in X-plore. Save was denied before dispatch because the reviewer interpreted a new Save node with its older Find meaning. The task stopped immediately; Save/readback remains incomplete. Temporary device permissions/settings were restored. N01–N08 continues with that specific approval-context repair and the existing remaining cases.
+
+当前Alpha58/code84已公开。三星聊天跳转和模型填写通过，保存仍被审批的旧节点含义拦下；首次拒绝后无重试。公开完整字节及生产更新发现已读回，权限和配置恢复，整轮继续。
+
+## Previous delivery — Android Alpha57 (2026-11-08)
 
 [Alpha57/code83](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.57) is published from immutable source `f8b6df6d94d2e0b1557189e8c6a3f8eb0e0aa71d`. The model's `workspace.externalEdit` uses the actual Android editor service and verifies saved content. Seven anonymous public asset downloads and production update discovery passed; iOS Latest is preserved. Related Kotlin, native-host, ARM64 and packaging checks are recorded in the [delivery](../docs/releases/ANDROID_ALPHA57_DELIVERY.md).
 
-Samsung confirmed the exact main/runtime83 engineering installation and an actual model-opened X-plore session. Automatic input/save has not passed: original page-freshness, approval and nonclickable-node failures remain recorded. These are intermediate previews; N01–N08 continues. The next [Alpha58 candidate](../docs/releases/ANDROID_ALPHA58_NOTES.md) repairs control summaries and chat scrolling; it is not yet published.
+Samsung confirmed the exact main/runtime83 engineering installation and an actual model-opened X-plore session. Automatic input/save did not pass: original page-freshness, approval and nonclickable-node failures remain recorded. These are intermediate previews; N01–N08 continues.
 
-当前公开Alpha57/code83，七附件完整字节及生产更新发现已读回。模型真实打开外部编辑器通过，自动输入／保存仍未通过，原始失败和恢复会话保留。下一Alpha58候选修控件摘要与聊天定位，尚未发布，整轮继续。
+Alpha57/code83七附件完整字节及生产更新发现已读回。该版模型真实打开外部编辑器通过，自动输入／保存未通过，原始失败和恢复会话保留。
 
 ## Previous delivery — Android Alpha56 (2026-11-08)
 
