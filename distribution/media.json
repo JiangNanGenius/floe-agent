@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "videos": [
+    {
+      "language": "zh",
+      "path": "distribution/videos/floe-intro-zh-720p.mp4",
+      "height": 720,
+      "size": 1732165,
+      "sha256": "4d18a030ae9a1d6de087ce66606f6082dac8febf28761211d4ebeb52f845e483",
+      "published_at": "2026-11-08T11:58:09.279653Z"
+    },
+    {
+      "language": "en",
+      "path": "distribution/videos/floe-intro-en-720p.mp4",
+      "height": 720,
+      "size": 1717864,
+      "sha256": "768bf867110ca8b7a46174ef0fa16ed501d1da722f61d21231693b3cdd5321dc",
+      "published_at": "2026-11-08T11:58:12.353483Z"
+    }
+  ]
+}
