@@ -30,10 +30,11 @@ for task_spec in 'aarch64-apple-darwin macos-arm64' 'aarch64-apple-ios-sim ios-a
   task_slice="${task_spec%% *}"
   task_name="${task_spec##* }"
   task_library="$task_staging/$task_name/libFloeFontCompiler.a"
-  task_headers="$task_staging/$task_name/Headers"
-  mkdir -p "$task_headers"
-  cp "$task_root/NativeRust/include/FloeFontCompiler.h" "$task_headers/"
-  printf 'module FloeFontCompiler { header "FloeFontCompiler.h" export * }\n' > "$task_headers/module.modulemap"
+  task_headers="$task_staging/$task_name/include"
+  task_module_headers="$task_headers/FloeFontCompiler"
+  mkdir -p "$task_module_headers"
+  cp "$task_root/NativeRust/include/FloeFontCompiler.h" "$task_module_headers/"
+  printf 'module FloeFontCompiler { header "FloeFontCompiler.h" export * }\n' > "$task_module_headers/module.modulemap"
   python3 "$task_root/Scripts/normalize_archive.py" \
     "$CARGO_TARGET_DIR/$task_slice/release/libFloeFontCompiler.a" \
     "$task_library" \
@@ -51,5 +52,9 @@ root=pathlib.Path(sys.argv[1])
 json.dump({path.name.removesuffix('-normalization.json'):json.loads(path.read_text())
            for path in sorted(root.glob('*-normalization.json'))},open(sys.argv[2],'w'),indent=2)
 PY
+# ProcessXCFramework copies a static library's header root into the consumer's
+# shared include directory. Keep the module map under FloeFontCompiler/ so it
+# cannot collide with another static XCFramework's include/module.modulemap.
+python3 "$task_root/Scripts/namespace_xcframework_headers.py" "$task_candidate"
 if [ -e "$task_output" ]; then echo 'Preserve existing packaged compiler before replacement' >&2; exit 1; fi
 mv "$task_candidate" "$task_output"

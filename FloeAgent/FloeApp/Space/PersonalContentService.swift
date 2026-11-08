@@ -12,6 +12,8 @@ import FloeMeetings
 import FloeChemistryCore
 import FloeCAD
 import FloeLaTeXCore
+import FloeElectronicsCore
+import FloeElectronicsUI
 
 /// Shared by Files, Creative, and agent tools. Editor commits stay in the
 /// corresponding native repository; this service owns their durable location.
@@ -93,6 +95,11 @@ actor PersonalContentService {
                 let repository = try NativeMusicRepository(root: directory.appendingPathComponent("Music"))
                 let document = try MusicDocument(id: .init(rawValue: id.uuidString.lowercased()), name: title)
                 _ = try await repository.save(document: document, expectedRevision: nil, fence: nil)
+            case .geography:
+                try await GISProjectOriginal.create(id: id, title: title, directory: directory)
+            case .electronics:
+                let project = await EDABuiltinLibrary.makeProject(id: id, title: title)
+                _ = try await EDAProjectStore.create(root: directory.appendingPathComponent("Electronics"), project: project)
             case .chemistry:
                 try await ChemistryHostFactory.create(id: id, title: title, directory: directory)
             case .biology:
@@ -132,6 +139,10 @@ actor PersonalContentService {
             _ = try await FileDiagramRepository(directory: location.url.appendingPathComponent("Diagram")).load(record.id)
         case .music:
             _ = try await NativeMusicRepository(root: location.url.appendingPathComponent("Music")).load(projectID: .init(rawValue: record.id.uuidString.lowercased()))
+        case .geography:
+            _ = try await personalPreviewOffMain { try GISProjectOriginal.read(id: record.id, directory: location.url) }
+        case .electronics:
+            _ = try await EDAProjectStore(root: location.url.appendingPathComponent("Electronics"), projectID: record.id, readOnly: true).load()
         case .printing:
             let document = try await PrintProjectDisk(root: location.url.appendingPathComponent("Printing")).load()
             guard document.projectID == record.id else { throw PersonalContentError.invalidProject }
@@ -159,6 +170,8 @@ actor PersonalContentService {
     }
 
     func importFile(_ source: URL, folders: [String]) async throws -> PersonalContentRecord {
+        if ["floegis", "geojson", "gpkg", "gpx", "kml", "kmz", "asc", "mbtiles"].contains(source.pathExtension.lowercased()) { return try await importGeography(source, folders: folders) }
+        if source.pathExtension.lowercased()=="floeeda" {return try await importElectronics(source,folders:folders)}
         if source.pathExtension.lowercased()=="tex" {return try await importLaTeX(source,folders:folders)}
         let library = try library()
         let title = source.deletingPathExtension().lastPathComponent
@@ -252,6 +265,8 @@ extension PersonalContentKind {
         case .chemistry: IDELanguageRunText.t("化学工程", "Chemistry project")
         case .biology: IDELanguageRunText.t("生物工程", "Biology project")
         case .latex: IDELanguageRunText.t("LaTeX 论文", "LaTeX document")
+        case .electronics: IDELanguageRunText.t("电路设计", "Electronics")
+        case .geography: IDELanguageRunText.t("地理信息", "Geography")
         case .cad2D: IDELanguageRunText.t("二维设计", "2D design")
         case .cad3D: IDELanguageRunText.t("三维设计", "3D design")
         case .printing: IDELanguageRunText.t("3D 打印", "3D printing")
@@ -271,6 +286,8 @@ extension PersonalContentKind {
         case .chemistry: "atom"
         case .biology: "microbe"
         case .latex: "doc.richtext"
+        case .electronics: "cpu"
+        case .geography: "map"
         case .cad2D: "ruler"
         case .cad3D: "cube.transparent"
         case .printing: "printer"
@@ -280,6 +297,6 @@ extension PersonalContentKind {
     }
     // Printing and machining are created from CAD's Manufacturing workspace.
     // Keep their record kinds readable for existing projects and results.
-    static var creationKinds: [Self] { [.canvas, .diagram, .latex, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .cad2D, .cad3D] }
+    static var creationKinds: [Self] { [.canvas, .diagram, .latex, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .cad2D, .cad3D, .electronics, .geography] }
 }
 #endif

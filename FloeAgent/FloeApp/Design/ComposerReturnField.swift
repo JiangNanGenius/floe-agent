@@ -333,6 +333,8 @@ struct ComposerReturnField: UIViewRepresentable {
     /// order). `makeUIView` and the behavior tests drive exactly this
     /// production setup, so tests never re-state the configuration.
     func configure(view: HardwareReturnTextView, coordinator: Coordinator) {
+        coordinator.beginApplyingViewState()
+        defer { coordinator.endApplyingViewState(in: view) }
         view.hardwareReturnBehavior = ComposerHardwareReturnBehavior(rawValue: storedHardwareReturn) ?? .newline
         view.delegate = coordinator
         view.backgroundColor = .clear
@@ -392,15 +394,19 @@ struct ComposerReturnField: UIViewRepresentable {
         let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: uiView.traitCollection)
         if ComposerIMEPolicy.allowsTextReplacement(hasMarkedText: uiView.hasActiveComposition),
            uiView.font != font {
-            uiView.font = font
-            uiView.placeholderLabel.font = font
+            context.coordinator.applyViewState(in: uiView) {
+                uiView.font = font
+                uiView.placeholderLabel.font = font
+            }
             context.coordinator.noteTextChange()
             needsRemeasure = true
         }
         // Never clobber in-flight IME composition or echo the user's own edit.
         if ComposerIMEPolicy.allowsTextReplacement(hasMarkedText: uiView.hasActiveComposition),
            uiView.text != text {
-            uiView.text = text
+            context.coordinator.applyViewState(in: uiView) {
+                uiView.text = text
+            }
             context.coordinator.noteTextChange()
             needsRemeasure = true
         }
@@ -645,6 +651,28 @@ struct ComposerReturnField: UIViewRepresentable {
         /// update cycle never re-applies (and never echoes) the same range.
         private var lastAppliedSelection: NSRange?
         private var lastReportedSelection: NSRange?
+        /// UIKit can synchronously report selection changes while SwiftUI
+        /// applies text, font or a restored caret. Those are host inputs,
+        /// not user edits to write back into the host's state.
+        private var viewStateApplicationDepth = 0
+
+        func beginApplyingViewState() {
+            viewStateApplicationDepth += 1
+        }
+
+        func endApplyingViewState(in textView: UITextView) {
+            // Also absorb a later UIKit notification of this same range.
+            // The next real selection change still reports synchronously.
+            lastReportedSelection = textView.selectedRange
+            viewStateApplicationDepth -= 1
+        }
+
+        func applyViewState(in textView: UITextView, _ apply: () -> Void) {
+            beginApplyingViewState()
+            defer { endApplyingViewState(in: textView) }
+            apply()
+        }
+
         /// One overflow delivery hop at a time: a layout burst overwrites
         /// the pending verdict instead of queueing another block, so only
         /// the newest measured revision reaches the host and older queued
@@ -844,7 +872,9 @@ struct ComposerReturnField: UIViewRepresentable {
             ) else { return }
             guard textView.selectedRange != target, lastAppliedSelection != target else { return }
             lastAppliedSelection = target
-            textView.selectedRange = target
+            applyViewState(in: textView) {
+                textView.selectedRange = target
+            }
         }
 
         func cachedNaturalMetrics(
@@ -942,6 +972,7 @@ struct ComposerReturnField: UIViewRepresentable {
         /// Persists the live caret so the full editor can reopen at exactly
         /// that position (and the store can restore it after a relaunch).
         private func reportSelectionIfChanged(_ textView: UITextView) {
+            guard viewStateApplicationDepth == 0 else { return }
             let range = textView.selectedRange
             guard range != lastReportedSelection else { return }
             lastReportedSelection = range

@@ -11005,14 +11005,14 @@ var FloeBundledEditor = (() => {
       var ownKeys2 = require_own_keys();
       var getOwnPropertyDescriptorModule = require_object_get_own_property_descriptor();
       var definePropertyModule = require_object_define_property();
-      module.exports = function(target, source, exceptions) {
-        var keys = ownKeys2(source);
+      module.exports = function(target, source2, exceptions) {
+        var keys = ownKeys2(source2);
         var defineProperty = definePropertyModule.f;
         var getOwnPropertyDescriptor2 = getOwnPropertyDescriptorModule.f;
         for (var i4 = 0; i4 < keys.length; i4++) {
           var key = keys[i4];
           if (!hasOwn(target, key) && !(exceptions && hasOwn(exceptions, key))) {
-            defineProperty(target, key, getOwnPropertyDescriptor2(source, key));
+            defineProperty(target, key, getOwnPropertyDescriptor2(source2, key));
           }
         }
       };
@@ -11051,7 +11051,7 @@ var FloeBundledEditor = (() => {
       var defineGlobalProperty = require_define_global_property();
       var copyConstructorProperties = require_copy_constructor_properties();
       var isForced = require_is_forced();
-      module.exports = function(options, source) {
+      module.exports = function(options, source2) {
         var TARGET = options.target;
         var GLOBAL = options.global;
         var STATIC = options.stat;
@@ -11063,8 +11063,8 @@ var FloeBundledEditor = (() => {
         } else {
           target = globalThis2[TARGET] && globalThis2[TARGET].prototype;
         }
-        if (target) for (key in source) {
-          sourceProperty = source[key];
+        if (target) for (key in source2) {
+          sourceProperty = source2[key];
           if (options.dontCallGetSet) {
             descriptor = getOwnPropertyDescriptor2(target, key);
             targetProperty = descriptor && descriptor.value;
@@ -12730,7 +12730,7 @@ var FloeBundledEditor = (() => {
           var groups = state.groups;
           var sticky = UNSUPPORTED_Y && re2.sticky;
           var flags = call(regexpFlags, re2);
-          var source = re2.source;
+          var source2 = re2.source;
           var charsAdded = 0;
           var strCopy = str;
           if (sticky) {
@@ -12741,14 +12741,14 @@ var FloeBundledEditor = (() => {
             strCopy = stringSlice(str, re2.lastIndex);
             var prevChar = re2.lastIndex > 0 && charAt(str, re2.lastIndex - 1);
             if (re2.lastIndex > 0 && (!re2.multiline || re2.multiline && prevChar !== "\n" && prevChar !== "\r" && prevChar !== "\u2028" && prevChar !== "\u2029")) {
-              source = "(?: (?:" + source + "))";
+              source2 = "(?: (?:" + source2 + "))";
               strCopy = " " + strCopy;
               charsAdded++;
             }
-            reCopy = new RegExp("^(?:" + source + ")", flags);
+            reCopy = new RegExp("^(?:" + source2 + ")", flags);
           }
           if (NPCG_INCLUDED) {
-            reCopy = new RegExp("^" + source + "$(?!\\s)", flags);
+            reCopy = new RegExp("^" + source2 + "$(?!\\s)", flags);
           }
           if (UPDATES_LAST_INDEX_WRONG) lastIndex = re2.lastIndex;
           var match = call(nativeExec, sticky ? reCopy : re2, strCopy);
@@ -15371,16 +15371,16 @@ var FloeBundledEditor = (() => {
   }
   function _objectSpread$2(target) {
     for (var i4 = 1; i4 < arguments.length; i4++) {
-      var source = arguments[i4] != null ? arguments[i4] : {};
+      var source2 = arguments[i4] != null ? arguments[i4] : {};
       if (i4 % 2) {
-        ownKeys$2(Object(source), true).forEach(function(key) {
-          _defineProperty(target, key, source[key]);
+        ownKeys$2(Object(source2), true).forEach(function(key) {
+          _defineProperty(target, key, source2[key]);
         });
       } else if (Object.getOwnPropertyDescriptors) {
-        Object.defineProperties(target, Object.getOwnPropertyDescriptors(source));
+        Object.defineProperties(target, Object.getOwnPropertyDescriptors(source2));
       } else {
-        ownKeys$2(Object(source)).forEach(function(key) {
-          Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key));
+        ownKeys$2(Object(source2)).forEach(function(key) {
+          Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source2, key));
         });
       }
     }
@@ -15414,16 +15414,16 @@ var FloeBundledEditor = (() => {
   }
   function _objectSpread$1(target) {
     for (var i4 = 1; i4 < arguments.length; i4++) {
-      var source = arguments[i4] != null ? arguments[i4] : {};
+      var source2 = arguments[i4] != null ? arguments[i4] : {};
       if (i4 % 2) {
-        ownKeys$1(Object(source), true).forEach(function(key) {
-          _defineProperty(target, key, source[key]);
+        ownKeys$1(Object(source2), true).forEach(function(key) {
+          _defineProperty(target, key, source2[key]);
         });
       } else if (Object.getOwnPropertyDescriptors) {
-        Object.defineProperties(target, Object.getOwnPropertyDescriptors(source));
+        Object.defineProperties(target, Object.getOwnPropertyDescriptors(source2));
       } else {
-        ownKeys$1(Object(source)).forEach(function(key) {
-          Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key));
+        ownKeys$1(Object(source2)).forEach(function(key) {
+          Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source2, key));
         });
       }
     }
@@ -15472,16 +15472,16 @@ var FloeBundledEditor = (() => {
   }
   function _objectSpread(target) {
     for (var i4 = 1; i4 < arguments.length; i4++) {
-      var source = arguments[i4] != null ? arguments[i4] : {};
+      var source2 = arguments[i4] != null ? arguments[i4] : {};
       if (i4 % 2) {
-        ownKeys(Object(source), true).forEach(function(key) {
-          _defineProperty(target, key, source[key]);
+        ownKeys(Object(source2), true).forEach(function(key) {
+          _defineProperty(target, key, source2[key]);
         });
       } else if (Object.getOwnPropertyDescriptors) {
-        Object.defineProperties(target, Object.getOwnPropertyDescriptors(source));
+        Object.defineProperties(target, Object.getOwnPropertyDescriptors(source2));
       } else {
-        ownKeys(Object(source)).forEach(function(key) {
-          Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source, key));
+        ownKeys(Object(source2)).forEach(function(key) {
+          Object.defineProperty(target, key, Object.getOwnPropertyDescriptor(source2, key));
         });
       }
     }
@@ -20228,7 +20228,7 @@ var FloeBundledEditor = (() => {
         }
         bindCreateImage(createImage2, anonymousCrossOrigin) {
           if (typeof anonymousCrossOrigin === "boolean") {
-            return (source, forceAnonymousCrossOrigin) => createImage2(source, typeof forceAnonymousCrossOrigin === "boolean" ? forceAnonymousCrossOrigin : anonymousCrossOrigin);
+            return (source2, forceAnonymousCrossOrigin) => createImage2(source2, typeof forceAnonymousCrossOrigin === "boolean" ? forceAnonymousCrossOrigin : anonymousCrossOrigin);
           }
           return createImage2;
         }
@@ -20708,18 +20708,18 @@ var FloeBundledEditor = (() => {
               if (hasValue) {
                 var filtered2 = list.__filtered;
                 if (!filtered2) {
-                  var source = this.getSource(list);
-                  filtered2 = list.__filtered = Base.create(source);
-                  filtered2.__unfiltered = source;
+                  var source2 = this.getSource(list);
+                  filtered2 = list.__filtered = Base.create(source2);
+                  filtered2.__unfiltered = source2;
                 }
                 filtered2[name2] = undefined2;
               }
               return this.read(hasValue ? [value] : list, start, options, amount);
             },
             readSupported: function(list, dest) {
-              var source = this.getSource(list), that = this, read2 = false;
-              if (source) {
-                Object.keys(source).forEach(function(key) {
+              var source2 = this.getSource(list), that = this, read2 = false;
+              if (source2) {
+                Object.keys(source2).forEach(function(key) {
                   if (key in dest) {
                     var value = that.readNamed(list, key);
                     if (value !== undefined2) {
@@ -20732,27 +20732,27 @@ var FloeBundledEditor = (() => {
               return read2;
             },
             getSource: function(list) {
-              var source = list.__source;
-              if (source === undefined2) {
+              var source2 = list.__source;
+              if (source2 === undefined2) {
                 var arg = list.length === 1 && list[0];
-                source = list.__source = arg && Base.isPlainObject(arg) ? arg : null;
+                source2 = list.__source = arg && Base.isPlainObject(arg) ? arg : null;
               }
-              return source;
+              return source2;
             },
             getNamed: function(list, name2) {
-              var source = this.getSource(list);
-              if (source) {
-                return name2 ? source[name2] : list.__filtered || source;
+              var source2 = this.getSource(list);
+              if (source2) {
+                return name2 ? source2[name2] : list.__filtered || source2;
               }
             },
             hasNamed: function(list, name2) {
               return !!this.getNamed(list, name2);
             },
-            filter: function(dest, source, exclude, prioritize) {
+            filter: function(dest, source2, exclude, prioritize) {
               var processed;
               function handleKey(key2) {
                 if (!(exclude && key2 in exclude) && !(processed && key2 in processed)) {
-                  var value = source[key2];
+                  var value = source2[key2];
                   if (value !== undefined2)
                     dest[key2] = value;
                 }
@@ -20760,14 +20760,14 @@ var FloeBundledEditor = (() => {
               if (prioritize) {
                 var keys = {};
                 for (var i4 = 0, key, l3 = prioritize.length; i4 < l3; i4++) {
-                  if ((key = prioritize[i4]) in source) {
+                  if ((key = prioritize[i4]) in source2) {
                     handleKey(key);
                     keys[key] = true;
                   }
                 }
                 processed = keys;
               }
-              Object.keys(source.__unfiltered || source).forEach(handleKey);
+              Object.keys(source2.__unfiltered || source2).forEach(handleKey);
               return dest;
             },
             isPlainValue: function(obj, asString) {
@@ -24038,26 +24038,26 @@ var FloeBundledEditor = (() => {
               }
               return copy;
             },
-            copyContent: function(source) {
-              var children = source._children;
+            copyContent: function(source2) {
+              var children = source2._children;
               for (var i4 = 0, l3 = children && children.length; i4 < l3; i4++) {
                 this.addChild(children[i4].clone(false), true);
               }
             },
-            copyAttributes: function(source, excludeMatrix) {
-              this.setStyle(source._style);
+            copyAttributes: function(source2, excludeMatrix) {
+              this.setStyle(source2._style);
               var keys = this._attributes;
               for (var i4 = 0, l3 = keys.length; i4 < l3; i4++) {
                 var key = keys[i4];
-                if (source.hasOwnProperty(key))
-                  this[key] = source[key];
+                if (source2.hasOwnProperty(key))
+                  this[key] = source2[key];
               }
               if (!excludeMatrix)
-                this._matrix.set(source._matrix, true);
-              this.setApplyMatrix(source._applyMatrix);
-              this.setPivot(source._pivot);
-              this.setSelection(source._selection);
-              var data = source._data, name2 = source._name, effects = source._effects;
+                this._matrix.set(source2._matrix, true);
+              this.setApplyMatrix(source2._applyMatrix);
+              this.setPivot(source2._pivot);
+              this.setSelection(source2._selection);
+              var data = source2._data, name2 = source2._name, effects = source2._effects;
               this._data = data ? Base.clone(data) : null;
               if (name2)
                 this.setName(name2);
@@ -25263,10 +25263,10 @@ var FloeBundledEditor = (() => {
             _equals: function(item) {
               return this._type === item._type && this._size.equals(item._size) && Base.equals(this._radius, item._radius);
             },
-            copyContent: function(source) {
-              this.setType(source._type);
-              this.setSize(source._size);
-              this.setRadius(source._radius);
+            copyContent: function(source2) {
+              this.setType(source2._type);
+              this.setSize(source2._size);
+              this.setRadius(source2._radius);
             },
             getType: function() {
               return this._type;
@@ -25553,12 +25553,12 @@ var FloeBundledEditor = (() => {
           _prioritize: ["crossOrigin"],
           _smoothing: "low",
           beans: true,
-          initialize: function Raster2(source, position) {
+          initialize: function Raster2(source2, position) {
             if (!this._initialize(
-              source,
+              source2,
               position !== undefined2 && Point2.read([position])
             )) {
-              var image, type = typeof source, object = type === "string" ? document2 && document2.getElementById(source) : type === "object" ? source : null;
+              var image, type = typeof source2, object = type === "string" ? document2 && document2.getElementById(source2) : type === "object" ? source2 : null;
               if (object && object !== Item.NO_INSERT) {
                 if (object.getContext || object.naturalHeight != null) {
                   image = object;
@@ -25572,7 +25572,7 @@ var FloeBundledEditor = (() => {
               if (image) {
                 this.setImage(image);
               } else {
-                this.setSource(source);
+                this.setSource(source2);
               }
             }
             if (!this._size) {
@@ -25583,16 +25583,16 @@ var FloeBundledEditor = (() => {
           _equals: function(item) {
             return this.getSource() === item.getSource();
           },
-          copyContent: function(source) {
-            var image = source._image, canvas = source._canvas;
+          copyContent: function(source2) {
+            var image = source2._image, canvas = source2._canvas;
             if (image) {
               this._setImage(image);
             } else if (canvas) {
-              var copyCanvas = CanvasProvider.getCanvas(source._size);
+              var copyCanvas = CanvasProvider.getCanvas(source2._size);
               copyCanvas.getContext("2d").drawImage(canvas, 0, 0);
               this._setImage(copyCanvas);
             }
-            this._crossOrigin = source._crossOrigin;
+            this._crossOrigin = source2._crossOrigin;
           },
           getSize: function() {
             var size = this._size;
@@ -26001,8 +26001,8 @@ var FloeBundledEditor = (() => {
           _equals: function(item) {
             return this._definition === item._definition;
           },
-          copyContent: function(source) {
-            this.setDefinition(source._definition);
+          copyContent: function(source2) {
+            this.setDefinition(source2._definition);
           },
           getDefinition: function() {
             return this._definition;
@@ -26445,8 +26445,8 @@ var FloeBundledEditor = (() => {
               var art = this.clone({ insert: false });
               art.setEffects(null);
               art.setMatrix(new Matrix2());
-              function expand(source, copy) {
-                var children = source._children;
+              function expand(source2, copy) {
+                var children = source2._children;
                 for (var i4 = 0, l3 = children ? children.length : 0; i4 < l3; i4++) {
                   var child = children[i4], output = child.getEffectOutput();
                   if (output) {
@@ -28883,10 +28883,10 @@ var FloeBundledEditor = (() => {
             _equals: function(item) {
               return this._closed === item._closed && Base.equals(this._segments, item._segments) && Base.equals(this._strokeProfile, item._strokeProfile);
             },
-            copyContent: function(source) {
-              var profile = source._strokeProfile;
-              this.setSegments(source._segments);
-              this._closed = source._closed;
+            copyContent: function(source2) {
+              var profile = source2._strokeProfile;
+              this.setSegments(source2._segments);
+              this._closed = source2._closed;
               if (profile || this._strokeProfile) {
                 this.setStrokeProfile(profile && profile.map(function(stop) {
                   return {
@@ -33837,10 +33837,10 @@ var FloeBundledEditor = (() => {
                 next._changed(9);
             }
           },
-          copyContent: function copyContent(source) {
-            copyContent.base.call(this, source);
-            this._story = source._story._clone([this]);
-            this._orientation = source._orientation;
+          copyContent: function copyContent(source2) {
+            copyContent.base.call(this, source2);
+            this._story = source2._story._clone([this]);
+            this._orientation = source2._orientation;
             this._changed(521);
           },
           _getStyles: function(style, key) {
@@ -34317,11 +34317,11 @@ var FloeBundledEditor = (() => {
           }, {
             _class: "PathText",
             _serializeFields: Base.set({ textPath: null }, fields),
-            copyContent: function copyContent(source) {
-              copyContent.base.call(this, source);
+            copyContent: function copyContent(source2) {
+              copyContent.base.call(this, source2);
               for (var name2 in fields) {
                 var key = "_" + name2;
-                this[key] = source[key];
+                this[key] = source2[key];
               }
             }
           });
@@ -34427,11 +34427,11 @@ var FloeBundledEditor = (() => {
           }, {
             _class: "AreaText",
             _serializeFields: Base.set({ textPath: null }, fields),
-            copyContent: function copyContent(source) {
-              copyContent.base.call(this, source);
+            copyContent: function copyContent(source2) {
+              copyContent.base.call(this, source2);
               for (var name2 in fields) {
                 var key = "_" + name2;
-                this[key] = source[key];
+                this[key] = source2[key];
               }
             }
           });
@@ -34916,10 +34916,10 @@ var FloeBundledEditor = (() => {
             content = "" + content;
             start = Math.max(0, Math.min(start, length));
             end = Math.max(start, Math.min(end, length));
-            var i4 = this._split(start), j2 = this._split(end), source = (i4 < j2 ? runs[i4] : runs[i4 - 1] || runs[i4]).style;
+            var i4 = this._split(start), j2 = this._split(end), source2 = (i4 < j2 ? runs[i4] : runs[i4 - 1] || runs[i4]).style;
             runs.splice(i4, j2 - i4, {
               length: content.length,
-              style: new Style(source, this)
+              style: new Style(source2, this)
             });
             this._runs = runs.filter(function(run) {
               return run.length > 0;
@@ -41335,8 +41335,8 @@ var FloeBundledEditor = (() => {
               item.matrix.apply(true, true);
             return item;
           }
-          function importSVG(source, options, owner) {
-            if (!source)
+          function importSVG(source2, options, owner) {
+            if (!source2)
               return null;
             options = typeof options === "function" ? { onLoad: options } : options || {};
             var scope2 = paper3, item = null;
@@ -41348,7 +41348,7 @@ var FloeBundledEditor = (() => {
                 );
                 if (!node3.nodeName) {
                   node3 = null;
-                  throw new Error("Unsupported SVG source: " + source);
+                  throw new Error("Unsupported SVG source: " + source2);
                 }
                 paper3 = scope2;
                 item = importNode(node3, options, true);
@@ -41370,19 +41370,19 @@ var FloeBundledEditor = (() => {
                 throw new Error(message);
               }
             }
-            if (typeof source === "string" && !/^[\s\S]*</.test(source)) {
-              var node2 = document2.getElementById(source);
+            if (typeof source2 === "string" && !/^[\s\S]*</.test(source2)) {
+              var node2 = document2.getElementById(source2);
               if (node2) {
                 onLoad(node2);
               } else {
                 Http.request({
-                  url: source,
+                  url: source2,
                   async: true,
                   onLoad,
                   onError
                 });
               }
-            } else if (typeof File !== "undefined" && source instanceof File) {
+            } else if (typeof File !== "undefined" && source2 instanceof File) {
               var reader = new FileReader();
               reader.onload = function() {
                 onLoad(reader.result);
@@ -41390,9 +41390,9 @@ var FloeBundledEditor = (() => {
               reader.onerror = function() {
                 onError(reader.error);
               };
-              return reader.readAsText(source);
+              return reader.readAsText(source2);
             } else {
-              onLoad(source);
+              onLoad(source2);
             }
             return item;
           }
@@ -41471,8 +41471,8 @@ var FloeBundledEditor = (() => {
           this.table = new Uint16Array(16);
           this.trans = new Uint16Array(288);
         }
-        function Data(source, dest) {
-          this.source = source;
+        function Data(source2, dest) {
+          this.source = source2;
           this.sourceIndex = 0;
           this.tag = 0;
           this.bitcount = 0;
@@ -41665,8 +41665,8 @@ var FloeBundledEditor = (() => {
           d2.bitcount = 0;
           return TINF_OK;
         }
-        function tinf_uncompress(source, dest) {
-          var d2 = new Data(source, dest);
+        function tinf_uncompress(source2, dest) {
+          var d2 = new Data(source2, dest);
           var bfinal, btype, res;
           do {
             bfinal = tinf_getbit(d2);
@@ -57764,18 +57764,18 @@ var FloeBundledEditor = (() => {
         });
         return thisObj;
       }
-      function clone3(source) {
-        if (!source || _typeof3(source) !== "object") {
-          return source;
+      function clone3(source2) {
+        if (!source2 || _typeof3(source2) !== "object") {
+          return source2;
         }
-        var cloned = source;
-        if (isArray(source)) {
-          cloned = source.slice().map(clone3);
-        } else if (isObject(source) && "isPrototypeOf" in source) {
+        var cloned = source2;
+        if (isArray(source2)) {
+          cloned = source2.slice().map(clone3);
+        } else if (isObject(source2) && "isPrototypeOf" in source2) {
           cloned = {};
-          for (var _i = 0, _Object$keys = Object.keys(source); _i < _Object$keys.length; _i++) {
+          for (var _i = 0, _Object$keys = Object.keys(source2); _i < _Object$keys.length; _i++) {
             var key = _Object$keys[_i];
-            cloned[key] = clone3(source[key]);
+            cloned[key] = clone3(source2[key]);
           }
         }
         return cloned;
@@ -60267,8 +60267,8 @@ var FloeBundledEditor = (() => {
          * @param {string} source 源字符串
          * @return {string}
          */
-        decodeHTML: function decodeHTML(source) {
-          var str = String(source).replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+        decodeHTML: function decodeHTML(source2) {
+          var str = String(source2).replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
           return str.replace(/&#([\d]+);/g, function($0, $1) {
             return String.fromCodePoint(parseInt($1, 10));
           });
@@ -60279,8 +60279,8 @@ var FloeBundledEditor = (() => {
          * @param {string} source 源字符串
          * @return {string}
          */
-        encodeHTML: function encodeHTML(source) {
-          return String(source).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+        encodeHTML: function encodeHTML(source2) {
+          return String(source2).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
         },
         /**
          * 获取string字节长度
@@ -60288,8 +60288,8 @@ var FloeBundledEditor = (() => {
          * @param {string} source 源字符串
          * @return {number} 长度
          */
-        getLength: function getLength(source) {
-          return String(source).replace(/[^\x00-\xff]/g, "11").length;
+        getLength: function getLength(source2) {
+          return String(source2).replace(/[^\x00-\xff]/g, "11").length;
         },
         /**
          * 字符串格式化，支持如 ${xxx.xxx} 的语法
@@ -60298,8 +60298,8 @@ var FloeBundledEditor = (() => {
          * @param {Object} data 数据
          * @return {string} 格式化后字符串
          */
-        format: function format(source, data) {
-          return source.replace(/\$\{([\w.]+)\}/g, function($0, $1) {
+        format: function format(source2, data) {
+          return source2.replace(/\$\{([\w.]+)\}/g, function($0, $1) {
             var ref = $1.split(".");
             var refObject = data;
             var level;
@@ -64339,13 +64339,13 @@ var FloeBundledEditor = (() => {
         }
         return oc && typeof oc.freeze === "function" ? oc.freeze(object) : object;
       }
-      function assign2(target, source) {
+      function assign2(target, source2) {
         if (target === null || typeof target !== "object") {
           throw new TypeError("target is not an object");
         }
-        for (var key in source) {
-          if (Object.prototype.hasOwnProperty.call(source, key)) {
-            target[key] = source[key];
+        for (var key in source2) {
+          if (Object.prototype.hasOwnProperty.call(source2, key)) {
+            target[key] = source2[key];
           }
         }
         return target;
@@ -68254,12 +68254,12 @@ var FloeBundledEditor = (() => {
       function XMLReader() {
       }
       XMLReader.prototype = {
-        parse: function(source, defaultNSMap, entityMap) {
+        parse: function(source2, defaultNSMap, entityMap) {
           var domBuilder = this.domBuilder;
           domBuilder.startDocument();
           _copy(defaultNSMap, defaultNSMap = {});
           parse2(
-            source,
+            source2,
             defaultNSMap,
             entityMap,
             domBuilder,
@@ -68268,7 +68268,7 @@ var FloeBundledEditor = (() => {
           domBuilder.endDocument();
         }
       };
-      function parse2(source, defaultNSMapCopy, entityMap, domBuilder, errorHandler) {
+      function parse2(source2, defaultNSMapCopy, entityMap, domBuilder, errorHandler) {
         function fixedFromCharCode(code) {
           if (code > 65535) {
             code -= 65536;
@@ -68291,14 +68291,14 @@ var FloeBundledEditor = (() => {
         }
         function appendText(end2) {
           if (end2 > start) {
-            var xt2 = source.substring(start, end2).replace(/&#?\w+;/g, entityReplacer);
+            var xt2 = source2.substring(start, end2).replace(/&#?\w+;/g, entityReplacer);
             locator && position(start);
             domBuilder.characters(xt2, 0, end2 - start);
             start = end2;
           }
         }
         function position(p4, m4) {
-          while (p4 >= lineEnd && (m4 = linePattern.exec(source))) {
+          while (p4 >= lineEnd && (m4 = linePattern.exec(source2))) {
             lineStart = m4.index;
             lineEnd = lineStart + m4[0].length;
             locator.lineNumber++;
@@ -68314,11 +68314,11 @@ var FloeBundledEditor = (() => {
         var start = 0;
         while (true) {
           try {
-            var tagStart = source.indexOf("<", start);
+            var tagStart = source2.indexOf("<", start);
             if (tagStart < 0) {
-              if (!source.substr(start).match(/^\s*$/)) {
+              if (!source2.substr(start).match(/^\s*$/)) {
                 var doc = domBuilder.doc;
-                var text2 = doc.createTextNode(source.substr(start));
+                var text2 = doc.createTextNode(source2.substr(start));
                 doc.appendChild(text2);
                 domBuilder.currentElement = text2;
               }
@@ -68327,13 +68327,13 @@ var FloeBundledEditor = (() => {
             if (tagStart > start) {
               appendText(tagStart);
             }
-            switch (source.charAt(tagStart + 1)) {
+            switch (source2.charAt(tagStart + 1)) {
               case "/":
-                var end = source.indexOf(">", tagStart + 3);
-                var tagName = source.substring(tagStart + 2, end).replace(/^([\s\S]*?[^ \t\n\r])?[ \t\n\r]*$/, "$1");
+                var end = source2.indexOf(">", tagStart + 3);
+                var tagName = source2.substring(tagStart + 2, end).replace(/^([\s\S]*?[^ \t\n\r])?[ \t\n\r]*$/, "$1");
                 var config = parseStack.pop();
                 if (end < 0) {
-                  tagName = source.substring(tagStart + 2).replace(/[\s<].*/, "");
+                  tagName = source2.substring(tagStart + 2).replace(/[\s<].*/, "");
                   errorHandler.error("end tag name: " + tagName + " is not complete:" + config.tagName);
                   end = tagStart + 1 + tagName.length;
                 } else if (tagName.match(/\s</)) {
@@ -68366,19 +68366,19 @@ var FloeBundledEditor = (() => {
               // end elment
               case "?":
                 locator && position(tagStart);
-                end = parseInstruction(source, tagStart, domBuilder);
+                end = parseInstruction(source2, tagStart, domBuilder);
                 break;
               case "!":
                 locator && position(tagStart);
-                end = parseDCC(source, tagStart, domBuilder, errorHandler);
+                end = parseDCC(source2, tagStart, domBuilder, errorHandler);
                 break;
               default:
                 locator && position(tagStart);
                 var el = new ElementAttributes();
                 var currentNSMap = parseStack[parseStack.length - 1].currentNSMap;
-                var end = parseElementStartPart(source, tagStart, el, currentNSMap, entityReplacer, errorHandler);
+                var end = parseElementStartPart(source2, tagStart, el, currentNSMap, entityReplacer, errorHandler);
                 var len = el.length;
-                if (!el.closed && fixSelfClosed(source, end, el.tagName, closeMap)) {
+                if (!el.closed && fixSelfClosed(source2, end, el.tagName, closeMap)) {
                   el.closed = true;
                   if (!entityMap.nbsp) {
                     errorHandler.warning("unclosed xml attribute");
@@ -68402,7 +68402,7 @@ var FloeBundledEditor = (() => {
                   }
                 }
                 if (NAMESPACE.isHTML(el.uri) && !el.closed) {
-                  end = parseHtmlSpecialContent(source, end, el.tagName, entityReplacer, domBuilder);
+                  end = parseHtmlSpecialContent(source2, end, el.tagName, entityReplacer, domBuilder);
                 } else {
                   end++;
                 }
@@ -68426,7 +68426,7 @@ var FloeBundledEditor = (() => {
         t4.columnNumber = f3.columnNumber;
         return t4;
       }
-      function parseElementStartPart(source, start, el, currentNSMap, entityReplacer, errorHandler) {
+      function parseElementStartPart(source2, start, el, currentNSMap, entityReplacer, errorHandler) {
         function addAttribute(qname, value2, startIndex) {
           if (el.attributeNames.hasOwnProperty(qname)) {
             errorHandler.fatalError("Attribute " + qname + " redefined");
@@ -68446,14 +68446,14 @@ var FloeBundledEditor = (() => {
         var p4 = ++start;
         var s3 = S_TAG;
         while (true) {
-          var c4 = source.charAt(p4);
+          var c4 = source2.charAt(p4);
           if (s3 === S_TAG && c4 === "<") {
-            throw new Error("unexpected < in tag name: " + source.slice(start, p4));
+            throw new Error("unexpected < in tag name: " + source2.slice(start, p4));
           }
           switch (c4) {
             case "=":
               if (s3 === S_ATTR) {
-                attrName = source.slice(start, p4);
+                attrName = source2.slice(start, p4);
                 s3 = S_EQ;
               } else if (s3 === S_ATTR_SPACE) {
                 s3 = S_EQ;
@@ -68466,19 +68466,19 @@ var FloeBundledEditor = (() => {
               if (s3 === S_EQ || s3 === S_ATTR) {
                 if (s3 === S_ATTR) {
                   errorHandler.warning('attribute value must after "="');
-                  attrName = source.slice(start, p4);
+                  attrName = source2.slice(start, p4);
                 }
                 start = p4 + 1;
-                p4 = source.indexOf(c4, start);
+                p4 = source2.indexOf(c4, start);
                 if (p4 > 0) {
-                  value = source.slice(start, p4);
+                  value = source2.slice(start, p4);
                   addAttribute(attrName, value, start - 1);
                   s3 = S_ATTR_END;
                 } else {
                   throw new Error("attribute value no end '" + c4 + "' match");
                 }
               } else if (s3 == S_ATTR_NOQUOT_VALUE) {
-                value = source.slice(start, p4);
+                value = source2.slice(start, p4);
                 addAttribute(attrName, value, start);
                 errorHandler.warning('attribute "' + attrName + '" missed start quot(' + c4 + ")!!");
                 start = p4 + 1;
@@ -68490,7 +68490,7 @@ var FloeBundledEditor = (() => {
             case "/":
               switch (s3) {
                 case S_TAG:
-                  el.setTagName(source.slice(start, p4));
+                  el.setTagName(source2.slice(start, p4));
                 case S_ATTR_END:
                 case S_TAG_SPACE:
                 case S_TAG_CLOSE:
@@ -68510,13 +68510,13 @@ var FloeBundledEditor = (() => {
             case "":
               errorHandler.error("unexpected end of input");
               if (s3 == S_TAG) {
-                el.setTagName(source.slice(start, p4));
+                el.setTagName(source2.slice(start, p4));
               }
               return p4;
             case ">":
               switch (s3) {
                 case S_TAG:
-                  el.setTagName(source.slice(start, p4));
+                  el.setTagName(source2.slice(start, p4));
                 case S_ATTR_END:
                 case S_TAG_SPACE:
                 case S_TAG_CLOSE:
@@ -68525,7 +68525,7 @@ var FloeBundledEditor = (() => {
                 case S_ATTR_NOQUOT_VALUE:
                 //Compatible state
                 case S_ATTR:
-                  value = source.slice(start, p4);
+                  value = source2.slice(start, p4);
                   if (value.slice(-1) === "/") {
                     el.closed = true;
                     value = value.slice(0, -1);
@@ -68555,15 +68555,15 @@ var FloeBundledEditor = (() => {
               if (c4 <= " ") {
                 switch (s3) {
                   case S_TAG:
-                    el.setTagName(source.slice(start, p4));
+                    el.setTagName(source2.slice(start, p4));
                     s3 = S_TAG_SPACE;
                     break;
                   case S_ATTR:
-                    attrName = source.slice(start, p4);
+                    attrName = source2.slice(start, p4);
                     s3 = S_ATTR_SPACE;
                     break;
                   case S_ATTR_NOQUOT_VALUE:
-                    var value = source.slice(start, p4);
+                    var value = source2.slice(start, p4);
                     errorHandler.warning('attribute "' + value + '" missed quot(")!!');
                     addAttribute(attrName, value, start);
                   case S_ATTR_END:
@@ -68669,10 +68669,10 @@ var FloeBundledEditor = (() => {
           return true;
         }
       }
-      function parseHtmlSpecialContent(source, elStartEnd, tagName, entityReplacer, domBuilder) {
+      function parseHtmlSpecialContent(source2, elStartEnd, tagName, entityReplacer, domBuilder) {
         if (/^(?:script|textarea)$/i.test(tagName)) {
-          var elEndStart = source.indexOf("</" + tagName + ">", elStartEnd);
-          var text2 = source.substring(elStartEnd + 1, elEndStart);
+          var elEndStart = source2.indexOf("</" + tagName + ">", elStartEnd);
+          var text2 = source2.substring(elStartEnd + 1, elEndStart);
           if (/[&<]/.test(text2)) {
             if (/^script$/i.test(tagName)) {
               domBuilder.characters(text2, 0, text2.length);
@@ -68685,32 +68685,32 @@ var FloeBundledEditor = (() => {
         }
         return elStartEnd + 1;
       }
-      function fixSelfClosed(source, elStartEnd, tagName, closeMap) {
+      function fixSelfClosed(source2, elStartEnd, tagName, closeMap) {
         var pos = closeMap[tagName];
         if (pos == null) {
-          pos = source.lastIndexOf("</" + tagName + ">");
+          pos = source2.lastIndexOf("</" + tagName + ">");
           if (pos < elStartEnd) {
-            pos = source.lastIndexOf("</" + tagName);
+            pos = source2.lastIndexOf("</" + tagName);
           }
           closeMap[tagName] = pos;
         }
         return pos < elStartEnd;
       }
-      function _copy(source, target) {
-        for (var n2 in source) {
-          if (Object.prototype.hasOwnProperty.call(source, n2)) {
-            target[n2] = source[n2];
+      function _copy(source2, target) {
+        for (var n2 in source2) {
+          if (Object.prototype.hasOwnProperty.call(source2, n2)) {
+            target[n2] = source2[n2];
           }
         }
       }
-      function parseDCC(source, start, domBuilder, errorHandler) {
-        var next = source.charAt(start + 2);
+      function parseDCC(source2, start, domBuilder, errorHandler) {
+        var next = source2.charAt(start + 2);
         switch (next) {
           case "-":
-            if (source.charAt(start + 3) === "-") {
-              var end = source.indexOf("-->", start + 4);
+            if (source2.charAt(start + 3) === "-") {
+              var end = source2.indexOf("-->", start + 4);
               if (end > start) {
-                domBuilder.comment(source, start + 4, end - start - 4);
+                domBuilder.comment(source2, start + 4, end - start - 4);
                 return end + 3;
               } else {
                 errorHandler.error("Unclosed comment");
@@ -68720,14 +68720,14 @@ var FloeBundledEditor = (() => {
               return -1;
             }
           default:
-            if (source.substr(start + 3, 6) == "CDATA[") {
-              var end = source.indexOf("]]>", start + 9);
+            if (source2.substr(start + 3, 6) == "CDATA[") {
+              var end = source2.indexOf("]]>", start + 9);
               domBuilder.startCDATA();
-              domBuilder.characters(source, start + 9, end - start - 9);
+              domBuilder.characters(source2, start + 9, end - start - 9);
               domBuilder.endCDATA();
               return end + 3;
             }
-            var matchs = split(source, start);
+            var matchs = split(source2, start);
             var len = matchs.length;
             if (len > 1 && /!doctype/i.test(matchs[0][0])) {
               var name2 = matchs[1][0];
@@ -68749,10 +68749,10 @@ var FloeBundledEditor = (() => {
         }
         return -1;
       }
-      function parseInstruction(source, start, domBuilder) {
-        var end = source.indexOf("?>", start);
+      function parseInstruction(source2, start, domBuilder) {
+        var end = source2.indexOf("?>", start);
         if (end) {
-          var match = source.substring(start, end).match(/^<\?(\S*)\s*([\s\S]*?)$/);
+          var match = source2.substring(start, end).match(/^<\?(\S*)\s*([\s\S]*?)$/);
           if (match) {
             var len = match[0].length;
             domBuilder.processingInstruction(match[1], match[2]);
@@ -68807,13 +68807,13 @@ var FloeBundledEditor = (() => {
         //	getType:function(uri,localName){}
         //	getType:function(i){},
       };
-      function split(source, start) {
+      function split(source2, start) {
         var match;
         var buf = [];
         var reg = /'[^']+'|"[^"]+"|[^\s<>\/=]+=?|(\/?\s*>|<)/g;
         reg.lastIndex = start;
-        reg.exec(source);
-        while (match = reg.exec(source)) {
+        reg.exec(source2);
+        while (match = reg.exec(source2)) {
           buf.push(match);
           if (match[1]) return buf;
         }
@@ -68840,7 +68840,7 @@ var FloeBundledEditor = (() => {
       function DOMParser2(options) {
         this.options = options || { locator: {} };
       }
-      DOMParser2.prototype.parseFromString = function(source, mimeType) {
+      DOMParser2.prototype.parseFromString = function(source2, mimeType) {
         var options = this.options;
         var sax2 = new XMLReader();
         var domBuilder = options.domBuilder || new DOMHandler();
@@ -68859,9 +68859,9 @@ var FloeBundledEditor = (() => {
         }
         defaultNSMap.xml = defaultNSMap.xml || NAMESPACE.XML;
         var normalize = options.normalizeLineEndings || normalizeLineEndings;
-        if (source && typeof source === "string") {
+        if (source2 && typeof source2 === "string") {
           sax2.parse(
-            normalize(source),
+            normalize(source2),
             defaultNSMap,
             entityMap
           );
@@ -79602,16 +79602,16 @@ var FloeBundledEditor = (() => {
   var assign = function(obj) {
     const sources = Array.prototype.slice.call(arguments, 1);
     while (sources.length) {
-      const source = sources.shift();
-      if (!source) {
+      const source2 = sources.shift();
+      if (!source2) {
         continue;
       }
-      if (typeof source !== "object") {
-        throw new TypeError(source + "must be non-object");
+      if (typeof source2 !== "object") {
+        throw new TypeError(source2 + "must be non-object");
       }
-      for (const p4 in source) {
-        if (_has(source, p4)) {
-          obj[p4] = source[p4];
+      for (const p4 in source2) {
+        if (_has(source2, p4)) {
+          obj[p4] = source2[p4];
         }
       }
     }
@@ -90104,12 +90104,22 @@ var FloeBundledEditor = (() => {
     commandIndex() {
       return [...this.commands.values()].map(({ descriptor }) => ({ id: descriptor.id, title: descriptor.title, group: descriptor.group, access: descriptor.access, hidden: descriptor.hidden ?? false, sideEffecting: descriptor.sideEffecting ?? false, fields: (descriptor.fields ?? []).map(({ key, label, type }) => ({ key, label, type })) }));
     }
-    formDescription(id, values = {}) {
+    formDescription(id, values = {}, discovery = null) {
       const descriptor = this.command(id), args = { ...values };
       const fields = (descriptor.fields ?? []).map((field2) => {
         const options = typeof field2.options === "function" ? field2.options(this, args) : field2.options;
         const initial = Object.hasOwn(values, field2.key) ? values[field2.key] : typeof field2.default === "function" ? field2.default(this, args) : field2.default;
         if (initial !== void 0) args[field2.key] = initial;
+        if (discovery) {
+          const query = String(discovery.query ?? "").slice(0, 200).toLocaleLowerCase();
+          const offset = Number(discovery.offset ?? 0), limit = Number(discovery.limit ?? 40);
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid discovery page");
+          const all = Array.isArray(options) ? options : null;
+          const matched = all?.filter((option) => !query || JSON.stringify(option).toLocaleLowerCase().includes(query));
+          const optionsPage = all ? { total: all.length, matched: matched.length, offset, limit, hasMore: offset + limit < matched.length } : void 0;
+          const serialized = JSON.stringify(initial);
+          return { ...field2, default: serialized?.length > 8192 ? void 0 : initial, defaultOmitted: serialized?.length > 8192 ? true : void 0, options: matched ? matched.slice(offset, offset + limit) : options, optionsPage };
+        }
         return { ...field2, default: initial, options };
       });
       return { ...descriptor, fields };
@@ -90440,7 +90450,7 @@ var FloeBundledEditor = (() => {
   function variationWeights(font, input) {
     const axes = font.axes ?? [], location2 = normalizedLocation(axes, input);
     const sources = [{ glyphs: font.glyphs, kerning: font.kerning, info: font.info, location: Object.fromEntries(axes.map((a3) => [a3.tag, a3.default])) }, ...font.masters ?? []];
-    const records = sources.map((source, index2) => ({ source, index: index2, location: normalizedLocation(axes, source.location ?? {}) }));
+    const records = sources.map((source2, index2) => ({ source: source2, index: index2, location: normalizedLocation(axes, source2.location ?? {}) }));
     const keys = /* @__PURE__ */ new Set();
     for (const record of records) {
       const key2 = record.location.join(",");
@@ -90496,10 +90506,10 @@ var FloeBundledEditor = (() => {
     }
     return { sources, weights };
   }
-  var blendNumber = (sources, weights, read2) => sources.reduce((sum, source, i4) => sum + Number(read2(source, i4) ?? 0) * weights[i4], 0);
+  var blendNumber = (sources, weights, read2) => sources.reduce((sum, source2, i4) => sum + Number(read2(source2, i4) ?? 0) * weights[i4], 0);
   function interpolatedKerning(sources, weights) {
     const result = {}, pairs = /* @__PURE__ */ new Map();
-    for (const source of sources) for (const [left, rights] of Object.entries(source.kerning ?? {})) for (const right of Object.keys(rights)) {
+    for (const source2 of sources) for (const [left, rights] of Object.entries(source2.kerning ?? {})) for (const right of Object.keys(rights)) {
       if (!pairs.has(left)) pairs.set(left, /* @__PURE__ */ new Set());
       pairs.get(left).add(right);
     }
@@ -91019,8 +91029,8 @@ var FloeBundledEditor = (() => {
     delete result.original;
     return result;
   }
-  function featureUsesGlyph(source, name2) {
-    const tokens = String(source).replace(/#[^\n]*|"(?:[^"\\]|\\.)*"/g, "").match(/\\?[A-Za-z_.][A-Za-z0-9_.]*/g) ?? [];
+  function featureUsesGlyph(source2, name2) {
+    const tokens = String(source2).replace(/#[^\n]*|"(?:[^"\\]|\\.)*"/g, "").match(/\\?[A-Za-z_.][A-Za-z0-9_.]*/g) ?? [];
     return tokens.some((token) => token.replace(/^\\/, "") === name2);
   }
   function registerFontModel(e2) {
@@ -91033,8 +91043,8 @@ var FloeBundledEditor = (() => {
     const infoFields = [field("familyName", t3("\u5BB6\u65CF\u540D\u79F0", "Family name")), field("styleName", t3("\u6837\u5F0F\u540D\u79F0", "Style name"), "text", { default: "Regular" }), field("unitsPerEm", t3("\u6BCF em \u5355\u4F4D", "Units per em"), "number", { default: 1e3, min: 16, max: 16384 }), field("ascender", t3("\u4E0A\u5347\u7EBF", "Ascender"), "number", { default: 800 }), field("descender", t3("\u4E0B\u964D\u7EBF", "Descender"), "number", { default: -200 }), field("xHeight", t3("x \u5B57\u9AD8", "x-height"), "number", { default: 500 }), field("capHeight", t3("\u5927\u5199\u5B57\u9AD8", "Cap height"), "number", { default: 700 }), field("openTypeNameDesigner", t3("\u8BBE\u8BA1\u8005", "Designer")), field("openTypeNameDesignerURL", t3("\u8BBE\u8BA1\u8005\u7F51\u5740", "Designer URL")), field("openTypeNameManufacturer", t3("\u5236\u4F5C\u65B9", "Manufacturer")), field("openTypeNameDescription", t3("\u63CF\u8FF0", "Description"), "textarea"), field("openTypeNameLicenseURL", t3("\u8BB8\u53EF\u7F51\u5740", "License URL")), field("openTypeOS2WeightClass", t3("\u5B57\u91CD\u7EA7\u522B", "Weight class"), "number", { default: 400, min: 1, max: 1e3 }), field("italicAngle", t3("\u503E\u659C\u89D2", "Italic angle"), "number", { default: 0 }), field("copyright", t3("\u7248\u6743", "Copyright"), "textarea"), field("license", t3("\u8BB8\u53EF", "License"), "textarea")];
     add("font.info", t3("\u5B57\u4F53\u4FE1\u606F", "Font information"), infoFields, (a3) => {
       if (a3.unitsPerEm < 16 || a3.unitsPerEm > 16384) throw new Error("Units per em must be 16\u201316384");
-      const source = activeSource(e2);
-      source.info = { ...source.info, ...a3 };
+      const source2 = activeSource(e2);
+      source2.info = { ...source2.info, ...a3 };
       for (const key of ["familyName", "unitsPerEm", "copyright", "license", "openTypeNameDesigner", "openTypeNameDesignerURL", "openTypeNameManufacturer", "openTypeNameDescription", "openTypeNameLicenseURL"]) if (a3[key] !== void 0) for (const target of [e2.state, ...e2.state.masters]) target.info[key] = a3[key];
       e2.state.title = a3.familyName || e2.state.title;
     }, t3("\u5DE5\u7A0B", "Project"));
@@ -91051,9 +91061,9 @@ var FloeBundledEditor = (() => {
       if (a3.glyph === ".notdef") throw new Error("The .notdef glyph must be retained");
       if ([e2.state, ...e2.state.masters].some((s3) => s3.glyphs.some((g2) => g2.components.some((c4) => c4.base === a3.glyph)))) throw new Error("Decompose referencing components before deleting");
       if (featureUsesGlyph(e2.state.features, a3.glyph)) throw new Error("Remove this glyph from the feature program first");
-      for (const source of [e2.state, ...e2.state.masters]) {
-        delete source.kerning[a3.glyph];
-        for (const rights of Object.values(source.kerning)) delete rights[a3.glyph];
+      for (const source2 of [e2.state, ...e2.state.masters]) {
+        delete source2.kerning[a3.glyph];
+        for (const rights of Object.values(source2.kerning)) delete rights[a3.glyph];
       }
       for (const name2 of Object.keys(e2.state.groups)) e2.state.groups[name2] = e2.state.groups[name2].filter((n2) => n2 !== a3.glyph);
       e2.state.glyphs = e2.state.glyphs.filter((g2) => g2.name !== a3.glyph);
@@ -91063,7 +91073,7 @@ var FloeBundledEditor = (() => {
     add("glyph.encoding", t3("\u5B57\u7B26\u6620\u5C04", "Character mapping"), [glyphField(), field("unicode", t3("\u5B57\u7B26\u6216 Unicode\uFF08\u9017\u53F7\u5206\u9694\uFF09", "Characters or Unicode (comma separated)"))], (a3) => {
       const values = String(a3.unicode).split(",").flatMap((s3) => /^U\+/i.test(s3.trim()) ? [parseInt(s3.trim().slice(2), 16)] : [...s3.trim()].map((c4) => c4.codePointAt(0)));
       if (values.some((v3) => !Number.isInteger(v3) || v3 < 0 || v3 > 1114111 || v3 >= 55296 && v3 <= 57343)) throw new Error("Invalid Unicode scalar");
-      for (const source of [e2.state, ...e2.state.masters]) required(source.glyphs.find((g2) => g2.name === a3.glyph), "Unknown glyph").unicodes = [...new Set(values)];
+      for (const source2 of [e2.state, ...e2.state.masters]) required(source2.glyphs.find((g2) => g2.name === a3.glyph), "Unknown glyph").unicodes = [...new Set(values)];
     });
     add("glyph.transform", t3("\u79FB\u52A8\uFF0F\u7F29\u653E\uFF0F\u65CB\u8F6C\uFF0F\u955C\u50CF", "Move / scale / rotate / mirror"), [glyphField(), field("dx", t3("\u6A2A\u5411\u79FB\u52A8", "Move X"), "number", { default: 0 }), field("dy", t3("\u7EB5\u5411\u79FB\u52A8", "Move Y"), "number", { default: 0 }), field("scaleX", t3("\u6C34\u5E73\u6BD4\u4F8B", "Scale X"), "number", { default: 1 }), field("scaleY", t3("\u5782\u76F4\u6BD4\u4F8B", "Scale Y"), "number", { default: 1 }), field("rotation", t3("\u89D2\u5EA6", "Angle"), "number", { default: 0 }), field("selectedOnly", t3("\u4EC5\u9009\u4E2D\u8282\u70B9", "Selected points only"), "checkbox")], (a3) => {
       const g2 = getGlyph(e2, a3.glyph), ids = new Set(e2.selection?.points ?? []), r2 = a3.rotation * Math.PI / 180, m4 = [Math.cos(r2) * a3.scaleX, Math.sin(r2) * a3.scaleX, -Math.sin(r2) * a3.scaleY, Math.cos(r2) * a3.scaleY, a3.dx, a3.dy];
@@ -91191,9 +91201,9 @@ var FloeBundledEditor = (() => {
       for (const name2 of names) required(e2.state.glyphs.find((g2) => g2.name === name2), "Unknown glyph " + name2);
       if (!names.length) {
         delete e2.state.groups[a3.name];
-        for (const source of [e2.state, ...e2.state.masters]) {
-          delete source.kerning[a3.name];
-          for (const rights of Object.values(source.kerning)) delete rights[a3.name];
+        for (const source2 of [e2.state, ...e2.state.masters]) {
+          delete source2.kerning[a3.name];
+          for (const rights of Object.values(source2.kerning)) delete rights[a3.name];
         }
         return;
       }
@@ -91201,15 +91211,15 @@ var FloeBundledEditor = (() => {
       e2.state.groups[a3.name] = names;
     }, t3("\u5B57\u8DDD\u4E0E\u6392\u7248", "Spacing & layout"));
     add("font.vertical", t3("\u542F\u7528\uFF0F\u7F16\u8F91\u7AD6\u6392\u53C2\u6570", "Enable / edit vertical layout"), [field("enabled", t3("\u542F\u7528\u7AD6\u6392", "Enable vertical layout"), "checkbox", { default: true }), field("ascender", t3("\u5782\u76F4\u4E0A\u5347\u503C", "Vertical ascender"), "number", { default: 500 }), field("descender", t3("\u5782\u76F4\u4E0B\u964D\u503C", "Vertical descender"), "number", { default: -500 }), field("lineGap", t3("\u5782\u76F4\u884C\u8DDD", "Vertical line gap"), "number", { default: 0 })], (a3) => {
-      const source = activeSource(e2), keys = ["openTypeVheaVertTypoAscender", "openTypeVheaVertTypoDescender", "openTypeVheaVertTypoLineGap"];
+      const source2 = activeSource(e2), keys = ["openTypeVheaVertTypoAscender", "openTypeVheaVertTypoDescender", "openTypeVheaVertTypoLineGap"];
       if (a3.enabled) {
-        [a3.ascender, a3.descender, a3.lineGap].forEach((value, index2) => source.info[keys[index2]] = finite(value));
+        [a3.ascender, a3.descender, a3.lineGap].forEach((value, index2) => source2.info[keys[index2]] = finite(value));
       } else for (const s3 of [e2.state, ...e2.state.masters]) for (const key of keys) delete s3.info[key];
     }, t3("\u5B57\u8DDD\u4E0E\u6392\u7248", "Spacing & layout"));
     add("font.glyphOrder", t3("\u8C03\u6574\u5B57\u5F62\u987A\u5E8F", "Set glyph order"), [field("names", t3("\u6309\u987A\u5E8F\u586B\u5199\u5168\u90E8\u5B57\u5F62\u540D", "All glyph names in order"), "textarea", { default: (e3) => e3.state.glyphs.map((g2) => g2.name).join(" ") })], (a3) => {
       const names = String(a3.names).trim().split(/\s+/);
       if (names[0] !== ".notdef" || names.length !== e2.state.glyphs.length || new Set(names).size !== names.length || names.some((n2) => !e2.state.glyphs.some((g2) => g2.name === n2))) throw new Error("List each glyph once, starting with .notdef");
-      for (const source of [e2.state, ...e2.state.masters]) source.glyphs = names.map((n2) => required(source.glyphs.find((g2) => g2.name === n2), "Missing master glyph"));
+      for (const source2 of [e2.state, ...e2.state.masters]) source2.glyphs = names.map((n2) => required(source2.glyphs.find((g2) => g2.name === n2), "Missing master glyph"));
     }, t3("\u5DE5\u7A0B", "Project"));
     add("features.substitution", t3("\u6DFB\u52A0\u8FDE\u5B57\uFF0F\u66FF\u4EE3\u89C4\u5219", "Add ligature / substitution rule"), [field("feature", t3("\u7279\u6027\u6807\u7B7E", "Feature tag"), "select", { options: ["liga", "dlig", "salt", "calt", "smcp", "locl"], default: "liga" }), field("input", t3("\u539F\u5B57\u5F62\uFF08\u7A7A\u683C\u5206\u9694\uFF09", "Input glyphs (space separated)"), "text", { default: "f i" }), glyphField("output", t3("\u66FF\u4EE3\u5B57\u5F62", "Replacement glyph")), field("script", t3("\u811A\u672C\u6807\u7B7E\uFF08\u53EF\u9009\uFF09", "Script tag (optional)"), "text"), field("language", t3("\u8BED\u8A00\u6807\u7B7E\uFF08\u53EF\u9009\uFF09", "Language tag (optional)"), "text")], (a3) => {
       const names = String(a3.input).trim().split(/\s+/);
@@ -91227,9 +91237,9 @@ var FloeBundledEditor = (() => {
       if (!a3.remove) axes.push({ tag: a3.tag, name: a3.name || a3.tag, min: a3.min, default: a3.default, max: a3.max, mapping });
       const proposal = clone2(e2.state);
       proposal.axes = axes;
-      for (const source of [...proposal.masters, ...proposal.instances]) {
-        if (a3.remove) delete source.location[a3.tag];
-        else if (!previous) source.location[a3.tag] = a3.default;
+      for (const source2 of [...proposal.masters, ...proposal.instances]) {
+        if (a3.remove) delete source2.location[a3.tag];
+        else if (!previous) source2.location[a3.tag] = a3.default;
       }
       const issues = compatible(proposal);
       if (issues.length) throw new Error(issues[0].error);
@@ -91239,7 +91249,7 @@ var FloeBundledEditor = (() => {
     }, t3("\u53D8\u91CF\u5B57\u4F53", "Variations"));
     add("variation.master", t3("\u521B\u5EFA\u6BCD\u7248", "Create master"), [field("name", t3("\u6BCD\u7248\u540D\u79F0", "Master name")), field("location", t3("\u8F74\u4F4D\u7F6E\uFF08wght=700,wdth=100\uFF09", "Axis location (wght=700,wdth=100)"), "text", { default: "wght=700" })], (a3) => {
       if (!e2.state.axes.length) throw new Error("Add a variation axis first");
-      const source = activeSource(e2), master = { id: uid(), name: a3.name || "Master", location: parseLocation(e2.state.axes, a3.location), glyphs: clone2(source.glyphs), kerning: clone2(source.kerning), info: clone2(source.info ?? e2.state.info) };
+      const source2 = activeSource(e2), master = { id: uid(), name: a3.name || "Master", location: parseLocation(e2.state.axes, a3.location), glyphs: clone2(source2.glyphs), kerning: clone2(source2.kerning), info: clone2(source2.info ?? e2.state.info) };
       const proposal = { ...e2.state, masters: [...e2.state.masters, master] }, issues = compatible(proposal);
       if (issues.some((i4) => i4.masterID === master.id && i4.error === "duplicate master location")) throw new Error("A master already exists at this location");
       e2.state.masters.push(master);
@@ -91262,9 +91272,9 @@ var FloeBundledEditor = (() => {
       master.location = location2;
     }, t3("\u53D8\u91CF\u5B57\u4F53", "Variations"));
     add("variation.copyGlyph", t3("\u5C06\u5B57\u5F62\u590D\u5236\u5230\u53E6\u4E00\u6BCD\u7248", "Copy glyph to another master"), [glyphField(), field("target", t3("\u76EE\u6807\u6BCD\u7248", "Target master"), "select", { options: (e3) => [{ value: "default", label: e3.state.info.styleName }, ...masterOptions(e3)] })], (a3) => {
-      const source = getGlyph(e2, a3.glyph), target = a3.target === "default" ? e2.state : required(e2.state.masters.find((m4) => m4.id === a3.target), "Unknown master"), index2 = target.glyphs.findIndex((g2) => g2.name === source.name);
-      if (index2 < 0) target.glyphs.push(clone2(source));
-      else target.glyphs[index2] = clone2(source);
+      const source2 = getGlyph(e2, a3.glyph), target = a3.target === "default" ? e2.state : required(e2.state.masters.find((m4) => m4.id === a3.target), "Unknown master"), index2 = target.glyphs.findIndex((g2) => g2.name === source2.name);
+      if (index2 < 0) target.glyphs.push(clone2(source2));
+      else target.glyphs[index2] = clone2(source2);
     }, t3("\u53D8\u91CF\u5B57\u4F53", "Variations"));
     add("variation.instance", t3("\u6DFB\u52A0\uFF0F\u66F4\u65B0\u547D\u540D\u5B9E\u4F8B", "Add / update named instance"), [field("name", t3("\u540D\u79F0", "Name")), field("location", t3("\u8F74\u4F4D\u7F6E\uFF08wght=700\uFF09", "Axis location (wght=700)"), "text", { default: "wght=700" }), field("remove", t3("\u5220\u9664\u5B9E\u4F8B", "Remove instance"), "checkbox")], (a3) => {
       const name2 = String(a3.name || "Instance"), location2 = parseLocation(e2.state.axes, a3.location), previous = e2.state.instances.find((i4) => i4.name === name2);
@@ -91279,10 +91289,10 @@ var FloeBundledEditor = (() => {
     add("glyph.rename", t3("\u91CD\u547D\u540D\u5B57\u5F62", "Rename glyph"), [glyphField(), field("name", t3("\u65B0\u5B57\u5F62\u540D", "New glyph name"))], (a3) => {
       if (a3.glyph === ".notdef" || !/^[A-Za-z_.][A-Za-z0-9_.]*$/.test(a3.name) || e2.state.glyphs.some((g2) => g2.name === a3.name)) throw new Error("Choose a unique valid glyph name");
       if (featureUsesGlyph(e2.state.features, a3.glyph)) throw new Error("Update this glyph name in the feature program before renaming");
-      for (const source of [e2.state, ...e2.state.masters]) {
-        required(source.glyphs.find((g2) => g2.name === a3.glyph), "Unknown glyph").name = a3.name;
-        for (const g2 of source.glyphs) for (const c4 of g2.components) if (c4.base === a3.glyph) c4.base = a3.name;
-        const kerning = source.kerning;
+      for (const source2 of [e2.state, ...e2.state.masters]) {
+        required(source2.glyphs.find((g2) => g2.name === a3.glyph), "Unknown glyph").name = a3.name;
+        for (const g2 of source2.glyphs) for (const c4 of g2.components) if (c4.base === a3.glyph) c4.base = a3.name;
+        const kerning = source2.kerning;
         if (kerning[a3.glyph]) {
           kerning[a3.name] = kerning[a3.glyph];
           delete kerning[a3.glyph];
@@ -91297,13 +91307,13 @@ var FloeBundledEditor = (() => {
     });
     add("glyph.duplicate", t3("\u590D\u5236\u5B57\u5F62", "Duplicate glyph"), [glyphField(), field("name", t3("\u65B0\u5B57\u5F62\u540D", "New glyph name"))], (a3) => {
       if (!/^[A-Za-z_.][A-Za-z0-9_.]*$/.test(a3.name) || e2.state.glyphs.some((g2) => g2.name === a3.name)) throw new Error("Choose a unique valid glyph name");
-      for (const source of [e2.state, ...e2.state.masters]) {
-        const copy = clone2(required(source.glyphs.find((g2) => g2.name === a3.glyph), "Unknown glyph"));
+      for (const source2 of [e2.state, ...e2.state.masters]) {
+        const copy = clone2(required(source2.glyphs.find((g2) => g2.name === a3.glyph), "Unknown glyph"));
         copy.id = uid();
         copy.name = a3.name;
         copy.unicodes = [];
         for (const c4 of copy.contours) for (const p4 of c4) p4.id = uid();
-        source.glyphs.push(copy);
+        source2.glyphs.push(copy);
       }
       e2.selection = { glyph: a3.name, points: [] };
     });
@@ -91314,7 +91324,7 @@ var FloeBundledEditor = (() => {
         if (e2.state.glyphs.some((g2) => g2.unicodes.includes(code))) continue;
         let name2 = code === 32 ? "space" : code < 128 && /[A-Za-z]/.test(character) ? character : "uni" + code.toString(16).toUpperCase().padStart(4, "0");
         while (e2.state.glyphs.some((g2) => g2.name === name2)) name2 += "_";
-        for (const source of [e2.state, ...e2.state.masters]) source.glyphs.push(glyph(name2, [code], [], finite(a3.advance, 600)));
+        for (const source2 of [e2.state, ...e2.state.masters]) source2.glyphs.push(glyph(name2, [code], [], finite(a3.advance, 600)));
         count++;
       }
       return { glyphsAdded: count };
@@ -91347,10 +91357,10 @@ var FloeBundledEditor = (() => {
         if (unicode.has(code)) issues.push({ glyph: g2.name, error: "duplicate Unicode", other: unicode.get(code) });
         unicode.set(code, g2.name);
       }
-      for (const source of [e2.state, ...e2.state.masters]) {
-        const font = { ...e2.state, glyphs: source.glyphs };
+      for (const source2 of [e2.state, ...e2.state.masters]) {
+        const font = { ...e2.state, glyphs: source2.glyphs };
         const names = /* @__PURE__ */ new Set();
-        for (const g2 of source.glyphs) {
+        for (const g2 of source2.glyphs) {
           if (names.has(g2.name)) issues.push({ glyph: g2.name, error: "duplicate glyph name" });
           names.add(g2.name);
           try {
@@ -91409,11 +91419,11 @@ var FloeBundledEditor = (() => {
     return new s3.CompoundPath({ pathData: glyphPath(font, getGlyph(e2, name2)), insert: false });
   }
   var multiply = (a3, b3) => [a3[0] * b3[0] + a3[2] * b3[1], a3[1] * b3[0] + a3[3] * b3[1], a3[0] * b3[2] + a3[2] * b3[3], a3[1] * b3[2] + a3[3] * b3[3], a3[0] * b3[4] + a3[2] * b3[5] + a3[4], a3[1] * b3[4] + a3[3] * b3[5] + a3[5]];
-  function svgTransform(source = "") {
+  function svgTransform(source2 = "") {
     let matrix = [1, 0, 0, 1, 0, 0];
     const pattern = /([A-Za-z]+)\s*\(([^)]*)\)/g;
     let match, consumed = "";
-    while (match = pattern.exec(source)) {
+    while (match = pattern.exec(source2)) {
       consumed += match[0];
       const values = match[2].trim().split(/[\s,]+/).filter(Boolean).map(Number);
       if (!values.every(Number.isFinite)) throw new Error("Invalid SVG transform");
@@ -91446,11 +91456,11 @@ var FloeBundledEditor = (() => {
       }
       matrix = multiply(matrix, next);
     }
-    if (source.replace(pattern, "").trim()) throw new Error("Invalid SVG transform");
+    if (source2.replace(pattern, "").trim()) throw new Error("Invalid SVG transform");
     return matrix;
   }
-  function readSVGOutlines(source, { flipY = true } = {}) {
-    const doc = parseXML(source), root = doc.documentElement, s3 = paperScope(), result = [];
+  function readSVGOutlines(source2, { flipY = true } = {}) {
+    const doc = parseXML(source2), root = doc.documentElement, s3 = paperScope(), result = [];
     const visit = (node2, parent = [1, 0, 0, 1, 0, 0], seen = /* @__PURE__ */ new Set(), referenced = false) => {
       const tag = node2.localName, matrix = multiply(parent, svgTransform(node2.getAttribute("transform") ?? "")), number = (key, fallback = 0) => Number(node2.getAttribute(key) ?? fallback);
       let item;
@@ -91594,8 +91604,8 @@ var FloeBundledEditor = (() => {
     const item = (v3) => v3 === true ? "<true/>" : v3 === false ? "<false/>" : typeof v3 === "number" ? `<${Number.isInteger(v3) ? "integer" : "real"}>${v3}</${Number.isInteger(v3) ? "integer" : "real"}>` : typeof v3 === "string" ? `<string>${escapeXML(v3)}</string>` : Array.isArray(v3) ? "<array>" + v3.map(item).join("") + "</array>" : v3 && typeof v3 === "object" ? "<dict>" + Object.entries(v3).filter(([, v4]) => v4 !== void 0 && v4 !== null).map(([k2, v4]) => `<key>${escapeXML(k2)}</key>${item(v4)}`).join("") + "</dict>" : "<string></string>";
     return '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0">' + item(value) + "</plist>";
   }
-  function readPlist(source) {
-    const stripped = source.replace(/<!DOCTYPE\s+plist\s+PUBLIC\s+"[^"]*"\s+"[^"]*"\s*>/gi, "");
+  function readPlist(source2) {
+    const stripped = source2.replace(/<!DOCTYPE\s+plist\s+PUBLIC\s+"[^"]*"\s+"[^"]*"\s*>/gi, "");
     const doc = parseXML(stripped), read2 = (node2) => {
       if (!node2) return null;
       const children = [...node2.children];
@@ -91641,8 +91651,8 @@ var FloeBundledEditor = (() => {
     else body += "</outline>";
     return `<?xml version="1.0" encoding="UTF-8"?><glyph name="${escapeXML(g2.name)}" format="2">${body}</glyph>`;
   }
-  function readGlif(source, name2) {
-    const root = parseXML(source).documentElement;
+  function readGlif(source2, name2) {
+    const root = parseXML(source2).documentElement;
     if (root.tagName !== "glyph") throw new Error("Invalid GLIF");
     const g2 = glyph(root.getAttribute("name") || name2, [...root.querySelectorAll(":scope > unicode")].map((n2) => parseInt(n2.getAttribute("hex"), 16)), [], Number(root.querySelector("advance")?.getAttribute("width") ?? 600));
     const height = root.querySelector("advance")?.getAttribute("height");
@@ -91658,8 +91668,8 @@ var FloeBundledEditor = (() => {
     for (const node2 of root.querySelectorAll(":scope > guideline")) g2.guidelines.push({ id: uid(), name: node2.getAttribute("name"), x: Number(node2.getAttribute("x")), y: Number(node2.getAttribute("y")), angle: Number(node2.getAttribute("angle") ?? 0) });
     return g2;
   }
-  function makeUFOFiles(font, glyphs = font.glyphs, styleName = font.info.styleName, source = font) {
-    const files = {}, contents = {}, info = { ...clone2(font.info), ...clone2(source.info ?? {}), styleName };
+  function makeUFOFiles(font, glyphs = font.glyphs, styleName = font.info.styleName, source2 = font) {
+    const files = {}, contents = {}, info = { ...clone2(font.info), ...clone2(source2.info ?? {}), styleName };
     if (font.guidelines?.length) info.guidelines = clone2(font.guidelines).map(({ id, ...guide }) => guide);
     delete info.name;
     delete info.original;
@@ -91677,7 +91687,7 @@ var FloeBundledEditor = (() => {
     }
     files["glyphs/contents.plist"] = strToU8(plist(contents));
     files["groups.plist"] = strToU8(plist(font.groups ?? {}));
-    files["kerning.plist"] = strToU8(plist(source.kerning ?? font.kerning ?? {}));
+    files["kerning.plist"] = strToU8(plist(source2.kerning ?? font.kerning ?? {}));
     files["features.fea"] = strToU8(font.features ?? "");
     files["lib.plist"] = strToU8(plist({ "public.glyphOrder": glyphs.map((g2) => g2.name), "public.openTypeCategories": Object.fromEntries(glyphs.filter((g2) => g2.anchors?.some((a3) => a3.name.startsWith("_"))).map((g2) => [g2.name, "mark"])) }));
     return files;
@@ -91740,15 +91750,15 @@ var FloeBundledEditor = (() => {
       return readUFOFiles(files, metainfo.slice(0, -"metainfo.plist".length));
     }
     const root = parseXML(strFromU8(files[designspace])).documentElement, base = designspace.includes("/") ? designspace.slice(0, designspace.lastIndexOf("/") + 1) : "", axes = [...root.querySelectorAll("axes > axis")].map((a3) => ({ tag: a3.getAttribute("tag"), name: a3.getAttribute("name"), min: Number(a3.getAttribute("minimum")), default: Number(a3.getAttribute("default")), max: Number(a3.getAttribute("maximum")), mapping: [...a3.querySelectorAll("map")].map((m4) => [Number(m4.getAttribute("input")), Number(m4.getAttribute("output"))]) }));
-    const sources = [...root.querySelectorAll("sources > source")].map((source) => {
-      const name2 = source.getAttribute("filename");
+    const sources = [...root.querySelectorAll("sources > source")].map((source2) => {
+      const name2 = source2.getAttribute("filename");
       if (!name2 || name2.includes("..") || name2.startsWith("/")) throw new Error("Unsafe designspace source");
       const location2 = {};
-      for (const d2 of source.querySelectorAll("location > dimension")) {
+      for (const d2 of source2.querySelectorAll("location > dimension")) {
         const axis = axes.find((a3) => a3.name === d2.getAttribute("name"));
         if (axis) location2[axis.tag] = mapCoordinate(axis, Number(d2.getAttribute("xvalue")), true);
       }
-      return { name: source.getAttribute("stylename") ?? source.getAttribute("name") ?? "Master", location: location2, font: readUFOFiles(files, base + name2.replace(/\/$/, "") + "/") };
+      return { name: source2.getAttribute("stylename") ?? source2.getAttribute("name") ?? "Master", location: location2, font: readUFOFiles(files, base + name2.replace(/\/$/, "") + "/") };
     });
     if (!sources.length) throw new Error("Designspace has no sources");
     const initial = sources.find((s3) => axes.every((a3) => (s3.location[a3.tag] ?? a3.default) === a3.default));
@@ -91919,11 +91929,11 @@ var FloeBundledEditor = (() => {
     result.title = result.info.familyName;
     result.glyphs = [];
     for (let i4 = 0; i4 < parsed.glyphs.length; i4++) {
-      const original = parsed.glyphs.get(i4), source = location2 && parsed.variation ? parsed.variation.getTransform(original, location2) : original;
+      const original = parsed.glyphs.get(i4), source2 = location2 && parsed.variation ? parsed.variation.getTransform(original, location2) : original;
       let name3 = /^[A-Za-z_.][A-Za-z0-9_.]*$/.test(original.name ?? "") ? original.name : i4 === 0 ? ".notdef" : "glyph" + i4;
       while (result.glyphs.some((g3) => g3.name === name3)) name3 += "_";
-      const g2 = glyph(name3, [...new Set(original.unicodes ?? [])], pathContours(source.path.commands), source.advanceWidth ?? 600);
-      g2.leftBearing = source.leftSideBearing ?? 0;
+      const g2 = glyph(name3, [...new Set(original.unicodes ?? [])], pathContours(source2.path.commands), source2.advanceWidth ?? 600);
+      g2.leftBearing = source2.leftSideBearing ?? 0;
       g2.sourceGlyphID = i4;
       const vertical = parsed.floeVertical?.metrics[i4];
       if (vertical) {
@@ -91995,13 +92005,13 @@ var FloeBundledEditor = (() => {
     return result;
   }
   function toCFF(ttf, info) {
-    const source = opentype.parse(arrayBuffer(ttf)), glyphs = [];
-    if (source.tables.fvar) throw new Error("Generate a static instance before CFF export");
-    for (let i4 = 0; i4 < source.glyphs.length; i4++) {
-      const original = source.glyphs.get(i4);
+    const source2 = opentype.parse(arrayBuffer(ttf)), glyphs = [];
+    if (source2.tables.fvar) throw new Error("Generate a static instance before CFF export");
+    for (let i4 = 0; i4 < source2.glyphs.length; i4++) {
+      const original = source2.glyphs.get(i4);
       glyphs.push(new opentype.Glyph({ name: original.name ?? "glyph" + i4, unicode: original.unicode, unicodes: original.unicodes, advanceWidth: original.advanceWidth, path: original.path }));
     }
-    const cff = new opentype.Font({ familyName: info.familyName, styleName: info.styleName, unitsPerEm: source.unitsPerEm, ascender: source.ascender, descender: source.descender, glyphs }), minimal = sfntTables(new Uint8Array(cff.toArrayBuffer())), tables = sfntTables(ttf);
+    const cff = new opentype.Font({ familyName: info.familyName, styleName: info.styleName, unitsPerEm: source2.unitsPerEm, ascender: source2.ascender, descender: source2.descender, glyphs }), minimal = sfntTables(new Uint8Array(cff.toArrayBuffer())), tables = sfntTables(ttf);
     for (const key of ["glyf", "loca", "gvar", "cvar", "fvar", "avar", "HVAR", "VVAR", "MVAR"]) tables.delete(key);
     tables.set("CFF ", required(minimal.get("CFF "), "CFF encoder did not produce CFF"));
     tables.set("maxp", minimal.get("maxp"));
@@ -92232,6 +92242,9 @@ var FloeBundledEditor = (() => {
     });
   }
 
+  // FloeAgent/Modules/FloeFontKit/Web/input.js
+  var outlineInputCanEdit = (kind, fingerDrawing = false) => kind === "mouse" || kind === "pen" || kind === "touch" && fingerDrawing === true;
+
   // FloeAgent/Modules/FloeFontKit/Web/view.js
   var ns = "http://www.w3.org/2000/svg";
   function svgNode(tag, attrs = {}) {
@@ -92250,6 +92263,8 @@ var FloeBundledEditor = (() => {
       this.search = "";
       this.page = 0;
       this.tool = "select";
+      this.fingerDrawing = false;
+      this.outlineInputGeneration = 0;
       this.curveType = "line";
       this.snap = 5;
       this.zoom = 1;
@@ -92266,6 +92281,7 @@ var FloeBundledEditor = (() => {
       Object.assign(this, e2.fontNativeUI ?? {});
     }
     async render() {
+      this.outlineInputGeneration++;
       const e2 = this.e;
       e2.sidebar.replaceChildren();
       e2.canvas.replaceChildren();
@@ -92378,6 +92394,7 @@ var FloeBundledEditor = (() => {
     outline(tools2) {
       const e2 = this.e, g2 = getGlyph(e2), font = { ...e2.state, glyphs: glyphList(e2) }, info = activeSource(e2).info ?? e2.state.info;
       this.drawing = [];
+      const generation = this.outlineInputGeneration, current = () => generation === this.outlineInputGeneration;
       for (const [tool, label] of [["select", t3("\u9009\u62E9\uFF0F\u79FB\u52A8", "Select / move")], ["marquee", t3("\u6846\u9009", "Box select")], ["pen", t3("\u94A2\u7B14", "Pen")], ["rectangle", t3("\u77E9\u5F62", "Rectangle")], ["ellipse", t3("\u692D\u5706", "Ellipse")]]) tools2.append(element("button", { text: label, class: this.tool === tool ? "active" : "", onclick: () => {
         this.tool = tool;
         this.drawing = [];
@@ -92400,6 +92417,8 @@ var FloeBundledEditor = (() => {
         });
       } }), element("button", { text: t3("\u5E73\u6ED1\u8282\u70B9", "Smooth points"), onclick: () => e2.showAction(e2.command("point.smooth")) }), element("button", { text: t3("\u5220\u9664\u8282\u70B9", "Delete points"), onclick: () => e2.perform("point.delete", { glyph: g2.name }).catch(() => {
       }) }));
+      tools2.append(element("label", {}, element("input", { type: "checkbox", checked: this.fingerDrawing, "aria-label": t3("\u624B\u6307\u7ED8\u56FE", "Finger drawing"), onchange: (event) => e2.perform("font.ui.tool", { fingerDrawing: event.target.checked }).catch(() => {
+      }) }), t3("\u624B\u6307\u7ED8\u56FE", "Finger drawing")));
       const svg2 = svgNode("svg", { class: "font-outline", tabindex: 0, "aria-label": t3("\u5B57\u5F62\u8F6E\u5ED3\u753B\u5E03", "Glyph outline canvas") }), group = svgNode("g", { transform: "scale(1,-1)" });
       svg2.append(group);
       this.surface.append(svg2);
@@ -92411,16 +92430,16 @@ var FloeBundledEditor = (() => {
       let draft = null;
       const render = () => {
         group.replaceChildren();
-        const current = draft ?? g2;
+        const current2 = draft ?? g2;
         for (const [y3, label] of [[0, t3("\u57FA\u7EBF", "Baseline")], [info.ascender, t3("\u4E0A\u5347\u7EBF", "Ascender")], [info.descender, t3("\u4E0B\u964D\u7EBF", "Descender")], [info.xHeight, t3("x \u5B57\u9AD8", "x-height")], [info.capHeight, t3("\u5927\u5199\u5B57\u9AD8", "Cap height")]]) {
           group.append(svgNode("line", { x1: -2e3, x2: 4e3, y1: y3, y2: y3, stroke: y3 === 0 ? "#8c929b" : "#8c929b66", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }));
         }
-        for (const guide of [...e2.state.guidelines, ...current.guidelines]) {
+        for (const guide of [...e2.state.guidelines, ...current2.guidelines]) {
           const angle = (guide.angle ?? 0) * Math.PI / 180;
           group.append(svgNode("line", { x1: guide.x - Math.cos(angle) * 3e3, y1: guide.y - Math.sin(angle) * 3e3, x2: guide.x + Math.cos(angle) * 3e3, y2: guide.y + Math.sin(angle) * 3e3, stroke: "#d1844477", "stroke-dasharray": "4 4", "vector-effect": "non-scaling-stroke" }));
         }
-        group.append(svgNode("line", { x1: current.advance, x2: current.advance, y1: -2e3, y2: 3e3, stroke: "#c4777c", "vector-effect": "non-scaling-stroke" }), svgNode("path", { d: glyphPath(font, current), fill: "#6d829833", stroke: "#20252e", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }));
-        for (const contour of current.contours) {
+        group.append(svgNode("line", { x1: current2.advance, x2: current2.advance, y1: -2e3, y2: 3e3, stroke: "#c4777c", "vector-effect": "non-scaling-stroke" }), svgNode("path", { d: glyphPath(font, current2), fill: "#6d829833", stroke: "#20252e", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }));
+        for (const contour of current2.contours) {
           for (let i4 = 0; i4 < contour.length; i4++) {
             const p4 = contour[i4], next = contour[(i4 + 1) % contour.length];
             if (p4.type === "offcurve" || next.type === "offcurve") group.append(svgNode("line", { x1: p4.x, y1: p4.y, x2: next.x, y2: next.y, class: "handle", "vector-effect": "non-scaling-stroke" }));
@@ -92432,7 +92451,7 @@ var FloeBundledEditor = (() => {
             group.append(node2);
           }
         }
-        for (const a3 of current.anchors) {
+        for (const a3 of current2.anchors) {
           const node2 = svgNode("text", { x: a3.x, y: -a3.y, transform: "scale(1,-1)", fill: "#ce7836", "font-size": 12 / this.zoom });
           node2.textContent = a3.name;
           group.append(node2);
@@ -92443,10 +92462,10 @@ var FloeBundledEditor = (() => {
         }
       };
       render();
-      const coordinate = (event) => {
+      const coordinate = (event, snap = true) => {
         const p4 = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg2.getScreenCTM().inverse());
         let x3 = p4.x, y3 = -p4.y;
-        if (this.snap) {
+        if (snap && this.snap) {
           x3 = Math.round(x3 / this.snap) * this.snap;
           y3 = Math.round(y3 / this.snap) * this.snap;
         }
@@ -92454,49 +92473,87 @@ var FloeBundledEditor = (() => {
       };
       let drag = null;
       const touches = /* @__PURE__ */ new Map();
+      let fingerNavigationOnly = false;
+      const fingers = () => [...touches.entries()].filter(([, p4]) => p4.kind === "touch");
+      const cancelDraft = () => {
+        if (drag?.pen) this.drawing.length = drag.drawingBefore;
+        if (drag?.selection) e2.selection = clone2(drag.selection);
+        draft = null;
+        drag = null;
+        render();
+      };
+      const panFrom = (id, p4) => ({ pan: true, navigation: true, owner: id, input: p4.kind, start: [p4.x, p4.y], original: [...this.pan] });
       svg2.addEventListener("pointerdown", (event) => {
+        if (!current()) return;
+        const kind = event.pointerType || "mouse";
         svg2.focus();
-        touches.set(event.pointerId, [event.clientX, event.clientY]);
+        touches.set(event.pointerId, { x: event.clientX, y: event.clientY, kind });
         svg2.setPointerCapture(event.pointerId);
-        const position = coordinate(event), id = event.target.dataset.point;
-        if (touches.size === 2) {
-          const values = [...touches.values()];
-          drag = { pinch: true, distance: Math.hypot(values[1][0] - values[0][0], values[1][1] - values[0][1]), zoom: this.zoom, pan: [...this.pan], center: values[0].map((v3, i4) => (v3 + values[1][i4]) / 2) };
+        const currentFingers = fingers();
+        if (kind === "touch" && drag && !["touch", void 0].includes(drag.input)) {
+          fingerNavigationOnly = true;
           return;
         }
+        if (kind !== "touch" && currentFingers.length) fingerNavigationOnly = true;
+        if (currentFingers.length >= 2 && kind === "touch") {
+          fingerNavigationOnly = true;
+          cancelDraft();
+          const values = currentFingers.map(([, p4]) => p4), center = { clientX: (values[0].x + values[1].x) / 2, clientY: (values[0].y + values[1].y) / 2 };
+          drag = { pinch: true, input: "touch", distance: Math.hypot(values[1].x - values[0].x, values[1].y - values[0].y), zoom: this.zoom, pan: [...this.pan], anchor: coordinate(center, false) };
+          return;
+        }
+        if (!outlineInputCanEdit(kind, this.fingerDrawing) || kind === "touch" && fingerNavigationOnly) {
+          drag = panFrom(event.pointerId, touches.get(event.pointerId));
+          return;
+        }
+        const position = coordinate(event), id = event.target.dataset.point, selection = clone2(e2.selection), begin = (value) => drag = { ...value, owner: event.pointerId, input: kind, selection };
         if (this.tool === "marquee") {
-          drag = { marquee: true, start: position, end: position, append: event.shiftKey };
+          begin({ marquee: true, start: position, end: position, append: event.shiftKey });
           return;
         }
         if (this.tool === "pen") {
+          begin({ pen: true, drawingBefore: this.drawing.length });
           const controls = this.curveType === "curve" ? 2 : this.curveType === "qcurve" ? 1 : 0, segment = this.drawing.length ? this.drawing.slice(1).length % (controls + 1) : controls;
           this.drawing.push(point(position.x, position.y, !this.drawing.length ? "line" : segment < controls ? "offcurve" : this.curveType));
           render();
           return;
         }
         if (this.tool === "rectangle" || this.tool === "ellipse") {
-          drag = { shape: this.tool, start: position };
+          begin({ shape: this.tool, start: position });
+          return;
+        }
+        if (this.tool === "pan") {
+          drag = panFrom(event.pointerId, touches.get(event.pointerId));
           return;
         }
         if (id) {
           const old = e2.selection?.points ?? [], ids = event.shiftKey ? old.includes(id) ? old.filter((v3) => v3 !== id) : [...old, id] : old.includes(id) ? old : [id];
           e2.selection = { glyph: g2.name, points: ids };
           draft = clone2(g2);
-          drag = { start: position, original: clone2(g2), ids: new Set(ids) };
+          begin({ start: position, original: clone2(g2), ids: new Set(ids) });
           render();
           e2.inspector.replaceChildren();
           this.inspector();
-        } else drag = { pan: true, start: [event.clientX, event.clientY], original: [...this.pan] };
+        } else drag = panFrom(event.pointerId, touches.get(event.pointerId));
       });
       svg2.addEventListener("pointermove", (event) => {
-        if (!touches.has(event.pointerId)) return;
-        touches.set(event.pointerId, [event.clientX, event.clientY]);
-        if (drag?.pinch && touches.size === 2) {
-          const values = [...touches.values()], distance = Math.hypot(values[1][0] - values[0][0], values[1][1] - values[0][1]);
+        if (!current()) return;
+        const previous = touches.get(event.pointerId);
+        if (!previous) return;
+        touches.set(event.pointerId, { ...previous, x: event.clientX, y: event.clientY });
+        if (drag?.pinch) {
+          const values = fingers().map(([, p5]) => p5);
+          if (values.length < 2) return;
+          const distance = Math.hypot(values[1].x - values[0].x, values[1].y - values[0].y), center = { clientX: (values[0].x + values[1].x) / 2, clientY: (values[0].y + values[1].y) / 2 };
           this.zoom = Math.max(0.2, Math.min(15, drag.zoom * distance / (drag.distance || 1)));
+          this.pan = [...drag.pan];
+          setView();
+          const now = coordinate(center, false);
+          this.pan = [drag.pan[0] + drag.anchor.x - now.x, drag.pan[1] + now.y - drag.anchor.y];
           setView();
           return;
         }
+        if (drag?.owner !== event.pointerId) return;
         if (drag?.marquee) {
           drag.end = coordinate(event);
           render();
@@ -92516,7 +92573,19 @@ var FloeBundledEditor = (() => {
         render();
       });
       svg2.addEventListener("pointerup", (event) => {
+        if (!current()) return;
         touches.delete(event.pointerId);
+        if (drag?.pinch) {
+          const remaining = fingers();
+          drag = remaining.length === 1 ? panFrom(remaining[0][0], remaining[0][1]) : null;
+          draft = null;
+          if (!remaining.length) fingerNavigationOnly = false;
+          return;
+        }
+        if (drag?.owner !== event.pointerId) {
+          if (!fingers().length) fingerNavigationOnly = false;
+          return;
+        }
         if (drag?.marquee) {
           const a3 = drag.start, b3 = drag.end, ids = g2.contours.flat().filter((p4) => p4.x >= Math.min(a3.x, b3.x) && p4.x <= Math.max(a3.x, b3.x) && p4.y >= Math.min(a3.y, b3.y) && p4.y <= Math.max(a3.y, b3.y)).map((p4) => p4.id);
           e2.selection = { glyph: g2.name, points: [.../* @__PURE__ */ new Set([...drag.append ? e2.selection?.points ?? [] : [], ...ids])] };
@@ -92534,12 +92603,17 @@ var FloeBundledEditor = (() => {
         }
         draft = null;
         drag = null;
+        if (!fingers().length) fingerNavigationOnly = false;
       });
-      svg2.addEventListener("pointercancel", () => {
-        touches.clear();
-        draft = null;
-        drag = null;
-        render();
+      svg2.addEventListener("pointercancel", (event) => {
+        if (!current()) return;
+        touches.delete(event.pointerId);
+        if (drag?.pinch) {
+          cancelDraft();
+          const remaining = fingers();
+          if (remaining.length === 1) drag = panFrom(remaining[0][0], remaining[0][1]);
+        } else if (drag?.owner === event.pointerId) cancelDraft();
+        if (!fingers().length) fingerNavigationOnly = false;
       });
       svg2.addEventListener("wheel", (event) => {
         if (event.ctrlKey || event.metaKey) {
@@ -92700,17 +92774,17 @@ var FloeBundledEditor = (() => {
       this.surface.append(element("p", { class: "muted", text: t3("\u5F53\u524D\u6BCD\u7248\uFF1A\u62D6\u52A8\u5B57\u5F62\u8D77\u70B9\u7EBF\u8C03\u6574\u524D\u4E00\u5B57\u5F62\u7684\u5B57\u8DDD\u3002", "Current master: drag a glyph origin line to adjust its preceding pair.") }), svg2);
     }
     features() {
-      const e2 = this.e, source = element("textarea", { value: e2.state.features, rows: 26, spellcheck: false, style: "width:100%;font:14px ui-monospace,monospace", "aria-label": "OpenType feature source" });
-      this.surface.append(element("div", { class: "canvas-tools" }, element("button", { text: t3("\u6DFB\u52A0\u66FF\u4EE3\u89C4\u5219", "Add substitution"), onclick: () => e2.showAction(e2.command("features.substitution")) }), element("button", { text: t3("\u4FDD\u5B58\u7279\u6027", "Save features"), onclick: () => e2.perform("features.edit", { source: source.value }).catch(() => {
+      const e2 = this.e, source2 = element("textarea", { value: e2.state.features, rows: 26, spellcheck: false, style: "width:100%;font:14px ui-monospace,monospace", "aria-label": "OpenType feature source" });
+      this.surface.append(element("div", { class: "canvas-tools" }, element("button", { text: t3("\u6DFB\u52A0\u66FF\u4EE3\u89C4\u5219", "Add substitution"), onclick: () => e2.showAction(e2.command("features.substitution")) }), element("button", { text: t3("\u4FDD\u5B58\u7279\u6027", "Save features"), onclick: () => e2.perform("features.edit", { source: source2.value }).catch(() => {
       }) }), element("button", { text: t3("\u7F16\u8BD1\u4E0E\u68C0\u67E5", "Compile & check"), onclick: async () => {
         try {
-          await e2.perform("features.edit", { source: source.value });
+          await e2.perform("features.edit", { source: source2.value });
           await e2.perform("font.preview");
           this.mode = "proof";
           this.render();
         } catch {
         }
-      } })), source, element("p", { class: "muted", text: t3("\u652F\u6301\u6807\u51C6 OpenType \u7279\u6027\u8BED\u6CD5\uFF0C\u7F16\u8BD1\u540E\u4F7F\u7528\u5F53\u524D\u5B57\u4F53\u5B9E\u9645\u6210\u5F62\u3002", "Use standard OpenType feature syntax. Compile to shape text with the resulting font.") }));
+      } })), source2, element("p", { class: "muted", text: t3("\u652F\u6301\u6807\u51C6 OpenType \u7279\u6027\u8BED\u6CD5\uFF0C\u7F16\u8BD1\u540E\u4F7F\u7528\u5F53\u524D\u5B57\u4F53\u5B9E\u9645\u6210\u5F62\u3002", "Use standard OpenType feature syntax. Compile to shape text with the resulting font.") }));
     }
     variations() {
       const e2 = this.e;
@@ -92736,13 +92810,88 @@ var FloeBundledEditor = (() => {
     }
   };
 
+  // FloeAgent/Modules/FloeFontKit/Web/read.js
+  var pageFields = () => [field("query", t3("\u641C\u7D22", "Search"), "text", { default: "" }), field("offset", t3("\u8D77\u59CB\u4F4D\u7F6E", "Offset"), "number", { default: 0, min: 0 }), field("limit", t3("\u6570\u91CF", "Limit"), "number", { default: 40, min: 1, max: 100 })];
+  function page(values, a3, match) {
+    const offset = a3.offset ?? 0, limit = a3.limit ?? 40, query = a3.query ?? "";
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100 || typeof query !== "string" || query.length > 200) throw new Error("Invalid font read page");
+    const filtered2 = values.filter((value) => !query || match(value).toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+    return { items: clone2(filtered2.slice(offset, offset + limit)), total: values.length, matched: filtered2.length, offset, limit, hasMore: offset + limit < filtered2.length };
+  }
+  function source(e2, a3) {
+    return !a3.master || a3.master === "default" ? e2.state : required(e2.state.masters.find((m4) => m4.id === a3.master), "Unknown master");
+  }
+  function registerFontReads(e2) {
+    const group = t3("\u5B57\u4F53\u8D44\u6599", "Font information");
+    e2.register({ id: "font.glyphs", title: t3("\u641C\u7D22\u5B57\u5F62", "Search glyphs"), group, access: "read", fields: [field("master", t3("\u6BCD\u7248 ID", "Master ID"), "text", { default: "default" }), ...pageFields()] }, (a3) => {
+      const glyphs = source(e2, a3).glyphs;
+      return page(
+        glyphs.map((g2) => ({ id: g2.id, name: g2.name, unicodes: g2.unicodes, advance: g2.advance, contourCount: g2.contours.length, pointCount: g2.contours.reduce((n2, c4) => n2 + c4.length, 0) })),
+        a3,
+        (g2) => g2.name + " " + g2.unicodes.map((c4) => String.fromCodePoint(c4) + " U+" + c4.toString(16)).join(" ")
+      );
+    });
+    e2.register({ id: "font.glyph", title: t3("\u8BFB\u53D6\u5B57\u5F62\u8282\u70B9", "Read glyph points"), group, access: "read", fields: [field("master", t3("\u6BCD\u7248 ID", "Master ID"), "text", { default: "default" }), field("glyph", t3("\u5B57\u5F62\u540D", "Glyph name"), "text"), ...pageFields()] }, (a3) => {
+      const g2 = required(source(e2, a3).glyphs.find((g3) => g3.name === a3.glyph), "Unknown glyph");
+      const points = g2.contours.flatMap((contour, c4) => contour.map((point2, p4) => ({ contour: c4, index: p4, ...point2 })));
+      return {
+        id: g2.id,
+        name: g2.name,
+        unicodes: clone2(g2.unicodes),
+        advance: g2.advance,
+        advanceHeight: g2.advanceHeight ?? null,
+        verticalOrigin: g2.verticalOrigin ?? null,
+        contourCount: g2.contours.length,
+        points: page(points, a3, (p4) => p4.id + " " + p4.type),
+        anchors: page(g2.anchors, a3, (p4) => p4.name),
+        components: page(g2.components, a3, (p4) => p4.base),
+        guidelines: page(g2.guidelines, a3, (p4) => p4.name ?? "")
+      };
+    });
+    e2.register({ id: "font.records", title: t3("\u8BFB\u53D6\u5B57\u4F53\u8BB0\u5F55", "Read font records"), group, access: "read", fields: [field("section", t3("\u7C7B\u522B", "Section"), "select", { options: ["info", "masters", "axes", "instances", "kerning", "groups", "groupMembers"], default: "info" }), field("master", t3("\u6BCD\u7248 ID", "Master ID"), "text", { default: "default" }), field("name", t3("\u5206\u7EC4\u540D", "Group name"), "text", { default: "" }), ...pageFields()] }, (a3) => {
+      const current = source(e2, a3);
+      let records;
+      switch (a3.section ?? "info") {
+        case "info":
+          records = Object.entries(current.info ?? e2.state.info).map(([name2, value]) => ({ name: name2, value }));
+          break;
+        case "masters":
+          records = [{ id: "default", name: e2.state.info.styleName, location: Object.fromEntries(e2.state.axes.map((a4) => [a4.tag, a4.default])), glyphCount: e2.state.glyphs.length }, ...e2.state.masters.map((m4) => ({ id: m4.id, name: m4.name, location: m4.location, glyphCount: m4.glyphs.length }))];
+          break;
+        case "axes":
+          records = e2.state.axes;
+          break;
+        case "instances":
+          records = e2.state.instances;
+          break;
+        case "kerning":
+          records = Object.entries(current.kerning ?? e2.state.kerning).flatMap(([left, rights]) => Object.entries(rights).map(([right, value]) => ({ left, right, value })));
+          break;
+        case "groups":
+          records = Object.entries(e2.state.groups).map(([name2, glyphs]) => ({ name: name2, count: glyphs.length }));
+          break;
+        case "groupMembers":
+          records = required(e2.state.groups[a3.name], "Unknown group").map((name2) => ({ name: name2 }));
+          break;
+        default:
+          throw new Error("Unknown font record section");
+      }
+      return page(records, a3, (value) => JSON.stringify(value));
+    });
+    e2.register({ id: "font.featureSource", title: t3("\u8BFB\u53D6\u7279\u6027\u6E90\u7801", "Read feature source"), group, access: "read", fields: [field("offset", t3("\u8D77\u59CB\u4F4D\u7F6E", "Offset"), "number", { default: 0, min: 0 }), field("limit", t3("\u5B57\u7B26\u6570", "Characters"), "number", { default: 12e3, min: 1, max: 24e3 })] }, (a3) => {
+      const offset = a3.offset ?? 0, limit = a3.limit ?? 12e3;
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 24e3) throw new Error("Invalid feature source page");
+      return { text: e2.state.features.slice(offset, offset + limit), offset, limit, total: e2.state.features.length, hasMore: offset + limit < e2.state.features.length };
+    });
+  }
+
   // FloeAgent/Modules/FloeFontKit/Web/native.js
   var modes = ["overview", "outline", "metrics", "features", "variations", "proof"];
   var tools = ["select", "marquee", "pan", "pen", "rectangle", "ellipse"];
   var infoKeys = ["familyName", "styleName", "unitsPerEm", "ascender", "descender", "xHeight", "capHeight", "italicAngle", "versionMajor", "versionMinor", "copyright", "license", "openTypeNameDesigner", "openTypeNameDesignerURL", "openTypeNameManufacturer", "openTypeNameDescription", "openTypeNameLicenseURL", "openTypeOS2WeightClass", "openTypeVheaVertTypoAscender", "openTypeVheaVertTypoDescender", "openTypeVheaVertTypoLineGap"];
   var nativeInfo = (info) => Object.fromEntries(infoKeys.filter((key) => ["string", "number", "boolean"].includes(typeof info[key])).map((key) => [key, info[key]]));
   var nativeNode = (p4) => ({ id: p4.id, x: p4.x, y: p4.y, type: p4.type, smooth: p4.smooth });
-  var nativeDefaults = () => ({ mode: "overview", search: "", page: 0, tool: "select", curveType: "line", snap: 5, text: "AVOVA AVA", size: 72, direction: "auto", language: "", vertical: false, multisize: false, previewLocation: {}, previewFeatures: { kern: true, liga: true, mark: true, locl: true } });
+  var nativeDefaults = () => ({ mode: "overview", search: "", page: 0, tool: "select", fingerDrawing: false, curveType: "line", snap: 5, text: "AVOVA AVA", size: 72, direction: "auto", language: "", vertical: false, multisize: false, previewLocation: {}, previewFeatures: { kern: true, liga: true, mark: true, locl: true } });
   function pathCommands(contours) {
     const commands = [];
     for (const contour of contours) {
@@ -92768,13 +92917,13 @@ var FloeBundledEditor = (() => {
   }
   var locationText = (value) => Object.entries(value ?? {}).map(([tag, v3]) => tag + "=" + v3).join(",");
   function fontNativeSnapshot(e2, view2) {
-    const v3 = ui(e2, view2), source = activeSource(e2), info = source.info ?? e2.state.info, font = { ...e2.state, glyphs: glyphList(e2) }, g2 = glyphList(e2).find((g3) => g3.name === e2.selection?.glyph) ?? glyphList(e2)[0], all = filtered(e2, v3), pageSize = 48, page = Math.max(0, Math.min(Math.trunc(v3.page ?? 0), Math.max(0, Math.ceil(all.length / pageSize) - 1)));
+    const v3 = ui(e2, view2), source2 = activeSource(e2), info = source2.info ?? e2.state.info, font = { ...e2.state, glyphs: glyphList(e2) }, g2 = glyphList(e2).find((g3) => g3.name === e2.selection?.glyph) ?? glyphList(e2)[0], all = filtered(e2, v3), pageSize = 48, page2 = Math.max(0, Math.min(Math.trunc(v3.page ?? 0), Math.max(0, Math.ceil(all.length / pageSize) - 1)));
     const shape = (glyph2) => {
       const contours2 = glyphContours(font, glyph2);
       return { commands: pathCommands(contours2), bounds: glyphBounds(font, glyph2) };
     };
     let thumbnailBudget = 14e3;
-    const glyphs = all.slice(page * pageSize, (page + 1) * pageSize).map((glyph2) => {
+    const glyphs = all.slice(page2 * pageSize, (page2 + 1) * pageSize).map((glyph2) => {
       const result = { id: glyph2.id, name: glyph2.name, unicodes: clone2(glyph2.unicodes), advance: glyph2.advance };
       const contours2 = glyphContours(font, glyph2), count = contours2.reduce((n2, c4) => n2 + c4.length, 0);
       if (count <= 2e3 && count <= thumbnailBudget) {
@@ -92811,7 +92960,7 @@ var FloeBundledEditor = (() => {
     return {
       kind: "font",
       revision: e2.revision ?? 0,
-      ui: { ...Object.fromEntries(Object.keys(nativeDefaults()).map((key) => [key, clone2(v3[key] ?? nativeDefaults()[key])])), page },
+      ui: { ...Object.fromEntries(Object.keys(nativeDefaults()).map((key) => [key, clone2(v3[key] ?? nativeDefaults()[key])])), page: page2 },
       info: nativeInfo(info),
       masterID: e2.activeMaster ?? "default",
       masters,
@@ -92821,7 +92970,7 @@ var FloeBundledEditor = (() => {
       instances: e2.state.instances.slice(0, 128).map((i4) => ({ id: String(i4.id ?? i4.name ?? ""), name: String(i4.name ?? ""), location: locationText(i4.location) })),
       instanceTotal: e2.state.instances.length,
       features: e2.state.features,
-      glyphList: { items: glyphs, total: glyphList(e2).length, filtered: all.length, page, pageSize },
+      glyphList: { items: glyphs, total: glyphList(e2).length, filtered: all.length, page: page2, pageSize },
       glyph: g2 ? { id: g2.id, name: g2.name, unicodes: clone2(g2.unicodes), advance: g2.advance, advanceHeight: g2.advanceHeight ?? info.unitsPerEm, verticalOrigin: g2.verticalOrigin ?? info.ascender, bounds: glyphBounds(font, g2), commands: pathCommands(contours), componentCommands: pathCommands(contours.slice(g2.contours.length)), contours: g2.contours.map((c4) => c4.map(nativeNode)), anchors: g2.anchors.map((a3) => ({ name: a3.name, x: a3.x, y: a3.y })), components: g2.components.map((c4) => ({ id: String(c4.id ?? ""), base: c4.base, matrix: clone2(c4.matrix) })), guidelines: [...e2.state.guidelines, ...g2.guidelines].map((g3) => ({ id: String(g3.id ?? ""), name: String(g3.name ?? ""), x: g3.x, y: g3.y, angle: g3.angle })) } : null,
       selectedPoints: clone2(e2.selection?.points ?? []),
       spacing,
@@ -92864,6 +93013,10 @@ var FloeBundledEditor = (() => {
     });
     add("tool", (a3) => {
       const v3 = ui(e2, getView());
+      if (a3.fingerDrawing !== void 0) {
+        if (typeof a3.fingerDrawing !== "boolean") throw new Error("Invalid finger drawing mode");
+        v3.fingerDrawing = a3.fingerDrawing;
+      }
       if (a3.tool !== void 0) {
         if (!tools.includes(a3.tool)) throw new Error("Invalid outline tool");
         v3.tool = a3.tool;
@@ -92920,6 +93073,7 @@ var FloeBundledEditor = (() => {
   registerGeometry(engine);
   registerFontFormats(engine);
   registerFontNative(engine, () => view);
+  registerFontReads(engine);
   engine.register({ id: "outline.addContour", title: t3("\u6DFB\u52A0\u8F6E\u5ED3", "Add contour"), group: t3("\u8F6E\u5ED3\u51E0\u4F55", "Outline geometry"), hidden: true, access: "edit", fields: [] }, (a3) => {
     const g2 = getGlyph(engine, a3.glyph);
     if (!Array.isArray(a3.points) || a3.points.length < 2 || a3.points.some((p4) => !Number.isFinite(p4.x) || !Number.isFinite(p4.y) || !["line", "qcurve", "curve", "offcurve", "move"].includes(p4.type))) throw new Error("Invalid contour");
@@ -92945,10 +93099,10 @@ var FloeBundledEditor = (() => {
       pages.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${content}</svg>`);
     }
     const stem = (info.familyName || "Typeface").replace(/[\\/:]/g, "_"), artifacts = [];
-    if (a3.format === "svg") return { artifacts: pages.map((source, index2) => artifact(`${stem}-${index2 + 1}.svg`, "image/svg+xml", source)) };
+    if (a3.format === "svg") return { artifacts: pages.map((source2, index2) => artifact(`${stem}-${index2 + 1}.svg`, "image/svg+xml", source2)) };
     const pdf = a3.format === "pdf" ? new E({ unit: "pt", format: [600, 800] }) : null;
-    for (const [index2, source] of pages.entries()) {
-      const url = URL.createObjectURL(new Blob([source], { type: "image/svg+xml" }));
+    for (const [index2, source2] of pages.entries()) {
+      const url = URL.createObjectURL(new Blob([source2], { type: "image/svg+xml" }));
       try {
         const image = new Image();
         await new Promise((resolve, reject) => {

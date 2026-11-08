@@ -6,6 +6,7 @@ import CryptoKit
 import FloeExecution
 import FloeModels
 import FloeCore
+import FloeTools
 
 struct RichArtifactGallery: View {
     let artifacts: [ToolArtifactReference]
@@ -19,8 +20,9 @@ struct RichArtifactGallery: View {
     }
 }
 
-private struct RichArtifactView: View {
+struct RichArtifactView: View {
     let artifact: ToolArtifactReference
+    var preverified: VerifiedChatInlineArtifact? = nil
     @State private var data: Data?
     @State private var fileURL: URL?
     @State private var error: String?
@@ -108,6 +110,10 @@ private struct RichArtifactView: View {
     }
 
     private func loadVerifiedData() {
+        if let preverified, preverified.artifact == artifact {
+            data = preverified.data; fileURL = preverified.fileURL; error = nil
+            return
+        }
         let allowedRoots = ["PresentationArtifacts/", "ChangeArtifacts/"]
         let limit: Int
         switch artifact.mimeType {

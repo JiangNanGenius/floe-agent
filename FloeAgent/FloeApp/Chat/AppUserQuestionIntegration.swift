@@ -95,20 +95,7 @@ final class AppUserQuestionIntegration: ObservableObject, UserQuestionNotificati
               let question = snapshot.currentQuestion else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        // Speech uses the same CAS answer path as taps. If it exactly names
-        // an offered choice, select that choice; otherwise keep it as text
-        // only when this question permits a written answer.
-        let matching = question.options.filter {
-            $0.label.compare(trimmed, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) == .orderedSame
-        }
-        let answer: UserQuestionAnswer
-        if matching.count == 1 {
-            answer = UserQuestionAnswer(selectedOptionIDs: [matching[0].id])
-        } else if question.isTextOnly || question.allowsFreeText {
-            answer = UserQuestionAnswer(freeText: trimmed)
-        } else {
-            return false
-        }
+        guard let answer = UserQuestionAnswer.spokenText(trimmed, for: question) else { return false }
         let receipt = try await coordinator.submitHumanAnswer(target: snapshot.target(for: question), answer: answer)
         return receipt.accepted
     }

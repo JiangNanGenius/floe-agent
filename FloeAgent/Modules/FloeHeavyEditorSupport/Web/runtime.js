@@ -101,12 +101,22 @@ export class EditorEngine {
     return {...descriptor,fields};
   }); }
   commandIndex(){return [...this.commands.values()].map(({descriptor})=>({id:descriptor.id,title:descriptor.title,group:descriptor.group,access:descriptor.access,hidden:descriptor.hidden??false,sideEffecting:descriptor.sideEffecting??false,fields:(descriptor.fields??[]).map(({key,label,type})=>({key,label,type}))}));}
-  formDescription(id,values={}){
+  formDescription(id,values={},discovery=null){
     const descriptor=this.command(id),args={...values};
     const fields=(descriptor.fields??[]).map(field=>{
       const options=typeof field.options==='function'?field.options(this,args):field.options;
       const initial=Object.hasOwn(values,field.key)?values[field.key]:typeof field.default==='function'?field.default(this,args):field.default;
       if(initial!==undefined)args[field.key]=initial;
+      if(discovery){
+        const query=String(discovery.query??'').slice(0,200).toLocaleLowerCase();
+        const offset=Number(discovery.offset??0),limit=Number(discovery.limit??40);
+        if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>100)throw new Error('Invalid discovery page');
+        const all=Array.isArray(options)?options:null;
+        const matched=all?.filter(option=>!query||JSON.stringify(option).toLocaleLowerCase().includes(query));
+        const optionsPage=all?{total:all.length,matched:matched.length,offset,limit,hasMore:offset+limit<matched.length}:undefined;
+        const serialized=JSON.stringify(initial);
+        return {...field,default:serialized?.length>8192?undefined:initial,defaultOmitted:serialized?.length>8192?true:undefined,options:matched?matched.slice(offset,offset+limit):options,optionsPage};
+      }
       return {...field,default:initial,options};
     });return {...descriptor,fields};
   }

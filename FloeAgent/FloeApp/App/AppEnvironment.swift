@@ -71,6 +71,8 @@ final class DurationAdvisoryRelay: @unchecked Sendable {
 @MainActor
 final class AppEnvironment: ObservableObject {
     lazy var studioCoordinator = StudioCoordinator(environment: self)
+    lazy var fontDesignAIHost = FontDesignAIHost(environment: self)
+    lazy var heavyEditorAppTools = HeavyEditorAppTools(environment: self, font: fontDesignAIHost)
     lazy var chemistryEnvironmentJobs = ChemistryEnvironmentJobAdapter(environment: self)
     lazy var biologyComposition = BiologyAppComposition(environment: self)
     lazy var latexComposition = LaTeXAppComposition(environment: self)
@@ -552,6 +554,14 @@ final class AppEnvironment: ObservableObject {
     #endif
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
     var filesCenter: FilesCenter { _filesCenter }
+    /// The native image tool shares task ownership and the existing capability gate.
+    lazy var appleImagePlaygroundService = AppleImagePlaygroundService(
+        enabled: { AppleCapabilityPreferences.isEnabled(.imagePlayground) },
+        ownerIsLive: { [weak self] owner in
+            guard let center = self?.conversationCenter,
+                  center.activeRuns[owner.runID]?.conversationID == owner.conversationID else { return false }
+            return center.hasLiveOwner(runID: owner.runID)
+        })
     var shareIntakeCenter: ShareIntakeCenter { _shareIntakeCenter }
     var documentIntakeCenter: DocumentIntakeCenter { _documentIntakeCenter }
     var importDestinationCenter: ImportDestinationCenter { _importDestinationCenter }
@@ -1505,25 +1515,11 @@ final class AppEnvironment: ObservableObject {
         return ["deviceFonts": String(records.count)]
     }
 
-    /// Environment exported into every local shell run. Paths point at
-    /// Floe-owned directories (package bins, a writable HOME, a shell tmp),
-    /// never at host paths the sandbox does not own.
+    /// Defaults for the resolved Linux environment. Host App paths are not
+    /// guest paths, even when the App owns those directories. Remote Mac/SSH
+    /// executions already omit these defaults in LocalShellService.
     private static func localShellEnvironment() -> [String: String] {
-        let root = (try? FloeArtifactStore.root())
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let packagesBin = root.appendingPathComponent("Packages/bin").path
-        let pythonBin = root.appendingPathComponent("Packages/pybin").path
-        let home = root.appendingPathComponent("ShellHome").path
-        let temp = root.appendingPathComponent("ShellTmp").path
-        return [
-            "PATH": "\(packagesBin):\(pythonBin):/usr/local/bin:/usr/bin:/bin",
-            "HOME": home,
-            "TMPDIR": temp,
-            "TERM": "xterm-256color",
-            "LANG": "en_US.UTF-8",
-            "LC_ALL": "en_US.UTF-8",
-            "PS1": "[\\w]\\$ "
-        ]
+        LinuxGuestProcessEnvironment.defaults(environmentDirectory: LinuxGuestMountPoint.environment)
     }
 
     /// Terminal-state hook for jobs.* background work. A live run is steered
@@ -1701,6 +1697,8 @@ final class AppEnvironment: ObservableObject {
         // Device-global, digest-addressed font resources for document/PDF
         // work. Removal remains approval-gated; bounded installation does not.
         registerFontTools(store: fontStore)
+        do { try heavyEditorAppTools.register() }
+        catch { FloeLogger(category: .tools).error("heavyEditorRegistrationFailed") }
         // Image tools (Core Image processing).
         _ = registerImageTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Native canvas inspection and mutation tools. Canvas runs are scoped
@@ -1849,6 +1847,7 @@ final class AppEnvironment: ObservableObject {
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.
         registerRemoteImageTools(center: filesCenter)
+        registerAppleImagePlaygroundTool(service: appleImagePlaygroundService)
         // Provider-backed durable video generation (Google Veo/Omni, Ark
         // Seedance, DashScope Wan) for ordinary chat. Submissions become
         // conversation-owned media jobs that survive relaunches.

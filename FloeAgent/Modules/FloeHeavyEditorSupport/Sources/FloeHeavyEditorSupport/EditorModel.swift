@@ -90,11 +90,16 @@ public struct HeavyEditorNativeExtension: Sendable {
     public let operations: Set<String>
     public let cancel: (@Sendable (String) async -> Void)?
     public let presentationClosed: (@Sendable () async -> Void)?
+    public let runInvocation: (@Sendable (UUID, String, EditorJSON) async throws -> EditorJSON)?
+    public let cancelInvocation: (@Sendable (UUID, String) async -> Void)?
     public let run: @Sendable (String, EditorJSON) async throws -> EditorJSON
     public init(operations: Set<String>, cancel: (@Sendable (String) async -> Void)? = nil,
                 presentationClosed: (@Sendable () async -> Void)? = nil,
+                runInvocation: (@Sendable (UUID, String, EditorJSON) async throws -> EditorJSON)? = nil,
+                cancelInvocation: (@Sendable (UUID, String) async -> Void)? = nil,
                 run: @escaping @Sendable (String, EditorJSON) async throws -> EditorJSON) {
         self.operations = operations; self.cancel = cancel; self.presentationClosed = presentationClosed; self.run = run
+        self.runInvocation = runInvocation; self.cancelInvocation = cancelInvocation
     }
 }
 public struct HeavyEditorArtifact: Sendable {

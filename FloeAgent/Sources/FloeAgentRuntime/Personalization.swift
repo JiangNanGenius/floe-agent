@@ -266,6 +266,12 @@ public struct DurableMemoryCandidate: Sendable, Codable, Hashable, Identifiable 
     public var id: UUID { candidate.id }
 }
 
+/// One committed snapshot of the saved rolling limit and its actual queue.
+public struct PendingMemoryReviewSnapshot: Sendable, Equatable {
+    public let capacity: Int
+    public let candidates: [DurableMemoryCandidate]
+}
+
 /// The only image-memory entry point. Callers must prove the image came from
 /// a user attachment; camera roll scans, generated images and tool downloads
 /// are rejected before a candidate is persisted.
@@ -563,22 +569,33 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
         }
     }
 
-    public func saveCandidate(_ record: DurableMemoryCandidate) async throws {
+    /// Admission, optional activation, expiry and FIFO pruning share one writer
+    /// transaction. A final review cannot be resurrected by a delayed submit.
+    /// Nil means this backdated pending item itself fell outside the capacity.
+    @discardableResult
+    public func saveCandidate(_ record: DurableMemoryCandidate, activateMemory: Bool = false) async throws
+        -> DurableMemoryCandidate? {
+        try Task.checkCancellation()
         let (scope, workspaceID, conversationID) = Self.scope(record.candidate.scope)
-        // Candidate rows survive even when rejected, so never persist raw
-        // conversation excerpts here. Message identity plus a digest is
-        // enough for provenance and cannot leak a credential into SQLite.
         let redactedEvidence = record.candidate.evidence.map {
-            MemoryEvidenceReference(
-                id: $0.id,
-                messageID: $0.messageID,
-                excerpt: "sha256:\(MemoryContentDigest.make($0.excerpt))",
-                source: $0.source
-            )
+            MemoryEvidenceReference(id: $0.id, messageID: $0.messageID,
+                excerpt: "sha256:\(MemoryContentDigest.make($0.excerpt))", source: $0.source)
         }
         let evidence = try Self.json(redactedEvidence)
         let conflicts = try Self.json(record.candidate.conflictsWithEntryIDs)
-        try await database.writer { db in
+        return try await database.writer { db in
+            let capacity = try Self.preparePending(db)
+            if let existing = try Row.fetchOne(db, sql: "SELECT * FROM memory_candidates WHERE id = ?",
+                                               arguments: [record.id.uuidString]) {
+                // Candidate identity owns an immutable proposal. Re-submission
+                // is not an approval and cannot reorder or replace its payload.
+                return try Self.candidate(existing)
+            }
+            if activateMemory {
+                guard record.status == .activated else { throw FloeError.validationFailed("Invalid candidate activation") }
+                try SQLiteIntelligenceStore.saveMemory(Self.activeMemory(record.candidate), evidence: record.candidate.evidence, in: db)
+            }
+            let expired = record.status == .pending && record.candidate.expiresAt.map { $0 <= Date() } == true
             try db.execute(sql: """
                 INSERT INTO memory_candidates (
                     id, scope, workspace_id, conversation_id, content, confidence,
@@ -588,33 +605,138 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET status=excluded.status,
                     review_reason=excluded.review_reason, updated_at=excluded.updated_at
+                WHERE memory_candidates.status = 'pending'
                 """, arguments: [record.id.uuidString, scope, workspaceID?.uuidString,
                     conversationID?.uuidString, record.candidate.content,
                     record.candidate.confidence, record.candidate.stability,
                     record.candidate.importance, record.candidate.sensitivity.rawValue,
                     record.candidate.origin.rawValue, evidence, conflicts,
                     record.sourceAttachmentID?.uuidString, record.sourceMIMEType,
-                    record.status.rawValue, record.reviewReason,
-                    record.candidate.expiresAt.map(Self.date),
-                    Self.date(record.candidate.createdAt), Self.date(record.updatedAt)])
+                    expired ? "rejected" : record.status.rawValue, expired ? "review window expired" : record.reviewReason,
+                    record.candidate.expiresAt.map(Self.candidateDate),
+                    Self.candidateDate(record.candidate.createdAt), Self.date(record.updatedAt)])
+            try Self.trimPending(db, capacity: capacity)
+            return try Row.fetchOne(db, sql: "SELECT * FROM memory_candidates WHERE id = ?", arguments: [record.id.uuidString]).map(Self.candidate)
+        }
+    }
+
+    /// Reopening the review screen repairs any legacy oversize queue before
+    /// returning data; the setting and rows always come from one commit.
+    public func pendingReview() async throws -> PendingMemoryReviewSnapshot {
+        try await database.writer { db in
+            let capacity = try Self.preparePending(db)
+            return try Self.pendingSnapshot(db, capacity: capacity)
+        }
+    }
+
+    @discardableResult
+    public func setPendingCapacity(_ value: Int) async throws -> PendingMemoryReviewSnapshot {
+        let capacity = MemoryPendingCapacity.normalized(value)
+        try Task.checkCancellation()
+        return try await database.writer { db in
+            try Self.writePendingCapacity(db, capacity: capacity)
+            _ = try Self.preparePending(db)
+            return try Self.pendingSnapshot(db, capacity: capacity)
         }
     }
 
     public func candidates(status: DurableMemoryCandidateStatus? = nil) async throws
         -> [DurableMemoryCandidate] {
         try await database.writer { db in
-            let now = Self.date(Date())
-            try db.execute(sql: """
-                UPDATE memory_candidates
-                SET status = 'rejected', review_reason = 'review window expired', updated_at = ?
-                WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?
-                """, arguments: [now, now])
+            _ = try Self.preparePending(db)
             var sql = "SELECT * FROM memory_candidates"
             var arguments = StatementArguments()
             if let status { sql += " WHERE status = ?"; arguments += [status.rawValue] }
-            sql += " ORDER BY importance DESC, created_at DESC"
+            // Newest creation first; admission rowid is the stable FIFO tie.
+            sql += status == .pending ? " ORDER BY julianday(created_at) DESC, rowid DESC"
+                : " ORDER BY importance DESC, created_at DESC, rowid DESC"
             return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.candidate)
         }
+    }
+
+    /// CAS against the still-pending row, including expiry/capacity cleanup.
+    /// Activation/evidence and final candidate status commit or roll back as one.
+    public func resolvePending(id: UUID, activate: Bool) async throws {
+        try Task.checkCancellation()
+        try await database.writer { db in
+            _ = try Self.preparePending(db)
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM memory_candidates WHERE id = ? AND status = 'pending'",
+                                            arguments: [id.uuidString]) else {
+                throw FloeError.validationFailed("Pending memory candidate does not exist")
+            }
+            let record = try Self.candidate(row)
+            if activate {
+                try SQLiteIntelligenceStore.saveMemory(Self.activeMemory(record.candidate), evidence: record.candidate.evidence, in: db)
+            }
+            try db.execute(sql: """
+                UPDATE memory_candidates SET status = ?, review_reason = ?, updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                """, arguments: [activate ? "activated" : "rejected", activate ? "approved by user" : "rejected by user",
+                                  Self.date(Date()), id.uuidString])
+            guard db.changesCount == 1 else { throw FloeError.validationFailed("Pending memory candidate changed") }
+        }
+    }
+
+    private static func activeMemory(_ candidate: MemoryCandidate) -> MemoryEntry {
+        MemoryEntry(id: candidate.id, scope: candidate.scope, status: .active, content: candidate.content,
+            confidence: candidate.confidence, importance: candidate.importance, sourceKind: candidate.origin,
+            originConversationID: candidate.originConversationID, originWorkspaceID: candidate.originWorkspaceID,
+            expiresAt: candidate.expiresAt, createdAt: candidate.createdAt)
+    }
+
+    private static func writePendingCapacity(_ db: Database, capacity: Int) throws {
+        try db.execute(sql: """
+            INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at
+            """, arguments: [MemoryPendingCapacity.settingKey, String(capacity), date(Date())])
+    }
+
+    private static func preparePending(_ db: Database) throws -> Int {
+        let raw = try String.fetchOne(db, sql: "SELECT value_json FROM app_settings WHERE key = ?",
+                                      arguments: [MemoryPendingCapacity.settingKey])
+        let decoded = raw.flatMap { try? JSONDecoder().decode(Double.self, from: Data($0.utf8)) }
+        let capacity: Int
+        if let decoded, decoded.isFinite {
+            // Clamp before converting so even corrupt, very large JSON numbers
+            // cannot overflow Int. Fractional legacy values normalize down.
+            capacity = Int(min(Double(MemoryPendingCapacity.maximum), max(1, decoded)))
+        } else {
+            capacity = MemoryPendingCapacity.defaultValue
+        }
+        if raw != String(capacity) { try writePendingCapacity(db, capacity: capacity) }
+        let now = candidateDate(Date())
+        try db.execute(sql: """
+            UPDATE memory_candidates
+            SET status = 'rejected', review_reason = 'review window expired', updated_at = ?
+            WHERE status = 'pending' AND expires_at IS NOT NULL AND julianday(expires_at) <= julianday(?)
+            """, arguments: [now, now])
+        try trimPending(db, capacity: capacity)
+        return capacity
+    }
+
+    private static func trimPending(_ db: Database, capacity: Int) throws {
+        // Delete the entire candidate row (payload, evidence and attachment
+        // reference), never an active memory, profile/SOUL or review history.
+        try db.execute(sql: """
+            DELETE FROM memory_candidates WHERE id IN (
+                SELECT id FROM memory_candidates WHERE status = 'pending'
+                ORDER BY julianday(created_at) DESC, rowid DESC LIMIT -1 OFFSET ?
+            )
+            """, arguments: [capacity])
+    }
+
+    private static func pendingSnapshot(_ db: Database, capacity: Int) throws -> PendingMemoryReviewSnapshot {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT * FROM memory_candidates WHERE status = 'pending'
+            ORDER BY julianday(created_at) DESC, rowid DESC
+            """)
+        return PendingMemoryReviewSnapshot(capacity: capacity, candidates: try rows.map(candidate))
+    }
+
+    private static func candidateDate(_ value: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: value)
     }
 
     private enum LifecycleSlot: String { case current, previous }
@@ -976,6 +1098,7 @@ public actor MemoryCandidatePipeline {
     @discardableResult
     public func submit(_ candidate: MemoryCandidate) async throws -> DurableMemoryCandidate {
         let modelDisposition = await reviewer?.review(candidate)
+        try Task.checkCancellation()
         return try await submit(candidate, modelDisposition: modelDisposition)
     }
 
@@ -992,13 +1115,6 @@ public actor MemoryCandidatePipeline {
         let record: DurableMemoryCandidate
         switch disposition {
         case .activate:
-            try await memories.saveMemory(MemoryEntry(id: candidate.id, scope: candidate.scope,
-                status: .active, content: candidate.content, confidence: candidate.confidence,
-                importance: candidate.importance, sourceKind: candidate.origin,
-                originConversationID: candidate.originConversationID,
-                originWorkspaceID: candidate.originWorkspaceID,
-                expiresAt: candidate.expiresAt, createdAt: candidate.createdAt,
-                updatedAt: Date()), evidence: candidate.evidence)
             record = DurableMemoryCandidate(candidate: candidate, status: .activated)
         case .pending(let reason):
             record = DurableMemoryCandidate(candidate: candidate, status: .pending,
@@ -1007,8 +1123,8 @@ public actor MemoryCandidatePipeline {
             record = DurableMemoryCandidate(candidate: candidate, status: .rejected,
                 reviewReason: reason)
         }
-        try await documents.saveCandidate(record)
-        return record
+        return try await documents.saveCandidate(record, activateMemory: record.status == .activated)
+            ?? DurableMemoryCandidate(candidate: candidate, status: .rejected, reviewReason: "pending queue capacity reached")
     }
 
     @discardableResult
@@ -1030,17 +1146,12 @@ public actor MemoryCandidatePipeline {
             sensitivity: sensitivity, origin: .automaticTurnReview,
             evidence: [MemoryEvidenceReference(messageID: evidenceMessageID, excerpt: excerpt)])
         let modelDisposition = await reviewer?.review(candidate)
+        try Task.checkCancellation()
         let disposition = policy.disposition(for: candidate, modelDisposition: modelDisposition)
         let status: DurableMemoryCandidateStatus
         let reason: String?
         switch disposition {
         case .activate:
-            try await memories.saveMemory(MemoryEntry(id: candidate.id, scope: scope,
-                status: .active, content: candidate.content, confidence: candidate.confidence,
-                importance: candidate.importance, sourceKind: candidate.origin,
-                originConversationID: candidate.originConversationID,
-                originWorkspaceID: candidate.originWorkspaceID),
-                evidence: candidate.evidence)
             status = .activated; reason = nil
         case .pending(let value): status = .pending; reason = value
         case .reject(let value): status = .rejected; reason = value
@@ -1048,31 +1159,11 @@ public actor MemoryCandidatePipeline {
         let record = DurableMemoryCandidate(candidate: candidate, status: status,
             reviewReason: reason, sourceAttachmentID: input.attachmentID,
             sourceMIMEType: input.mimeType)
-        try await documents.saveCandidate(record)
-        return record
+        return try await documents.saveCandidate(record, activateMemory: record.status == .activated)
+            ?? DurableMemoryCandidate(candidate: candidate, status: .rejected, reviewReason: "pending queue capacity reached")
     }
 
     public func resolvePending(id: UUID, activate: Bool) async throws {
-        guard var record = try await documents.candidates(status: .pending)
-            .first(where: { $0.id == id }) else {
-            throw FloeError.validationFailed("Pending memory candidate does not exist")
-        }
-        if activate {
-            let candidate = record.candidate
-            try await memories.saveMemory(MemoryEntry(id: candidate.id, scope: candidate.scope,
-                status: .active, content: candidate.content, confidence: candidate.confidence,
-                importance: candidate.importance, sourceKind: candidate.origin,
-                originConversationID: candidate.originConversationID,
-                originWorkspaceID: candidate.originWorkspaceID,
-                expiresAt: candidate.expiresAt, createdAt: candidate.createdAt),
-                evidence: candidate.evidence)
-            record.status = .activated
-            record.reviewReason = "approved by user"
-        } else {
-            record.status = .rejected
-            record.reviewReason = "rejected by user"
-        }
-        record.updatedAt = Date()
-        try await documents.saveCandidate(record)
+        try await documents.resolvePending(id: id, activate: activate)
     }
 }

@@ -255,6 +255,9 @@ import UIKit
               let rawChallenge = APNsEnrollmentEncoding.decode32(nonce.attestationChallenge) else { throw APNsServiceError.protocolViolation }
         let hash = Data(SHA256.hash(data: rawChallenge))
         guard isForeground() else { throw APNsServiceError.foregroundRequired }
+        // Native callbacks may outlive cancellation or fail before HTTP. Keep
+        // the real nonce deadline even in that phase, without calling it 429.
+        retryAfterInterruption = nonce.expiresAt
         var proof = try await installation.proof(installationID: request.installationID,
             clientDataHash: hash, preference: .automatic)
         try current(id)
@@ -294,7 +297,15 @@ import UIKit
                 clientDataHash: hash, preference: preference)
             try current(id)
             try validate(proof)
-            if preference == .assertionRequired && proof.keyID != oldKeyID { throw APNsServiceError.protocolViolation }
+            if preference == .assertionRequired, proof.keyID != oldKeyID {
+                // Only a native typed-invalidKey recovery can return fresh
+                // attestation here. Backend still verifies the actual proof.
+                guard let recovery = proof.nativeKeyRecovery,
+                      recovery.previousKeyID == oldKeyID, recovery.reason == .unusableNativeKey,
+                      proof.attestationObject != nil, proof.assertionObject == nil else {
+                    throw APNsServiceError.protocolViolation
+                }
+            }
             do {
                 challengeData = try await http.enrollmentRequest(.challenge, body: encoder.encode(ChallengeRequest(
                     nonceID: nonce.nonceID, deviceToken: deviceToken, proof: proof, signedAppTransaction: signed)), secret: secret)
@@ -345,6 +356,11 @@ import UIKit
         return .init(nonceID: nonce.nonceID.uuidString.lowercased(), voucher: voucher.voucher)
     }
     private func validate(_ proof: APNsAppAttestProof) throws {
+        if let recovery = proof.nativeKeyRecovery {
+            guard !recovery.previousKeyID.isEmpty, recovery.previousKeyID.utf8.count <= 512,
+                  recovery.previousKeyID != proof.keyID,
+                  proof.attestationObject != nil, proof.assertionObject == nil else { throw APNsServiceError.protocolViolation }
+        }
         let bytes = proof.attestationObject ?? proof.assertionObject
         guard !proof.keyID.isEmpty, proof.keyID.utf8.count <= 512,
               (proof.attestationObject == nil) != (proof.assertionObject == nil),

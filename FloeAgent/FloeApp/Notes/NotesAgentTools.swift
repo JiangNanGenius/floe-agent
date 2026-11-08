@@ -273,7 +273,7 @@ enum NotesAssistantToolCatalog {
         "workspace.inspectFileMetadata", "workspace.createFile", "workspace.writeFile",
         "workspace.applyPatch", "workspace.createDirectory", "workspace.moveFile",
         "document.pdf.inspect", "document.pdf.render", "document.office.inspect",
-        "image.ocr", "image.inspect", "audio.inspect",
+        "image.ocr", "image.inspect", "image.playground", "audio.inspect",
         "exec.shell",
         "latex.create", "latex.inspect", "latex.edit", "latex.typeset", "latex.restore", "latex.export",
         "conversation.search", "conversation.read", "conversation.list",
@@ -282,10 +282,10 @@ enum NotesAssistantToolCatalog {
     ]
 
     /// Deterministic auto-grant: handlers bounded to the granted document or
-    /// the task scratch. `image.inspect` is excluded because it ships
-    /// document bytes to a provider; exec tools are additionally gated on
+    /// the task scratch. Image inspection and Image Playground are excluded
+    /// because document bytes may leave the device; exec tools are additionally gated on
     /// the task network policy inside the approval policy.
-    static let scopedAutoGrantToolNames: Set<String> = toolNames.subtracting(["image.inspect"])
+    static let scopedAutoGrantToolNames: Set<String> = toolNames.subtracting(["image.inspect", "image.playground"])
 }
 
 struct NotesSearchTool: AgentTool {

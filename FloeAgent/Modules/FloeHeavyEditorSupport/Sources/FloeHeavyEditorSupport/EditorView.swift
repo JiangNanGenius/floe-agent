@@ -8,6 +8,7 @@ import WebKit
 public struct HeavyEditorView: View {
   @Bindable private var controller: HeavyEditorController
   private let onClose: () -> Void
+  private let closeLabel: String?
   private let outline: AnyView?
   private let canvasToolbar: AnyView?
   private let inspector: AnyView?
@@ -23,10 +24,12 @@ public struct HeavyEditorView: View {
   public init(
     controller: HeavyEditorController, onClose: @escaping () -> Void = {},
     outline: AnyView? = nil, canvasToolbar: AnyView? = nil,
-    inspector: AnyView? = nil, canvasContent: AnyView? = nil, bottomBar: AnyView? = nil
+    inspector: AnyView? = nil, canvasContent: AnyView? = nil, bottomBar: AnyView? = nil,
+    closeLabel: String? = nil
   ) {
     self.controller = controller
     self.onClose = onClose
+    self.closeLabel = closeLabel
     self.outline = outline
     self.canvasToolbar = canvasToolbar
     self.inspector = inspector
@@ -181,7 +184,7 @@ public struct HeavyEditorView: View {
           Image(systemName: "sparkles")
         }.accessibilityLabel(EditorText.t("助手", "Assistant"))
       }
-      Button(EditorText.t("完成", "Done")) {
+      Button(closeLabel ?? EditorText.t("完成", "Done")) {
         Task {
           await controller.endPresentation()
           onClose()

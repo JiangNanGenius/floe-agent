@@ -92,7 +92,7 @@ enum RunOutputPublication {
 struct DocumentConvertTool: AgentTool {
     typealias Arguments = DocumentConversionArguments
     static let name = "document.convert"
-    static let toolDescription = "Convert an existing workspace file directly between Markdown, DOCX (Word), HTML, RTF and plain text using bundled offline libraries. Pass paths, never regenerate or copy the document into tool arguments. Preserves semantic headings, lists, tables, emphasis, links and supported embedded/local images where the target supports them. Writes a new file, never overwrites; reports conversion limitations. RTF preserves basic rich text, not all table/layout semantics. For any PDF input or output use document.pdf.convert. Legacy .doc is unsupported."
+    static let toolDescription = "Primary file conversion tool for Markdown, DOCX (Word), HTML, RTF and plain text. For example, HTML to text uses document.convert with inputPath=index.html, outputPath=index.txt, format=text. Pass existing workspace paths, never regenerate or copy document contents into arguments. Uses bundled offline libraries, preserves supported semantics, writes a new file and reports limitations. RTF preserves basic rich text, not all table/layout semantics. Only when the input or output is PDF use document.pdf.convert instead. Legacy .doc is unsupported."
     static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string","description":"Existing workspace-relative .md/.markdown/.docx/.html/.rtf/.txt file"},"outputPath":{"type":"string","description":"New workspace-relative file; extension must match format"},"format":{"type":"string","enum":["markdown","docx","html","rtf","text"]}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
@@ -107,7 +107,7 @@ struct DocumentConvertTool: AgentTool {
 struct PDFConvertTool: AgentTool {
     typealias Arguments = DocumentConversionArguments
     static let name = "document.pdf.convert"
-    static let toolDescription = "Convert Markdown, Word DOCX, Excel XLSX, PowerPoint PPTX, HTML, RTF or text files to a paginated PDF, or extract a copy-permitted text PDF into Markdown, DOCX, HTML, RTF or text. DOCX/XLSX/PPTX inputs use the shared pinned Office engine for a real layout-preserving PDF of the saved package; other inputs use the offline HTML renderer. Optional includeInk=false omits handwriting from Office PDF output while preserving the saved file. Optional pages (1-based, e.g. 2-4,7) selects the final PDF pages of an Office-generated PDF. Operates offline on existing files without model rewriting. Source is preserved and output must be new. PDF extraction retains page order and searchable text, not original layout, tables or images; image-only/scanned pages fail with an OCR-required message instead of silently disappearing. For non-PDF conversions use document.convert."
+    static let toolDescription = "PDF conversions only: inputPath must be a PDF, or format must be pdf. For HTML to text, Markdown to DOCX and all other non-PDF conversions call document.convert instead. Convert Markdown, Word DOCX, Excel XLSX, PowerPoint PPTX, HTML, RTF or text to a PDF, or extract a copy-permitted text PDF to Markdown, DOCX, HTML, RTF or text. Office inputs use the pinned layout engine; other inputs use the offline HTML renderer. Optional includeInk=false omits handwriting from Office PDF output. Optional pages (1-based, e.g. 2-4,7) selects final Office PDF pages. Source is preserved and output must be new. PDF extraction preserves searchable text in page order; image-only pages require OCR."
     static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string","description":"New workspace-relative file; extension must match format"},"format":{"type":"string","enum":["pdf","markdown","docx","html","rtf","text"]},"pages":{"type":"string","maxLength":1024,"description":"Office -> PDF only: strict 1-based final page selection like 2-4,7."},"includeInk":{"type":"boolean","description":"Office -> PDF only: false omits handwriting from the output; omit or true preserves it. The source is unchanged."}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
@@ -138,17 +138,39 @@ enum DocumentFileConverter {
     static func validate(_ args: DocumentConversionArguments, requiresPDF: Bool) throws {
         try PDFToolSupport.validatePath(args.inputPath)
         try PDFToolSupport.validatePath(args.outputPath)
-        guard args.inputPath.utf8.count <= 1024, args.outputPath.utf8.count <= 1024,
-              ["markdown", "docx", "html", "rtf", "text", "pdf"].contains(args.format),
-              let source = format(args.inputPath), format(args.outputPath) == args.format,
-              args.inputPath != args.outputPath,
-              (source == "pdf" || args.format == "pdf") == requiresPDF,
-              !(source == "pdf" && args.format == "pdf") else {
-            throw FloeError.validationFailed("Choose supported input and matching new output extension; use the PDF conversion tool when either format is PDF")
+        guard args.inputPath.utf8.count <= 1024, args.outputPath.utf8.count <= 1024 else {
+            throw FloeError.validationFailed("inputPath and outputPath must each be at most 1024 UTF-8 bytes")
+        }
+        guard ["markdown", "docx", "html", "rtf", "text", "pdf"].contains(args.format) else {
+            throw FloeError.validationFailed("format must be markdown, docx, html, rtf, text or pdf")
+        }
+        guard let source = format(args.inputPath) else {
+            throw FloeError.validationFailed("inputPath must end in .md, .markdown, .docx, .html, .htm, .rtf, .txt, .pdf, .xlsx or .pptx; legacy .doc is unsupported")
+        }
+        guard format(args.outputPath) == args.format else {
+            let extensionName = ["markdown": "md", "text": "txt"][args.format] ?? args.format
+            throw FloeError.validationFailed("outputPath must have the .\(extensionName) extension for format=\(args.format); choose a new output filename")
+        }
+        guard args.inputPath != args.outputPath else {
+            throw FloeError.validationFailed("outputPath must be a new file different from inputPath; the source is never overwritten")
+        }
+        guard !(source == "pdf" && args.format == "pdf") else {
+            throw FloeError.validationFailed("PDF-to-PDF is not a conversion; choose a non-PDF export format")
         }
         let sourceExtension = (args.inputPath as NSString).pathExtension.lowercased()
         if ["xlsx", "pptx"].contains(sourceExtension), args.format != "pdf" {
-            throw FloeError.validationFailed("Excel and PowerPoint inputs convert to PDF only")
+            throw FloeError.validationFailed("Excel and PowerPoint inputs convert to PDF only: use document.pdf.convert, format=pdf and a new .pdf outputPath")
+        }
+        let isPDFConversion = source == "pdf" || args.format == "pdf"
+        if isPDFConversion != requiresPDF {
+            let tool = isPDFConversion ? PDFConvertTool.name : DocumentConvertTool.name
+            // Return the actual complete payload, JSON escaped rather than
+            // interpolated, so the caller can correct the route immediately.
+            let data = try JSONSerialization.data(withJSONObject: [
+                "inputPath": args.inputPath, "outputPath": args.outputPath, "format": args.format
+            ], options: [.sortedKeys, .withoutEscapingSlashes])
+            let payload = String(decoding: data, as: UTF8.self)
+            throw FloeError.validationFailed("This conversion \(isPDFConversion ? "involves PDF" : "has no PDF input or output"). Call \(tool) with \(payload). Do not repeat it through \(requiresPDF ? PDFConvertTool.name : DocumentConvertTool.name).")
         }
         if args.includeInk != nil {
             guard args.format == "pdf",

@@ -61,9 +61,6 @@ struct APNsSettingsSection: View {
             return APNsText.t("版本提醒未获允许，后台刷新仍可登记。", "Version reminders are not allowed; background refresh can still register.")
         }
         if !center.backgroundRefreshAvailable { return APNsText.t("后台刷新当前不可用。", "Background refresh is currently unavailable.") }
-        if center.eligibilitySnapshot?.eligible == false {
-            return APNsText.t("没有定时任务需要运行，暂不发送后台刷新推送。", "No scheduled work needs to run, so background pushes are paused.")
-        }
         return center.status().serverConnected
             ? APNsText.t("已连接，实际后台运行由系统安排。", "Connected. The system decides when background work runs.")
             : APNsText.t("正在确认连接状态。", "Checking the connection.")
@@ -72,46 +69,102 @@ struct APNsSettingsSection: View {
 
 struct APNsSettingsView: View {
     @ObservedObject var center: APNsCenter
+    @Environment(\.openURL) private var openURL
+    @State private var diagnosticsExpanded = false
+
     var body: some View {
         Form {
             Section(APNsText.t("连接", "Connection")) {
-                LabeledContent(APNsText.t("设备登记", "Device registration"), value: center.status().deviceRegistered ? APNsText.t("已收到登记回执", "Registration received") : APNsText.t("尚未确认", "Unconfirmed"))
-                LabeledContent(APNsText.t("服务登记", "Service registration"), value: center.status().serverConnected ? APNsText.t("已确认", "Confirmed") : APNsText.t("尚未连接", "Not connected"))
-                if let date = center.status().nextRegistrationAttemptAt, date > Date() {
-                    LabeledContent(APNsText.t("下次可重试", "Retry available")) { Text(date, style: .relative) }
+                LabeledContent(APNsText.t("推送", "Push"), value: connectionText)
+                if center.preferences.enabled, !center.status().serverConnected, let failure = center.failure {
+                    Text(failure).foregroundStyle(.secondary)
                 }
-                if let date = center.status().lastServerAcceptedAt {
-                    LabeledContent(APNsText.t("服务最近接受登记", "Last accepted registration")) { Text(date, style: .relative) }
+                if center.preferences.enabled {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let waiting = (center.status().nextRegistrationAttemptAt ?? .distantPast) > context.date
+                        Button(waiting ? APNsText.t("稍后重试", "Try again later") : APNsText.t("重试连接", "Retry connection")) {
+                            Task { await center.reload() }
+                        }
+                        .disabled(waiting || center.syncState == "connecting")
+                        .accessibilityIdentifier("push.retry")
+                    }
                 }
-                if let failure = center.failure { Text(failure).foregroundStyle(.secondary) }
-                Button(APNsText.t("重试连接", "Retry connection")) { Task { await center.reload() } }
-                    .accessibilityIdentifier("push.retry")
             }
-            Section(APNsText.t("权限与安装", "Permissions and installation")) {
-                LabeledContent(APNsText.t("可见通知", "Visible notifications"), value: APNsText.authorization(center.visibleAuthorization))
-                LabeledContent(APNsText.t("后台刷新", "Background refresh"), value: center.backgroundRefreshAvailable ? APNsText.t("可用", "Available") : APNsText.t("当前不可用", "Unavailable"))
-                LabeledContent(APNsText.t("安装通道", "Install channel"), value: APNsText.channel(center.channel))
-                LabeledContent(APNsText.t("待运行的计划", "Scheduled work"), value: center.eligibilitySnapshot.map { $0.eligible ? APNsText.t("有", "Present") : APNsText.t("无", "None") } ?? APNsText.t("尚未确认", "Unconfirmed"))
-            }
-            Section(APNsText.t("最近活动", "Recent activity")) {
-                if let date = center.status().lastReceivedAt {
-                    LabeledContent(APNsText.t("App 收到通知", "App received a notification")) { Text(date, style: .relative) }
-                } else { Text(APNsText.t("尚无收到通知的记录。", "No notifications have been received yet.")).foregroundStyle(.secondary) }
-                if let outcome = center.status().lastWakeOutcome {
-                    LabeledContent(APNsText.t("后台检查", "Background check"), value: outcomeText(outcome))
+            if center.preferences.enabled && ((center.preferences.versionReminders && center.visibleAuthorization == .denied)
+                || !center.backgroundRefreshAvailable) {
+                Section {
+                    if center.preferences.versionReminders && center.visibleAuthorization == .denied {
+                        Text(APNsText.t("允许通知后才能收到版本更新提醒。", "Allow notifications to receive version update reminders."))
+                    }
+                    if !center.backgroundRefreshAvailable {
+                        Text(APNsText.t("请在系统设置中允许后台刷新。", "Allow background refresh in system settings."))
+                    }
+                    Button(APNsText.t("前往系统设置", "Open system settings")) {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                    }
                 }
-                Text(APNsText.t("服务接受登记、App 收到通知和任务完成分别记录。", "Service registration, notification receipt and task completion are recorded separately."))
-                    .font(.footnote).foregroundStyle(.secondary)
             }
-            Section(APNsText.t("诊断", "Diagnostics")) {
-                LabeledContent("APNs", value: center.signingEnvironment.rawValue)
-                LabeledContent(APNsText.t("同步状态", "Sync state"), value: center.syncState)
+            Section {
+                DisclosureGroup(APNsText.t("诊断详情", "Diagnostics"), isExpanded: $diagnosticsExpanded) {
+                    diagnostics
+                }
+                .accessibilityIdentifier("push.diagnostics")
             }
         }
         .navigationTitle(APNsText.t("推送详情", "Push details"))
         .accessibilityIdentifier("push.settings")
         .task { await center.reconcile() }
     }
+
+    private var connectionText: String {
+        if !center.preferences.enabled { return APNsText.t("已关闭", "Off") }
+        if center.status().serverConnected { return APNsText.t("已连接", "Connected") }
+        if center.syncState == "connecting" || center.syncState == "retrying" {
+            return APNsText.t("正在连接", "Connecting")
+        }
+        return APNsText.t("尚未连接", "Not connected")
+    }
+
+    @ViewBuilder private var diagnostics: some View {
+        LabeledContent(APNsText.t("系统通知登记", "System notification registration"), value: center.status().deviceRegistered
+            ? APNsText.t("已就绪", "Ready") : APNsText.t("尚未确认", "Unconfirmed"))
+        LabeledContent(APNsText.t("服务登记", "Service registration"), value: center.status().serverConnected
+            ? APNsText.t("已确认", "Confirmed") : APNsText.t("尚未连接", "Not connected"))
+        if let date = center.status().nextRegistrationAttemptAt, date > Date() {
+            LabeledContent(APNsText.t("下次可重试", "Retry available")) { Text(date, style: .relative) }
+        }
+        if let date = center.status().lastServerAcceptedAt {
+            LabeledContent(APNsText.t("服务最近接受登记", "Last accepted registration")) { Text(date, style: .relative) }
+        }
+        if let date = center.state.receipt?.leaseExpiresAt {
+            LabeledContent(APNsText.t("登记有效期", "Registration expiry")) { Text(date, style: .relative) }
+        }
+        LabeledContent(APNsText.t("可见通知", "Visible notifications"), value: APNsText.authorization(center.visibleAuthorization))
+        LabeledContent(APNsText.t("后台刷新", "Background refresh"), value: center.backgroundRefreshAvailable
+            ? APNsText.t("可用", "Available") : APNsText.t("当前不可用", "Unavailable"))
+        LabeledContent(APNsText.t("安装通道", "Install channel"), value: APNsText.channel(center.channel))
+        LabeledContent(APNsText.t("待运行的计划", "Scheduled work"), value: center.eligibilitySnapshot.map {
+            $0.eligible ? APNsText.t("有", "Present") : APNsText.t("无", "None")
+        } ?? APNsText.t("尚未确认", "Unconfirmed"))
+        LabeledContent("APNs", value: center.signingEnvironment.rawValue)
+        LabeledContent(APNsText.t("同步状态", "Sync state"), value: center.syncState)
+        if case .some(.nativeVerification(let diagnostic)) = center.state.registrationFailure {
+            LabeledContent(APNsText.t("验证阶段", "Verification stage"), value: diagnostic.stage.rawValue)
+            LabeledContent(APNsText.t("验证结果", "Verification result"), value: diagnostic.code.rawValue)
+        }
+        if let date = center.status().lastReceivedAt {
+            LabeledContent(APNsText.t("App 收到通知", "App received a notification")) { Text(date, style: .relative) }
+        } else {
+            Text(APNsText.t("尚无收到通知的记录。", "No notifications have been received yet.")).foregroundStyle(.secondary)
+        }
+        if let outcome = center.status().lastWakeOutcome {
+            LabeledContent(APNsText.t("后台检查", "Background check"), value: outcomeText(outcome))
+        }
+        Text(APNsText.t("系统登记、服务连接和收到通知是不同阶段。后台运行由系统安排。",
+            "System registration, service connection and notification receipt are separate stages. The system schedules background work."))
+            .font(.footnote).foregroundStyle(.secondary)
+    }
+
     private func outcomeText(_ value: APNsWakeOutcome) -> String {
         switch value {
         case .newData: APNsText.t("检查已完成", "Check completed")

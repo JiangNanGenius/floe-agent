@@ -77,6 +77,8 @@ struct ThreadDetailView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var imagePlaygroundHostID = UUID().uuidString
     @Environment(\.continuousVoiceWindowID) private var voiceWindowID
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
     @StateObject private var automaticRead = ChatAutomaticReadController()
@@ -236,6 +238,8 @@ struct ThreadDetailView: View {
             // available height — rotation, split and dynamic-type relayouts
             // all funnel through this proxy.
             .environment(\.composerHeightBudget, proxy.size.height)
+            .environment(\.chatInlineContentScope, ChatInlineContentScope(
+                conversationID: viewModel.conversationID, isTemporary: viewModel.isTemporary))
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
             .modifier(ThreadNavigationTitle(title: viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle, enabled: ownsNavigationTitle))
@@ -405,6 +409,20 @@ struct ThreadDetailView: View {
                 }
             }
         }
+        .appleImagePlaygroundHost(
+            service: environment.appleImagePlaygroundService,
+            sceneID: imagePlaygroundHostID,
+            visibleConversationIDs: [viewModel.conversationID],
+            active: scenePhase == .active && imagePlaygroundCanPresent)
+    }
+
+    /// Keep the original conversation binding while another local sheet is open;
+    /// only new native-image requests are deferred by this presentability gate.
+    private var imagePlaygroundCanPresent: Bool {
+        !continuousVoiceActive && structuredExport == nil && scheduleDetail == nil && presentedChild == nil
+            && !showingTaskEnvironment && !showsTemporaryAbout && editingPendingInput == nil
+            && !showingGoalBuilder && !showingPermissionsSheet && selectedAttachment == nil
+            && selectedImportantFile == nil && !showingUsageDetails
     }
 
     private func checklistStatus(_ checklist: TaskChecklist) -> some View {
@@ -843,7 +861,7 @@ struct ThreadDetailView: View {
             )
 
         case .liveThinking:
-            ModelResponseWaitingView()
+            ModelResponseWaitingView(title: RunStateLocalizer.responseWaitingTitle(for: viewModel.selectedRun?.state))
 
         case .approval(let approval):
             ApprovalCardView(approval: approval) { decision in

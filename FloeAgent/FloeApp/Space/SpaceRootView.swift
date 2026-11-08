@@ -33,6 +33,7 @@ struct SpaceRootView: View {
     @State private var creatingFolder = false
     @State private var importing = false
     @State private var importingLaTeX = false
+    @State private var importingGeography = false
     @State private var busy = false
     @State private var notice: String?
     @AppStorage("space.personalFiles.showGrid") private var showingGrid = false
@@ -276,7 +277,8 @@ struct SpaceRootView: View {
                     busy = true
                     defer { busy = false }
                     let record:PersonalContentRecord
-                    if importingLaTeX {record=try await PersonalContentService.shared.importLaTeX(file,folders:folders)}
+                    if importingGeography {record=try await PersonalContentService.shared.importGeography(file,folders:folders)}
+                    else if importingLaTeX {record=try await PersonalContentService.shared.importLaTeX(file,folders:folders)}
                     else {record=try await PersonalContentService.shared.importFile(file,folders:folders)}
                     await refresh()
                     presentWork(record)
@@ -424,6 +426,8 @@ struct SpaceRootView: View {
             OverviewGroup(id: "design", title: IDELanguageRunText.t("设计与工程", "Design & engineering"), entries: [
                 overviewEntry(kind.cad2D.title, kind.cad2D.systemImage, .create(.work(.cad2D))),
                 overviewEntry(kind.cad3D.title, kind.cad3D.systemImage, .create(.work(.cad3D))),
+                overviewEntry(kind.electronics.title, kind.electronics.systemImage, .create(.work(.electronics))),
+                overviewEntry(kind.geography.title, kind.geography.systemImage, .create(.work(.geography))),
                 overviewEntry(kind.diagram.title, kind.diagram.systemImage, .create(.work(.diagram)))
             ]),
             OverviewGroup(id: "science", title: IDELanguageRunText.t("科学", "Science"), entries: [
@@ -717,7 +721,7 @@ struct SpaceRootView: View {
                     }
                 } label: { Label("CAD", systemImage: "cube.transparent") }
                 .accessibilityIdentifier("space.new.cad")
-                ForEach([PersonalContentKind.diagram, .music, .latex], id: \.self) { kind in
+                ForEach([PersonalContentKind.diagram, .music, .latex, .electronics, .geography], id: \.self) { kind in
                     Button(kind.title, systemImage: kind.systemImage) { requestCreation(.work(kind)) }
                         .accessibilityIdentifier("space.create." + kind.rawValue)
                 }
@@ -735,10 +739,12 @@ struct SpaceRootView: View {
             Menu {
                 // Import lives here (not as a standalone arrow) and keeps the
                 // existing flow: one original copied into the current folder.
-                Button(IDELanguageRunText.t("导入…", "Import…"), systemImage: "square.and.arrow.down") { importingLaTeX=false;importing = true }
+                Button(IDELanguageRunText.t("导入…", "Import…"), systemImage: "square.and.arrow.down") { importingGeography=false;importingLaTeX=false;importing = true }
                     .accessibilityIdentifier("space.import")
-                Button(IDELanguageRunText.t("导入 LaTeX 工程…","Import LaTeX project…"),systemImage:"doc.richtext") {importingLaTeX=true;importing=true}
+                Button(IDELanguageRunText.t("导入 LaTeX 工程…","Import LaTeX project…"),systemImage:"doc.richtext") {importingGeography=false;importingLaTeX=true;importing=true}
                     .accessibilityIdentifier("space.import.latex")
+                Button(IDELanguageRunText.t("导入地理数据…", "Import geographic data…"), systemImage: "map") { importingGeography=true;importingLaTeX=false;importing=true }
+                    .accessibilityIdentifier("space.import.geography")
                 Button(IDELanguageRunText.t("最近删除", "Recently Deleted"), systemImage: "trash") { showingRecentlyDeleted = true }
                     .accessibilityIdentifier("space.files.recentlyDeleted")
                 Divider()

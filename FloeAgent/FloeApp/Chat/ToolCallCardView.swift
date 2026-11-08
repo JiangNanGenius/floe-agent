@@ -261,9 +261,10 @@ private struct ArtifactImageGallery: View {
     }
 }
 
-private struct ArtifactImageView: View {
+struct ArtifactImageView: View {
     let artifact: ToolArtifactReference
     let index: Int
+    var preverified: VerifiedChatInlineArtifact? = nil
     @State private var image: UIImage?
     @State private var fileURL: URL?
     @State private var failed = false
@@ -314,6 +315,13 @@ private struct ArtifactImageView: View {
         failed = false
         image = nil
         fileURL = nil
+        if let preverified, preverified.artifact == artifact {
+            let bytes = await Task.detached(priority: .utility) { preverified.imagePreviewData() }.value
+            guard !Task.isCancelled else { return }
+            guard let bytes, let decoded = UIImage(data: bytes) else { failed = true; return }
+            image = decoded; fileURL = preverified.fileURL
+            return
+        }
         let reference = artifact
         let loaded = await Task.detached(priority: .userInitiated) {
             guard let support = FileManager.default.urls(for: .applicationSupportDirectory,

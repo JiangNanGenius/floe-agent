@@ -11,6 +11,7 @@ import FloeManufacturingUI
 import FloeNotes
 import FloeCAD
 import FloeChemistryUI
+import FloeElectronicsUI
 
 struct PersonalContentEditor: View {
     let record: PersonalContentRecord
@@ -51,6 +52,8 @@ struct PersonalContentEditor: View {
         case chemistry(ChemistryProjectSession)
         case biology(BiologyProjectSession)
         case latex(LaTeXProjectSession)
+        case electronics(ElectronicsProjectSession)
+        case geography(GISProjectSession)
         case text(PersonalTextDocument)
         case office(PersonalOfficeDocument)
         case media(URL)
@@ -67,6 +70,9 @@ struct PersonalContentEditor: View {
             } else if let content, case .canvas(let store) = content {
                 // The original canvas owns its split navigation and close path.
                 CreativeCanvasSurface(record: record, store: store)
+            } else if let content, case .geography(let session) = content {
+                GISProjectEditorSurface(session: session, onClose: { Task { await finish() } },
+                    onAssistant: { showingAssistant = true })
             } else if let content, case .manufacturing(let model) = content {
                 ManufacturingWorkbenchView(model: model, onClose: {
                     do { try model.saveDraft(); dismissAfterClosing() } catch { model.report(error) }
@@ -86,6 +92,7 @@ struct PersonalContentEditor: View {
             if !presented {
                 biologyNotesReturn.cancel()
                 if case .biology(let session) = content { Task { await session.close() } }
+                if case .geography(let session) = content { Task { await session.presentationEnded() } }
                 fileUsage?.release(); fileUsage = nil
             }
         }
@@ -189,6 +196,10 @@ struct PersonalContentEditor: View {
                         })
                     case .latex(let session):
                         LaTeXEditorSurface(session:session)
+                    case .electronics(let session):
+                        EDWorkbenchView(session: session.workbench)
+                    case .geography:
+                        EmptyView() // GIS owns its qualified native split-view chrome above.
                     case .text(let document):
                         PersonalTextDocumentView(document: document)
                     case .office:
@@ -333,6 +344,11 @@ struct PersonalContentEditor: View {
                 content = .biology(try await BiologyProjectSession.open(id: record.id, directory: value.url, host: host))
             case .latex:
                 content = .latex(try await LaTeXProjectSession.open(id:record.id,composition:environment.latexComposition))
+            case .geography:
+                let session = try await GISProjectSession.open(id: record.id, directory: value.url)
+                try session.beginPresentation(); content = .geography(session)
+            case .electronics:
+                content = .electronics(try await ElectronicsProjectSession.open(id: record.id, directory: value.url))
             case .meeting:
                 content = .meeting(try await MeetingProjectSession.open(id: record.id, directory: value.url.appendingPathComponent("Meeting"), environment: environment))
             default:
@@ -355,6 +371,7 @@ struct PersonalContentEditor: View {
         case .chemistry(let session): Task { await session.refreshFromHost() }
         case .biology(let session): Task { try? await session.refreshFromHost() }
         case .latex(let session): Task { await session.refresh() }
+        case .geography(let session): Task { try? await session.refresh() }
         default: break // These process-owned sessions are already observed.
         }
     }
@@ -370,6 +387,8 @@ struct PersonalContentEditor: View {
             guard await session.flushForClose() else { return }
             await session.close()
         case .latex(let session): guard await session.flushForClose() else {return}
+        case .electronics(let session): guard await session.flushForClose() else { return }
+        case .geography(let session): guard await session.flushForClose() else { return }
         case .cad(let document):
             do { try await CADSimulationSessions.close(document:document) }
             catch { self.error = error.localizedDescription; return }

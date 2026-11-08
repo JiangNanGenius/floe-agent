@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import Observation
 import FloeCore
 import FloeModels
 import FloePersistence
@@ -12,7 +13,16 @@ import FloeLaTeXHostAdapter
 
 /// A native Typeset event owns a saved run and real execution leases. The
 /// editor may disappear while this service finishes the same original.
-@MainActor final class LaTeXNativeRuntime {
+@MainActor @Observable final class LaTeXNativeRuntime {
+    struct Operation:Equatable {
+        enum Kind:Equatable {case preparation,typesetting}
+        let kind:Kind
+        var cancelling=false
+        var waitingRecovery=false
+    }
+    struct Failure:Equatable {let id:UUID;let message:String;let occurredAt=Date()}
+    private(set) var operations=[UUID:Operation]()
+    private(set) var failures=[UUID:Failure]()
     private unowned let composition:LaTeXAppComposition
     private struct Owner {
         let runID:UUID
@@ -21,9 +31,10 @@ import FloeLaTeXHostAdapter
         let project:LaTeXHostProject
         let cancellation:CancellationToken
     }
-    private var owners=[UUID:Owner]()
-    private var preparing=Set<UUID>()
-    private enum Outcome {case build(LaTeXBuildRecord),prepared([LaTeXEngineCapability])}
+    @ObservationIgnored private var owners=[UUID:Owner]()
+    @ObservationIgnored private var preparing=[UUID:CancellationToken]()
+    private enum Outcome:Sendable {case build(LaTeXBuildRecord),prepared([LaTeXEngineCapability])}
+    @ObservationIgnored private var operationTasks=[UUID:Task<Outcome,Error>]()
     init(composition:LaTeXAppComposition) {self.composition=composition}
 
     func typeset(_ store:LaTeXProjectStore,revision:Int64,configuration:LaTeXBuildConfiguration) async throws -> LaTeXBuildRecord {
@@ -34,17 +45,44 @@ import FloeLaTeXHostAdapter
         guard case .prepared(let values)=try await perform(store,revision:revision,configuration:.init(),action:"prepare",installProfile:installProfile) else {throw PersonalContentError.changedDocument}
         return values
     }
-    func cancel(projectID:UUID) {owners[projectID]?.cancellation.cancel()}
+    func cancel(projectID:UUID) {
+        preparing[projectID]?.cancel();owners[projectID]?.cancellation.cancel()
+        if var operation=operations[projectID] {operation.cancelling=true;operations[projectID]=operation}
+    }
     private func perform(_ store:LaTeXProjectStore,revision:Int64,configuration:LaTeXBuildConfiguration,action:String,installProfile:String?) async throws -> Outcome {
+        // The native service owns cancellation, processor drain and SQLite
+        // settlement. Cancelling an editor waiter requests that work through
+        // the token; it must not cancel the service's GRDB reads/writes.
+        let requestID=UUID(),cancellation=CancellationToken()
+        let task=Task { @MainActor in
+            try await self.performOwned(store,revision:revision,configuration:configuration,action:action,installProfile:installProfile,cancellation:cancellation)
+        }
+        operationTasks[requestID]=task
+        defer {operationTasks.removeValue(forKey:requestID)}
+        return try await withTaskCancellationHandler(operation:{try await task.value},onCancel:{cancellation.cancel()})
+    }
+    private func performOwned(_ store:LaTeXProjectStore,revision:Int64,configuration:LaTeXBuildConfiguration,action:String,installProfile:String?,cancellation:CancellationToken) async throws -> Outcome {
         let manifest=try await store.manifest(),id=manifest.id
-        guard preparing.insert(id).inserted else {throw LaTeXError.unavailable("This document is preparing typesetting.")}
-        defer {preparing.remove(id)}
+        try cancellation.throwIfCancelled()
+        guard preparing[id]==nil else {throw LaTeXError.unavailable("This document is preparing typesetting.")}
         guard owners[id]==nil else {throw LaTeXError.unavailable("The previous typesetting worker still needs a confirmed stop. Its source and execution owner have been retained.")}
+        failures.removeValue(forKey:id)
+        preparing[id]=cancellation
+        operations[id]=Operation(kind:action=="prepare" ? .preparation:.typesetting)
+        defer {
+            preparing.removeValue(forKey:id)
+            if owners[id]==nil {operations.removeValue(forKey:id)}
+            else {operations[id]?.waitingRecovery=true}
+            let finished=failures.filter {owners[$0.key]==nil && $0.key != id}
+            if finished.count>128 {
+                for item in finished.sorted(by:{$0.value.occurredAt<$1.value.occurredAt}).prefix(finished.count-128) {failures.removeValue(forKey:item.key)}
+            }
+        }
         let app=try composition.app(),host=try await composition.host(),original=try await composition.original(id)
         guard original.root.standardizedFileURL==store.root.standardizedFileURL,manifest.revision==revision else {throw PersonalContentError.changedDocument}
         let taskID=try await composition.assistantForNativeOriginal(original)
         guard let conversation=try await app.conversationStore.conversation(id:taskID),[.ordinary,.notes].contains(conversation.purpose) else {throw PersonalContentError.changedDocument}
-        let runID=UUID(),cancellation=CancellationToken()
+        let runID=UUID()
         var root:WorkspaceCenter.TaskRootLease?
         var layers:ToolEnvironmentLease?
         var persisted=false
@@ -59,7 +97,7 @@ import FloeLaTeXHostAdapter
                 root=acquired;workspaceRoot=acquired.url
                 pin=try await app.taskExecutionEnvironments.resolveBinding(conversationID:taskID,runID:runID,root:workspaceRoot,workspace:workspace)
             }
-            try Task.checkCancellation()
+            try cancellation.throwIfCancelled();try Task.checkCancellation()
             try await app.runStore.saveRun(.init(id:runID,conversationID:taskID,state:"preparing",goal:IDELanguageRunText.t("排版论文","Typeset document"),startedAt:Date(),executionBinding:pin))
             persisted=true
             var stores=composition.typedServiceStorePaths
@@ -75,7 +113,11 @@ import FloeLaTeXHostAdapter
             owners[id]=Owner(runID:runID,root:root,layers:acquired,project:access,cancellation:cancellation)
             let output=try await invoke(original:original,revision:revision,configuration:configuration,action:action,installProfile:installProfile,purpose:conversation.purpose,context:acquired.context)
             if action=="prepare" {
-                guard !output.outcomeUnknown else {throw LaTeXEngineFailure("Toolchain preparation has an unknown result.",workerStopped:false)}
+                if output.outcomeUnknown {
+                    struct Unknown:Decodable {let message:String;let messages:[String]}
+                    let unknown=try? JSONDecoder().decode(Unknown.self,from:Data(output.summary.utf8))
+                    throw LaTeXEngineFailure(unknown?.message ?? "Toolchain preparation has an unknown result.",messages:unknown?.messages ?? [],workerStopped:false)
+                }
                 let values=try JSONDecoder().decode([LaTeXEngineCapability].self,from:Data(output.summary.utf8))
                 try await finish(id,runID:runID,state:"completed");return .prepared(values)
             }
@@ -83,16 +125,28 @@ import FloeLaTeXHostAdapter
                   let raw=value["id"] as? String,let buildID=UUID(uuidString:raw) else {throw LaTeXEngineFailure("Typesetting returned an unrecognized build receipt.",workerStopped:false)}
             let result=try await host.builds.wait(buildID)
             guard result.workerStopped != false else {
+                operations[id]?.waitingRecovery=true
                 try await app.runStore.updateRunState(id:runID,state:"waitingRecovery",endedAt:nil)
                 return .build(result)
             }
             try await finish(id,runID:runID,state:result.succeeded ? "completed":result.state == .cancelled ? "cancelled":"failed")
             return .build(result)
         } catch {
-            let cancelled=error is CancellationError || (error as? LaTeXEngineFailure)?.cancelled==true
+            let cancelled=cancellation.isCancelled || Task.isCancelled || error is CancellationError || (error as? LaTeXEngineFailure)?.cancelled==true
+            if !cancelled {
+                let message=String(error.localizedDescription.prefix(2000))
+                failures[id]=Failure(id:runID,message:message)
+                if persisted {
+                    do {
+                        let payload=try JSONSerialization.data(withJSONObject:["source":"latex.native","projectID":id.uuidString,"operation":action,"message":message])
+                        _ = try await app.runStore.appendEvent(runID:runID,kind:.error,payloadJSON:String(decoding:payload,as:UTF8.self))
+                    } catch {FloeLogger(category:.persistence).warning("latexNativeFailureEvidenceFailed")}
+                }
+            }
             if let failure=error as? LaTeXEngineFailure,!failure.workerStopped {
                 // Even a failed preparation command can leave a worker. A
                 // missing final receipt cannot release this original/run.
+                operations[id]?.waitingRecovery=true
                 try? await app.runStore.updateRunState(id:runID,state:"waitingRecovery",endedAt:nil)
                 throw error
             }

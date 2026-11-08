@@ -69,6 +69,14 @@ public actor LaTeXShellTransport:LaTeXEnvironmentTransport {
         return .init(stdout:output.capturedOutput ?? output.summary,exitStatus:output.exitStatus.map(Int.init) ?? -1,workerStopped:!output.outcomeUnknown && output.exitStatus != nil)
     }
     public func run(script:String,progress:@escaping @Sendable (String)->Void) async throws -> LaTeXEnvironmentCommandResult {
+        // An unstructured service task outlives a cancelled waiter. In
+        // particular, GRDB must still persist the cancellation request and
+        // read the processor's canonical exit before this call can settle.
+        let cancellation=context.cancellation
+        let task=Task {try await self.runOwned(script:script,progress:progress)}
+        return try await withTaskCancellationHandler(operation:{try await task.value},onCancel:{cancellation.cancel()})
+    }
+    private func runOwned(script:String,progress:@escaping @Sendable (String)->Void) async throws -> LaTeXEnvironmentCommandResult {
         try await validate();sequence+=1
         let call="latex."+context.runID.uuidString.lowercased()+"."+UUID().uuidString.lowercased()+"."+String(sequence)
         let data=try JSONEncoder().encode(LocalShellTool.Arguments(script:script,cwd:".",maxOutputBytes:262144))
@@ -83,7 +91,11 @@ public actor LaTeXShellTransport:LaTeXEnvironmentTransport {
               submitted.toolCallID==call,submitted.targetTool=="exec.shell",submitted.payloadJSON==data else {throw LaTeXEngineFailure("The saved job does not match the exact typesetting operation.",workerStopped:false)}
         active.insert(submitted.id);unconfirmed.insert(submitted.id);defer {active.remove(submitted.id)}
         progress("Typesetting job "+submitted.id.uuidString.lowercased())
+        var cancellationRequested=false
         do {while true {
+            if context.cancellation.isCancelled && !cancellationRequested {
+                _=try await jobs.cancel(id:submitted.id);cancellationRequested=true
+            }
             guard let current=try await jobs.job(id:submitted.id) else {throw LaTeXEngineFailure("The typesetting job record disappeared.",workerStopped:false)}
             if current.state.isTerminal {
                 let text=current.resultSummary ?? current.lastError ?? ""
@@ -95,12 +107,17 @@ public actor LaTeXShellTransport:LaTeXEnvironmentTransport {
                 if current.state == .cancelled {throw LaTeXEngineFailure("Typesetting cancelled",cancelled:true,workerStopped:stopped)}
                 return .init(stdout:text,exitStatus:code ?? -1,workerStopped:code != nil)
             }
-            if Task.isCancelled || context.cancellation.isCancelled {_=try await jobs.cancel(id:submitted.id)}
             await Task.detached {try? await Task.sleep(for:.milliseconds(150))}.value
         }} catch let failure as LaTeXEngineFailure {throw failure}
         catch {throw LaTeXEngineFailure("The existing typesetting job could not be reconciled.",messages:[error.localizedDescription],workerStopped:false)}
     }
     public func stop() async throws {
+        // Stop is reconciliation, including when invoked by an already
+        // cancelled caller. Never propagate waiter cancellation into GRDB.
+        let task=Task {try await self.stopOwned()}
+        try await task.value
+    }
+    private func stopOwned() async throws {
         let owned=active.union(unconfirmed)
         for id in owned {_=try await jobs.cancel(id:id)}
         for id in owned {

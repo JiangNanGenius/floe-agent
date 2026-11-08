@@ -805,7 +805,7 @@
   },
   {
     "source": "FloeHeavyEditorSupport/Web/runtime.js",
-    "bytes": 21525
+    "bytes": 22429
   },
   {
     "source": "npm/proj4/lib/global.js",
@@ -1981,7 +1981,7 @@
   },
   {
     "source": "FloeGISKit/Web/native.js",
-    "bytes": 10203
+    "bytes": 10319
   },
   {
     "source": "npm/ol/extent/Relationship.js",
@@ -3132,18 +3132,6 @@
     "bytes": 10915
   },
   {
-    "source": "npm/ol/geom/flat/geodesic.js",
-    "bytes": 6501
-  },
-  {
-    "source": "npm/ol/render.js",
-    "bytes": 5511
-  },
-  {
-    "source": "npm/ol/layer/Graticule.js",
-    "bytes": 39388
-  },
-  {
     "source": "npm/three/build/three.core.js",
     "bytes": 1474799
   },
@@ -3156,8 +3144,24 @@
     "bytes": 40918
   },
   {
+    "source": "npm/ol/geom/flat/geodesic.js",
+    "bytes": 6501
+  },
+  {
+    "source": "npm/ol/render.js",
+    "bytes": 5511
+  },
+  {
+    "source": "npm/ol/layer/Graticule.js",
+    "bytes": 39388
+  },
+  {
+    "source": "FloeGISKit/Web/input.js",
+    "bytes": 8702
+  },
+  {
     "source": "FloeGISKit/Web/view.js",
-    "bytes": 41569
+    "bytes": 42432
   },
   {
     "source": "FloeGISKit/Web/main.js",

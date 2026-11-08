@@ -598,6 +598,7 @@ public struct UserQuestion: Codable, Sendable, Hashable, Identifiable {
             selectedOptionIDs: answer.selectedOptionIDs,
             selectedOptionLabels: answer.selectedOptionIDs.compactMap { optionLabelsByID[$0] },
             freeText: answer.freeText,
+            customText: answer.customText,
             source: answerSource,
             answeredAt: answeredAt
         )
@@ -607,33 +608,57 @@ public struct UserQuestion: Codable, Sendable, Hashable, Identifiable {
 public struct UserQuestionAnswer: Codable, Sendable, Hashable {
     public var selectedOptionIDs: [String]
     public var freeText: String?
+    /// The person's own typed answer on a choice question ("Other"). This is
+    /// an answer, never a note: for single-select it is exclusive with the
+    /// declared options, for multiple-select it may accompany them. Every
+    /// choice question accepts it regardless of `allowsFreeText`, which only
+    /// governs the optional note. A non-nil empty value is a selected, still
+    /// incomplete custom-answer draft. Text-only
+    /// questions use `freeText` as their answer and never carry custom text.
+    public var customText: String?
 
-    public init(selectedOptionIDs: [String] = [], freeText: String? = nil) {
+    public init(selectedOptionIDs: [String] = [], freeText: String? = nil, customText: String? = nil) {
         self.selectedOptionIDs = selectedOptionIDs
         self.freeText = freeText
+        self.customText = customText
     }
 
-    private enum CodingKeys: String, CodingKey { case selectedOptionIDs, freeText }
+    private enum CodingKeys: String, CodingKey { case selectedOptionIDs, freeText, customText }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         selectedOptionIDs = try values.decodeIfPresent([String].self, forKey: .selectedOptionIDs) ?? []
         freeText = try values.decodeIfPresent(String.self, forKey: .freeText)
+        // Older persisted answers predate the custom-answer option; they
+        // decode with no custom text and keep their original meaning.
+        customText = try values.decodeIfPresent(String.self, forKey: .customText)
     }
 
     public var isEmpty: Bool {
-        selectedOptionIDs.isEmpty && (freeText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        selectedOptionIDs.isEmpty
+            && (freeText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (customText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Validates and normalizes this answer against `question`.
     /// `partial` permits an incomplete draft, but never an invalid option id,
-    /// too many selections for single-select, or disallowed free text.
+    /// too many selections for single-select, a custom answer combined with a
+    /// fixed option on single-select, or a note where the question forbids it.
     public func validated(for question: UserQuestion, partial: Bool) throws -> UserQuestionAnswer {
         let trimmedText = freeText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = (trimmedText?.isEmpty == false) ? trimmedText : nil
         if let text, text.count > UserQuestionRequest.maximumFreeTextCharacters {
             throw FloeError.validationFailed(
                 "The note must be at most \(UserQuestionRequest.maximumFreeTextCharacters) characters."
+            )
+        }
+        let trimmedCustom = customText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Preserve a selected empty custom field in drafts without ever
+        // accepting it as a completed answer, even beside multiple choices.
+        let custom = (trimmedCustom?.isEmpty == false) ? trimmedCustom : nil
+        if let custom, custom.count > UserQuestionRequest.maximumFreeTextCharacters {
+            throw FloeError.validationFailed(
+                "Your own answer must be at most \(UserQuestionRequest.maximumFreeTextCharacters) characters."
             )
         }
         guard Set(selectedOptionIDs).count == selectedOptionIDs.count else {
@@ -650,18 +675,27 @@ public struct UserQuestionAnswer: Codable, Sendable, Hashable {
             guard selectedOptionIDs.isEmpty else {
                 throw FloeError.validationFailed("This is a text question; it has no options to select.")
             }
+            guard customText == nil else {
+                throw FloeError.validationFailed("Type the answer in the answer field; a written-answer question has no separate custom answer.")
+            }
             if !partial, text == nil {
                 throw FloeError.validationFailed("Type an answer before continuing.")
             }
         } else {
+            if customText != nil, !selectedOptionIDs.isEmpty, question.selectionMode == .single {
+                throw FloeError.validationFailed("Choose either one of the options or your own answer, not both.")
+            }
+            if !partial, customText != nil, custom == nil {
+                throw FloeError.validationFailed("Type your own answer before continuing.")
+            }
             if !partial {
                 switch question.selectionMode {
                 case .single:
-                    guard selectedOptionIDs.count == 1 else {
+                    guard selectedOptionIDs.count == 1 || custom != nil else {
                         throw FloeError.validationFailed("Choose exactly one option before continuing.")
                     }
                 case .multiple:
-                    guard !selectedOptionIDs.isEmpty else {
+                    guard !selectedOptionIDs.isEmpty || custom != nil else {
                         throw FloeError.validationFailed("Choose at least one option before continuing.")
                     }
                 }
@@ -674,7 +708,22 @@ public struct UserQuestionAnswer: Codable, Sendable, Hashable {
                 throw FloeError.validationFailed("This question does not accept an additional note.")
             }
         }
-        return UserQuestionAnswer(selectedOptionIDs: selectedOptionIDs, freeText: text)
+        return UserQuestionAnswer(selectedOptionIDs: selectedOptionIDs, freeText: text,
+                                  customText: custom ?? (partial && customText != nil ? "" : nil))
+    }
+
+    /// Speech/composer replies use the same typed answer semantics as the
+    /// card: an exact offered label selects it; other text is the person's
+    /// own answer, independent of the optional-note setting.
+    public static func spokenText(_ text: String, for question: UserQuestion) -> UserQuestionAnswer? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        guard !question.isTextOnly else { return .init(freeText: text) }
+        let matching = question.options.filter {
+            $0.label.compare(text, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) == .orderedSame
+        }
+        if matching.count == 1 { return .init(selectedOptionIDs: [matching[0].id]) }
+        return .init(customText: text)
     }
 
     public func isComplete(for question: UserQuestion) -> Bool {
@@ -689,6 +738,7 @@ public struct UserQuestionAnswerRecord: Codable, Sendable, Hashable, Identifiabl
     public var selectedOptionIDs: [String]
     public var selectedOptionLabels: [String]
     public var freeText: String?
+    public var customText: String?
     public var source: UserQuestionAnswerSource
     public var answeredAt: Date?
 
@@ -698,6 +748,7 @@ public struct UserQuestionAnswerRecord: Codable, Sendable, Hashable, Identifiabl
         selectedOptionIDs: [String],
         selectedOptionLabels: [String],
         freeText: String?,
+        customText: String? = nil,
         source: UserQuestionAnswerSource,
         answeredAt: Date?
     ) {
@@ -706,6 +757,7 @@ public struct UserQuestionAnswerRecord: Codable, Sendable, Hashable, Identifiabl
         self.selectedOptionIDs = selectedOptionIDs
         self.selectedOptionLabels = selectedOptionLabels
         self.freeText = freeText
+        self.customText = customText
         self.source = source
         self.answeredAt = answeredAt
     }
@@ -1027,10 +1079,10 @@ public enum UserQuestionFormatting {
             let provenance = record.source == .human
                 ? "answer"
                 : "declared deadline default (NOT a human answer)"
-            let choice = record.selectedOptionLabels.isEmpty
-                ? (record.freeText ?? "")
-                : record.selectedOptionLabels.joined(separator: ", ")
-                    + (record.freeText.map { " — note: \($0)" } ?? "")
+            var choices = record.selectedOptionLabels
+            if let custom = record.customText { choices.append("custom answer: " + custom) }
+            let choice = choices.isEmpty ? (record.freeText ?? "")
+                : choices.joined(separator: ", ") + (record.freeText.map { " — note: \($0)" } ?? "")
             return "- \(record.question): \(choice) [\(provenance)]"
         }
         return """

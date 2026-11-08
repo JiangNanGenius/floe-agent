@@ -17,6 +17,19 @@ import FloeCore
 /// …) to localized copy, semantic color and the loading flag.
 enum RunStateLocalizer {
 
+    /// Empty response content does not imply a model is running: a native
+    /// workbench may be preparing its environment or executing a real tool.
+    static func responseWaitingTitle(for stateName: String?) -> LocalizedStringKey {
+        guard let stateName else { return "chat.reasoning_block_view.waiting_for_the_model" }
+        switch stateName {
+        case "preparing", "idle", "preparingToolCall", "reconnecting", "committingResults",
+             "reviewingApproval", "verifying", "executingTool", "waitingApproval", "compacting", "waitingUser", "cancelling":
+            return title(for: stateName)
+        default:
+            return "chat.reasoning_block_view.waiting_for_the_model"
+        }
+    }
+
     /// Localized title for a machine state name (§6.2 mapping table).
     /// Unknown names fall back to the honest "unknown" state instead of
     /// leaking raw machine text into the UI.

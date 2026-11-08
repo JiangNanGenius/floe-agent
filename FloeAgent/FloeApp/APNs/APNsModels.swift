@@ -119,6 +119,9 @@ struct APNsPersistentState: Codable, Sendable {
     /// preserves the on-disk schema of already saved installations.
     var tokenRenewalPending: Bool?
     var nextRegistrationAttemptAt: Date?
+    /// Closed, language-independent failure only; never retain server bodies
+    /// or native error userInfo. Missing in older state files remains nil.
+    var registrationFailure: APNsServiceError?
     var seen: [APNsSeenDelivery] = []
     var lastReceivedAt: Date?
     var lastWakeOutcome: APNsWakeOutcome?
@@ -172,10 +175,18 @@ enum APNsRemoteFailure: String, Codable, Sendable {
     }
 }
 
-enum APNsServiceError: Error, LocalizedError, Sendable {
+struct APNsNativeProofDiagnostic: Codable, Sendable, Equatable {
+    enum Stage: String, Codable, Sendable { case availability, generation, attestation, assertion }
+    enum Code: String, Codable, Sendable { case unsupported, invalidInput, invalidKey, serverUnavailable, unknown, invalidResult }
+    let stage: Stage
+    let code: Code
+}
+
+enum APNsServiceError: Error, LocalizedError, Codable, Sendable, Equatable {
     case invalidPayload, stalePayload, disabled, duplicate, unavailable, unconfigured, storage, protocolViolation, http(Int)
     case remote(APNsRemoteFailure)
     case enrollmentPending, foregroundRequired, attestationUnavailable, rateLimited(until: Date), enrollmentDeferred(until: Date)
+    case nativeVerification(APNsNativeProofDiagnostic)
     var errorDescription: String? {
         switch self {
         case .invalidPayload, .stalePayload: APNsText.t("这条通知已失效。", "This notification is no longer valid.")
@@ -183,10 +194,11 @@ enum APNsServiceError: Error, LocalizedError, Sendable {
         case .duplicate: APNsText.t("这条通知已处理。", "This notification was already handled.")
         case .unconfigured: APNsText.t("推送服务尚未连接。", "The push service is not connected yet.")
         case .storage: APNsText.t("无法读取推送设置，请重试。", "Unable to read push settings. Try again.")
-        case .protocolViolation: APNsText.t("未能确认服务登记，请重试。", "Service registration could not be confirmed. Try again.")
-        case .enrollmentPending, .enrollmentDeferred: APNsText.t("设备登记尚未确认，保持 App 打开后重试。", "Device registration is pending. Keep the app open and try again.")
-        case .foregroundRequired: APNsText.t("打开 App 后可完成设备登记。", "Open the app to finish device registration.")
-        case .attestationUnavailable: APNsText.t("此安装暂不能完成设备验证。", "Device verification is not available for this installation yet.")
+        case .protocolViolation: APNsText.t("暂时无法确认连接，请重试。", "Unable to confirm the connection. Try again.")
+        case .enrollmentPending, .enrollmentDeferred: APNsText.t("正在确认推送，请保持 App 打开。", "Checking push. Keep the app open.")
+        case .foregroundRequired: APNsText.t("请打开 App 后重试。", "Open the app and try again.")
+        case .attestationUnavailable, .nativeVerification:
+            APNsText.t("暂时无法验证推送，请稍后重试。", "Push verification is unavailable. Try again later.")
         case .rateLimited: APNsText.t("服务暂时繁忙，请稍后重试。", "The service is busy. Try again later.")
         case .remote(.tokenNeedsRenewal): APNsText.t("设备登记需要更新，正在等待系统确认。", "Device registration needs updating. Waiting for system confirmation.")
         case .remote(.invalidAppProof), .remote(.channelProofMismatch), .remote(.unsupportedInstallChannel):
@@ -197,6 +209,16 @@ enum APNsServiceError: Error, LocalizedError, Sendable {
     }
     var retryable: Bool {
         switch self { case .unavailable: true; case .http(let status): status == 408 || status == 429 || status >= 500; default: false }
+    }
+    var registrationState: String {
+        switch self {
+        case .rateLimited: "rateLimited"
+        case .enrollmentPending, .enrollmentDeferred, .foregroundRequired: "pending"
+        case .attestationUnavailable, .nativeVerification: "verificationUnavailable"
+        case .unconfigured: "unconfigured"
+        case .storage: "storageUnavailable"
+        default: "failed"
+        }
     }
 }
 #endif

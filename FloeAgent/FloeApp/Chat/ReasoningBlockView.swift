@@ -13,6 +13,7 @@ import UIKit
 
 /// Shown only until the first response content, never beside live reasoning.
 struct ModelResponseWaitingView: View {
+    var title: LocalizedStringKey = "chat.reasoning_block_view.waiting_for_the_model"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var breathing = false
     var body: some View {
@@ -21,7 +22,7 @@ struct ModelResponseWaitingView: View {
                 .frame(width: 6, height: 6)
                 .opacity(reduceMotion || !breathing ? 0.85 : 0.35)
                 .accessibilityHidden(true)
-            Text("chat.reasoning_block_view.waiting_for_the_model")
+            Text(title)
                 .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
         }
         .padding(.vertical, 8)

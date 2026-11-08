@@ -801,7 +801,7 @@
   },
   {
     "source": "FloeHeavyEditorSupport/Web/runtime.js",
-    "bytes": 21525
+    "bytes": 22429
   },
   {
     "source": "FloeFontKit/Web/variation.js",
@@ -1316,15 +1316,23 @@
     "bytes": 26076
   },
   {
+    "source": "FloeFontKit/Web/input.js",
+    "bytes": 244
+  },
+  {
     "source": "FloeFontKit/Web/view.js",
-    "bytes": 31244
+    "bytes": 34229
+  },
+  {
+    "source": "FloeFontKit/Web/read.js",
+    "bytes": 4769
   },
   {
     "source": "FloeFontKit/Web/native.js",
-    "bytes": 9892
+    "bytes": 10062
   },
   {
     "source": "FloeFontKit/Web/main.js",
-    "bytes": 5077
+    "bytes": 5150
   }
 ]

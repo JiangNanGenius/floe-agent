@@ -15,11 +15,35 @@ ARTIFACT_SUFFIXES={'.pdf','.gz','.log','.aux','.bbl','.blg','.bcf','.xml','.idx'
 class WorkerError(Exception):pass
 class Stopped(WorkerError):pass
 child=None;cancelled=False
+ISOLATION_NAMESPACES=('mnt','pid','net','ipc','uts','user')
+# Root-without-USERNS bubblewrap does not clear the bounding set itself.
+# Only this immutable system-Python launcher gets SETPCAP; every document
+# executable is entered after all five capability sets read back as zero.
+ROOT_PAYLOAD_LAUNCHER="# Fixed trusted launcher embedded in the hashed worker, never document code.\n# It runs inside bubblewrap's private namespaces/read-only system tree.\nimport ctypes,os,sys\nfrom pathlib import Path\n\nlibc=ctypes.CDLL(None,use_errno=True)\nlibc.prctl.argtypes=[ctypes.c_int,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong]\nlibc.prctl.restype=ctypes.c_int\n\ndef prctl(option,a=0,b=0,c=0,d=0):\n    if libc.prctl(option,a,b,c,d)!=0:\n        error=ctypes.get_errno()\n        raise OSError(error,'TeX privilege launcher prctl '+str(option)+': '+os.strerror(error))\n\nif len(sys.argv)<2 or not os.path.isabs(sys.argv[1]):\n    raise RuntimeError('TeX privilege launcher requires a fixed absolute executable')\n\n# Refuse any gain of privilege before entering the document executable.\nprctl(38,1)  # PR_SET_NO_NEW_PRIVS\nlast=int(Path('/proc/sys/kernel/cap_last_cap').read_text().strip())\nif not 8<=last<=4096:\n    raise RuntimeError('Unsupported Linux capability range')\nfor capability in [value for value in range(last+1) if value!=8]+[8]:\n    prctl(24,capability)  # PR_CAPBSET_DROP; SETPCAP dropped last\nprctl(47,4)  # PR_CAP_AMBIENT / PR_CAP_AMBIENT_CLEAR_ALL\n\nclass Header(ctypes.Structure):\n    _fields_=[('version',ctypes.c_uint32),('pid',ctypes.c_int)]\nclass Capabilities(ctypes.Structure):\n    _fields_=[('effective',ctypes.c_uint32),('permitted',ctypes.c_uint32),('inheritable',ctypes.c_uint32)]\nlibc.capset.argtypes=[ctypes.POINTER(Header),ctypes.POINTER(Capabilities)]\nlibc.capset.restype=ctypes.c_int\nheader=Header(0x20080522,0)\nempty=(Capabilities*2)()\nif libc.capset(ctypes.byref(header),empty)!=0:\n    error=ctypes.get_errno()\n    raise OSError(error,'TeX privilege launcher capset: '+os.strerror(error))\n\nstatus=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)\nkeys=('CapInh','CapPrm','CapEff','CapBnd','CapAmb')\nremaining={key:status[key].strip() for key in keys if int(status[key],16)!=0}\nif remaining or status['NoNewPrivs'].strip()!='1':\n    raise RuntimeError('TeX privilege launcher refused payload: '+repr(remaining))\nos.execv(sys.argv[1],sys.argv[1:])\n"
+ISOLATION_PROBE="""# floe-latex-isolation-probe-v1
+import json,os
+from pathlib import Path
+status=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+print(json.dumps({'namespaces':{name:os.readlink('/proc/self/ns/'+name) for name in ('mnt','pid','net','ipc','uts','user')},'status':{key:status.get(key,'').strip() for key in ('CapInh','CapPrm','CapEff','CapBnd','CapAmb','NoNewPrivs')}}))
+"""
+
+def namespace_ids():
+    return {name:os.readlink('/proc/self/ns/'+name) for name in ISOLATION_NAMESPACES}
 
 def isolated_command(args,cwd=None,source=None,output=None,cache=None):
     program=shutil.which('bwrap')
     if not program:raise WorkerError('Install bubblewrap in the selected Linux environment to isolate document inputs and workers')
-    command=[program,'--die-with-parent','--new-session','--unshare-user','--unshare-pid','--unshare-ipc','--unshare-uts','--unshare-net','--cap-drop','ALL','--clearenv']
+    command=[program,'--die-with-parent','--new-session']
+    # Floe's Linux project runner already runs as guest root in a chroot.
+    # Linux refuses CLONE_NEWUSER from a chroot. Bubblewrap officially
+    # supports root without a user namespace: it still creates a private
+    # mount namespace and must remove all payload capabilities. Non-root
+    # callers always require a user namespace; there is no try/fallback mode.
+    root_mode=os.geteuid()==0
+    if not root_mode:command+=['--unshare-user']
+    command+=['--unshare-pid','--unshare-ipc','--unshare-uts','--unshare-net','--cap-drop','ALL']
+    if root_mode:command+=['--cap-add','CAP_SETPCAP']
+    command+=['--clearenv']
     # Construct an empty filesystem. Never bind /, the user's home, a task
     # workspace, another project, credentials, or the host environment.
     for path in ['/usr','/bin','/sbin','/lib','/lib64','/etc/alternatives','/etc/fonts','/etc/texmf','/etc/ld.so.cache','/etc/locale.alias','/etc/papersize','/etc/paperspecs','/var/lib/texmf','/var/cache/fontconfig']:
@@ -29,11 +53,27 @@ def isolated_command(args,cwd=None,source=None,output=None,cache=None):
     for path in [output,cache]:
         if path is not None:command+=['--bind',str(path),str(path)]
     command+=['--chdir',str(cwd) if cwd is not None else '/']
+    if root_mode:args=['/usr/bin/python3','-I','-B','-c',ROOT_PAYLOAD_LAUNCHER]+args
     return command+['--']+args
 
 def verify_isolation():
-    result=subprocess.run(isolated_command(['/usr/bin/true']),env={'PATH':os.environ.get('PATH','/usr/bin:/bin')},capture_output=True,timeout=10)
+    # Resolve the trusted helper before reading Linux namespace state so a
+    # missing dependency remains actionable. The payload Python is in the
+    # read-only system tree, never the task's writable venv or document root.
+    command=isolated_command(['/usr/bin/python3','-I','-B','-c',ISOLATION_PROBE])
+    parent=namespace_ids()
+    result=subprocess.run(command,env={'PATH':os.environ.get('PATH','/usr/bin:/bin')},capture_output=True,timeout=10)
     if result.returncode!=0:raise WorkerError('The selected environment cannot isolate TeX files, network and worker processes: '+result.stderr.decode(errors='replace')[-1024:])
+    try:
+        proof=json.loads(result.stdout)
+        required=ISOLATION_NAMESPACES[:5] if os.geteuid()==0 else ISOLATION_NAMESPACES
+        if any(not proof['namespaces'].get(name) or proof['namespaces'][name]==parent[name] for name in required):raise ValueError('namespace did not change')
+        status=proof['status']
+        remaining={key:status[key] for key in ('CapInh','CapPrm','CapEff','CapBnd','CapAmb') if int(status[key],16)!=0}
+        if remaining:raise ValueError('payload retained capabilities: '+json.dumps(remaining,sort_keys=True))
+        if status['NoNewPrivs']!='1':raise ValueError('payload could gain privileges')
+    except (KeyError,TypeError,ValueError) as error:
+        raise WorkerError('The selected environment did not confirm TeX namespace and privilege isolation: '+str(error)) from error
 
 def stop(signum,frame):
     global cancelled

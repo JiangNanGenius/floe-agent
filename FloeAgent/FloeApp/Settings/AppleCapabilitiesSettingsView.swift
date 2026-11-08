@@ -2,6 +2,9 @@
 import Foundation
 import SwiftUI
 import FloeTools
+#if canImport(ImagePlayground)
+import ImagePlayground
+#endif
 
 import FloeCore
 #if canImport(HealthKit)
@@ -14,10 +17,16 @@ import CoreNFC
 /// switch controls whether a tool is advertised to the model; the operating
 /// system remains the final authority and prompts only on first real use.
 enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
-    case calendar, reminders, home, maps, web, watch, vision, mail, documents, camera, location, shortcuts, automation, clipboard, health, nfc, contacts, media, alarm
+    case calendar, reminders, home, maps, web, watch, vision, mail, documents, camera, location, shortcuts, automation, clipboard, health, nfc, contacts, media, alarm, imagePlayground
 
     var isAvailableOnDevice: Bool {
         switch self {
+        case .imagePlayground:
+            #if canImport(ImagePlayground)
+            return ImagePlaygroundViewController.isAvailable
+            #else
+            return false
+            #endif
         case .watch:
             // No companion product is shipped in this milestone.
             return false
@@ -60,6 +69,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .media: FloeL10n.l("settings.apple_capabilities_settings_view.media_library")
         case .nfc: FloeL10n.l("settings.apple_capabilities_settings_view.nfc")
         case .alarm: FloeL10n.l("settings.apple_capabilities_settings_view.alarm")
+        case .imagePlayground: AppleImagePlaygroundCopy.title
         }
     }
     var icon: String {
@@ -83,6 +93,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .media: "music.note.list"
         case .nfc: "antenna.radiowaves.left.and.right"
         case .alarm: "alarm"
+        case .imagePlayground: "photo.badge.sparkles"
         }
     }
     var detail: String {
@@ -106,6 +117,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .media: FloeL10n.l("settings.apple_capabilities_settings_view.search_and_play_media_from_your_local_library")
         case .nfc: FloeL10n.l("settings.apple_capabilities_settings_view.scan_one_tag_foreground_only_read_only")
         case .alarm: FloeL10n.l("settings.apple_capabilities_settings_view.schedule_system_alarms_and_timers")
+        case .imagePlayground: AppleImagePlaygroundCopy.detail
         }
     }
     var toolPrefixes: [String] {
@@ -129,6 +141,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .media: ["apple.media."]
         case .nfc: ["apple.nfc."]
         case .alarm: ["apple.alarm."]
+        case .imagePlayground: [AppleImagePlaygroundTool.name]
         }
     }
 }

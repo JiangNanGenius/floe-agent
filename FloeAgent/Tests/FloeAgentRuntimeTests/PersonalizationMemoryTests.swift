@@ -860,3 +860,244 @@ struct PersonalizationMemoryTests {
         }
     }
 }
+
+@Suite("FloeAgentRuntime.PendingMemoryCapacity")
+struct PendingMemoryCapacityTests {
+    private func candidate(_ index: Int, createdAt: Date? = nil, importance: Double? = nil) -> MemoryCandidate {
+        MemoryCandidate(scope: .userProfile, content: "pending capacity fixture \(index)", confidence: 1, stability: 1,
+            importance: importance ?? 0.5, sensitivity: .personal, origin: .automaticTurnReview,
+            evidence: [.init(messageID: nil, excerpt: "synthetic supporting evidence \(index)",
+                source: .init(sourceID: "fixture", revision: "1", ownerID: "synthetic", locator: "row/\(index)"))],
+            createdAt: createdAt ?? Date(timeIntervalSince1970: 1_700_000_000 + Double(index)))
+    }
+
+    private func setup() async throws -> (DatabaseManager, SQLitePersonalizationStore, SQLiteIntelligenceStore, MemoryCandidatePipeline) {
+        let db = try DatabaseManager.inMemory(); try await db.migrate()
+        let docs = SQLitePersonalizationStore(database: db), memories = SQLiteIntelligenceStore(database: db)
+        return (db, docs, memories, MemoryCandidatePipeline(documents: docs, memories: memories))
+    }
+
+    @Test("Real App pipeline retains newest 50 and deletes discarded payload without changing active/profile/SOUL")
+    func durableDefault50FIFOAndIsolation() async throws {
+        let (db, docs, memories, pipeline) = try await setup()
+        let active = MemoryEntry(scope: .userProfile, status: .active, content: "confirmed outside review capacity",
+                                 confidence: 1, importance: 1, sourceKind: .explicitUserRequest)
+        try await memories.saveMemory(active, evidence: [])
+        _ = try await docs.applyCurrent(kind: .userProfile, workspaceID: nil, content: "profile retained", source: .manual,
+                                       evidenceDigest: "", expectedRevision: nil, now: Date())
+        _ = try await docs.applyCurrent(kind: .soul, workspaceID: nil, content: "soul retained", source: .manual,
+                                       evidenceDigest: "", expectedRevision: nil, now: Date())
+        var submitted: [MemoryCandidate] = []
+        for i in 0..<73 {
+            let item = candidate(i, importance: i < 23 ? 1 : 0.1); submitted.append(item)
+            #expect(try await pipeline.submit(item).status == .pending)
+        }
+        let snapshot = try await docs.pendingReview()
+        #expect(snapshot.capacity == 50 && snapshot.candidates.count == 50)
+        #expect(snapshot.candidates.map(\.id) == Array(submitted.suffix(50).reversed()).map(\.id))
+        let rawCount = try await db.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory_candidates") }
+        #expect(rawCount == 50)
+        let oldest = submitted[0].id.uuidString
+        #expect(try await db.reader { db in try Row.fetchOne(db, sql: "SELECT * FROM memory_candidates WHERE id = ?", arguments: [oldest]) == nil })
+        #expect(try await memories.memory(id: active.id)?.content == active.content)
+        #expect(try await docs.liveSnapshot(workspaceID: nil) == .init(soul: "soul retained", profile: "profile retained"))
+    }
+
+    @Test("Capacity persists and clamps to 1...100; resizing irreversibly removes the oldest pending rows")
+    func maximum100ResizeAndNormalization() async throws {
+        let (db, docs, _, pipeline) = try await setup()
+        #expect(try await docs.setPendingCapacity(999).capacity == 100)
+        var items: [MemoryCandidate] = []
+        for i in 0..<121 { let item = candidate(i); items.append(item); _ = try await pipeline.submit(item) }
+        #expect(try await docs.pendingReview().candidates.count == 100)
+        #expect(try await docs.setPendingCapacity(7).candidates.map(\.id) == Array(items.suffix(7).reversed()).map(\.id))
+        let reopened = SQLitePersonalizationStore(database: db)
+        #expect(try await reopened.pendingReview().capacity == 7)
+        try await SQLiteSettingsStore(database: db).setValue("-9", forKey: MemoryPendingCapacity.settingKey)
+        #expect(try await reopened.pendingReview().capacity == 1)
+        #expect(try await reopened.candidates(status: .pending).map(\.id) == [items.last!.id])
+        #expect(try await SQLiteSettingsStore(database: db).value(forKey: MemoryPendingCapacity.settingKey) == "1")
+        try await SQLiteSettingsStore(database: db).setValue("not JSON", forKey: MemoryPendingCapacity.settingKey)
+        #expect(try await reopened.pendingReview().capacity == 50)
+        #expect(try await reopened.pendingReview().candidates.count == 1)
+        try await SQLiteSettingsStore(database: db).setValue("100000", forKey: MemoryPendingCapacity.settingKey)
+        #expect(try await reopened.pendingReview().capacity == 100)
+        try await SQLiteSettingsStore(database: db).setValue("1e200", forKey: MemoryPendingCapacity.settingKey)
+        #expect(try await reopened.pendingReview().capacity == 100)
+        try await SQLiteSettingsStore(database: db).setValue("5.5", forKey: MemoryPendingCapacity.settingKey)
+        #expect(try await reopened.pendingReview().capacity == 5)
+    }
+
+    @Test("FIFO follows creation time including fractions, with stable admission ties and immutable duplicate identity")
+    func creationOrderTiesAndDuplicateAdmission() async throws {
+        let (_, docs, _, pipeline) = try await setup(); _ = try await docs.setPendingCapacity(2)
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let newest = candidate(1, createdAt: base.addingTimeInterval(0.9), importance: 0.1)
+        let oldest = candidate(2, createdAt: base.addingTimeInterval(0.1), importance: 1)
+        let middle = candidate(3, createdAt: base.addingTimeInterval(0.5), importance: 0.5)
+        _ = try await pipeline.submit(newest); _ = try await pipeline.submit(oldest); _ = try await pipeline.submit(middle)
+        #expect(try await docs.pendingReview().candidates.map(\.id) == [newest.id, middle.id])
+        let backdated = candidate(4, createdAt: base.addingTimeInterval(-1))
+        #expect(try await pipeline.submit(backdated).status == .rejected)
+        #expect(try await docs.candidates(status: .pending).map(\.id) == [newest.id, middle.id])
+        let a = candidate(5, createdAt: base.addingTimeInterval(1)), b = candidate(6, createdAt: base.addingTimeInterval(1))
+        _ = try await pipeline.submit(a); _ = try await pipeline.submit(b)
+        var altered = a; altered.content = "must not replace persisted proposal"; altered.createdAt = base.addingTimeInterval(100)
+        _ = try await pipeline.submit(altered)
+        #expect(try await docs.pendingReview().candidates.map(\.id) == [b.id, a.id])
+        #expect(try await docs.pendingReview().candidates.last?.candidate.content == a.content)
+        let c = candidate(7, createdAt: base.addingTimeInterval(1)); _ = try await pipeline.submit(c)
+        #expect(try await docs.pendingReview().candidates.map(\.id) == [c.id, b.id])
+    }
+
+    @Test("Reopening an oversized legacy queue enforces its saved capacity in durable SQLite")
+    func reopenedLegacyQueuePrunesBeforeReturning() async throws {
+        let root = ProcessInfo.processInfo.environment["FLOE_PENDING_MEMORY_TEST_ROOT"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory
+        let folder = root.appendingPathComponent("pending-reopen-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("fixture.sqlite")
+        let firstDB = try DatabaseManager(path: url); try await firstDB.migrate()
+        let store = SQLitePersonalizationStore(database: firstDB); _ = try await store.setPendingCapacity(13)
+        let records = (0..<67).map { candidate($0) }
+        try await firstDB.writer { db in
+            for record in records {
+                try db.execute(sql: """
+                    INSERT INTO memory_candidates (id,scope,content,confidence,stability,importance,sensitivity,origin,status,created_at,updated_at)
+                    VALUES (?, 'user', ?, 1, 1, 1, 'personal', 'automaticTurnReview', 'pending', ?, ?)
+                    """, arguments: [record.id.uuidString, record.content,
+                        ISO8601DateFormatter().string(from: record.createdAt), ISO8601DateFormatter().string(from: record.createdAt)])
+            }
+        }
+        let reopenedDB = try DatabaseManager(path: url); try await reopenedDB.migrate()
+        let reopened = SQLitePersonalizationStore(database: reopenedDB)
+        let snapshot = try await reopened.pendingReview()
+        #expect(snapshot.capacity == 13 && snapshot.candidates.map(\.id) == Array(records.suffix(13).reversed()).map(\.id))
+        #expect(try await reopenedDB.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory_candidates") } == 13)
+    }
+
+    @Test("An evicted pending item cannot later be approved from a stale review screen")
+    func staleReviewAfterEvictionCannotActivate() async throws {
+        let (db, docs, memories, pipeline) = try await setup(); _ = try await docs.setPendingCapacity(1)
+        let old = candidate(0); _ = try await pipeline.submit(old); _ = try await pipeline.submit(candidate(1))
+        let other = MemoryCandidatePipeline(documents: SQLitePersonalizationStore(database: db), memories: memories)
+        await #expect(throws: (any Error).self) { try await other.resolvePending(id: old.id, activate: true) }
+        #expect(try await memories.memory(id: old.id) == nil)
+        #expect(try await docs.candidates().contains { $0.id == old.id } == false)
+    }
+
+    @Test("Independent review writers have one winner; rejection never leaves an active memory")
+    func concurrentApproveRejectHasOneAtomicWinner() async throws {
+        let (db, docs, memories, pipeline) = try await setup()
+        let item = candidate(0); _ = try await pipeline.submit(item)
+        let other = MemoryCandidatePipeline(documents: SQLitePersonalizationStore(database: db), memories: memories)
+        let outcomes = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+            group.addTask { do { try await pipeline.resolvePending(id: item.id, activate: true); return true } catch { return false } }
+            group.addTask { do { try await other.resolvePending(id: item.id, activate: false); return true } catch { return false } }
+            var result: [Bool] = []; for await success in group { result.append(success) }; return result
+        }
+        #expect(outcomes.filter { $0 }.count == 1)
+        let final = try #require(try await docs.candidates().first { $0.id == item.id })
+        let active = try await memories.memory(id: item.id)
+        #expect((final.status == .activated) == (active != nil))
+        #expect(final.status != .pending)
+        _ = try await pipeline.submit(item)
+        #expect(try await docs.candidates().first { $0.id == item.id }?.status == final.status)
+    }
+
+    @Test("Concurrent admission and review cannot activate a discarded row or exceed the committed limit")
+    func concurrentAdmissionAndReviewPreserveInvariants() async throws {
+        let (db, docs, memories, pipeline) = try await setup(); _ = try await docs.setPendingCapacity(1)
+        let old = candidate(0), newest = candidate(1); _ = try await pipeline.submit(old)
+        let otherDocs = SQLitePersonalizationStore(database: db)
+        let admission = Task { try await MemoryCandidatePipeline(documents: otherDocs, memories: memories).submit(newest) }
+        let review = Task { () -> Bool in do { try await pipeline.resolvePending(id: old.id, activate: true); return true } catch { return false } }
+        _ = try await admission.value
+        let approved = await review.value
+        let pending = try await docs.pendingReview()
+        #expect(pending.candidates.map(\.id) == [newest.id])
+        let active = try await memories.memory(id: old.id)
+        #expect((active != nil) == approved)
+        let oldRecords = try await docs.candidates().filter { $0.id == old.id }
+        #expect(approved ? oldRecords.first?.status == .activated : oldRecords.isEmpty)
+    }
+
+    @Test("An activation failure after the active write rolls back both active evidence and candidate status")
+    func approvalFailureRollsBackWholeTransaction() async throws {
+        let (db, docs, memories, pipeline) = try await setup()
+        let item = candidate(0); _ = try await pipeline.submit(item)
+        try await db.writer { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_candidate_review BEFORE UPDATE OF status ON memory_candidates
+                WHEN NEW.status = 'activated' BEGIN SELECT RAISE(ABORT, 'synthetic review failure'); END
+                """)
+        }
+        await #expect(throws: (any Error).self) { try await pipeline.resolvePending(id: item.id, activate: true) }
+        #expect(try await memories.memory(id: item.id) == nil)
+        #expect(try await db.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory_evidence") } == 0)
+        #expect(try await docs.pendingReview().candidates.map(\.id) == [item.id])
+        try await db.writer { db in try db.execute(sql: "DROP TRIGGER fail_candidate_review") }
+        try await pipeline.resolvePending(id: item.id, activate: true)
+        #expect(try await memories.memory(id: item.id)?.content == item.content)
+        #expect(try await db.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM memory_evidence") } == 1)
+    }
+
+    @Test("Capacity deletion failure rolls back both admission and a changed saved setting")
+    func pruneFailureRollsBackAdmissionAndResize() async throws {
+        let (db, docs, _, pipeline) = try await setup(); _ = try await docs.setPendingCapacity(3)
+        for i in 0..<3 { _ = try await pipeline.submit(candidate(i)) }
+        let before = try await docs.pendingReview()
+        try await db.writer { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_pending_prune BEFORE DELETE ON memory_candidates
+                WHEN OLD.status = 'pending' BEGIN SELECT RAISE(ABORT, 'synthetic prune failure'); END
+                """)
+        }
+        await #expect(throws: (any Error).self) { _ = try await pipeline.submit(candidate(3)) }
+        await #expect(throws: (any Error).self) { _ = try await docs.setPendingCapacity(1) }
+        #expect(try await docs.pendingReview() == before)
+        #expect(try await SQLiteSettingsStore(database: db).value(forKey: MemoryPendingCapacity.settingKey) == "3")
+    }
+
+    @Test("Rejected and expired review history survives FIFO cleanup and secrets remain rejected")
+    func reviewPolicyAndHistoryRemainSeparate() async throws {
+        let (_, docs, _, pipeline) = try await setup(); _ = try await docs.setPendingCapacity(1)
+        let denied = candidate(0); _ = try await pipeline.submit(denied); try await pipeline.resolvePending(id: denied.id, activate: false)
+        var expired = candidate(1); expired.expiresAt = Date.distantPast
+        _ = try await pipeline.submit(expired)
+        _ = try await docs.pendingReview()
+        var secret = candidate(2); secret.content = "api_key=fixture-secret"
+        #expect(try await pipeline.submit(secret).status == .rejected)
+        _ = try await pipeline.submit(candidate(3)); _ = try await pipeline.submit(candidate(4))
+        let history = try await docs.candidates(status: .rejected)
+        #expect(Set(history.map(\.id)) == [denied.id, expired.id, secret.id])
+        #expect(try await docs.pendingReview().candidates.count == 1)
+    }
+
+    @Test("Transient helper uses the same default/hard cap and FIFO instead of importance or implicit workspace eight")
+    func transientQueueMatchesRollingPolicy() async throws {
+        #expect(MemoryReviewLimits().maximumPending == 50 && MemoryReviewLimits().maximumPendingPerWorkspace == 50)
+        #expect(MemoryReviewLimits(maximumPending: Int.max).maximumPending == 100)
+        let queue = MemoryPendingQueue(), workspace = UUID()
+        for i in 0..<60 {
+            var item = candidate(i, importance: i < 10 ? 1 : 0.1); item.scope = .workspace(workspace)
+            _ = await queue.enqueue(item)
+        }
+        let retained = await queue.all()
+        #expect(retained.count == 50 && retained.last?.content == "pending capacity fixture 10")
+        #expect(MemoryReviewLimits().maximumRecallCount == 6 && MemoryReviewLimits().maximumRecallTokens == 1_500)
+    }
+    @Test("Cancelled admission cannot persist a candidate after model review")
+    func cancelledAdmissionPersistsNothing() async throws {
+        let (_, docs, _, pipeline) = try await setup()
+        let item = candidate(0)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await pipeline.submit(item)
+        }
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(try await docs.candidates().isEmpty)
+    }
+
+}

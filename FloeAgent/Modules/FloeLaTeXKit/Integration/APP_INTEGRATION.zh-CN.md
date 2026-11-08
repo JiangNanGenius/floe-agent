@@ -26,7 +26,7 @@
 
 任务／手记保留自己的原件解析与授权，不强行通过空间单例查找。编辑器的 selection、undo、assistant 会话彼此隔离；共享的是工程与排版服务。
 
-构造 `LaTeXEditorSession` 时传入该原件的 lease、实际服务、`formulaRenderer`、`engineCapabilities` 和 `typesetAction`。原生 Typeset 按钮应沿用既有原生工作台的真实 durable run／环境／审批记录入口，捕获准确 project/revision/payload；模型调用继续走 AgentRuntime，不能伪造 native-ui 来源或仅构造一个带 grant UUID 的 ToolContext。排版运行期间可以关闭编辑器，服务继续持有原件及环境生命周期。
+构造 `LaTeXEditorSession` 时传入该原件的 lease、实际服务、`formulaRenderer`、`engineCapabilities`、`typesetAction` 与服务拥有的 `operationIsActive`。原生 Typeset 按钮应沿用既有原生工作台的真实 durable run／环境／审批记录入口，捕获准确 project/revision/payload；模型调用继续走 AgentRuntime，不能伪造 native-ui 来源或仅构造一个带 grant UUID 的 ToolContext。排版运行期间可以关闭编辑器，服务继续持有原件及环境生命周期。重开时通过 `LaTeXWorkbenchOperation` 接回状态及 Stop；不共享输入、选择或撤销状态，也不再启动第二个操作。
 
 PDF 回调必须使用现有受保护读取服务，按 `context.location` 定位同次构建；反向定位通过 `onSource(page,x,y)` 返回相对于纸张左上角的 PDF points，注意 PDFKit 页面坐标的 Y 翻转与页面边界。宏包或图片预览不能绕开项目权限与 PDFKitGate。
 
@@ -50,4 +50,5 @@ PDF 回调必须使用现有受保护读取服务，按 `context.location` 定�
 - `LaTeXNativeRuntime` 为显式原生排版／准备事件建立真实 saved run、执行 pin 和租约，通过 `NativeWorkbenchApproval` 持久记录精确原始参数，再发行现有 runtime authority；未确认停止时保留原件和 run。
 - Notes run 使用自身 scratch 的显式 Linux pin，保留既有 Notes 助手和 scope；每次原件调用以及 native grant 的前后都复核。模型不能调用原生 UI 的创建／授权入口。
 - `LaTeXProjectSession` 每个编辑器独立，注入现有 PDFReadingSession／异常保护和 SwiftMath 图像；文件预览只读保存的 PDF／源码，不初始化编辑器或触发编译。
-- 主 App 及 8 项新契约仅完成构建。实际模型调用、App Linux 工具准备／排版／文件返回、最终 Simulator 和 Bio 原 native grant 回归由主线在对应产物上验证。
+- 既有 8 项 App／授权契约已在主线实际 App 的定向测试中通过。实际 App 已验证空间与手记入口、归属、保存重开、工程 ZIP 和历史恢复；首次安装与隔离探针暴露了宿主临时路径和 guest chroot 兼容问题，原始失败保留。
+- 本轮修复已通过 UIKit 组件对象编译和 12 项 worker 合成协议契约。新的 App 桥接／取消测试、恢复安装、root 模式真实隔离、App PDF／定位／返回和实际模型调用仍待主线对应产物验收；旧 worker 的独立 Linux 结果不能替代本轮摘要的资格。

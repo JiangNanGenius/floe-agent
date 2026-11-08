@@ -36,7 +36,7 @@ struct AssistantMessageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            MarkdownRendererView(source: text, isStreaming: isStreaming)
+            InlineAnswerBodyView(source: text, isStreaming: isStreaming)
             if !attachments.isEmpty {
                 AttachmentChipRow(items: attachments, alignment: .leading, onOpen: onOpenAttachment, onDesign: onDesignAttachment)
             }

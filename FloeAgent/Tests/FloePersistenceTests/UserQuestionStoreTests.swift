@@ -90,6 +90,87 @@ struct UserQuestionStoreTests {
         #expect(version == DatabaseManager.currentSchemaVersion)
     }
 
+    @Test("Custom drafts survive SQLite reopen and CAS preserves exactly one real custom answer")
+    func customDraftReopenAndCAS() async throws {
+        let (database, conversation, run) = try await fixture()
+        let store = UserQuestionStore(database: database)
+        let snapshot = try await store.register(try registration(conversationID: conversation, runID: run,
+            drafts: [.init(question: "Which?", options: [.init(id: "a", label: "A")], allowsFreeText: false)]))
+        let target = snapshot.target(for: try #require(snapshot.currentQuestion))
+        _ = try await store.saveDraft(target: target, draft: .init(customText: "  "), now: Date())
+        let restoredStore = UserQuestionStore(database: database)
+        let restored = try #require(try await restoredStore.snapshot(requestID: snapshot.requestID))
+        #expect(restored.questions[0].draftAnswer?.customText == "")
+        #expect(restored.questions[0].status == .pending)
+        await #expect(throws: (any Error).self) {
+            try await restoredStore.submitHumanAnswer(target: target, answer: .init(customText: " "), now: Date())
+        }
+        let accepted = try await restoredStore.submitHumanAnswer(target: target,
+            answer: .init(customText: "  My own answer  "), now: Date())
+        #expect(accepted.accepted)
+        #expect(accepted.answer?.customText == "My own answer")
+        #expect(accepted.answer?.freeText == nil)
+        #expect(accepted.answer?.selectedOptionIDs.isEmpty == true)
+        let duplicate = try await store.submitHumanAnswer(target: target,
+            answer: .init(selectedOptionIDs: ["a"]), now: Date())
+        #expect(!duplicate.accepted)
+        #expect(duplicate.alreadySettled)
+        #expect(duplicate.answer?.customText == "My own answer")
+        let readback = try #require(try await UserQuestionStore(database: database).snapshot(requestID: snapshot.requestID))
+        #expect(readback.questions[0].answer?.customText == "My own answer")
+        #expect(readback.questions[0].draftAnswer == nil)
+        #expect(readback.questions[0].answerSource == .human)
+        #expect(readback.questions[0].revision == target.expectedRevision + 1)
+    }
+
+    @Test("Multi custom text, selected choices and optional notes remain distinct in durable delivery")
+    func customMultiNoteDeliveryAndLegacyDecode() async throws {
+        let (database, conversation, run) = try await fixture()
+        let store = UserQuestionStore(database: database)
+        let snapshot = try await store.register(try registration(conversationID: conversation, runID: run,
+            waitPolicy: .optionalContinue, drafts: [.init(question: "Choose many", options: [.init(id: "a", label: "A")],
+                selection: .multiple, allowsFreeText: true)]))
+        let target = snapshot.target(for: try #require(snapshot.currentQuestion))
+        _ = try await store.submitHumanAnswer(target: target,
+            answer: .init(selectedOptionIDs: ["a"], freeText: "A reason", customText: "Another answer"), now: Date())
+        let reopened = UserQuestionStore(database: database)
+        let deliveries = try await reopened.undeliveredAnswers(conversationID: conversation)
+        let delivery = try #require(deliveries.first)
+        #expect(delivery.answers[0].selectedOptionIDs == ["a"])
+        #expect(delivery.answers[0].freeText == "A reason")
+        #expect(delivery.answers[0].customText == "Another answer")
+        #expect(delivery.text.contains("custom answer: Another answer"))
+        #expect(delivery.text.contains("note: A reason"))
+        #expect(!delivery.text.contains("note: Another answer"))
+        let legacy = try JSONDecoder().decode(UserQuestionAnswer.self,
+            from: Data(#"{"selectedOptionIDs":["a"],"freeText":"Legacy note"}"#.utf8))
+        #expect(legacy.customText == nil)
+        #expect(legacy.freeText == "Legacy note")
+        let legacyRecord = try JSONDecoder().decode(UserQuestionAnswerRecord.self,
+            from: Data(#"{"questionID":"old","question":"Old?","selectedOptionIDs":[],"selectedOptionLabels":[],"freeText":"Old answer","source":"human"}"#.utf8))
+        #expect(legacyRecord.customText == nil)
+        #expect(legacyRecord.freeText == "Old answer")
+        try await reopened.markDelivered(questionIDs: delivery.answers.map(\.questionID), at: Date())
+        #expect(try await store.undeliveredAnswers(conversationID: conversation).isEmpty)
+    }
+
+    @Test("Custom answers in temporary questions remain RAM-only and are purged with their run")
+    func temporaryCustomAnswerStaysInRAM() async throws {
+        let (database, conversation, run) = try await fixture()
+        let store = UserQuestionStore(database: database)
+        let snapshot = try await store.register(try registration(conversationID: conversation, runID: run,
+            drafts: [.init(question: "Temporary choice", options: [.init(id: "a", label: "A")])], ephemeral: true))
+        let target = snapshot.target(for: try #require(snapshot.currentQuestion))
+        _ = try await store.saveDraft(target: target, draft: .init(customText: "Draft in RAM"), now: Date())
+        _ = try await store.submitHumanAnswer(target: target, answer: .init(customText: "Only in RAM"), now: Date())
+        #expect(try await store.snapshot(requestID: snapshot.requestID)?.questions[0].answer?.customText == "Only in RAM")
+        let rows = try await database.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM user_questions") }
+        #expect(rows == 0)
+        #expect(try await UserQuestionStore(database: database).snapshot(requestID: snapshot.requestID) == nil)
+        await store.purgeEphemeral(runID: run)
+        #expect(try await store.snapshot(requestID: snapshot.requestID) == nil)
+    }
+
     @Test("Registration is idempotent and refuses a reused call for different questions")
     func registrationIsIdempotentAndBound() async throws {
         let (database, conversation, run) = try await fixture()

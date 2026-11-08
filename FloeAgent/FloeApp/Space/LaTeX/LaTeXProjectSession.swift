@@ -15,6 +15,7 @@ import FloeLaTeXHostAdapter
     private let access:LaTeXHostProject
     private let composition:LaTeXAppComposition
     private(set) var preparingToolchain=false
+    @ObservationIgnored private var shownNativeFailureID:UUID?
     @ObservationIgnored private var preparationTask:Task<[LaTeXEngineCapability],Error>?
     private init(original:LaTeXOriginal,access:LaTeXHostProject,composition:LaTeXAppComposition,editor:LaTeXEditorSession) {
         self.original=original;self.access=access;self.composition=composition;self.editor=editor
@@ -25,7 +26,7 @@ import FloeLaTeXHostAdapter
         let editor=LaTeXEditorSession(store:access.store,builds:host.builds,chinese:IDELanguageRunText.isChinese,
             lifetime:access,formulaRenderer:LaTeXFormulaImage.image,typesetAction:{store,revision,configuration in
                 try await composition.nativeRuntime.typeset(store,revision:revision,configuration:configuration)
-            })
+            },operationIsActive:{composition.nativeRuntime.operations[id] != nil})
         await editor.load()
         return .init(original:original,access:access,composition:composition,editor:editor)
     }
@@ -38,8 +39,23 @@ import FloeLaTeXHostAdapter
         } catch {editor.report(error);return false}
     }
     func refresh() async {await editor.refresh()}
+    var nativeFailureID:UUID? {composition.nativeRuntime.failures[original.id]?.id}
+    func presentNativeFailure() {
+        guard let failure=composition.nativeRuntime.failures[original.id],shownNativeFailureID != failure.id else {return}
+        shownNativeFailureID=failure.id;editor.report(LaTeXError.unavailable(failure.message))
+    }
+    var workbenchOperation:LaTeXWorkbenchOperation? {
+        let operation=composition.nativeRuntime.operations[original.id]
+        guard preparingToolchain || operation != nil else {return nil}
+        let preparing=operation?.kind != .typesetting
+        let status:String
+        if operation?.waitingRecovery==true {status=IDELanguageRunText.t("正在确认任务已停止…","Confirming the task has stopped…")}
+        else if operation?.cancelling==true {status=IDELanguageRunText.t("正在停止…","Stopping…")}
+        else {status=preparing ? IDELanguageRunText.t("正在准备排版工具…","Preparing typesetting tools…"):IDELanguageRunText.t("正在排版…","Typesetting…")}
+        return .init(status:status,stopLabel:preparing ? IDELanguageRunText.t("停止准备","Stop preparation"):IDELanguageRunText.t("停止排版","Stop typesetting"),stop:{self.cancelPreparation()})
+    }
     func prepareToolchain(profile:String?) async {
-        guard !preparingToolchain,!editor.isBuilding else {return}
+        guard workbenchOperation==nil,!editor.isBuilding else {return}
         preparingToolchain=true;defer {preparingToolchain=false;preparationTask=nil}
         do {
             editor.commitInput();try await editor.save()
@@ -50,7 +66,7 @@ import FloeLaTeXHostAdapter
             editor.updateCapabilities(values)
         } catch {editor.report(error)}
     }
-    func cancelPreparation() {preparationTask?.cancel();composition.nativeRuntime.cancel(projectID:original.id)}
+    func cancelPreparation() {editor.stop();preparationTask?.cancel();composition.nativeRuntime.cancel(projectID:original.id)}
 }
 
 @MainActor enum LaTeXFormulaImage {
@@ -73,8 +89,9 @@ struct LaTeXEditorSurface:View {
     let session:LaTeXProjectSession
     var onAssistant:(@MainActor ()->Void)?=nil
     var body:some View {
-        LaTeXWorkbench(session:session.editor,pdfRenderer:renderPreview,onAssistant:onAssistant)
+        LaTeXWorkbench(session:session.editor,pdfRenderer:renderPreview,onAssistant:onAssistant,operation:session.workbenchOperation)
             .toolbar {ToolbarItem(placement:.topBarTrailing) {toolchainControl}}
+            .onChange(of:session.nativeFailureID,initial:true) {_,_ in session.presentNativeFailure()}
     }
     private func renderPreview(_ preview:LaTeXPreviewContext)->AnyView {
         let destination:PDFReadingDestination?
@@ -84,8 +101,8 @@ struct LaTeXEditorSurface:View {
         return AnyView(InlinePDFReader(url:preview.url,destination:destination,onSource:sourceAction))
     }
     @ViewBuilder private var toolchainControl:some View {
-            if session.preparingToolchain {
-                HStack {ProgressView();Button(IDELanguageRunText.t("停止准备","Stop preparation")) {session.cancelPreparation()}}
+            if let operation=session.workbenchOperation {
+                ProgressView().accessibilityLabel(operation.status)
             } else {
                 Menu {
                     Button(IDELanguageRunText.t("检查工具链","Check toolchain")) {Task {await session.prepareToolchain(profile:nil)}}

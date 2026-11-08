@@ -13139,6 +13139,8 @@ private struct SharedCanvasAgentConversation: View {
             ReasoningBlockView(text: viewModel.liveReasoningText, isStreaming: true)
         case .liveAssistantTail:
             AssistantMessageView(text: viewModel.liveStreamedText, isStreaming: true)
+                .environment(\.chatInlineContentScope, ChatInlineContentScope(
+                    conversationID: viewModel.conversationID, isTemporary: viewModel.isTemporary))
         case .liveThinking:
             ModelResponseWaitingView()
         case .approval(let approval):
@@ -13154,7 +13156,9 @@ private struct SharedCanvasAgentConversation: View {
             if isUser {
                 Text(text).textSelection(.enabled)
             } else {
-                AssistantMessageView(text: text)
+            AssistantMessageView(text: text)
+                .environment(\.chatInlineContentScope, ChatInlineContentScope(
+                    conversationID: viewModel.conversationID, isTemporary: viewModel.isTemporary))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

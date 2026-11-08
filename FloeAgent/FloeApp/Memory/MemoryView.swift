@@ -62,6 +62,8 @@ struct MemoryPublicationState {
 final class MemoryCenter: ObservableObject {
     @Published private(set) var entries: [MemoryEntry] = []
     @Published private(set) var pendingCandidates: [DurableMemoryCandidate] = []
+    @Published private(set) var pendingCapacity = MemoryPendingCapacity.defaultValue
+    @Published private(set) var pendingReviewLoaded = false
     @Published private(set) var profile: PersonalizationDocument?
     @Published private(set) var profilePrevious: PersonalizationDocument?
     @Published private(set) var soul: PersonalizationDocument?
@@ -161,7 +163,7 @@ final class MemoryCenter: ObservableObject {
         do {
             let profileRetention = try await personalizationStore.retention(kind: .userProfile, workspaceID: nil)
             let soulRetention = try await personalizationStore.retention(kind: .soul, workspaceID: nil)
-            let candidates = try await personalizationStore.candidates(status: .pending)
+            let pending = try await personalizationStore.pendingReview()
             let profileCursor = try await personalizationStore.cursor(kind: .userProfile, workspaceID: nil)
             let soulCursor = try await personalizationStore.cursor(kind: .soul, workspaceID: nil)
             guard canPublish(token, in: .personalization) else { return }
@@ -169,12 +171,31 @@ final class MemoryCenter: ObservableObject {
             profilePrevious = profileRetention.previous
             soul = soulRetention.current
             soulPrevious = soulRetention.previous
-            pendingCandidates = candidates
+            pendingCandidates = pending.candidates
+            pendingCapacity = pending.capacity
+            pendingReviewLoaded = true
             profileAutomaticUpdates = profileCursor.automaticUpdatesEnabled
             soulAutomaticUpdates = soulCursor.automaticUpdatesEnabled
             if publication.clearError(onSuccessFor: .load) { errorMessage = nil }
         } catch {
             finishLoad(error, token: token, channel: .personalization, scope: .load)
+        }
+    }
+
+    func setPendingCapacity(_ value: Int) async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            _ = try await personalizationStore.setPendingCapacity(value)
+            if publication.clearError(onSuccessFor: .settings) { errorMessage = nil }
+            // A new publication token fences any read started before the write.
+            // Counts and capacity are loaded together from the committed store.
+            await loadPersonalization()
+        } catch {
+            if PersonalizationCancellation.isCancellation(error) { return }
+            errorMessage = Self.userMessage(for: error)
+            publication.recordError(scope: .settings)
         }
     }
 
@@ -473,6 +494,9 @@ final class MemoryCenter: ObservableObject {
     }
 
     func resolve(_ candidate: DurableMemoryCandidate, activate: Bool) async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
         do {
             try await candidatePipeline.resolvePending(id: candidate.id, activate: activate)
             await load()
@@ -482,6 +506,9 @@ final class MemoryCenter: ObservableObject {
             if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
             errorMessage = error.localizedDescription
             publication.recordError(scope: .review)
+            // A stale screen may refer to an already discarded/reviewed row.
+            // Refresh the real queue while retaining the review error banner.
+            await loadPersonalization()
         }
     }
 }
@@ -555,6 +582,17 @@ struct MemoryView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("memory.pending")
+                Stepper(value: Binding(
+                    get: { center.pendingCapacity },
+                    set: { value in Task { await center.setPendingCapacity(value) } }
+                ), in: 1...MemoryPendingCapacity.maximum) {
+                    LabeledContent("memory.memory_view.pending_capacity", value: String(center.pendingCapacity))
+                }
+                .disabled(center.isWorking || !center.pendingReviewLoaded)
+                .accessibilityIdentifier("memory.pending_capacity")
+                Text("memory.memory_view.pending_capacity_description")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if !query.isEmpty { searchSection } else { memorySection }
             if let notice = center.operationNotice {
@@ -1149,6 +1187,7 @@ private struct PendingMemoryReviewView: View {
                     Spacer()
                     Button("memory.memory_view.save_memory") { Task { await center.resolve(record, activate: true) } }.buttonStyle(.borderedProminent)
                 }
+                .disabled(center.isWorking)
             }.padding(.vertical, 4)
         }.navigationTitle("memory.memory_view.memories_pending_confirmation_2")
     }

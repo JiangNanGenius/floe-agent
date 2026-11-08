@@ -17,6 +17,11 @@ import Combine
 import FloeModels
 import FloeCore
 
+public enum UserQuestionCardInputField: Sendable, Equatable {
+    case freeText
+    case customText
+}
+
 @MainActor
 public final class UserQuestionCardModel: ObservableObject {
     public let snapshot: UserQuestionWaitingSnapshot
@@ -24,7 +29,11 @@ public final class UserQuestionCardModel: ObservableObject {
     @Published public private(set) var index: Int
     @Published public private(set) var selectedOptionIDs: Set<String>
     @Published public private(set) var freeText: String
+    @Published public private(set) var customText: String
+    @Published public private(set) var isCustomSelected: Bool
     @Published public private(set) var isNoteRevealed: Bool
+    @Published public private(set) var dictationField: UserQuestionCardInputField = .freeText
+    @Published public private(set) var inputRevision = 0
     @Published public private(set) var isSubmitting = false
     @Published public private(set) var submissionError: String?
 
@@ -36,6 +45,8 @@ public final class UserQuestionCardModel: ObservableObject {
     private struct Draft: Sendable {
         var selectedOptionIDs: Set<String>
         var freeText: String
+        var customText: String
+        var isCustomSelected: Bool
         var isNoteRevealed: Bool
     }
 
@@ -53,11 +64,16 @@ public final class UserQuestionCardModel: ObservableObject {
         let draft = question.flatMap { $0.draftAnswer }
         self.selectedOptionIDs = Set(draft?.selectedOptionIDs ?? [])
         self.freeText = draft?.freeText ?? ""
+        self.customText = draft?.customText ?? ""
+        self.isCustomSelected = draft?.customText != nil
         self.isNoteRevealed = !(draft?.freeText ?? "").isEmpty
+        self.dictationField = question?.isTextOnly == false && (draft?.freeText ?? "").isEmpty ? .customText : .freeText
         if let question {
             drafts[question.questionID] = Draft(
                 selectedOptionIDs: Set(draft?.selectedOptionIDs ?? []),
                 freeText: draft?.freeText ?? "",
+                customText: draft?.customText ?? "",
+                isCustomSelected: draft?.customText != nil,
                 isNoteRevealed: !(draft?.freeText ?? "").isEmpty
             )
         }
@@ -86,7 +102,8 @@ public final class UserQuestionCardModel: ObservableObject {
         let text = freeText.trimmingCharacters(in: .whitespacesAndNewlines)
         return UserQuestionAnswer(
             selectedOptionIDs: selectedOptionIDs.sorted(),
-            freeText: text.isEmpty ? nil : text
+            freeText: text.isEmpty ? nil : text,
+            customText: isCustomSelected ? customText.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         )
     }
 
@@ -111,9 +128,12 @@ public final class UserQuestionCardModel: ObservableObject {
     /// Single-select replaces; multi-select toggles. No option can be selected
     /// twice, and a text-only question never shows options.
     public func toggleOption(_ optionID: String) {
-        guard let question = currentQuestion, !question.isTextOnly else { return }
+        guard let question = currentQuestion, !question.isTextOnly, !isCurrentSettled, !isSubmitting,
+              question.options.contains(where: { $0.id == optionID }) else { return }
+        inputRevision += 1
         if question.selectionMode == .single {
             selectedOptionIDs = [optionID]
+            isCustomSelected = false
         } else if selectedOptionIDs.contains(optionID) {
             selectedOptionIDs.remove(optionID)
         } else {
@@ -127,28 +147,59 @@ public final class UserQuestionCardModel: ObservableObject {
     }
 
     public func setFreeText(_ text: String) {
+        guard let question = currentQuestion, question.isTextOnly || question.allowsFreeText,
+              !isCurrentSettled, !isSubmitting else { return }
         freeText = String(text.prefix(UserQuestionRequest.maximumFreeTextCharacters))
         if !freeText.isEmpty { isNoteRevealed = true }
+        dictationField = .freeText
+        persistCurrentDraft()
+    }
+
+    public func selectCustomAnswer() {
+        guard let question = currentQuestion, !question.isTextOnly, !isCurrentSettled, !isSubmitting else { return }
+        inputRevision += 1
+        isCustomSelected = question.selectionMode == .single || !isCustomSelected
+        if isCustomSelected, question.selectionMode == .single { selectedOptionIDs = [] }
+        dictationField = .customText
+        persistCurrentDraft()
+    }
+
+    public func setCustomText(_ text: String) {
+        guard let question = currentQuestion, !question.isTextOnly, !isCurrentSettled, !isSubmitting else { return }
+        customText = String(text.prefix(UserQuestionRequest.maximumFreeTextCharacters))
+        isCustomSelected = true
+        if question.selectionMode == .single { selectedOptionIDs = [] }
+        dictationField = .customText
+        persistCurrentDraft()
+    }
+
+    public var dictationText: String { dictationField == .customText ? customText : freeText }
+
+    public func setDictatedText(_ text: String, field: UserQuestionCardInputField) {
+        guard dictationField == field else { return }
+        if field == .customText { setCustomText(text) } else { setFreeText(text) }
     }
 
     public func revealNote() {
+        guard currentQuestion?.allowsFreeText == true else { return }
+        inputRevision += 1
         isNoteRevealed = true
+        dictationField = .freeText
     }
 
     public func hideNote() {
+        inputRevision += 1
         isNoteRevealed = false
         freeText = ""
+        dictationField = isTextQuestion ? .freeText : .customText
         persistCurrentDraft()
     }
 
     public func applyDictatedText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let existing = freeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        freeText = existing.isEmpty ? trimmed : existing + " " + trimmed
-        freeText = String(freeText.prefix(UserQuestionRequest.maximumFreeTextCharacters))
-        isNoteRevealed = true
-        persistCurrentDraft()
+        let existing = dictationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        setDictatedText(existing.isEmpty ? trimmed : existing + " " + trimmed, field: dictationField)
     }
 
     /// Persists the current card state without settling the question.
@@ -159,6 +210,8 @@ public final class UserQuestionCardModel: ObservableObject {
         drafts[question.questionID] = Draft(
             selectedOptionIDs: selectedOptionIDs,
             freeText: freeText,
+            customText: customText,
+            isCustomSelected: isCustomSelected,
             isNoteRevealed: isNoteRevealed
         )
         onDraftChanged?(target, answer)
@@ -242,12 +295,17 @@ public final class UserQuestionCardModel: ObservableObject {
             Draft(
                 selectedOptionIDs: Set($0.selectedOptionIDs),
                 freeText: $0.freeText ?? "",
+                customText: $0.customText ?? "",
+                isCustomSelected: $0.customText != nil,
                 isNoteRevealed: !($0.freeText ?? "").isEmpty
             )
         }
         selectedOptionIDs = draft?.selectedOptionIDs ?? []
         freeText = draft?.freeText ?? ""
+        customText = draft?.customText ?? ""
+        isCustomSelected = draft?.isCustomSelected ?? false
         isNoteRevealed = draft?.isNoteRevealed ?? false
+        dictationField = !question.isTextOnly && freeText.isEmpty ? .customText : .freeText
     }
 }
 
@@ -370,7 +428,44 @@ public struct UserQuestionCardView: View {
                 .accessibilityIdentifier("user_question.option.\(option.id)")
                 .accessibilityAddTraits(model.isSelected(option.id) ? .isSelected : [])
             }
+            customAnswerRow(question)
         }
+    }
+
+    private func customAnswerRow(_ question: UserQuestion) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                model.selectCustomAnswer()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: question.selectionMode == .multiple
+                          ? (model.isCustomSelected ? "checkmark.square.fill" : "square")
+                          : (model.isCustomSelected ? "largecircle.fill.circle" : "circle"))
+                        .foregroundStyle(model.isCustomSelected ? FloeTheme.primary : .secondary)
+                    Text("user_question.card.custom")
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("user_question.custom.select")
+            .accessibilityAddTraits(model.isCustomSelected ? .isSelected : [])
+            TextField("user_question.card.custom_placeholder", text: Binding(
+                get: { model.customText }, set: { model.setCustomText($0) }
+            ), axis: .vertical)
+            .lineLimit(2...5)
+            .padding(9)
+            .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityLabel(Text("user_question.card.custom_accessibility"))
+            .accessibilityIdentifier("user_question.custom.text")
+        }
+        .font(FloeTheme.Typography.body)
+        .padding(10)
+        .background(model.isCustomSelected ? FloeTheme.primary.opacity(0.12) : FloeTheme.readingSurface,
+                    in: RoundedRectangle(cornerRadius: 9))
+        .disabled(model.isSubmitting || model.isCurrentSettled)
     }
 
     private func selectionSymbol(for optionID: String, question: UserQuestion) -> String {
@@ -404,7 +499,7 @@ public struct UserQuestionCardView: View {
     private func noteField(question: UserQuestion) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("user_question.card.note")
+                Text(question.isTextOnly ? "user_question.card.answer" : "user_question.card.note")
                     .font(FloeTheme.Typography.metadata.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -417,7 +512,7 @@ public struct UserQuestionCardView: View {
                     .foregroundStyle(.secondary)
                 }
             }
-            TextField("user_question.card.note_placeholder", text: Binding(
+            TextField(question.isTextOnly ? "user_question.card.answer_placeholder" : "user_question.card.note_placeholder", text: Binding(
                 get: { model.freeText },
                 set: { model.setFreeText($0) }
             ), axis: .vertical)
@@ -454,8 +549,7 @@ public struct UserQuestionCardView: View {
 
             Spacer()
 
-            if let onRequestDictation, let target = model.currentTarget,
-               question.isTextOnly || question.allowsFreeText {
+            if let onRequestDictation, let target = model.currentTarget {
                 Button {
                     onRequestDictation(target)
                 } label: {

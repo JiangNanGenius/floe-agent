@@ -209,6 +209,44 @@ import AVFoundation
             #expect(try await completeMusic(fixture.id, context).document == after.document)
         }
     }
+    @Test func nativeMusicControlsUpdateFileRecencyAfterSaveAndUndo() async throws {
+        try await withSavedTask { context in
+            let fixture = try await musicFixture(context, muted: true)
+            let id = try #require(UUID(uuidString: fixture.id))
+            let library = try await PersonalContentService.shared.library()
+            let location = try await library.resolve(id)
+            let session = try await MusicProjectSession.open(id: id, directory: location.url.appendingPathComponent("Music"),
+                environment: FloeAgentApp.liveEnvironment)
+            let track = try #require(session.document.tracks.first)
+            let beforeApply = Date()
+            try await session.applyPreset(index: 3, trackID: track.id, expectedRevision: session.document.revision)
+            let changed = try await library.resolve(id).record
+            #expect(changed.modifiedAt >= beforeApply)
+            #expect(changed.modifiedAt > location.record.modifiedAt)
+            #expect(session.document.masterStrip.muted)
+            let disk = try NativeMusicRepository(root: location.url.appendingPathComponent("Music"))
+            #expect(try await disk.load(projectID: session.document.id) == session.document)
+            let revision = session.document.revision
+            do {
+                try await session.apply([.setMasterStrip(session.document.masterStrip)], expectedRevision: revision - 1)
+                Issue.record("A stale native edit must not update file recency")
+            } catch MusicError.staleRevision { }
+            #expect(session.document.revision == revision)
+            #expect(try await library.resolve(id).record.modifiedAt == changed.modifiedAt)
+            let beforeUndo = Date()
+            await session.undo()
+            #expect(session.document.revision == revision + 1)
+            #expect(session.document.tracks.first?.instrument == track.instrument)
+            #expect(try await library.resolve(id).record.modifiedAt >= beforeUndo)
+            let beforeRedo = Date()
+            await session.undo(redo: true)
+            #expect(session.document.revision == revision + 2)
+            #expect(session.document.tracks.first?.instrument?.presetIndex == 3)
+            #expect(try await library.resolve(id).record.modifiedAt >= beforeRedo)
+            #expect(try await disk.load(projectID: session.document.id) == session.document)
+            #expect(session.document.masterStrip.muted)
+        }
+    }
     @Test func publishedMusicExampleCommitsReopensAndRendersThroughRegisteredTools() async throws {
         try await withSavedTask { initial in
             var context = initial

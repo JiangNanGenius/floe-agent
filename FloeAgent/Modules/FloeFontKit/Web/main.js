@@ -5,6 +5,7 @@ import { createFont,normalizeFont,registerFontModel,getGlyph,glyphPath,glyphList
 import { registerGeometry } from './geometry.js';
 import { registerFontFormats } from './formats.js';
 import { FontView } from './view.js';
+import { registerFontReads } from './read.js';
 import { contourSegments } from './contours.js';
 import { fontNativeSnapshot,registerFontNative } from './native.js';
 let view;
@@ -15,7 +16,7 @@ export const engine=new EditorEngine({kind:'font',title:t('字体设计','Font d
   view??=new FontView(e);await view.render();
 }});
 registerFontModel(engine);registerGeometry(engine);registerFontFormats(engine);
-registerFontNative(engine,()=>view);
+registerFontNative(engine,()=>view);registerFontReads(engine);
 engine.register({id:'outline.addContour',title:t('添加轮廓','Add contour'),group:t('轮廓几何','Outline geometry'),hidden:true,access:'edit',fields:[]},a=>{
   const g=getGlyph(engine,a.glyph);if(!Array.isArray(a.points)||a.points.length<2||a.points.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)||!['line','qcurve','curve','offcurve','move'].includes(p.type)))throw new Error('Invalid contour');
   const contour=clone(a.points);for(const p of contour)p.id=uid();

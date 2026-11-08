@@ -1,0 +1,33 @@
+{
+  "reason": "Static XCFramework consumers share Products/include; module.modulemap must have a module-specific subdirectory.",
+  "infoPlistSHA256": "21363fd64379624593911f4daee40f4abfa2e31e72d35e6a7bd94b261044f742",
+  "slices": {
+    "ios-arm64-simulator": {
+      "headersPath": "include",
+      "moduleMap": "include/FloeFontCompiler/module.modulemap",
+      "moduleMapSHA256": "cee41c678d670a4841c09658c26dfb4fd22ca9a0b34791feb2943d9a75529aaf",
+      "header": "include/FloeFontCompiler/FloeFontCompiler.h",
+      "headerSHA256": "d9f8120d8a9a007bc848d89490f6b042250f52efaa9f33bd82dea4116c1e427c",
+      "binarySHA256": "80a418f4ad7a63cf955818765000c5d0f89356da03d41efdd537dadd2c5a486b",
+      "binaryBytesUnchanged": true
+    },
+    "macos-arm64": {
+      "headersPath": "include",
+      "moduleMap": "include/FloeFontCompiler/module.modulemap",
+      "moduleMapSHA256": "cee41c678d670a4841c09658c26dfb4fd22ca9a0b34791feb2943d9a75529aaf",
+      "header": "include/FloeFontCompiler/FloeFontCompiler.h",
+      "headerSHA256": "d9f8120d8a9a007bc848d89490f6b042250f52efaa9f33bd82dea4116c1e427c",
+      "binarySHA256": "b54f9e552d1aa330b1257ee14f1113a1dc59dc1fff5d62ff9178f235d3835071",
+      "binaryBytesUnchanged": true
+    },
+    "ios-arm64": {
+      "headersPath": "include",
+      "moduleMap": "include/FloeFontCompiler/module.modulemap",
+      "moduleMapSHA256": "cee41c678d670a4841c09658c26dfb4fd22ca9a0b34791feb2943d9a75529aaf",
+      "header": "include/FloeFontCompiler/FloeFontCompiler.h",
+      "headerSHA256": "d9f8120d8a9a007bc848d89490f6b042250f52efaa9f33bd82dea4116c1e427c",
+      "binarySHA256": "1b6b4290b69e8c4865da3285fed2679c626058544632d4d1b59656b5ac9c841a",
+      "binaryBytesUnchanged": true
+    }
+  }
+}

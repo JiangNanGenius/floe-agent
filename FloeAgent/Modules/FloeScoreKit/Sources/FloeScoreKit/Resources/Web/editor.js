@@ -53079,12 +53079,22 @@ var FloeBundledEditor = (() => {
     commandIndex() {
       return [...this.commands.values()].map(({ descriptor }) => ({ id: descriptor.id, title: descriptor.title, group: descriptor.group, access: descriptor.access, hidden: descriptor.hidden ?? false, sideEffecting: descriptor.sideEffecting ?? false, fields: (descriptor.fields ?? []).map(({ key, label, type }) => ({ key, label, type })) }));
     }
-    formDescription(id, values = {}) {
+    formDescription(id, values = {}, discovery = null) {
       const descriptor = this.command(id), args = { ...values };
       const fields = (descriptor.fields ?? []).map((field2) => {
         const options = typeof field2.options === "function" ? field2.options(this, args) : field2.options;
         const initial = Object.hasOwn(values, field2.key) ? values[field2.key] : typeof field2.default === "function" ? field2.default(this, args) : field2.default;
         if (initial !== void 0) args[field2.key] = initial;
+        if (discovery) {
+          const query = String(discovery.query ?? "").slice(0, 200).toLocaleLowerCase();
+          const offset = Number(discovery.offset ?? 0), limit = Number(discovery.limit ?? 40);
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid discovery page");
+          const all = Array.isArray(options) ? options : null;
+          const matched = all?.filter((option) => !query || JSON.stringify(option).toLocaleLowerCase().includes(query));
+          const optionsPage = all ? { total: all.length, matched: matched.length, offset, limit, hasMore: offset + limit < matched.length } : void 0;
+          const serialized = JSON.stringify(initial);
+          return { ...field2, default: serialized?.length > 8192 ? void 0 : initial, defaultOmitted: serialized?.length > 8192 ? true : void 0, options: matched ? matched.slice(offset, offset + limit) : options, optionsPage };
+        }
         return { ...field2, default: initial, options };
       });
       return { ...descriptor, fields };

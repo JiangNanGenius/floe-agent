@@ -28,6 +28,10 @@ import WebKit
     @ObservationIgnored private var requests: [UUID: Task<EditorJSON, any Error>] = [:]
     @ObservationIgnored private var activeOperation: UUID?
     @ObservationIgnored private var activeCommand: String?
+    @ObservationIgnored private var activeAuthorizer: HeavyEditorOperationAuthorizer?
+    @ObservationIgnored private var activeAccess: HeavyEditorAccess = .read
+    @ObservationIgnored private var activeNativeOperation: UUID?
+    @ObservationIgnored private var activeNativeInvocations: Set<UUID> = []
     @ObservationIgnored private var navigationBridge: HeavyEditorNavigation?
     @ObservationIgnored private var messageBridge: HeavyEditorMessageBridge?
     @ObservationIgnored private var presentationRefresh: Task<Void, Never>?
@@ -97,12 +101,12 @@ import WebKit
         let value = try await call("return JSON.stringify({presentation:window.FloeEditor.nativeSnapshot(),commands:window.FloeEditor.commandIndex()});", value: .null)
         presentation = value["presentation"]; commandCatalog = value["commands"].array
     }
-    public func commandForm(_ name: String, arguments: EditorJSON = .object([:])) async throws -> EditorJSON {
+    public func commandForm(_ name: String, arguments: EditorJSON = .object([:]), discovery: HeavyEditorDiscoveryPage? = nil, authorization: HeavyEditorOperationAuthorizer? = nil) async throws -> EditorJSON {
         try await waitUntilReady()
         guard allowedCommands.contains(name) else { throw HeavyEditorError.invalidCommand }
-        try await hooks.authorize(access(.read, "document.parameters"))
-        return try await call("return JSON.stringify(window.FloeEditor.formDescription(value.command,value.arguments));",
-            value: .object(["command": .string(name), "arguments": arguments]))
+        try await authorize(.read, "document.parameters", using: authorization)
+        return try await call("return JSON.stringify(window.FloeEditor.formDescription(value.command,value.arguments,value.discovery));",
+            value: .object(["command": .string(name), "arguments": arguments, "discovery": try discovery.map(encoded) ?? .null]))
     }
     public func showCommand(_ name: String, preset: EditorJSON = .object([:])) {
         guard isReady, allowedCommands.contains(name) else { return }
@@ -149,20 +153,36 @@ import WebKit
             try await Task.sleep(for: .milliseconds(50))
         }
     }
-    public func describe() async throws -> EditorJSON {
+    public func describe(command: String? = nil, arguments: EditorJSON = .object([:]), discovery: HeavyEditorDiscoveryPage = .init(), authorization: HeavyEditorOperationAuthorizer? = nil) async throws -> EditorJSON {
         try await waitUntilReady()
-        try await hooks.authorize(access(.read, "document.describe"))
-        let details = try await call("return JSON.stringify({commands:window.FloeEditor.catalog(),selection:window.FloeEditor.selection??null});", value: .null)
-        return .object(["projectID": .string(document.id.uuidString), "kind": .string(descriptor.kind.rawValue),
-                        "title": .string(document.title), "baseRevision": .number(Double(document.revision)),
-                        "commands": details["commands"], "selection": details["selection"]])
+        guard !isWorking else { throw HeavyEditorError.unavailable }
+        let revision = document.revision
+        try await authorize(.read, "document.describe", using: authorization)
+        let details = try await call("return JSON.stringify({commands:window.FloeEditor.commandIndex().filter(command=>!command.hidden),selection:window.FloeEditor.selection??null});", value: .null)
+        var value: [String: EditorJSON] = ["projectID": .string(document.id.uuidString), "kind": .string(descriptor.kind.rawValue),
+            "title": .string(document.title), "baseRevision": .number(Double(revision)),
+            "commands": details["commands"], "selection": details["selection"]]
+        if allowedCommands.contains("file.import") { value["importCommand"] = .string("file.import") }
+        if let command {
+            let metadata = try await commandMetadata(command)
+            guard metadata["hidden"] != .bool(true) || command == "file.import" else { throw HeavyEditorError.invalidCommand }
+            var form = try await commandForm(command, arguments: arguments, discovery: discovery, authorization: authorization).object
+            if command == "file.import" {
+                form["fields"] = .array((form["fields"]?.array ?? []).filter { !["name", "base64"].contains($0["key"].string ?? "") })
+            }
+            value["form"] = .object(form)
+        }
+        guard !isWorking, document.revision == revision else { throw HeavyEditorError.revisionConflict }
+        let result = EditorJSON.object(value)
+        guard try result.data().count <= 512 * 1024 else { throw HeavyEditorError.engine("Use a narrower command or selection for parameter discovery.") }
+        return result
     }
     public func commandMetadata(_ name: String) async throws -> EditorJSON {
         try await waitUntilReady()
         guard allowedCommands.contains(name) else { throw HeavyEditorError.invalidCommand }
         return try await call("return JSON.stringify(window.FloeEditor.command(value));", value: .string(name))
     }
-    public func execute(_ name: String, arguments: EditorJSON = .object([:]), expectedRevision: UInt64? = nil) async throws -> EditorJSON {
+    public func execute(_ name: String, arguments: EditorJSON = .object([:]), expectedRevision: UInt64? = nil, authorization: HeavyEditorOperationAuthorizer? = nil) async throws -> EditorJSON {
         try Task.checkCancellation()
         guard isReady, allowedCommands.contains(name) else { throw HeavyEditorError.invalidCommand }
         guard requests.count < 256 else { throw HeavyEditorError.unavailable }
@@ -171,7 +191,7 @@ import WebKit
         let task = Task { @MainActor [self] in
             _ = try? await predecessor?.value
             try Task.checkCancellation()
-            return try await perform(name, arguments: arguments, expectedRevision: expectedRevision, operationID: id)
+            return try await perform(name, arguments: arguments, expectedRevision: expectedRevision, operationID: id, authorization: authorization)
         }
         tail = task; tailID = id; requests[id] = task
         defer { requests[id] = nil; if tailID == id { tail = nil; tailID = nil } }
@@ -193,13 +213,23 @@ import WebKit
         // host process is created by this internal editor service.
         webView.evaluateJavaScript("window.FloeEditor?.cancel()", completionHandler: nil)
         let command = activeCommand ?? ""
-        if let cancel = nativeExtension?.cancel { Task { await cancel(command) } }
+        if let cancel = nativeExtension?.cancelInvocation {
+            let owned = activeNativeInvocations
+            Task { for nativeID in owned { await cancel(nativeID, command) } }
+        } else if activeNativeOperation != nil, let cancel = nativeExtension?.cancel {
+            Task { await cancel(command) }
+        }
     }
     /// Call on real editor navigation/close, not a transient view reconstruction.
     /// Long calculations remain service-owned; a transport may stop its own audio.
     public func endPresentation() async { await nativeExtension?.presentationClosed?() }
-    public func importFile(name: String, data: Data, expectedRevision: UInt64? = nil) async throws {
-        _ = try await execute("file.import", arguments: .object(["name": .string(name), "base64": .string(data.base64EncodedString())]), expectedRevision: expectedRevision)
+    public func importFile(name: String, data: Data, arguments: EditorJSON = .object([:]), expectedRevision: UInt64? = nil, authorization: HeavyEditorOperationAuthorizer? = nil) async throws {
+        let metadata = try await commandMetadata("file.import")
+        let payloadFields: Set<String> = ["name", "base64"]
+        let optionFields = Set(metadata["fields"].array.compactMap { $0["key"].string }).subtracting(payloadFields)
+        guard case .object(var values) = arguments, Set(values.keys).isSubset(of: optionFields) else { throw HeavyEditorError.invalidCommand }
+        values["name"] = .string(name); values["base64"] = .string(data.base64EncodedString())
+        _ = try await execute("file.import", arguments: .object(values), expectedRevision: expectedRevision, authorization: authorization)
     }
     public func save() async throws {
         _ = try await execute("document.save")
@@ -240,7 +270,15 @@ import WebKit
                 guard isWorking, let nativeCapability, message["token"].string == nativeCapability,
                       let operation = message["operation"].string,
                       let nativeExtension, nativeExtension.operations.contains(operation) else { throw HeavyEditorError.invalidCommand }
-                let response = try await nativeExtension.run(operation, message["arguments"])
+                guard let activeOperation, let activeCommand else { throw HeavyEditorError.invalidCommand }
+                try await authorize(activeAccess, activeCommand, using: activeAuthorizer)
+                guard self.activeOperation == activeOperation, message["token"].string == self.nativeCapability,
+                      requests[activeOperation]?.isCancelled == false else { throw CancellationError() }
+                let nativeCallID = UUID(); activeNativeOperation = nativeCallID; activeNativeInvocations.insert(nativeCallID)
+                defer { if activeNativeOperation == nativeCallID { activeNativeOperation = nil } }
+                let response: EditorJSON
+                if let run = nativeExtension.runInvocation { response = try await run(nativeCallID, operation, message["arguments"]) }
+                else { response = try await nativeExtension.run(operation, message["arguments"]) }
                 await reply(id, result: response, error: nil)
             case "request":
                 guard let command = message["command"].string else { throw HeavyEditorError.invalidCommand }
@@ -257,14 +295,22 @@ import WebKit
     private func access(_ mode: HeavyEditorAccess, _ command: String) -> HeavyEditorAccessRequest {
         HeavyEditorAccessRequest(documentID: document.id, owner: owner, revision: document.revision, access: mode, command: command)
     }
-    private func perform(_ name: String, arguments: EditorJSON, expectedRevision: UInt64?, operationID: UUID) async throws -> EditorJSON {
+    private func authorize(_ mode: HeavyEditorAccess, _ command: String, using authorization: HeavyEditorOperationAuthorizer?) async throws {
+        try Task.checkCancellation()
+        let request = access(mode, command)
+        try await authorization?(request)
+        try await hooks.authorize(request)
+        try Task.checkCancellation()
+    }
+    private func perform(_ name: String, arguments: EditorJSON, expectedRevision: UInt64?, operationID: UUID, authorization: HeavyEditorOperationAuthorizer?) async throws -> EditorJSON {
         if let expectedRevision, expectedRevision != document.revision { throw HeavyEditorError.revisionConflict }
-        isWorking = true; activeOperation = operationID; activeCommand = name
-        defer { isWorking = false; activeOperation = nil; activeCommand = nil }
+        isWorking = true; activeOperation = operationID; activeCommand = name; activeAuthorizer = authorization; activeNativeInvocations = []
+        defer { isWorking = false; activeOperation = nil; activeCommand = nil; activeAuthorizer = nil; activeAccess = .read; activeNativeInvocations = [] }
         // Mutation/access metadata comes from the bundled registry, never caller fields.
         let metadata = try await call("return JSON.stringify(window.FloeEditor.command(value));", value: .string(name))
         let mode = HeavyEditorAccess(rawValue: metadata["access"].string ?? "read") ?? .read
-        try await hooks.authorize(access(mode, name))
+        activeAccess = mode
+        try await authorize(mode, name, using: authorization)
         let capability = UUID().uuidString
         nativeCapability = capability
         defer { nativeCapability = nil }
@@ -273,14 +319,14 @@ import WebKit
             let response = try await call("return JSON.stringify(await window.FloeEditor.execute(value));", value: request)
             try Task.checkCancellation()
             if mode == .edit || mode == .importFile {
-                try await hooks.authorize(access(mode, name))
+                try await authorize(mode, name, using: authorization)
                 try Task.checkCancellation()
                 let updated = try await store.commit(content: response["state"], title: response["state"]["data"]["title"].string, expectedRevision: document.revision)
                 document = updated; await hooks.didSave(updated)
             }
             var receipts: [EditorJSON] = []
             for item in response["artifacts"].array {
-                try await hooks.authorize(access(.exportFile, name))
+                try await authorize(.exportFile, name, using: authorization)
                 try Task.checkCancellation()
                 guard let filename = item["name"].string, let media = item["mediaType"].string,
                       let base64 = item["base64"].string, let bytes = Data(base64Encoded: base64) else { throw HeavyEditorError.invalidDocument }

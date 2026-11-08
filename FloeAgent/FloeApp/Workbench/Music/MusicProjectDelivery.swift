@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import UniformTypeIdentifiers
 import FloeMusicCore
 
 struct MusicAssetLibrary: View {
@@ -73,6 +74,8 @@ struct MusicExportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var content = "mix"
     @State private var format = "mp3"
+    @State private var restoringBackup = false
+    @State private var restoreBase: MusicNotationSnapshot?
     var body: some View {
         NavigationStack {
             Form {
@@ -92,8 +95,22 @@ struct MusicExportSheet: View {
                         if content == "mix" { session.render(asMP3: format == "mp3") }
                         else { session.exportOriginals(stems: content == "stems") }
                     } label: { Label(WorkbenchText.t("生成文件", "Create files"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
-                        .disabled(session.isRendering || (content != "project" && session.document.tracks.flatMap(\.clips).isEmpty))
+                        .disabled(session.isRendering || session.notationImporting || (content != "project" && session.document.tracks.flatMap(\.clips).isEmpty))
                         .accessibilityIdentifier("music.export.create")
+                }
+                Section(WorkbenchText.t("工程备份", "Project backup")) {
+                    Button {
+                        do { restoreBase = try session.notationBackupSnapshot(); restoringBackup = true }
+                        catch { session.diagnostic = error.localizedDescription }
+                    } label: { Label(WorkbenchText.t("恢复本工程备份", "Restore this project's backup"), systemImage: "arrow.counterclockwise") }
+                        .disabled(session.isRendering || session.notationImporting || session.saving)
+                        .accessibilityIdentifier("music.backup.restore")
+                    Text(WorkbenchText.t("恢复编排与乐谱，并保留当前版本。", "Restore the arrangement and score while retaining the current version."))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if session.notationImporting {
+                        ProgressView(WorkbenchText.t("正在恢复工程…", "Restoring project…"))
+                        Button(WorkbenchText.t("取消恢复", "Cancel restoration")) { session.cancelNotationRestore() }
+                    }
                 }
                 if session.isRendering {
                     Section { ProgressView(WorkbenchText.t("正在准备…", "Preparing…")); Button(WorkbenchText.t("取消", "Cancel")) { session.cancelRender() } }
@@ -117,7 +134,17 @@ struct MusicExportSheet: View {
             }
             .navigationTitle(WorkbenchText.t("导出音乐", "Export music")).navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { dismiss() } } }
-        }.presentationDetents([.medium, .large])
+        }
+        .fileImporter(isPresented: $restoringBackup, allowedContentTypes: [.zip]) { result in
+            switch result {
+            case .success(let source):
+                if let restoreBase { session.restoreNotationBackup(source: source, expected: restoreBase) }
+            case .failure(let error):
+                if (error as NSError).code != NSUserCancelledError { session.diagnostic = error.localizedDescription }
+            }
+            restoreBase = nil
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

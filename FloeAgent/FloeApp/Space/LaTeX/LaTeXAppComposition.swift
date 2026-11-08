@@ -7,6 +7,7 @@ import FloePersistence
 import FloeSecurity
 import FloeTools
 import FloeNotes
+import FloeExecution
 import FloeLaTeXCore
 import FloeLaTeXEngine
 import FloeLaTeXHostAdapter
@@ -18,6 +19,14 @@ import FloeLaTeXHostAdapter
     private var pending:Task<LaTeXHostServices,Error>?
     private var assistants=[UUID:Task<UUID,Error>]()
     lazy var nativeRuntime=LaTeXNativeRuntime(composition:self)
+    #if DEBUG
+    private(set) var maintenanceQualification:LaTeXMaintenanceQualification?
+    private func startMaintenanceQualificationIfOptedIn() {
+        guard ProcessInfo.processInfo.environment["FLOE_LATEX_MAINTENANCE_QA"]=="1",maintenanceQualification==nil else{return}
+        let value=LaTeXMaintenanceQualification(composition:self)
+        maintenanceQualification=value;value.startIfOptedIn()
+    }
+    #endif
     init(environment:AppEnvironment) {self.environment=environment}
     static func permanentRoot() throws ->URL {
         try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true)
@@ -47,7 +56,11 @@ import FloeLaTeXHostAdapter
                         let policy=try await SQLiteWorkspaceStore(database:app.database).taskPolicy(conversationID:id)
                         guard policy.networkAllowed != false else {throw FloeError.validationFailed(IDELanguageRunText.t("此任务已关闭联网，无法下载工具链。","Network access is disabled for this task; the toolchain cannot be downloaded."))}
                     }))
-            host.registerTools();return host
+            host.registerTools()
+            #if DEBUG
+            self.startMaintenanceQualificationIfOptedIn()
+            #endif
+            return host
         }
         pending=task
         do {let value=try await task.value;ready=value;pending=nil;return value}
@@ -274,4 +287,270 @@ import FloeLaTeXHostAdapter
     }
 }
 extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.Name("floe.latex.document.didChange")}
+// SPDX-License-Identifier: MPL-2.0
+// Append inside LaTeXAppComposition.swift's UIKit guard, under DEBUG only.
+#if DEBUG
+@MainActor final class LaTeXMaintenanceQualification {
+    static let taskID=UUID(uuidString:"B7D40D04-9BB8-474C-85F6-FA7C97C97763")!
+    static let projectID=UUID(uuidString:"D93F3745-3F0E-49E5-B215-60212E2E16D6")!
+    static let environmentID="56b967db-cdb7-4af6-b73c-1ee4c13aeb48"
+    static let scriptSHA256="4de1017e9ff9b75d48fec332640a2cf61810387f77d092003990bf0a898f871c"
+    static let scriptBytes=13566
+    private weak var composition:LaTeXAppComposition?
+    private var operationTask:Task<Void,Never>?
+    private var cancelTask:Task<Void,Never>?
+    private let cancellation=CancellationToken()
+    private struct Owner {
+        let app:AppEnvironment
+        let jobs:BackgroundJobService
+        let root:WorkspaceCenter.TaskRootLease
+        let layers:ToolEnvironmentLease
+        let original:LaTeXHostProject
+        let pin:TaskExecutionBinding
+        let environmentIDs:Set<String>
+        let manifestHash:String
+        let mainHash:String
+    }
+    private var owner:Owner?
+    private var runID:UUID?
+    private var jobID:UUID?
+    private var submittedPayload:Data?
+    private var submittedCallID:String?
+    private var knownStopped=false
+    private var submissionAttempted=false
+    private var cancellationRequested=false
+    private let receiptID=UUID()
+    private(set) var facts=[String:String]()
+    init(composition:LaTeXAppComposition) {self.composition=composition}
+
+    /// Entrypoint is only a process launch opt-in, never a model argument,
+    /// imported document, URL, provider response or general script endpoint.
+    func startIfOptedIn() {
+        guard ProcessInfo.processInfo.environment["FLOE_LATEX_MAINTENANCE_QA"]=="1",operationTask==nil,runID==nil else{return}
+        operationTask=Task { @MainActor in
+            defer {self.operationTask=nil}
+            await self.perform()
+        }
+    }
+    /// Same normal service API as the product's exact-job inspector Cancel.
+    /// Cancelling a Swift waiter is deliberately NOT the stop mechanism.
+    func requestCancellation() {
+        cancellationRequested=true;cancellation.cancel()
+        facts["cancellationRequested"]="true";persist()
+        guard cancelTask==nil,let owner,let jobID else{return}
+        cancelTask=Task { @MainActor in
+            defer {self.cancelTask=nil}
+            do {_ = try await owner.jobs.cancel(id:jobID)}
+            catch {self.facts["cancelError"]=error.localizedDescription;self.persist()}
+        }
+    }
+    private func require(_ condition:Bool,_ message:String)throws {
+        guard condition else{throw FloeError.validationFailed(message)}
+    }
+    private var evidenceRoot:URL {
+        URL.applicationSupportDirectory.appendingPathComponent("FloeAgent/QualificationEvidence/LaTeXMaintenance",isDirectory:true)
+    }
+    private func persist() {
+        do {
+            let directory=evidenceRoot.appendingPathComponent(receiptID.uuidString,isDirectory:true)
+            try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            facts["receiptID"]=receiptID.uuidString;facts["updatedAt"]=ISO8601DateFormatter().string(from:Date())
+            let data=try LaTeXDigest.encode(facts)
+            try data.write(to:directory.appendingPathComponent("receipt.json"),options:.atomic)
+            try data.write(to:evidenceRoot.appendingPathComponent("current.json"),options:.atomic)
+        }catch {FloeLogger(category:.persistence).warning("latexMaintenanceEvidenceWriteFailed")}
+    }
+    private func perform() async {
+        facts=["kind":"opt-in fixed native QA exec.shell/jobs; not model/PDF qualification",
+            "taskID":Self.taskID.uuidString,"projectID":Self.projectID.uuidString,"environmentID":Self.environmentID,
+            "approvedScriptSHA256":Self.scriptSHA256,"phase":"validating","nativeCompileLockAcquiredByHarness":"false"]
+        persist()
+        do {
+            let input=ProcessInfo.processInfo.environment
+            guard let encoded=input["FLOE_LATEX_MAINTENANCE_SCRIPT_BASE64"],encoded.utf8.count<=20000,
+                  let data=Data(base64Encoded:encoded),data.count==Self.scriptBytes,LaTeXDigest.hash(data)==Self.scriptSHA256,
+                  let script=String(data:data,encoding:.utf8),!script.contains("\nFLOE_FIXED_LATEX_RECOVERY\n") else {
+                throw FloeError.validationFailed("Only the reviewed, exact maintenance payload is accepted")
+            }
+            guard let composition else{throw PersonalContentError.storageUnavailable}
+            let app=try composition.app()
+            try await app.ensureDurableAutomationReady()
+            let jobs=try app.backgroundJobService.unwrapForLaTeXMaintenance()
+            guard let task=try await app.conversationStore.conversation(id:Self.taskID),task.purpose == .ordinary,task.visibility == .normal else {
+                throw PersonalContentError.changedDocument
+            }
+            let unfinished=try await app.runStore.nonTerminalRuns().filter{$0.conversationID==Self.taskID}
+            try require(unfinished.isEmpty,"Reconcile the retained task's earlier run before starting maintenance")
+            let currentJobs=try await BackgroundJobStore(database:app.database).jobs(environmentID:Self.environmentID,limit:4096)
+            try require(currentJobs.allSatisfy{$0.state.isTerminal},"The retained environment already has an active job")
+            let pins=TaskExecutionBindingStore(database:app.database)
+            guard let pin=try await pins.binding(conversationID:Self.taskID),pin.generation==1,
+                  pin.target.backend == .linuxVM,pin.target.environmentID==Self.environmentID,pin.target.remoteHostID==nil else {
+                throw FloeError.validationFailed("The retained QA execution pin changed")
+            }
+            guard let environment=await app.environmentRegistry.record(id:Self.environmentID),environment.state != .deleting,
+                  !environment.requiresRebuild,environment.pendingRuntimeResetID==nil else{throw PersonalContentError.changedDocument}
+            let workspaces=SQLiteWorkspaceStore(database:app.database)
+            guard let workspaceID=try await workspaces.workspaceID(conversationID:Self.taskID),let workspace=try await workspaces.workspace(id:workspaceID) else {
+                throw PersonalContentError.missingDocument
+            }
+            let policy=try await workspaces.taskPolicy(conversationID:Self.taskID)
+            try require(policy.allowedToolNames?.contains("exec.shell") != false,"The retained task does not allow exec.shell")
+            try cancellation.throwIfCancelled()
+            let root=try await app.workspaceCenter.acquireTaskRoot(workspace,conversationID:Self.taskID)
+            var layers:ToolEnvironmentLease?
+            let id=UUID()
+            var saved=false
+            do {
+                let resolved=try await app.taskExecutionEnvironments.resolveBinding(conversationID:Self.taskID,runID:id,root:root.url,workspace:workspace)
+                try require(resolved.target==pin.target && resolved.generation==pin.generation,"Normal resolution changed the retained pin")
+                try cancellation.throwIfCancelled()
+                // acquire/authorizeOriginal verify the persisted real run
+                // and its exact binding, including for a native QA caller.
+                try await app.runStore.saveRun(.init(id:id,conversationID:Self.taskID,state:"executing",goal:"LaTeX toolchain maintenance QA",startedAt:Date(),executionBinding:pin))
+                saved=true;runID=id;facts["runID"]=id.uuidString;persist()
+                let context=ToolContext(runID:id,scope:.local,allowedToolNames:["exec.shell"],workspaceRootURL:root.url,
+                    serviceStorePaths:composition.typedServiceStorePaths,cancellation:cancellation,environmentID:Self.environmentID,
+                    executionBindingGeneration:pin.generation,conversationID:Self.taskID,
+                    clientSessionID:"latex.maintenance.qa."+id.uuidString.lowercased(),frozenEffectiveCatalogNames:["exec.shell"])
+                let acquired=try await ToolEnvironmentRouting.shared.acquire(context);layers=acquired
+                try require(acquired.context.environment?.id==Self.environmentID,"The acquired environment owner changed")
+                let original=try await composition.acquire(Self.projectID,context:acquired.context,editing:false)
+                let manifest=try await original.store.manifest()
+                try require(manifest.id==Self.projectID && manifest.owner == .init(kind:.space,id:Self.projectID),"The retained original changed owner")
+                let manifestHash=LaTeXDigest.hash(try LaTeXDigest.encode(manifest)),mainHash=LaTeXDigest.hash(try await original.store.read(manifest.mainFile))
+                let environmentIDs=Set(await app.environmentRegistry.all().map(\.id))
+                let shell="exec /usr/bin/python3 -I -B - <<'FLOE_FIXED_LATEX_RECOVERY'\n"+script+"\nFLOE_FIXED_LATEX_RECOVERY\n"
+                let payload=try JSONEncoder().encode(LocalShellTool.Arguments(script:shell,cwd:".",maxOutputBytes:262144))
+                guard let runner=ToolRunnerRegistry.shared.runner(named:"exec.shell"),runner.isAvailable() else{throw PersonalContentError.storageUnavailable}
+                try runner.validateArguments(payload)
+                if let preflight=runner.preflightSubmission {try await preflight(payload,root.url)}
+                try cancellation.throwIfCancelled()
+                runID=id;submittedCallID="qa.latex.maintenance."+id.uuidString.lowercased();submittedPayload=payload
+                owner=Owner(app:app,jobs:jobs,root:root,layers:acquired,original:original,pin:pin,environmentIDs:environmentIDs,manifestHash:manifestHash,mainHash:mainHash)
+                facts["runID"]=id.uuidString;facts["bindingGeneration"]=String(pin.generation);facts["sourceManifestSHA256Before"]=manifestHash
+                facts["submittedPayloadSHA256"]=LaTeXDigest.hash(payload)
+                facts["sourceMainSHA256Before"]=mainHash;facts["phase"]="submitting";persist()
+                submissionAttempted=true
+                let job=try await jobs.submit(runID:id,toolCallID:submittedCallID,targetTool:"exec.shell",payloadJSON:payload,
+                    scope:acquired.context.scope,workspaceRootURL:root.url,allowedWorkspacePaths:acquired.context.allowedWorkspacePaths,
+                    environmentID:Self.environmentID,allowedToolNames:["exec.shell"],submissionSource:.nativeService,waitForCompletion:true)
+                try validate(job);jobID=job.id
+                facts["jobID"]=job.id.uuidString;facts["phase"]="running";persist()
+                await monitor(job.id)
+            }catch {
+                // Before owner acquisition nothing could have reached exec.
+                if owner==nil {
+                    if saved {
+                        do {try await app.runStore.updateRunState(id:id,state:cancellation.isCancelled ? "cancelled":"failed",endedAt:Date())}
+                        catch {facts["preflightSettlementError"]=error.localizedDescription;persist()}
+                    }
+                    if let layers {await layers.finish()};root.release()
+                }
+                throw error
+            }
+        }catch {
+            facts["error"]=String(error.localizedDescription.prefix(4000))
+            if submissionAttempted && !knownStopped {
+                facts["phase"]="waitingRecovery";facts["workerStopped"]="false";persist()
+                if let owner,let runID {try? await owner.app.runStore.updateRunState(id:runID,state:"waitingRecovery",endedAt:nil)}
+            }else if owner != nil {
+                await settle(state:cancellationRequested ? "cancelled":"failed")
+            }else {facts["phase"]="rejected-before-execution";persist()}
+        }
+    }
+    private func validate(_ job:BackgroundJob)throws {
+        try require(job.runID==runID && job.conversationID==Self.taskID && job.environmentID==Self.environmentID &&
+            job.toolCallID==submittedCallID && job.targetTool=="exec.shell" && job.payloadJSON==submittedPayload,
+            "The durable job does not match the exact retained maintenance operation")
+    }
+    private func monitor(_ id:UUID) async {
+        guard let owner else{return}
+        do {
+            var cancellationSent=false
+            while true {
+                if cancellationRequested && !cancellationSent {_ = try await owner.jobs.cancel(id:id);cancellationSent=true}
+                guard let job=try await owner.jobs.job(id:id) else{throw PersonalContentError.changedDocument}
+                try validate(job)
+                if job.state.isTerminal {
+                    let summary=job.resultSummary ?? ""
+                    let code=Self.canonicalExit(summary)
+                    knownStopped=code != nil || (job.state == .cancelled && job.lastError=="Cancelled before execution started; no effects were produced.")
+                    facts["jobState"]=job.state.rawValue;facts["canonicalReceipt"]=String(summary.prefix(2000));facts["workerStopped"]=String(knownStopped)
+                    facts["exitCode"]=code.map{String($0)} ?? "unconfirmed";facts["jobLastError"]=job.lastError ?? ""
+                    persist()
+                    guard knownStopped else{throw LaTeXEngineFailure("The maintenance processor has not confirmed exit",workerStopped:false)}
+                    if job.state == .cancelled {
+                        if job.outputPath != nil {
+                            do {_ = try retainedOutput(job)}catch {facts["outputReadbackError"]=error.localizedDescription}
+                        }
+                        await settle(state:"cancelled");return
+                    }
+                    try require(job.state == .completed && code==0,"The actual maintenance job failed")
+                    let output=try retainedOutput(job)
+                    let prefix="FLOE_LATEX_CONFIGURE_RECOVERY "
+                    guard let line=output.split(separator:"\n").first(where:{$0.hasPrefix(prefix)}),
+                          let value=try JSONSerialization.jsonObject(with:Data(line.dropFirst(prefix.count).utf8)) as? [String:Any],
+                          value["phase"] as? String=="configured-and-audited",value["dpkgAuditClean"] as? Bool==true,
+                          value["downloads"] as? Bool==false,value["existingSevenFormatHashesUnchanged"] as? Bool==true else {
+                        throw FloeError.validationFailed("The actual package audit/format preservation receipt is missing")
+                    }
+                    let pin=try await TaskExecutionBindingStore(database:owner.app.database).binding(conversationID:Self.taskID)
+                    try require(pin?.target==owner.pin.target && pin?.generation==owner.pin.generation,"The task pin changed during maintenance")
+                    try require(Set(await owner.app.environmentRegistry.all().map(\.id))==owner.environmentIDs,"The environment inventory changed during maintenance")
+                    guard let composition else{throw PersonalContentError.storageUnavailable}
+                    _ = try await composition.authorizeOriginal(Self.projectID,context:owner.layers.context,editing:false)
+                    let manifest=try await owner.original.store.manifest()
+                    let manifestHash=LaTeXDigest.hash(try LaTeXDigest.encode(manifest))
+                    let mainHash=LaTeXDigest.hash(try await owner.original.store.read(manifest.mainFile))
+                    try require(manifestHash==owner.manifestHash && mainHash==owner.mainHash,"The original changed during maintenance; retain the current original")
+                    facts["sourceAndPinUnchanged"]="true";facts["dpkgAuditClean"]="true";facts["pdfVerified"]="false"
+                    facts["guestEvidencePath"]=value["evidence"] as? String ?? ""
+                    await settle(state:"completed");return
+                }
+                // The service task has no UI/test waiter cancellation parent.
+                try await Task.sleep(for:.milliseconds(500))
+            }
+        }catch {
+            facts["error"]=String(error.localizedDescription.prefix(4000))
+            if knownStopped {await settle(state:cancellationRequested ? "cancelled":"failed")}
+            else {
+                facts["phase"]="waitingRecovery";facts["workerStopped"]="false";persist()
+                if let runID {try? await owner.app.runStore.updateRunState(id:runID,state:"waitingRecovery",endedAt:nil)}
+            }
+        }
+    }
+    private func retainedOutput(_ job:BackgroundJob)throws ->String {
+        let expected=URL.applicationSupportDirectory.appendingPathComponent("Floe/JobOutputs",isDirectory:true).appendingPathComponent(job.id.uuidString+".txt")
+        guard let raw=job.outputPath,URL(fileURLWithPath:raw).standardizedFileURL==expected.standardizedFileURL,
+              let count=job.outputBytes,(0...1048576).contains(count) else{throw PersonalContentError.changedDocument}
+        let bytes=try Data(contentsOf:expected)
+        try require(bytes.count==count,"The saved output size changed")
+        facts["outputBytes"]=String(count);facts["outputSHA256"]=LaTeXDigest.hash(bytes)
+        let directory=evidenceRoot.appendingPathComponent(receiptID.uuidString,isDirectory:true)
+        try bytes.write(to:directory.appendingPathComponent("stdout.txt"),options:.atomic)
+        return String(decoding:bytes,as:UTF8.self)
+    }
+    private static func canonicalExit(_ summary:String)->Int? {
+        guard let first=summary.split(separator:"\n").first,first.hasPrefix("exit="),let token=first.split(separator:" ").first else{return nil}
+        return Int(token.dropFirst(5))
+    }
+    private func settle(state:String) async {
+        guard let owner,let runID else{return}
+        do {try await owner.app.runStore.updateRunState(id:runID,state:state,endedAt:Date())}
+        catch {facts["phase"]="waitingRecovery";facts["settlementError"]=error.localizedDescription;persist();return}
+        self.owner=nil
+        await owner.layers.finish();owner.root.release()
+        facts["phase"]=state;facts["leasesReleased"]="true";facts["workerStopped"]=String(knownStopped)
+        persist()
+    }
+}
+
+private extension Optional where Wrapped==BackgroundJobService {
+    func unwrapForLaTeXMaintenance()throws->BackgroundJobService {
+        guard let self else{throw PersonalContentError.storageUnavailable};return self
+    }
+}
+#endif
+
 #endif

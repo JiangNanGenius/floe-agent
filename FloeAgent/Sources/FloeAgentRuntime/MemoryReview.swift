@@ -92,6 +92,13 @@ public enum MemoryReviewDisposition: Sendable, Codable, Hashable {
     case reject(reason: String)
 }
 
+public enum MemoryPendingCapacity {
+    public static let defaultValue = 50
+    public static let maximum = 100
+    public static let settingKey = "memory.pending.capacity"
+    public static func normalized(_ value: Int) -> Int { min(maximum, max(1, value)) }
+}
+
 public struct MemoryReviewLimits: Sendable, Codable, Hashable {
     public var maximumPending: Int
     public var maximumPendingPerWorkspace: Int
@@ -100,14 +107,15 @@ public struct MemoryReviewLimits: Sendable, Codable, Hashable {
     public var maximumRecallTokens: Int
 
     public init(
-        maximumPending: Int = 24,
-        maximumPendingPerWorkspace: Int = 8,
+        maximumPending: Int = MemoryPendingCapacity.defaultValue,
+        maximumPendingPerWorkspace: Int? = nil,
         pendingLifetime: TimeInterval = 7 * 24 * 60 * 60,
         maximumRecallCount: Int = 6,
         maximumRecallTokens: Int = 1_500
     ) {
-        self.maximumPending = max(1, maximumPending)
-        self.maximumPendingPerWorkspace = max(1, maximumPendingPerWorkspace)
+        self.maximumPending = MemoryPendingCapacity.normalized(maximumPending)
+        self.maximumPendingPerWorkspace = min(self.maximumPending,
+            max(1, maximumPendingPerWorkspace ?? self.maximumPending))
         self.pendingLifetime = max(60, pendingLifetime)
         self.maximumRecallCount = max(1, maximumRecallCount)
         self.maximumRecallTokens = max(1, maximumRecallTokens)
@@ -180,14 +188,18 @@ public struct BoundedMemoryReviewPolicy: Sendable {
 }
 
 /// Bounded pending queue. Expired items are discarded and are never
-/// promoted implicitly. When full, the oldest lowest-importance candidate
-/// is evicted first.
+/// promoted implicitly. When full, the oldest-created candidate is discarded;
+/// insertion order breaks equal timestamps. The App's durable review screen
+/// uses SQLitePersonalizationStore, not this transient helper.
 public actor MemoryPendingQueue {
     private let limits: MemoryReviewLimits
     private var candidates: [MemoryCandidate] = []
 
     public init(limits: MemoryReviewLimits = MemoryReviewLimits()) {
-        self.limits = limits
+        var bounded = limits
+        bounded.maximumPending = MemoryPendingCapacity.normalized(limits.maximumPending)
+        bounded.maximumPendingPerWorkspace = min(bounded.maximumPending, max(1, limits.maximumPendingPerWorkspace))
+        self.limits = bounded
     }
 
     @discardableResult
@@ -198,8 +210,12 @@ public actor MemoryPendingQueue {
             candidate.expiresAt,
             now.addingTimeInterval(limits.pendingLifetime)
         )
-        candidates.removeAll { $0.id == bounded.id }
-        candidates.append(bounded)
+        if let index = candidates.firstIndex(where: { $0.id == bounded.id }) {
+            bounded.createdAt = candidates[index].createdAt
+            candidates[index] = bounded
+        } else {
+            candidates.append(bounded)
+        }
 
         if case .workspace(let workspaceID) = bounded.scope {
             trimWorkspace(workspaceID)
@@ -210,7 +226,10 @@ public actor MemoryPendingQueue {
 
     public func all(now: Date = Date()) -> [MemoryCandidate] {
         purgeExpired(now: now)
-        return candidates.sorted { $0.createdAt > $1.createdAt }
+        return candidates.enumerated().sorted {
+            if $0.element.createdAt != $1.element.createdAt { return $0.element.createdAt > $1.element.createdAt }
+            return $0.offset > $1.offset
+        }.map(\.element)
     }
 
     public func remove(id: UUID) {
@@ -247,10 +266,8 @@ public actor MemoryPendingQueue {
         _ lhs: EnumeratedSequence<[MemoryCandidate]>.Element,
         _ rhs: EnumeratedSequence<[MemoryCandidate]>.Element
     ) -> Bool {
-        if lhs.element.importance == rhs.element.importance {
-            return lhs.element.createdAt < rhs.element.createdAt
-        }
-        return lhs.element.importance < rhs.element.importance
+        if lhs.element.createdAt != rhs.element.createdAt { return lhs.element.createdAt < rhs.element.createdAt }
+        return lhs.offset < rhs.offset
     }
 
     private func minDate(_ lhs: Date?, _ rhs: Date) -> Date {

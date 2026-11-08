@@ -36,7 +36,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private static var sessions: [UUID: MusicProjectSession] = [:]
     static func requireIdleForDeletion(id: UUID) throws {
         guard let value = sessions[id] else { return }
-        guard !value.saving, !value.isRendering, !value.isLive, value.previewPresetIndex == nil, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording else { throw PersonalFileActionError.busy }
+        guard value.notation?.isBusy != true, !value.notationImporting, !value.notationRestoring, !value.saving, !value.isRendering, !value.isLive, value.previewPresetIndex == nil, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording else { throw PersonalFileActionError.busy }
     }
 
     /// Read-only lookup; observing audio must not construct an editor, prefetch
@@ -54,7 +54,15 @@ private nonisolated struct MusicImportDirectory: Sendable {
     let id: UUID
     let root: URL
     let repository: NativeMusicRepository
-    let store: MusicProjectStore
+    private(set) var store: MusicProjectStore
+    var notation: MusicNotationSession?
+    var notationImporting = false
+    @ObservationIgnored var notationRestoreTask: Task<Void, Never>?
+    private(set) var notationRestoring = false
+    private var notationRestoreIdentity: UUID?
+    var notationAudioAuthority: any MusicAudioAuthority { audio }
+    var notationRenderer: MusicOfflineRenderer { renderer }
+    var notationOwnerToken: String { handle.ownerToken }
     private(set) var document: MusicDocument
     let keyboard: KeyboardPerformanceController
     private let sink = MusicKeyboardSink()
@@ -111,6 +119,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     static func open(id: UUID, directory: URL, environment: AppEnvironment) async throws -> MusicProjectSession {
         if let value = sessions[id] { return value }
+        try MusicNotationPackage.recoverPending(root: directory, parentID: id)
         let repository = try NativeMusicRepository(root: directory)
         let store = try await MusicProjectStore.open(projectID: .init(rawValue: id.uuidString.lowercased()), repository: repository)
         let document = try await store.currentSnapshot()
@@ -121,8 +130,51 @@ private nonisolated struct MusicImportDirectory: Sendable {
         value.loadWaveforms()
         return value
     }
+    /// Host-only restoration fence. Closing the old store session invalidates
+    /// pending commit fences before either original directory can be exchanged.
+    func beginNotationRestore(expected: MusicNotationSnapshot) async throws -> MusicNotationRestoreAuthority {
+        guard expected.parentID == id, expected.musicRevision == document.revision,
+              !saving, !notationRestoring, !isRendering, !isRecording, !isMIDIRecording,
+              notation?.isBusy != true else { throw PersonalContentError.changedDocument }
+        try MusicNotationPackage.requireUnchanged(expected, root: root)
+        let ticket = MusicNotationRestoreAuthority(identity: UUID(), ownerToken: handle.ownerToken, oldStore: store, oldDocument: document)
+        saving = true; notationRestoring = true; notationRestoreIdentity = ticket.identity
+        stopLive(); stopPlayback(); cancelRender(); notation?.invalidateForRestore()
+        do { try await store.close(handle) }
+        catch { saving = false; notationRestoring = false; notationRestoreIdentity = nil; throw error }
+        return ticket
+    }
+    /// Reopen through the same repository/store authority after atomic exchange
+    /// or rollback. A prior restore's late callback cannot adopt this session.
+    func finishNotationRestore(_ ticket: MusicNotationRestoreAuthority, store next: MusicProjectStore) async throws {
+        guard notationRestoring, notationRestoreIdentity == ticket.identity else { throw PersonalContentError.changedDocument }
+        try await store.close(handle)
+        let restored = try await next.currentSnapshot()
+        guard restored.id == document.id else { throw PersonalContentError.changedDocument }
+        let nextHandle = await next.beginSession(ownerToken: ticket.ownerToken)
+        guard notationRestoring, notationRestoreIdentity == ticket.identity else { try? await next.close(nextHandle); throw PersonalContentError.changedDocument }
+        for task in waveformTasks.values { task.cancel() }
+        waveformTasks.removeAll(); waveforms.removeAll(); waveformErrors.removeAll()
+        exportedFile = nil; exportedFiles = []
+        store = next; document = restored; handle = nextHandle
+        if let bytes = try? Data(contentsOf: root.appendingPathComponent("dj-session.json")) {
+            dj = try JSONDecoder().decode(MusicDJSession.self, from: bytes)
+        } else { dj = nil }
+        reconcileSelection()
+    }
+    func completeNotationRestore(_ ticket: MusicNotationRestoreAuthority) {
+        guard notationRestoring, notationRestoreIdentity == ticket.identity else { return }
+        saving = false; notationRestoring = false; notationRestoreIdentity = nil
+        notation?.invalidateForRestore(); loadWaveforms()
+        Task { await publishSavedChange(previousRevision: ticket.oldDocument.revision) }
+    }
+    func registerNotationExport(_ url: URL) {
+        exportedFile = url
+        if !exportedFiles.contains(url) { exportedFiles.append(url) }
+    }
+
     func apply(_ operations: [MusicEditOp], expectedRevision: Int64? = nil) async throws {
-        guard !saving else { throw MusicError.invalidBatch(reason: "another edit is saving") }
+        guard !saving, !notationRestoring, !notationImporting else { throw MusicError.invalidBatch(reason: "another edit is saving") }
         if let expectedRevision, expectedRevision != document.revision {
             throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision)
         }
@@ -145,10 +197,28 @@ private nonisolated struct MusicImportDirectory: Sendable {
         defer { saving = false }
         cancelRender()
         stopPlayback()
+        let previousRevision = document.revision
         document = try await store.commit(.init(baseRevision: document.revision, author: "native-editor", ops: operations), as: handle)
         handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
         loadWaveforms()
         reconcileSelection()
+        await publishSavedChange(previousRevision: previousRevision)
+    }
+    /// The repository commits first. File recency follows that same original;
+    /// failures never turn an unsaved edit into a successful library update.
+    private func publishSavedChange(previousRevision: Int64) async {
+        guard document.revision != previousRevision,
+              let library = try? await PersonalContentService.shared.library(),
+              let location = try? await library.resolve(id), location.record.kind == .music,
+              location.url.appendingPathComponent("Music").standardizedFileURL.resolvingSymlinksInPath()
+                == root.standardizedFileURL.resolvingSymlinksInPath() else { return }
+        do {
+            try await library.markChanged(id)
+            NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: id)
+        } catch {
+            diagnostic = IDELanguageRunText.t("作品已保存，但文件列表暂未更新。请稍后刷新。",
+                "The work was saved, but its file listing could not be updated. Refresh it shortly.")
+        }
     }
     func addTrack() async {
         do {
@@ -174,7 +244,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         return clip
     }
     func undo(redo: Bool = false) async {
-        guard !saving, !isRecording, !isMIDIRecording else {
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else {
             diagnostic = IDELanguageRunText.t("请先结束录制，再撤销或重做。", "Finish recording before undoing or redoing."); return
         }
         saving = true
@@ -185,13 +255,17 @@ private nonisolated struct MusicImportDirectory: Sendable {
         defer { resumeLive(resumeTrack, ifIdentity: resumeIdentity) }
         do {
             cancelRender()
+            let previousRevision = document.revision
             document = try await (redo ? store.redo(handle) : store.undo(handle))
             handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
             reconcileSelection()
+            await publishSavedChange(previousRevision: previousRevision)
         } catch { diagnostic = error.localizedDescription }
     }
     func importFile(_ url: URL) async {
+        let importRevision = document.revision
         do {
+            guard !notationRestoring else { throw PersonalContentError.changedDocument }
             let repository = self.repository, sampleRate = document.tempoMap.sampleRate
             let imported = try await Task.detached(priority: .userInitiated) { () -> (MusicAsset, [FloeMusicCore.MusicTrack], MusicTempoMap?) in
                 let access = url.startAccessingSecurityScopedResource()
@@ -215,7 +289,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
             var operations: [MusicEditOp] = [.insertAsset(imported.0)]
             operations += imported.1.map(MusicEditOp.insertTrack)
             if document.tracks.isEmpty, let tempo = imported.2 { operations.append(.setTempoMap(tempo)) }
-            try await apply(operations)
+            try await apply(operations, expectedRevision: importRevision)
             if let trackID = imported.1.first?.id { selectTrack(trackID) }
             selectedClip = imported.1.first?.clips.first?.id
         } catch { diagnostic = error.localizedDescription }
@@ -249,13 +323,13 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private func commitAuthorizedImport(_ url: URL, sourceRoot: URL, sourceReference: String, provenance: String,
                                         expectedRevision: Int64, expectedSHA256: String?, cancellation: CancellationToken,
                                         validateSource: @escaping @MainActor @Sendable () async throws -> Void) async throws -> AuthorizedImport {
-        guard !saving, !isRecording, !isMIDIRecording else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
         guard expectedRevision == document.revision else { throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision) }
         try cancellation.throwIfCancelled(); try await validateSource()
         let ext = url.pathExtension.lowercased()
         guard ["wav", "caf", "aif", "aiff", "mp3", "m4a", "mid", "midi"].contains(ext),
               !sourceReference.isEmpty, sourceReference.utf8.count <= 1_024 else { throw MusicError.invalidAsset(reason: "Choose a supported audio or MIDI file") }
-        guard !saving, !isRecording, !isMIDIRecording else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
         guard document.revision == expectedRevision else { throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision) }
         saving = true; defer { saving = false }
         let destinationRoot = try MusicImportDirectory(root), sampleRate = document.tempoMap.sampleRate
@@ -301,15 +375,18 @@ private nonisolated struct MusicImportDirectory: Sendable {
         var operations: [MusicEditOp] = [.insertAsset(prepared.0)] + prepared.1.map(MusicEditOp.insertTrack)
         if document.tracks.isEmpty, let tempo = prepared.2 { operations.append(.setTempoMap(tempo)) }
         cancelRender(); stopPlayback()
+        let previousRevision = document.revision
         document = try await store.commit(.init(baseRevision: expectedRevision, author: "native-task-import", ops: operations), as: handle)
         handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
         if let trackID = prepared.1.first?.id { selectTrack(trackID) }
         selectedClip = prepared.1.first?.clips.first?.id
         loadWaveforms()
+        await publishSavedChange(previousRevision: previousRevision)
         return .init(asset: prepared.0, trackIDs: prepared.1.map(\.id), clipIDs: prepared.1.flatMap(\.clips).map(\.id),
             revision: document.revision, byteCount: prepared.3.count)
     }
     func startLive() {
+        guard !saving, !notationRestoring, !notationImporting else { return }
         guard !isLive else { return }
         stopPresetPreview()
         liveIdentity = UUID()
@@ -339,7 +416,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     /// A late track-save callback may finish its authorized save after panel
     /// closure, but cannot activate audio or recording in a closed context.
     func activateKeyboard(recording: Bool = false) async {
-        guard !saving, !isRecording, !isMIDIRecording else {
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else {
             diagnostic = IDELanguageRunText.t("请先结束当前录制或保存。", "Finish recording or saving first."); return
         }
         let identity = UUID()
@@ -369,6 +446,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     /// Auditions never write an instrument or enter the keyboard recording sink.
     /// One session-owned voice and cancellation fence cover every exit path.
     func previewPreset(_ index: Int) {
+        guard !saving, !notationRestoring, !notationImporting else { return }
         guard MusicPresetCatalog.preset(index: index) != nil else {
             diagnostic = IDELanguageRunText.t("此音色不可用。", "This preset is unavailable."); return
         }
@@ -419,6 +497,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         return patch.parameters[key] ?? MusicPresetCatalog.preset(index: patch.presetIndex)?.parameters[key] ?? fallback
     }
     func startMIDIRecording() {
+        guard !saving, !notationRestoring, !notationImporting else { return }
         guard !isRecording, midiStart == nil else { return }
         startLive()
         guard isLive else { return }
@@ -479,7 +558,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         } catch { diagnostic = error.localizedDescription }
     }
     func render(asMP3: Bool, play: Bool = false, tailFrames: Int64 = 48_000) {
-        guard !isRendering else { return }
+        guard !isRendering, !notationRestoring, !notationImporting else { return }
         do { try validateRenderTail(tailFrames) }
         catch { renderError = error; diagnostic = error.localizedDescription; return }
         stopPresetPreview()
@@ -544,12 +623,14 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     func cancelRender() { lease?.invalidate(); lease = nil; renderTask?.cancel() }
     func stopPlayback() {
+        notation?.stopAudio()
         stopPresetPreview()
         let owned = player != nil
         player?.stop(); player = nil; isPlaying = false
         if owned { audio.releasePlayback() }
     }
     func startMicrophone() async {
+        guard !saving, !notationRestoring, !notationImporting else { return }
         guard !isRecording, !isLive, !isPlaying else { return }
         stopPresetPreview()
         do {
@@ -599,7 +680,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         if selectedTrack == clip.trackID { selectedClip = clip.id }
     }
     func reload() async throws {
-        guard !saving else { return }
+        guard !saving, !notationRestoring, !notationImporting else { return }
         let resumeTrack = isLive ? selectedTrack : nil
         stopLive()
         let resumeIdentity = liveIdentity
@@ -742,6 +823,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         }
     }
     func changeDJ(_ change: (inout MusicDJSession) throws -> Void) {
+        guard !saving, !notationRestoring, !notationImporting else { return }
         do {
             let old = dj
             var next = try MusicDJSession(id: old?.id ?? MusicDJSessionID(), assets: document.assets,
@@ -754,7 +836,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         } catch { diagnostic = error.localizedDescription }
     }
     func exportOriginals(stems: Bool) {
-        guard !isRendering else { return }
+        guard !isRendering, !notationRestoring, !notationImporting else { return }
         stopPresetPreview()
         let frozen = document
         isRendering = true; diagnostic = nil; renderError = nil
@@ -794,6 +876,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
                     }
                     _ = try await target.save(document: frozen, expectedRevision: nil, fence: nil)
                     if let dj { try JSONEncoder().encode(dj).write(to: staging.appendingPathComponent("dj-session.json"), options: .atomic) }
+                    let notationManifest = try MusicNotationPackage.stageCompanion(source: root, destination: staging, parentID: id, music: frozen)
                     let output = directory.appendingPathComponent("music-project-r\(frozen.revision)-\(UUID().uuidString).zip")
                     let stagedZip = directory.appendingPathComponent(".package-\(UUID().uuidString).zip")
                     defer { try? FileManager.default.removeItem(at: stagedZip) }
@@ -810,6 +893,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
                         if let copyError { throw copyError }
                     }.value
                     try Task.checkCancellation(); try lease.validate(document: document)
+                    try MusicNotationPackage.validateExport(notationManifest, source: root)
                     try FileManager.default.moveItem(at: stagedZip, to: output)
                     outputs = [output]
                 }
@@ -819,6 +903,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         }
     }
     func renderDJ(deck: MusicDJSession.DeckSlot? = nil) {
+        guard !saving, !notationRestoring, !notationImporting else { return }
         guard !isRendering, var snapshot = dj else { return }
         stopPresetPreview()
         do {

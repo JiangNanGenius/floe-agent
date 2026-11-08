@@ -19,6 +19,7 @@ public typealias LaTeXTypesetAction = @MainActor @Sendable (LaTeXProjectStore,In
     private let lifetime:(any LaTeXBuildLifetime)?
     private let typesetAction:LaTeXTypesetAction?
     private let engineCapabilities:(@MainActor @Sendable () async -> [LaTeXEngineCapability])?
+    private let operationIsActive:@MainActor @Sendable ()->Bool
     public var chinese:Bool
     public private(set) var manifest:LaTeXProjectManifest?
     public private(set) var source=""
@@ -62,8 +63,9 @@ public typealias LaTeXTypesetAction = @MainActor @Sendable (LaTeXProjectStore,In
     @ObservationIgnored private var lastEdit=Date.distantPast
     @ObservationIgnored private let editorID=UUID()
 
-    public init(store:LaTeXProjectStore,builds:LaTeXBuildService,chinese:Bool = Locale.preferredLanguages.first?.hasPrefix("zh") == true,lifetime:(any LaTeXBuildLifetime)?=nil,formulaRenderer:LaTeXFormulaRenderer?=nil,typesetAction:LaTeXTypesetAction?=nil,engineCapabilities:(@MainActor @Sendable () async -> [LaTeXEngineCapability])?=nil) {
+    public init(store:LaTeXProjectStore,builds:LaTeXBuildService,chinese:Bool = Locale.preferredLanguages.first?.hasPrefix("zh") == true,lifetime:(any LaTeXBuildLifetime)?=nil,formulaRenderer:LaTeXFormulaRenderer?=nil,typesetAction:LaTeXTypesetAction?=nil,engineCapabilities:(@MainActor @Sendable () async -> [LaTeXEngineCapability])?=nil,operationIsActive:@escaping @MainActor @Sendable ()->Bool = {false}) {
         self.store=store;self.builds=builds;self.chinese=chinese;self.lifetime=lifetime;self.formulaRenderer=formulaRenderer;self.typesetAction=typesetAction;self.engineCapabilities=engineCapabilities
+        self.operationIsActive=operationIsActive
     }
     public func t(_ zh:String,_ en:String)->String {chinese ? zh:en}
     public func updateCapabilities(_ values:[LaTeXEngineCapability]) {capabilities=values}
@@ -85,7 +87,7 @@ public typealias LaTeXTypesetAction = @MainActor @Sendable (LaTeXProjectStore,In
     }
     public var pdfURL:URL? {guard let record=pdfBuild,let relative=record.pdfRelativePath else{return nil};return store.root.appendingPathComponent("Builds/"+record.id.uuidString).appendingPathComponent(relative)}
     public var pdfIsCurrent:Bool {pdfBuild?.revision == manifest?.revision && !dirty}
-    public var isBuilding:Bool {preparingTypeset || build?.isActive == true}
+    public var isBuilding:Bool {preparingTypeset || build?.isActive == true || operationIsActive()}
     public func load() async {
         do {
             let current=try await store.manifest()

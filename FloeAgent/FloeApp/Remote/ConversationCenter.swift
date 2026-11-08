@@ -2170,7 +2170,20 @@ final class ConversationCenter: ObservableObject {
     /// existing explicit-label scanner. Neither path grants tool authority.
     func normalizeQuestionAnswer(_ answer: UserQuestionAnswer, question: UserQuestion,
                                  ephemeral: Bool) async throws -> UserQuestionAnswer {
-        guard let raw = answer.freeText, !raw.isEmpty else { return answer }
+        var safe = answer
+        if let raw = answer.freeText, !raw.isEmpty {
+            safe.freeText = try await normalizeQuestionText(raw, question: question, ephemeral: ephemeral,
+                sourceID: ModelUserInputProjection.questionSourceID(question.questionID))
+        }
+        if let raw = answer.customText, !raw.isEmpty {
+            safe.customText = try await normalizeQuestionText(raw, question: question, ephemeral: ephemeral,
+                sourceID: ModelUserInputProjection.questionSourceID("custom-answer:" + question.questionID))
+        }
+        return safe
+    }
+
+    private func normalizeQuestionText(_ raw: String, question: UserQuestion, ephemeral: Bool,
+                                       sourceID: UUID) async throws -> String {
         let ingress: (sanitizedText: String, captures: [CapturedSecret])
         if question.answerSensitivity == .credential,
            SecretIngressScanner.credentialID(from: raw) == nil {
@@ -2193,11 +2206,8 @@ final class ConversationCenter: ObservableObject {
         }
         guard !isClearingHistory, !deletingConversationIDs.contains(question.conversationID) else { throw CancellationError() }
         try modelInputProjection(for: question.runID, conversationID: question.conversationID).register(
-            id: ModelUserInputProjection.questionSourceID(question.questionID),
-            safe: ingress.sanitizedText, live: raw, captures: ingress.captures)
-        var safe = answer
-        safe.freeText = ingress.sanitizedText
-        return safe
+            id: sourceID, safe: ingress.sanitizedText, live: raw, captures: ingress.captures)
+        return ingress.sanitizedText
     }
 
     private func discardTemporarySession() async {
@@ -4016,6 +4026,12 @@ final class ConversationCenter: ObservableObject {
         var serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
         serviceStorePaths.merge(environment.biologyComposition.typedServiceStorePaths) { _, native in native }
         serviceStorePaths.merge(environment.latexComposition.typedServiceStorePaths) { _, native in native }
+        if !isTemporary, runSurface == .ordinary {
+            do {
+                let fontStores = try await environment.fontDesignAIHost.typedServiceStorePaths()
+                serviceStorePaths.merge(fontStores) { _, actual in actual }
+            } catch { FloeLogger(category: .tools).warning("fontDesignStoreUnavailable") }
+        }
         // The real instance supplies its container, including custom/migrated
         // roots and works created later in this same run. No model path or
         // organizational folder is treated as ownership.
@@ -4041,7 +4057,7 @@ final class ConversationCenter: ObservableObject {
         let biologyCatalogContext = ToolContext(runID: runID,
             scope: runExecutionBinding?.target.remoteHostID.map(ToolScope.host) ?? .local,
             allowedToolNames: allowedToolNames, workspaceRootURL: runWorkspaceRoot,
-            cancellation: CancellationToken(),
+            serviceStorePaths: serviceStorePaths, cancellation: CancellationToken(),
             environmentID: runExecutionEnvironmentID,
             executionBindingGeneration: runExecutionBinding?.generation,
             conversationID: conversationID, temporaryReadOnly: isTemporary)
@@ -4134,6 +4150,11 @@ final class ConversationCenter: ObservableObject {
                 let latex=await environment.latexComposition.discoverableToolNames(for:biologyCatalogContext)
                 names.subtract(LaTeXHostTools.names)
                 names.formUnion(latex)
+                names.subtract(await HeavyEditorAppTools.names)
+                do {
+                    let editors = try await environment.heavyEditorAppTools.descriptors(for: biologyCatalogContext)
+                    names.formUnion(editors.map(\.name))
+                } catch { FloeLogger(category: .tools).warning("heavyEditorDiscoveryUnavailable") }
                 return names
             }
         )

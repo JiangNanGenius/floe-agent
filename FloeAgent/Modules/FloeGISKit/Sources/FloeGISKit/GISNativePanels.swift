@@ -232,6 +232,7 @@ private struct GISSnapshot {
             }.pickerStyle(.menu)
             Toggle(gisText("多选", "Multi-select"), isOn: Binding(get: { snapshot.raw["ui"]["multiselect"].gisBool }, set: { actions.run("gis.ui.options", ["multiselect": .bool($0)]) })).toggleStyle(.button)
             Toggle(gisText("捕捉", "Snap"), isOn: Binding(get: { snapshot.raw["ui"]["snapping"].gisBool }, set: { actions.run("gis.ui.options", ["snapping": .bool($0)]) })).toggleStyle(.button)
+            Toggle(gisText("手指绘图", "Draw with finger"), isOn: Binding(get: { snapshot.raw["ui"]["fingerDrawing"].gisBool }, set: { actions.run("gis.ui.options", ["fingerDrawing": .bool($0)]) })).toggleStyle(.button).accessibilityIdentifier("gis.fingerDrawing")
             canvasButton("fitLayer", "缩放至图层", "Fit layer", "arrow.up.left.and.arrow.down.right")
             canvasButton("zoomIn", "放大", "Zoom in", "plus.magnifyingglass")
             canvasButton("zoomOut", "缩小", "Zoom out", "minus.magnifyingglass")

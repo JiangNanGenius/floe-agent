@@ -119,6 +119,45 @@ struct WorkspacePathGuardTests {
         #expect(resolved.lastPathComponent == "real.txt")
     }
 
+    @Test("Missing output descendants cannot conceal a symlink escape")
+    func missingOutputUnderExternalSymlinkRejected() throws {
+        let (root, guardResolver) = try makeFixture()
+        defer { cleanup(root) }
+        let outside = root.deletingLastPathComponent().appendingPathComponent("floe-outside-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: false)
+        defer { cleanup(outside) }
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("GeneratedImages"), withDestinationURL: outside)
+        #expect(throws: WorkspaceToolError.self) { try guardResolver.resolve("GeneratedImages/Apple/new-run/image.png") }
+        #expect(throws: WorkspaceToolError.self) { try guardResolver.assertWritable(root.appendingPathComponent("GeneratedImages/Apple/new-run/image.png")) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    @Test("Dangling links and cycles cannot authorize a new output")
+    func danglingExternalLinkAndCycleRejected() throws {
+        let (root, guardResolver) = try makeFixture()
+        defer { cleanup(root) }
+        let outside = root.deletingLastPathComponent().appendingPathComponent("floe-missing-" + UUID().uuidString)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("dangling"), withDestinationURL: outside)
+        #expect(throws: WorkspaceToolError.self) { try guardResolver.resolve("dangling/new/image.png") }
+        #expect(!FileManager.default.fileExists(atPath: outside.path))
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("cycle-a").path, withDestinationPath: "cycle-b")
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("cycle-b").path, withDestinationPath: "cycle-a")
+        #expect(throws: WorkspaceToolError.self) { try guardResolver.resolve("cycle-a/new.png") }
+    }
+
+    @Test("Internal directory links retain contained new-output semantics")
+    func internalDirectoryLinkWithNewDescendantsAllowed() throws {
+        let (root, guardResolver) = try makeFixture()
+        defer { cleanup(root) }
+        let real = root.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("alias").path, withDestinationPath: "real")
+        let result = try guardResolver.resolve("alias/missing/new.png")
+        #expect(result.path == guardResolver.rootURL.appendingPathComponent("real/missing/new.png").path)
+        try guardResolver.assertWritable(result)
+        #expect(!FileManager.default.fileExists(atPath: real.appendingPathComponent("missing").path))
+    }
+
     // MARK: Secrets
 
     @Test("Secret-file exclusion list is enforced")

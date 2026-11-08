@@ -30,6 +30,8 @@ extension StudioCoordinator {
         }
         if value.record.kind == .latex {
             text += "\nThis is the current LaTeX paper. Use latex.inspect with this exact projectID, latex.edit with its actual expectedRevision, then latex.typeset and inspect real build diagnostics. latex.export returns the verified PDF or source ZIP. Preserve comments and unsupported macros."
+        } else if value.record.kind == .geography {
+            text += "\nThis is the current geography project. Use gis.describe with this exact projectID to discover its compact command index and one live command form; query/invoke/import/export use its actual baseRevision. Keep the same original, use only indexed fileIDs, and return actual exported outputFiles."
         } else if availableToolNames?.contains("studio.edit") != false,
            try await access.get().canAccess(conversationID: conversationID, projectID: id, editing: true) {
             text += "\nFor an authorized edit use the exact studio.read revision/editFormat with studio.edit, then inspect its saved readback. Meeting note appends use the note action from studio.read editFormat; no recording, playback or transcription is required. Existing task approval and cancellation checks remain authoritative."

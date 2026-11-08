@@ -173,6 +173,8 @@ public enum TypedMutationContract {
     /// Actual app-owned LaTeX original/build/history container, never a path
     /// accepted from a model or imported project.
     public static let nativeLaTeXStoreKey = "nativeLaTeX"
+    /// Fixed FontDesignLibrary container. Fonts are never Space work records.
+    public static let nativeFontLibraryStoreKey = "nativeFontLibrary"
 
     public static func nativeStudioContainerPath(serviceStorePaths:[String:String]) -> String? {
         guard let path = serviceStorePaths[nativeStudioLibraryStoreKey], (path as NSString).isAbsolutePath,
@@ -222,6 +224,10 @@ public enum TypedMutationContract {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch toolName {
+        case "font.create", "font.invoke", "font.import", "font.export":
+            return [.init(argument: "projectID", role: .sourceWrite, whenAbsent: .required, storeKey: nativeFontLibraryStoreKey)]
+        case "gis.create", "gis.invoke", "gis.import", "gis.export", "score.create", "score.invoke", "score.import", "score.export":
+            return [.init(argument: "projectID", role: .sourceWrite, whenAbsent: .required, storeKey: nativeStudioLibraryStoreKey)]
         case "latex.create", "latex.edit", "latex.typeset", "latex.restore", "latex.export":
             return [nativeLaTeXStoreKey,nativeStudioLibraryStoreKey].map {
                 .init(argument:"projectID",role:.sourceWrite,whenAbsent:.required,storeKey:$0)
@@ -505,7 +511,7 @@ public enum TypedMutationContract {
         let role: TypedMutableRole
         if toolName == "studio.create" {
             guard keys(["kind","title","format"]), let kind = arguments["kind"] as? String,
-                  ["canvas","diagram","image","drawing","video","music","meeting","chemistry","biology","latex","document","cad2D","cad3D"].contains(kind),
+                  ["canvas","diagram","image","drawing","video","music","meeting","chemistry","biology","latex","document","cad2D","cad3D","electronics","geography"].contains(kind),
                   let title = arguments["title"] as? String, (1...160).contains(title.count) else { return [] }
             if let format = arguments["format"], !(format is NSNull) {
                 guard kind == "document", let name = format as? String, ["docx","xlsx","pptx","md"].contains(name) else { return [] }
@@ -526,7 +532,7 @@ public enum TypedMutationContract {
                    ["note","todo","decision","summary"].contains(action) { return [] }
             case "studio.run":
                 guard keys(["projectID","action","inputJSON"]), let action = arguments["action"] as? String,
-                      ["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO"].contains(action), inputIsNative() else { return [] }
+                      ["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.export"].contains(action), inputIsNative() else { return [] }
             case "studio.media":
                 guard keys(["projectID","toolID","inputJSON"]), let tool = arguments["toolID"] as? String,
                       nativeStudioMediaToolIDs.contains(tool), let json = text("inputJSON",262_144),
@@ -624,6 +630,15 @@ public enum TypedMutationContract {
         fileManager: FileManager
     ) -> TypedMutableTarget?? {
         if let storeKey = spec.storeKey {
+            if storeKey == nativeFontLibraryStoreKey {
+                guard let raw = serviceStorePaths[storeKey], (raw as NSString).isAbsolutePath, !raw.contains("\0") else { return nil }
+                let root = URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+                guard root.path != "/" else { return nil }
+                if toolName == "font.create" { return .some(.init(path: root.path, role: spec.role)) }
+                guard let rawID = stringArgument(spec.argument, in: arguments), let id = UUID(uuidString: rawID) else { return nil }
+                return .some(.init(path: root.appendingPathComponent("Projects", isDirectory: true)
+                    .appendingPathComponent(id.uuidString, isDirectory: true).path, role: spec.role))
+            }
             if storeKey == nativeLaTeXStoreKey {
                 guard let raw=serviceStorePaths[storeKey],(raw as NSString).isAbsolutePath,!raw.contains("\0") else {return nil}
                 let path=URL(fileURLWithPath:raw,isDirectory:true).standardizedFileURL.resolvingSymlinksInPath().path

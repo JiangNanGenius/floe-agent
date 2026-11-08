@@ -343,7 +343,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 // cut here destroys the JSON and its continuation cursor.
                 maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
                     (["user.ask", "skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
-                        (["conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control"].contains(call.toolName) ? 98_304 : 4096)),
+                        (["conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control", "chat.content.list"].contains(call.toolName) ? 98_304 : 4096)),
                 capturedOutput: output.capturedOutput ?? output.summary,
                 capturedOutputTruncated: output.capturedOutput == nil
                     ? output.summaryTruncated : output.capturedOutputTruncated,
@@ -369,10 +369,19 @@ public struct CatalogToolExecutor: ToolExecutor {
         } catch {
             let recovery = ToolWorkflowGuidance.recoveryHint(for: call.toolName)
                 .map { " Recovery: \($0)" } ?? ""
+            // Argument/contract validation has a definite outcome. Loading the
+            // same schema again cannot make the unchanged payload valid; a
+            // corrected call or a successfully resolved prerequisite can.
+            let correction: String
+            if let validation = error as? FloeError, case .validationFailed = validation {
+                correction = "\nretryable=false: Correct the named arguments or resolve the stated prerequisite before retrying; do not repeat this unchanged payload."
+            } else {
+                correction = ""
+            }
             return ToolResult(
                 callID: call.id,
                 status: .failed,
-                outputSummary: "Execution error: \(error.localizedDescription)\(recovery)",
+                outputSummary: "Execution error: \(correction.isEmpty ? "" : "[retryable=false] ")\(error.localizedDescription)\(recovery)\(correction)",
                 outputDigest: ""
             )
         }
@@ -4533,11 +4542,13 @@ public actor FloeAgentRuntime {
                     descriptor: descriptor,
                     workspaceRootURL: configuration.workspaceRootURL,
                     stagedDocument: configuration.canvasStagedDocument,
-                    // Only this new native container key is threaded here;
-                    // existing family authority mirrors remain unchanged.
+                    // These native containers must match the concrete hosts'
+                    // canonical targets; existing family mirrors stay unchanged.
                     serviceStorePaths: configuration.serviceStorePaths.filter {
                         $0.key == TypedMutationContract.nativeStudioLibraryStoreKey
                             || $0.key == TypedMutationContract.nativeBiologyStoreKey
+                            || $0.key == TypedMutationContract.nativeFontLibraryStoreKey
+                            || $0.key == TypedMutationContract.nativeLaTeXStoreKey
                     }
                 ),
                 toolName: call.toolName,
@@ -5154,7 +5165,8 @@ public actor FloeAgentRuntime {
                 resultsByID[call.id] = skipped
                 continue
             }
-            if let guardrail = loopGuard.blockDecision(for: call) {
+            if let guardrail = loopGuard.blockDecision(for: call,
+                capabilityIdentity: executor.descriptor(named: call.toolName)?.authorizationIdentity) {
                 let blocked = ToolResult(
                     callID: call.id,
                     status: .failed,
@@ -5407,6 +5419,7 @@ public actor FloeAgentRuntime {
                 call: call,
                 result: result,
                 isSideEffecting: executedIsSideEffecting,
+                capabilityIdentity: preDispatch?.authorizationIdentity ?? settledDescriptor?.authorizationIdentity,
                 stopLimit: configuration.unchangedToolOutcomeLimit
             ) {
                 routeStopped = guardrail.shouldStop
@@ -5419,8 +5432,9 @@ public actor FloeAgentRuntime {
             }
             if call.toolName == UserAskTool.name,
                let receipt = try? JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(result.outputSummary.utf8)) {
-                let sources = receipt.answers.filter { $0.source == .human }.compactMap { answer in
-                    answer.freeText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID(answer.questionID), text: $0) }
+                let sources = receipt.answers.filter { $0.source == .human }.flatMap { answer in
+                    [answer.freeText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID(answer.questionID), text: $0) },
+                     answer.customText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID("custom-answer:" + answer.questionID), text: $0) }].compactMap { $0 }
                 }
                 do {
                     try await hydrateModelInputs?(sources)
@@ -5430,6 +5444,10 @@ public actor FloeAgentRuntime {
                             if let text = live.answers[index].freeText {
                                 live.answers[index].freeText = projection.liveText(for: ModelUserInputSource(
                                     id: ModelUserInputProjection.questionSourceID(live.answers[index].questionID), text: text))
+                            }
+                            if let text = live.answers[index].customText {
+                                live.answers[index].customText = projection.liveText(for: ModelUserInputSource(
+                                    id: ModelUserInputProjection.questionSourceID("custom-answer:" + live.answers[index].questionID), text: text))
                             }
                         }
                         if live != receipt, let bytes = try? JSONEncoder().encode(live) {
@@ -5744,8 +5762,9 @@ public actor FloeAgentRuntime {
         let questionCalls = Set(calls.filter { $0.toolName == UserAskTool.name }.map(\.id))
         for result in results where questionCalls.contains(result.callID) {
             guard let receipt = try? JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(result.outputSummary.utf8)) else { continue }
-            sources += receipt.answers.filter { $0.source == .human }.compactMap { answer in
-                answer.freeText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID(answer.questionID), text: $0) }
+            sources += receipt.answers.filter { $0.source == .human }.flatMap { answer in
+                [answer.freeText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID(answer.questionID), text: $0) },
+                 answer.customText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID("custom-answer:" + answer.questionID), text: $0) }].compactMap { $0 }
             }
         }
         return sources
@@ -5784,6 +5803,10 @@ public actor FloeAgentRuntime {
                 if let text = receipt.answers[index].freeText {
                     receipt.answers[index].freeText = projection.liveText(for: ModelUserInputSource(
                         id: ModelUserInputProjection.questionSourceID(receipt.answers[index].questionID), text: text))
+                }
+                if let text = receipt.answers[index].customText {
+                    receipt.answers[index].customText = projection.liveText(for: ModelUserInputSource(
+                        id: ModelUserInputProjection.questionSourceID("custom-answer:" + receipt.answers[index].questionID), text: text))
                 }
             }
             guard receipt != safeReceipt else { return item }
@@ -6101,7 +6124,7 @@ public actor FloeAgentRuntime {
     ) -> String {
         let body = body ?? result.outputSummary
         guard let provenance = result.provenance else { return body }
-        let envelope: [String: Any] = [
+        var envelope: [String: Any] = [
             "trustedSourceID": provenance.sourceID,
             "toolName": provenance.toolName,
             "runID": provenance.runID.uuidString,
@@ -6111,6 +6134,11 @@ public actor FloeAgentRuntime {
                 ["name": $0.name, "value": $0.value]
             }
         ]
+        let inlineContents = ChatInlineContentCatalog.descriptors(result)
+        if !inlineContents.isEmpty {
+            envelope["inlineContent"] = ChatInlineContentCatalog.wireItems(inlineContents)
+            envelope["inlineContentFormat"] = "Copy inlineMarkdown verbatim onto complete standalone lines between answer paragraphs. These task-scoped display references grant no tool permissions; do not invent IDs or paths."
+        }
         guard JSONSerialization.isValidJSONObject(envelope),
               let data = try? JSONSerialization.data(
                   withJSONObject: envelope, options: [.sortedKeys]
@@ -8005,6 +8033,8 @@ struct ToolLoopGuard {
 
     mutating func advanceProgressEpoch() {
         clearEpochCounters()
+        nonretryableRoutesInEpoch.removeAll(keepingCapacity: true)
+        blockedNonretryableRouteCounts.removeAll(keepingCapacity: true)
         resetActionCycle()
     }
 
@@ -8014,8 +8044,9 @@ struct ToolLoopGuard {
     private mutating func clearEpochCounters() {
         outcomeCountsInEpoch.removeAll(keepingCapacity: true)
         lastObservationInEpoch = nil
-        nonretryableRoutesInEpoch.removeAll(keepingCapacity: true)
-        blockedNonretryableRouteCounts.removeAll(keepingCapacity: true)
+        // A different read, including tools.search, is a new observation but
+        // cannot resolve an unchanged non-retryable route. Keep those fences
+        // until actual progress or new user input advances the epoch.
     }
 
     private mutating func resetActionCycle() {
@@ -8107,8 +8138,8 @@ struct ToolLoopGuard {
         )
     }
 
-    mutating func blockDecision(for call: ToolCall) -> ToolLoopGuardrailDecision? {
-        let route = Self.canonicalRoute(for: call)
+    mutating func blockDecision(for call: ToolCall, capabilityIdentity: String? = nil) -> ToolLoopGuardrailDecision? {
+        let route = Self.retryFenceKey(Self.canonicalRoute(for: call), capabilityIdentity: capabilityIdentity)
         guard nonretryableRoutesInEpoch.contains(route) else { return nil }
         blockedNonretryableRouteCounts[route, default: 0] += 1
         let count = blockedNonretryableRouteCounts[route, default: 0]
@@ -8124,6 +8155,7 @@ struct ToolLoopGuard {
         call: ToolCall,
         result: ToolResult,
         isSideEffecting: Bool,
+        capabilityIdentity: String? = nil,
         stopLimit: Int = 3
     ) -> ToolLoopGuardrailDecision? {
         // The batch-level cycle key keeps both the canonical route and the
@@ -8132,13 +8164,14 @@ struct ToolLoopGuard {
         let batchOutcome = "\(result.status.rawValue)|\(result.outputDigest.isEmpty ? Self.digest(Data(result.outputSummary.utf8)) : result.outputDigest.lowercased())"
         currentBatchRoutes.insert("\(Self.canonicalRoute(for: call))|\(batchOutcome)")
         // Failure streak tracking applies to every tool and argument shape.
+        var failureWarning: ToolLoopGuardrailDecision?
         if result.status == .failed {
             let streak = consecutiveFailuresByTool[call.toolName, default: 0] + 1
             consecutiveFailuresByTool[call.toolName] = streak
             lastFailureExcerptByTool[call.toolName] = String(result.outputSummary.prefix(300))
             if streak >= Self.failureBreakerThreshold {
                 let excerpt = lastFailureExcerptByTool[call.toolName] ?? ""
-                return ToolLoopGuardrailDecision(
+                failureWarning = ToolLoopGuardrailDecision(
                     shouldStop: false,
                     message: "Circuit breaker: '\(call.toolName)' has failed \(streak) times in a row (most recently: \(excerpt)). Do not guess another payload: re-read the tool's schema by exact name with tools.search, map every required argument against the error above, and fix the named problem — or choose a materially different path. If the contract cannot express what you need, report the blocker to the user instead of retrying."
                 )
@@ -8192,7 +8225,7 @@ struct ToolLoopGuard {
 
         if result.status == .failed || result.status == .denied,
            Self.isExplicitlyNonretryable(result.outputSummary) {
-            nonretryableRoutesInEpoch.insert(route)
+            nonretryableRoutesInEpoch.insert(Self.retryFenceKey(route, capabilityIdentity: capabilityIdentity))
         }
 
         outcomeCountsInEpoch[exact, default: 0] += 1
@@ -8208,11 +8241,22 @@ struct ToolLoopGuard {
                 message: "This exact tool, canonical argument set, status, and observable result has already repeated. Do not issue the unchanged call again; different arguments or a different error remain valid progress."
             )
         }
-        return nil
+        // Failure advice must not return before recording the exact outcome:
+        // doing so previously let the third and every later failure bypass
+        // both unchanged-outcome counting and non-retryable route fencing.
+        return failureWarning
     }
 
     static func canonicalRoute(for call: ToolCall) -> String {
         "\(call.toolName)|\(canonicalDigest(call.argumentsJSON))"
+    }
+
+    private static func retryFenceKey(_ route: String, capabilityIdentity: String?) -> String {
+        // Loading unchanged documentation is not progress. A genuinely
+        // replaced capability has a new compiled/registered authority identity
+        // and must get its own attempt through the ordinary approval path.
+        guard let capabilityIdentity else { return route }
+        return "\(route)|capability=\(capabilityIdentity)"
     }
 
     private static let catalogEnumerationTools: Set<String> = [

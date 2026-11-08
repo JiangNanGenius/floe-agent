@@ -27,7 +27,16 @@
       "dwarfSectionsSha256": "e887d8d3e8f82dd1cda444d424302771594cf56706ef05db9c55a8cacaa359bf"
     },
     "runtimeSectionsPlatformAndNonSTABSymbolsPreserved": true,
-    "debugInformationPreserved": true
+    "debugInformationPreserved": true,
+    "headerLayout": {
+      "headersPath": "include",
+      "moduleMap": "include/FloeFontCompiler/module.modulemap",
+      "moduleMapSHA256": "cee41c678d670a4841c09658c26dfb4fd22ca9a0b34791feb2943d9a75529aaf",
+      "header": "include/FloeFontCompiler/FloeFontCompiler.h",
+      "headerSHA256": "d9f8120d8a9a007bc848d89490f6b042250f52efaa9f33bd82dea4116c1e427c",
+      "binarySHA256": "80a418f4ad7a63cf955818765000c5d0f89356da03d41efdd537dadd2c5a486b",
+      "binaryBytesUnchanged": true
+    }
   },
   "macos-arm64": {
     "recipe": [
@@ -57,7 +66,16 @@
       "dwarfSectionsSha256": "1dd151d17f1e09fdf595be74782e8458411e9cb9a5d59a493d4babaa51547a65"
     },
     "runtimeSectionsPlatformAndNonSTABSymbolsPreserved": true,
-    "debugInformationPreserved": true
+    "debugInformationPreserved": true,
+    "headerLayout": {
+      "headersPath": "include",
+      "moduleMap": "include/FloeFontCompiler/module.modulemap",
+      "moduleMapSHA256": "cee41c678d670a4841c09658c26dfb4fd22ca9a0b34791feb2943d9a75529aaf",
+      "header": "include/FloeFontCompiler/FloeFontCompiler.h",
+      "headerSHA256": "d9f8120d8a9a007bc848d89490f6b042250f52efaa9f33bd82dea4116c1e427c",
+      "binarySHA256": "b54f9e552d1aa330b1257ee14f1113a1dc59dc1fff5d62ff9178f235d3835071",
+      "binaryBytesUnchanged": true
+    }
   },
   "ios-arm64": {
     "recipe": [
@@ -87,6 +105,15 @@
       "dwarfSectionsSha256": "6e59881bd5cc42a140f1253d3c849b59fd36fb96cae5a40ea8ae1c521c1a9970"
     },
     "runtimeSectionsPlatformAndNonSTABSymbolsPreserved": true,
-    "debugInformationPreserved": true
+    "debugInformationPreserved": true,
+    "headerLayout": {
+      "headersPath": "include",
+      "moduleMap": "include/FloeFontCompiler/module.modulemap",
+      "moduleMapSHA256": "cee41c678d670a4841c09658c26dfb4fd22ca9a0b34791feb2943d9a75529aaf",
+      "header": "include/FloeFontCompiler/FloeFontCompiler.h",
+      "headerSHA256": "d9f8120d8a9a007bc848d89490f6b042250f52efaa9f33bd82dea4116c1e427c",
+      "binarySHA256": "1b6b4290b69e8c4865da3285fed2679c626058544632d4d1b59656b5ac9c841a",
+      "binaryBytesUnchanged": true
+    }
   }
 }

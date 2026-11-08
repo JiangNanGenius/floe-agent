@@ -28,6 +28,12 @@ extension PersonalContentPreviewService {
         }
         let inner: PersonalContentPreviewRequest
         switch record.kind {
+        case .geography:
+            inner = try await savedGIS(record: record, directory: directory, ownerID: owner,
+                maximumPixelSize: maximumPixelSize, validate: validate)
+        case .electronics:
+            inner = try await savedElectronics(record: record, directory: directory, ownerID: owner,
+                maximumPixelSize: maximumPixelSize, validate: validate)
         case .latex:
             let projectRoot=directory.appendingPathComponent("LaTeX",isDirectory:true)
             // Read saved bytes only. A thumbnail never recovers a journal,

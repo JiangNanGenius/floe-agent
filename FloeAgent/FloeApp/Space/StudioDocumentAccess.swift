@@ -40,6 +40,12 @@ actor StudioDocumentAccess {
             return !editing || editable
         }
     }
+    func revokeAccess(conversationID: UUID, projectID: UUID) throws {
+        try pool.write { db in
+            try db.execute(sql: "DELETE FROM document_access WHERE conversation_id=? AND project_id=?",
+                arguments: [conversationID.uuidString, projectID.uuidString])
+        }
+    }
     func projectIDs(conversationID: UUID) throws -> [UUID] {
         try pool.read { db in
             try String.fetchAll(db, sql: "SELECT project_id FROM document_access WHERE conversation_id=? ORDER BY project_id",
@@ -81,6 +87,19 @@ actor StudioDocumentAccess {
             try db.execute(sql: "INSERT INTO document_creations(operation_key,project_id,payload_digest) VALUES (?,?,?)",
                 arguments: [operationKey, id.uuidString, digest])
             return id
+        }
+    }
+    /// Idempotent companion creation reuses an already authorized parent.
+    /// This records replay identity only; it never grants document access.
+    func reserveCompanionCreation(operationKey: String, digest: String, parentID: UUID) throws {
+        try pool.write { db in
+            if let row = try Row.fetchOne(db, sql: "SELECT project_id,payload_digest FROM document_creations WHERE operation_key=?", arguments: [operationKey]) {
+                let storedID: String = row["project_id"], storedDigest: String = row["payload_digest"]
+                guard UUID(uuidString: storedID) == parentID, storedDigest == digest else { throw PersonalContentError.changedDocument }
+                return
+            }
+            try db.execute(sql: "INSERT INTO document_creations(operation_key,project_id,payload_digest) VALUES (?,?,?)",
+                arguments: [operationKey, parentID.uuidString, digest])
         }
     }
     func finishCreation(conversationID: UUID, projectID: UUID) throws {

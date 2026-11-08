@@ -155,6 +155,89 @@ actor DeviceFontStore {
         return try persist(data: data, extension: ext)
     }
 
+    /// Settings' font designer edits a copy of one actual managed font, never
+    /// a CoreText/system-font URL or a path supplied by imported project data.
+    func editableSource(id: String) throws -> FontDesignManagedSource {
+        guard id.count == 64, id.allSatisfy({ $0.isHexDigit }),
+              let url = fontFiles().first(where: { $0.deletingPathExtension().lastPathComponent == id }) else { throw DeviceFontError.notFound }
+        guard ["ttf", "otf"].contains(url.pathExtension.lowercased()) else { throw DeviceFontError.unsupportedExtension }
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size <= Self.maximumFontBytes,
+              url.resolvingSymlinksInPath().deletingLastPathComponent() == rootURL.standardizedFileURL.resolvingSymlinksInPath() else { throw DeviceFontError.invalidFont }
+        let data = try Data(contentsOf: url)
+        guard data.count <= Self.maximumFontBytes, FloeDigest.sha256Hex(data) == id else { throw DeviceFontError.invalidFont }
+        return FontDesignManagedSource(record: try inspect(url: url), data: data)
+    }
+
+    /// Installs a separately named design version. Name conflicts, including
+    /// system/bundled fonts, are rejected; this never replaces another URL.
+    func importDesignedFont(from sourceURL: URL) throws -> ManagedFontRecord {
+        try Task.checkCancellation()
+        try ensureDirectory()
+        let ext = sourceURL.pathExtension.lowercased()
+        guard ["ttf", "otf"].contains(ext) else { throw DeviceFontError.unsupportedExtension }
+        let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw DeviceFontError.invalidFont }
+        guard let size = values.fileSize, size <= Self.maximumFontBytes else { throw DeviceFontError.tooLarge }
+        let data = try Data(contentsOf: sourceURL)
+        guard !data.isEmpty, data.count <= Self.maximumFontBytes else { throw DeviceFontError.tooLarge }
+        let digest = FloeDigest.sha256Hex(data), destination = rootURL.appendingPathComponent(digest + "." + ext)
+        let candidate = try inspect(url: sourceURL, idOverride: digest, fileNameOverride: destination.lastPathComponent)
+        guard !candidate.postScriptNames.isEmpty else { throw DeviceFontError.invalidFont }
+        for name in candidate.postScriptNames {
+            if CoreTextFontRegistration.resolves(postScriptName: name) {
+                guard resolvedFontURL(name) == destination.standardizedFileURL.resolvingSymlinksInPath() else { throw FontDesignError.nameInUse(name) }
+            }
+        }
+        // Also reserve names in inactive managed files; do not rely on a stale
+        // process font cache or silently create two different managed versions.
+        for record in list() where record.id != digest {
+            if let name = candidate.postScriptNames.first(where: { name in record.postScriptNames.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }) { throw FontDesignError.nameInUse(name) }
+        }
+        try Task.checkCancellation()
+        let existed = FileManager.default.fileExists(atPath: destination.path)
+        if existed {
+            let values = try destination.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  try Data(contentsOf: destination) == data else { throw DeviceFontError.invalidFont }
+        } else {
+            let temporary = rootURL.appendingPathComponent("." + UUID().uuidString + "." + ext)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try data.write(to: temporary, options: [.atomic])
+            _ = try inspect(url: temporary, idOverride: digest, fileNameOverride: destination.lastPathComponent)
+            try FileManager.default.moveItem(at: temporary, to: destination)
+        }
+        do {
+            try Task.checkCancellation()
+            var registrationError: Unmanaged<CFError>?
+            _ = CTFontManagerRegisterFontsForURL(destination as CFURL, .process, &registrationError)
+            // This path verifies the exact registered file, not merely a matching
+            // PostScript name that could still resolve to an older/system font.
+            if let registrationError { _ = registrationError.takeRetainedValue() }
+            guard candidate.postScriptNames.allSatisfy({ resolvedFontURL($0) == destination.standardizedFileURL.resolvingSymlinksInPath() }) else { throw FontDesignError.registrationFailed }
+            let result = try inspect(url: destination)
+            guard result.id == digest, result.byteCount == Int64(data.count),
+                  try Data(contentsOf: destination) == data else { throw DeviceFontError.invalidFont }
+            return result
+        } catch {
+            if !existed {
+                var unregisterError: Unmanaged<CFError>?
+                _ = CTFontManagerUnregisterFontsForURL(destination as CFURL, .process, &unregisterError)
+                if let unregisterError { _ = unregisterError.takeRetainedValue() }
+                try? FileManager.default.removeItem(at: destination)
+            }
+            throw error
+        }
+    }
+
+    private func resolvedFontURL(_ name: String) -> URL? {
+        let font = CTFontCreateWithNameAndOptions(name as CFString, 12, nil, .preventAutoActivation)
+        guard (CTFontCopyPostScriptName(font) as String).caseInsensitiveCompare(name) == .orderedSame,
+              let url = CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL else { return nil }
+        return url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
     func install(from remoteURL: URL) async throws -> ManagedFontRecord {
         try PublicNetworkTargetPolicy.validate(remoteURL)
         let ext = try validatedExtension(remoteURL.pathExtension)

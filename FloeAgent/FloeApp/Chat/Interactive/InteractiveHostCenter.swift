@@ -232,5 +232,6 @@ private struct ChatPresentTool: AgentTool {
 extension Notification.Name { static let floeInteractiveMessageDidChange = Notification.Name("floe.interactive.message.changed") }
 @MainActor func registerInteractiveHostTools(environment: AppEnvironment, registry: ToolRunnerRegistry = .shared) {
     ToolCatalog.register(ChatPresentTool.self); registry.register(ChatPresentTool(environment: environment))
+    registerChatInlineContentTools(environment: environment, registry: registry)
 }
 #endif

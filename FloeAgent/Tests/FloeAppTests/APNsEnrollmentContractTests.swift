@@ -4,6 +4,8 @@ import Foundation
 import CryptoKit
 import Testing
 import UIKit
+import Security
+import FloeSecurity
 @testable import FloeApp
 
 /// URLProtocol intercepts all owned .invalid fixtures even after teardown;
@@ -56,11 +58,13 @@ private nonisolated final class APNsEnrollmentFixtureProtocol: URLProtocol, @unc
     @MainActor private final class Installation: APNsInstallationProving {
         var hashes: [Data] = [], preferences: [APNsAppAttestPreference] = []
         var confirmations = 0, initialAssertion = false
+        var failure: APNsServiceError?
         var proofForegroundStates: [Bool] = []
         var isForeground: @MainActor () -> Bool = { true }
         func evidence() async -> APNsInstallationEvidence { .unknown }
         func proof(installationID: UUID, clientDataHash: Data, preference: APNsAppAttestPreference) async throws -> APNsAppAttestProof {
             hashes.append(clientDataHash); preferences.append(preference)
+            if let failure { throw failure }
             proofForegroundStates.append(isForeground())
             let asserting = preference == .assertionRequired || (preference == .automatic && initialAssertion)
             return .init(keyID: "synthetic-native-key", attestationObject: asserting ? nil : Data([1, 2, 3, 4]),
@@ -80,6 +84,7 @@ private nonisolated final class APNsEnrollmentFixtureProtocol: URLProtocol, @unc
         var initialKeyError: APNsRemoteFailure?
         var challengeUnavailable = false, completeFailureOnce = false, blockComplete = false, rateLimit = false
         var completeBodies: [Data] = []
+        var challengeProofBodies: [[String: Any]] = []
         var completeGate: CheckedContinuation<Reply, Never>?
         var onTarget: (([AnyHashable: Any]) -> Void)?
         var nonceSawExplicitNull = false, challengeSawExplicitNullJWS = false
@@ -134,6 +139,7 @@ private nonisolated final class APNsEnrollmentFixtureProtocol: URLProtocol, @unc
             }
             if path.hasSuffix("/enrollment/challenges") {
                 challengeCalls += 1
+                challengeProofBodies.append(object)
                 challengeSawExplicitNullJWS = object["signedAppTransaction"] is NSNull
                 guard object["nonceID"] as? String == nonceID.uuidString,
                       request.value(forHTTPHeaderField: "Authorization") == "Bearer " + secret.base64EncodedString() else {
@@ -489,5 +495,494 @@ private nonisolated final class APNsEnrollmentFixtureProtocol: URLProtocol, @unc
         }
         #expect(server.putCalls == 1 && server.nonceCalls == 0)
     }
+
+    @Test("An orphan attestation recovers through the actual HTTP coordinator: explicit server unknown, native invalidKey, one replacement attestation")
+    func orphanProofHTTPRecoveryIncludingLegacyRecord() async throws {
+        for legacy in [false, true] {
+            let service = "org.floeagent.fixture.orphan-wire-\(UUID())"
+            defer {
+                SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                    kSecAttrSynchronizable as String: false] as CFDictionary)
+            }
+            let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+            let server = Server(); server.initialKeyError = .unknownAppAttestKey
+            let account = server.installationID.uuidString.lowercased() + "/app-attest-key"
+            var record: [String: Any] = ["id": "orphan-fixture-key", "confirmed": false]
+            if !legacy { record["attested"] = true }
+            try vault.store(account: account, secret: JSONSerialization.data(withJSONObject: record))
+            let calls = OrphanCalls()
+            let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+            let (http, host) = try http(server); defer { APNsEnrollmentFixtureProtocol.registry.set(host, nil) }
+            let enrollment = try APNsEnrollmentCoordinator(http: http, installation: native, isForeground: { true })
+            let voucher = try await enrollment.proof(for: request(server, enabled: false), secret: server.secret)
+            #expect(voucher.voucher == "AA.BB")
+            #expect(calls.generations == 1)
+            #expect(server.nonceCalls == 1 && server.challengeCalls == 2 && server.completeCalls == 1)
+            #expect(server.privateTargetSends == 0)
+            let bodies = server.challengeProofBodies
+            try #require(bodies.count == 2)
+            #expect(bodies[0]["appAttestKeyID"] as? String == "orphan-fixture-key")
+            #expect(bodies[0]["assertionObject"] != nil && bodies[0]["attestationObject"] == nil)
+            #expect(bodies[1]["appAttestKeyID"] as? String == "replacement-fixture-key")
+            #expect(bodies[1]["attestationObject"] != nil && bodies[1]["assertionObject"] == nil)
+            #expect(bodies[0]["nonceID"] as? String == bodies[1]["nonceID"] as? String)
+            #expect(calls.hashes.allSatisfy { $0 == calls.hashes.first })
+            #expect(calls.modes == (legacy ? [false, true, false, false] : [true, false, false]))
+            let saved = try #require(JSONSerialization.jsonObject(with: vault.read(account: account)) as? [String: Any])
+            #expect(saved["id"] as? String == "replacement-fixture-key")
+            #expect(saved["confirmed"] as? Bool == true && saved["attested"] as? Bool == true)
+        }
+    }
+    @MainActor private final class OrphanCalls {
+        var generations = 0
+        var modes: [Bool] = []
+        var hashes: [Data] = []
+        var operations: APNsAppAttestOperations {
+            .init(isSupported: { true }, generateKey: {
+                self.generations += 1; return "replacement-fixture-key"
+            }, object: { key, hash, asserting in
+                self.modes.append(asserting); self.hashes.append(hash)
+                // Model Apple's documented already-attested key behavior,
+                // instead of permitting an impossible second attestation.
+                if key == "orphan-fixture-key" && !asserting { throw APNsNativeAttestFailure.invalidKey }
+                return Data([1, 2, 3, 4])
+            })
+        }
+    }
+
+    @MainActor private final class InvalidKeyWireCalls {
+        struct Step: Equatable { let key: String; let asserting: Bool }
+        var generated = 0
+        var steps: [Step] = []
+        var hashes: [Data] = []
+        var oldAttestationSucceeds = false
+        var newInvalid = false
+        var oldFailure: APNsServiceError?
+        var holdOld = false
+        var pending: CheckedContinuation<Data, Error>?
+        var operations: APNsAppAttestOperations {
+            .init(isSupported: { true }, generateKey: {
+                self.generated += 1; return "replacement-fixture-key"
+            }, object: { key, hash, asserting in
+                self.steps.append(.init(key: key, asserting: asserting)); self.hashes.append(hash)
+                if key == "unusable-fixture-key" {
+                    if self.holdOld { return try await withCheckedThrowingContinuation { self.pending = $0 } }
+                    if let failure = self.oldFailure { throw failure }
+                    if asserting || !self.oldAttestationSucceeds { throw APNsNativeAttestFailure.invalidKey }
+                } else if self.newInvalid { throw APNsNativeAttestFailure.invalidKey }
+                return Data([1, 2, 3, 4])
+            })
+        }
+    }
+    private func clearRecoveryFixture(_ service: String) {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: false] as CFDictionary)
+    }
+
+    @Test("Typed unusable old keys recover once through Native provider and HTTP, including confirmed and legacy states")
+    func unusableNativeKeyHTTPRecovery() async throws {
+        for variant in ["legacy", "attested", "confirmed", "assertionRequired"] {
+            let service = "org.floeagent.fixture.unusable-wire-\(UUID())"
+            defer { clearRecoveryFixture(service) }
+            let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+            let server = Server(), calls = InvalidKeyWireCalls()
+            let account = server.installationID.uuidString.lowercased() + "/app-attest-key"
+            var record: [String: Any] = ["id": "unusable-fixture-key", "confirmed": variant == "confirmed"]
+            if variant == "attested" { record["attested"] = true }
+            if variant == "assertionRequired" {
+                calls.oldAttestationSucceeds = true
+                server.initialKeyError = .appAttestAssertionRequired
+            }
+            try vault.store(account: account, secret: JSONSerialization.data(withJSONObject: record))
+            let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+            let (http, host) = try http(server); defer { APNsEnrollmentFixtureProtocol.registry.set(host, nil) }
+            let enrollment = try APNsEnrollmentCoordinator(http: http, installation: native, isForeground: { true })
+            _ = try await enrollment.proof(for: request(server, enabled: false), secret: server.secret)
+            #expect(calls.generated == 1 && server.nonceCalls == 1 && server.completeCalls == 1)
+            #expect(server.challengeCalls == (variant == "assertionRequired" ? 2 : 1))
+            #expect(server.privateTargetSends == 0)
+            let last = try #require(server.challengeProofBodies.last)
+            #expect(last["appAttestKeyID"] as? String == "replacement-fixture-key")
+            #expect(last["attestationObject"] != nil && last["assertionObject"] == nil)
+            #expect(last["nativeKeyRecovery"] == nil) // Internal provenance never enters wire JSON.
+            #expect(calls.hashes.allSatisfy { $0 == calls.hashes.first })
+            let expectedModes: [Bool] = (variant == "legacy" || variant == "assertionRequired")
+                ? [false, true, false] : [true, false]
+            #expect(calls.steps.map(\.asserting) == expectedModes)
+            let saved = try #require(JSONSerialization.jsonObject(with: vault.read(account: account)) as? [String: Any])
+            #expect(saved["id"] as? String == "replacement-fixture-key" && saved["confirmed"] as? Bool == true)
+        }
+    }
+
+    @Test("A replacement error cannot create another key on the same challenge; initial fresh-key failure never loops")
+    func replacementInvalidKeyNeverLoops() async throws {
+        for existing in [false, true] {
+            let service = "org.floeagent.fixture.invalidkey-budget-\(UUID())"
+            defer { clearRecoveryFixture(service) }
+            let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+            let id = UUID(), account = id.uuidString.lowercased() + "/app-attest-key"
+            if existing {
+                try vault.store(account: account, secret: JSONSerialization.data(withJSONObject: ["id": "unusable-fixture-key", "confirmed": true]))
+            }
+            let calls = InvalidKeyWireCalls(); calls.newInvalid = true
+            let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+            let hash = Data(repeating: 0x51, count: 32)
+            do { _ = try await native.proof(installationID: id, clientDataHash: hash, preference: .automatic); Issue.record("Unusable replacement accepted") }
+            catch let error as APNsServiceError {
+                #expect(error == .nativeVerification(.init(stage: .attestation, code: .invalidKey)))
+            }
+            #expect(calls.generated == 1)
+            #expect(calls.steps.filter { $0.key == "replacement-fixture-key" }.count == 1)
+            if existing {
+                do { _ = try await native.proof(installationID: id, clientDataHash: hash, preference: .automatic); Issue.record("Repeated unusable key accepted") }
+                catch let error as APNsServiceError { if case .nativeVerification = error {} else { Issue.record("Unexpected error") } }
+                #expect(calls.generated == 1) // A second proof negotiation does not reset budget.
+            }
+        }
+    }
+
+    @Test("Cancellation wins over late invalidKey and prevents replacement native work")
+    func cancelledInvalidKeyCannotReplace() async throws {
+        let service = "org.floeagent.fixture.invalidkey-cancel-\(UUID())"
+        defer { clearRecoveryFixture(service) }
+        let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+        let id = UUID(), account = id.uuidString.lowercased() + "/app-attest-key"
+        let original = try JSONSerialization.data(withJSONObject: ["id": "unusable-fixture-key", "confirmed": true])
+        try vault.store(account: account, secret: original)
+        let calls = InvalidKeyWireCalls(); calls.holdOld = true
+        let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+        let task = Task { try await native.proof(installationID: id, clientDataHash: Data(repeating: 0x52, count: 32), preference: .automatic) }
+        try await wait { calls.pending != nil }
+        task.cancel(); let continuation = calls.pending; calls.pending = nil
+        continuation?.resume(throwing: APNsNativeAttestFailure.invalidKey)
+        do { _ = try await task.value; Issue.record("Cancelled invalidKey continued") }
+        catch is CancellationError {}
+        #expect(calls.generated == 0 && calls.steps.count == 1)
+        #expect(try vault.read(account: account) == original)
+    }
+
+    @Test("Unknown native errors and HTTP503 never authorize key replacement")
+    func unknownAndHTTPFailureCannotReplaceKey() async throws {
+        for failNative in [false, true] {
+            let service = "org.floeagent.fixture.invalidkey-negative-\(UUID())"
+            defer { clearRecoveryFixture(service) }
+            let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+            let server = Server(), calls = InvalidKeyWireCalls()
+            server.challengeUnavailable = !failNative
+            let account = server.installationID.uuidString.lowercased() + "/app-attest-key"
+            try vault.store(account: account, secret: JSONSerialization.data(withJSONObject: ["id": "unusable-fixture-key", "confirmed": true]))
+            if failNative { calls.oldFailure = .nativeVerification(.init(stage: .assertion, code: .unknown)) }
+            // For HTTP503, allow the old native assertion and fail only HTTP.
+            let operations = APNsAppAttestOperations(isSupported: { true }, generateKey: calls.operations.generateKey,
+                object: { key, hash, asserting in
+                    calls.steps.append(.init(key: key, asserting: asserting)); calls.hashes.append(hash)
+                    if let error = calls.oldFailure { throw error }
+                    return Data([1, 2, 3, 4])
+                })
+            let native = APNsNativeInstallationProofs(vault: vault, native: operations)
+            let (http, host) = try http(server); defer { APNsEnrollmentFixtureProtocol.registry.set(host, nil) }
+            let enrollment = try APNsEnrollmentCoordinator(http: http, installation: native, isForeground: { true })
+            do { _ = try await enrollment.proof(for: request(server, enabled: false), secret: server.secret); Issue.record("Failure accepted") }
+            catch let error as APNsServiceError {
+                if failNative { #expect(error == calls.oldFailure) }
+                else { if case .enrollmentDeferred = error {} else { Issue.record("503 did not defer") } }
+            }
+            #expect(calls.generated == 0 && calls.steps.count == 1 && server.privateTargetSends == 0)
+            #expect(server.challengeCalls == (failNative ? 0 : 1))
+        }
+    }
+
+    private actor RegistrationRecoveryTransport: APNsEnrollmentTransport {
+        private var count = 0
+        private var failure: APNsServiceError?
+        init(failure: APNsServiceError? = nil) { self.failure = failure }
+        func apply(_ request: APNsRegistrationRequest, installationSecret: Data) async throws -> APNsRegistrationReceipt {
+            count += 1
+            if let failure { throw failure }
+            return .init(installationID: request.installationID, acceptedRevision: request.revision,
+                enabled: request.enabled, acceptedAt: Date(), leaseExpiresAt: Date().addingTimeInterval(300))
+        }
+        func calls() -> Int { count }
+    }
+    private func recoveryCenter(store: APNsStateStore, transport: RegistrationRecoveryTransport) -> APNsCenter {
+        APNsCenter(store: store, signingEnvironment: .production, transport: transport,
+            credentials: Credentials(), platform: platform(),
+            eligibility: { .init(hasEnabledSchedule: true, hasProgressableExecution: false) },
+            performWake: { _ in .noData })
+    }
+
+    @Test("Cold restart retains typed waits: only an actual 429 is busy; legacy deadlines stay pending")
+    func persistedRegistrationWaitsKeepTheirCause() async throws {
+        let deadline = Date().addingTimeInterval(600)
+        let nativeFailure = APNsServiceError.nativeVerification(.init(stage: .attestation, code: .unknown))
+        let cases: [(APNsServiceError?, String)] = [
+            (nil, "pending"), (.enrollmentDeferred(until: deadline), "pending"),
+            (.foregroundRequired, "pending"), (nativeFailure, "verificationUnavailable"),
+            (.rateLimited(until: deadline), "rateLimited")
+        ]
+        for (cause, expected) in cases {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apns-recovery-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = try APNsStateStore(directory: directory)
+            var state = APNsPersistentState(); state.preferences.enabled = true
+            state.nextRegistrationAttemptAt = deadline; state.registrationFailure = cause
+            // Real legacy JSON omits the newly added optional field entirely.
+            if cause == nil {
+                var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+                json.removeValue(forKey: "registrationFailure")
+                state = try JSONDecoder().decode(APNsPersistentState.self, from: JSONSerialization.data(withJSONObject: json))
+            }
+            try store.save(state)
+            let transport = RegistrationRecoveryTransport()
+            for _ in 0..<2 {
+                let center = recoveryCenter(store: store, transport: transport)
+                await center.reload()
+                #expect(center.syncState == expected)
+                #expect(center.failure == (cause ?? .enrollmentDeferred(until: deadline)).localizedDescription)
+                #expect(center.state.registrationFailure == cause)
+                #expect(center.status().nextRegistrationAttemptAt == deadline)
+                #expect(center.state.installationID == state.installationID)
+                #expect(!center.status().serverConnected)
+            }
+            #expect(await transport.calls() == 0)
+        }
+    }
+
+    @Test("Actual 429 persists its cause and deadline; cold reopen cannot retry early")
+    func rateLimitPersistsAcrossCenterReopen() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apns-rate-reopen-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try APNsStateStore(directory: directory)
+        var state = APNsPersistentState(); state.preferences.enabled = true; try store.save(state)
+        let deadline = Date().addingTimeInterval(600)
+        let transport = RegistrationRecoveryTransport(failure: .rateLimited(until: deadline))
+        let first = recoveryCenter(store: store, transport: transport)
+        await first.reload()
+        #expect(first.state.registrationFailure == .rateLimited(until: deadline))
+        #expect(first.syncState == "rateLimited" && !first.status().serverConnected)
+        let reopened = recoveryCenter(store: store, transport: transport)
+        await reopened.reload()
+        #expect(reopened.state.registrationFailure == .rateLimited(until: deadline))
+        #expect(reopened.status().nextRegistrationAttemptAt == deadline)
+        #expect(reopened.state.installationID == state.installationID)
+        #expect(await transport.calls() == 1)
+    }
+
+    @Test("Only a final valid registration receipt clears persisted failure and establishes connection")
+    func finalReceiptClearsRegistrationFailure() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apns-final-receipt-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try APNsStateStore(directory: directory)
+        var state = APNsPersistentState(); state.preferences.enabled = true
+        state.nextRegistrationAttemptAt = Date().addingTimeInterval(-1)
+        state.registrationFailure = .nativeVerification(.init(stage: .attestation, code: .serverUnavailable))
+        try store.save(state)
+        let transport = RegistrationRecoveryTransport(), center = recoveryCenter(store: store, transport: transport)
+        #expect(!center.status().serverConnected)
+        await center.reload()
+        #expect(center.status().serverConnected && center.syncState == "connected")
+        #expect(center.state.registrationFailure == nil && center.state.nextRegistrationAttemptAt == nil)
+        let persisted = try store.load()
+        #expect(persisted.registrationFailure == nil && persisted.nextRegistrationAttemptAt == nil)
+        #expect(persisted.installationID == state.installationID)
+        #expect(await transport.calls() == 1)
+    }
+
+    @Test("A native proof failure persists its typed cause through the actual center and blocks another request until nonce expiry")
+    func nativeFailurePersistsAcrossCenterReopen() async throws {
+        let server = Server(), installation = Installation()
+        let failure = APNsServiceError.nativeVerification(.init(stage: .attestation, code: .unknown))
+        installation.failure = failure
+        let (http, host) = try http(server); defer { APNsEnrollmentFixtureProtocol.registry.set(host, nil) }
+        let enrollment = try APNsEnrollmentCoordinator(http: http, installation: installation, isForeground: { true })
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("apns-native-reopen-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try center(server, http: http, enrollment: enrollment, directory: directory, wake: { _ in .noData })
+        await first.reload()
+        #expect(first.state.registrationFailure == failure)
+        #expect(first.syncState == "verificationUnavailable" && !first.status().serverConnected)
+        #expect(first.state.nextRegistrationAttemptAt == server.expires)
+        let unused = RegistrationRecoveryTransport()
+        let reopened = recoveryCenter(store: try APNsStateStore(directory: directory), transport: unused)
+        await reopened.reload()
+        #expect(reopened.state.registrationFailure == failure && reopened.syncState == "verificationUnavailable")
+        #expect(reopened.status().nextRegistrationAttemptAt == server.expires)
+        #expect(reopened.state.installationID == server.installationID)
+        #expect(await unused.calls() == 0)
+        #expect(server.nonceCalls == 1 && server.challengeCalls == 0 && installation.hashes.count == 1)
+    }
+
+    @Test("Native failure before challenge preserves the real nonce deadline and closed diagnostic")
+    func nativeFailureBeforeChallengeRetainsDeadline() async throws {
+        let server = Server(), installation = Installation()
+        installation.failure = .nativeVerification(.init(stage: .attestation, code: .unknown))
+        let (http, host) = try http(server); defer { APNsEnrollmentFixtureProtocol.registry.set(host, nil) }
+        let enrollment = try APNsEnrollmentCoordinator(http: http, installation: installation, isForeground: { true })
+        do { _ = try await enrollment.proof(for: request(server), secret: server.secret); Issue.record("Native failure accepted") }
+        catch let error as APNsServiceError { #expect(error == installation.failure) }
+        #expect(enrollment.retryAfterInterruption == server.expires)
+        #expect(server.nonceCalls == 1 && server.challengeCalls == 0 && server.privateTargetSends == 0)
+        #expect(installation.confirmations == 0)
+    }
+
 }
+
+@Suite("APNs registration native recovery", .serialized)
+@MainActor struct APNsRegistrationNativeRecoveryTests {
+    private struct Call: Equatable { let key: String; let hash: Data; let asserting: Bool }
+    @MainActor private final class Calls {
+        var generated = 0
+        var objects: [Call] = []
+        var failures: [APNsServiceError] = []
+        var hold = false
+        var pending: CheckedContinuation<Data, Error>?
+        var operations: APNsAppAttestOperations {
+            .init(isSupported: { true }, generateKey: {
+                self.generated += 1; return "fixture-native-key"
+            }, object: { key, hash, asserting in
+                self.objects.append(.init(key: key, hash: hash, asserting: asserting))
+                if !self.failures.isEmpty { throw self.failures.removeFirst() }
+                if self.hold { return try await withCheckedThrowingContinuation { self.pending = $0 } }
+                return Data([1, 2, 3, 4])
+            })
+        }
+        func finish() { let continuation = pending; pending = nil; continuation?.resume(returning: Data([1, 2, 3, 4])) }
+    }
+    private func wait(_ predicate: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(predicate())
+    }
+    private func removeFixture(_ service: String) {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: false] as CFDictionary)
+    }
+    private func record(_ vault: KeychainStore, _ account: String) throws -> [String: Any] {
+        try #require(JSONSerialization.jsonObject(with: vault.read(account: account)) as? [String: Any])
+    }
+
+    @Test("Native success is retained independently from server confirmation; a new nonce uses assertion after recreation")
+    func nativeSuccessAndServerConfirmationAreSeparate() async throws {
+        let service = "org.floeagent.fixture.native-recovery-\(UUID())"
+        defer { removeFixture(service) }
+        let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+        let id = UUID(), account = id.uuidString.lowercased() + "/app-attest-key"
+        let calls = Calls(), hash = Data(repeating: 1, count: 32)
+        let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+        let proof = try await native.proof(installationID: id, clientDataHash: hash, preference: .automatic)
+        #expect(proof.attestationObject != nil && proof.assertionObject == nil)
+        #expect(try record(vault, account)["attested"] as? Bool == true)
+        #expect(try record(vault, account)["confirmed"] as? Bool == false)
+        _ = try await native.proof(installationID: id, clientDataHash: hash, preference: .automatic)
+        #expect(calls.objects.count == 1) // Lost HTTP reply can reuse the exact cached attestation.
+        let reopened = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+        let assertion = try await reopened.proof(installationID: id, clientDataHash: Data(repeating: 2, count: 32), preference: .automatic)
+        #expect(assertion.assertionObject != nil && assertion.attestationObject == nil)
+        #expect(calls.generated == 1 && calls.objects.count == 2 && calls.objects.last?.asserting == true)
+        #expect(try record(vault, account)["confirmed"] as? Bool == false)
+        try reopened.confirm(installationID: id, keyID: proof.keyID)
+        #expect(try record(vault, account)["confirmed"] as? Bool == true)
+    }
+
+    @Test("A cancelled successful native callback retains attested state before cancellation without changing credentials")
+    func cancelledAttestationSuccessIsRetained() async throws {
+        let service = "org.floeagent.fixture.native-cancel-\(UUID())"
+        defer { removeFixture(service) }
+        let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+        let id = UUID(), prefix = id.uuidString.lowercased(), account = prefix + "/app-attest-key"
+        let secret = Data(repeating: 0x47, count: 32), token = Data(repeating: 0x48, count: 32)
+        try vault.store(account: prefix + "/credential", secret: secret)
+        try vault.store(account: prefix + "/token", secret: token)
+        let calls = Calls(); calls.hold = true
+        let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+        let task = Task { try await native.proof(installationID: id, clientDataHash: Data(repeating: 3, count: 32), preference: .automatic) }
+        try await wait { calls.pending != nil }
+        task.cancel(); calls.finish()
+        do { _ = try await task.value; Issue.record("Cancelled callback returned a usable proof") }
+        catch is CancellationError {}
+        #expect(try record(vault, account)["attested"] as? Bool == true)
+        #expect(try record(vault, account)["confirmed"] as? Bool == false)
+        calls.hold = false
+        let reopened = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+        _ = try await reopened.proof(installationID: id, clientDataHash: Data(repeating: 4, count: 32), preference: .automatic)
+        #expect(calls.objects.last?.asserting == true && calls.generated == 1)
+        #expect(try vault.read(account: prefix + "/credential") == secret)
+        #expect(try vault.read(account: prefix + "/token") == token)
+    }
+
+    @Test("Late native success cannot mark or overwrite a newer canonical key")
+    func lateAttestationDoesNotOverwriteNewerKey() async throws {
+        let service = "org.floeagent.fixture.native-attest-cas-\(UUID())"
+        defer { removeFixture(service) }
+        let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+        let id = UUID(), account = id.uuidString.lowercased() + "/app-attest-key"
+        let calls = Calls(); calls.hold = true
+        let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+        let task = Task { try await native.proof(installationID: id, clientDataHash: Data(repeating: 5, count: 32), preference: .automatic) }
+        try await wait { calls.pending != nil }
+        let newer = try JSONSerialization.data(withJSONObject: ["id": "newer-fixture-key", "confirmed": true])
+        try vault.store(account: account, secret: newer)
+        calls.finish()
+        do { _ = try await task.value; Issue.record("Stale callback accepted a replaced key") }
+        catch APNsServiceError.storage {}
+        #expect(try vault.read(account: account) == newer)
+        #expect(calls.generated == 1)
+    }
+
+    @Test("Only native attestation serverUnavailable retries once with the identical key and hash")
+    func transientRetryKeepsKeyAndHash() async throws {
+        for unavailableCount in [1, 2] {
+            let service = "org.floeagent.fixture.native-transient-\(UUID())"
+            defer { removeFixture(service) }
+            let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+            let calls = Calls()
+            let failure = APNsServiceError.nativeVerification(.init(stage: .attestation, code: .serverUnavailable))
+            calls.failures = Array(repeating: failure, count: unavailableCount)
+            let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+            do {
+                _ = try await native.proof(installationID: UUID(), clientDataHash: Data(repeating: 6, count: 32), preference: .automatic)
+                #expect(unavailableCount == 1)
+            } catch let error as APNsServiceError { #expect(unavailableCount == 2 && error == failure) }
+            #expect(calls.generated == 1 && calls.objects.count == 2)
+            #expect(calls.objects[0] == calls.objects[1] && !calls.objects[0].asserting)
+        }
+    }
+
+    @Test("Unknown native failure and assertion serverUnavailable never retry or generate another key; legacy records remain readable")
+    func nonTransientFailureDoesNotRegenerate() async throws {
+        for asserting in [false, true] {
+            let service = "org.floeagent.fixture.native-no-retry-\(UUID())"
+            defer { removeFixture(service) }
+            let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+            let id = UUID(), account = id.uuidString.lowercased() + "/app-attest-key"
+            if asserting { try vault.store(account: account, secret: JSONSerialization.data(withJSONObject: ["id": "legacy-key", "confirmed": true])) }
+            let calls = Calls()
+            let failure = APNsServiceError.nativeVerification(.init(stage: asserting ? .assertion : .attestation,
+                code: asserting ? .serverUnavailable : .unknown))
+            calls.failures = [failure]
+            let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+            do { _ = try await native.proof(installationID: id, clientDataHash: Data(repeating: 7, count: 32), preference: .automatic); Issue.record("Failure accepted") }
+            catch let error as APNsServiceError { #expect(error == failure) }
+            #expect(calls.objects.count == 1 && calls.objects[0].asserting == asserting)
+            #expect(calls.generated == (asserting ? 0 : 1))
+            #expect(try record(vault, account)["attested"] == nil)
+        }
+    }
+
+    @Test("Cancellation fences the one transient retry before a second native call")
+    func cancellationStopsTransientRetry() async throws {
+        let service = "org.floeagent.fixture.native-retry-cancel-\(UUID())"
+        defer { removeFixture(service) }
+        let vault = KeychainStore(service: service, synchronizable: false, accessibility: .afterFirstUnlockThisDeviceOnly)
+        let calls = Calls(); calls.failures = [.nativeVerification(.init(stage: .attestation, code: .serverUnavailable))]
+        let native = APNsNativeInstallationProofs(vault: vault, native: calls.operations)
+        let task = Task { try await native.proof(installationID: UUID(), clientDataHash: Data(repeating: 8, count: 32), preference: .automatic) }
+        try await wait { calls.objects.count == 1 }
+        task.cancel()
+        do { _ = try await task.value; Issue.record("Cancelled transient operation continued") }
+        catch is CancellationError {}
+        #expect(calls.generated == 1 && calls.objects.count == 1)
+    }
+}
+
 #endif

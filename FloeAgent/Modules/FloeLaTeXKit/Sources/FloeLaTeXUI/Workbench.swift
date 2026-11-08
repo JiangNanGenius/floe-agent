@@ -13,20 +13,32 @@ public struct LaTeXPreviewContext {
 }
 public typealias LaTeXPDFRenderer = @MainActor (LaTeXPreviewContext)->AnyView
 
+/// Service-owned work may outlive an editor. A newly opened editor observes
+/// the same operation without sharing its selection, draft or undo state.
+public struct LaTeXWorkbenchOperation {
+    public var status:String
+    public var stopLabel:String
+    public var stop:@MainActor ()->Void
+    public init(status:String,stopLabel:String,stop:@escaping @MainActor ()->Void) {
+        self.status=status;self.stopLabel=stopLabel;self.stop=stop
+    }
+}
+
 /// Reusable inside Space, a task artifact, a note attachment or a document scene.
 /// The host resolves ownership and supplies its existing protected PDF surface.
 public struct LaTeXWorkbench:View {
     @Bindable private var session:LaTeXEditorSession
     private let pdfRenderer:LaTeXPDFRenderer
     private let onAssistant:(@MainActor ()->Void)?
+    private let operation:LaTeXWorkbenchOperation?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var panel:Panel? = .files
     @State private var showingPreview=false
     @State private var insertion:LaTeXInsertion?
     @State private var importingAsset=false
     @State private var share:ShareItem?
-    public init(session:LaTeXEditorSession,pdfRenderer:@escaping LaTeXPDFRenderer,onAssistant:(@MainActor ()->Void)? = nil) {
-        self.session=session;self.pdfRenderer=pdfRenderer;self.onAssistant=onAssistant
+    public init(session:LaTeXEditorSession,pdfRenderer:@escaping LaTeXPDFRenderer,onAssistant:(@MainActor ()->Void)? = nil,operation:LaTeXWorkbenchOperation? = nil) {
+        self.session=session;self.pdfRenderer=pdfRenderer;self.onAssistant=onAssistant;self.operation=operation
     }
     enum Panel:String,CaseIterable,Identifiable {case files,outline,references,search,history,builds,settings;var id:String{rawValue}}
     private struct ShareItem:Identifiable {let id=UUID();var url:URL}
@@ -92,8 +104,8 @@ public struct LaTeXWorkbench:View {
                     ForEach(LaTeXInsertion.allCases) {kind in Button(kind.title(session)) {insertion=kind}}
                     Button(session.t("导入图片或文件","Import image or file")) {importingAsset=true}
                 }label:{Image(systemName:"plus")}.accessibilityLabel(session.t("插入","Insert"))
-                Button {endEditing();Task {await session.compile();showingPreview=true}}label:{Label(session.t("排版","Typeset"),systemImage:"play.fill")}.disabled(session.isBuilding).accessibilityIdentifier("latex.compile")
-                if session.isBuilding {Button {session.stop()}label:{Image(systemName:"stop.fill")}.accessibilityLabel(session.t("停止排版","Stop typesetting"))}
+                Button {endEditing();Task {await session.compile();showingPreview=true}}label:{Label(session.t("排版","Typeset"),systemImage:"play.fill")}.disabled(session.isBuilding || operation != nil).accessibilityIdentifier("latex.compile")
+                if session.isBuilding || operation != nil {Button {if let operation {operation.stop()}else {session.stop()}}label:{Image(systemName:"stop.fill")}.accessibilityLabel(operation?.stopLabel ?? session.t("停止排版","Stop typesetting"))}
                 Button {showingPreview.toggle()}label:{Image(systemName:"doc.richtext")}.accessibilityLabel(session.t("PDF 预览","PDF preview"))
                 Button {endEditing();session.revealPDF();showingPreview=true}label:{Image(systemName:"scope")}.accessibilityLabel(session.t("定位到 PDF","Locate in PDF"))
                 Menu {
@@ -106,7 +118,7 @@ public struct LaTeXWorkbench:View {
     }
     private var statusBar:some View {
         HStack(spacing:10) {
-            if session.isBuilding {ProgressView().controlSize(.mini)}
+            if session.isBuilding || operation != nil {ProgressView().controlSize(.mini)}
             Button {panel = .builds}label:{Text(buildStatus).lineLimit(1)}.buttonStyle(.plain).accessibilityIdentifier("latex.buildStatus")
             Spacer(minLength:8)
             Text(session.dirty ? session.t("正在保存…","Saving…"):session.t("已保存","Saved")).foregroundStyle(.secondary)
@@ -114,6 +126,7 @@ public struct LaTeXWorkbench:View {
         }.font(.caption).padding(.horizontal,12).frame(height:30).background(.bar)
     }
     private var buildStatus:String {
+        if let operation {return operation.status}
         if session.preparingTypeset {return session.t("正在准备排版…","Preparing typesetting…")}
         guard let build=session.build else {return session.t("尚未排版","Ready to typeset")}
         return switch build.state {case .queued,.preparing:session.t("正在准备…","Preparing…");case .compiling:session.t("正在排版…","Typesetting…");case .succeeded:session.pdfIsCurrent ? session.t("PDF 已更新","PDF is up to date"):session.t("PDF 等待更新","PDF needs updating");case .failed:session.t("排版遇到问题，查看详情","Typesetting failed · View details");case .cancelled:session.t("排版已停止","Typesetting stopped");case .interrupted:session.t("排版已中断","Typesetting interrupted")}

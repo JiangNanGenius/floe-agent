@@ -7,7 +7,7 @@ import FloeMusicCore
 import FloeMusicKeyboard
 
 enum MusicWorkbenchDock: String, CaseIterable, Identifiable {
-    case mixer, piano, drums, keyboard, dj
+    case mixer, piano, drums, keyboard, dj, score
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -16,10 +16,11 @@ enum MusicWorkbenchDock: String, CaseIterable, Identifiable {
         case .drums: return WorkbenchText.t("鼓机", "Drums")
         case .keyboard: return WorkbenchText.t("电子琴", "Keyboard")
         case .dj: return WorkbenchText.t("DJ 打碟", "DJ decks")
+        case .score: return WorkbenchText.t("乐谱", "Score")
         }
     }
     var icon: String {
-        switch self { case .mixer: "slider.horizontal.3"; case .piano: "pianokeys"; case .drums: "square.grid.3x3"; case .keyboard: "pianokeys.inverse"; case .dj: "opticaldisc" }
+        switch self { case .mixer: "slider.horizontal.3"; case .piano: "pianokeys"; case .drums: "square.grid.3x3"; case .keyboard: "pianokeys.inverse"; case .dj: "opticaldisc"; case .score: "music.note.list" }
     }
 }
 
@@ -46,27 +47,32 @@ struct MusicWorkbenchView: View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 1000
             VStack(spacing: 0) {
-                titlebar
-                Divider()
-                transport
-                Divider()
-                if !wide { sectionBar }
-                if dock == .dj && (wide || section == "arrange") {
+                if dock == .score {
                     dockBar
-                    MusicDJWorkbench(session: session).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if wide {
-                    HStack(spacing: 0) {
-                        VStack(spacing: 0) {
-                            if !expanded { arrangement.frame(maxHeight: .infinity) }
-                            dockBar
-                            dockContent.frame(height: expanded ? max(260, geometry.size.height - 170) : min(290, max(220, geometry.size.height * 0.38)))
+                    dockContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    titlebar
+                    Divider()
+                    transport
+                    Divider()
+                    if !wide { sectionBar }
+                    if dock == .dj && (wide || section == "arrange") {
+                        dockBar
+                        MusicDJWorkbench(session: session).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if wide {
+                        HStack(spacing: 0) {
+                            VStack(spacing: 0) {
+                                if !expanded { arrangement.frame(maxHeight: .infinity) }
+                                dockBar
+                                dockContent.frame(height: expanded ? max(260, geometry.size.height - 170) : min(290, max(220, geometry.size.height * 0.38)))
+                            }
+                            Divider()
+                            inspectorContent.frame(width: min(300, geometry.size.width * 0.25))
                         }
-                        Divider()
-                        inspectorContent.frame(width: min(300, geometry.size.width * 0.25))
-                    }
-                } else { compactContent }
-                Divider()
-                statusBar
+                    } else { compactContent }
+                    Divider()
+                    statusBar
+                }
             }.background(Color(uiColor: .systemBackground))
         }
         .onAppear { bpm = session.document.tempoMap.segments.first?.bpm ?? 120; name = session.document.name }
@@ -224,14 +230,21 @@ struct MusicWorkbenchView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 3) {
                     ForEach(MusicWorkbenchDock.allCases) { value in
-                        Button { let wasDJ = dock == .dj; dock = value; if value == .dj { expanded = true } else if wasDJ { expanded = false } } label: {
+                        Button {
+                            let wasExpandedEditor = dock == .dj || dock == .score
+                            if dock == .score || value == .score { session.stopLive(); session.stopPlayback() }
+                            dock = value
+                            if value == .dj || value == .score { expanded = true } else if wasExpandedEditor { expanded = false }
+                        } label: {
                             Label(value.title, systemImage: value.icon).font(.callout).padding(.horizontal, 9).frame(minHeight: 44)
                                 .background(dock == value ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
                         }.buttonStyle(.plain).foregroundStyle(dock == value ? Color.accentColor : .primary).accessibilityIdentifier("music.dock." + value.rawValue)
                     }
                 }
             }
-            MusicIconButton(expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", WorkbenchText.t("展开或收起编辑器", "Expand or collapse editor")) { expanded.toggle() }
+            if dock != .score {
+                MusicIconButton(expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", WorkbenchText.t("展开或收起编辑器", "Expand or collapse editor")) { expanded.toggle() }
+            }
         }.padding(.horizontal, 6).background(Color(uiColor: .secondarySystemBackground))
     }
     @ViewBuilder private var dockContent: some View {
@@ -241,6 +254,7 @@ struct MusicWorkbenchView: View {
         case .drums: MusicDrumGrid(session: session)
         case .keyboard: MusicKeyboardWorkbench(session: session)
         case .dj: MusicDJWorkbench(session: session)
+        case .score: MusicNotationWorkbench(session: session, onAssistant: onAssistant, onClose: { dock = .mixer; expanded = false })
         }
     }
     private var inspectorContent: some View {

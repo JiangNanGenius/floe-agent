@@ -4,6 +4,8 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeTools
+import FloeSecurity
+import FloeTestSupport
 @testable import FloeAgentRuntime
 
 @Suite("FloeAgentRuntime.UserQuestions")
@@ -57,6 +59,128 @@ struct UserQuestionTests {
         #expect(request.questions[0].selection == .single)
         #expect(request.questions[0].allowsFreeText == false)
         try request.validate()
+    }
+
+    @Test("A required custom answer reaches the model receipt and durable runtime recovery")
+    func requiredCustomAnswerAndRecovery() async throws {
+        let (database, conversation, run, store, coordinator) = try await fixture()
+        let callID = "call_custom_required"
+        let requestID = UserQuestionCoordinator.requestID(runID: run, toolCallID: callID)
+        let waiting = Task {
+            try await coordinator.ask(request([.init(question: "Which approach?", options: [.init(id: "a", label: "A")],
+                allowsFreeText: false)]), runID: run, conversationID: conversation, toolCallID: callID,
+                cancellation: CancellationToken(), temporaryReadOnly: false)
+        }
+        let snapshot = try await waitForSnapshot(store, requestID: requestID)
+        let target = snapshot.target(for: try #require(snapshot.currentQuestion))
+        _ = try await coordinator.submitHumanAnswer(target: target, answer: .init(customText: "My own approach"))
+        let receipt = try await waiting.value
+        #expect(receipt.status == .answered)
+        #expect(receipt.answers[0].customText == "My own approach")
+        #expect(receipt.answers[0].freeText == nil)
+        #expect(receipt.answers[0].source == .human)
+        let restored = UserQuestionCoordinator(store: UserQuestionStore(database: database))
+        let call = try ToolCall(id: callID, toolName: UserAskTool.name, argumentsJSON: Data("{}".utf8), scope: .local)
+        let recovered = try #require(await restored.recoverInterruptedQuestion(runID: run, conversationID: conversation,
+            call: call))
+        let delivered = try JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(recovered.outputSummary.utf8))
+        #expect(delivered.answers[0].customText == "My own approach")
+        #expect(delivered.answers[0].selectedOptionIDs.isEmpty)
+        #expect(delivered.humanAnsweredQuestionIDs == [target.questionID])
+    }
+
+    @Test("Optional custom and note content survives recovery until the exact delivery is acknowledged")
+    func optionalCustomDeliveryRecovery() async throws {
+        let (database, conversation, run, store, coordinator) = try await fixture()
+        let callID = "call_custom_optional"
+        _ = try await coordinator.ask(request([.init(question: "Which options?", options: [.init(id: "a", label: "A")],
+            selection: .multiple, allowsFreeText: true)], policy: .optionalContinue), runID: run,
+            conversationID: conversation, toolCallID: callID, cancellation: CancellationToken(), temporaryReadOnly: false)
+        let snapshot = try await waitForSnapshot(store, requestID: UserQuestionCoordinator.requestID(runID: run, toolCallID: callID))
+        let target = snapshot.target(for: try #require(snapshot.currentQuestion))
+        _ = try await coordinator.submitHumanAnswer(target: target,
+            answer: .init(selectedOptionIDs: ["a"], freeText: "A note", customText: "My option"))
+        let first = try #require(try await coordinator.pendingDeliveries(conversationID: conversation).first)
+        let restored = UserQuestionCoordinator(store: UserQuestionStore(database: database))
+        let replay = try #require(try await restored.pendingDeliveries(conversationID: conversation).first)
+        #expect(replay.id == first.id)
+        #expect(replay.answers[0].customText == "My option")
+        #expect(replay.answers[0].freeText == "A note")
+        #expect(replay.answers[0].selectedOptionIDs == ["a"])
+        #expect(replay.text.contains("custom answer: My option"))
+        #expect(replay.text.contains("note: A note"))
+        try await restored.acknowledgeDeliveries(questionIDs: replay.answers.map(\.questionID))
+        #expect(try await coordinator.pendingDeliveries(conversationID: conversation).isEmpty)
+    }
+
+    @Test("Spoken custom replies and validation keep note policy, cancellation and text questions distinct")
+    func spokenCustomValidationAndCancellation() async throws {
+        let (_, conversation, run, store, coordinator) = try await fixture()
+        let callID = "call_custom_cancel"
+        _ = try await coordinator.ask(request([.init(question: "Which?", options: [.init(id: "a", label: "A")],
+            allowsFreeText: false)], policy: .optionalContinue), runID: run, conversationID: conversation,
+            toolCallID: callID, cancellation: CancellationToken(), temporaryReadOnly: false)
+        let snapshot = try await waitForSnapshot(store, requestID: UserQuestionCoordinator.requestID(runID: run, toolCallID: callID))
+        let question = try #require(snapshot.currentQuestion), target = snapshot.target(for: question)
+        #expect(UserQuestionAnswer.spokenText("a", for: question)?.selectedOptionIDs == ["a"])
+        #expect(UserQuestionAnswer.spokenText("My alternative", for: question)?.customText == "My alternative")
+        #expect(throws: (any Error).self) { try UserQuestionAnswer(freeText: "A note").validated(for: question, partial: false) }
+        #expect(throws: (any Error).self) {
+            try UserQuestionAnswer(selectedOptionIDs: ["a"], customText: "Other").validated(for: question, partial: true)
+        }
+        try await coordinator.cancelRequest(requestID: snapshot.requestID)
+        let late = try await coordinator.submitHumanAnswer(target: target, answer: .init(customText: "Late answer"))
+        #expect(!late.accepted)
+        #expect(late.alreadySettled)
+        #expect(late.answer == nil)
+        #expect(late.status == .cancelled)
+    }
+
+    @Test("Custom and note credentials reach only the primary request and never its durable checkpoints")
+    func customAndNoteCredentialWireProjection() async throws {
+        let questionID = "uq_custom_wire.q1"
+        let noteSecret = CapturedSecret(label: "synthetic-note", value: Data("QUESTION_NOTE_SYNTHETIC_42".utf8))
+        let customSecret = CapturedSecret(label: "synthetic-custom", value: Data("QUESTION_CUSTOM_SYNTHETIC_43".utf8))
+        let projection = ModelUserInputProjection()
+        try projection.register(id: ModelUserInputProjection.questionSourceID(questionID),
+            safe: noteSecret.placeholder, live: "QUESTION_NOTE_SYNTHETIC_42", captures: [noteSecret])
+        try projection.register(id: ModelUserInputProjection.questionSourceID("custom-answer:" + questionID),
+            safe: customSecret.placeholder, live: "QUESTION_CUSTOM_SYNTHETIC_43", captures: [customSecret])
+        let record = UserQuestionAnswerRecord(questionID: questionID, question: "Which credential?",
+            selectedOptionIDs: [], selectedOptionLabels: [], freeText: noteSecret.placeholder,
+            customText: customSecret.placeholder, source: .human, answeredAt: Date())
+        let receipt = UserQuestionToolReceipt(requestID: "uq_custom_wire", status: .answered, answers: [record],
+            pendingQuestionIDs: [], expiredQuestionIDs: [], cancelledQuestionIDs: [],
+            humanAnsweredQuestionIDs: [questionID], defaultedQuestionIDs: [], message: "Answered")
+        let executor = MockExecutor()
+        executor.descriptors[UserAskTool.name] = .init(name: UserAskTool.name,
+            parametersJSON: UserAskTool.parametersJSON, riskLabels: [], isSideEffecting: false,
+            executionBoundary: .mainRunOnly)
+        executor.results = [.init(callID: "custom-wire-call", status: .ok,
+            outputSummary: String(decoding: try JSONEncoder().encode(receipt), as: UTF8.self),
+            outputDigest: "safe", maximumSummaryCharacters: 262_144)]
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "custom-wire-call", toolName: UserAskTool.name,
+                arguments: #"{"questions":[{"question":"Which?","options":[{"id":"a","label":"A"}]}]}"#)),
+             .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let provider = TestFixtures.localhostProvider(), checkpoints = MockCheckpointStore()
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id), verifyFinalAnswer: false),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: executor,
+            checkpointStore: checkpoints, modelInputProjection: projection)
+        try await runtime.start(goal: "Synthetic question projection")
+        #expect(adapter.requests.count == 2)
+        let wire = try #require(adapter.requests.last).toolResults
+        #expect(wire.contains { $0.output.contains("QUESTION_CUSTOM_SYNTHETIC_43") })
+        #expect(wire.contains { $0.output.contains("QUESTION_NOTE_SYNTHETIC_42") })
+        for checkpoint in checkpoints.saved {
+            let saved = String(decoding: try checkpoint.encoded(), as: UTF8.self)
+            #expect(!saved.contains("QUESTION_CUSTOM_SYNTHETIC_43"))
+            #expect(!saved.contains("QUESTION_NOTE_SYNTHETIC_42"))
+        }
     }
 
     @Test("A required wait has no silent timeout or model default")

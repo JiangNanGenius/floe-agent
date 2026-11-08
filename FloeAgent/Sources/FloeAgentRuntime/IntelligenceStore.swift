@@ -401,6 +401,14 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference]) async throws {
+        try await database.writer { db in
+            try Self.saveMemory(entry, evidence: evidence, in: db)
+        }
+    }
+
+    /// Shared transaction body: pending review can commit activation and its
+    /// compare-and-swap status change without an intervening eviction writer.
+    static func saveMemory(_ entry: MemoryEntry, evidence: [MemoryEvidenceReference], in db: Database) throws {
         let (scope, workspaceID, conversationID) = Self.scope(entry.scope)
         let normalized = entry.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else { throw FloeError.validationFailed("Memory must not be empty") }
@@ -408,62 +416,60 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             throw FloeError.validationFailed("Authentication material cannot be saved to memory")
         }
         let replacementRevision = Int64(Date().timeIntervalSince1970 * 1_000)
-        try await database.writer { db in
-            if let identity = entry.factIdentity {
-                let arguments: StatementArguments = [
-                    identity.subjectKey, identity.attributeKey, entry.id.uuidString, scope,
-                    workspaceID?.uuidString, workspaceID?.uuidString,
-                    conversationID?.uuidString, conversationID?.uuidString
-                ]
-                let superseded = try String.fetchAll(db, sql: """
-                    SELECT id FROM memory_entries
-                    WHERE subject_key = ? AND attribute_key = ? AND id <> ? AND scope = ?
-                      AND (workspace_id IS ? OR origin_workspace_id IS ?)
-                      AND (conversation_id IS ? OR origin_conversation_id IS ?)
-                    """, arguments: arguments)
-                let deletedAt = Self.date(Date())
-                for oldID in superseded {
-                    try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [oldID])
-                    try db.execute(sql: """
-                        INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
-                        VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
-                            deleted_at=excluded.deleted_at,
-                            sync_revision=MAX(memory_tombstones.sync_revision, excluded.sync_revision)
-                        """, arguments: [oldID, deletedAt, replacementRevision])
-                }
-            }
-            try db.execute(sql: """
-                INSERT INTO memory_entries (
-                    id, scope, workspace_id, conversation_id, status, content, normalized_content,
-                    confidence, importance, is_pinned, source_kind, expires_at,
-                    origin_conversation_id, origin_workspace_id, subject_key, attribute_key,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET status=excluded.status, content=excluded.content,
-                    normalized_content=excluded.normalized_content, confidence=excluded.confidence,
-                    importance=excluded.importance, is_pinned=excluded.is_pinned,
-                    expires_at=excluded.expires_at,
-                    subject_key=excluded.subject_key, attribute_key=excluded.attribute_key,
-                    origin_conversation_id=COALESCE(memory_entries.origin_conversation_id, excluded.origin_conversation_id),
-                    origin_workspace_id=COALESCE(memory_entries.origin_workspace_id, excluded.origin_workspace_id),
-                    updated_at=excluded.updated_at
-                """, arguments: [entry.id.uuidString, scope, workspaceID?.uuidString,
-                    conversationID?.uuidString,
-                    entry.status.rawValue, entry.content, normalized, entry.confidence,
-                    entry.importance, entry.isPinned, entry.sourceKind.rawValue,
-                    entry.expiresAt.map(Self.date), entry.originConversationID?.uuidString,
-                    entry.originWorkspaceID?.uuidString, entry.factIdentity?.subjectKey,
-                    entry.factIdentity?.attributeKey, Self.date(entry.createdAt), Self.date(entry.updatedAt)])
-            try db.execute(sql: "DELETE FROM memory_evidence WHERE memory_id = ?", arguments: [entry.id.uuidString])
-            for reference in evidence {
+        if let identity = entry.factIdentity {
+            let arguments: StatementArguments = [
+                identity.subjectKey, identity.attributeKey, entry.id.uuidString, scope,
+                workspaceID?.uuidString, workspaceID?.uuidString,
+                conversationID?.uuidString, conversationID?.uuidString
+            ]
+            let superseded = try String.fetchAll(db, sql: """
+                SELECT id FROM memory_entries
+                WHERE subject_key = ? AND attribute_key = ? AND id <> ? AND scope = ?
+                  AND (workspace_id IS ? OR origin_workspace_id IS ?)
+                  AND (conversation_id IS ? OR origin_conversation_id IS ?)
+                """, arguments: arguments)
+            let deletedAt = Self.date(Date())
+            for oldID in superseded {
+                try db.execute(sql: "DELETE FROM memory_entries WHERE id = ?", arguments: [oldID])
                 try db.execute(sql: """
-                    INSERT INTO memory_evidence (
-                        id, memory_id, conversation_id, message_id, excerpt_digest, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """, arguments: [reference.id.uuidString, entry.id.uuidString,
-                        entry.originConversationID?.uuidString, reference.messageID?.uuidString,
-                        Self.stableDigest(reference.excerpt), Self.date(entry.updatedAt)])
+                    INSERT INTO memory_tombstones (memory_id, deleted_at, sync_revision)
+                    VALUES (?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET
+                        deleted_at=excluded.deleted_at,
+                        sync_revision=MAX(memory_tombstones.sync_revision, excluded.sync_revision)
+                    """, arguments: [oldID, deletedAt, replacementRevision])
             }
+        }
+        try db.execute(sql: """
+            INSERT INTO memory_entries (
+                id, scope, workspace_id, conversation_id, status, content, normalized_content,
+                confidence, importance, is_pinned, source_kind, expires_at,
+                origin_conversation_id, origin_workspace_id, subject_key, attribute_key,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET status=excluded.status, content=excluded.content,
+                normalized_content=excluded.normalized_content, confidence=excluded.confidence,
+                importance=excluded.importance, is_pinned=excluded.is_pinned,
+                expires_at=excluded.expires_at,
+                subject_key=excluded.subject_key, attribute_key=excluded.attribute_key,
+                origin_conversation_id=COALESCE(memory_entries.origin_conversation_id, excluded.origin_conversation_id),
+                origin_workspace_id=COALESCE(memory_entries.origin_workspace_id, excluded.origin_workspace_id),
+                updated_at=excluded.updated_at
+            """, arguments: [entry.id.uuidString, scope, workspaceID?.uuidString,
+                conversationID?.uuidString,
+                entry.status.rawValue, entry.content, normalized, entry.confidence,
+                entry.importance, entry.isPinned, entry.sourceKind.rawValue,
+                entry.expiresAt.map(Self.date), entry.originConversationID?.uuidString,
+                entry.originWorkspaceID?.uuidString, entry.factIdentity?.subjectKey,
+                entry.factIdentity?.attributeKey, Self.date(entry.createdAt), Self.date(entry.updatedAt)])
+        try db.execute(sql: "DELETE FROM memory_evidence WHERE memory_id = ?", arguments: [entry.id.uuidString])
+        for reference in evidence {
+            try db.execute(sql: """
+                INSERT INTO memory_evidence (
+                    id, memory_id, conversation_id, message_id, excerpt_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [reference.id.uuidString, entry.id.uuidString,
+                    entry.originConversationID?.uuidString, reference.messageID?.uuidString,
+                    Self.stableDigest(reference.excerpt), Self.date(entry.updatedAt)])
         }
     }
 

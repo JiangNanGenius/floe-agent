@@ -29,6 +29,8 @@ private struct UserQuestionCardSurface: View {
     @EnvironmentObject private var voiceInput: VoiceInputController
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
     @State private var dictationBase = ""
+    @State private var dictationField: UserQuestionCardInputField?
+    @State private var dictationInputRevision: Int?
     @State private var voiceTarget: String?
     @State private var preparation: Task<Void, Never>?
 
@@ -68,12 +70,17 @@ private struct UserQuestionCardSurface: View {
         }
         .onChange(of: voiceInput.transcript) { _, text in
             guard let current = model.currentTarget,
-                  questions.dictationQuestionID == current.questionID else { return }
+                  questions.dictationQuestionID == current.questionID,
+                  let dictationField, model.dictationField == dictationField,
+                  model.inputRevision == dictationInputRevision else { return }
             // Recognizers replace cumulative partials; never append each
             // partial to the previous partial or to the ordinary composer.
-            model.setFreeText(dictationBase + (dictationBase.isEmpty || text.isEmpty ? "" : " ") + text)
+            model.setDictatedText(dictationBase + (dictationBase.isEmpty || text.isEmpty ? "" : " ") + text,
+                                  field: dictationField)
         }
         .onChange(of: model.index) { _, _ in stopDictation() }
+        .onChange(of: model.inputRevision) { _, _ in stopDictation() }
+        .onChange(of: model.dictationField) { _, _ in stopDictation() }
         .onDisappear {
             model.persistCurrentDraft()
             stopDictation()
@@ -90,11 +97,15 @@ private struct UserQuestionCardSurface: View {
         preparation?.cancel()
         questions.dictationQuestionID = target.questionID
         voiceTarget = target.questionID
-        dictationBase = model.freeText
+        dictationBase = model.dictationText
+        dictationField = model.dictationField
+        dictationInputRevision = model.inputRevision
         preparation = Task { @MainActor in
             await voiceInput.stopAndWait()
             guard !Task.isCancelled, questions.dictationQuestionID == target.questionID,
-                  model.currentTarget?.questionID == target.questionID else { return }
+                  model.currentTarget?.questionID == target.questionID,
+                  model.inputRevision == dictationInputRevision,
+                  model.dictationField == dictationField else { return }
             voiceInput.requestStart()
         }
     }
@@ -102,6 +113,8 @@ private struct UserQuestionCardSurface: View {
     private func stopDictation() {
         preparation?.cancel()
         preparation = nil
+        dictationField = nil
+        dictationInputRevision = nil
         guard let voiceTarget, questions.dictationQuestionID == voiceTarget else { return }
         voiceInput.stop()
         questions.dictationQuestionID = nil

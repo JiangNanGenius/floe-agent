@@ -9,12 +9,25 @@ import FloeHeavyEditorSupport
 public struct ScorePlaybackAdapter: Sendable {
     private let transport: @Sendable (EditorJSON) async throws -> EditorJSON
     private let stop: (@Sendable () async -> Void)?
+    private let scopedTransport: (@Sendable (UUID, EditorJSON) async throws -> EditorJSON)?
+    private let cancelInvocation: (@Sendable (UUID, String) async -> Void)?
     public init(transport: @escaping @Sendable (EditorJSON) async throws -> EditorJSON,
-                stop: (@Sendable () async -> Void)? = nil) {
+                stop: (@Sendable () async -> Void)? = nil,
+                scopedTransport: (@Sendable (UUID, EditorJSON) async throws -> EditorJSON)? = nil,
+                cancelInvocation: (@Sendable (UUID, String) async -> Void)? = nil) {
         self.transport = transport; self.stop = stop
+        self.scopedTransport = scopedTransport; self.cancelInvocation = cancelInvocation
     }
     public var nativeExtension: HeavyEditorNativeExtension {
-        HeavyEditorNativeExtension(operations: ["score.transport"], cancel: { _ in await stop?() }, presentationClosed: { await stop?() }) { operation, arguments in
+        let scoped: (@Sendable (UUID, String, EditorJSON) async throws -> EditorJSON)?
+        if let scopedTransport {
+            scoped = { id, operation, arguments in
+                guard operation == "score.transport" else { throw HeavyEditorError.invalidCommand }
+                return try await scopedTransport(id, arguments)
+            }
+        } else { scoped = nil }
+        return HeavyEditorNativeExtension(operations: ["score.transport"], cancel: { _ in await stop?() },
+            presentationClosed: { await stop?() }, runInvocation: scoped, cancelInvocation: cancelInvocation) { operation, arguments in
             guard operation == "score.transport" else { throw HeavyEditorError.invalidCommand }
             return try await transport(arguments)
         }

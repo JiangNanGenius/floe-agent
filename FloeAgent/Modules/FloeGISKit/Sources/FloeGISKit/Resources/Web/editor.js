@@ -34744,10 +34744,16 @@ end`;
     commandIndex() {
       return [...this.commands.values()].map(({ descriptor }) => ({ id: descriptor.id, title: descriptor.title, group: descriptor.group, access: descriptor.access, hidden: descriptor.hidden ?? !1, sideEffecting: descriptor.sideEffecting ?? !1, fields: (descriptor.fields ?? []).map(({ key: key2, label, type }) => ({ key: key2, label, type })) }));
     }
-    formDescription(id, values2 = {}) {
+    formDescription(id, values2 = {}, discovery = null) {
       let descriptor = this.command(id), args = { ...values2 }, fields = (descriptor.fields ?? []).map((field2) => {
         let options = typeof field2.options == "function" ? field2.options(this, args) : field2.options, initial = Object.hasOwn(values2, field2.key) ? values2[field2.key] : typeof field2.default == "function" ? field2.default(this, args) : field2.default;
-        return initial !== void 0 && (args[field2.key] = initial), { ...field2, default: initial, options };
+        if (initial !== void 0 && (args[field2.key] = initial), discovery) {
+          let query = String(discovery.query ?? "").slice(0, 200).toLocaleLowerCase(), offset = Number(discovery.offset ?? 0), limit = Number(discovery.limit ?? 40);
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid discovery page");
+          let all3 = Array.isArray(options) ? options : null, matched = all3?.filter((option) => !query || JSON.stringify(option).toLocaleLowerCase().includes(query)), optionsPage = all3 ? { total: all3.length, matched: matched.length, offset, limit, hasMore: offset + limit < matched.length } : void 0, serialized = JSON.stringify(initial);
+          return { ...field2, default: serialized?.length > 8192 ? void 0 : initial, defaultOmitted: serialized?.length > 8192 ? !0 : void 0, options: matched ? matched.slice(offset, offset + limit) : options, optionsPage };
+        }
+        return { ...field2, default: initial, options };
       });
       return { ...descriptor, fields };
     }
@@ -45891,7 +45897,7 @@ northing meters` + mgrsString;
   // FloeAgent/Modules/FloeGISKit/Web/native.js
   var GIS_TABLE_PAGE_SIZE = 25;
   function gisUI(e2) {
-    return e2.gisUI ??= { mode: "map", tool: "select", multiselect: !1, snapping: !0, page: 0, filter: "", sort: "", sortDescending: !1, onlySelected: !1, columns: null, terrainFactor: 1, vertexAction: null, drawing: !1 };
+    return e2.gisUI ??= { mode: "map", tool: "select", multiselect: !1, snapping: !0, fingerDrawing: !1, page: 0, filter: "", sort: "", sortDescending: !1, onlySelected: !1, columns: null, terrainFactor: 1, vertexAction: null, drawing: !1 };
   }
   var textValue = (value, type) => type === "json" || typeof value == "object" ? JSON.stringify(value ?? null) : String(value ?? "");
   function cell(name, type, value, limit) {
@@ -45943,13 +45949,13 @@ northing meters` + mgrsString;
     }), add5("tool", t3("\u9009\u62E9\u5730\u56FE\u5DE5\u5177", "Choose map tool"), [field("tool", t3("\u5DE5\u5177", "Tool"), "select", { options: ["select", "Point", "LineString", "Polygon", "modify", "translate"] })], (a3) => {
       if (!["select", "Point", "LineString", "Polygon", "modify", "translate"].includes(a3.tool)) throw new Error("Unknown map tool");
       return gisUI(e2).tool = a3.tool, gisUI(e2).vertexAction = null, gisUI(e2).drawing = !1, redraw("full"), { tool: a3.tool };
-    }), add5("options", t3("\u5730\u56FE\u9009\u62E9\u4E0E\u6355\u6349", "Map selection & snapping"), [field("multiselect", t3("\u591A\u9009", "Multi-select"), "checkbox"), field("snapping", t3("\u6355\u6349", "Snap"), "checkbox")], (a3) => {
+    }), add5("options", t3("\u5730\u56FE\u9009\u9879", "Map options"), [field("multiselect", t3("\u591A\u9009", "Multi-select"), "checkbox"), field("snapping", t3("\u6355\u6349", "Snap"), "checkbox"), field("fingerDrawing", t3("\u624B\u6307\u7ED8\u56FE", "Draw with finger"), "checkbox")], (a3) => {
       let ui = gisUI(e2);
-      for (let key2 of ["multiselect", "snapping"]) if (key2 in a3) {
+      for (let key2 of ["multiselect", "snapping", "fingerDrawing"]) if (key2 in a3) {
         if (typeof a3[key2] != "boolean") throw new Error("Invalid map option");
         ui[key2] = a3[key2];
       }
-      return redraw("full"), { multiselect: ui.multiselect, snapping: ui.snapping };
+      return redraw("full"), { multiselect: ui.multiselect, snapping: ui.snapping, fingerDrawing: ui.fingerDrawing };
     }), add5("selectLayer", t3("\u9009\u62E9\u56FE\u5C42", "Select layer"), [layerField()], (a3) => {
       let layer = getLayer(e2, a3.layer);
       return e2.selection = { layer: layer.id, features: [] }, gisUI(e2).page = 0, gisUI(e2).columns = null, gisUI(e2).filter = "", gisUI(e2).sort = "", redraw("full"), { layerID: layer.id };
@@ -65949,10 +65955,10 @@ NODATA_value ${layer.nodata}
       mapBrowserEvent.activePointers && (this.targetPointers = mapBrowserEvent.activePointers);
     }
   };
-  function centroid2(pointerEvents) {
-    let length3 = pointerEvents.length, clientX = 0, clientY = 0;
+  function centroid2(pointerEvents2) {
+    let length3 = pointerEvents2.length, clientX = 0, clientY = 0;
     for (let i4 = 0; i4 < length3; i4++)
-      clientX += pointerEvents[i4].clientX, clientY += pointerEvents[i4].clientY;
+      clientX += pointerEvents2[i4].clientX, clientY += pointerEvents2[i4].clientY;
     return { clientX: clientX / length3, clientY: clientY / length3 };
   }
   var Pointer_default = PointerInteraction;
@@ -83685,612 +83691,6 @@ NODATA_value ${layer.nodata}
       }
     }
   }
-
-  // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/ol/geom/flat/geodesic.js
-  function line(interpolate, transform3, squaredTolerance) {
-    if (!transform3)
-      return [];
-    let flatCoordinates = [], geoA = interpolate(0), geoB = interpolate(1), a3 = transform3(geoA), b3 = transform3(geoB), geoStack = [geoB, geoA], stack = [b3, a3], fractionStack = [1, 0], fractions = {}, maxIterations = 1e5, geoM, m4, fracA, fracB, fracM, key2;
-    for (; --maxIterations > 0 && fractionStack.length > 0; )
-      fracA = /** @type {number} */
-      fractionStack.pop(), geoA = /** @type {import("../../coordinate.js").Coordinate} */
-      geoStack.pop(), a3 = /** @type {import("../../coordinate.js").Coordinate} */
-      stack.pop(), key2 = fracA.toString(), key2 in fractions || (flatCoordinates.push(a3[0], a3[1]), fractions[key2] = !0), fracB = /** @type {number} */
-      fractionStack.pop(), geoB = /** @type {import("../../coordinate.js").Coordinate} */
-      geoStack.pop(), b3 = /** @type {import("../../coordinate.js").Coordinate} */
-      stack.pop(), fracM = (fracA + fracB) / 2, geoM = interpolate(fracM), m4 = transform3(geoM), squaredSegmentDistance(m4[0], m4[1], a3[0], a3[1], b3[0], b3[1]) < squaredTolerance ? (flatCoordinates.push(b3[0], b3[1]), key2 = fracB.toString(), fractions[key2] = !0) : (fractionStack.push(fracB, fracM, fracM, fracA), stack.push(b3, m4, m4, a3), geoStack.push(geoB, geoM, geoM, geoA));
-    return flatCoordinates;
-  }
-  function meridian(lon, lat1, lat2, projection2, squaredTolerance) {
-    let epsg4326Projection = get4("EPSG:4326");
-    return line(
-      /**
-       * @param {number} frac Fraction.
-       * @return {import("../../coordinate.js").Coordinate} Coordinate.
-       */
-      function(frac) {
-        return [lon, lat1 + (lat2 - lat1) * frac];
-      },
-      getTransform(
-        /** @type {import("../../proj.js").ProjectionLike} */
-        epsg4326Projection,
-        projection2
-      ),
-      squaredTolerance
-    );
-  }
-  function parallel(lat, lon1, lon2, projection2, squaredTolerance) {
-    let epsg4326Projection = get4("EPSG:4326");
-    return line(
-      /**
-       * @param {number} frac Fraction.
-       * @return {import("../../coordinate.js").Coordinate} Coordinate.
-       */
-      function(frac) {
-        return [lon1 + (lon2 - lon1) * frac, lat];
-      },
-      getTransform(
-        /** @type {import("../../proj.js").ProjectionLike} */
-        epsg4326Projection,
-        projection2
-      ),
-      squaredTolerance
-    );
-  }
-
-  // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/ol/render.js
-  function getVectorContext(event) {
-    if (!(event.context instanceof CanvasRenderingContext2D))
-      throw new Error("Only works for render events from Canvas 2D layers");
-    let inversePixelTransform = event.inversePixelTransform, frameState = event.frameState;
-    if (!inversePixelTransform || !frameState)
-      throw new Error("Only works for render events from Canvas 2D layers");
-    let extent = frameState.extent;
-    if (!extent)
-      throw new Error("Missing frame extent");
-    let a3 = inversePixelTransform[0], b3 = inversePixelTransform[1], canvasPixelRatio = Math.sqrt(a3 * a3 + b3 * b3), transform3 = multiply(
-      inversePixelTransform.slice(),
-      frameState.coordinateToPixelTransform
-    ), squaredTolerance = getSquaredTolerance(
-      frameState.viewState.resolution,
-      canvasPixelRatio
-    ), userTransform, userProjection2 = getUserProjection();
-    return userProjection2 && (userTransform = getTransformFromProjections(
-      userProjection2,
-      frameState.viewState.projection
-    )), new Immediate_default(
-      event.context,
-      canvasPixelRatio,
-      extent,
-      transform3,
-      frameState.viewState.rotation,
-      squaredTolerance,
-      userTransform || void 0
-    );
-  }
-
-  // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/ol/layer/Graticule.js
-  var DEFAULT_STROKE_STYLE2 = new Stroke_default({
-    color: "rgba(0,0,0,0.2)"
-  }), INTERVALS = [
-    90,
-    45,
-    30,
-    20,
-    10,
-    5,
-    2,
-    1,
-    30 / 60,
-    20 / 60,
-    10 / 60,
-    5 / 60,
-    2 / 60,
-    1 / 60,
-    30 / 3600,
-    20 / 3600,
-    10 / 3600,
-    5 / 3600,
-    2 / 3600,
-    1 / 3600
-  ], Graticule = class extends Vector_default {
-    /**
-     * @param {Options} [options] Options.
-     */
-    constructor(options) {
-      options = options || {};
-      let baseOptions = Object.assign(
-        {
-          updateWhileAnimating: !0,
-          updateWhileInteracting: !0,
-          renderBuffer: 0
-        },
-        options
-      );
-      delete baseOptions.maxLines, delete baseOptions.strokeStyle, delete baseOptions.targetSize, delete baseOptions.showLabels, delete baseOptions.lonLabelFormatter, delete baseOptions.latLabelFormatter, delete baseOptions.lonLabelPosition, delete baseOptions.latLabelPosition, delete baseOptions.lonLabelStyle, delete baseOptions.latLabelStyle, delete baseOptions.intervals, super(baseOptions), this.projection_ = null, this.maxLat_ = 1 / 0, this.maxLon_ = 1 / 0, this.minLat_ = -1 / 0, this.minLon_ = -1 / 0, this.maxX_ = 1 / 0, this.maxY_ = 1 / 0, this.minX_ = -1 / 0, this.minY_ = -1 / 0, this.targetSize_ = options.targetSize !== void 0 ? options.targetSize : 100, this.maxLines_ = options.maxLines !== void 0 ? options.maxLines : 100, this.meridians_ = [], this.parallels_ = [], this.strokeStyle_ = options.strokeStyle !== void 0 ? options.strokeStyle : DEFAULT_STROKE_STYLE2, this.fromLonLatTransform_ = void 0, this.toLonLatTransform_ = void 0, this.projectionCenterLonLat_ = null, this.bottomLeft_ = null, this.bottomRight_ = null, this.topLeft_ = null, this.topRight_ = null, this.meridiansLabels_ = null, this.parallelsLabels_ = null, options.showLabels && (this.lonLabelFormatter_ = options.lonLabelFormatter == null ? degreesToStringHDMS.bind(this, "EW") : options.lonLabelFormatter, this.latLabelFormatter_ = options.latLabelFormatter == null ? degreesToStringHDMS.bind(this, "NS") : options.latLabelFormatter, this.lonLabelPosition_ = options.lonLabelPosition == null ? 0 : options.lonLabelPosition, this.latLabelPosition_ = options.latLabelPosition == null ? 1 : options.latLabelPosition, this.lonLabelStyleBase_ = new Style_default({
-        text: options.lonLabelStyle !== void 0 ? options.lonLabelStyle.clone() : new Text_default({
-          font: "12px Calibri,sans-serif",
-          textBaseline: "bottom",
-          fill: new Fill_default({
-            color: "rgba(0,0,0,1)"
-          }),
-          stroke: new Stroke_default({
-            color: "rgba(255,255,255,1)",
-            width: 3
-          })
-        })
-      }), this.lonLabelStyle_ = (feature2) => {
-        let label = feature2.get("graticule_label");
-        return this.lonLabelStyleBase_.getText()?.setText(label), this.lonLabelStyleBase_;
-      }, this.latLabelStyleBase_ = new Style_default({
-        text: options.latLabelStyle !== void 0 ? options.latLabelStyle.clone() : new Text_default({
-          font: "12px Calibri,sans-serif",
-          textAlign: "right",
-          fill: new Fill_default({
-            color: "rgba(0,0,0,1)"
-          }),
-          stroke: new Stroke_default({
-            color: "rgba(255,255,255,1)",
-            width: 3
-          })
-        })
-      }), this.latLabelStyle_ = (feature2) => {
-        let label = feature2.get("graticule_label");
-        return this.latLabelStyleBase_.getText()?.setText(label), this.latLabelStyleBase_;
-      }, this.meridiansLabels_ = [], this.parallelsLabels_ = [], this.addEventListener(
-        EventType_default3.POSTRENDER,
-        /** @type {import("../events.js").ListenerFunction} */
-        this.drawLabels_.bind(this)
-      )), this.intervals_ = options.intervals !== void 0 ? options.intervals : INTERVALS, this.setSource(
-        new Vector_default2({
-          loader: this.loaderFunction.bind(this),
-          strategy: this.strategyFunction.bind(this),
-          features: new Collection_default(),
-          overlaps: !1,
-          useSpatialIndex: !1,
-          wrapX: options.wrapX
-        })
-      ), this.featurePool_ = [], this.lineStyle_ = new Style_default({
-        stroke: this.strokeStyle_
-      }), this.loadedExtent_ = null, this.renderedExtent_ = null, this.renderedResolution_ = null, this.setRenderOrder(null);
-    }
-    /**
-     * Strategy function for loading features based on the view's extent and
-     * resolution.
-     * @param {import("../extent.js").Extent} extent Extent.
-     * @param {number} resolution Resolution.
-     * @return {Array<import("../extent.js").Extent>} Extents.
-     */
-    strategyFunction(extent, resolution) {
-      let realWorldExtent = extent.slice(), source = this.getSource();
-      return this.projection_ && source?.getWrapX() && wrapX(realWorldExtent, this.projection_), this.loadedExtent_ && (approximatelyEquals(this.loadedExtent_, realWorldExtent, resolution) ? realWorldExtent = this.loadedExtent_.slice() : source?.removeLoadedExtent(this.loadedExtent_)), [realWorldExtent];
-    }
-    /**
-     * Update geometries in the source based on current view
-     * @param {import("../extent.js").Extent} extent Extent
-     * @param {number} resolution Resolution
-     * @param {import("../proj/Projection.js").default} projection Projection
-     */
-    loaderFunction(extent, resolution, projection2) {
-      this.loadedExtent_ = extent;
-      let source = this.getSource(), layerExtent = this.getExtent() || [
-        -1 / 0,
-        -1 / 0,
-        1 / 0,
-        1 / 0
-      ], renderExtent = getIntersection(layerExtent, extent);
-      if (this.renderedExtent_ && equals2(this.renderedExtent_, renderExtent) && this.renderedResolution_ === resolution || (this.renderedExtent_ = renderExtent, this.renderedResolution_ = resolution, isEmpty(renderExtent)))
-        return;
-      let center2 = getCenter(renderExtent), squaredTolerance = resolution * resolution / 4;
-      (!this.projection_ || !equivalent(this.projection_, projection2)) && this.updateProjectionInfo_(projection2), this.createGraticule_(renderExtent, center2, resolution, squaredTolerance);
-      let featureCount = this.meridians_.length + this.parallels_.length;
-      this.meridiansLabels_ && (featureCount += this.meridians_.length), this.parallelsLabels_ && (featureCount += this.parallels_.length);
-      let feature2;
-      for (; featureCount > this.featurePool_.length; )
-        feature2 = new Feature_default(), this.featurePool_.push(feature2);
-      let featuresColl = source?.getFeaturesCollection();
-      if (!featuresColl)
-        return;
-      featuresColl.clear();
-      let poolIndex = 0, i4, l4;
-      for (i4 = 0, l4 = this.meridians_.length; i4 < l4; ++i4)
-        feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(this.meridians_[i4]), feature2.setStyle(this.lineStyle_), featuresColl.push(feature2);
-      for (i4 = 0, l4 = this.parallels_.length; i4 < l4; ++i4)
-        feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(this.parallels_[i4]), feature2.setStyle(this.lineStyle_), featuresColl.push(feature2);
-    }
-    /**
-     * @param {number} lon Longitude.
-     * @param {number} minLat Minimal latitude.
-     * @param {number} maxLat Maximal latitude.
-     * @param {number} squaredTolerance Squared tolerance.
-     * @param {import("../extent.js").Extent} extent Extent.
-     * @param {number} index Index.
-     * @return {number} Index.
-     * @private
-     */
-    addMeridian_(lon, minLat, maxLat, squaredTolerance, extent, index2) {
-      let lineString2 = this.getMeridian_(
-        lon,
-        minLat,
-        maxLat,
-        squaredTolerance,
-        index2
-      );
-      if (intersects(lineString2.getExtent(), extent)) {
-        if (this.meridiansLabels_ && this.lonLabelFormatter_) {
-          let text3 = this.lonLabelFormatter_(lon);
-          index2 in this.meridiansLabels_ ? this.meridiansLabels_[index2].text = text3 : this.meridiansLabels_[index2] = {
-            geom: new Point_default2([]),
-            text: text3
-          };
-        }
-        this.meridians_[index2++] = lineString2;
-      }
-      return index2;
-    }
-    /**
-     * @param {number} lat Latitude.
-     * @param {number} minLon Minimal longitude.
-     * @param {number} maxLon Maximal longitude.
-     * @param {number} squaredTolerance Squared tolerance.
-     * @param {import("../extent.js").Extent} extent Extent.
-     * @param {number} index Index.
-     * @return {number} Index.
-     * @private
-     */
-    addParallel_(lat, minLon, maxLon, squaredTolerance, extent, index2) {
-      let lineString2 = this.getParallel_(
-        lat,
-        minLon,
-        maxLon,
-        squaredTolerance,
-        index2
-      );
-      if (intersects(lineString2.getExtent(), extent)) {
-        if (this.parallelsLabels_) {
-          let text3 = this.latLabelFormatter_(lat);
-          index2 in this.parallelsLabels_ ? this.parallelsLabels_[index2].text = text3 : this.parallelsLabels_[index2] = {
-            geom: new Point_default2([]),
-            text: text3
-          };
-        }
-        this.parallels_[index2++] = lineString2;
-      }
-      return index2;
-    }
-    /**
-     * @param {import("../render/Event.js").default} event Render event.
-     * @private
-     */
-    drawLabels_(event) {
-      let frameState = event.frameState;
-      if (!frameState)
-        return;
-      let rotation = frameState.viewState.rotation, resolution = frameState.viewState.resolution, size = frameState.size, extent = frameState.extent;
-      if (!extent)
-        return;
-      let rotationCenter = getCenter(extent), rotationExtent = extent;
-      if (rotation) {
-        let unrotatedWidth = size[0] * resolution, unrotatedHeight = size[1] * resolution;
-        rotationExtent = [
-          rotationCenter[0] - unrotatedWidth / 2,
-          rotationCenter[1] - unrotatedHeight / 2,
-          rotationCenter[0] + unrotatedWidth / 2,
-          rotationCenter[1] + unrotatedHeight / 2
-        ];
-      }
-      let startWorld = 0, endWorld = 0, labelsAtStart = this.latLabelPosition_ < 0.5, projection2 = this.projection_;
-      if (!projection2)
-        return;
-      let projectionExtent = projection2.getExtent(), worldWidth = getWidth(projectionExtent);
-      if (this.getSource()?.getWrapX() && projection2.canWrapX() && !containsExtent(projectionExtent, extent)) {
-        startWorld = Math.floor((extent[0] - projectionExtent[0]) / worldWidth), endWorld = Math.ceil((extent[2] - projectionExtent[2]) / worldWidth);
-        let inverted = Math.abs(rotation) > Math.PI / 2;
-        labelsAtStart = labelsAtStart !== inverted;
-      }
-      let vectorContext = getVectorContext(event);
-      for (let world = startWorld; world <= endWorld; ++world) {
-        let poolIndex = this.meridians_.length + this.parallels_.length, feature2, index2, l4, textPoint;
-        if (this.meridiansLabels_ && this.lonLabelFormatter_)
-          for (index2 = 0, l4 = this.meridiansLabels_.length; index2 < l4; ++index2) {
-            let lineString2 = this.meridians_[index2];
-            if (!rotation && world === 0)
-              textPoint = this.getMeridianPoint_(lineString2, extent, index2);
-            else {
-              let clone6 = lineString2.clone();
-              clone6.translate(world * worldWidth, 0), clone6.rotate(-rotation, rotationCenter), textPoint = this.getMeridianPoint_(clone6, rotationExtent, index2), textPoint.rotate(rotation, rotationCenter);
-            }
-            if (feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(textPoint), feature2.set("graticule_label", this.meridiansLabels_[index2].text), this.lonLabelStyle_) {
-              let lonStyle = this.lonLabelStyle_(feature2);
-              vectorContext.drawFeature(
-                feature2,
-                /** @type {import("../style/Style.js").default} */
-                Array.isArray(lonStyle) ? lonStyle[0] : lonStyle
-              );
-            }
-          }
-        if (this.parallelsLabels_ && this.latLabelStyle_ && (world === startWorld && labelsAtStart || world === endWorld && !labelsAtStart))
-          for (index2 = 0, l4 = this.parallels_.length; index2 < l4; ++index2) {
-            let lineString2 = this.parallels_[index2];
-            if (!rotation && world === 0)
-              textPoint = this.getParallelPoint_(lineString2, extent, index2);
-            else {
-              let clone6 = lineString2.clone();
-              clone6.translate(world * worldWidth, 0), clone6.rotate(-rotation, rotationCenter), textPoint = this.getParallelPoint_(clone6, rotationExtent, index2), textPoint.rotate(rotation, rotationCenter);
-            }
-            feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(textPoint), feature2.set("graticule_label", this.parallelsLabels_[index2].text);
-            let latStyle = this.latLabelStyle_(feature2);
-            vectorContext.drawFeature(
-              feature2,
-              /** @type {import("../style/Style.js").default} */
-              Array.isArray(latStyle) ? latStyle[0] : latStyle
-            );
-          }
-      }
-    }
-    /**
-     * @param {import("../extent.js").Extent} extent Extent.
-     * @param {import("../coordinate.js").Coordinate} center Center.
-     * @param {number} resolution Resolution.
-     * @param {number} squaredTolerance Squared tolerance.
-     * @private
-     */
-    createGraticule_(extent, center2, resolution, squaredTolerance) {
-      let interval = this.getInterval_(resolution);
-      if (interval == -1) {
-        this.meridians_.length = 0, this.parallels_.length = 0, this.meridiansLabels_ && (this.meridiansLabels_.length = 0), this.parallelsLabels_ && (this.parallelsLabels_.length = 0);
-        return;
-      }
-      let wrapX4 = !1, projection2 = this.projection_;
-      if (!projection2 || !this.toLonLatTransform_)
-        return;
-      let projectionExtent = projection2.getExtent(), worldWidth = getWidth(projectionExtent);
-      this.getSource()?.getWrapX() && projection2.canWrapX() && !containsExtent(projectionExtent, extent) && (getWidth(extent) >= worldWidth ? (extent[0] = projectionExtent[0], extent[2] = projectionExtent[2]) : wrapX4 = !0);
-      let validCenterP = [
-        clamp(center2[0], this.minX_, this.maxX_),
-        clamp(center2[1], this.minY_, this.maxY_)
-      ], centerLonLat = this.toLonLatTransform_(validCenterP);
-      isNaN(centerLonLat[1]) && (centerLonLat[1] = Math.abs(this.maxLat_) >= Math.abs(this.minLat_) ? this.maxLat_ : this.minLat_);
-      let centerLon = clamp(centerLonLat[0], this.minLon_, this.maxLon_), centerLat = clamp(centerLonLat[1], this.minLat_, this.maxLat_), maxLines = this.maxLines_, cnt, idx, lat, lon, validExtentP = extent;
-      wrapX4 || (validExtentP = [
-        clamp(extent[0], this.minX_, this.maxX_),
-        clamp(extent[1], this.minY_, this.maxY_),
-        clamp(extent[2], this.minX_, this.maxX_),
-        clamp(extent[3], this.minY_, this.maxY_)
-      ]);
-      let validExtent = applyTransform(
-        validExtentP,
-        this.toLonLatTransform_,
-        void 0,
-        8
-      ), maxLat = validExtent[3], maxLon = validExtent[2], minLat = validExtent[1], minLon = validExtent[0];
-      if (wrapX4 || (containsCoordinate(
-        validExtentP,
-        /** @type {import("../coordinate.js").Coordinate} */
-        this.bottomLeft_
-      ) && (minLon = this.minLon_, minLat = this.minLat_), containsCoordinate(
-        validExtentP,
-        /** @type {import("../coordinate.js").Coordinate} */
-        this.bottomRight_
-      ) && (maxLon = this.maxLon_, minLat = this.minLat_), containsCoordinate(
-        validExtentP,
-        /** @type {import("../coordinate.js").Coordinate} */
-        this.topLeft_
-      ) && (minLon = this.minLon_, maxLat = this.maxLat_), containsCoordinate(
-        validExtentP,
-        /** @type {import("../coordinate.js").Coordinate} */
-        this.topRight_
-      ) && (maxLon = this.maxLon_, maxLat = this.maxLat_), maxLat = clamp(maxLat, centerLat, this.maxLat_), maxLon = clamp(maxLon, centerLon, this.maxLon_), minLat = clamp(minLat, this.minLat_, centerLat), minLon = clamp(minLon, this.minLon_, centerLon)), centerLon = Math.floor(centerLon / interval) * interval, lon = clamp(centerLon, this.minLon_, this.maxLon_), idx = this.addMeridian_(lon, minLat, maxLat, squaredTolerance, extent, 0), cnt = 0, wrapX4)
-        for (; (lon -= interval) >= minLon && cnt++ < maxLines; )
-          idx = this.addMeridian_(
-            lon,
-            minLat,
-            maxLat,
-            squaredTolerance,
-            extent,
-            idx
-          );
-      else
-        for (; lon != this.minLon_ && cnt++ < maxLines; )
-          lon = Math.max(lon - interval, this.minLon_), idx = this.addMeridian_(
-            lon,
-            minLat,
-            maxLat,
-            squaredTolerance,
-            extent,
-            idx
-          );
-      if (lon = clamp(centerLon, this.minLon_, this.maxLon_), cnt = 0, wrapX4)
-        for (; (lon += interval) <= maxLon && cnt++ < maxLines; )
-          idx = this.addMeridian_(
-            lon,
-            minLat,
-            maxLat,
-            squaredTolerance,
-            extent,
-            idx
-          );
-      else
-        for (; lon != this.maxLon_ && cnt++ < maxLines; )
-          lon = Math.min(lon + interval, this.maxLon_), idx = this.addMeridian_(
-            lon,
-            minLat,
-            maxLat,
-            squaredTolerance,
-            extent,
-            idx
-          );
-      for (this.meridians_.length = idx, this.meridiansLabels_ && (this.meridiansLabels_.length = idx), centerLat = Math.floor(centerLat / interval) * interval, lat = clamp(centerLat, this.minLat_, this.maxLat_), idx = this.addParallel_(lat, minLon, maxLon, squaredTolerance, extent, 0), cnt = 0; lat != this.minLat_ && cnt++ < maxLines; )
-        lat = Math.max(lat - interval, this.minLat_), idx = this.addParallel_(
-          lat,
-          minLon,
-          maxLon,
-          squaredTolerance,
-          extent,
-          idx
-        );
-      for (lat = clamp(centerLat, this.minLat_, this.maxLat_), cnt = 0; lat != this.maxLat_ && cnt++ < maxLines; )
-        lat = Math.min(lat + interval, this.maxLat_), idx = this.addParallel_(
-          lat,
-          minLon,
-          maxLon,
-          squaredTolerance,
-          extent,
-          idx
-        );
-      this.parallels_.length = idx, this.parallelsLabels_ && (this.parallelsLabels_.length = idx);
-    }
-    /**
-     * @param {number} resolution Resolution.
-     * @return {number} The interval in degrees.
-     * @private
-     */
-    getInterval_(resolution) {
-      if (!this.projectionCenterLonLat_ || !this.fromLonLatTransform_)
-        return -1;
-      let centerLon = this.projectionCenterLonLat_[0], centerLat = this.projectionCenterLonLat_[1], interval = -1, target = Math.pow(this.targetSize_ * resolution, 2), p12 = [], p23 = [];
-      for (let i4 = 0, ii = this.intervals_.length; i4 < ii; ++i4) {
-        let delta = clamp(this.intervals_[i4] / 2, 0, 90), clampedLat = clamp(centerLat, -90 + delta, 90 - delta);
-        if (p12[0] = centerLon - delta, p12[1] = clampedLat - delta, p23[0] = centerLon + delta, p23[1] = clampedLat + delta, this.fromLonLatTransform_(p12, p12), this.fromLonLatTransform_(p23, p23), Math.pow(p23[0] - p12[0], 2) + Math.pow(p23[1] - p12[1], 2) <= target)
-          break;
-        interval = this.intervals_[i4];
-      }
-      return interval;
-    }
-    /**
-     * @param {number} lon Longitude.
-     * @param {number} minLat Minimal latitude.
-     * @param {number} maxLat Maximal latitude.
-     * @param {number} squaredTolerance Squared tolerance.
-     * @return {LineString} The meridian line string.
-     * @param {number} index Index.
-     * @private
-     */
-    getMeridian_(lon, minLat, maxLat, squaredTolerance, index2) {
-      let flatCoordinates = meridian(
-        lon,
-        minLat,
-        maxLat,
-        /** @type {import("../proj/Projection.js").default} */
-        this.projection_,
-        squaredTolerance
-      ), lineString2 = this.meridians_[index2];
-      return lineString2 ? (lineString2.setFlatCoordinates("XY", flatCoordinates), lineString2.changed()) : (lineString2 = new LineString_default(flatCoordinates, "XY"), this.meridians_[index2] = lineString2), lineString2;
-    }
-    /**
-     * @param {LineString} lineString Meridian
-     * @param {import("../extent.js").Extent} extent Extent.
-     * @param {number} index Index.
-     * @return {Point} Meridian point.
-     * @private
-     */
-    getMeridianPoint_(lineString2, extent, index2) {
-      let flatCoordinates = lineString2.getFlatCoordinates(), bottom = 1, top = flatCoordinates.length - 1;
-      flatCoordinates[bottom] > flatCoordinates[top] && (bottom = top, top = 1);
-      let clampedBottom = Math.max(extent[1], flatCoordinates[bottom]), clampedTop = Math.min(extent[3], flatCoordinates[top]), lat = clamp(
-        extent[1] + Math.abs(extent[1] - extent[3]) * this.lonLabelPosition_,
-        clampedBottom,
-        clampedTop
-      ), coordinate = [flatCoordinates[bottom - 1] + (flatCoordinates[top - 1] - flatCoordinates[bottom - 1]) * (lat - flatCoordinates[bottom]) / (flatCoordinates[top] - flatCoordinates[bottom]), lat], point2 = this.meridiansLabels_?.[index2]?.geom;
-      return point2 ? (point2.setCoordinates(coordinate), point2) : new Point_default2(coordinate);
-    }
-    /**
-     * Get the list of meridians.  Meridians are lines of equal longitude.
-     * @return {Array<LineString>} The meridians.
-     * @api
-     */
-    getMeridians() {
-      return this.meridians_;
-    }
-    /**
-     * @param {number} lat Latitude.
-     * @param {number} minLon Minimal longitude.
-     * @param {number} maxLon Maximal longitude.
-     * @param {number} squaredTolerance Squared tolerance.
-     * @return {LineString} The parallel line string.
-     * @param {number} index Index.
-     * @private
-     */
-    getParallel_(lat, minLon, maxLon, squaredTolerance, index2) {
-      let flatCoordinates = parallel(
-        lat,
-        minLon,
-        maxLon,
-        /** @type {import("../proj/Projection.js").default} */
-        this.projection_,
-        squaredTolerance
-      ), lineString2 = this.parallels_[index2];
-      return lineString2 ? (lineString2.setFlatCoordinates("XY", flatCoordinates), lineString2.changed()) : lineString2 = new LineString_default(flatCoordinates, "XY"), lineString2;
-    }
-    /**
-     * @param {LineString} lineString Parallels.
-     * @param {import("../extent.js").Extent} extent Extent.
-     * @param {number} index Index.
-     * @return {Point} Parallel point.
-     * @private
-     */
-    getParallelPoint_(lineString2, extent, index2) {
-      let flatCoordinates = lineString2.getFlatCoordinates(), left = 0, right = flatCoordinates.length - 2;
-      flatCoordinates[left] > flatCoordinates[right] && (left = right, right = 0);
-      let clampedLeft = Math.max(extent[0], flatCoordinates[left]), clampedRight = Math.min(extent[2], flatCoordinates[right]), lon = clamp(
-        extent[0] + Math.abs(extent[0] - extent[2]) * this.latLabelPosition_,
-        clampedLeft,
-        clampedRight
-      ), coordinate1 = flatCoordinates[left + 1] + (flatCoordinates[right + 1] - flatCoordinates[left + 1]) * (lon - flatCoordinates[left]) / (flatCoordinates[right] - flatCoordinates[left]), coordinate = [lon, coordinate1], point2 = this.parallelsLabels_?.[index2]?.geom;
-      return point2 ? (point2.setCoordinates(coordinate), point2) : new Point_default2(coordinate);
-    }
-    /**
-     * Get the list of parallels.  Parallels are lines of equal latitude.
-     * @return {Array<LineString>} The parallels.
-     * @api
-     */
-    getParallels() {
-      return this.parallels_;
-    }
-    /**
-     * @param {import("../proj/Projection.js").default} projection Projection.
-     * @private
-     */
-    updateProjectionInfo_(projection2) {
-      let epsg4326Projection = get4("EPSG:4326");
-      if (!epsg4326Projection)
-        return;
-      let worldExtent = projection2.getWorldExtent();
-      this.maxLat_ = worldExtent[3], this.maxLon_ = worldExtent[2], this.minLat_ = worldExtent[1], this.minLon_ = worldExtent[0];
-      let toLonLatTransform = getTransform(projection2, epsg4326Projection);
-      if (!toLonLatTransform)
-        return;
-      if (this.minLon_ < this.maxLon_)
-        this.toLonLatTransform_ = toLonLatTransform;
-      else {
-        let split = this.minLon_ + this.maxLon_ / 2;
-        this.maxLon_ += 360, this.toLonLatTransform_ = function(coordinates2, output, dimension) {
-          dimension = dimension || 2;
-          let lonLatCoordinates = toLonLatTransform(
-            coordinates2,
-            output,
-            dimension
-          );
-          for (let i4 = 0, l4 = lonLatCoordinates.length; i4 < l4; i4 += dimension)
-            lonLatCoordinates[i4] < split && (lonLatCoordinates[i4] += 360);
-          return lonLatCoordinates;
-        };
-      }
-      let fromLonLatTransform = getTransform(epsg4326Projection, projection2);
-      if (!fromLonLatTransform)
-        return;
-      this.fromLonLatTransform_ = fromLonLatTransform;
-      let worldExtentP = applyTransform(
-        [this.minLon_, this.minLat_, this.maxLon_, this.maxLat_],
-        fromLonLatTransform,
-        void 0,
-        8
-      );
-      this.minX_ = worldExtentP[0], this.maxX_ = worldExtentP[2], this.minY_ = worldExtentP[1], this.maxY_ = worldExtentP[3], this.bottomLeft_ = fromLonLatTransform([this.minLon_, this.minLat_]), this.bottomRight_ = fromLonLatTransform([this.maxLon_, this.minLat_]), this.topLeft_ = fromLonLatTransform([this.minLon_, this.maxLat_]), this.topRight_ = fromLonLatTransform([this.maxLon_, this.maxLat_]);
-      let toLonLat2 = this.toLonLatTransform_;
-      toLonLat2 && (this.projectionCenterLonLat_ = toLonLat2(getCenter(projection2.getExtent())), isNaN(this.projectionCenterLonLat_[1]) && (this.projectionCenterLonLat_[1] = Math.abs(this.maxLat_) >= Math.abs(this.minLat_) ? this.maxLat_ : this.minLat_), this.projection_ = projection2);
-    }
-  }, Graticule_default = Graticule;
 
   // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/three/build/three.core.js
   var MOUSE = { LEFT: 0, MIDDLE: 1, RIGHT: 2, ROTATE: 0, DOLLY: 1, PAN: 2 }, TOUCH = { ROTATE: 0, PAN: 1, DOLLY_PAN: 2, DOLLY_ROTATE: 3 }, CullFaceNone = 0, CullFaceBack = 1, CullFaceFront = 2;
@@ -107002,6 +106402,726 @@ void main() {
     event.key === "Control" && (this._controlActive = !1, this.domElement.ownerDocument.removeEventListener("keyup", this._interceptControlUp, { passive: !0, capture: !0 }));
   }
 
+  // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/ol/geom/flat/geodesic.js
+  function line(interpolate, transform3, squaredTolerance) {
+    if (!transform3)
+      return [];
+    let flatCoordinates = [], geoA = interpolate(0), geoB = interpolate(1), a3 = transform3(geoA), b3 = transform3(geoB), geoStack = [geoB, geoA], stack = [b3, a3], fractionStack = [1, 0], fractions = {}, maxIterations = 1e5, geoM, m4, fracA, fracB, fracM, key2;
+    for (; --maxIterations > 0 && fractionStack.length > 0; )
+      fracA = /** @type {number} */
+      fractionStack.pop(), geoA = /** @type {import("../../coordinate.js").Coordinate} */
+      geoStack.pop(), a3 = /** @type {import("../../coordinate.js").Coordinate} */
+      stack.pop(), key2 = fracA.toString(), key2 in fractions || (flatCoordinates.push(a3[0], a3[1]), fractions[key2] = !0), fracB = /** @type {number} */
+      fractionStack.pop(), geoB = /** @type {import("../../coordinate.js").Coordinate} */
+      geoStack.pop(), b3 = /** @type {import("../../coordinate.js").Coordinate} */
+      stack.pop(), fracM = (fracA + fracB) / 2, geoM = interpolate(fracM), m4 = transform3(geoM), squaredSegmentDistance(m4[0], m4[1], a3[0], a3[1], b3[0], b3[1]) < squaredTolerance ? (flatCoordinates.push(b3[0], b3[1]), key2 = fracB.toString(), fractions[key2] = !0) : (fractionStack.push(fracB, fracM, fracM, fracA), stack.push(b3, m4, m4, a3), geoStack.push(geoB, geoM, geoM, geoA));
+    return flatCoordinates;
+  }
+  function meridian(lon, lat1, lat2, projection2, squaredTolerance) {
+    let epsg4326Projection = get4("EPSG:4326");
+    return line(
+      /**
+       * @param {number} frac Fraction.
+       * @return {import("../../coordinate.js").Coordinate} Coordinate.
+       */
+      function(frac) {
+        return [lon, lat1 + (lat2 - lat1) * frac];
+      },
+      getTransform(
+        /** @type {import("../../proj.js").ProjectionLike} */
+        epsg4326Projection,
+        projection2
+      ),
+      squaredTolerance
+    );
+  }
+  function parallel(lat, lon1, lon2, projection2, squaredTolerance) {
+    let epsg4326Projection = get4("EPSG:4326");
+    return line(
+      /**
+       * @param {number} frac Fraction.
+       * @return {import("../../coordinate.js").Coordinate} Coordinate.
+       */
+      function(frac) {
+        return [lon1 + (lon2 - lon1) * frac, lat];
+      },
+      getTransform(
+        /** @type {import("../../proj.js").ProjectionLike} */
+        epsg4326Projection,
+        projection2
+      ),
+      squaredTolerance
+    );
+  }
+
+  // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/ol/render.js
+  function getVectorContext(event) {
+    if (!(event.context instanceof CanvasRenderingContext2D))
+      throw new Error("Only works for render events from Canvas 2D layers");
+    let inversePixelTransform = event.inversePixelTransform, frameState = event.frameState;
+    if (!inversePixelTransform || !frameState)
+      throw new Error("Only works for render events from Canvas 2D layers");
+    let extent = frameState.extent;
+    if (!extent)
+      throw new Error("Missing frame extent");
+    let a3 = inversePixelTransform[0], b3 = inversePixelTransform[1], canvasPixelRatio = Math.sqrt(a3 * a3 + b3 * b3), transform3 = multiply(
+      inversePixelTransform.slice(),
+      frameState.coordinateToPixelTransform
+    ), squaredTolerance = getSquaredTolerance(
+      frameState.viewState.resolution,
+      canvasPixelRatio
+    ), userTransform, userProjection2 = getUserProjection();
+    return userProjection2 && (userTransform = getTransformFromProjections(
+      userProjection2,
+      frameState.viewState.projection
+    )), new Immediate_default(
+      event.context,
+      canvasPixelRatio,
+      extent,
+      transform3,
+      frameState.viewState.rotation,
+      squaredTolerance,
+      userTransform || void 0
+    );
+  }
+
+  // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/ol/layer/Graticule.js
+  var DEFAULT_STROKE_STYLE2 = new Stroke_default({
+    color: "rgba(0,0,0,0.2)"
+  }), INTERVALS = [
+    90,
+    45,
+    30,
+    20,
+    10,
+    5,
+    2,
+    1,
+    30 / 60,
+    20 / 60,
+    10 / 60,
+    5 / 60,
+    2 / 60,
+    1 / 60,
+    30 / 3600,
+    20 / 3600,
+    10 / 3600,
+    5 / 3600,
+    2 / 3600,
+    1 / 3600
+  ], Graticule = class extends Vector_default {
+    /**
+     * @param {Options} [options] Options.
+     */
+    constructor(options) {
+      options = options || {};
+      let baseOptions = Object.assign(
+        {
+          updateWhileAnimating: !0,
+          updateWhileInteracting: !0,
+          renderBuffer: 0
+        },
+        options
+      );
+      delete baseOptions.maxLines, delete baseOptions.strokeStyle, delete baseOptions.targetSize, delete baseOptions.showLabels, delete baseOptions.lonLabelFormatter, delete baseOptions.latLabelFormatter, delete baseOptions.lonLabelPosition, delete baseOptions.latLabelPosition, delete baseOptions.lonLabelStyle, delete baseOptions.latLabelStyle, delete baseOptions.intervals, super(baseOptions), this.projection_ = null, this.maxLat_ = 1 / 0, this.maxLon_ = 1 / 0, this.minLat_ = -1 / 0, this.minLon_ = -1 / 0, this.maxX_ = 1 / 0, this.maxY_ = 1 / 0, this.minX_ = -1 / 0, this.minY_ = -1 / 0, this.targetSize_ = options.targetSize !== void 0 ? options.targetSize : 100, this.maxLines_ = options.maxLines !== void 0 ? options.maxLines : 100, this.meridians_ = [], this.parallels_ = [], this.strokeStyle_ = options.strokeStyle !== void 0 ? options.strokeStyle : DEFAULT_STROKE_STYLE2, this.fromLonLatTransform_ = void 0, this.toLonLatTransform_ = void 0, this.projectionCenterLonLat_ = null, this.bottomLeft_ = null, this.bottomRight_ = null, this.topLeft_ = null, this.topRight_ = null, this.meridiansLabels_ = null, this.parallelsLabels_ = null, options.showLabels && (this.lonLabelFormatter_ = options.lonLabelFormatter == null ? degreesToStringHDMS.bind(this, "EW") : options.lonLabelFormatter, this.latLabelFormatter_ = options.latLabelFormatter == null ? degreesToStringHDMS.bind(this, "NS") : options.latLabelFormatter, this.lonLabelPosition_ = options.lonLabelPosition == null ? 0 : options.lonLabelPosition, this.latLabelPosition_ = options.latLabelPosition == null ? 1 : options.latLabelPosition, this.lonLabelStyleBase_ = new Style_default({
+        text: options.lonLabelStyle !== void 0 ? options.lonLabelStyle.clone() : new Text_default({
+          font: "12px Calibri,sans-serif",
+          textBaseline: "bottom",
+          fill: new Fill_default({
+            color: "rgba(0,0,0,1)"
+          }),
+          stroke: new Stroke_default({
+            color: "rgba(255,255,255,1)",
+            width: 3
+          })
+        })
+      }), this.lonLabelStyle_ = (feature2) => {
+        let label = feature2.get("graticule_label");
+        return this.lonLabelStyleBase_.getText()?.setText(label), this.lonLabelStyleBase_;
+      }, this.latLabelStyleBase_ = new Style_default({
+        text: options.latLabelStyle !== void 0 ? options.latLabelStyle.clone() : new Text_default({
+          font: "12px Calibri,sans-serif",
+          textAlign: "right",
+          fill: new Fill_default({
+            color: "rgba(0,0,0,1)"
+          }),
+          stroke: new Stroke_default({
+            color: "rgba(255,255,255,1)",
+            width: 3
+          })
+        })
+      }), this.latLabelStyle_ = (feature2) => {
+        let label = feature2.get("graticule_label");
+        return this.latLabelStyleBase_.getText()?.setText(label), this.latLabelStyleBase_;
+      }, this.meridiansLabels_ = [], this.parallelsLabels_ = [], this.addEventListener(
+        EventType_default3.POSTRENDER,
+        /** @type {import("../events.js").ListenerFunction} */
+        this.drawLabels_.bind(this)
+      )), this.intervals_ = options.intervals !== void 0 ? options.intervals : INTERVALS, this.setSource(
+        new Vector_default2({
+          loader: this.loaderFunction.bind(this),
+          strategy: this.strategyFunction.bind(this),
+          features: new Collection_default(),
+          overlaps: !1,
+          useSpatialIndex: !1,
+          wrapX: options.wrapX
+        })
+      ), this.featurePool_ = [], this.lineStyle_ = new Style_default({
+        stroke: this.strokeStyle_
+      }), this.loadedExtent_ = null, this.renderedExtent_ = null, this.renderedResolution_ = null, this.setRenderOrder(null);
+    }
+    /**
+     * Strategy function for loading features based on the view's extent and
+     * resolution.
+     * @param {import("../extent.js").Extent} extent Extent.
+     * @param {number} resolution Resolution.
+     * @return {Array<import("../extent.js").Extent>} Extents.
+     */
+    strategyFunction(extent, resolution) {
+      let realWorldExtent = extent.slice(), source = this.getSource();
+      return this.projection_ && source?.getWrapX() && wrapX(realWorldExtent, this.projection_), this.loadedExtent_ && (approximatelyEquals(this.loadedExtent_, realWorldExtent, resolution) ? realWorldExtent = this.loadedExtent_.slice() : source?.removeLoadedExtent(this.loadedExtent_)), [realWorldExtent];
+    }
+    /**
+     * Update geometries in the source based on current view
+     * @param {import("../extent.js").Extent} extent Extent
+     * @param {number} resolution Resolution
+     * @param {import("../proj/Projection.js").default} projection Projection
+     */
+    loaderFunction(extent, resolution, projection2) {
+      this.loadedExtent_ = extent;
+      let source = this.getSource(), layerExtent = this.getExtent() || [
+        -1 / 0,
+        -1 / 0,
+        1 / 0,
+        1 / 0
+      ], renderExtent = getIntersection(layerExtent, extent);
+      if (this.renderedExtent_ && equals2(this.renderedExtent_, renderExtent) && this.renderedResolution_ === resolution || (this.renderedExtent_ = renderExtent, this.renderedResolution_ = resolution, isEmpty(renderExtent)))
+        return;
+      let center2 = getCenter(renderExtent), squaredTolerance = resolution * resolution / 4;
+      (!this.projection_ || !equivalent(this.projection_, projection2)) && this.updateProjectionInfo_(projection2), this.createGraticule_(renderExtent, center2, resolution, squaredTolerance);
+      let featureCount = this.meridians_.length + this.parallels_.length;
+      this.meridiansLabels_ && (featureCount += this.meridians_.length), this.parallelsLabels_ && (featureCount += this.parallels_.length);
+      let feature2;
+      for (; featureCount > this.featurePool_.length; )
+        feature2 = new Feature_default(), this.featurePool_.push(feature2);
+      let featuresColl = source?.getFeaturesCollection();
+      if (!featuresColl)
+        return;
+      featuresColl.clear();
+      let poolIndex = 0, i4, l4;
+      for (i4 = 0, l4 = this.meridians_.length; i4 < l4; ++i4)
+        feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(this.meridians_[i4]), feature2.setStyle(this.lineStyle_), featuresColl.push(feature2);
+      for (i4 = 0, l4 = this.parallels_.length; i4 < l4; ++i4)
+        feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(this.parallels_[i4]), feature2.setStyle(this.lineStyle_), featuresColl.push(feature2);
+    }
+    /**
+     * @param {number} lon Longitude.
+     * @param {number} minLat Minimal latitude.
+     * @param {number} maxLat Maximal latitude.
+     * @param {number} squaredTolerance Squared tolerance.
+     * @param {import("../extent.js").Extent} extent Extent.
+     * @param {number} index Index.
+     * @return {number} Index.
+     * @private
+     */
+    addMeridian_(lon, minLat, maxLat, squaredTolerance, extent, index2) {
+      let lineString2 = this.getMeridian_(
+        lon,
+        minLat,
+        maxLat,
+        squaredTolerance,
+        index2
+      );
+      if (intersects(lineString2.getExtent(), extent)) {
+        if (this.meridiansLabels_ && this.lonLabelFormatter_) {
+          let text3 = this.lonLabelFormatter_(lon);
+          index2 in this.meridiansLabels_ ? this.meridiansLabels_[index2].text = text3 : this.meridiansLabels_[index2] = {
+            geom: new Point_default2([]),
+            text: text3
+          };
+        }
+        this.meridians_[index2++] = lineString2;
+      }
+      return index2;
+    }
+    /**
+     * @param {number} lat Latitude.
+     * @param {number} minLon Minimal longitude.
+     * @param {number} maxLon Maximal longitude.
+     * @param {number} squaredTolerance Squared tolerance.
+     * @param {import("../extent.js").Extent} extent Extent.
+     * @param {number} index Index.
+     * @return {number} Index.
+     * @private
+     */
+    addParallel_(lat, minLon, maxLon, squaredTolerance, extent, index2) {
+      let lineString2 = this.getParallel_(
+        lat,
+        minLon,
+        maxLon,
+        squaredTolerance,
+        index2
+      );
+      if (intersects(lineString2.getExtent(), extent)) {
+        if (this.parallelsLabels_) {
+          let text3 = this.latLabelFormatter_(lat);
+          index2 in this.parallelsLabels_ ? this.parallelsLabels_[index2].text = text3 : this.parallelsLabels_[index2] = {
+            geom: new Point_default2([]),
+            text: text3
+          };
+        }
+        this.parallels_[index2++] = lineString2;
+      }
+      return index2;
+    }
+    /**
+     * @param {import("../render/Event.js").default} event Render event.
+     * @private
+     */
+    drawLabels_(event) {
+      let frameState = event.frameState;
+      if (!frameState)
+        return;
+      let rotation = frameState.viewState.rotation, resolution = frameState.viewState.resolution, size = frameState.size, extent = frameState.extent;
+      if (!extent)
+        return;
+      let rotationCenter = getCenter(extent), rotationExtent = extent;
+      if (rotation) {
+        let unrotatedWidth = size[0] * resolution, unrotatedHeight = size[1] * resolution;
+        rotationExtent = [
+          rotationCenter[0] - unrotatedWidth / 2,
+          rotationCenter[1] - unrotatedHeight / 2,
+          rotationCenter[0] + unrotatedWidth / 2,
+          rotationCenter[1] + unrotatedHeight / 2
+        ];
+      }
+      let startWorld = 0, endWorld = 0, labelsAtStart = this.latLabelPosition_ < 0.5, projection2 = this.projection_;
+      if (!projection2)
+        return;
+      let projectionExtent = projection2.getExtent(), worldWidth = getWidth(projectionExtent);
+      if (this.getSource()?.getWrapX() && projection2.canWrapX() && !containsExtent(projectionExtent, extent)) {
+        startWorld = Math.floor((extent[0] - projectionExtent[0]) / worldWidth), endWorld = Math.ceil((extent[2] - projectionExtent[2]) / worldWidth);
+        let inverted = Math.abs(rotation) > Math.PI / 2;
+        labelsAtStart = labelsAtStart !== inverted;
+      }
+      let vectorContext = getVectorContext(event);
+      for (let world = startWorld; world <= endWorld; ++world) {
+        let poolIndex = this.meridians_.length + this.parallels_.length, feature2, index2, l4, textPoint;
+        if (this.meridiansLabels_ && this.lonLabelFormatter_)
+          for (index2 = 0, l4 = this.meridiansLabels_.length; index2 < l4; ++index2) {
+            let lineString2 = this.meridians_[index2];
+            if (!rotation && world === 0)
+              textPoint = this.getMeridianPoint_(lineString2, extent, index2);
+            else {
+              let clone6 = lineString2.clone();
+              clone6.translate(world * worldWidth, 0), clone6.rotate(-rotation, rotationCenter), textPoint = this.getMeridianPoint_(clone6, rotationExtent, index2), textPoint.rotate(rotation, rotationCenter);
+            }
+            if (feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(textPoint), feature2.set("graticule_label", this.meridiansLabels_[index2].text), this.lonLabelStyle_) {
+              let lonStyle = this.lonLabelStyle_(feature2);
+              vectorContext.drawFeature(
+                feature2,
+                /** @type {import("../style/Style.js").default} */
+                Array.isArray(lonStyle) ? lonStyle[0] : lonStyle
+              );
+            }
+          }
+        if (this.parallelsLabels_ && this.latLabelStyle_ && (world === startWorld && labelsAtStart || world === endWorld && !labelsAtStart))
+          for (index2 = 0, l4 = this.parallels_.length; index2 < l4; ++index2) {
+            let lineString2 = this.parallels_[index2];
+            if (!rotation && world === 0)
+              textPoint = this.getParallelPoint_(lineString2, extent, index2);
+            else {
+              let clone6 = lineString2.clone();
+              clone6.translate(world * worldWidth, 0), clone6.rotate(-rotation, rotationCenter), textPoint = this.getParallelPoint_(clone6, rotationExtent, index2), textPoint.rotate(rotation, rotationCenter);
+            }
+            feature2 = this.featurePool_[poolIndex++], feature2.setGeometry(textPoint), feature2.set("graticule_label", this.parallelsLabels_[index2].text);
+            let latStyle = this.latLabelStyle_(feature2);
+            vectorContext.drawFeature(
+              feature2,
+              /** @type {import("../style/Style.js").default} */
+              Array.isArray(latStyle) ? latStyle[0] : latStyle
+            );
+          }
+      }
+    }
+    /**
+     * @param {import("../extent.js").Extent} extent Extent.
+     * @param {import("../coordinate.js").Coordinate} center Center.
+     * @param {number} resolution Resolution.
+     * @param {number} squaredTolerance Squared tolerance.
+     * @private
+     */
+    createGraticule_(extent, center2, resolution, squaredTolerance) {
+      let interval = this.getInterval_(resolution);
+      if (interval == -1) {
+        this.meridians_.length = 0, this.parallels_.length = 0, this.meridiansLabels_ && (this.meridiansLabels_.length = 0), this.parallelsLabels_ && (this.parallelsLabels_.length = 0);
+        return;
+      }
+      let wrapX4 = !1, projection2 = this.projection_;
+      if (!projection2 || !this.toLonLatTransform_)
+        return;
+      let projectionExtent = projection2.getExtent(), worldWidth = getWidth(projectionExtent);
+      this.getSource()?.getWrapX() && projection2.canWrapX() && !containsExtent(projectionExtent, extent) && (getWidth(extent) >= worldWidth ? (extent[0] = projectionExtent[0], extent[2] = projectionExtent[2]) : wrapX4 = !0);
+      let validCenterP = [
+        clamp(center2[0], this.minX_, this.maxX_),
+        clamp(center2[1], this.minY_, this.maxY_)
+      ], centerLonLat = this.toLonLatTransform_(validCenterP);
+      isNaN(centerLonLat[1]) && (centerLonLat[1] = Math.abs(this.maxLat_) >= Math.abs(this.minLat_) ? this.maxLat_ : this.minLat_);
+      let centerLon = clamp(centerLonLat[0], this.minLon_, this.maxLon_), centerLat = clamp(centerLonLat[1], this.minLat_, this.maxLat_), maxLines = this.maxLines_, cnt, idx, lat, lon, validExtentP = extent;
+      wrapX4 || (validExtentP = [
+        clamp(extent[0], this.minX_, this.maxX_),
+        clamp(extent[1], this.minY_, this.maxY_),
+        clamp(extent[2], this.minX_, this.maxX_),
+        clamp(extent[3], this.minY_, this.maxY_)
+      ]);
+      let validExtent = applyTransform(
+        validExtentP,
+        this.toLonLatTransform_,
+        void 0,
+        8
+      ), maxLat = validExtent[3], maxLon = validExtent[2], minLat = validExtent[1], minLon = validExtent[0];
+      if (wrapX4 || (containsCoordinate(
+        validExtentP,
+        /** @type {import("../coordinate.js").Coordinate} */
+        this.bottomLeft_
+      ) && (minLon = this.minLon_, minLat = this.minLat_), containsCoordinate(
+        validExtentP,
+        /** @type {import("../coordinate.js").Coordinate} */
+        this.bottomRight_
+      ) && (maxLon = this.maxLon_, minLat = this.minLat_), containsCoordinate(
+        validExtentP,
+        /** @type {import("../coordinate.js").Coordinate} */
+        this.topLeft_
+      ) && (minLon = this.minLon_, maxLat = this.maxLat_), containsCoordinate(
+        validExtentP,
+        /** @type {import("../coordinate.js").Coordinate} */
+        this.topRight_
+      ) && (maxLon = this.maxLon_, maxLat = this.maxLat_), maxLat = clamp(maxLat, centerLat, this.maxLat_), maxLon = clamp(maxLon, centerLon, this.maxLon_), minLat = clamp(minLat, this.minLat_, centerLat), minLon = clamp(minLon, this.minLon_, centerLon)), centerLon = Math.floor(centerLon / interval) * interval, lon = clamp(centerLon, this.minLon_, this.maxLon_), idx = this.addMeridian_(lon, minLat, maxLat, squaredTolerance, extent, 0), cnt = 0, wrapX4)
+        for (; (lon -= interval) >= minLon && cnt++ < maxLines; )
+          idx = this.addMeridian_(
+            lon,
+            minLat,
+            maxLat,
+            squaredTolerance,
+            extent,
+            idx
+          );
+      else
+        for (; lon != this.minLon_ && cnt++ < maxLines; )
+          lon = Math.max(lon - interval, this.minLon_), idx = this.addMeridian_(
+            lon,
+            minLat,
+            maxLat,
+            squaredTolerance,
+            extent,
+            idx
+          );
+      if (lon = clamp(centerLon, this.minLon_, this.maxLon_), cnt = 0, wrapX4)
+        for (; (lon += interval) <= maxLon && cnt++ < maxLines; )
+          idx = this.addMeridian_(
+            lon,
+            minLat,
+            maxLat,
+            squaredTolerance,
+            extent,
+            idx
+          );
+      else
+        for (; lon != this.maxLon_ && cnt++ < maxLines; )
+          lon = Math.min(lon + interval, this.maxLon_), idx = this.addMeridian_(
+            lon,
+            minLat,
+            maxLat,
+            squaredTolerance,
+            extent,
+            idx
+          );
+      for (this.meridians_.length = idx, this.meridiansLabels_ && (this.meridiansLabels_.length = idx), centerLat = Math.floor(centerLat / interval) * interval, lat = clamp(centerLat, this.minLat_, this.maxLat_), idx = this.addParallel_(lat, minLon, maxLon, squaredTolerance, extent, 0), cnt = 0; lat != this.minLat_ && cnt++ < maxLines; )
+        lat = Math.max(lat - interval, this.minLat_), idx = this.addParallel_(
+          lat,
+          minLon,
+          maxLon,
+          squaredTolerance,
+          extent,
+          idx
+        );
+      for (lat = clamp(centerLat, this.minLat_, this.maxLat_), cnt = 0; lat != this.maxLat_ && cnt++ < maxLines; )
+        lat = Math.min(lat + interval, this.maxLat_), idx = this.addParallel_(
+          lat,
+          minLon,
+          maxLon,
+          squaredTolerance,
+          extent,
+          idx
+        );
+      this.parallels_.length = idx, this.parallelsLabels_ && (this.parallelsLabels_.length = idx);
+    }
+    /**
+     * @param {number} resolution Resolution.
+     * @return {number} The interval in degrees.
+     * @private
+     */
+    getInterval_(resolution) {
+      if (!this.projectionCenterLonLat_ || !this.fromLonLatTransform_)
+        return -1;
+      let centerLon = this.projectionCenterLonLat_[0], centerLat = this.projectionCenterLonLat_[1], interval = -1, target = Math.pow(this.targetSize_ * resolution, 2), p12 = [], p23 = [];
+      for (let i4 = 0, ii = this.intervals_.length; i4 < ii; ++i4) {
+        let delta = clamp(this.intervals_[i4] / 2, 0, 90), clampedLat = clamp(centerLat, -90 + delta, 90 - delta);
+        if (p12[0] = centerLon - delta, p12[1] = clampedLat - delta, p23[0] = centerLon + delta, p23[1] = clampedLat + delta, this.fromLonLatTransform_(p12, p12), this.fromLonLatTransform_(p23, p23), Math.pow(p23[0] - p12[0], 2) + Math.pow(p23[1] - p12[1], 2) <= target)
+          break;
+        interval = this.intervals_[i4];
+      }
+      return interval;
+    }
+    /**
+     * @param {number} lon Longitude.
+     * @param {number} minLat Minimal latitude.
+     * @param {number} maxLat Maximal latitude.
+     * @param {number} squaredTolerance Squared tolerance.
+     * @return {LineString} The meridian line string.
+     * @param {number} index Index.
+     * @private
+     */
+    getMeridian_(lon, minLat, maxLat, squaredTolerance, index2) {
+      let flatCoordinates = meridian(
+        lon,
+        minLat,
+        maxLat,
+        /** @type {import("../proj/Projection.js").default} */
+        this.projection_,
+        squaredTolerance
+      ), lineString2 = this.meridians_[index2];
+      return lineString2 ? (lineString2.setFlatCoordinates("XY", flatCoordinates), lineString2.changed()) : (lineString2 = new LineString_default(flatCoordinates, "XY"), this.meridians_[index2] = lineString2), lineString2;
+    }
+    /**
+     * @param {LineString} lineString Meridian
+     * @param {import("../extent.js").Extent} extent Extent.
+     * @param {number} index Index.
+     * @return {Point} Meridian point.
+     * @private
+     */
+    getMeridianPoint_(lineString2, extent, index2) {
+      let flatCoordinates = lineString2.getFlatCoordinates(), bottom = 1, top = flatCoordinates.length - 1;
+      flatCoordinates[bottom] > flatCoordinates[top] && (bottom = top, top = 1);
+      let clampedBottom = Math.max(extent[1], flatCoordinates[bottom]), clampedTop = Math.min(extent[3], flatCoordinates[top]), lat = clamp(
+        extent[1] + Math.abs(extent[1] - extent[3]) * this.lonLabelPosition_,
+        clampedBottom,
+        clampedTop
+      ), coordinate = [flatCoordinates[bottom - 1] + (flatCoordinates[top - 1] - flatCoordinates[bottom - 1]) * (lat - flatCoordinates[bottom]) / (flatCoordinates[top] - flatCoordinates[bottom]), lat], point2 = this.meridiansLabels_?.[index2]?.geom;
+      return point2 ? (point2.setCoordinates(coordinate), point2) : new Point_default2(coordinate);
+    }
+    /**
+     * Get the list of meridians.  Meridians are lines of equal longitude.
+     * @return {Array<LineString>} The meridians.
+     * @api
+     */
+    getMeridians() {
+      return this.meridians_;
+    }
+    /**
+     * @param {number} lat Latitude.
+     * @param {number} minLon Minimal longitude.
+     * @param {number} maxLon Maximal longitude.
+     * @param {number} squaredTolerance Squared tolerance.
+     * @return {LineString} The parallel line string.
+     * @param {number} index Index.
+     * @private
+     */
+    getParallel_(lat, minLon, maxLon, squaredTolerance, index2) {
+      let flatCoordinates = parallel(
+        lat,
+        minLon,
+        maxLon,
+        /** @type {import("../proj/Projection.js").default} */
+        this.projection_,
+        squaredTolerance
+      ), lineString2 = this.parallels_[index2];
+      return lineString2 ? (lineString2.setFlatCoordinates("XY", flatCoordinates), lineString2.changed()) : lineString2 = new LineString_default(flatCoordinates, "XY"), lineString2;
+    }
+    /**
+     * @param {LineString} lineString Parallels.
+     * @param {import("../extent.js").Extent} extent Extent.
+     * @param {number} index Index.
+     * @return {Point} Parallel point.
+     * @private
+     */
+    getParallelPoint_(lineString2, extent, index2) {
+      let flatCoordinates = lineString2.getFlatCoordinates(), left = 0, right = flatCoordinates.length - 2;
+      flatCoordinates[left] > flatCoordinates[right] && (left = right, right = 0);
+      let clampedLeft = Math.max(extent[0], flatCoordinates[left]), clampedRight = Math.min(extent[2], flatCoordinates[right]), lon = clamp(
+        extent[0] + Math.abs(extent[0] - extent[2]) * this.latLabelPosition_,
+        clampedLeft,
+        clampedRight
+      ), coordinate1 = flatCoordinates[left + 1] + (flatCoordinates[right + 1] - flatCoordinates[left + 1]) * (lon - flatCoordinates[left]) / (flatCoordinates[right] - flatCoordinates[left]), coordinate = [lon, coordinate1], point2 = this.parallelsLabels_?.[index2]?.geom;
+      return point2 ? (point2.setCoordinates(coordinate), point2) : new Point_default2(coordinate);
+    }
+    /**
+     * Get the list of parallels.  Parallels are lines of equal latitude.
+     * @return {Array<LineString>} The parallels.
+     * @api
+     */
+    getParallels() {
+      return this.parallels_;
+    }
+    /**
+     * @param {import("../proj/Projection.js").default} projection Projection.
+     * @private
+     */
+    updateProjectionInfo_(projection2) {
+      let epsg4326Projection = get4("EPSG:4326");
+      if (!epsg4326Projection)
+        return;
+      let worldExtent = projection2.getWorldExtent();
+      this.maxLat_ = worldExtent[3], this.maxLon_ = worldExtent[2], this.minLat_ = worldExtent[1], this.minLon_ = worldExtent[0];
+      let toLonLatTransform = getTransform(projection2, epsg4326Projection);
+      if (!toLonLatTransform)
+        return;
+      if (this.minLon_ < this.maxLon_)
+        this.toLonLatTransform_ = toLonLatTransform;
+      else {
+        let split = this.minLon_ + this.maxLon_ / 2;
+        this.maxLon_ += 360, this.toLonLatTransform_ = function(coordinates2, output, dimension) {
+          dimension = dimension || 2;
+          let lonLatCoordinates = toLonLatTransform(
+            coordinates2,
+            output,
+            dimension
+          );
+          for (let i4 = 0, l4 = lonLatCoordinates.length; i4 < l4; i4 += dimension)
+            lonLatCoordinates[i4] < split && (lonLatCoordinates[i4] += 360);
+          return lonLatCoordinates;
+        };
+      }
+      let fromLonLatTransform = getTransform(epsg4326Projection, projection2);
+      if (!fromLonLatTransform)
+        return;
+      this.fromLonLatTransform_ = fromLonLatTransform;
+      let worldExtentP = applyTransform(
+        [this.minLon_, this.minLat_, this.maxLon_, this.maxLat_],
+        fromLonLatTransform,
+        void 0,
+        8
+      );
+      this.minX_ = worldExtentP[0], this.maxX_ = worldExtentP[2], this.minY_ = worldExtentP[1], this.maxY_ = worldExtentP[3], this.bottomLeft_ = fromLonLatTransform([this.minLon_, this.minLat_]), this.bottomRight_ = fromLonLatTransform([this.maxLon_, this.minLat_]), this.topLeft_ = fromLonLatTransform([this.minLon_, this.maxLat_]), this.topRight_ = fromLonLatTransform([this.maxLon_, this.maxLat_]);
+      let toLonLat2 = this.toLonLatTransform_;
+      toLonLat2 && (this.projectionCenterLonLat_ = toLonLat2(getCenter(projection2.getExtent())), isNaN(this.projectionCenterLonLat_[1]) && (this.projectionCenterLonLat_[1] = Math.abs(this.maxLat_) >= Math.abs(this.minLat_) ? this.maxLat_ : this.minLat_), this.projection_ = projection2);
+    }
+  }, Graticule_default = Graticule;
+
+  // FloeAgent/Modules/FloeGISKit/Web/input.js
+  var pointerEvents = /* @__PURE__ */ new Set(["pointerdown", "pointermove", "pointerdrag", "pointerup"]), clickEvents = /* @__PURE__ */ new Set(["click", "singleclick", "dblclick"]), gis2DViewOptions = { enableRotation: !1, rotation: 0 };
+  function gisInputPolicy({ fingerDrawing = () => !1, editing = () => !1 } = {}) {
+    let activeCount = 0, multiple = !1, suppressClick = !1, events = /* @__PURE__ */ new WeakMap(), observe = (event) => {
+      if (events.has(event)) return events.get(event);
+      let original = event.originalEvent ?? {}, pointer = pointerEvents.has(event.type), click = clickEvents.has(event.type), count = pointer && Array.isArray(event.activePointers) ? event.activePointers.length : activeCount;
+      event.type === "pointerdown" && activeCount === 0 && count <= 1 && (suppressClick = !1), count > 1 && (multiple = !0, suppressClick = !0);
+      let navigationGesture = multiple || click && suppressClick, device = original.pointerType, primary = original.isPrimary !== !1 && (original.button === 0 || ["pointermove", "pointerdrag"].includes(event.type) && original.button === -1), hardware = device === "mouse" || device === "pen" || device === "touch" && fingerDrawing(), result = { edit: !!(editing() && hardware && primary && !navigationGesture), navigationGesture, click: !navigationGesture };
+      return events.set(event, result), pointer && (activeCount = count, event.type === "pointerup" && count === 0 && (multiple = !1)), result;
+    };
+    return {
+      observe,
+      cancelEvent: (event) => events.set(event, { edit: !1, navigationGesture: !0, click: !1 }),
+      edit: (event) => observe(event).edit,
+      click: (event) => observe(event).click,
+      navigate: (event) => {
+        let state = observe(event);
+        return noModifierKeys(event) && (state.navigationGesture || !state.edit) && (event.originalEvent?.button === 0 || event.activePointers?.length > 1);
+      }
+    };
+  }
+  function gisNavigationInteractions(input) {
+    let interactions = defaults2({ dragPan: !1, altShiftDragRotate: !1, pinchRotate: !1 }), pan2 = new DragPan_default({ condition: input.navigate }), handle = pan2.handleEvent.bind(pan2);
+    return pan2.handleEvent = (event) => (input.observe(event), handle(event)), interactions.push(pan2), interactions;
+  }
+  function gisDrawConditions(input) {
+    return { condition: (event) => input.edit(event) && noModifierKeys(event), freehandCondition: (event) => input.edit(event) && shiftKeyOnly(event), finishCondition: input.edit };
+  }
+  function gisModifyConditions(input) {
+    return { condition: (event) => input.edit(event) && primaryAction(event), deleteCondition: (event) => input.edit(event) && singleClick(event) && altKeyOnly(event) };
+  }
+  function gisTranslateConditions(input) {
+    return { condition: (event) => input.edit(event) && primaryAction(event) };
+  }
+  function guardGISEditInteraction(interaction, input, { start: start2, end, draw = !1 } = {}) {
+    let pointerGesture = !1, cancelling = !1, originals = /* @__PURE__ */ new Map(), handle = interaction.handleEvent.bind(interaction);
+    return start2 && interaction.on(start2, (event) => {
+      for (let feature2 of event.features.getArray()) originals.has(feature2) || originals.set(feature2, feature2.getGeometry()?.clone());
+    }), end && interaction.on(end, () => {
+      cancelling || originals.clear();
+    }), interaction.handleEvent = (event) => {
+      if (!pointerEvents.has(event.type) && !clickEvents.has(event.type)) return handle(event);
+      if (input.edit(event)) {
+        let result = handle(event);
+        return event.type === "pointerdown" && (pointerGesture = !0), event.type === "pointerup" && event.activePointers?.length === 0 && (pointerGesture = !1), result;
+      }
+      if (pointerGesture) {
+        cancelling = !0;
+        try {
+          let up = new MapBrowserEvent_default("pointerup", event.map, event.originalEvent, !1, event.frameState ?? void 0, []);
+          up.pixel = event.pixel.slice(), up.coordinate = event.coordinate.slice(), input.cancelEvent(up), handle(up), draw && interaction.abortDrawing();
+          for (let [feature2, geometry] of originals) geometry && feature2.setGeometry(geometry);
+        } finally {
+          originals.clear(), pointerGesture = !1, cancelling = !1;
+        }
+      }
+      return !0;
+    }, { interaction, canCommit: () => !cancelling };
+  }
+  function gisVertexClick(modify, input, event, action, onInsert) {
+    return !input.edit(event) || !["insert", "delete"].includes(action) ? !1 : (action === "delete" ? modify.removePoint(event.coordinate) : modify.insertPoint(event.coordinate) && onInsert?.(), !0);
+  }
+  function insetGraticuleLabels(grid, styles) {
+    let render2;
+    grid.on("prerender", (event) => {
+      render2 = event;
+    });
+    for (let [key2, base] of [["lonLabelStyle_", styles[0]], ["latLabelStyle_", styles[1]]]) {
+      let original = grid[key2], offset = [base.getOffsetX(), base.getOffsetY()];
+      if (typeof original != "function") throw new Error("GIS graticule label adapter requires OL 10.11.0 label callbacks");
+      grid[key2] = (feature2) => {
+        let style = original(feature2), text3 = style.getText();
+        if (!text3) throw new Error("GIS graticule label adapter requires the pinned Text style");
+        text3.setOffsetX(offset[0]), text3.setOffsetY(offset[1]);
+        let state = render2?.frameState;
+        if (!state) return style;
+        let size = state.size;
+        if (!Array.isArray(size) || size.length !== 2 || !size.every(Number.isFinite)) throw new Error("GIS graticule label adapter received an invalid frame size");
+        if (size[0] <= 0 || size[1] <= 0) return style;
+        let transform3 = state.coordinateToPixelTransform, context = render2.context, point2 = feature2.getGeometry();
+        if (!Array.isArray(transform3) || transform3.length !== 6 || !transform3.every(Number.isFinite) || point2?.getType() !== "Point" || !point2.getCoordinates().every(Number.isFinite)) throw new Error("GIS graticule label adapter requires the frame transform and OL Point");
+        if (typeof context?.measureText != "function" || typeof context.save != "function" || typeof context.restore != "function" || text3.getRotation()) throw new Error("GIS graticule label adapter requires Canvas font metrics and unrotated Text");
+        let measured;
+        context.save();
+        try {
+          context.font = text3.getFont(), context.textAlign = text3.getTextAlign() ?? "center", context.textBaseline = text3.getTextBaseline() ?? "middle", measured = context.measureText(text3.getText());
+        } finally {
+          context.restore();
+        }
+        let bounds = [measured.actualBoundingBoxLeft, measured.actualBoundingBoxAscent, measured.actualBoundingBoxRight, measured.actualBoundingBoxDescent];
+        if (!bounds.every(Number.isFinite)) throw new Error("GIS graticule label adapter requires actual Canvas bounding-box metrics");
+        let scale7 = text3.getScaleArray(), halo = (text3.getStroke()?.getWidth() ?? 0) / 2, pixel = apply4(transform3, point2.getCoordinates().slice()), clamp3 = (value, min, max2) => min <= max2 ? Math.max(min, Math.min(max2, value)) : (min + max2) / 2;
+        for (let axis of [0, 1]) {
+          let before = (bounds[axis] + halo) * scale7[axis], after = (bounds[axis + 2] + halo) * scale7[axis], inset = Math.min(8, Math.max(0, (size[axis] - before - after) / 2)), value = clamp3(pixel[axis] + offset[axis], inset + before, size[axis] - inset - after) - pixel[axis];
+          axis === 0 ? text3.setOffsetX(value) : text3.setOffsetY(value);
+        }
+        return style;
+      };
+    }
+    return grid;
+  }
+  function gisGraticule() {
+    let ink = () => ({ font: "12px Calibri,sans-serif", fill: new Fill_default({ color: "rgba(0,0,0,1)" }), stroke: new Stroke_default({ color: "rgba(255,255,255,1)", width: 3 }) }), lon = new Text_default({ ...ink(), textBaseline: "bottom", offsetY: -8 }), lat = new Text_default({ ...ink(), textAlign: "right", offsetX: -8 });
+    return insetGraticuleLabels(new Graticule_default({
+      strokeStyle: new Stroke_default({ color: "#8192a433", width: 1 }),
+      showLabels: !0,
+      wrapX: !1,
+      lonLabelPosition: 0,
+      latLabelPosition: 1,
+      lonLabelStyle: lon,
+      latLabelStyle: lat
+    }), [lon, lat]);
+  }
+
   // FloeAgent/Modules/FloeGISKit/Web/view.js
   var format = new GeoJSON_default(), editorValue = (layer, key2, value) => layer.fields?.find((f3) => f3.name === key2)?.type === "json" || typeof value == "object" ? JSON.stringify(value) : String(value ?? "");
   function olStyle(layer, selected) {
@@ -107023,7 +107143,7 @@ void main() {
   var GISView = class {
     constructor(engine2) {
       this.e = engine2;
-      for (let key2 of ["mode", "tool", "page", "multiselect", "snapping", "terrainFactor", "filter", "sort", "sortDescending", "onlySelected", "vertexAction", "drawing"]) Object.defineProperty(this, key2, { get: () => gisUI(engine2)[key2], set: (value) => {
+      for (let key2 of ["mode", "tool", "page", "multiselect", "snapping", "fingerDrawing", "terrainFactor", "filter", "sort", "sortDescending", "onlySelected", "vertexAction", "drawing"]) Object.defineProperty(this, key2, { get: () => gisUI(engine2)[key2], set: (value) => {
         gisUI(engine2)[key2] = value, engine2.notifyPresentation?.();
       } });
       this.sources = new globalThis.Map(), this.olLayers = new globalThis.Map(), this.resources = [], this.generation = 0;
@@ -107206,9 +107326,9 @@ void main() {
         return;
       }
       this.resources = resources, this.sources = sources, this.olLayers = olLayers;
-      let saved = e2.liveView ?? e2.state.view, view2 = new View_default({ projection: projection2, center: transformPosition(saved.center ?? [0, 20], "EPSG:4326", projection2), zoom: saved.zoom ?? 2 }), map = this.map = new Map_default2({ target: surface, layers, view: view2, controls: [] });
+      let current = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), source = current?.kind === "vector" ? sources.get(current.id) : null, input = gisInputPolicy({ fingerDrawing: () => this.fingerDrawing, editing: () => !!(source && current && !current.locked && this.tool !== "select") }), saved = e2.liveView ?? e2.state.view, view2 = new View_default({ ...gis2DViewOptions, projection: projection2, center: transformPosition(saved.center ?? [0, 20], "EPSG:4326", projection2), zoom: saved.zoom ?? 2 }), map = this.map = new Map_default2({ target: surface, layers, view: view2, controls: [], interactions: gisNavigationInteractions(input) });
       this.mapState = e2.state;
-      let grid = new Graticule_default({ strokeStyle: new Stroke_default({ color: "#8192a433", width: 1 }), showLabels: !0, wrapX: !1 });
+      let grid = gisGraticule();
       grid.setMap(map), this.resources.push(() => grid.setMap(null));
       let resize = () => {
         generation === this.generation && map.updateSize();
@@ -107218,7 +107338,7 @@ void main() {
         let p5 = event.coordinate;
         e2.status(`${p5[0].toFixed(projection2 === "EPSG:4326" ? 5 : 2)}, ${p5[1].toFixed(projection2 === "EPSG:4326" ? 5 : 2)}`);
       });
-      let current = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), source = current?.kind === "vector" ? sources.get(current.id) : null, button = (id, label, handler) => {
+      let button = (id, label, handler) => {
         e2.nativeChrome || tools.append(element("button", { text: label, class: this.tool === id ? "active" : "", onclick: handler ?? (() => {
           this.tool = id, this.render().catch((error2) => e2.status(error2.message, !0));
         }) }));
@@ -107228,9 +107348,11 @@ void main() {
         this.multiselect = !this.multiselect, this.render().catch((error2) => e2.status(error2.message, !0));
       }), button("snap", this.snapping ? t3("\u6355\u6349\uFF1A\u5F00", "Snap: on") : t3("\u6355\u6349\uFF1A\u5173", "Snap: off"), () => {
         this.snapping = !this.snapping, this.render().catch((error2) => e2.status(error2.message, !0));
-      }), button("fit", t3("\u7F29\u653E\u81F3\u56FE\u5C42", "Fit layer"), () => {
+      }), button("fingerDrawing", this.fingerDrawing ? t3("\u624B\u6307\u7ED8\u56FE\uFF1A\u5F00", "Finger drawing: on") : t3("\u624B\u6307\u7ED8\u56FE\uFF1A\u5173", "Finger drawing: off"), () => e2.perform("gis.ui.options", { fingerDrawing: !this.fingerDrawing }).catch(() => {
+      })), button("fit", t3("\u7F29\u653E\u81F3\u56FE\u5C42", "Fit layer"), () => {
         source && !source.isEmpty() ? view2.fit(source.getExtent(), { padding: [30, 30, 30, 30], maxZoom: 18 }) : current?.bounds && view2.fit(projectedBounds(current.bounds, current.kind === "tiles" ? "EPSG:4326" : current.crs, projection2), { padding: [20, 20, 20, 20] });
       }), this.tool === "select" && map.on("singleclick", (event) => {
+        if (!input.click(event)) return;
         let hit;
         if (map.forEachFeatureAtPixel(event.pixel, (f3) => {
           !hit && f3.get("_floeLayer") && (hit = f3);
@@ -107242,30 +107364,34 @@ void main() {
         let toChange = (features) => features.map((f3) => ({ layer: current.id, feature: f3.getId(), geometry: format.writeGeometryObject(f3.getGeometry()) })).map((c5) => ({ ...c5, geometry: transformGeometry(c5.geometry, projection2, current.crs) })), commit = (features) => e2.perform("feature.geometries", { changes: toChange(features) }).catch(() => {
         });
         if (["Point", "LineString", "Polygon"].includes(this.tool)) {
-          let draw = this.draw = new Draw_default({ type: this.tool, wrapX: !1 }), drawing = (active) => {
+          let draw = this.draw = new Draw_default({ type: this.tool, wrapX: !1, ...gisDrawConditions(input) }), guard = guardGISEditInteraction(draw, input, { draw: !0 }), drawing = (active) => {
             this.drawing = active, e2.nativeChrome && e2.perform("gis.ui.drawing", { active }).catch(() => {
             });
           };
           draw.on("drawstart", () => drawing(!0)), draw.on("drawabort", () => drawing(!1)), draw.on("drawend", (event) => {
-            drawing(!1);
+            if (drawing(!1), !guard.canCommit()) return;
             let geometry = transformGeometry(format.writeGeometryObject(event.feature.getGeometry()), projection2, current.crs);
             e2.perform("feature.add", { layer: current.id, geometry: geometry.type, coordinates: geometry.coordinates, properties: {} }).catch(() => {
             });
           }), map.addInteraction(draw), this.tool !== "Point" && button("finish", t3("\u5B8C\u6210\u7ED8\u5236", "Finish drawing"), () => draw.finishDrawing()), button("abort", t3("\u53D6\u6D88\u7ED8\u5236", "Cancel drawing"), () => draw.abortDrawing());
         } else if (this.tool === "modify") {
-          let ids = new Set((e2.selection?.features ?? []).map(String)), features = source.getFeatures().filter((f3) => !ids.size || ids.has(String(f3.getId()))), modify = this.modify = new Modify_default({ features: new Collection_default(features), pixelTolerance: 14 });
-          modify.on("modifyend", (event) => commit(event.features.getArray())), map.addInteraction(modify), button("insertVertex", t3("\u63D2\u5165\u8282\u70B9", "Insert vertex"), () => {
+          let ids = new Set((e2.selection?.features ?? []).map(String)), features = source.getFeatures().filter((f3) => !ids.size || ids.has(String(f3.getId()))), modify = this.modify = new Modify_default({ features: new Collection_default(features), pixelTolerance: 14, ...gisModifyConditions(input) }), guard = guardGISEditInteraction(modify, input, { start: "modifystart", end: "modifyend" });
+          modify.on("modifyend", (event) => {
+            guard.canCommit() && commit(event.features.getArray());
+          }), map.addInteraction(modify), button("insertVertex", t3("\u63D2\u5165\u8282\u70B9", "Insert vertex"), () => {
             this.vertexAction = "insert", e2.status(t3("\u70B9\u6309\u7EBF\u6BB5\u63D2\u5165\u8282\u70B9\u3002", "Tap a segment to insert a vertex."));
           }), button("removeVertex", t3("\u5220\u9664\u8282\u70B9", "Delete vertex"), () => {
             this.vertexAction = "delete", e2.status(t3("\u70B9\u6309\u8981\u5220\u9664\u7684\u8282\u70B9\u3002", "Tap the vertex to delete."));
           }), map.on("singleclick", (event) => {
-            this.vertexAction === "delete" ? (modify.removePoint(event.coordinate), this.vertexAction = null) : this.vertexAction === "insert" && (modify.insertPoint(event.coordinate), this.vertexAction = null);
+            gisVertexClick(modify, input, event, this.vertexAction, () => commit(features)) && (this.vertexAction = null);
           });
         } else if (this.tool === "translate") {
-          let ids = new Set((e2.selection?.features ?? []).map(String)), selected = source.getFeatures().filter((f3) => ids.has(String(f3.getId()))), translate2 = new Translate_default({ ...selected.length ? { features: new Collection_default(selected) } : { filter: (f3) => f3.get("_floeLayer") === current.id }, hitTolerance: 12 });
+          let ids = new Set((e2.selection?.features ?? []).map(String)), selected = source.getFeatures().filter((f3) => ids.has(String(f3.getId()))), translate2 = new Translate_default({ ...selected.length ? { features: new Collection_default(selected) } : { filter: (f3) => f3.get("_floeLayer") === current.id }, hitTolerance: 12, ...gisTranslateConditions(input) }), guard = guardGISEditInteraction(translate2, input, { start: "translatestart", end: "translateend" });
           translate2.on("translatestart", (event) => {
             this.chooseSelection({ layer: current.id, features: event.features.getArray().map((f3) => f3.getId()) });
-          }), translate2.on("translateend", (event) => commit(event.features.getArray())), map.addInteraction(translate2);
+          }), translate2.on("translateend", (event) => {
+            guard.canCommit() && commit(event.features.getArray());
+          }), map.addInteraction(translate2);
         }
         if (this.snapping) for (let [id, snapSource] of sources) e2.state.layers.find((l4) => l4.id === id)?.visible && map.addInteraction(new Snap_default({ source: snapSource, pixelTolerance: 14 }));
       }

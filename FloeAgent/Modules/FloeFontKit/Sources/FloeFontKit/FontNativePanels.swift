@@ -649,41 +649,60 @@ private func fontMoveNodes(_ original: [[FontNode]], ids: Set<String>, delta: CG
     @State private var addSelection = false
     @State private var drawing: [FontNode] = []
     @State private var pinching = false
+    @State private var pointerRecords: [SpatialEventCollection.Event.ID: FontOutlinePointer] = [:]
+    @State private var editingPointer: SpatialEventCollection.Event.ID?
+    @State private var navigation: FontOutlineNavigation?
+    @State private var fingerNavigationOnly = false
+    @State private var inputEpoch: UInt64 = 0
+    @State private var ignoredPointers: Set<SpatialEventCollection.Event.ID> = []
     @State private var fittedGlyph: EditorJSON = .null
     @FocusState private var canvasFocused: Bool
     private var state: EditorJSON { controller.presentation }
     private var glyph: EditorJSON { state["glyph"] }
     private var contours: [[FontNode]] { glyph["contours"].array.map { $0.array.map(FontNode.init) } }
     private var tool: String { state["ui"]["tool"].string ?? "select" }
+    private var fingerDrawing: Bool { state["ui"]["fingerDrawing"].bool ?? false }
     private var canvasKey: String { (state["masterID"].string ?? "default") + ":" + glyph["id"].fontText }
     var body: some View {
         GeometryReader { proxy in
+            let gestureEpoch = inputEpoch
             let viewport = FontViewport(size: proxy.size, info: state["info"], glyph: fittedGlyph == .null ? glyph : fittedGlyph, zoom: zoom * magnification, pan: pan)
             Canvas { context, size in draw(context: &context, size: size, viewport: viewport) }
                 .background(.background).contentShape(Rectangle())
                 .focusable().focused($canvasFocused).onKeyPress { press in keyPress(press) }
-                .gesture(DragGesture(minimumDistance: 0).onChanged { value in changed(value, viewport: viewport) }.onEnded { value in ended(value, viewport: viewport) })
-                .simultaneousGesture(MagnificationGesture().updating($magnification) { value, state, _ in state = value }.onChanged { _ in pinching = true; drag = nil; draft = nil }.onEnded { value in zoom = min(15, max(0.2, zoom * value)); pinching = false; drag = nil; draft = nil })
+                .gesture(SpatialEventGesture(coordinateSpace: .local)
+                    .onChanged { events in spatial(events, viewport: viewport, size: proxy.size, epoch: gestureEpoch) }
+                    .onEnded { events in spatial(events, viewport: viewport, size: proxy.size, epoch: gestureEpoch); if gestureEpoch == inputEpoch { resetPointers() } })
+                .id(gestureEpoch)
+                #if os(macOS)
+                .simultaneousGesture(MagnificationGesture().updating($magnification) { value, state, _ in state = value }.onChanged { _ in if !pinching { cancelCurrentPointers() }; pinching = true }.onEnded { value in zoom = min(15, max(0.2, zoom * value)); pinching = false; navigation = nil })
+                #endif
                 .overlay(alignment: .topLeading) { canvasControls }
                 .accessibilityLabel(EditorText.t("字形轮廓画布", "Glyph outline canvas"))
                 .onAppear { selection = Set(state["selectedPoints"].fontStrings); fittedGlyph = glyph }
-        }.clipped().onChange(of: canvasKey) { _, _ in zoom = 1; pan = .zero; drawing = []; draft = nil; drag = nil; selection = []; fittedGlyph = glyph }
+        }.clipped().onChange(of: canvasKey) { _, _ in invalidateInput(); zoom = 1; pan = .zero; drawing = []; selection = []; fittedGlyph = glyph }
             .onChange(of: state["selectedPoints"]) { _, value in if drag == nil { selection = Set(value.fontStrings) } }
-            .onChange(of: tool) { _, _ in drawing = []; drag = nil; draft = nil }
+            .onChange(of: tool) { _, _ in invalidateInput(); drawing = [] }
+            .onChange(of: fingerDrawing) { _, _ in invalidateInput() }
     }
     private var canvasControls: some View {
-        HStack(spacing: 10) {
+        ScrollView(.horizontal) {
+          HStack(spacing: 10) {
             Button { zoom = max(0.2, zoom / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }.accessibilityLabel(EditorText.t("缩小", "Zoom out"))
             Button { zoom = min(15, zoom * 1.25) } label: { Image(systemName: "plus.magnifyingglass") }.accessibilityLabel(EditorText.t("放大", "Zoom in"))
             Button("\(Int(zoom * 100))%") { zoom = 1; pan = .zero; fittedGlyph = glyph }.monospacedDigit().accessibilityLabel(EditorText.t("适合画布", "Fit canvas"))
             Toggle(EditorText.t("追加选择", "Add selection"), isOn: $addSelection).toggleStyle(.button)
+            Toggle(EditorText.t("手指绘图", "Finger drawing"), isOn: Binding(get: { fingerDrawing }, set: {
+                controller.runCommand("font.ui.tool", arguments: .object(["fingerDrawing": .bool($0)]))
+            })).toggleStyle(.button).accessibilityIdentifier("font.outline.fingerDrawing")
             Button { selection = Set(contours.flatMap { $0 }.map(\.id)); commitSelection() } label: { Image(systemName: "checkmark.square") }.accessibilityLabel(EditorText.t("全选节点", "Select all points"))
             if tool == "pen" {
                 Button(EditorText.t("闭合", "Close")) { finishDrawing(closed: true) }.disabled(!canCloseDrawing)
                 Button(EditorText.t("完成开放轮廓", "Finish open")) { finishDrawing(closed: false) }.disabled(!canFinishDrawing)
                 Button { drawing = [] } label: { Image(systemName: "xmark") }.accessibilityLabel(EditorText.t("取消绘制", "Cancel drawing"))
             }
-        }.buttonStyle(.borderless).controlSize(.small).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10)).padding(10)
+          }.buttonStyle(.borderless).controlSize(.small).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        }.scrollIndicators(.hidden).fixedSize(horizontal: false, vertical: true).padding(10)
     }
     private var canFinishDrawing: Bool { drawing.count > 1 && drawing.last?.type != "offcurve" }
     private var canCloseDrawing: Bool { drawing.count > 1 && drawing.reversed().prefix(while: { $0.type == "offcurve" }).count <= 2 }
@@ -739,7 +758,92 @@ private func fontMoveNodes(_ original: [[FontNode]], ids: Set<String>, delta: CG
             context.fill(path, with: .color(.accentColor.opacity(0.1))); context.stroke(path, with: .color(.accentColor), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
         }
     }
-    private func changed(_ value: DragGesture.Value, viewport: FontViewport) {
+    /// SpatialEventGesture is available on iOS18+/macOS15, unlike DragGesture
+    /// inputKinds (27+). It keeps the iOS26 path on the same native canvas.
+    private func spatial(_ events: SpatialEventCollection, viewport: FontViewport, size: CGSize, epoch: UInt64) {
+        // A recreated gesture cannot finish a draft from an older glyph,
+        // master, tool or input mode. Drain retired IDs without reusing them.
+        let retired = ignoredPointers
+        for event in events where event.phase == .ended || event.phase == .cancelled { ignoredPointers.remove(event.id) }
+        guard epoch == inputEpoch else { return }
+        var terminals: [SpatialEventCollection.Event.ID: (FontOutlinePointer, Bool)] = [:]
+        var fingersSeen = Set(pointerRecords.filter { $0.value.finger }.map(\.key))
+        for event in events {
+            if retired.contains(event.id) { continue }
+            let finger = event.kind == .touch
+            if finger { fingersSeen.insert(event.id) }
+            let editable: Bool
+            switch event.kind {
+            case .pointer: editable = true
+            #if os(iOS)
+            case .pencil: editable = true
+            #endif
+            case .touch: editable = fingerDrawing
+            default: editable = false
+            }
+            var pointer = pointerRecords[event.id] ?? FontOutlinePointer(start: event.location, location: event.location,
+                finger: finger, editable: editable, timestamp: event.timestamp)
+            pointer.location = event.location
+            switch event.phase {
+            case .active: pointerRecords[event.id] = pointer
+            case .ended, .cancelled:
+                terminals[event.id] = (pointer, event.phase == .cancelled); pointerRecords[event.id] = nil
+            default: break
+            }
+        }
+        let fingers = pointerRecords.filter { $0.value.finger }
+        let precise = pointerRecords.filter { !$0.value.finger && $0.value.editable }
+        if fingersSeen.count > 1 || !precise.isEmpty && !fingers.isEmpty { fingerNavigationOnly = true }
+        guard !controller.isWorking, !pinching else { cancelCurrentPointers(); return }
+        if let id = editingPointer, let (pointer, cancelled) = terminals[id] {
+            if cancelled || pointer.finger && fingerNavigationOnly { cancelOutlineDrag() }
+            else { ended(pointer.value, viewport: viewport) }
+            editingPointer = nil
+        }
+        // Pencil/mouse owns its stroke; concurrent fingers cannot move its
+        // viewport or become an edit after the precise pointer is lifted.
+        let next = editingPointer.flatMap { id in precise[id].map { (id, $0) } }
+            ?? precise.min(by: { $0.value.timestamp < $1.value.timestamp }).map { ($0.key, $0.value) }
+            ?? (fingers.count == 1 && !fingerNavigationOnly ? fingers.first.flatMap { $0.value.editable ? ($0.key, $0.value) : nil } : nil)
+        if let (id, pointer) = next {
+            if editingPointer != id { cancelOutlineDrag(); editingPointer = id }
+            navigation = nil; changed(pointer.value, viewport: viewport)
+        } else if !fingers.isEmpty {
+            cancelOutlineDrag(); editingPointer = nil
+            let values = fingers.values.map(\.location), center = CGPoint(
+                x: values.reduce(0) { $0 + $1.x } / CGFloat(values.count), y: values.reduce(0) { $0 + $1.y } / CGFloat(values.count))
+            let distance = values.count > 1 ? hypot(values[0].x - values[1].x, values[0].y - values[1].y) : 0
+            let ids = Set(fingers.keys)
+            if navigation?.ids != ids {
+                navigation = FontOutlineNavigation(ids: ids, anchor: viewport.font(center), distance: distance, zoom: zoom)
+            }
+            if let navigation {
+                let scale = navigation.distance > 0 && distance > 0 ? distance / navigation.distance : 1
+                zoom = min(15, max(0.2, navigation.zoom * scale))
+                let base = FontViewport(size: size, info: state["info"], glyph: fittedGlyph == .null ? glyph : fittedGlyph, zoom: zoom)
+                let anchor = base.screen(navigation.anchor.x, navigation.anchor.y)
+                pan = CGSize(width: center.x - anchor.x, height: center.y - anchor.y)
+            }
+        } else {
+            navigation = nil
+        }
+        if fingers.isEmpty { fingerNavigationOnly = false }
+    }
+    private func cancelOutlineDrag() {
+        if drag != nil { selection = Set(state["selectedPoints"].fontStrings) }
+        drag = nil; draft = nil
+    }
+    private func cancelCurrentPointers() {
+        ignoredPointers.formUnion(pointerRecords.keys)
+        resetPointers()
+    }
+    private func invalidateInput() {
+        cancelCurrentPointers(); inputEpoch &+= 1
+    }
+    private func resetPointers() {
+        cancelOutlineDrag(); pointerRecords = [:]; editingPointer = nil; navigation = nil; fingerNavigationOnly = false
+    }
+    private func changed(_ value: FontOutlineDragValue, viewport: FontViewport) {
         guard !controller.isWorking, !pinching else { return }
         canvasFocused = true
         let position = viewport.font(value.location, snap: state["ui"]["snap"].fontNumber)
@@ -760,7 +864,7 @@ private func fontMoveNodes(_ original: [[FontNode]], ids: Set<String>, delta: CG
         if current.kind == "pan" { pan = CGSize(width: current.pan.width + value.translation.width, height: current.pan.height + value.translation.height) }
         if current.kind == "points" { draft = fontMoveNodes(current.original, ids: current.ids, delta: CGPoint(x: position.x - current.start.x, y: position.y - current.start.y)) }
     }
-    private func ended(_ value: DragGesture.Value, viewport: FontViewport) {
+    private func ended(_ value: FontOutlineDragValue, viewport: FontViewport) {
         defer { drag = nil; draft = nil }
         guard !pinching, let current = drag else { return }
         if current.kind == "points" {
@@ -809,6 +913,25 @@ private func fontMoveNodes(_ original: [[FontNode]], ids: Set<String>, delta: CG
     }
 }
 
+private struct FontOutlineDragValue {
+    let startLocation: CGPoint
+    let location: CGPoint
+    var translation: CGSize { CGSize(width: location.x - startLocation.x, height: location.y - startLocation.y) }
+}
+private struct FontOutlinePointer {
+    let start: CGPoint
+    var location: CGPoint
+    let finger: Bool
+    let editable: Bool
+    let timestamp: TimeInterval
+    var value: FontOutlineDragValue { .init(startLocation: start, location: location) }
+}
+private struct FontOutlineNavigation {
+    let ids: Set<SpatialEventCollection.Event.ID>
+    let anchor: CGPoint
+    let distance: CGFloat
+    let zoom: CGFloat
+}
 private struct FontCanvasDrag {
     let kind: String
     let start: CGPoint

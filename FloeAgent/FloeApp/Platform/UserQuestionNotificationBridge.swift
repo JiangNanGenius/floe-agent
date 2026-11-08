@@ -118,6 +118,7 @@ private struct UserQuestionNotificationCategories: @unchecked Sendable {
 
 public enum UserQuestionNotificationAction: Sendable, Equatable {
     case text(String)
+    case customText(String)
     case option(String)
     case open
     case dismiss
@@ -136,6 +137,7 @@ public struct UserQuestionNotificationResponse: Sendable, Equatable {
 @MainActor
 public final class UserQuestionNotificationBridge {
     public nonisolated static let textActionIdentifier = "uq.answer.text"
+    public nonisolated static let customTextActionIdentifier = "uq.answer.custom"
     public nonisolated static let optionActionPrefix = "uq.answer.option."
 
     private let center: UNUserNotificationCenter
@@ -244,7 +246,7 @@ public final class UserQuestionNotificationBridge {
         // multi-select question opens the inline card so the person can make
         // the full selection; it never pretends one tapped option is a
         // complete multi-select answer.
-        if question.selectionMode == .single, question.options.count <= 4 {
+        if question.selectionMode == .single, question.options.count <= 3 {
             for option in question.options {
                 actions.append(UNNotificationAction(
                     identifier: Self.optionActionPrefix + option.id,
@@ -253,19 +255,16 @@ public final class UserQuestionNotificationBridge {
                 ))
             }
         }
-        // A text response is a complete answer only for a text-only
-        // question. For an option question, typing a note without selecting
-        // an option is incomplete; the notification opens the inline card
-        // instead of sending a guaranteed-invalid answer.
-        if question.isTextOnly {
-            actions.append(UNTextInputNotificationAction(
-                identifier: Self.textActionIdentifier,
-                title: FloeL10n.l("user_question.notification.answer"),
+        // Keep the final system action available for an actual custom answer;
+        // note permission cannot remove it. Larger/multiple selections still
+        // open the card when the notification itself is tapped.
+        actions.append(UNTextInputNotificationAction(
+                identifier: question.isTextOnly ? Self.textActionIdentifier : Self.customTextActionIdentifier,
+                title: FloeL10n.l(question.isTextOnly ? "user_question.notification.answer" : "user_question.card.custom"),
                 options: [.authenticationRequired],
                 textInputButtonTitle: FloeL10n.l("user_question.notification.send"),
-                textInputPlaceholder: FloeL10n.l("user_question.notification.placeholder")
+                textInputPlaceholder: FloeL10n.l(question.isTextOnly ? "user_question.notification.placeholder" : "user_question.card.custom_placeholder")
             ))
-        }
         return UNNotificationCategory(
             identifier: payload.categoryIdentifier,
             actions: actions,
@@ -302,6 +301,9 @@ public final class UserQuestionNotificationBridge {
         } else if actionIdentifier == textActionIdentifier {
             let text = (response as? UNTextInputNotificationResponse)?.userText ?? ""
             action = .text(String(text.prefix(UserQuestionRequest.maximumFreeTextCharacters)))
+        } else if actionIdentifier == customTextActionIdentifier {
+            let text = (response as? UNTextInputNotificationResponse)?.userText ?? ""
+            action = .customText(String(text.prefix(UserQuestionRequest.maximumFreeTextCharacters)))
         } else {
             action = .open
         }
@@ -335,13 +337,15 @@ public final class UserQuestionNotificationBridge {
         case .dismiss:
             Task { @MainActor in notificationCompletion.finish() }
             return true
-        case .text(let text):
+        case .text(let text), .customText(let text):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 Task { @MainActor in notificationCompletion.finish() }
                 return true
             }
-            let answer = UserQuestionAnswer(freeText: trimmed)
+            let answer: UserQuestionAnswer
+            if case .customText = action { answer = .init(customText: trimmed) }
+            else { answer = .init(freeText: trimmed) }
             Task {
                 do {
                     _ = try await answering.submitNotificationAnswer(

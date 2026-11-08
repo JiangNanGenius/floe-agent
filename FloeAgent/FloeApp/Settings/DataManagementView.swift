@@ -39,6 +39,43 @@ struct DataManagementView: View {
 
     var body: some View {
         Form {
+            // Keep actions above asynchronously populated storage sections so
+            // completing a scan cannot move a navigation target under a tap.
+            Section {
+                // The SAME canonical management surface the Task Center
+                // opens — one store, one lifecycle path. The row is titled
+                // "Manage tasks", so it starts on the ACTIVE task slice like
+                // the Task Center's 管理 entry; the archived slice is one
+                // segmented switch away (only an entry titled
+                // "Manage archived tasks" defaults to the archive).
+                NavigationLink {
+                    ConversationBatchManagementView(
+                        center: conversationCenter,
+                        initialFilter: .active,
+                        presentation: .pushed
+                    )
+                } label: {
+                    ManagementRow(
+                        title: TaskManagementCopy.manageTasks,
+                        detail: TaskManagementCopy.manageTasksDetail,
+                        icon: "checklist"
+                    )
+                }
+
+                NavigationLink {
+                    FontManagementView(store: environment.fontStore)
+                } label: {
+                    ManagementRow(
+                        title: FloeL10n.l("settings.data_management_view.font_resources"),
+                        detail: FloeL10n.l("settings.data_management_view.download_once_shared_across_all_floe"),
+                        icon: "textformat"
+                    )
+                }
+            } header: {
+                Text("settings.data_management_view.manage")
+            }
+
+
             Section {
                 if let report = storage.report {
                     // The App total is the SAME snapshot's mutually-exclusive
@@ -184,39 +221,6 @@ struct DataManagementView: View {
                 Text("settings.data_management_view.syncs_only_when_both_the_master")
             }
 
-            Section {
-                // The SAME canonical management surface the Task Center
-                // opens — one store, one lifecycle path. The row is titled
-                // "Manage tasks", so it starts on the ACTIVE task slice like
-                // the Task Center's 管理 entry; the archived slice is one
-                // segmented switch away (only an entry titled
-                // "Manage archived tasks" defaults to the archive).
-                NavigationLink {
-                    ConversationBatchManagementView(
-                        center: conversationCenter,
-                        initialFilter: .active,
-                        presentation: .pushed
-                    )
-                } label: {
-                    ManagementRow(
-                        title: TaskManagementCopy.manageTasks,
-                        detail: TaskManagementCopy.manageTasksDetail,
-                        icon: "checklist"
-                    )
-                }
-
-                NavigationLink {
-                    FontManagementView(store: environment.fontStore)
-                } label: {
-                    ManagementRow(
-                        title: FloeL10n.l("settings.data_management_view.font_resources"),
-                        detail: FloeL10n.l("settings.data_management_view.download_once_shared_across_all_floe"),
-                        icon: "textformat"
-                    )
-                }
-            } header: {
-                Text("settings.data_management_view.manage")
-            }
 
             Section {
                 ForEach(cleanupPlan.candidates) { candidate in
@@ -569,6 +573,7 @@ private struct StorageUsageRow: View {
 
 struct FontManagementView: View {
     let store: DeviceFontStore
+    @State private var designer = FontDesignCoordinator()
     @State private var records: [ManagedFontRecord] = []
     @State private var remoteURL = ""
     @State private var isWorking = false
@@ -579,6 +584,25 @@ struct FontManagementView: View {
 
     var body: some View {
         Form {
+            Section(FontDesignText.t("字体设计", "Font design")) {
+                Button {
+                    successMessage = nil
+                    designer.newProject(store: store)
+                } label: { Label(FontDesignText.t("新建字体", "New typeface"), systemImage: "plus") }
+                    .disabled(designer.isOpening).accessibilityIdentifier("fontManagement.newDesign")
+                if designer.isOpening { HStack { ProgressView(); Text(FontDesignText.t("正在打开…", "Opening…")) } }
+                ForEach(designer.projects) { project in
+                    Button {
+                        successMessage = nil
+                        designer.open(project, store: store)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(project.title)
+                            Text(project.modifiedAt, format: .dateTime.month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
+                        }.frame(minHeight: FloeTheme.minimumTarget)
+                    }.disabled(designer.isOpening)
+                }
+            }
             Section("settings.data_management_view.floe_global_fonts") {
                 if records.isEmpty {
                     ContentUnavailableView("settings.data_management_view.no_floe_global_fonts_yet",
@@ -587,12 +611,25 @@ struct FontManagementView: View {
                     )
                 } else {
                     ForEach(records) { record in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(record.displayName)
-                            Text(record.familyNames.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
-                                .font(.caption2).foregroundStyle(.tertiary)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(record.displayName)
+                                Text(record.familyNames.joined(separator: " · "))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 8)
+                            if ["ttf", "otf"].contains(URL(fileURLWithPath: record.fileName).pathExtension.lowercased()) {
+                                Button {
+                                    successMessage = nil
+                                    designer.edit(record, store: store)
+                                } label: { Label(FontDesignText.t("编辑", "Edit"), systemImage: "pencil") }
+                                    .buttonStyle(.borderless).disabled(designer.isOpening)
+                                    .accessibilityIdentifier("fontManagement.editManagedFont")
+                            } else {
+                                Text(FontDesignText.t("字体集合", "Font collection")).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                         .frame(minHeight: FloeTheme.minimumTarget)
                         .swipeActions {
@@ -633,12 +670,17 @@ struct FontManagementView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
-            if let successMessage {
-                Section { Text(successMessage).foregroundStyle(.green) }
+            if let message = successMessage ?? designer.installedMessage {
+                Section { Text(message).foregroundStyle(.green) }
             }
         }
         .navigationTitle(FloeL10n.l("settings.data_management_view.font_resources"))
-        .task { await reload() }
+        .task { await reload(); await designer.reload() }
+        .fullScreenCover(item: $designer.presented, onDismiss: {
+            Task { await reload(); await designer.reload() }
+        }) { session in
+            FontDesignEditorView(session: session)
+        }
         .sheet(isPresented: $showsImporter) {
             DocumentPickerView(contentTypes: Self.fontTypes) { url in
                 showsImporter = false
@@ -646,12 +688,12 @@ struct FontManagementView: View {
             }
         }
         .alert("settings.data_management_view.could_not_add_the_font", isPresented: Binding(
-            get: { errorMessage != nil },
-            set: { if !$0 { errorMessage = nil } }
+            get: { errorMessage != nil || designer.errorMessage != nil },
+            set: { if !$0 { errorMessage = nil; designer.errorMessage = nil } }
         )) {
-            Button("workspace.office_document_editor_view.ok") { errorMessage = nil }
+            Button("workspace.office_document_editor_view.ok") { errorMessage = nil; designer.errorMessage = nil }
         } message: {
-            Text(errorMessage ?? "common.unknown_error")
+            Text(errorMessage ?? designer.errorMessage ?? "common.unknown_error")
         }
         .confirmationDialog("settings.data_management_view.remove_this_font_from_all_floe",
             isPresented: Binding(

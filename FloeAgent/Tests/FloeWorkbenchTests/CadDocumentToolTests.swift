@@ -13,6 +13,26 @@ import FloeTools
 import FloeCore
 import FloeModels
 
+/// Checks the real tool output's retained artifacts after a Codable receipt
+/// roundtrip. The existing host fixture remains an engine-contract fixture;
+/// this does not claim a full App or production-renderer run.
+private func expectCADInlineAdvertisement(_ output: ToolExecutionOutput, context: ToolContext) throws {
+    let task = try #require(context.conversationID)
+    let result = ToolResult(callID: context.toolCallID ?? "cad-contract", status: .ok,
+        outputSummary: output.summary, outputDigest: output.fullOutputSHA256, artifacts: output.artifacts,
+        provenance: .init(sourceID: "cad-contract", toolName: CadDocumentTool.name, runID: context.runID, taskID: task))
+    let restored = try JSONDecoder().decode(ToolResult.self, from: JSONEncoder().encode(result))
+    let descriptors = ChatInlineContentCatalog.descriptors(restored)
+    #expect(descriptors.count == output.artifacts.count)
+    for artifact in output.artifacts {
+        let descriptor = try #require(descriptors.first { $0.reference.contentID == artifact.id.uuidString })
+        #expect(descriptor.reference.ownerID == context.runID)
+        #expect(descriptor.mimeType == artifact.mimeType)
+        let expected = try #require(ChatContentReference(kind: .artifact, ownerID: context.runID, contentID: artifact.id.uuidString))
+        #expect(descriptor.reference == expected)
+    }
+}
+
 // MARK: - Fake host
 
 actor FakeCadHost: CadDocumentHost {
@@ -2189,6 +2209,8 @@ struct CadNativeEditToolTests {
         #expect(output.summary.contains("\"image_sha256\":\"\(artifact.sha256)\""))
         #expect(output.summary.contains("vision"))
 
+        try expectCADInlineAdvertisement(output, context: context)
+
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false)
@@ -2339,6 +2361,7 @@ struct CadNativeEditToolTests {
         #expect(requests[0].frame == 30)
         #expect(output.artifacts.count == 1)
         #expect(output.artifacts[0].mimeType == "image/png")
+        try expectCADInlineAdvertisement(output, context: context)
     }
 
     @Test("animation export validates the MP4 target and returns the host receipt")
@@ -2582,6 +2605,7 @@ struct CadOriginalSceneObservationTests {
         #expect(output.artifacts.count == 4)
         #expect(output.summary.contains("sourceUnchanged"))
         #expect(output.summary.contains("sourceSHA256"))
+        try expectCADInlineAdvertisement(output, context: context)
         for artifact in output.artifacts {
             let verified = try VerifiedToolImageArtifact.load(artifact, root: support)
             #expect(verified.mimeType == "image/png")

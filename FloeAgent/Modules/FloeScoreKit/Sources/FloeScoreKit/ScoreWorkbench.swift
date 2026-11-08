@@ -24,13 +24,14 @@ public enum ScoreWorkbench {
 public struct ScoreEditorView:View {
     private let controller:HeavyEditorController
     private let onClose:()->Void
-    public init(controller:HeavyEditorController,onClose:@escaping()->Void={}){self.controller=controller;self.onClose=onClose}
+    private let closeLabel:String?
+    public init(controller:HeavyEditorController,onClose:@escaping()->Void={},closeLabel:String?=nil){self.controller=controller;self.onClose=onClose;self.closeLabel=closeLabel}
     public var body:some View {
         HeavyEditorView(controller:controller,onClose:onClose,
             outline:AnyView(ScoreNativeOutline(controller:controller)),
             canvasToolbar:AnyView(ScoreNativeInputToolbar(controller:controller)),
             inspector:AnyView(ScoreNativeInspector(controller:controller)),
             canvasContent:nil,
-            bottomBar:AnyView(ScoreNativeBottomBar(controller:controller)))
+            bottomBar:AnyView(ScoreNativeBottomBar(controller:controller)),closeLabel:closeLabel)
     }
 }

@@ -2,7 +2,8 @@
 
 Native electronics document and editing services for the complete PCB/schematic
 editor tracked in [the implementation ledger](../../../docs/FLOE_PCB_EDITOR_IMPLEMENTATION_PLAN.zh-CN.md).
-This package checkpoint is the document/core stage, not a completed App editor.
+This is an incremental implementation, not a completed full PCB editor. The
+native UI and App/Files/model integration are under active qualification.
 
 `FloeElectronicsCore` provides millimetre geometry, hierarchical schematic and
 board records, symbol/footprint definitions, typed atomic edits, monotonic undo
@@ -18,9 +19,25 @@ Eighteen focused tests passed with Xcode 27.2 (27B52) on the arm64 macOS host on
 symlink refusal, read-only access, crossing/junction geometry, hierarchical
 connectivity, output conflicts and routed-net migration/split handling.
 
-App creation/navigation, touch/Pencil editing, library UI, interactive routing,
-complete DRC, copper filling, exchange/fabrication, 3D, simulation and model tool
-bindings remain stages in the ledger. They are not satisfied by these core tests.
+`FloeElectronicsUI` supplies the native schematic/PCB/symbol/footprint workbench,
+properties, checks, exports and a separate board-only 3D view. It embeds in the
+host navigation and uses the injected original store and one monotonic undo
+stack. Mouse and Pencil edit by default; finger drawing is an explicit toggle.
+Narrow windows use panels instead of squeezing three columns onto the canvas.
+
+Manual 45-degree routing resolves the touched pad, track or via on its actual
+copper layer. It rejects different-net endpoints and violations involving the
+new track in the supported DRC checks. It is not a shove/automatic router.
+Native project, netlist, BOM, positions and actual board/schematic SVG exports
+are available. Numeric position columns retain negative values; spreadsheet
+formula-like user text is escaped. Native text rotation/mirroring is retained.
+
+Five focused Mac session/routing/export tests and arm64 iOS 26 object
+compilation passed on 2026-11-08. Those results do not validate the App wiring,
+latest adaptive panel changes, actual touch input, or the whole PCB ledger.
+App qualification is recorded separately. Copper filling, complete DRC,
+advanced routing/tuning, KiCad exchange, Gerber/Excellon fabrication, component
+3D models and simulation remain open implementation stages.
 
 ## PCB DRC core checkpoint
 

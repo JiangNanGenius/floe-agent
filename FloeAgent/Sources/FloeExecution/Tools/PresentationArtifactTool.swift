@@ -76,7 +76,7 @@ public struct PresentationArtifactTool: AgentTool {
 
     public static let name = "document.presentation.createInline"
     public static let toolDescription =
-        "Create a rich conversation result shown inline in the chat. Use table for native structured rows, chart for native line/bar/area/pie/scatter charts, or web for an interactive self-contained HTML preview. Web previews may use inline CSS and JavaScript but cannot access the network, frames, forms, plug-ins, native bridges, or arbitrary files. The result is saved, hash-verified, displayed inline, and can be shared. For an editable .pptx slide-deck file instead of an inline result, use document.presentation.createDeck."
+        "Create a rich conversation result. Copy the returned inlineMarkdown verbatim onto a standalone line between answer paragraphs to insert the actual native result in your reply. Use table for native rows, chart for native line/bar/area/pie/scatter, or web for a self-contained sandboxed preview. Web previews cannot access networks, frames, forms, plug-ins, native bridges or arbitrary files. The saved result is hash-verified and shareable. Use chat.content.list to recover older references from this task. For an editable .pptx file use document.presentation.createDeck."
     public static let parametersJSON = #"""
     {
       "type":"object",
@@ -211,8 +211,11 @@ public struct PresentationArtifactTool: AgentTool {
             byteCount: document.count,
             sha256: digest
         )
+        let reference = ChatContentReference(kind: .artifact, ownerID: context.runID, contentID: id.uuidString)!
+        let summary = try JSONSerialization.data(withJSONObject: ["status": "created", "kind": args.kind.rawValue,
+            "inlineMarkdown": reference.markdown(title: args.title ?? args.kind.rawValue)], options: [.sortedKeys])
         return ToolExecutionOutput(
-            summary: "created \(args.kind.rawValue) presentation\(args.title.map { ": \($0)" } ?? "")",
+            summary: String(decoding: summary, as: UTF8.self),
             fullOutputSHA256: digest,
             artifacts: [artifact]
         )

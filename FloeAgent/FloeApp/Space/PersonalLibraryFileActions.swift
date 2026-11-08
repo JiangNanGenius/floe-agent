@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeElectronicsCore
 import CryptoKit
 import Darwin
 import FloeDiagramCore
@@ -229,6 +230,8 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         case .printing: try PrintProjectSession.requireIdleForDeletion(id: record.id)
         case .manufacturing: try ManufacturingSessions.requireIdleForDeletion(id: record.id)
         case .music: try MusicProjectSession.requireIdleForDeletion(id: record.id)
+        case .electronics: try await ElectronicsProjectSession.prepareForFileAction(id: record.id, directory: directory)
+        case .geography: try await GISProjectSession.prepareForFileAction(id: record.id, directory: directory)
         case .image, .drawing, .video: try MediaV2Session.requireIdleForDeletion(id: record.id)
         case .meeting: await MeetingProjectSession.prepareForDeletion(id: record.id)
         case .chemistry:
@@ -244,9 +247,9 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
     }
     static func supports(_ action: PersonalFileAction, kind: PersonalContentKind) -> Bool {
         switch action {
-        case .move: [.document, .cad2D, .cad3D, .biology, .latex].contains(kind)
-        case .duplicate: [.document, .printing, .latex].contains(kind)
-        case .share: [.document, .diagram, .printing, .latex].contains(kind)
+        case .move: [.document, .cad2D, .cad3D, .biology, .latex, .electronics, .geography].contains(kind)
+        case .duplicate: [.document, .printing, .latex, .electronics, .geography].contains(kind)
+        case .share: [.document, .diagram, .printing, .latex, .electronics, .geography].contains(kind)
         }
     }
     static func limitation(_ action: PersonalFileAction, kind: PersonalContentKind) -> String {
@@ -262,6 +265,14 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         let library = try await PersonalContentService.shared.library(), source = try await library.resolve(selection.id)
         guard source.record.relativePath == selection.relativePath, source.record.kind == selection.kind else { throw PersonalFileActionError.changed }
         switch source.record.kind {
+        case .geography:
+            guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
+            try await GISProjectSession.prepareForFileAction(id: selection.id, directory: source.url)
+            _ = try await personalPreviewOffMain { try GISProjectOriginal.read(id: selection.id, directory: source.url) }
+        case .electronics:
+            guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
+            try await ElectronicsProjectSession.prepareForFileAction(id: selection.id, directory: source.url)
+            _ = try await EDAProjectStore(root: checkedChildDirectory("Electronics", under: source.url), projectID: selection.id, readOnly: true).load()
         case .latex:
             guard uses[selection.id]?.isEmpty != false else {throw PersonalFileActionError.closeFirst}
             let manifest=try await LaTeXProjectStore(root:source.url.appendingPathComponent("LaTeX")).manifest()
@@ -288,7 +299,14 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         let library = try await PersonalContentService.shared.library(), source = try await library.resolve(selection.id)
         guard source.record.relativePath == selection.relativePath, source.record.kind == selection.kind else { throw PersonalFileActionError.changed }
         let result: PersonalContentRecord
-        if source.record.kind == .latex {
+        if source.record.kind == .geography {
+            let saved = try await personalPreviewOffMain { try GISProjectOriginal.read(id: selection.id, directory: source.url) }
+            result = try await library.create(kind: .geography, title: title, in: folders) { directory, id in
+                try await GISProjectOriginal.copy(saved, to: directory, id: id, title: title)
+                try saved.validate(); try await verifyLocation(selection.id, expected: source.record.relativePath)
+                try writeCopyReceipt(directory: directory, source: source.record, newID: id, revision: saved.sha256)
+            }
+        } else if source.record.kind == .latex {
             let store=try LaTeXProjectStore(root:source.url.appendingPathComponent("LaTeX")),snapshot=try await store.snapshot()
             do {
                 guard snapshot.manifest.id==selection.id,snapshot.manifest.owner == .init(kind:.space,id:selection.id) else {throw PersonalFileActionError.changed}
@@ -304,6 +322,20 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
                 }
                 try await store.releaseSnapshot(snapshot)
             } catch {try? await store.releaseSnapshot(snapshot);throw error}
+        } else if source.record.kind == .electronics {
+            let store = try EDAProjectStore(root: checkedChildDirectory("Electronics", under: source.url), projectID: selection.id, readOnly: true)
+            let saved = try await store.load()
+            result = try await library.create(kind: .electronics, title: title, in: folders) { directory, id in
+                var copy = saved.project
+                copy.id = id; copy.title = title; copy.revision = 0; copy.createdAt = Date(); copy.modifiedAt = copy.createdAt
+                for board in copy.boards.indices { for zone in copy.boards[board].zones.indices {
+                    copy.boards[board].zones[zone].filledPolygons = []; copy.boards[board].zones[zone].fillRevision = nil
+                } }
+                _ = try await EDAProjectStore.create(root: directory.appendingPathComponent("Electronics"), project: copy)
+                guard try await store.load().digest == saved.digest else { throw PersonalFileActionError.changed }
+                try await verifyLocation(selection.id, expected: source.record.relativePath)
+                try writeCopyReceipt(directory: directory, source: source.record, newID: id, revision: String(saved.project.revision))
+            }
         } else if source.record.kind == .document {
             try PersonalTextDocument.requireClosedForFileAction(projectID: selection.id)
             try PersonalOfficeDocument.requireClosedForFileAction(projectID: selection.id)
@@ -342,6 +374,19 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         defer { if !adopted { try? FileManager.default.removeItem(at: directory) } }
         let url: URL
         switch source.record.kind {
+        case .geography:
+            let saved = try await personalPreviewOffMain { try GISProjectOriginal.read(id: selection.id, directory: source.url) }
+            let bytes = try GISProjectOriginal.projectData(saved)
+            url = directory.appendingPathComponent(safeName(source.record.title) + ".floegis")
+            try bytes.write(to: url, options: .withoutOverwriting)
+            try saved.validate()
+        case .electronics:
+            let store = try EDAProjectStore(root: checkedChildDirectory("Electronics", under: source.url), projectID: selection.id, readOnly: true)
+            let saved = try await store.load(), bundle = try EDAExchange.export(saved.project, format: .project)
+            guard let file = bundle.files.first else { throw PersonalContentError.invalidProject }
+            url = directory.appendingPathComponent(safeName(source.record.title) + ".floeeda")
+            try file.data.write(to: url, options: .atomic)
+            guard try await store.load().digest == saved.digest else { throw PersonalFileActionError.changed }
         case .latex:
             let store=try LaTeXProjectStore(root:source.url.appendingPathComponent("LaTeX")),snapshot=try await store.snapshot()
             url=directory.appendingPathComponent(safeName(source.record.title)+".zip")

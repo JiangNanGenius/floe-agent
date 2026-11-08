@@ -79,6 +79,9 @@ import FloeTools
             guard let location else { throw APNsServiceError.storage }
             state = try location.load(); preferences = state.preferences; storageReady = true
             syncState = preferences.enabled ? "pending" : "off"
+            if preferences.enabled, let issue = state.registrationFailure {
+                failure = issue.localizedDescription; syncState = issue.registrationState
+            }
         } catch { failure = APNsServiceError.storage.localizedDescription; syncState = "storageUnavailable" }
         enrollment?.setEvidenceChangedHandler { [weak self] in
             guard let self, self.preferences.enabled, self.storageReady else { return }
@@ -252,6 +255,7 @@ import FloeTools
         guard syncGeneration == generation else { return }
         if let retryAt = enrollment?.retryAfterInterruption {
             var next = state; next.nextRegistrationAttemptAt = retryAt
+            next.registrationFailure = .foregroundRequired
             do { try persist(next) } catch { report(error) }
         }
         syncGeneration = UUID(); syncTask?.cancel(); enrollment?.cancel()
@@ -273,6 +277,7 @@ import FloeTools
         } else {
             if let retryAt = enrollment?.retryAfterInterruption {
                 var next = state; next.nextRegistrationAttemptAt = retryAt
+                next.registrationFailure = .foregroundRequired
                 do { try persist(next) } catch { report(error) }
             }
             syncGeneration = UUID(); syncTask?.cancel(); enrollment?.cancel()
@@ -332,8 +337,11 @@ import FloeTools
     private func synchronize(generation: UUID) async {
         do {
             if let retryAt = state.nextRegistrationAttemptAt, retryAt > Date() {
-                syncState = "rateLimited"
-                failure = APNsServiceError.rateLimited(until: retryAt).localizedDescription
+                // A date is not proof of HTTP 429. Legacy date-only records
+                // and ordinary enrollment waits must never fabricate busy.
+                let issue = state.registrationFailure ?? .enrollmentDeferred(until: retryAt)
+                syncState = issue.registrationState
+                failure = issue.localizedDescription
                 return
             }
             let authorization = await platform.authorization()
@@ -409,7 +417,8 @@ import FloeTools
                     guard receipt.installationID == state.installationID, receipt.acceptedRevision == revision,
                           receipt.enabled == preferences.enabled, receipt.leaseExpiresAt > Date(),
                           abs(receipt.acceptedAt.timeIntervalSinceNow) <= 300 else { throw APNsServiceError.protocolViolation }
-                    var next = state; next.receipt = receipt; next.nextRegistrationAttemptAt = nil; try persist(next)
+                    var next = state; next.receipt = receipt; next.nextRegistrationAttemptAt = nil
+                    next.registrationFailure = nil; try persist(next)
                     enrollment?.registrationDidCommit()
                     syncState = preferences.enabled ? "connected" : "off"; failure = nil
                     return
@@ -424,13 +433,15 @@ import FloeTools
                     }
                     let problem = error as? APNsServiceError ?? .unavailable
                     if case .enrollmentDeferred(let retryAt) = problem {
-                        var next = state; next.nextRegistrationAttemptAt = retryAt; try persist(next)
-                        report(problem); syncState = "pending"
+                        var next = state; next.nextRegistrationAttemptAt = retryAt
+                        next.registrationFailure = problem; try persist(next)
+                        failure = problem.localizedDescription; syncState = problem.registrationState
                         return
                     }
                     if case .rateLimited(let retryAt) = problem {
-                        var next = state; next.nextRegistrationAttemptAt = retryAt; try persist(next)
-                        report(problem); syncState = "rateLimited"
+                        var next = state; next.nextRegistrationAttemptAt = retryAt
+                        next.registrationFailure = problem; try persist(next)
+                        failure = problem.localizedDescription; syncState = problem.registrationState
                         return
                     }
                     if case .remote(.tokenNeedsRenewal) = problem {
@@ -441,20 +452,19 @@ import FloeTools
                         return
                     }
                     if let retryAt = enrollment?.retryAfterInterruption, retryAt > Date() {
-                        var next = state; next.nextRegistrationAttemptAt = retryAt; try persist(next)
-                        report(problem)
-                        if case .enrollmentPending = problem { syncState = "pending" }
-                        if case .foregroundRequired = problem { syncState = "pending" }
+                        var next = state; next.nextRegistrationAttemptAt = retryAt
+                        next.registrationFailure = problem; try persist(next)
+                        failure = problem.localizedDescription; syncState = problem.registrationState
                         return
                     }
-                    if case .enrollmentPending = problem { report(problem); syncState = "pending"; return }
-                    if case .foregroundRequired = problem { report(problem); syncState = "pending"; return }
-                    if attempt == 2 || !problem.retryable { report(problem); return }
+                    if case .enrollmentPending = problem { reportRegistration(problem); return }
+                    if case .foregroundRequired = problem { reportRegistration(problem); return }
+                    if attempt == 2 || !problem.retryable { reportRegistration(problem); return }
                     syncState = "retrying"
                     try await Task.sleep(for: .seconds(attempt == 0 ? 2 : 8))
                 }
             }
-        } catch { if current(generation) { report(error) } }
+        } catch { if current(generation) { reportRegistration(error) } }
     }
 
     private func beginTokenRenewal(generation: UUID) throws {
@@ -566,6 +576,14 @@ import FloeTools
     private func report(_ error: Error) {
         failure = (error as? APNsServiceError ?? .unavailable).localizedDescription
         syncState = "failed"
+    }
+    private func reportRegistration(_ error: Error) {
+        let problem = error as? APNsServiceError ?? .unavailable
+        var next = state; next.registrationFailure = problem
+        do { try persist(next) }
+        catch { report(APNsServiceError.storage); return }
+        failure = problem.localizedDescription
+        syncState = problem.registrationState
     }
     private static func authorization(_ value: UNAuthorizationStatus) -> APNsVisibleAuthorization {
         switch value {

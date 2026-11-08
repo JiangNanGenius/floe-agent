@@ -67,6 +67,18 @@ packages:
     path: Modules/FloeLaTeXKit
   FloeLaTeXHostAdapter:
     path: Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter
+  FloeElectronicsKit:
+    path: Modules/FloeElectronicsKit
+  FloeGISKit:
+    path: Modules/FloeGISKit
+  FloeScoreKit:
+    path: Modules/FloeScoreKit
+  FloeFontKit:
+    path: Modules/FloeFontKit
+  FloeHeavyEditorsHostAdapter:
+    path: Qualification/HeavyEditors/Integration/FloeHeavyEditorsHostAdapter
+  FloeHeavyEditorSupport:
+    path: Modules/FloeHeavyEditorSupport
   SwiftMath:
     path: Modules/FloeDiagramKit/Vendor/SwiftMath
   FloeToolbox:
@@ -340,6 +352,7 @@ targets:
     dependencies:
       - package: SwiftCrypto
         product: Crypto
+        embed: true
       - package: FloeCanvasKit
         product: FloeCanvasCore
       - package: FloeCanvasKit
@@ -432,8 +445,23 @@ targets:
         product: FloeBiologyHostAdapter
       - package: FloeLaTeXKit
         product: FloeLaTeXKit
+        embed: true
       - package: FloeLaTeXHostAdapter
         product: FloeLaTeXHostAdapter
+      - package: FloeElectronicsKit
+        product: FloeElectronicsCore
+      - package: FloeElectronicsKit
+        product: FloeElectronicsUI
+      - package: FloeGISKit
+        product: FloeGISKit
+      - package: FloeScoreKit
+        product: FloeScoreKit
+      - package: FloeFontKit
+        product: FloeFontKit
+      - package: FloeHeavyEditorsHostAdapter
+        product: FloeHeavyEditorsHostAdapter
+      - package: FloeHeavyEditorSupport
+        product: FloeHeavyEditorSupport
       - package: SwiftMath
         product: SwiftMath
       - package: FloeAgentPackages
@@ -556,6 +584,17 @@ targets:
           - $(SRCROOT)/Vendor/Office/native-host-inputs.xcfilelist
         outputFileLists:
           - $(SRCROOT)/scripts/office_host_outputs.xcfilelist
+      - name: Seal Simulator runpaths and embedded code
+        script: |
+          if [ "${PLATFORM_NAME:-}" = "iphonesimulator" ]; then
+            /usr/bin/python3 -B "${SRCROOT}/scripts/normalize_simulator_runpaths.py" \
+              --app "${TARGET_BUILD_DIR}/${WRAPPER_NAME}" \
+              --owner-root "${TARGET_BUILD_DIR}" --seal-bundle
+          fi
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/scripts/normalize_simulator_runpaths.py
+          - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Info.plist
     settings:
       base:
         DEVELOPMENT_TEAM: QYL72C43K6
@@ -574,7 +613,7 @@ targets:
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
-        # This target has one script: verified Office framework/resource copy.
+        # Post-build scripts embed Office and seal the Simulator bundle.
         # Xcode only grants literal output paths; listing ~5,000 files exceeds
         # the process argument limit. Other targets keep their script sandbox.
         ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -1691,6 +1730,13 @@ targets:
     sources:
       - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
       - path: Tests/FloeAppTests/LaTeXAppIntegrationTests.swift
+      - path: Tests/FloeAppTests/AppleImagePlaygroundTests.swift
+      - path: Tests/FloeAppTests/ElectronicsAppIntegrationTests.swift
+      - path: Tests/FloeAppTests/GISProductionOriginalTests.swift
+      - path: Tests/FloeAppTests/MusicNotationAIContractTests.swift
+      - path: Tests/FloeAppTests/FontDesignAIAppContractTests.swift
+      - path: Tests/FloeWorkspaceTests/WorkspacePathGuardTests.swift
+      - path: Tests/FloeExecutionTests/LinuxGuestProcessEnvironmentTests.swift
       - path: Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter/Tests/FloeLaTeXHostAdapterTests/AuthorityTests.swift
       - path: Tests/FloeAppTests/ToolboxUSBAppIntegrationTests.swift
       - path: Tests/FloeAppTests/ToolboxUSBTransportTests.swift
@@ -1777,8 +1823,30 @@ targets:
       - path: Tests/FloeAppTests/NativeCADHostRuntimeTests.swift
       - path: Tests/FloeAppTests/CADNativeStudyReceiptTests.swift
       - path: Tests/FloeCoreTests/FloeAppEntryRouteTests.swift
+      - path: Tests/FloeAppTests/DocumentConversionRouteContractTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ToolContractCorrectionTests.swift
+      - path: Tests/FloeAppTests/UserQuestionCardTests.swift
+      - path: Tests/FloeAppTests/UserQuestionDeliveryProjectionTests.swift
+      - path: Tests/FloeAgentRuntimeTests/UserQuestionTests.swift
+      - path: Tests/FloePersistenceTests/UserQuestionStoreTests.swift
+      - path: Tests/FloeAgentRuntimeTests/PersonalizationMemoryTests.swift
+      - path: Tests/FloePersistenceTests/V13PersonalizationMemoryTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDLibraryEditingTests.swift
+      - path: Tests/FloeAppTests/UserQuestionNotificationIntegrationTests.swift
+      - path: Tests/FloeAppTests/ChatInlineContentContractTests.swift
+      - path: Tests/FloeAppTests/ChatInlineContentProductionFlowTests.swift
+      - path: Tests/FloeMarkdownTests/InlineContentBlockParserTests.swift
+      - path: Tests/FloeModelsTests/ChatContentReferenceTests.swift
+      - path: Tests/FloeToolsTests/ChatInlineContentCatalogTests.swift
+      - path: Tests/FloeAppTests/ComposerSelectionReentryTests.swift
+      - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
+      - path: Tests/FloeAppTests/CadNativeObservationTests.swift
     dependencies:
       - target: FloeAgent
+      - package: FloeAgentPackages
+        product: FloeWorkbench
+      - package: FloeCADKit
+        product: FloeCAD
       - package: FloeSimulationKit
         product: FloeSimulationCore
       - package: FloeDiagramKit
@@ -1816,6 +1884,10 @@ targets:
       - package: FloeAgentPackages
         product: FloeTestSupport
       - package: FloeAgentPackages
+        product: FloeWorkspace
+      - package: FloeAgentPackages
+        product: FloeExecution
+      - package: FloeAgentPackages
         product: FloeMedia
       - package: FloeAgentPackages
         product: FloeTools
@@ -1839,6 +1911,18 @@ targets:
         product: FloeLaTeXKit
       - package: FloeLaTeXHostAdapter
         product: FloeLaTeXHostAdapter
+      - package: FloeElectronicsKit
+        product: FloeElectronicsCore
+      - package: FloeElectronicsKit
+        product: FloeElectronicsUI
+      - package: FloeGISKit
+        product: FloeGISKit
+      - package: FloeScoreKit
+        product: FloeScoreKit
+      - package: FloeHeavyEditorSupport
+        product: FloeHeavyEditorSupport
+      - package: FloeHeavyEditorsHostAdapter
+        product: FloeHeavyEditorsHostAdapter
       - package: FloeInteractiveContent
         product: FloeInteractiveContentCore
       - package: GRDB

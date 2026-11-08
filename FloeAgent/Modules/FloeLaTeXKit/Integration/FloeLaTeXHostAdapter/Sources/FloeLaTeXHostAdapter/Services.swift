@@ -110,6 +110,9 @@ public struct LaTeXHostHooks:Sendable {
         let packages=profile=="full" ? "texlive-full":"texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex texlive-lang-chinese texlive-science texlive-pictures biber latexmk"
         let script="""
         set -eu
+        # Package scripts run in Linux, whose temporary directories and
+        # locale must not inherit native App container paths or locale ids.
+        export TMPDIR=/tmp TMP=/tmp TEMP=/tmp LANG=C.UTF-8 LC_ALL=C.UTF-8
         command -v apt-get >/dev/null || { echo 'Use the selected Linux distribution package manager to install TeX Live, Biber, bubblewrap and Python 3.' >&2; exit 64; }
         if [ "$(id -u)" = 0 ]; then privilege=''; else command -v sudo >/dev/null; privilege='sudo -n'; fi
         $privilege env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 update

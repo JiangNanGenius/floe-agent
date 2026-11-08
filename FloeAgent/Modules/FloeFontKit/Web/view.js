@@ -3,6 +3,7 @@ import { element,t,clone,uid,finite,escapeXML } from '../../FloeHeavyEditorSuppo
 import { glyphList,getGlyph,selectedName,glyphPath,glyphBounds,point,compatible,activeSource,activeKerning } from './model.js';
 import { moveGlyphPoints } from './contours.js';
 import { sourceSignature } from './formats.js';
+import { outlineInputCanEdit } from './input.js';
 const ns='http://www.w3.org/2000/svg';
 function svgNode(tag,attrs={}){const node=document.createElementNS(ns,tag);for(const [key,value]of Object.entries(attrs))node.setAttribute(key,String(value));return node;}
 export function glyphSVG(font,g,{points=false,width=700,height=800,margin=80}={}){
@@ -10,8 +11,9 @@ export function glyphSVG(font,g,{points=false,width=700,height=800,margin=80}={}
   return `<svg xmlns="${ns}" viewBox="${view}" width="${width}" height="${height}"><g transform="scale(1,-1)"><path d="${glyphPath(font,g)}" fill="currentColor" fill-rule="nonzero"/>${points?g.contours.flat().map(p=>`<circle cx="${p.x}" cy="${p.y}" r="5" fill="${p.type==='offcurve'?'#fff':'#2879c7'}" stroke="#2879c7"/>`).join(''):''}</g></svg>`;
 }
 export class FontView {
-  constructor(e){this.e=e;this.mode='overview';this.search='';this.page=0;this.tool='select';this.curveType='line';this.snap=5;this.zoom=1;this.pan=[0,0];this.text='AVOVA AVA';this.size=72;this.previewLocation={};this.previewFeatures={kern:true,liga:true,mark:true,locl:true};this.drawing=[];this.direction='auto';this.language='';this.vertical=false;this.multisize=false;Object.assign(this,e.fontNativeUI??{});}
+  constructor(e){this.e=e;this.mode='overview';this.search='';this.page=0;this.tool='select';this.fingerDrawing=false;this.outlineInputGeneration=0;this.curveType='line';this.snap=5;this.zoom=1;this.pan=[0,0];this.text='AVOVA AVA';this.size=72;this.previewLocation={};this.previewFeatures={kern:true,liga:true,mark:true,locl:true};this.drawing=[];this.direction='auto';this.language='';this.vertical=false;this.multisize=false;Object.assign(this,e.fontNativeUI??{});}
   async render(){
+    this.outlineInputGeneration++;
     const e=this.e;e.sidebar.replaceChildren();e.canvas.replaceChildren();e.inspector.replaceChildren();if(!e.nativeChrome){this.sidebar();this.inspector();}
     if(e.nativeChrome){this.surface=element('div',{class:'canvas-frame'});e.canvas.append(this.surface);if(this.mode==='proof')this.proof(false);return;}
     const tabs=element('div',{class:'canvas-tools'});for(const [key,title]of [['overview',t('字符集','Character set')],['outline',t('轮廓','Outlines')],['metrics',t('字宽与字距','Spacing')],['features',t('OpenType 特性','OpenType features')],['variations',t('变量字体','Variations')],['proof',t('文本打样','Proof')]])tabs.append(element('button',{text:title,class:this.mode===key?'active':'',onclick:()=>{this.mode=key;this.render();}}));e.canvas.append(tabs);this.surface=element('div',{class:'canvas-frame'});e.canvas.append(this.surface);
@@ -37,8 +39,10 @@ export class FontView {
   }
   outline(tools){
     const e=this.e,g=getGlyph(e),font={...e.state,glyphs:glyphList(e)},info=activeSource(e).info??e.state.info;this.drawing=[];
+    const generation=this.outlineInputGeneration,current=()=>generation===this.outlineInputGeneration;
     for(const [tool,label]of [['select',t('选择／移动','Select / move')],['marquee',t('框选','Box select')],['pen',t('钢笔','Pen')],['rectangle',t('矩形','Rectangle')],['ellipse',t('椭圆','Ellipse')]])tools.append(element('button',{text:label,class:this.tool===tool?'active':'',onclick:()=>{this.tool=tool;this.drawing=[];this.render();}}));
     const curve=element('select',{'aria-label':t('曲线类型','Curve type')},[['line',t('直线','Line')],['qcurve',t('二次曲线','Quadratic')],['curve',t('三次曲线','Cubic')]].map(([value,label])=>element('option',{value,text:label})));curve.value=this.curveType;curve.onchange=()=>this.curveType=curve.value;tools.append(element('label',{class:'row'},t('吸附','Snap'),element('input',{type:'number',min:0,max:100,value:this.snap,style:'width:64px','aria-label':t('吸附步长','Snap interval'),onchange:event=>this.snap=Math.max(0,finite(event.target.value))})),element('button',{text:'−',onclick:()=>{this.zoom=Math.max(.2,this.zoom/1.25);setView();}}),element('button',{text:'+',onclick:()=>{this.zoom=Math.min(15,this.zoom*1.25);setView();}}),curve,element('button',{text:t('闭合轮廓','Close contour'),onclick:()=>{if(this.drawing.length>1)e.perform('outline.addContour',{glyph:g.name,points:this.drawing,closed:true}).then(()=>this.drawing=[]).catch(()=>{});}}),element('button',{text:t('完成开放轮廓','Finish open contour'),onclick:()=>{if(this.drawing.length>1)e.perform('outline.addContour',{glyph:g.name,points:this.drawing,closed:false}).catch(()=>{});}}),element('button',{text:t('平滑节点','Smooth points'),onclick:()=>e.showAction(e.command('point.smooth'))}),element('button',{text:t('删除节点','Delete points'),onclick:()=>e.perform('point.delete',{glyph:g.name}).catch(()=>{})}));
+    tools.append(element('label',{},element('input',{type:'checkbox',checked:this.fingerDrawing,'aria-label':t('手指绘图','Finger drawing'),onchange:event=>e.perform('font.ui.tool',{fingerDrawing:event.target.checked}).catch(()=>{})}),t('手指绘图','Finger drawing')));
     const svg=svgNode('svg',{class:'font-outline',tabindex:0,'aria-label':t('字形轮廓画布','Glyph outline canvas')}),group=svgNode('g',{transform:'scale(1,-1)'});svg.append(group);this.surface.append(svg);
     const baseWidth=Math.max(info.unitsPerEm,g.advance)+180,baseHeight=info.ascender-info.descender+180;
     const setView=()=>{svg.setAttribute('viewBox',`${-90+this.pan[0]} ${-info.ascender-90+this.pan[1]} ${baseWidth/this.zoom} ${baseHeight/this.zoom}`);};setView();
@@ -50,17 +54,48 @@ export class FontView {
       for(const a of current.anchors){const node=svgNode('text',{x:a.x,y:-a.y,transform:'scale(1,-1)',fill:'#ce7836','font-size':12/this.zoom});node.textContent=a.name;group.append(node);}
       if(this.drawing.length){group.append(svgNode('path',{d:'M'+this.drawing.map(p=>`${p.x} ${p.y}`).join('L'),fill:'none',stroke:'#2879c7','stroke-width':2,'vector-effect':'non-scaling-stroke'}));for(const p of this.drawing)group.append(svgNode('circle',{cx:p.x,cy:p.y,r:4,fill:'#2879c7'}));}
     };render();
-    const coordinate=event=>{const p=new DOMPoint(event.clientX,event.clientY).matrixTransform(svg.getScreenCTM().inverse());let x=p.x,y=-p.y;if(this.snap){x=Math.round(x/this.snap)*this.snap;y=Math.round(y/this.snap)*this.snap;}return {x,y};};let drag=null;const touches=new Map();
-    svg.addEventListener('pointerdown',event=>{svg.focus();touches.set(event.pointerId,[event.clientX,event.clientY]);svg.setPointerCapture(event.pointerId);const position=coordinate(event),id=event.target.dataset.point;if(touches.size===2){const values=[...touches.values()];drag={pinch:true,distance:Math.hypot(values[1][0]-values[0][0],values[1][1]-values[0][1]),zoom:this.zoom,pan:[...this.pan],center:values[0].map((v,i)=>(v+values[1][i])/2)};return;}
-      if(this.tool==='marquee'){drag={marquee:true,start:position,end:position,append:event.shiftKey};return;}
-      if(this.tool==='pen'){const controls=this.curveType==='curve'?2:this.curveType==='qcurve'?1:0,segment=this.drawing.length?this.drawing.slice(1).length%(controls+1):controls;this.drawing.push(point(position.x,position.y,!this.drawing.length?'line':segment<controls?'offcurve':this.curveType));render();return;}
-      if(this.tool==='rectangle'||this.tool==='ellipse'){drag={shape:this.tool,start:position};return;}
-      if(id){const old=e.selection?.points??[],ids=event.shiftKey?(old.includes(id)?old.filter(v=>v!==id):[...old,id]):old.includes(id)?old:[id];e.selection={glyph:g.name,points:ids};draft=clone(g);drag={start:position,original:clone(g),ids:new Set(ids)};render();e.inspector.replaceChildren();this.inspector();}
-      else drag={pan:true,start:[event.clientX,event.clientY],original:[...this.pan]};
+    const coordinate=(event,snap=true)=>{const p=new DOMPoint(event.clientX,event.clientY).matrixTransform(svg.getScreenCTM().inverse());let x=p.x,y=-p.y;if(snap&&this.snap){x=Math.round(x/this.snap)*this.snap;y=Math.round(y/this.snap)*this.snap;}return {x,y};};let drag=null;const touches=new Map();let fingerNavigationOnly=false;
+    const fingers=()=>[...touches.entries()].filter(([,p])=>p.kind==='touch');
+    const cancelDraft=()=>{if(drag?.pen)this.drawing.length=drag.drawingBefore;if(drag?.selection)e.selection=clone(drag.selection);draft=null;drag=null;render();};
+    const panFrom=(id,p)=>({pan:true,navigation:true,owner:id,input:p.kind,start:[p.x,p.y],original:[...this.pan]});
+    svg.addEventListener('pointerdown',event=>{
+      if(!current())return;const kind=event.pointerType||'mouse';svg.focus();touches.set(event.pointerId,{x:event.clientX,y:event.clientY,kind});svg.setPointerCapture(event.pointerId);
+      const currentFingers=fingers();
+      // A finger alongside Pencil/mouse is navigation-only until lifted and
+      // cannot alter the viewport under that precise pointer's active stroke.
+      if(kind==='touch'&&drag&&!['touch',undefined].includes(drag.input)){fingerNavigationOnly=true;return;}
+      if(kind!=='touch'&&currentFingers.length)fingerNavigationOnly=true;
+      if(currentFingers.length>=2&&kind==='touch'){
+        fingerNavigationOnly=true;cancelDraft();const values=currentFingers.map(([,p])=>p),center={clientX:(values[0].x+values[1].x)/2,clientY:(values[0].y+values[1].y)/2};
+        drag={pinch:true,input:'touch',distance:Math.hypot(values[1].x-values[0].x,values[1].y-values[0].y),zoom:this.zoom,pan:[...this.pan],anchor:coordinate(center,false)};return;
+      }
+      if(!outlineInputCanEdit(kind,this.fingerDrawing)||kind==='touch'&&fingerNavigationOnly){drag=panFrom(event.pointerId,touches.get(event.pointerId));return;}
+      const position=coordinate(event),id=event.target.dataset.point,selection=clone(e.selection),begin=value=>drag={...value,owner:event.pointerId,input:kind,selection};
+      if(this.tool==='marquee'){begin({marquee:true,start:position,end:position,append:event.shiftKey});return;}
+      if(this.tool==='pen'){begin({pen:true,drawingBefore:this.drawing.length});const controls=this.curveType==='curve'?2:this.curveType==='qcurve'?1:0,segment=this.drawing.length?this.drawing.slice(1).length%(controls+1):controls;this.drawing.push(point(position.x,position.y,!this.drawing.length?'line':segment<controls?'offcurve':this.curveType));render();return;}
+      if(this.tool==='rectangle'||this.tool==='ellipse'){begin({shape:this.tool,start:position});return;}
+      if(this.tool==='pan'){drag=panFrom(event.pointerId,touches.get(event.pointerId));return;}
+      if(id){const old=e.selection?.points??[],ids=event.shiftKey?(old.includes(id)?old.filter(v=>v!==id):[...old,id]):old.includes(id)?old:[id];e.selection={glyph:g.name,points:ids};draft=clone(g);begin({start:position,original:clone(g),ids:new Set(ids)});render();e.inspector.replaceChildren();this.inspector();}
+      else drag=panFrom(event.pointerId,touches.get(event.pointerId));
     });
-    svg.addEventListener('pointermove',event=>{if(!touches.has(event.pointerId))return;touches.set(event.pointerId,[event.clientX,event.clientY]);if(drag?.pinch&&touches.size===2){const values=[...touches.values()],distance=Math.hypot(values[1][0]-values[0][0],values[1][1]-values[0][1]);this.zoom=Math.max(.2,Math.min(15,drag.zoom*distance/(drag.distance||1)));setView();return;}if(drag?.marquee){drag.end=coordinate(event);render();group.append(svgNode('rect',{x:Math.min(drag.start.x,drag.end.x),y:Math.min(drag.start.y,drag.end.y),width:Math.abs(drag.start.x-drag.end.x),height:Math.abs(drag.start.y-drag.end.y),fill:'#2879c722',stroke:'#2879c7','vector-effect':'non-scaling-stroke'}));return;}if(drag?.pan){const scale=baseWidth/this.zoom/svg.clientWidth;this.pan=[drag.original[0]-(event.clientX-drag.start[0])*scale,drag.original[1]-(event.clientY-drag.start[1])*scale];setView();return;}if(!drag?.original||!draft)return;const p=coordinate(event),dx=p.x-drag.start.x,dy=p.y-drag.start.y;draft=clone(drag.original);moveGlyphPoints(draft,drag.original.contours.flat().filter(p=>drag.ids.has(p.id)).map(p=>({id:p.id,x:p.x+dx,y:p.y+dy})));render();});
-    svg.addEventListener('pointerup',event=>{touches.delete(event.pointerId);if(drag?.marquee){const a=drag.start,b=drag.end,ids=g.contours.flat().filter(p=>p.x>=Math.min(a.x,b.x)&&p.x<=Math.max(a.x,b.x)&&p.y>=Math.min(a.y,b.y)&&p.y<=Math.max(a.y,b.y)).map(p=>p.id);e.selection={glyph:g.name,points:[...new Set([...(drag.append?e.selection?.points??[]:[]),...ids])]};this.e.inspector.replaceChildren();this.inspector();render();}else if(drag?.shape){const end=coordinate(event),a=drag.start;e.perform('outline.shape',{glyph:g.name,shape:drag.shape,x:Math.min(a.x,end.x),y:Math.min(a.y,end.y),width:Math.abs(end.x-a.x),height:Math.abs(end.y-a.y)}).catch(()=>{});}else if(draft&&drag?.original){const before=new Map(g.contours.flat().map(p=>[p.id,p])),changes=draft.contours.flat().filter(p=>p.x!==before.get(p.id).x||p.y!==before.get(p.id).y).map(({id,x,y})=>({id,x,y}));if(changes.length)e.perform('point.move',{glyph:g.name,points:changes,follow:false}).catch(()=>{});}draft=null;drag=null;});
-    svg.addEventListener('pointercancel',()=>{touches.clear();draft=null;drag=null;render();});
+    svg.addEventListener('pointermove',event=>{
+      if(!current())return;const previous=touches.get(event.pointerId);if(!previous)return;touches.set(event.pointerId,{...previous,x:event.clientX,y:event.clientY});
+      if(drag?.pinch){const values=fingers().map(([,p])=>p);if(values.length<2)return;const distance=Math.hypot(values[1].x-values[0].x,values[1].y-values[0].y),center={clientX:(values[0].x+values[1].x)/2,clientY:(values[0].y+values[1].y)/2};this.zoom=Math.max(.2,Math.min(15,drag.zoom*distance/(drag.distance||1)));this.pan=[...drag.pan];setView();const now=coordinate(center,false);this.pan=[drag.pan[0]+drag.anchor.x-now.x,drag.pan[1]+now.y-drag.anchor.y];setView();return;}
+      if(drag?.owner!==event.pointerId)return;
+      if(drag?.marquee){drag.end=coordinate(event);render();group.append(svgNode('rect',{x:Math.min(drag.start.x,drag.end.x),y:Math.min(drag.start.y,drag.end.y),width:Math.abs(drag.start.x-drag.end.x),height:Math.abs(drag.start.y-drag.end.y),fill:'#2879c722',stroke:'#2879c7','vector-effect':'non-scaling-stroke'}));return;}
+      if(drag?.pan){const scale=baseWidth/this.zoom/svg.clientWidth;this.pan=[drag.original[0]-(event.clientX-drag.start[0])*scale,drag.original[1]-(event.clientY-drag.start[1])*scale];setView();return;}
+      if(!drag?.original||!draft)return;const p=coordinate(event),dx=p.x-drag.start.x,dy=p.y-drag.start.y;draft=clone(drag.original);moveGlyphPoints(draft,drag.original.contours.flat().filter(p=>drag.ids.has(p.id)).map(p=>({id:p.id,x:p.x+dx,y:p.y+dy})));render();
+    });
+    svg.addEventListener('pointerup',event=>{
+      if(!current())return;touches.delete(event.pointerId);
+      if(drag?.pinch){const remaining=fingers();drag=remaining.length===1?panFrom(remaining[0][0],remaining[0][1]):null;draft=null;if(!remaining.length)fingerNavigationOnly=false;return;}
+      if(drag?.owner!==event.pointerId){if(!fingers().length)fingerNavigationOnly=false;return;}
+      if(drag?.marquee){const a=drag.start,b=drag.end,ids=g.contours.flat().filter(p=>p.x>=Math.min(a.x,b.x)&&p.x<=Math.max(a.x,b.x)&&p.y>=Math.min(a.y,b.y)&&p.y<=Math.max(a.y,b.y)).map(p=>p.id);e.selection={glyph:g.name,points:[...new Set([...(drag.append?e.selection?.points??[]:[]),...ids])]};this.e.inspector.replaceChildren();this.inspector();render();}
+      else if(drag?.shape){const end=coordinate(event),a=drag.start;e.perform('outline.shape',{glyph:g.name,shape:drag.shape,x:Math.min(a.x,end.x),y:Math.min(a.y,end.y),width:Math.abs(end.x-a.x),height:Math.abs(end.y-a.y)}).catch(()=>{});}
+      else if(draft&&drag?.original){const before=new Map(g.contours.flat().map(p=>[p.id,p])),changes=draft.contours.flat().filter(p=>p.x!==before.get(p.id).x||p.y!==before.get(p.id).y).map(({id,x,y})=>({id,x,y}));if(changes.length)e.perform('point.move',{glyph:g.name,points:changes,follow:false}).catch(()=>{});}
+      draft=null;drag=null;if(!fingers().length)fingerNavigationOnly=false;
+    });
+    svg.addEventListener('pointercancel',event=>{if(!current())return;touches.delete(event.pointerId);if(drag?.pinch){cancelDraft();const remaining=fingers();if(remaining.length===1)drag=panFrom(remaining[0][0],remaining[0][1]);}else if(drag?.owner===event.pointerId)cancelDraft();if(!fingers().length)fingerNavigationOnly=false;});
     svg.addEventListener('wheel',event=>{if(event.ctrlKey||event.metaKey){event.preventDefault();this.zoom=Math.max(.2,Math.min(15,this.zoom*Math.exp(-event.deltaY*.005)));setView();}},{passive:false});
     svg.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key==='a'){event.preventDefault();e.selection={glyph:g.name,points:g.contours.flat().map(p=>p.id)};render();}else if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();const step=event.shiftKey?10:1,dx=event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0,dy=event.key==='ArrowDown'?-step:event.key==='ArrowUp'?step:0;e.perform('point.move',{glyph:g.name,points:g.contours.flat().filter(p=>(e.selection?.points??[]).includes(p.id)).map(p=>({id:p.id,x:p.x+dx,y:p.y+dy}))}).catch(()=>{});}else if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();e.perform('point.delete',{glyph:g.name}).catch(()=>{});}else if(event.key==='Escape'){this.drawing=[];render();}else if(event.key==='Enter'&&this.drawing.length>1)e.perform('outline.addContour',{glyph:g.name,points:this.drawing}).catch(()=>{});});
   }

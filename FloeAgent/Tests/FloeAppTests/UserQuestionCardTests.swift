@@ -219,6 +219,93 @@ struct UserQuestionCardTests {
         ) == nil)
     }
 
+    @Test("Custom single answer is independent of note permission, exclusive and never complete while blank")
+    func customSingleAnswerIsExclusive() throws {
+        let model = UserQuestionCardModel(snapshot: try snapshot([
+            .init(question: "Choose", options: [.init(id: "a", label: "A")], allowsFreeText: false)
+        ]))
+        model.toggleOption("a")
+        #expect(model.canContinue)
+        model.selectCustomAnswer()
+        #expect(model.isCustomSelected)
+        #expect(model.selectedOptionIDs.isEmpty)
+        #expect(model.currentAnswer?.customText == "")
+        #expect(!model.canContinue)
+        model.setCustomText("  My own answer  ")
+        #expect(model.canContinue)
+        #expect(model.currentAnswer?.customText == "My own answer")
+        #expect(model.currentAnswer?.freeText == nil)
+        model.toggleOption("a")
+        #expect(!model.isCustomSelected)
+        #expect(model.currentAnswer?.customText == nil)
+        #expect(model.currentAnswer?.selectedOptionIDs == ["a"])
+    }
+
+    @Test("Multiple choices coexist with custom text but a selected empty custom answer remains incomplete")
+    func customMultipleAnswerCoexists() throws {
+        let model = UserQuestionCardModel(snapshot: try snapshot([
+            .init(question: "Choose many", options: [.init(id: "a", label: "A")],
+                  selection: .multiple, allowsFreeText: false)
+        ]))
+        model.toggleOption("a")
+        model.setCustomText("Another choice")
+        #expect(model.canContinue)
+        #expect(model.currentAnswer?.selectedOptionIDs == ["a"])
+        #expect(model.currentAnswer?.customText == "Another choice")
+        model.setCustomText("   ")
+        #expect(!model.canContinue)
+        model.selectCustomAnswer()
+        #expect(model.currentAnswer?.customText == nil)
+        #expect(model.canContinue)
+    }
+
+    @Test("Custom answers and notes survive navigation and reconstruct from the persisted typed draft")
+    func customDraftSurvivesNavigationAndReopen() throws {
+        var state = try snapshot([
+            .init(question: "First", options: [.init(id: "a", label: "A")], allowsFreeText: true),
+            .init(question: "Second")
+        ])
+        let model = UserQuestionCardModel(snapshot: state)
+        model.setCustomText("My choice")
+        model.revealNote()
+        model.setFreeText("Why I chose it")
+        state.questions[0].draftAnswer = model.currentAnswer
+        model.advance()
+        model.setFreeText("Second answer")
+        model.goBack()
+        #expect(model.isCustomSelected)
+        #expect(model.customText == "My choice")
+        #expect(model.freeText == "Why I chose it")
+        let restored = UserQuestionCardModel(snapshot: try JSONDecoder().decode(
+            UserQuestionWaitingSnapshot.self, from: JSONEncoder().encode(state)))
+        #expect(restored.currentAnswer?.customText == "My choice")
+        #expect(restored.currentAnswer?.freeText == "Why I chose it")
+        #expect(restored.canContinue)
+        restored.setCustomText("")
+        state.questions[0].draftAnswer = try restored.currentAnswer?.validated(for: state.questions[0], partial: true)
+        let blank = UserQuestionCardModel(snapshot: state)
+        #expect(blank.isCustomSelected)
+        #expect(!blank.canContinue)
+    }
+
+    @Test("Reused dictation targets custom answers and notes separately and ignores a previous field")
+    func customDictationKeepsNoteSeparate() throws {
+        let model = UserQuestionCardModel(snapshot: try snapshot([
+            .init(question: "Which?", options: [.init(id: "a", label: "A")], allowsFreeText: true)
+        ]))
+        #expect(model.dictationField == .customText)
+        model.applyDictatedText("My spoken answer")
+        #expect(model.customText == "My spoken answer")
+        #expect(model.freeText.isEmpty)
+        model.revealNote()
+        model.setDictatedText("late previous transcript", field: .customText)
+        #expect(model.customText == "My spoken answer")
+        model.applyDictatedText("A separate note")
+        #expect(model.freeText == "A separate note")
+        #expect(model.currentAnswer?.customText == "My spoken answer")
+        #expect(model.canContinue)
+    }
+
     @Test("A deadline question keeps its explicit deadline visible in the model")
     func deadlineMetadataIsPreserved() throws {
         let model = UserQuestionCardModel(snapshot: try snapshot([
