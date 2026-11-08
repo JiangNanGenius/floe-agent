@@ -25,7 +25,7 @@ internal fun LinuxDesktopDiagnosticsAction(state: LinuxDesktopState) {
         fun safe(value: String?) = value?.takeIf { it.matches(Regex("[A-Za-z0-9_.:-]{1,128}")) } ?: "-"
         val text = stringResource(R.string.linux_desktop_diagnostic_content,
             Build.VERSION.SDK_INT.toString(), "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-            safe(state.phase), safe(state.failureStage), safe(state.failureCode), safe(state.taskID),
+            safe(state.phase), safe(state.failureStage), safe(state.failureCode ?: state.failure), safe(state.taskID),
             safe(state.workspaceID), safe(state.environmentID), safe(state.runtimeGeneration))
         FloeConfirmDialog(title = stringResource(R.string.linux_desktop_diagnostics), message = text,
             confirmLabel = stringResource(R.string.linux_desktop_copy_details), dismissLabel = stringResource(R.string.done),

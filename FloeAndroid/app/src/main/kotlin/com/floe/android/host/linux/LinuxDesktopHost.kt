@@ -206,7 +206,14 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     frames = scope.launch(Dispatchers.IO) {
                         try { readFrames(session.id, owner) }
                         catch (cancelled: CancellationException) { throw cancelled }
-                        catch (_: Exception) { mutable.value = state.value.copy(phase = "failed", failure = "desktop_disconnected") }
+                        catch (failure: Exception) {
+                            if (live() && vncID == session.id) {
+                                reportOperationFailure("frames", failure)
+                                mutable.value = state.value.copy(phase = "failed",
+                                    vnc = state.value.vnc?.copy(state = "failed"),
+                                    failure = "desktop_disconnected")
+                            }
+                        }
                     }
                     refreshSoftware()
                     // Launch only for this new owned session, after its control
@@ -296,12 +303,12 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             } catch (timeout: TimeoutCancellationException) {
                 if (epoch == admittedEpoch && terminalID == token)
                     mutable.value = state.value.copy(softwareOperation = null, failure = "software_operation_failed")
-                reportFileFailure("application", timeout)
+                reportOperationFailure("application", timeout)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 if (epoch == admittedEpoch && terminalID == token)
                     mutable.value = state.value.copy(softwareOperation = null, failure = "software_operation_failed")
-                reportFileFailure("application", failure)
+                reportOperationFailure("application", failure)
             } finally { fileOpens.remove(operationID) }
         }
         fileOpens[operationID] = operation
@@ -417,19 +424,19 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                             }
                         } catch (cancelled: CancellationException) { throw cancelled }
                         catch (failure: Exception) {
-                            reportFileFailure("watch", failure)
+                            reportOperationFailure("watch", failure)
                             mutable.value = state.value.copy(failure = "file_return_failed")
                         }
                         delay(2_000)
                     }
                 }
             } catch (timeout: TimeoutCancellationException) {
-                reportFileFailure("open", timeout)
+                reportOperationFailure("open", timeout)
                 if (epoch == admittedEpoch && terminalID == token)
                     mutable.value = state.value.copy(failure = "file_return_failed")
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
-                reportFileFailure("open", failure)
+                reportOperationFailure("open", failure)
                 mutable.value = state.value.copy(failure = "file_return_failed")
             }
             finally { fileOpens.remove(operationID) }
@@ -479,7 +486,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                 }
             }
         } catch (failure: Exception) {
-            reportFileFailure("stop", failure)
+            reportOperationFailure("stop", failure)
             mutable.value = state.value.copy(phase = "save_pending", failure = "file_return_failed")
             return@withContext false
         }
@@ -522,13 +529,13 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             editReaders.clear()
             true
         } catch (failure: Exception) {
-            reportFileFailure("close_$closeStage", failure)
+            reportOperationFailure("close_$closeStage", failure)
             mutable.value = state.value.copy(phase = "close_pending", failure = "desktop_stop_pending")
             false
         }
     }
 
-    private fun reportFileFailure(stage: String, failure: Exception) {
+    private fun reportOperationFailure(stage: String, failure: Exception) {
         val code = when (failure) {
             is CommandFailure -> failure.code
             is LinuxDesktopFileBridge.Failure -> failure.code
@@ -537,15 +544,21 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             else -> failure.javaClass.simpleName
         }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
         mutable.value = state.value.copy(failureStage = stage, failureCode = code)
-        android.util.Log.w("FloeLinuxDesktop", "file_return_failed stage=$stage code=$code")
+        android.util.Log.w("FloeLinuxDesktop", "operation_failed stage=$stage code=$code")
     }
 
     private suspend fun readFrames(sessionID: String, owner: C05RemoteOwner) {
         while (currentCoroutineContext().isActive && live() && vncID == sessionID) {
             if (!visible) { delay(250); continue }
             val session = vncClient.status(sessionID, owner)
+            if (!live() || vncID != sessionID) return
             if (session.state in setOf("closed", "failed")) {
-                mutable.value = state.value.copy(phase = "failed", failure = "desktop_disconnected")
+                val safeCode = Regex("[A-Za-z0-9_]{1,80}")
+                mutable.value = state.value.copy(phase = "failed",
+                    vnc = state.value.vnc?.copy(state = session.state),
+                    failure = "desktop_disconnected",
+                    failureStage = session.failure?.stage?.takeIf { it.matches(safeCode) } ?: "frame_status",
+                    failureCode = session.failure?.code?.takeIf { it.matches(safeCode) } ?: "session_${session.state}")
                 return
             }
             val meta = C05VNCVideoNative.acquireFrame(epoch, owner.token, sessionID)
