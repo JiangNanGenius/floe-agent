@@ -22,4 +22,25 @@ class LinuxSetupDiagnosticTest {
         assertEquals("permission", LinuxSetupDiagnostic.fromFields("COMPONENT_BLOCKED", "component").category)
         assertEquals("unknown", LinuxSetupDiagnostic.fromFields("UNEXPECTED_IO", "publish").category)
     }
+
+    @Test fun componentPreparationFailuresAreDistinguishedAndActionable() {
+        // Every existing component-stage check boundary closes to its own
+        // category: storage for staging, component for bundle/identity/session.
+        assertEquals("storage", LinuxSetupDiagnostic.fromFields("COMPONENT_STAGING_UNAVAILABLE", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_ASSET_UNAVAILABLE", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_SIZE_EXCEEDED", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_DIGEST_MISMATCH", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_ARCHIVE_UNREADABLE", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_PACKAGE_MISMATCH", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_VERSION_MISMATCH", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_CERTIFICATE_UNAVAILABLE", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_IDENTITY_MISMATCH", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_SESSION_FAILED", "component").category)
+        assertEquals("component", LinuxSetupDiagnostic.fromFields("COMPONENT_INSTALL_FAILED", "component").category)
+        // Stage and closed codes survive the token gate unchanged.
+        val failure = LinuxSetupDiagnostic.fromFields("COMPONENT_DIGEST_MISMATCH", "component", "ComponentPreparation")
+        assertEquals("component", failure.stage)
+        assertEquals("COMPONENT_DIGEST_MISMATCH", failure.code)
+        assertEquals("ComponentPreparation", failure.exceptionType)
+    }
 }

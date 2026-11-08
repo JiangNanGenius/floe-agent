@@ -38,44 +38,82 @@ class BundledRuntimeInstaller(private val context: Context) {
             packages.packageInstaller.abandonSession(pending.sessionId)
         }
         val staging = File(context.cacheDir, "linux-component-install").apply { mkdirs() }
-        check(staging.canonicalFile.parentFile == context.cacheDir.canonicalFile && staging.isDirectory)
+        if (!(staging.canonicalFile.parentFile == context.cacheDir.canonicalFile && staging.isDirectory)) {
+            throw LinuxSetupException(ComponentInstallPolicy.diagnostic(
+                ComponentInstallRejection.STAGING_UNAVAILABLE))
+        }
         val apk = File(staging, "runtime.apk")
         try {
-            val expected = context.assets.open("linux-runtime/runtime.apk.sha256").bufferedReader().use { it.readText() }.trim()
-            require(expected.matches(Regex("[0-9a-f]{64}")))
-            val digest = MessageDigest.getInstance("SHA-256")
-            context.assets.open("linux-runtime/runtime.apk").use { input ->
-                java.io.FileOutputStream(apk).use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    var bytes = 0L
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        bytes += count
-                        check(bytes <= 512L * 1024 * 1024) { "Bundled runtime package exceeds its budget" }
-                        digest.update(buffer, 0, count); output.write(buffer, 0, count)
-                    }
-                    output.fd.sync()
-                }
+            val expected = try {
+                context.assets.open("linux-runtime/runtime.apk.sha256").bufferedReader().use { it.readText() }.trim()
+            } catch (failure: Exception) {
+                throw ComponentInstallPolicy.failure(ComponentInstallRejection.ASSET_UNAVAILABLE, failure)
             }
-            check(digest.digest().joinToString("") { "%02x".format(it) } == expected)
+            if (!expected.matches(Regex("[0-9a-f]{64}"))) {
+                throw LinuxSetupException(ComponentInstallPolicy.diagnostic(
+                    ComponentInstallRejection.ASSET_UNAVAILABLE))
+            }
+            val digest = MessageDigest.getInstance("SHA-256")
+            val source = try {
+                context.assets.open("linux-runtime/runtime.apk")
+            } catch (failure: Exception) {
+                throw ComponentInstallPolicy.failure(ComponentInstallRejection.ASSET_UNAVAILABLE, failure)
+            }
+            try {
+                source.use { input ->
+                    java.io.FileOutputStream(apk).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var bytes = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            bytes += count
+                            if (bytes > 512L * 1024 * 1024) {
+                                throw LinuxSetupException(ComponentInstallPolicy.diagnostic(
+                                    ComponentInstallRejection.SIZE_EXCEEDED))
+                            }
+                            digest.update(buffer, 0, count); output.write(buffer, 0, count)
+                        }
+                        output.fd.sync()
+                    }
+                }
+            } catch (failure: LinuxSetupException) {
+                throw failure
+            } catch (failure: Exception) {
+                throw ComponentInstallPolicy.failure(ComponentInstallRejection.COPY_FAILED, failure)
+            }
+            if (digest.digest().joinToString("") { "%02x".format(it) } != expected) {
+                throw LinuxSetupException(ComponentInstallPolicy.diagnostic(
+                    ComponentInstallRejection.DIGEST_MISMATCH))
+            }
             @Suppress("DEPRECATION")
-            val archive = checkNotNull(packages.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNING_CERTIFICATES))
+            val archive = packages.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNING_CERTIFICATES)
             @Suppress("DEPRECATION")
             val own = packages.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
-            check(archive.packageName == pair.runtime && archive.longVersionCode == own.longVersionCode)
-            fun certificates(info: android.content.pm.PackageInfo): Set<String> =
-                checkNotNull(info.signingInfo).apkContentsSigners.map { signature ->
-                    MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).joinToString("") { "%02x".format(it) }
-                }.toSet().also { check(it.isNotEmpty()) }
-            check(certificates(archive) == certificates(own)) { "Runtime signing identity differs" }
+            val rejection = ComponentInstallPolicy.rejectIdentity(
+                candidate = archive?.let {
+                    ComponentIdentity(
+                        packageName = it.packageName,
+                        longVersionCode = it.longVersionCode,
+                        signerSha256 = certificateDigests(it.signingInfo?.apkContentsSigners),
+                    )
+                },
+                expectedPackage = pair.runtime,
+                ownVersionCode = own.longVersionCode,
+                ownSignerSha256 = certificateDigests(own.signingInfo?.apkContentsSigners),
+            )
+            if (rejection != null) throw LinuxSetupException(ComponentInstallPolicy.diagnostic(rejection))
             val parameters = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
                 .apply {
                     setAppPackageName(pair.runtime); setSize(apk.length())
                     if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
                 }
             val installer = packages.packageInstaller
-            val sessionID = installer.createSession(parameters)
+            val sessionID = try {
+                installer.createSession(parameters)
+            } catch (failure: Exception) {
+                throw ComponentInstallPolicy.failure(ComponentInstallRejection.SESSION_FAILED, failure)
+            }
             try {
                 installer.openSession(sessionID).use { session ->
                     session.openWrite("runtime.apk", 0, apk.length()).use { output ->
@@ -89,8 +127,9 @@ class BundledRuntimeInstaller(private val context: Context) {
                     session.commit(callback.intentSender)
                 }
             } catch (failure: Exception) {
-                installer.abandonSession(sessionID)
-                throw failure
+                try { installer.abandonSession(sessionID) }
+                catch (cleanupFailure: Exception) { failure.addSuppressed(cleanupFailure) }
+                throw ComponentInstallPolicy.failure(ComponentInstallRejection.SESSION_FAILED, failure)
             }
             return Action.AwaitingSystem(sessionID)
         } finally {
@@ -98,6 +137,12 @@ class BundledRuntimeInstaller(private val context: Context) {
             apk.delete(); staging.delete()
         }
     }
+
+    /** Public certificate digests only; null/absent signers become an empty set. */
+    private fun certificateDigests(signers: Array<android.content.pm.Signature>?): Set<String> =
+        signers.orEmpty().map { signature ->
+            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).joinToString("") { "%02x".format(it) }
+        }.toSet()
 }
 
 /** Process-local UI handoff only; PackageInstaller owns durable session state. */

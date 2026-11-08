@@ -676,3 +676,6 @@ English: The next source batch passes37 focused updater tests,4 real BSD socket 
 - 累计退役80个自建测试任务（三星33、模拟器47）及12个测试计划；原有记录、项目与恢复副本保留。自有Android模拟器均关闭，三星常亮／权限恢复并睡眠，等待新APK。
 
 English: The shared Linux/VNC viewer now uses one compact toolbar, a recoverable fullscreen handle and one special-key strip. Full/Play Kotlin and the focused final notice change compile successfully; rendered Samsung behavior is pending. The Android9 component failure remains under investigation: current minimum-SDK and signature checks do not prove installation on the reported device. Alpha61 stays a private exact-artifact precursor; planned Alpha62 is a source checkpoint, not a published APK or completion of N01–N08.
+
+
+2026-11-09 组件专项代码补充：已将内置组件的原有检查失败拆为封闭的阶段码，区分读取、复制、摘要、包名／版本、证书及系统安装；取消与权限原因保留，异常原文不进入诊断。13项相关JVM检查及集成后的Full／Play Kotlin编译通过。外测索尼的具体失败点仍未证明；这批诊断改进不作为Android9故障销账或刷机依据。下一步固定源码、复用未改native23，生产并使用一份Full候选进行三星迭代。

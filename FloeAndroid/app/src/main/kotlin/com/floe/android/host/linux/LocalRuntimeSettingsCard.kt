@@ -89,6 +89,16 @@ fun LocalRuntimeSettingsCard() {
                         "compatibility" -> R.string.linux_failure_compatibility
                         "busy" -> R.string.linux_failure_busy
                         "runtime" -> R.string.linux_failure_runtime
+                        "component" -> when (failure.code) {
+                            "COMPONENT_ASSET_UNAVAILABLE", "COMPONENT_ARCHIVE_UNREADABLE",
+                            "COMPONENT_SIZE_EXCEEDED" -> R.string.linux_failure_component_archive
+                            "COMPONENT_DIGEST_MISMATCH", "COMPONENT_CERTIFICATE_UNAVAILABLE",
+                            "COMPONENT_IDENTITY_MISMATCH" -> R.string.linux_failure_component_verify
+                            "COMPONENT_PACKAGE_MISMATCH", "COMPONENT_VERSION_MISMATCH" -> R.string.linux_failure_component_version
+                            "COMPONENT_COPY_FAILED" -> R.string.linux_failure_component_copy
+                            "COMPONENT_SESSION_FAILED", "COMPONENT_INSTALL_FAILED" -> R.string.linux_failure_component_install
+                            else -> R.string.linux_failure_component
+                        }
                         else -> R.string.linux_failure_unknown
                     }), style = Floe.typography.body, color = Floe.colors.label)
                     var details by remember(failure) { mutableStateOf(false) }

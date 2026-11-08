@@ -17,4 +17,10 @@
     <string name="linux_environment_tools_ready">Local task execution is ready.</string>
     <string name="linux_environment_tools_prepare_terminal">Open a terminal in a task to finish preparing local tasks.</string>
     <string name="linux_environment_local_network">Allow local network access</string>
+    <string name="linux_failure_component">The runtime could not be prepared. Try again; if it repeats, send the diagnostic details.</string>
+    <string name="linux_failure_component_archive">The runtime installer could not be read. Download a fresh full installer and try again.</string>
+    <string name="linux_failure_component_verify">The runtime installer could not be verified. Download the matching full Floe installer and try again.</string>
+    <string name="linux_failure_component_version">The runtime installer does not match this Floe version. Update using a full installer, then try again.</string>
+    <string name="linux_failure_component_copy">The runtime installer could not be copied. Check free space, then try again.</string>
+    <string name="linux_failure_component_install">Android could not complete the runtime install. Check the system prompt, then try again or send the diagnostic details.</string>
 </resources>

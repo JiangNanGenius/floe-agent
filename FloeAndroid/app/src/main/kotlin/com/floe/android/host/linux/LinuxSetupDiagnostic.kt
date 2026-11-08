@@ -17,6 +17,14 @@ data class LinuxSetupDiagnostic(val code: String, val stage: String, val excepti
         "RUNTIME_BUSY", "environment_transaction_busy", "environment_transaction_requires_idle" -> "busy"
         "RUNTIME_CONNECTION_FAILED", "runtime_not_ready" -> "runtime"
         "COMPONENT_INCOMPATIBLE" -> "compatibility"
+        // Bundled runtime-component preparation boundaries: closed, finite
+        // codes so a component-stage failure names ONE check instead of
+        // collapsing into an undifferentiated IllegalStateException.
+        "COMPONENT_STAGING_UNAVAILABLE" -> "storage"
+        "COMPONENT_ASSET_UNAVAILABLE", "COMPONENT_COPY_FAILED", "COMPONENT_SIZE_EXCEEDED", "COMPONENT_DIGEST_MISMATCH",
+        "COMPONENT_ARCHIVE_UNREADABLE", "COMPONENT_PACKAGE_MISMATCH", "COMPONENT_VERSION_MISMATCH",
+        "COMPONENT_CERTIFICATE_UNAVAILABLE", "COMPONENT_IDENTITY_MISMATCH",
+        "COMPONENT_SESSION_FAILED", "COMPONENT_INSTALL_FAILED" -> "component"
         else -> "unknown"
     }
     companion object {
@@ -38,4 +46,4 @@ data class LinuxSetupDiagnostic(val code: String, val stage: String, val excepti
     }
 }
 
-internal class LinuxSetupException(val diagnostic: LinuxSetupDiagnostic) : Exception(diagnostic.code)
+internal class LinuxSetupException(val diagnostic: LinuxSetupDiagnostic, cause: Throwable? = null) : Exception(diagnostic.code, cause)
