@@ -184,7 +184,10 @@ public enum EDAExchange {
                 try text(component.reference+" "+component.value,placement.position + .init(0,4))
             }
             for label in sheet.labels{try text(label.name,label.position)}
-            for bus in sheet.buses{try line(bus.points,color:"blue",width:0.5);if let p=bus.points.first{try text(bus.name,p)}}
+            for bus in sheet.buses{
+                try line(bus.points,color:"blue",width:0.5);if let p=bus.points.first{try text(bus.name,p)}
+                for entry in bus.entries ?? [] {try line([entry.busPosition,entry.wirePosition],color:"blue",width:0.25)}
+            }
             for mark in sheet.noConnects{try line([mark.position + .init(-0.6,-0.6),mark.position + .init(0.6,0.6)],color:"blue");try line([mark.position + .init(-0.6,0.6),mark.position + .init(0.6,-0.6)],color:"blue")}
             try graphics(sheet.graphics)
         }

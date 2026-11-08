@@ -192,8 +192,9 @@ public struct LinuxShellCommandRouter: Sendable {
     public static func linuxRequiredOutput(command: String) -> LinuxCommandResult {
         let message = """
         \(command): Debian packages are managed only inside a Floe Linux environment, and no Linux environment is available for this shell yet. \
-        On this device the package entries are separate: Python packages install with the python.packages tool or the exec.localPython/exec.shell `packages` argument, \
-        Node packages with npm/pnpm, and signed WASI commands with the wasm.packages tool.
+        Choose a Linux environment in Settings → Execution → Environments, then prepare it and retry. \
+        In that environment, use the Python · PyPI page or normally reviewed exec.shell commands with an activated venv and python3 -m pip for Python dependencies; \
+        use npm/pnpm for Node dependencies, and wasm.packages for signed WASI commands.
         """
         return LinuxCommandResult(stdout: "", stderr: message, exitCode: 100)
     }

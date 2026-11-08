@@ -24,7 +24,7 @@ nonisolated enum StudioElectronicsContract {
         let limitations: [String]
     }
     static let commands = ["rename", "sheet.create", "component.place", "component.set", "component.remove",
-        "symbol.move", "wire.put", "label.put", "junction.put", "noConnect.put", "schematic.remove", "board.remove", "native.put", "undo", "redo"]
+        "symbol.move", "wire.put", "bus.unfold", "label.put", "junction.put", "noConnect.put", "schematic.remove", "board.remove", "native.put", "undo", "redo"]
     static let nativeKinds = ["symbolDefinition", "footprintDefinition", "component", "sheet", "symbolPlacement",
         "wire", "junction", "noConnect", "label", "bus", "sheetLink", "board", "footprint", "track", "via", "zone", "keepout", "hole", "simulation"]
     static let runActions = ["eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.refillCopper", "eda.export"]
@@ -36,6 +36,7 @@ nonisolated enum StudioElectronicsContract {
         "component.remove": "{op:component.remove,componentID:UUID}. Removes logical placements; the physical board is retained for explicit synchronization.",
         "symbol.move": "{op:symbol.move,sheetID:UUID,objectID:placement UUID,x:number,y:number,angle?:degrees,mirrored?:boolean}",
         "wire.put": "{op:wire.put,sheetID:UUID,id?:wire UUID,points:[{x:number,y:number},...]}. At least two points; an existing ID replaces that wire.",
+        "bus.unfold": "{op:bus.unfold,sheetID:UUID,busID:UUID,member:exact declared literal name,busPosition:{x:number,y:number},wirePoints:[{x:number,y:number},...],scope?:local|global|hierarchical}. One transaction creates a graphical entry, member label and ordinary wire. Entry geometry does not join bus members.",
         "label.put": "{op:label.put,sheetID:UUID,id?:label UUID,name:string,x:number,y:number,scope?:local|global|hierarchical}",
         "junction.put": "{op:junction.put,sheetID:UUID,id?:marker UUID,x:number,y:number}",
         "noConnect.put": "{op:noConnect.put,sheetID:UUID,id?:marker UUID,x:number,y:number}",
@@ -96,6 +97,7 @@ nonisolated enum StudioElectronicsContract {
             commandFormats: commandFormats,
             examplesJSON: String(decoding: bytes, as: UTF8.self), limitations: [
                 "Examples are alternatives, not a request to insert test components. Use actual IDs from this original.",
+                "bus.members are explicit literal net names, not vector ranges, groups or aliases. bus.entries is optional [{id:UUID,busPosition:{x,y},wirePosition:{x,y}}]; entries are graphical only. Use bus.unfold after explicitly choosing a member, or preserve existing real wires and member labels through native.put. Entry deletion removes only the drawing. Do not merge scalar nets merely because they touch a bus; run ERC and explicit forward annotation after edits. Hierarchical buses and alias expansion are not implemented.",
                 "native.put replaces one complete native record. Copy all encoded fields, omit nil optional fields, and preserve unknown source content. Extra keys are rejected with a field path.",
                 "Manual 45-degree routing, supported DRC and bounded vector zone refill are available. Refill shares the editor session/CAS/undo operation, retains isolated islands, reports precision, refuses unsupported geometry or incomplete four-spoke thermals, and does not implement neck minima, island removal or hatch fill. Shove routing, differential tuning and external EDA import remain unimplemented.",
                 "Gerber exports supported copper/profile artwork; Excellon exports represented holes and straight slots, separated by plating/span. Missing radius/current fill/plating fails explicitly. Mask/paste/silk/assembly and a complete factory data set are not generated. Set manufacturingFields through the existing native.put board/footprintDefinition/hole records before export; preserve full records and expectedRevision. Never delete unsupported graphics, zones or holes merely to get export success, and never invent fill geometry or plating.",
@@ -120,7 +122,7 @@ nonisolated enum StudioElectronicsContract {
         var edits: [EDAEdit] = [], candidate = project
         for (i, value) in values.enumerated() {
             if cancelled() { throw EDAError.cancelled }
-            edits += try command(value, project: candidate, path: "$[\(i)]")
+            edits += try command(value, project: candidate, path: "$[\(i)]", cancelled: cancelled)
             var preview = try EDAEditingSession(project: project)
             do { try preview.apply(edits, expectedRevision: project.revision, cancelled: cancelled) }
             catch { throw failure("$[\(i)]", String(describing: error)) }
@@ -128,7 +130,7 @@ nonisolated enum StudioElectronicsContract {
         }
         return .edits(edits)
     }
-    private static func command(_ v: [String: Any], project p: EDAProject, path: String) throws -> [EDAEdit] {
+    private static func command(_ v: [String: Any], project p: EDAProject, path: String, cancelled: @Sendable () -> Bool) throws -> [EDAEdit] {
         let op = try string(v, "op", path)
         func uuid(_ key: String) throws -> UUID { try id(v, key, path) }
         func point() throws -> EDAPoint { .init(try number(v, "x", path), try number(v, "y", path)) }
@@ -191,6 +193,20 @@ nonisolated enum StudioElectronicsContract {
                 return .init(try number(value, "x", at), try number(value, "y", at))
             }
             return [.putWire(sheet: try sheet(), .init(id: try optionalID(v, "id", path) ?? UUID(), points: points))]
+        case "bus.unfold":
+            try keys(v,["op","sheetID","busID","member","scope","busPosition","wirePoints"],path)
+            guard let position=v["busPosition"] as? [String:Any] else{throw failure(path+".busPosition","expected {x,y}")}
+            try keys(position,["x","y"],path+".busPosition")
+            guard let values=v["wirePoints"] as? [[String:Any]],(2...10_000).contains(values.count) else{throw failure(path+".wirePoints","use 2...10000 {x,y} points")}
+            let points=try values.enumerated().map{index,value -> EDAPoint in
+                let at=path+".wirePoints[\(index)]";try keys(value,["x","y"],at)
+                return .init(try number(value,"x",at),try number(value,"y",at))
+            }
+            let scopeName=try optionalString(v,"scope",path) ?? "local"
+            guard let scope=EDALabelScope(rawValue:scopeName) else{throw failure(path+".scope","use local, global or hierarchical")}
+            do{return try EDABusUnfold.newWire(project:p,sheetID:sheet(),busID:uuid("busID"),member:string(v,"member",path),scope:scope,
+                busPosition:.init(number(position,"x",path+".busPosition"),number(position,"y",path+".busPosition")),wirePoints:points,cancelled:cancelled).edits}
+            catch{throw failure(path,String(describing:error))}
         case "label.put":
             try keys(v, ["op", "sheetID", "id", "name", "x", "y", "scope"], path)
             let name = try optionalString(v, "scope", path) ?? "local"

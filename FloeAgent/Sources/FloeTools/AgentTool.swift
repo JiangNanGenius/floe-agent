@@ -136,6 +136,11 @@ public struct ToolExecutionOutcomeUnknownError: Error, Sendable, LocalizedError 
 /// Bounded UI summary with a transient full response; the digest covers all admitted bytes.
 public struct ToolExecutionOutput: Sendable {
     public var summary: String
+    /// Transient comparison-only digest issued by the native shell receipt
+    /// formatter. It excludes only that formatter's own elapsed duration;
+    /// the complete output and its SHA-256 remain unchanged. Never derive
+    /// this metadata by interpreting provider/tool-output text or JSON.
+    public var nativeShellOutcomeDigest: String? = nil
     /// Optional already-sanitized capture for runtime paging, separate from
     /// the short display summary. Producers must never supply raw logs here.
     public var capturedOutput: String?

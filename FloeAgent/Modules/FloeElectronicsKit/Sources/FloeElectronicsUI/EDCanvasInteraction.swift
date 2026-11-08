@@ -51,7 +51,10 @@ enum EDCanvasInteraction {
                 for graphic in definition.graphics { consider(graphicDistance(local, graphic), placement.id, 4) }
             }
             for wire in sheet.wires { consider(lineDistance(point, wire.points), wire.id, 3) }
-            for bus in sheet.buses { consider(max(0, lineDistance(point, bus.points) - 0.3), bus.id, 3) }
+            for bus in sheet.buses {
+                consider(max(0, lineDistance(point, bus.points) - 0.3), bus.id, 3)
+                for entry in bus.entries ?? [] { consider(max(0, EDAGeometry.pointDistance(point,to:entry.busPosition,entry.wirePosition)-0.125),entry.id,2) }
+            }
             for junction in sheet.junctions { consider(max(0, point.distance(to: junction.position) - 0.4), junction.id, 1) }
             for mark in sheet.noConnects {
                 let a = EDAPoint(0.6, 0.6), b = EDAPoint(0.6, -0.6)
@@ -156,29 +159,31 @@ enum EDCanvasInteraction {
     }
 
     private enum Item: Equatable {
-        case placement(EDASymbolPlacement), wire(EDAWire), junction(EDAJunction), label(EDANetLabel), noConnect(EDAJunction), bus(EDABus), link(EDASheetLink)
+        case placement(EDASymbolPlacement), wire(EDAWire), junction(EDAJunction), label(EDANetLabel), noConnect(EDAJunction), bus(EDABus), busEntry(bus:UUID,EDABusEntry), link(EDASheetLink)
         case footprint(EDAFootprint), track(EDATrack), via(EDAVia), zone(EDAZone), keepout(EDAKeepout), hole(EDAHole)
         case pin(EDAPin), pad(EDAPad)
         var id: UUID { switch self {
         case .placement(let v): v.id; case .wire(let v): v.id; case .junction(let v): v.id; case .label(let v): v.id
-        case .noConnect(let v): v.id; case .bus(let v): v.id; case .link(let v): v.id; case .footprint(let v): v.id
+        case .noConnect(let v): v.id; case .bus(let v): v.id; case .busEntry(_,let v): v.id; case .link(let v): v.id; case .footprint(let v): v.id
         case .track(let v): v.id; case .via(let v): v.id; case .zone(let v): v.id; case .keepout(let v): v.id
         case .hole(let v): v.id; case .pin(let v): v.id; case .pad(let v): v.id } }
         var locked: Bool { switch self { case .footprint(let v): v.locked; case .track(let v): v.locked; default: false } }
         var oriented: Bool { switch self {
-        case .placement, .footprint, .track, .wire, .bus, .zone, .keepout, .pad: true
+        case .placement, .footprint, .track, .wire, .bus, .busEntry, .zone, .keepout, .pad: true
         case .hole(let v): v.endPosition != nil
         default: false } }
         var points: [EDAPoint] { switch self {
         case .placement(let v): [v.position]; case .wire(let v): v.points; case .junction(let v): [v.position]
-        case .label(let v): [v.position]; case .noConnect(let v): [v.position]; case .bus(let v): v.points
+        case .label(let v): [v.position]; case .noConnect(let v): [v.position]; case .bus(let v): v.points + (v.entries ?? []).flatMap { [$0.busPosition,$0.wirePosition] }
+        case .busEntry(_,let v): [v.busPosition,v.wirePosition]
         case .link(let v): v.ports.map(\.position); case .footprint(let v): [v.position]; case .track(let v): v.points
         case .via(let v): [v.position]; case .zone(let v): v.outline; case .keepout(let v): v.outline
         case .hole(let v): [v.position] + (v.endPosition.map { [$0] } ?? []); case .pin(let v): [v.position]; case .pad(let v): [v.position] } }
         func copy() -> Item { let id = UUID(); switch self {
         case .placement(var v): v.id = id; return .placement(v); case .wire(var v): v.id = id; return .wire(v)
         case .junction(var v): v.id = id; return .junction(v); case .label(var v): v.id = id; return .label(v)
-        case .noConnect(var v): v.id = id; return .noConnect(v); case .bus(var v): v.id = id; return .bus(v)
+        case .noConnect(var v): v.id = id; return .noConnect(v); case .bus(let v): return .bus(EDABusEditing.duplicate(v))
+        case .busEntry(let bus,let v): return .busEntry(bus:bus,EDABusEditing.duplicate(v))
         case .link(var v): v.id = id; return .link(v); case .footprint(var v): v.id = id; return .footprint(v)
         case .track(var v): v.id = id; return .track(v); case .via(var v): v.id = id; return .via(v)
         case .zone(var v): v.id = id; return .zone(v); case .keepout(var v): v.id = id; return .keepout(v)
@@ -189,7 +194,8 @@ enum EDCanvasInteraction {
         case .junction(var v): v.position = point(v.position); return .junction(v)
         case .label(var v): v.position = point(v.position); return .label(v)
         case .noConnect(var v): v.position = point(v.position); return .noConnect(v)
-        case .bus(var v): v.points = v.points.map(point); return .bus(v)
+        case .bus(let v): return .bus(EDABusEditing.transformed(v,point:point))
+        case .busEntry(let bus,let v): return .busEntry(bus:bus,EDABusEditing.transformed(v,point:point))
         case .link(var v): for i in v.ports.indices { v.ports[i].position = point(v.ports[i].position) }; return .link(v)
         case .footprint(var v): v.position = point(v.position); v.angle = angle(v.angle); return .footprint(v)
         case .track(var v): v.points = v.points.map(point); return .track(v)
@@ -216,6 +222,7 @@ enum EDCanvasInteraction {
             all.append(contentsOf: v.symbols.map(Item.placement)); all.append(contentsOf: v.wires.map(Item.wire))
             all.append(contentsOf: v.junctions.map(Item.junction)); all.append(contentsOf: v.labels.map(Item.label))
             all.append(contentsOf: v.noConnects.map(Item.noConnect)); all.append(contentsOf: v.buses.map(Item.bus))
+            for bus in v.buses { all.append(contentsOf:(bus.entries ?? []).map{Item.busEntry(bus:bus.id,$0)}) }
             all.append(contentsOf: v.children.map(Item.link))
         case .symbol(let id):
             guard let v = project.symbols.first(where: { $0.id == id }) else { throw EDAError.missing("symbol") }; all = v.pins.map(Item.pin)
@@ -224,7 +231,10 @@ enum EDCanvasInteraction {
         }
         let selected = all.filter { ids.contains($0.id) }
         guard selected.count == ids.count else { throw EDAError.missing("selected canvas object") }
-        return selected.sorted { $0.id.uuidString < $1.id.uuidString }
+        // Selecting a bus and its owned entry transforms that entry once.
+        return selected.filter { value in
+            if case .busEntry(let parent,_) = value,ids.contains(parent){return false};return true
+        }.sorted { $0.id.uuidString < $1.id.uuidString }
     }
     private static func removal(_ values: [Item], project: EDAProject, context: EDADocumentContext) throws -> [EDAEdit] {
         switch context {
@@ -244,10 +254,25 @@ enum EDCanvasInteraction {
             case .footprint(let v): .putFootprint(board: id, v); case .track(let v): .putTrack(board: id, v); case .via(let v): .putVia(board: id, v)
             case .zone(let v): .putZone(board: id, v); case .keepout(let v): .putKeepout(board: id, v); case .hole(let v): .putHole(board: id, v)
             default: throw EDAError.invalid("board canvas object") } }
-        case .schematic(let id): return try values.map { value in switch value {
-            case .placement(let v): .placeSymbol(sheet: id, v); case .wire(let v): .putWire(sheet: id, v); case .junction(let v): .putJunction(sheet: id, v)
-            case .label(let v): .putLabel(sheet: id, v); case .noConnect(let v): .putNoConnect(sheet: id, v); case .bus(let v): .putBus(sheet: id, v)
-            case .link(let v): .putSheetLink(sheet: id, v); default: throw EDAError.invalid("schematic canvas object") } }
+        case .schematic(let id):
+            var edits:[EDAEdit]=[],buses:[UUID:EDABus]=[:]
+            for value in values { switch value {
+            case .placement(let v):edits.append(.placeSymbol(sheet:id,v))
+            case .wire(let v):edits.append(.putWire(sheet:id,v))
+            case .junction(let v):edits.append(.putJunction(sheet:id,v))
+            case .label(let v):edits.append(.putLabel(sheet:id,v))
+            case .noConnect(let v):edits.append(.putNoConnect(sheet:id,v))
+            case .bus(let v):buses[v.id]=v
+            case .busEntry(let parent,let v):
+                guard var bus=buses[parent] ?? project.sheets.first(where:{$0.id==id})?.buses.first(where:{$0.id==parent}) else{throw EDAError.missing("bus entry parent")}
+                var entries=bus.entries ?? []
+                if append{entries.append(v)}else if let index=entries.firstIndex(where:{$0.id==v.id}){entries[index]=v}else{throw EDAError.missing("bus entry")}
+                bus.entries=entries;buses[parent]=bus
+            case .link(let v):edits.append(.putSheetLink(sheet:id,v))
+            default:throw EDAError.invalid("schematic canvas object")
+            } }
+            edits += buses.values.sorted{$0.id.uuidString<$1.id.uuidString}.map{.putBus(sheet:id,$0)}
+            return edits
         case .symbol(let id):
             guard var definition = project.symbols.first(where: { $0.id == id }) else { throw EDAError.missing("symbol") }
             for item in values {

@@ -89,6 +89,7 @@ public enum EDAERC {
                 issues.append(.init(code: "undriven_input", severity: .warning, objectIDs: members.filter { $0.type == .input }.map { $0.reference.componentID }, netID: net.id))
             }
         }
+        issues += try EDABusDiagnostics.issues(project, netlist: netlist, cancelled: cancelled)
         return .init(projectID: project.id, revision: project.revision, netlist: netlist, issues: issues.sorted { $0.id < $1.id })
     }
 }

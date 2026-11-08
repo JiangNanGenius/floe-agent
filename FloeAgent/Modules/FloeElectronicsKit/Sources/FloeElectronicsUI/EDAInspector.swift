@@ -11,8 +11,13 @@ struct EDAInspector: View {
             if let placement = session.project.sheets.first(where: { $0.id == sheetID })?.symbols.first(where: { session.selection.objectIDs.contains($0.id) }),
                let component = session.project.components.first(where: { $0.id == placement.componentID }) {
                 EDComponentProperties(session: session, sheetID: sheetID, placement: placement, component: component).id(placement.id)
+            } else if let value=EDBusInspectorSelection.read(session.project,sheetID:sheetID,objectIDs:session.selection.objectIDs) {
+                switch value {
+                case .bus(let bus):EDBusProperties(session:session,sheetID:sheetID,value:bus).id(bus.id)
+                case .entry(let busID,let entry):EDBusEntryProperties(session:session,sheetID:sheetID,busID:busID,value:entry).id(entry.id)
+                }
             } else {
-                ContentUnavailableView(edText("未选择对象", "No selection"), systemImage: "cursorarrow", description: Text(edText("在画布上选择元件以编辑属性。", "Select a component on the canvas to edit its properties.")))
+                ContentUnavailableView(edText("未选择对象", "No selection"), systemImage: "cursorarrow", description: Text(edText("在画布上选择元件、总线或引出线以编辑属性。", "Select a component, bus or entry on the canvas to edit its properties.")))
             }
         case .board(let boardID):
             if let board = session.project.boards.first(where: { $0.id == boardID }) {

@@ -103,8 +103,15 @@ public enum EDAConnectivity {
         }
         var names: [String: Int] = [:]
         for (label, sheet, index) in labelNodes {
-            let key = (label.scope == .global ? "global" : sheet.uuidString) + ":" + label.name
-            if let other = names[key] { graph.join(index, other) } else { names[key] = index }
+            // Every label type participates in the sheet-local name first.
+            // A global label additionally bridges that name across sheets;
+            // it does not exclude same-named local/hierarchical labels here.
+            let localKey = sheet.uuidString + ":" + label.name
+            if let other = names[localKey] { graph.join(index, other) } else { names[localKey] = index }
+            if label.scope == .global {
+                let globalKey = "global:" + label.name
+                if let other = names[globalKey] { graph.join(index, other) } else { names[globalKey] = index }
+            }
         }
         for sheet in project.sheets {
             for link in sheet.children {

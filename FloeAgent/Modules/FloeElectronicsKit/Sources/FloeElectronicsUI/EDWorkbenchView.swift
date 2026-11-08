@@ -250,7 +250,8 @@ public struct EDWorkbenchView: View {
                                            symbolID: symbolID, footprintID: footprintID, labelName: labelName,
                                            layer: activeLayer, width: wireWidth, netID: netID, holeDiameter: holeDiameter,
                                            showGrid: showGrid, placementAngle: $placementAngle, placementFlipped: $placementFlipped,
-                                           onCancel: { tool = .select; libraryTool = .select }, onProperties: showProperties)
+                                           onCancel: { tool = .select; libraryTool = .select }, onProperties: showProperties,
+                                           onWireToolRequested: { tool = .wire })
                         } else { ContentUnavailableView(edText("选择图页或库项目", "Select a sheet or library item"), systemImage: "square.dashed") }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     if !compactPanels && inspectorVisible {

@@ -384,33 +384,37 @@ public struct LocalShellTool: AgentTool {
             let sanitizedErr = ShellOutputSanitizer.sanitizeReportingTruncation(stderr)
             let cleanOut = SecretRedactor.redact(sanitizedOut.text)
             let cleanErr = SecretRedactor.redact(sanitizedErr.text)
-            var text = prefix()
-            text += "exit=\(code) durationMs=\(durationMs) cwd=\(cwd) \(timeoutReceipt())"
-            if truncated { text += " stdoutTruncated" }
-            if stderrTruncated { text += " stderrTruncated" }
-            text += "\n--- stdout ---\n\(cleanOut)"
-            if !cleanErr.isEmpty { text += "\n--- stderr ---\n\(cleanErr)" }
+            let receiptPrefix = prefix() + "exit=\(code) durationMs="
+            var receiptSuffix = " cwd=\(cwd) \(timeoutReceipt())"
+            if truncated { receiptSuffix += " stdoutTruncated" }
+            if stderrTruncated { receiptSuffix += " stderrTruncated" }
+            receiptSuffix += "\n--- stdout ---\n\(cleanOut)"
+            if !cleanErr.isEmpty { receiptSuffix += "\n--- stderr ---\n\(cleanErr)" }
             // This capture is the complete RETAINED text for this run, but when
             // the transport cap or the sanitizer already cut stdout/stderr it
             // is NOT the command's whole raw output, and neither the job
             // artifact nor a result reader may claim otherwise.
             return Self.output(
-                text, exitStatus: code,
+                receiptPrefix + String(durationMs) + receiptSuffix, exitStatus: code,
                 captureTruncated: truncated || stderrTruncated
-                    || sanitizedOut.truncated || sanitizedErr.truncated)
+                    || sanitizedOut.truncated || sanitizedErr.truncated,
+                comparisonText: receiptPrefix + "0" + receiptSuffix)
         case .timedOut(let partialStdout, let partialStderr, let durationMs):
-            var text = prefix()
-            text += "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut \(timeoutReceipt())"
-            text += isBackground
+            let receiptPrefix = prefix() + "exit=124 durationMs="
+            var receiptSuffix = " cwd=\(cwd) status=timedOut \(timeoutReceipt())"
+            receiptSuffix += isBackground
                 ? "\nThe background command reached its effective deadline. Inspect existing outputs before explicitly continuing; do not blindly repeat side effects."
                 : "\nThe foreground command reached its effective deadline. Inspect existing outputs before explicitly continuing long work through jobs.submit; do not blindly repeat side effects."
             let cleanOut = SecretRedactor.redact(ShellOutputSanitizer.sanitize(partialStdout))
-            if !cleanOut.isEmpty { text += "\n--- stdout ---\n\(cleanOut)" }
+            if !cleanOut.isEmpty { receiptSuffix += "\n--- stdout ---\n\(cleanOut)" }
             let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(partialStderr))
-            if !cleanErr.isEmpty { text += "\n--- stderr ---\n\(cleanErr)" }
+            if !cleanErr.isEmpty { receiptSuffix += "\n--- stderr ---\n\(cleanErr)" }
             // A deadline stop leaves only partial output: declare the capture
             // incomplete instead of inventing a size for what was never read.
-            return Self.output(text, exitStatus: 124, captureTruncated: true)
+            return Self.output(
+                receiptPrefix + String(durationMs) + receiptSuffix,
+                exitStatus: 124, captureTruncated: true,
+                comparisonText: receiptPrefix + "0" + receiptSuffix)
         case .cancelled:
             // Cancellation returns a receipt with no collected stdout: the
             // command's output is unknown, so the capture is partial too.
@@ -439,12 +443,19 @@ public struct LocalShellTool: AgentTool {
     private static func output(
         _ text: String,
         exitStatus: Int32,
-        captureTruncated: Bool = false
+        captureTruncated: Bool = false,
+        comparisonText: String? = nil
     ) -> ToolExecutionOutput {
-        ToolExecutionOutput(
+        var output = ToolExecutionOutput(
             digesting: text,
             exitStatus: exitStatus,
             capturedOutput: text,
             capturedOutputTruncated: captureTruncated)
+        // Constructed alongside the native header, never by parsing command
+        // output. Business fields named durationMs in stdout/stderr survive.
+        output.nativeShellOutcomeDigest = comparisonText.map {
+            FloeDigest.sha256Hex(Data($0.utf8))
+        }
+        return output
     }
 }

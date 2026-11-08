@@ -167,6 +167,10 @@ public struct ToolResultCaptureInfo: Sendable, Codable, Hashable {
 /// excluded from identity because it describes the retention side record, not
 /// the settled result itself.
 public struct ToolResult: Sendable, Codable, Hashable {
+    /// Native execution-time hint used only by the unchanged-outcome guard.
+    /// Not Codable, part of identity, or a replacement for outputDigest.
+    /// Only the native exec.shell formatter supplies this separate digest.
+    public var nativeShellOutcomeDigest: String? = nil
     /// Transient sanitized capture: deliberately excluded from CodingKeys so
     /// checkpoints retain their bounded projection rather than large outputs.
     public var capturedOutput: String? = nil
@@ -252,6 +256,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
     /// retained record without carrying the body.
     public func durableProjection() -> ToolResult {
         var projected = self
+        projected.nativeShellOutcomeDigest = nil
         projected.capturedOutput = nil
         projected.ephemeralSensitiveOutput = nil
         projected.capturedOutputTruncated = false

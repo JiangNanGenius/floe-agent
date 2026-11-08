@@ -18,6 +18,7 @@ struct EDCanvasEditor:View {
     @Binding var placementFlipped:Bool
     let onCancel:()->Void
     let onProperties:()->Void
+    var onWireToolRequested:(()->Void)?=nil
     @State private var bounds:CGRect?
     @State private var center:EDAPoint?
     @State private var zoom=1.0
@@ -32,6 +33,8 @@ struct EDCanvasEditor:View {
     @State private var committing=false
     @State private var gestureGeneration=UUID()
     @State private var ownedEdit:Task<Void,Never>?
+    @State private var pendingBusUnfold:EDBusUnfoldDraft?
+    @State private var choosingBusMember=false
     private var editingEnabled:Bool{!committing && !session.busy && !session.isRouting && !session.isFilling && !session.isClosed}
     private var tool:EDCanvasTool {
         switch mode { case .schematic(let value),.board(let value):return value;default:return .select }
@@ -59,7 +62,8 @@ struct EDCanvasEditor:View {
             gestureStatus
             drawing
             if !session.selection.objectIDs.isEmpty && session.selection.context==context {selectionActions}
-        }
+        }.popover(isPresented:$choosingBusMember){if let bus=selectedBus{EDBusMemberPicker(bus:bus){beginBusUnfold($0)}}}
+
     }
     private var drawing:some View {
         GeometryReader{geometry in
@@ -71,6 +75,7 @@ struct EDCanvasEditor:View {
                     EDAPlot.draw(project:session.project,context:context,projection:projection,selected:session.selection.objectIDs,selectionOffset:offset,in:&canvas)
                     if let previewGraphic{EDAPlot.drawPreview(previewGraphic,projection:projection,in:&canvas)}
                     if tool == .place,!isLibraryContext{EDAPlot.drawPlacement(project:session.project,context:context,definitionID:placementDefinitionID,position:pointer ?? projection.center,angle:placementAngle,flipped:placementFlipped,projection:projection,in:&canvas)}
+                    if let draft=pendingBusUnfold,let tip=anchor ?? pointer{EDAPlot.drawPolylinePreview([draft.busPosition,tip],projection:projection,in:&canvas)}
                     if let anchor,let pointer{
                         let points=wirePoints(from:anchor,to:connectionPoint(pointer,tolerance:Self.hitTolerance(for:projection)))
                         EDAPlot.drawPolylinePreview(points,projection:projection,in:&canvas)
@@ -104,7 +109,7 @@ struct EDCanvasEditor:View {
             }
             .onAppear{fit();if let request=session.focusRequest,request.context==context{center=request.positionMillimetres}}
             .onChange(of:context){_,_ in fit();resetGesture();if let request=session.focusRequest,request.context==context{center=request.positionMillimetres}}
-            .onChange(of:mode){_,_ in resetGesture()}.onChange(of:layer){_,_ in anchor=nil}
+            .onChange(of:mode){_,newMode in if pendingBusUnfold != nil,case .schematic(.wire)=newMode{return};resetGesture()}.onChange(of:layer){_,_ in anchor=nil}
             .onChange(of:session.fingerDrawingEnabled){_,_ in resetGesture()}
             .onDisappear{resetGesture()}
             .onChange(of:session.focusRequest){_,request in if let request,request.context==context{center=request.positionMillimetres}}
@@ -112,6 +117,7 @@ struct EDCanvasEditor:View {
     }
     private var placementDefinitionID:UUID?{if case .board=context{return footprintID};return symbolID}
     private var drawingInstruction:String{
+        if let draft=pendingBusUnfold{return draft.member + " · " + (anchor == nil ? edText("点选引出端，再继续连线","Choose the entry tip, then continue the wire"):edText("继续点按连线；取消放弃本次展开","Continue the wire; cancel to discard this unfold"))}
         if isLibraryContext{return edText("直接绘制或拖动；选中后可调整属性","Draw or drag; select to adjust properties")}
         switch tool{
         case .select:return edText("点选对象，拖动移动","Select an object; drag to move")
@@ -153,6 +159,7 @@ struct EDCanvasEditor:View {
             Button{editSelection(.flip)}label:{Image(systemName:"arrow.left.and.right.righttriangle.left.righttriangle.right").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("翻转","Flip"))
                 .disabled(!selectionCapabilities.contains(.flip))
             Menu{
+                if selectedBus != nil{Button(edText("展开成员…","Unfold member…"),systemImage:"arrow.up.right"){choosingBusMember=true}.disabled(onWireToolRequested == nil)}
                 Button(edText("复制","Duplicate"),systemImage:"plus.square.on.square"){editSelection(.duplicate)}
                     .disabled(!selectionCapabilities.contains(.duplicate))
                 Button(edText("删除","Delete"),systemImage:"trash",role:.destructive){editSelection(.delete)}
@@ -188,7 +195,18 @@ struct EDCanvasEditor:View {
         case .delete:editSelection(.delete)
         }
     }
-    private func resetGesture(){ownedEdit?.cancel();anchor=nil;dragStart=nil;dragEnd=nil;pointer=nil;polygon=[];movingIDs=[];draftRevision=nil;gestureGeneration=UUID()}
+    private func resetGesture(){ownedEdit?.cancel();anchor=nil;dragStart=nil;dragEnd=nil;pointer=nil;polygon=[];movingIDs=[];draftRevision=nil;pendingBusUnfold=nil;choosingBusMember=false;gestureGeneration=UUID()}
+    private var selectedBus:EDABus?{
+        guard case .schematic(let sheet)=context,session.selection.objectIDs.count==1 else{return nil}
+        return session.project.sheets.first(where:{$0.id==sheet})?.buses.first{session.selection.objectIDs.contains($0.id)}
+    }
+    private func beginBusUnfold(_ member:String){
+        guard editingEnabled,case .schematic(let sheet)=context,let bus=selectedBus else{return}
+        do{
+            let draft=try EDBusUnfoldDraft(project:session.project,sheetID:sheet,busID:bus.id,member:member,at:pointer ?? bus.points.first ?? .zero)
+            resetGesture();pendingBusUnfold=draft;draftRevision=draft.source.revision;onWireToolRequested?()
+        }catch{session.report(error)}
+    }
     private func fit(){bounds=EDAPlot.bounds(session.project,context:context);center=nil;zoom=1}
     private func snapped(_ point:EDAPoint)->EDAPoint{session.snapToGrid ? point.snapped(to:session.gridSizeMillimetres):point}
     private func nearest(_ point:EDAPoint,tolerance:Double)->UUID?{EDCanvasInteraction.hit(project:session.project,context:context,at:point,tolerance:tolerance)}
@@ -238,7 +256,8 @@ struct EDCanvasEditor:View {
             switch context {
             case .schematic(let sheet):
                 let generation=gestureGeneration,expected=draftRevision ?? session.revision
-                apply([.putWire(sheet:sheet,.init(points:wirePoints(from:first,to:endpoint)))],expectedRevision:expected){if generation==gestureGeneration{anchor=endpoint;draftRevision=expected<UInt64.max ? expected+1:expected}}
+                if let draft=pendingBusUnfold{applyBusUnfold(draft,wirePoints:wirePoints(from:first,to:endpoint),endpoint:endpoint)}
+                else{apply([.putWire(sheet:sheet,.init(points:wirePoints(from:first,to:endpoint)))],expectedRevision:expected){if generation==gestureGeneration{anchor=endpoint;draftRevision=expected<UInt64.max ? expected+1:expected}}}
             default:break
             }
         case .junction:if case .schematic(let sheet)=context{apply([.putJunction(sheet:sheet,.init(position:p))])}
@@ -428,6 +447,19 @@ struct EDCanvasEditor:View {
         default:break
         }
         session.selection = .none
+    }
+    private func applyBusUnfold(_ draft:EDBusUnfoldDraft,wirePoints:[EDAPoint],endpoint:EDAPoint){
+        guard editingEnabled else{return};let generation=gestureGeneration;committing=true
+        ownedEdit=Task{
+            defer{committing=false;ownedEdit=nil}
+            let worker=Task.detached(priority:.userInitiated){try draft.plan(wirePoints:wirePoints,cancelled:{Task.isCancelled})}
+            do{
+                let plan=try await withTaskCancellationHandler(operation:{try await worker.value},onCancel:{worker.cancel()})
+                try Task.checkCancellation();try plan.validateSource(session.project)
+                try await session.apply(plan.edits,expectedRevision:plan.revision,cancelBeforeCommit:true)
+                if generation==gestureGeneration{pendingBusUnfold=nil;anchor=endpoint;draftRevision=plan.revision<UInt64.max ? plan.revision+1:plan.revision}
+            }catch{session.report(error)}
+        }
     }
     private func apply(_ edits:[EDAEdit],expectedRevision:UInt64?=nil,onSuccess:(()->Void)?=nil){
         guard !edits.isEmpty,editingEnabled else{return};let expected=expectedRevision ?? draftRevision ?? session.revision

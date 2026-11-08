@@ -145,13 +145,26 @@ public struct EDASheetLink: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// Graphical bus entry only. Electrical identity comes from real wire labels;
+/// these endpoints never create scalar graph nodes or short the bus members.
+public struct EDABusEntry: Codable, Hashable, Identifiable, Sendable {
+    public var id: UUID
+    public var busPosition: EDAPoint
+    public var wirePosition: EDAPoint
+    public init(id: UUID = UUID(), busPosition: EDAPoint, wirePosition: EDAPoint) {
+        self.id = id; self.busPosition = busPosition; self.wirePosition = wirePosition
+    }
+}
+
 public struct EDABus: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
     public var members: [String]
     public var points: [EDAPoint]
-    public init(id: UUID = UUID(), name: String, members: [String], points: [EDAPoint]) {
-        self.id = id; self.name = name; self.members = members; self.points = points
+    /// Nil preserves old originals with no entry metadata.
+    public var entries: [EDABusEntry]?
+    public init(id: UUID = UUID(), name: String, members: [String], points: [EDAPoint], entries: [EDABusEntry]? = nil) {
+        self.id = id; self.name = name; self.members = members; self.points = points; self.entries = entries
     }
 }
 

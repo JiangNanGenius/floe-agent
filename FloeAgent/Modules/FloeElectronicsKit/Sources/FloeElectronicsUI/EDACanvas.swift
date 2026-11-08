@@ -34,6 +34,8 @@ enum EDAPlot {
         case .schematic(let id):
             if let sheet=project.sheets.first(where:{$0.id==id}) {
                 points=sheet.wires.flatMap(\.points)+sheet.symbols.flatMap { [$0.position + .init(-10,-10),$0.position + .init(10,10)] }+sheet.labels.map(\.position)
+                points += sheet.buses.flatMap(\.points)
+                points += sheet.buses.flatMap { ($0.entries ?? []).flatMap { [$0.busPosition,$0.wirePosition] } }
             }
         case .symbol(let id): points=project.symbols.first(where:{$0.id==id})?.pins.map(\.position) ?? []
         case .footprint(let id): points=project.footprints.first(where:{$0.id==id})?.pads.map(\.position) ?? []
@@ -157,7 +159,15 @@ enum EDAPlot {
             }
             for item in sheet.labels.prefix(10_000){label(item.name,item.position+offset(item.id),selected.contains(item.id) ? .cyan:.red)}
             for item in sheet.noConnects.prefix(10_000){line([item.position + .init(-0.6,-0.6),item.position + .init(0.6,0.6)],.blue);line([item.position + .init(-0.6,0.6),item.position + .init(0.6,-0.6)],.blue)}
-            for bus in sheet.buses.prefix(10_000){line(bus.points,.blue,0.6);if let point=bus.points.first{label(bus.name,point,.blue)}}
+            for bus in sheet.buses.prefix(10_000){
+                let busOffset=offset(bus.id)
+                line(bus.points.map{$0+busOffset},selected.contains(bus.id) ? .cyan:.blue,0.6)
+                if let point=bus.points.first{label(bus.name,point+busOffset,.blue)}
+                for entry in (bus.entries ?? []).prefix(20_000){
+                    let translation=busOffset != .zero ? busOffset:offset(entry.id)
+                    line([entry.busPosition+translation,entry.wirePosition+translation],selected.contains(entry.id) ? .cyan:.blue,0.25)
+                }
+            }
             graphics(sheet.graphics)
         case .symbol(let id):
             if let symbol=project.symbols.first(where:{$0.id==id}){

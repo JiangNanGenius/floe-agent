@@ -211,6 +211,11 @@ public struct EDAEditingSession: Sendable {
             value.sheets[i].junctions.removeAll { $0.id == object }; value.sheets[i].labels.removeAll { $0.id == object }
             value.sheets[i].noConnects.removeAll { $0.id == object }; value.sheets[i].buses.removeAll { $0.id == object }
             value.sheets[i].children.removeAll { $0.id == object }
+            for b in value.sheets[i].buses.indices {
+                if value.sheets[i].buses[b].entries != nil {
+                    value.sheets[i].buses[b].entries!.removeAll { $0.id == object }
+                }
+            }
         case .putBoard(let v): put(v, in: &value.boards)
         case .removeBoard(let id): value.boards.removeAll { $0.id == id }
         case .putFootprint(let id, let v): let i = try board(id); put(v, in: &value.boards[i].footprints)

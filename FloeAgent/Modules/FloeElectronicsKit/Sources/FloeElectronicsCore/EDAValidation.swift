@@ -65,12 +65,16 @@ public enum EDAValidation {
             try graphics(definition.graphics)
             try EDAGraphicLayers.validateLayout(graphics: definition.graphics, layers: definition.graphicLayers)
         }
+        let nonEntryIDs = EDABusEditing.objectIDs(project, includeEntries: false)
+        var entryIDs: Set<UUID> = []
         var parent: [UUID: UUID] = [:]
         for sheet in project.sheets {
             let ids = sheet.symbols.map(\.id) + sheet.wires.map(\.id) + sheet.junctions.map(\.id)
                 + sheet.labels.map(\.id) + sheet.noConnects.map(\.id) + sheet.buses.map(\.id) + sheet.children.map(\.id)
             try unique(ids, "sheet object IDs")
-            guard ids.count <= 200_000 else { throw EDAError.invalid("sheet limits") }
+            let entryCount = sheet.buses.reduce(0) { $0 + ($1.entries?.count ?? 0) }
+            guard ids.count <= 200_000, entryCount <= EDABusEditing.maximumEntries,
+                  ids.count + entryCount <= 200_000 else { throw EDAError.invalid("sheet limits") }
             for placement in sheet.symbols {
                 guard componentIDs.contains(placement.componentID), placement.unit > 0 else { throw EDAError.missing("component") }
                 try points([placement.position]); try finite(placement.angle)
@@ -80,7 +84,15 @@ public enum EDAValidation {
             for label in sheet.labels {
                 try points([label.position]); guard !label.name.isEmpty, label.name.utf8.count <= 4096 else { throw EDAError.invalid("net label") }
             }
-            for bus in sheet.buses { try points(bus.points, min: 2) }
+            for bus in sheet.buses {
+                try points(bus.points, min: 2)
+                for entry in bus.entries ?? [] {
+                    try points([entry.busPosition, entry.wirePosition])
+                    guard entry.busPosition.distance(to: entry.wirePosition) > EDAGeometry.tolerance else { throw EDAError.invalid("zero-length bus entry") }
+                    guard !nonEntryIDs.contains(entry.id), entryIDs.insert(entry.id).inserted else { throw EDAError.duplicate("global bus entry ID") }
+                    guard entryIDs.count <= EDABusEditing.maximumEntries else { throw EDAError.invalid("bus entry limits") }
+                }
+            }
             for link in sheet.children {
                 guard sheetIDs.contains(link.childSheetID), parent[link.childSheetID] == nil,
                       link.childSheetID != sheet.id else { throw EDAError.invalid("sheet hierarchy") }

@@ -321,7 +321,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 argumentsJSON: call.argumentsJSON,
                 context: context
             )
-            return ToolResult(
+            var result = ToolResult(
                 callID: call.id,
                 status: context.cancellation.isCancelled ? .cancelled : (output.requiresUserAction ? .needsUser : ((output.exitStatus ?? 0) == 0 ? .ok : .failed)),
                 outputSummary: ToolWorkflowGuidance.outputSummary(
@@ -353,6 +353,10 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outcomeUnknown: output.outcomeUnknown,
                 ephemeralSensitiveOutput: output.ephemeralSensitiveOutput
             )
+            if call.toolName == "exec.shell" {
+                result.nativeShellOutcomeDigest = output.nativeShellOutcomeDigest
+            }
+            return result
         } catch let error as ToolExecutionOutcomeUnknownError {
             let summary = "status=outcomeUnknown reference=\(error.reference)\n\(SecretRedactor.redact(error.message))\nReconnect and inspect the existing operation. Do not submit it again."
             return ToolResult(
@@ -5746,6 +5750,13 @@ public actor FloeAgentRuntime {
                     "Run output publication rejected: \(reason) The tool reported user-file outputs that could not be sealed to this exact call, so no output files were advertised. Reported result before rejection (untrusted, may be incomplete): \(prior)"
             }
         }
+        if finalized.status != result.status
+            || finalized.outputSummary != result.outputSummary
+            || finalized.outputDigest != result.outputDigest {
+            // A replacement/redacted receipt no longer matches the native
+            // formatter's comparison digest; retain the ordinary identity.
+            finalized.nativeShellOutcomeDigest = nil
+        }
         return finalized
     }
 
@@ -8190,7 +8201,8 @@ struct ToolLoopGuard {
         // The batch-level cycle key keeps both the canonical route and the
         // observable outcome, so genuinely changing observations break the
         // pattern instead of being stopped as a stall.
-        let batchOutcome = "\(result.status.rawValue)|\(result.outputDigest.isEmpty ? Self.digest(Data(result.outputSummary.utf8)) : result.outputDigest.lowercased())"
+        let observableOutput = Self.observableDigest(call: call, result: result)
+        let batchOutcome = "\(result.status.rawValue)|\(observableOutput)"
         currentBatchRoutes.insert("\(Self.canonicalRoute(for: call))|\(batchOutcome)")
         // Failure streak tracking applies to every tool and argument shape.
         var failureWarning: ToolLoopGuardrailDecision?
@@ -8210,9 +8222,6 @@ struct ToolLoopGuard {
             lastFailureExcerptByTool[call.toolName] = nil
         }
         let arguments = Self.canonicalDigest(call.argumentsJSON)
-        let observableOutput = result.outputDigest.isEmpty
-            ? Self.digest(Data(result.outputSummary.utf8))
-            : result.outputDigest.lowercased()
 
         if result.status == .ok, Self.isCatalogEnumerationTool(call.toolName) {
             let route = "\(call.toolName)|\(arguments)"
@@ -8278,6 +8287,19 @@ struct ToolLoopGuard {
 
     static func canonicalRoute(for call: ToolCall) -> String {
         "\(call.toolName)|\(canonicalDigest(call.argumentsJSON))"
+    }
+
+    private static func observableDigest(call: ToolCall, result: ToolResult) -> String {
+        // The native producer issues this transient digest while it builds
+        // its receipt. Never normalize arbitrary result text/JSON, including
+        // stdout/stderr that happen to contain durationMs. Durable results
+        // and all other tools keep their original full-output identity.
+        if call.toolName == "exec.shell", let digest = result.nativeShellOutcomeDigest {
+            return digest
+        }
+        return result.outputDigest.isEmpty
+            ? Self.digest(Data(result.outputSummary.utf8))
+            : result.outputDigest.lowercased()
     }
 
     private static func retryFenceKey(_ route: String, capabilityIdentity: String?) -> String {
