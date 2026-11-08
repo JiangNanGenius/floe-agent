@@ -10,7 +10,8 @@
 // FloeTransport streaming session, PublicNetworkTargetPolicy, redirect
 // revalidation delegate, cookie/credential-store-free ephemeral config,
 // 512 KiB-per-request internal clamp via send() and file-bounded download()).
-// (private source candidate; NOT compiled, NOT executed, NOT registered.)
+// This file is the production public-hub transport composed in
+// G02DomainServices.swift (SkillsRemoteTransportComposition.makePublicHubTransport).
 //
 // GitHub host allow-list (the narrowest honest adapter over the ORIGINAL
 // service): the iOS app reached the hub through SourceControlCenter (an
@@ -29,6 +30,20 @@
 // private-ref fetch is honestly refused (the capability stays declared;
 // Main's G03/connector lane owns the real backend). No token is read, no
 // auth header is fabricated.
+//
+// Signed transport-mirror policy (CONTRACT_V1): official GitHub is always
+// the first route. The service-owned AndroidHubMirrorPolicyStore keeps the
+// last verified, unexpired signed mirror list (detached Ed25519 under the
+// SAME pinned curated-hub trust) plus the monotonic generation floor; it
+// refreshes in the background at most once per six hours through the
+// compiled bootstrap routes only (atom → immutable commit → payload+sig,
+// never through the store itself — no recursive trust). Only bounded
+// network/server availability failures (HTTP 408/429/500/502/503/504, or a
+// typed URLError availability code) may advance to an approved mirror for
+// the SAME immutable repo/commit/path; cancellation, local, cache-only,
+// certificate/permission, 401/403/404, size and parse/signature/hash
+// failures fail closed on the route that produced them. No
+// Authorization/cookie/secret header is ever forwarded to a mirror origin.
 import Foundation
 import FloeCore
 import FloeSkills
@@ -39,12 +54,18 @@ import FloeAndroidWebTools
 
 public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
     private let http: HTTPRequestService
+    /// Service-owned signed mirror policy (last-good + generation floor).
+    private let mirrorPolicy: AndroidHubMirrorPolicyStore
 
     /// One transport, one session (AGENTS invariant): bind the SAME
     /// qualified HTTPRequestService used by the D1 web tools; do not
-    /// construct another URLSession here.
-    public init(http: HTTPRequestService) {
+    /// construct another URLSession here. The policy store is injected by
+    /// the composition with service-owned persistence; a nil-persistence
+    /// store still honours the same verify/floor semantics in memory.
+    public init(http: HTTPRequestService,
+                mirrorPolicy: AndroidHubMirrorPolicyStore = AndroidHubMirrorPolicyStore(persistenceURL: nil)) {
         self.http = http
+        self.mirrorPolicy = mirrorPolicy
     }
 
     enum TransportError: Error, Equatable {
@@ -71,6 +92,11 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
     /// Commit resolution ⇄ the original connector path's refs endpoint:
     /// GET api.github.com/repos/<owner>/<repo>/commits/<ref> reading the
     /// top-level "sha". Bounded ≤64 KiB via send().
+    ///
+    /// The signed mirror list has no role for the mutable GitHub API, so
+    /// resolution stays official-only; a failure here never initiates a
+    /// mirror route (the immutable commit is fixed before any mirrored
+    /// content fetch).
     public func resolveCommit(_ source: GitHubSkillSource) async throws -> String {
         let refPath = source.ref.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? source.ref
         let url = try Self.validated(url: URL(string:
@@ -95,47 +121,130 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
     /// through the bounded download path (oversized ⇒ deleted + typed
     /// error — the ORIGINAL download semantics, never a partial keep);
     /// smaller documents use send() within its 256 KiB internal clamp.
+    ///
+    /// Official GitHub is always the first route. When the canonical URL
+    /// is an approved hub raw shape, the verified same-content mirror
+    /// policy MAY order already-compiled mirrors after it; only bounded
+    /// availability failures advance, and every route serves the SAME
+    /// immutable commit/path bytes for the existing signature/digest/size
+    /// checks downstream.
     public func fetch(_ source: GitHubSkillSource, commit: String,
                       path: String) async throws -> Data {
         guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else {
             throw SkillUpgradeError.invalidCommit
         }
         let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
-        let url = try Self.validated(url: URL(string:
+        // Keep version '+' bytes canonically encoded for the exact Hub;
+        // unrelated repositories retain their original official-only path.
+        let canonical = AndroidHubMirrorTransport.rawFileURL(owner: source.owner,
+            repository: source.repository, commit: commit.lowercased(), path: path)
+        let url = try Self.validated(url: canonical ?? URL(string:
             "https://raw.githubusercontent.com/\(source.owner)/\(source.repository)/\(commit.lowercased())/\(encodedPath)")!)
-        if path.hasSuffix(".zip") {
-            return try await downloadBounded(url: url, maxBytes: 8_388_608)
-        }
-        let response = try await http.send(method: "GET", url: url,
-                                           headers: [:], body: nil,
-                                           timeout: 30,
-                                           maxResponseBytes: 262_144)
-        guard (200...299).contains(response.statusCode) else {
-            throw TransportError.status(response.statusCode)
-        }
-        guard !response.truncated else {
-            throw TransportError.oversized("document")
-        }
-        return Data(response.body.utf8)
+        return try await loadWithMirrorPolicy(url: url,
+                                              kind: path.hasSuffix(".zip") ? .boundedArchive : .document)
     }
 
     /// Finder envelope ingest (≤262 KiB exactly like the original cap at
     /// SkillsCenter:454-455). https-only + public-target policy is enforced
     /// by HTTPRequestService itself (PublicNetworkTargetPolicy: LAN/
-    /// loopback/CGNAT refused).
+    /// loopback/CGNAT refused). Mirrors apply only when the validated URL
+    /// is an approved hub raw shape; otherwise the envelope stays
+    /// official-only.
     public func fetchFinderEnvelope(url: URL) async throws -> Data {
         let target = try Self.validated(url: url)
-        let response = try await http.send(method: "GET", url: target,
-                                           headers: [:], body: nil,
-                                           timeout: 30,
-                                           maxResponseBytes: FinderSkillEnvelope.maximumEnvelopeBytes)
-        guard (200...299).contains(response.statusCode) else {
-            throw TransportError.status(response.statusCode)
+        return try await loadWithMirrorPolicy(url: target, kind: .envelope)
+    }
+
+    // MARK: - Signed mirror policy routing
+
+    private enum BodyKind {
+        /// Small document through send() (256 KiB internal clamp).
+        case document
+        /// Finder envelope through send() with the original 262 KiB cap.
+        case envelope
+        /// Zip package through the bounded file download (≤8 MiB).
+        case boundedArchive
+    }
+
+    /// Official route first; the verified policy may append already-compiled
+    /// mirrors for approved hub shapes. Non-approved shapes keep the exact
+    /// original official-only behaviour.
+    private func loadWithMirrorPolicy(url: URL, kind: BodyKind) async throws -> Data {
+        let policy = await mirrorPolicy.policyRefreshingIfNeeded { [self] in
+            try await self.downloadMirrorManifest()
         }
-        guard !response.truncated, response.body.utf8.count <= FinderSkillEnvelope.maximumEnvelopeBytes else {
-            throw TransportError.oversized("envelope")
+        let routes = AndroidHubMirrorTransport.candidates(for: url, roles: policy.roles)
+        guard !routes.isEmpty else {
+            return try await fetchBytes(url, kind: kind)
         }
-        return Data(response.body.utf8)
+        return try await AndroidHubMirrorTransport.load(url, roles: policy.roles) { [self] route in
+            try await self.fetchBytes(route, kind: kind)
+        }
+    }
+
+    /// One request over the ORIGINAL qualified service. HTTP-level failures
+    /// normalize onto the mirror classifier's typed surface; cancellation,
+    /// oversize and local file failures keep their original typed
+    /// semantics and therefore NEVER qualify for a mirror route.
+    private func fetchBytes(_ url: URL, kind: BodyKind, maximumBytes: Int = 262_144) async throws -> Data {
+        switch kind {
+        case .document:
+            let response = try await http.send(method: "GET", url: url,
+                                               headers: [:], body: nil,
+                                               timeout: 30,
+                                               maxResponseBytes: maximumBytes)
+            guard (200...299).contains(response.statusCode) else {
+                throw AndroidHubMirrorTransport.Failure.httpStatus(response.statusCode)
+            }
+            guard !response.truncated, response.body.utf8.count <= maximumBytes else {
+                throw TransportError.oversized("document")
+            }
+            return Data(response.body.utf8)
+        case .envelope:
+            let response = try await http.send(method: "GET", url: url,
+                                               headers: [:], body: nil,
+                                               timeout: 30,
+                                               maxResponseBytes: FinderSkillEnvelope.maximumEnvelopeBytes)
+            guard (200...299).contains(response.statusCode) else {
+                throw AndroidHubMirrorTransport.Failure.httpStatus(response.statusCode)
+            }
+            guard !response.truncated, response.body.utf8.count <= FinderSkillEnvelope.maximumEnvelopeBytes else {
+                throw TransportError.oversized("envelope")
+            }
+            return Data(response.body.utf8)
+        case .boundedArchive:
+            return try await downloadBounded(url: url, maxBytes: 8_388_608)
+        }
+    }
+
+    /// One immutable discovery snapshot, using compiled routes only. It
+    /// never calls the policy store and cannot recursively trust a mirror.
+    private func downloadMirrorManifest() async throws -> AndroidHubMirrorPolicyStore.Downloaded {
+        guard let atomURL = AndroidHubMirrorTransport.atomURL(
+            owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository) else {
+            throw AndroidHubMirrorManifestFailure.unavailable
+        }
+        let atom = try await AndroidHubMirrorTransport.load(atomURL, roles: .bundled) { [self] target in
+            try await self.fetchBytes(target, kind: .document)
+        }
+        try Task.checkCancellation()
+        let commit = try AndroidHubAtomCommit.extract(atom, owner: CuratedSkillHub.owner,
+                                                      repository: CuratedSkillHub.repository)
+        func fetch(_ path: String, maximumBytes: Int) async throws -> Data {
+            guard let url = AndroidHubMirrorTransport.rawFileURL(
+                owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository,
+                commit: commit, path: path) else {
+                throw AndroidHubMirrorManifestFailure.unavailable
+            }
+            return try await AndroidHubMirrorTransport.load(url, roles: .bundled) { [self] target in
+                try await self.fetchBytes(target, kind: .document, maximumBytes: maximumBytes)
+            }
+        }
+        async let payload = fetch(AndroidHubTransportMirrorManifest.payloadPath,
+                                  maximumBytes: AndroidHubTransportMirrorManifest.maximumPayloadBytes)
+        async let signature = fetch(AndroidHubTransportMirrorManifest.signaturePath,
+                                    maximumBytes: AndroidHubTransportMirrorManifest.maximumSignatureBytes)
+        return try await .init(payload: payload, signature: signature)
     }
 
     private func downloadBounded(url: URL, maxBytes: Int) async throws -> Data {
@@ -152,8 +261,22 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
             return data
         } catch let error as TransportError {
             throw error
-        } catch {
-            throw TransportError.status(-1)
+        } catch let error as HTTPRequestError {
+            // HTTP-level failures normalize onto the mirror classifier's
+            // typed surface so ONLY 408/429/5xx can advance a route; the
+            // original typed cancellation/oversize requests keep failing
+            // closed here.
+            if case .httpStatus(let code) = error {
+                throw AndroidHubMirrorTransport.Failure.httpStatus(code)
+            }
+            throw error
+        } catch let error as FloeError {
+            // download() types cooperative cancellation as FloeError.cancelled;
+            // surface it as cancellation (never a mirror-availability signal).
+            if case .cancelled = error {
+                throw CancellationError()
+            }
+            throw error
         }
     }
 }
@@ -200,5 +323,15 @@ public enum SkillsRemoteTransportComposition {
     public static func makePublicHubTransport(
         http: HTTPRequestService) -> any SkillsRemoteTransport {
         WebToolsSkillsRemoteTransport(http: http)
+    }
+
+    /// Production binding with a service-owned mirror-policy store: the
+    /// store (not any view or task) owns the atomic last-good record and
+    /// the monotonic generation floor; `persistenceURL` lives in
+    /// service-owned storage.
+    public static func makePublicHubTransport(
+        http: HTTPRequestService,
+        mirrorPolicy: AndroidHubMirrorPolicyStore) -> any SkillsRemoteTransport {
+        WebToolsSkillsRemoteTransport(http: http, mirrorPolicy: mirrorPolicy)
     }
 }

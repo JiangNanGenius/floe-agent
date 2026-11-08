@@ -294,6 +294,7 @@ final class TransportSink: @unchecked Sendable {
 
     enum SinkResponse {
         case response(URLResponse)
+        case failure(Error)
         case completedWithoutResponse
     }
     private typealias SinkResult = Result<(Data, URLResponse), Error>
@@ -303,6 +304,7 @@ final class TransportSink: @unchecked Sendable {
     private var task: URLSessionTask?
     private var response: URLResponse?
     private var responsePending: SinkResponse?
+    private var streamTerminalError: Error?
     private var collected = Data()
     private var terminalDelivered = false
     private var fenced = false
@@ -537,6 +539,7 @@ final class TransportSink: @unchecked Sendable {
                 }
                 if terminalDelivered {
                     if let response { return .response(response) }
+                    if let streamTerminalError { return .failure(streamTerminalError) }
                     return .completedWithoutResponse
                 }
                 pendingResponseWaiter = cont
@@ -546,6 +549,7 @@ final class TransportSink: @unchecked Sendable {
         }
         switch outcome {
         case .response(let httpResponse): return httpResponse
+        case .failure(let error): throw error
         case .completedWithoutResponse: throw IncrementalTransportError.noHTTPResponse
         }
     }
@@ -562,6 +566,7 @@ final class TransportSink: @unchecked Sendable {
     }
 
     private func recordStreamTerminalLocked(_ error: Error?) {
+        streamTerminalError = error
         terminalDelivered = true
         fenced = true
         terminalCounter.bump()
@@ -589,6 +594,7 @@ final class TransportSink: @unchecked Sendable {
             guard let waiter = pendingResponseWaiter else { return nil }
             pendingResponseWaiter = nil
             if let response { return (waiter, .response(response)) }
+            if let streamTerminalError { return (waiter, .failure(streamTerminalError)) }
             return (waiter, .completedWithoutResponse)
         }
         if let wake { wake.0.resume(with: .success(wake.1)) }

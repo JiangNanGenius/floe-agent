@@ -343,7 +343,12 @@ public final class G02InstalledComposition: @unchecked Sendable {
             stagingRoot: rootURL.appendingPathComponent("FloeAgent/SkillsStaging",
                                                         isDirectory: true),
             hostContext: hostContext,
-            transport: SkillsRemoteTransportComposition.makePublicHubTransport(),
+            transport: SkillsRemoteTransportComposition.makePublicHubTransport(
+                http: HTTPRequestService(),
+                mirrorPolicy: AndroidHubMirrorPolicyStore(
+                    persistenceURL: rootURL.appendingPathComponent("FloeAgent/GitHubTransport",
+                                                                   isDirectory: true)
+                        .appendingPathComponent("mirrors-state.v1.json"))),
             rewriter: SkillsModelRewriteComposition.makeAdapter(
                 database: database,
                 gateway: SecretGatewayRegistry.shared,

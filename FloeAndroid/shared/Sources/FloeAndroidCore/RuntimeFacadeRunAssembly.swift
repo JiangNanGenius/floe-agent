@@ -2,8 +2,8 @@
 //
 // RB-4 RunDomain REPAIR (job-047bee7a3eff4941) — the REAL native run-service
 // assembly factory, owned tool/child exact-token accounting, and the
-// non-blocking owned P8 maintenance-feed dispatch (private source candidate;
-// NOT compiled, NOT executed, NOT registered).
+// non-blocking owned P8 maintenance-feed dispatch. This is the production
+// assembly used by Android task runs.
 //
 // What this file REPAIRS against the frozen parent (runtime-runs-approvals-
 // source, pure archive 6c36124e…): Main review RUN-S1/RUN-S3 found the
@@ -56,6 +56,22 @@ import FloeTools
 import FloePersistence
 import FloeAgentRuntime
 import FloeSecurity
+
+// MARK: - Platform execution guidance (capability hints, never authorization)
+
+enum AndroidExecutionGuidance {
+    static let commandLine = "Prefer exec.shell and command-line tools in the task's resolved Linux environment for model work: dependency installation, file editing/conversion, analysis, background services and checking saved outputs. The Linux graphical desktop is primarily for the user to operate professional applications manually. Do not make starting or keeping a desktop open a prerequisite for ordinary model tasks. When the user requests a graphical application, prepare its dependencies and files and launch it for user handoff. Preserve lightweight in-App editing and native Android application handoff. Existing task/environment ownership, permissions and approval rules remain authoritative; explicit phone or remote-UI requests keep their own authorized tool paths."
+    static let phone = "Android phone UI uses phone.observe / phone.act / phone.screenshot, not VNC or a Linux desktop. Discover exact phone schemas when offered. If phone tools are absent, read system.access.status and explain the missing Settings > Phone setup (accessibility and selected target apps), then wait for the user. For automated external-file editing, establish phone.observe and resolve screen handover BEFORE workspace.externalEdit open; then observe the opened editor. An approval or question answered in Floe can replace the external page. Never reuse its old node refs, guess a public path for the private edit copy, or use an app launcher as proof that the file editor was restored. Keep its session and report a missing handover. VNC is a distinct remote/Linux desktop; never substitute it for the phone or switch targets to evade a missing grant. Existing task, app, approval and screen-consent checks remain authoritative."
+
+    static func workspaceNotes(temporary: Bool, isNotes: Bool,
+                               availableTools: Set<String>) -> [String] {
+        guard !temporary && !isNotes else { return [] }
+        var notes: [String] = []
+        if availableTools.contains("exec.shell") { notes.append(commandLine) }
+        if availableTools.contains("system.access.status") { notes.append(phone) }
+        return notes
+    }
+}
 
 // MARK: - Production credential-argument normalizer adapter (S1)
 
@@ -652,13 +668,11 @@ extension FacadeRunDomain {
                 availableToolNames: ceiling,
                 skillInstructions: isNotes ? notes?.contextText : nil,
                 taskResources: mediaTaskContext,
-                // Full's real registered status tool is the platform signal;
-                // Play and Notes receive no phone-control capability hint.
-                // This is discovery guidance only, never an authorization.
-                workspaceNotes: !temporary && !isNotes &&
-                    (ceiling ?? Set(components.registry.allDescriptors.map(\.name))).contains("system.access.status") ? [
-                    "Android phone UI uses phone.observe / phone.act / phone.screenshot, not VNC or a Linux desktop. Discover exact phone schemas when offered. If phone tools are absent, read system.access.status and explain the missing Settings > Phone setup (accessibility and selected target apps), then wait for the user. For automated external-file editing, establish phone.observe and resolve screen handover BEFORE workspace.externalEdit open; then observe the opened editor. An approval or question answered in Floe can replace the external page. Never reuse its old node refs, guess a public path for the private edit copy, or use an app launcher as proof that the file editor was restored. Keep its session and report a missing handover. VNC is a distinct remote/Linux desktop; never substitute it for the phone or switch targets to evade a missing grant. Existing task, app, approval and screen-consent checks remain authoritative."
-                ] : []),
+                // Ordinary Full/Play tasks receive only guidance for capabilities
+                // actually offered. Notes/temporary contexts retain their ceilings.
+                workspaceNotes: AndroidExecutionGuidance.workspaceNotes(
+                    temporary: temporary, isNotes: isNotes,
+                    availableTools: ceiling ?? Set(components.registry.allDescriptors.map(\.name)))),
             personalizationProvider: personalizationProvider,
             resourceAccessCleanup: nil,
             artifactRootURL: components.artifactRootURL)

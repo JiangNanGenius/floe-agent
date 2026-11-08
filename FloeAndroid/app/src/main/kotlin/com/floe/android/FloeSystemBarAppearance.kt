@@ -4,11 +4,14 @@ package com.floe.android
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.view.Window
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import com.floe.android.design.FloeThemeMode
+import com.floe.android.design.Floe
 import com.floe.android.design.floeIsDarkAppearance
 
 /**
@@ -29,10 +32,24 @@ import com.floe.android.design.floeIsDarkAppearance
  */
 @Composable
 fun FloeSystemBarAppearance(themeMode: FloeThemeMode) {
-    val dark = floeIsDarkAppearance(themeMode)
     val view = LocalView.current
-    LaunchedEffect(dark) {
-        val window = view.context.floeHostActivity()?.window ?: return@LaunchedEffect
+    FloeWindowBarAppearance(view.context.floeHostActivity()?.window,
+        dark = floeIsDarkAppearance(themeMode))
+}
+
+/** A fullscreen Compose dialog has its own window; changing the activity's
+ * icons does not reach it. Match the current Floe surface in that window. */
+@Composable
+internal fun FloeDialogSystemBarAppearance() {
+    val view = LocalView.current
+    val window = (view.parent as? DialogWindowProvider)?.window
+    FloeWindowBarAppearance(window, dark = Floe.colors.isDark)
+}
+
+@Composable
+private fun FloeWindowBarAppearance(window: Window?, dark: Boolean) {
+    LaunchedEffect(window, dark) {
+        window ?: return@LaunchedEffect
         val controller = WindowCompat.getInsetsController(window, window.decorView)
             ?: return@LaunchedEffect
         controller.isAppearanceLightStatusBars = !dark

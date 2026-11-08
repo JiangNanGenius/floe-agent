@@ -62,6 +62,7 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
     // the page offscreen.
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(
         usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        FloeDialogSystemBarAppearance()
         FloeSettingsContentDensity(compact = compact) {
             Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface).safeDrawingPadding()) {
                 val owned = state.workspaceID.equals(workspaceID, true)

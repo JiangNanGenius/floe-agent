@@ -189,15 +189,15 @@ public struct HTTPRequestService: Sendable {
         // replaced by the real streaming seam. The ORIGINAL outcome is kept:
         // the first `cap` bytes with `truncated == true` when the body is
         // larger — NOT a `responseTooLarge` error, which would silently
-        // change tool behaviour. Transport failures keep the original
-        // `requestFailed(error.localizedDescription)` mapping.
+        // change tool behaviour. Preserve typed transport errors so callers
+        // can distinguish availability from cancellation and TLS failures.
         do {
             (data, response) = try await WebBoundedStream.execute(
                 request,
                 via: session,
                 cap: max(1, min(maxResponseBytes, 256 * 1024)))
         } catch {
-            throw HTTPRequestError.requestFailed(error.localizedDescription)
+            throw Self.transportFailure(error)
         }
         #else
         do {
@@ -211,7 +211,7 @@ public struct HTTPRequestService: Sendable {
             data = bounded
             response = receivedResponse
         } catch {
-            throw HTTPRequestError.requestFailed(error.localizedDescription)
+            throw Self.transportFailure(error)
         }
         #endif
         let http = response as? HTTPURLResponse
@@ -341,7 +341,7 @@ public struct HTTPRequestService: Sendable {
             throw FloeError.cancelled
         } catch {
             if cancellation?.isCancelled == true { throw FloeError.cancelled }
-            throw HTTPRequestError.requestFailed(error.localizedDescription)
+            throw Self.transportFailure(error)
         }
         try cancellation?.throwIfCancelled()
         return try Self.commitDownload(temporary: temporary, response: response, maxBytes: maxBytes, destination: destination)
@@ -370,6 +370,16 @@ public struct HTTPRequestService: Sendable {
         }
         return DownloadResult(statusCode: statusCode, contentType: contentType, byteCount: size)
     }
+
+    /// Keep the platform category; never infer retryability from localized
+    /// error text. Local storage/size failures use their existing paths.
+    static func transportFailure(_ error: Error) -> Error {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled {
+            return FloeError.cancelled
+        }
+        if let error = error as? URLError { return error }
+        return HTTPRequestError.requestFailed(error.localizedDescription)
+    }
 }
 
 /// The Android/Linux bounded read body for `send`. Compiled on EVERY
@@ -396,12 +406,9 @@ public struct HTTPRequestService: Sendable {
 /// - A plain (non-streaming) session throws `sessionNotStreamable` here and
 ///   is mapped to the original `requestFailed` at the call site — never a
 ///   silent session recreation or full-buffer fallback.
-/// - One documented degradation: a transport failure BEFORE any response
-///   head surfaces here as `IncrementalTransportError.noHTTPResponse` (the
-///   router does not replay the platform error through the response
-///   waiter). The call-site mapping is unchanged (`requestFailed` with a
-///   platform description); only the diagnostic text of the detail can
-///   differ on Android. Device confirmation stays with Main.
+/// - A transport failure before any response head retains the original
+///   error through the response waiter. Completion without either a head
+///   or an error still reports `IncrementalTransportError.noHTTPResponse`.
 enum WebBoundedStream {
     /// In-flight ceiling between the delegate callback and this consumer.
     /// The body read stops at `cap + 1` (cap ≤ 256 KiB), so 1 MiB of queued

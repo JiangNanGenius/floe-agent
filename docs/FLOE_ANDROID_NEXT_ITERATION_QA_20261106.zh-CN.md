@@ -1,6 +1,6 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
-日期：2026-11-06，实测更新至2026-11-09。当前：[Alpha62/code88已公开](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.62)，固定App源 `ab48bbcec558f587e0574ac2d1f2c45e0d8769c1`。七附件完整公开字节、不可变来源和实际更新解析器读回完成；三星通过App内完整包从Alpha61升级到62，两个包的安装字节和UID已核对，原记录保留。桌面共用紧凑工具栏、隐藏／恢复及真实键盘目录切换有三星证据。Android9索尼组件故障的具体原因仍未知；新版分阶段诊断不等于该设备已修复。整轮N01–N08继续。
+日期：2026-11-06，实测更新至2026-11-09。当前：[Alpha63/code89已公开](releases/ANDROID_ALPHA63_DELIVERY.md)，固定App源`914ccff868a00cdee3bcbbc83ae8625b5957f5dd`。七附件完整公开字节、不可变来源及实际生产更新解析器读回完成；三星主／运行组件实际code89、字节与UID保持，双鼠标模式和关闭重开后的选择恢复已验证。本版三星安装为工程替换，不冒称63完成设备OTA；61→62的App内完整升级证据独立保留。Android9索尼组件故障和原VNC断连尚未证明已修复。整轮N01–N08继续，以下较早记录按原日期保留。
 
 iOS对照沿用固定视觉参照 `36f63bf4` 及原有编号。Alpha46的 `c828775b6`→`e4d334904` 仅为签名／版本／上传元数据变化；Alpha47后又登记Biology模块与独立宿主提交 `eb3bb7bca` 的51条路径，作为下一轮独立能力复核，不移动本轮范围。Alpha52候选又从 `eb3bb7bca` 对照到主集成 `9b016097d`：1481条iOS路径变化按轻量入口、网络历史、工具合同与独立重型模块分类，不等同缺失功能，详见[增量记录](FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md#2026-11-08-alpha52-候选的有界-ios-增量)。后续每个大目标结束增量核对实际iOS主线；不为小修重启全量审计。
 
@@ -713,3 +713,16 @@ Alpha63代码检查点：主负责人在OpenCode明确要求主线程接手后�
 English: Alpha63/code89 is published from914ccff86 with seven public asset read-backs and an exact62-to63 patch. Samsung verified both touch modes and selection restoration after reopening; broader hardware and other Linux workspaces are not implicitly accepted. Model work should primarily use the resolved task Linux CLI; the graphical desktop serves users operating professional software manually. A subsequent bounded runtime-guidance packet must make that division explicit without changing the frozen Alpha63 artifact.
 
 Alpha63验收清理完成：为已有项目建立的单次Ark Plan／ark-code-latest仅回复会话已导出核对，1次请求／0工具调用；指针动作均由主负责人手动验证。自建任务及精确导出副本已正常删除，累计退役82个测试任务（三星35、模拟器47）及12个旧计划，原有五条记录、两个项目和原失败保留。图形／PRoot自有进程归零；三星恢复直接触屏的原操作习惯，常亮0、无线调试0、无障碍未启用并休眠，未启动模拟器。19处已完成构建副本和源码／增量暂存已清理，内置盘两次可用空间实测分别增加2,714,341,376及448,929,792字节；当前包、必要回退、符号和下一批仍要使用的缓存保留。
+
+
+## 2026-11-09 下一源码批次：执行分工与公共Hub传输
+
+- N07已把“模型命令行优先、Linux桌面主要供用户手动操作”接入普通Full／Play任务的真实上下文；按实际提供的`exec.shell`及手机状态工具分别附加指引，手记／临时会话保持原上下文边界。`graphics.usage`保留真实环境／DISPLAY并说明为用户准备软件和文件。4项原生产声明的聚焦宿主检查通过；完整Android对象／链接随后与镜像代码合并做，不把宿主检查记为新APK或实机通过。
+- 公共Hub传输的单个Normal／auto代码包已交接；委派服务要求主线程接回后，确认原任务取消、原生会话idle并释放写域。实际消费者已接既有签名镜像策略，保留官方源优先、同内容绑定、版本／签名／摘要／长度检查和持久代次下限。主负责人补齐真实HTTP／流式响应的网络错误类型、配置下载长度及带“+”版本路径，未新建HTTP引擎。28项真实生产模块的聚焦宿主检查通过；实际ARM64、APK与三星行为继续验证。可变GitHub API的commit解析仍仅走官方接口，非Hub来源不擅自扩大镜像范围。
+- N08顺带修复63已经观察到的桌面弹窗状态栏对比度：复用既有Floe系统栏桥接，让Dialog自己的窗口按当前Floe明暗外观设置图标；不改键盘和边距。相关Full／Play Kotlin实际编译通过，下一实机包的渲染观察仍待完成。
+- N07另有明确源码缺口需保留：`SkillsConnectorFetchUnavailable`仍对私有仓库连接器取回返回未实现。它不等于账号未配置或平台不支持，不能拿公共Hub镜像完成销账；后续须按现有凭据和授权服务接真实后端，不向App注入开发者CLI凭据。
+- 本次核对旧公开字节及当前远端标签、摘要和恢复URL后，退役55／57／58／59／60共25处旧Office/CAD安装副本与增量；外盘该删除窗口实测可用空间增加628,387,840字节。所有主APK（含原故障）、当前63、必要62回退、私有61、源码／符号及SDK/AVD保持。原始失败和清理恢复清单保留，不把并行任务造成的其他空间变化归入本次清理。
+
+English: The next source batch wires CLI-first/manual-desktop guidance into ordinary Full/Play contexts, retaining Notes/temporary and phone-control boundaries. Four focused production-declaration guidance cases and28 real-module mirror/transport host cases pass; actual Android object/link and the new APK are pending. The public-Hub code packet was safely reclaimed after the bridge requested coordinator continuation. Mutable GitHub API commit resolution remains official-only; private connector fetching remains a distinct missing backend. Dialog-window system-bar contrast uses the existing appearance bridge and passes Full/Play Kotlin compilation; rendered device behavior remains pending. Old optional installers/deltas were retired only after exact public recovery checks, with all main APKs and failure evidence preserved.
+
+下一候选使用Alpha64/code90，已更新版本与Office源码入口的配套摘要；尚未因此宣称已构建、已安装或已发布。沿用全部既知问题和整轮N01–N08目标，不移动63的不可变来源。

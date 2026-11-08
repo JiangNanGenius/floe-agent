@@ -338,7 +338,7 @@ enum C01LinuxEnvironmentRendering {
             lines.append("graphics.viewport=\(graphics.width)x\(graphics.height)")
             lines.append("graphics.workspaceID=\(graphics.workspaceID)")
             lines.append("graphics.runtimeGeneration=\(graphics.runtimeGeneration)")
-            lines.append("graphics.usage=Use exec.shell in this same resolved environment with DISPLAY=\(graphics.display) to launch graphical software. A launched process is not proof the file was saved.")
+            lines.append("graphics.usage=Prefer exec.shell and command-line tools for model work in this resolved environment. The desktop is primarily for the user to operate manually; when requested, prepare dependencies/files and launch graphical software with DISPLAY=\(graphics.display) for user handoff. A launched process is not proof the file was saved.")
         }
         if !snapshot.detail.isEmpty { lines.append("detail=\(snapshot.detail)") }
         return lines.joined(separator: "\n")
