@@ -351,6 +351,14 @@ public struct UserQuestionCardView: View {
                 freeTextArea(question)
                 if let deadline = question.deadlineAt {
                     DeadlineCaption(deadline: deadline)
+                    if let fallback = UserQuestionFallbackPresentation(question: question) {
+                        Group {
+                            if fallback.isSensitive { Text("user_question.card.fallback_sensitive") }
+                            else { Text("user_question.card.fallback \(fallback.components.joined(separator: " · "))") }
+                        }
+                        .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("user_question.fallback")
+                    }
                 }
                 if let error = model.submissionError {
                     Text(error)
@@ -587,7 +595,7 @@ private struct DeadlineCaption: View {
 
     var body: some View {
         Label {
-            Text("user_question.card.deadline \(deadline.formatted(date: .omitted, time: .shortened))")
+            Text("user_question.card.deadline \(deadline.formatted(date: .omitted, time: .standard))")
         } icon: {
             Image(systemName: "timer")
         }

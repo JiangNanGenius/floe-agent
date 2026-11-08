@@ -52,7 +52,8 @@ public enum ToolSchemaOfferPlanner {
     public static func plan(
         descriptors: [ToolCatalog.Descriptor],
         tokenBudget: Int,
-        alwaysKeep: Set<String> = []
+        alwaysKeep: Set<String> = [],
+        discoveryName: String? = nil
     ) -> Plan {
         let budget = max(0, tokenBudget)
         var offered: [ToolCatalog.Descriptor] = []
@@ -73,6 +74,11 @@ public enum ToolSchemaOfferPlanner {
             }
             offered.append(descriptor)
             used += cost
+        }
+        // One complete, enabled discovery schema must precede even optional
+        // metadata helpers. This changes ordering only when explicitly asked.
+        if let discoveryName, let discovery = descriptors.first(where: { $0.name == discoveryName }) {
+            admit(discovery)
         }
         for descriptor in descriptors where alwaysKeep.contains(descriptor.name) {
             admit(descriptor)
@@ -123,14 +129,19 @@ public enum ToolSchemaOfferPlanner {
         messageTokens: Int,
         imageTokens: Int,
         replayTokens: Int,
-        toolResultReserveTokens: Int
+        toolResultReserveTokens: Int,
+        minimumDiscoveryTokens: Int = 0
     ) -> Int {
         let window = max(1, contextWindowTokens)
         let fixed = max(0, reservedOutputTokens)
             + max(0, messageTokens)
             + max(0, imageTokens)
             + max(0, replayTokens)
-            + max(0, toolResultReserveTokens)
-        return max(0, window - fixed)
+        let remaining = max(0, window - fixed)
+        // Borrow only from the provisional tool-result reserve. Messages,
+        // images, replay and output reservation are never reduced or ignored.
+        let resultReserve = min(max(0, toolResultReserveTokens),
+            max(0, remaining - max(0, minimumDiscoveryTokens)))
+        return remaining - resultReserve
     }
 }

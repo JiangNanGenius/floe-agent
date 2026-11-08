@@ -37,8 +37,8 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
     public var project: EDAProject { editing.project }
     public var revision: UInt64 { project.revision }
     public var isDirty: Bool { editing.isDirty }
-    public var canUndo: Bool { editing.canUndo && !busy && !isRouting && !isClosed }
-    public var canRedo: Bool { editing.canRedo && !busy && !isRouting && !isClosed }
+    public var canUndo: Bool { editing.canUndo && !busy && !isRouting && !isFilling && !isClosed }
+    public var canRedo: Bool { editing.canRedo && !busy && !isRouting && !isFilling && !isClosed }
     public private(set) var busy = false
     public private(set) var isClosed = false
     private var closing = false
@@ -46,6 +46,16 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
     public private(set) var conflictWithOriginal = false
     public private(set) var isChecking = false
     public private(set) var isRouting = false
+    public private(set) var isFilling = false
+    public private(set) var isCommittingCopperFill = false
+    public var canCancelFilling: Bool { isFilling && !busy && !isCommittingCopperFill && !closing && !isClosed && cancelledFillGeneration != fillGeneration }
+    public private(set) var copperFillReport: EDACopperFillReport?
+    public private(set) var copperFillIssues: [EDACopperFillIssue] = []
+    @ObservationIgnored private var fillTask: Task<EDACopperFillPlan, Error>?
+    @ObservationIgnored private var fillGeneration: UUID?
+    private var cancelledFillGeneration: UUID?
+    public private(set) var isExporting = false
+    @ObservationIgnored private var exportTask: Task<EDAExchangeBundle, Error>?
     public private(set) var ercReport: EDAERCReport?
     public private(set) var drcReport: EDADRCReport?
     private enum CheckResult: Sendable { case erc(EDAERCReport), drc(EDADRCReport) }
@@ -76,25 +86,34 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
             throw EDAError.staleRevision(expected: expectedRevision, actual: revision)
         }
     }
-    private func perform(_ operation: String, expectedRevision: UInt64?,
+    private func perform(_ operation: String, expectedRevision: UInt64?, beforeCommit: (() throws -> Void)? = nil,
                          _ change: (inout EDAEditingSession) throws -> Void) async throws {
         try requireOpen(expectedRevision: expectedRevision)
         guard !isRouting else { throw EDAError.invalid("routing is still running") }
         guard !conflictWithOriginal else { throw EDAError.invalid("resolve the saved original conflict first") }
         busy = true; defer { busy = false }
         var candidate = editing
+        var enteredStore = false
         do {
             try change(&candidate)
             guard candidate.project != editing.project else { return }
+            let digest = try savedDigest()
+            // The final cancellation check and CAS admission run on this
+            // actor without an await. Nothing is published before admission.
+            try beforeCommit?()
+            enteredStore = true
             let saved = try await store.save(candidate.project, expectedRevision: editing.savedRevision,
-                expectedDigest: try savedDigest())
+                expectedDigest: digest)
             try candidate.markSaved(saved)
             editing = candidate; lastError = nil; conflictWithOriginal = false
+            copperFillReport = nil; copperFillIssues = []
             onSaved?(saved); onChange?()
         } catch {
             // A failed CAS retains the local proposal and its undo stack.
             // Only an explicit discard/refresh may replace those edits.
-            editing = candidate
+            // A pre-admission cancelled fill discards its private proposal.
+            // A real CAS failure keeps the original proposal/undo semantics.
+            if beforeCommit == nil || enteredStore { editing = candidate }
             if case EDAError.staleRevision = error { conflictWithOriginal = true }
             report(error, operation: operation)
             throw error
@@ -104,8 +123,10 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
         guard let value = editing.savedDigest else { throw EDAError.invalid("saved digest missing") }
         return value
     }
-    public func apply(_ edits: [EDAEdit], expectedRevision: UInt64? = nil) async throws {
-        try await perform("apply", expectedRevision: expectedRevision) { candidate in
+    public func apply(_ edits: [EDAEdit], expectedRevision: UInt64? = nil, cancelBeforeCommit: Bool = false) async throws {
+        if cancelBeforeCommit { try Task.checkCancellation() }
+        let check: (() throws -> Void)? = cancelBeforeCommit ? { try Task.checkCancellation() } : nil
+        try await perform("apply", expectedRevision: expectedRevision, beforeCommit: check) { candidate in
             try candidate.apply(edits, expectedRevision: candidate.project.revision)
         }
     }
@@ -143,23 +164,65 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
         do {
             let saved = try await store.load()
             editing = try EDAEditingSession(project: saved.project, savedDigest: saved.digest)
+            copperFillReport = nil; copperFillIssues = []
             conflictWithOriginal = false; lastError = nil; onChange?()
         } catch { report(error, operation: "refresh"); throw error }
     }
     public func flushForClose() async -> Bool {
         do {
             try requireOpen(); closing = true; defer { closing = false }
+            let ownedFill = fenceFillForClose()
             if let checkTask {checkTask.cancel();_ = try? await checkTask.value;self.checkTask=nil;isChecking=false}
             if let routeTask {routeTask.cancel();_ = try? await routeTask.value;self.routeTask=nil;isRouting=false}
+            if let exportTask{exportTask.cancel();_ = try? await exportTask.value;self.exportTask=nil;isExporting=false}
+            if let ownedFill { _ = try? await ownedFill.value }
+            finishFillForClose()
             _ = try await saveBound(); isClosed = true; selection = .none
             return true
         } catch { report(error, operation: "close"); return false }
     }
     public func close() async {
-        guard !busy, !isDirty else { return }
+        guard !busy, !isDirty, !closing, !isClosed else { return }
+        closing = true; defer { closing = false }
+        // Fence before joining any unrelated worker. A fill whose geometry
+        // finishes during another join cannot enter a late save.
+        let ownedFill = fenceFillForClose()
         if let checkTask {checkTask.cancel();_ = try? await checkTask.value;self.checkTask=nil;isChecking=false}
         if let routeTask {routeTask.cancel();_ = try? await routeTask.value;self.routeTask=nil;isRouting=false}
+        if let exportTask{exportTask.cancel();_ = try? await exportTask.value;self.exportTask=nil;isExporting=false}
+        if let ownedFill { _ = try? await ownedFill.value }
+        finishFillForClose()
+        guard !busy, !isDirty else { return }
         isClosed = true; selection = .none
+    }
+    private func fenceFillForClose() -> Task<EDACopperFillPlan, Error>? {
+        let task = fillTask
+        fillGeneration = nil; cancelledFillGeneration = nil
+        task?.cancel()
+        return task
+    }
+    private func finishFillForClose() {
+        fillTask = nil; isFilling = false; isCommittingCopperFill = false
+    }
+    public func cancelExport() { exportTask?.cancel() }
+    /// Own the bounded worker in the document session, preserve the saved
+    /// source and fence both native edits and independent original writers.
+    public func export(format:EDAExportFormat,boardID:UUID?,variant:String) async throws -> EDAExchangeBundle {
+        try requireOpen()
+        guard !isExporting else{throw EDAError.invalid("an export is already running")}
+        isExporting=true;defer{exportTask=nil;isExporting=false}
+        try Task.checkCancellation()
+        let saved=try await save(),snapshot=saved.project
+        guard !isClosed, !closing else { throw EDAError.cancelled }
+        try Task.checkCancellation()
+        let task=Task.detached(priority:.userInitiated){try EDAExchange.export(snapshot,format:format,boardID:boardID,variant:variant,cancelled:{Task.isCancelled})}
+        exportTask=task
+        let result=try await withTaskCancellationHandler(operation:{try await task.value},onCancel:{task.cancel()})
+        try Task.checkCancellation()
+        let current=try await store.load()
+        guard !isClosed,!closing else{throw EDAError.cancelled}
+        guard revision==snapshot.revision,current.digest==saved.digest else{throw EDAError.staleRevision(expected:snapshot.revision,actual:current.project.revision)}
+        return result
     }
     public func netlist() throws -> EDANetlist { try requireOpen(); return try EDAConnectivity.derive(project) }
     public func erc() throws -> EDAERCReport { try requireOpen(); return try EDAERC.check(project) }
@@ -170,9 +233,69 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
             try EDAForwardAnnotation.apply(plan, to: &candidate)
         }
     }
-    public func route(boardID: UUID, from start: EDAPoint, to end: EDAPoint, layer: String, width: Double) async throws {
-        try requireOpen()
-        guard !isRouting else { throw EDAError.invalid("routing is still running") }
+    public func createCopperZone(boardID: UUID, netID: String, layer: String, outline: [EDAPoint],
+                                 expectedRevision: UInt64? = nil, cancelBeforeCommit: Bool = false) async throws {
+        let zone = EDACopperFill.newZone(netID: netID, layer: layer, outline: outline)
+        try await apply([.putZone(board: boardID, zone)], expectedRevision: expectedRevision, cancelBeforeCommit: cancelBeforeCommit)
+        guard !isClosed, !closing, project.boards.first(where: { $0.id == boardID })?.zones.contains(where: { $0.id == zone.id }) == true else { return }
+        selection = .init(context: .board(boardID: boardID), objectIDs: [zone.id])
+    }
+    @discardableResult
+    public func refillCopper(boardID: UUID, expectedRevision: UInt64? = nil,
+                             cancelled: @escaping @Sendable () -> Bool = { false }) async throws -> EDACopperFillReport {
+        try requireOpen(expectedRevision: expectedRevision)
+        guard !isFilling, !isRouting else { throw EDAError.invalid("a board geometry operation is running") }
+        guard !conflictWithOriginal else { throw EDAError.invalid("resolve the saved original conflict first") }
+        let snapshot = project, generation = UUID()
+        let task = Task.detached(priority: .userInitiated) {
+            try EDACopperFill.plan(snapshot, boardID: boardID, cancelled: { Task.isCancelled || cancelled() })
+        }
+        fillGeneration = generation; cancelledFillGeneration = nil
+        fillTask = task; isFilling = true; isCommittingCopperFill = false
+        copperFillIssues = []; copperFillReport = nil
+        defer { if fillGeneration == generation {
+            fillTask = nil; fillGeneration = nil; cancelledFillGeneration = nil
+            isFilling = false; isCommittingCopperFill = false
+        } }
+        do {
+            let plan = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { task.cancel() })
+            try Task.checkCancellation()
+            guard !cancelled(), fillGeneration == generation, cancelledFillGeneration != generation else { throw EDAError.cancelled }
+            var result: EDACopperFillReport?
+            try await perform("refillCopper", expectedRevision: snapshot.revision, beforeCommit: {
+                guard !Task.isCancelled, !cancelled(), self.fillGeneration == generation,
+                      self.cancelledFillGeneration != generation, !self.isClosed, !self.closing else { throw EDAError.cancelled }
+                self.isCommittingCopperFill = true
+            }) { candidate in
+                result = try candidate.applyCopperFill(plan, expectedRevision: snapshot.revision, cancelled: cancelled)
+            }
+            guard let result else { throw EDAError.invalid("copper fill result missing") }
+            // CAS already returned success (or the operation was a no-op).
+            // Closing/new edits fence UI adoption, not the saved fact.
+            if !isClosed, !closing, fillGeneration == generation, result.resultRevision == revision {
+                copperFillReport = result
+            }
+            return result
+        } catch {
+            if !isClosed, !closing, fillGeneration == generation {
+                copperFillIssues = (error as? EDACopperFillFailure)?.issues ?? []
+                report(error, operation: "refillCopper")
+            }
+            throw error
+        }
+    }
+    @discardableResult
+    public func cancelFilling() -> Bool {
+        guard canCancelFilling, let generation = fillGeneration else { return false }
+        cancelledFillGeneration = generation
+        fillTask?.cancel()
+        return true
+    }
+    public func route(boardID: UUID, from start: EDAPoint, to end: EDAPoint, layer: String, width: Double,
+                      expectedRevision: UInt64? = nil) async throws {
+        try requireOpen(expectedRevision: expectedRevision)
+        try Task.checkCancellation()
+        guard !isRouting, !isFilling else { throw EDAError.invalid("a board geometry operation is running") }
         let snapshot = project
         let task = Task.detached(priority: .userInitiated) {
             try EDAInteractiveRouting.track(snapshot, boardID: boardID, from: start, to: end,
@@ -183,7 +306,12 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
         let track = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { task.cancel() })
         try Task.checkCancellation()
         isRouting = false
-        try await apply([.putTrack(board: boardID, track)], expectedRevision: snapshot.revision)
+        try await perform("route", expectedRevision: snapshot.revision, beforeCommit: {
+            try Task.checkCancellation()
+            if task.isCancelled { throw EDAError.cancelled }
+        }) { candidate in
+            try candidate.apply([.putTrack(board: boardID, track)], expectedRevision: snapshot.revision)
+        }
     }
     public func cancelRouting() { routeTask?.cancel() }
     public func requestFocus(_ request: EDAFocusRequest) {
@@ -220,6 +348,8 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
             message = chinese ? "终点属于另一个网络，请重新选择。" : "The endpoint belongs to another net. Choose a different endpoint."
         } else if case EDAError.invalid(let reason) = error, reason.hasPrefix("route violates ") {
             message = chinese ? "这条路径违反间距、板边或禁布规则，请调整走线。" : "This route violates a clearance, board-edge or keepout rule. Adjust the path."
+        } else if error is EDACopperFillFailure {
+            message = chinese ? "未能重填铜区，请检查铜区设置和详细原因。" : "Copper zones could not be refilled. Review their settings and details."
         } else {
             message = chinese ? "未能完成操作，原件和待保存的修改仍保留。" : "The operation could not finish. The original and pending edits are retained."
         }

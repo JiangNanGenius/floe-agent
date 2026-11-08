@@ -1728,6 +1728,23 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeProvidersTests/DeepSeekProtocolGuardTests.swift
+      - path: Tests/FloeProvidersTests/DeepSeekNativeBoundaryTests.swift
+      - path: Tests/FloeAgentRuntimeTests/NativeDiscoveryBudgetTests.swift
+      - path: Tests/FloeAgentRuntimeTests/NativeAuthoringGuidanceTests.swift
+      - path: Tests/FloeAgentRuntimeTests/NativeAuthoringDiscoveryContractTests.swift
+      - path: Tests/FloeAgentRuntimeTests/UserQuestionDefaultPolicyTests.swift
+      - path: Tests/FloeModelsTests/UserQuestionDefaultsTests.swift
+      - path: Tests/FloeAppTests/RuntimeDiagnosticStackTests.swift
+      - path: Tests/FloeAppTests/ChemistryRunReceiptTests.swift
+      - path: Tests/FloeAppTests/ChemistryResultWorkflowTests.swift
+      - path: Tests/FloeAppTests/ChatInlineContentPagingTests.swift
+      - path: Tests/FloeAppTests/ElectronicsOutputPreviewTests.swift
+      - path: Tests/FloeAppTests/ElectronicsOutputPublicationTests.swift
+      - path: Tests/FloeAppTests/EDCanvasInputTests.swift
+      - path: Tests/FloePersistenceTests/InlineContentPagingStoreTests.swift
+      - path: Tests/FloeToolsTests/ChatInlineAudioCatalogTests.swift
+      - path: Tests/FloeAgentRuntimeTests/InlineContentPagePolicyTests.swift
       - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
       - path: Tests/FloeAppTests/LaTeXAppIntegrationTests.swift
       - path: Tests/FloeAppTests/AppleImagePlaygroundTests.swift
@@ -1832,6 +1849,8 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/PersonalizationMemoryTests.swift
       - path: Tests/FloePersistenceTests/V13PersonalizationMemoryTests.swift
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDLibraryEditingTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDCanvasInteractionTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDInspectorSessionTests.swift
       - path: Tests/FloeAppTests/UserQuestionNotificationIntegrationTests.swift
       - path: Tests/FloeAppTests/ChatInlineContentContractTests.swift
       - path: Tests/FloeAppTests/ChatInlineContentProductionFlowTests.swift

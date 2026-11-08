@@ -31,6 +31,7 @@ extension PersonalContentService {
             project.id = id; project.revision = 0; project.createdAt = Date(); project.modifiedAt = project.createdAt
             for board in project.boards.indices { for zone in project.boards[board].zones.indices {
                 project.boards[board].zones[zone].filledPolygons = []; project.boards[board].zones[zone].fillRevision = nil
+                project.boards[board].zones[zone].fillState = nil
             } }
             let root = directory.appendingPathComponent("Electronics")
             _ = try await EDAProjectStore.create(root: root, project: project)

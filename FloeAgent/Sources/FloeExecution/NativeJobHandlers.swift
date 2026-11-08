@@ -143,6 +143,44 @@ public struct NativeServiceRunMetadata: Sendable, Codable, Equatable {
     }
 }
 
+/// Continuation metadata for a user-requested native LaTeX operation.
+/// It suppresses an unsolicited model follow-up after its shell job ends;
+/// it never grants tool, project, environment or execution authority.
+public struct LaTeXNativeRunMetadata: Sendable, Codable, Equatable {
+    public enum Operation: String, Sendable, Codable { case preparation, typesetting, maintenance }
+    public let activity: String
+    public let version: Int
+    public let source: NativeJobSubmissionSource
+    public let runID: UUID
+    public let conversationID: UUID
+    public let projectID: UUID
+    public let environmentID: String?
+    public let operation: Operation
+    public let targetTool: String
+
+    public init(runID: UUID, conversationID: UUID, projectID: UUID,
+                environmentID: String?, operation: Operation) {
+        activity = "latexNativeService"; version = 1; source = .nativeService
+        self.runID = runID; self.conversationID = conversationID; self.projectID = projectID
+        self.environmentID = environmentID; self.operation = operation
+        targetTool = "exec.shell"
+    }
+    public func payloadJSON() throws -> String {
+        String(decoding: try JSONEncoder().encode(self), as: UTF8.self)
+    }
+    public static func matches(_ event: RunEventRecord, runID: UUID,
+                               conversationID: UUID, targetTool: String,
+                               environmentID: String?) -> Bool {
+        guard event.kind == .status, event.runID == runID, targetTool == "exec.shell",
+              let data = event.payloadJSON.data(using: .utf8),
+              let value = try? JSONDecoder().decode(Self.self, from: data) else { return false }
+        return value.activity == "latexNativeService" && value.version == 1
+            && value.source == .nativeService && value.runID == runID
+            && value.conversationID == conversationID && value.targetTool == targetTool
+            && value.environmentID == environmentID
+    }
+}
+
 /// Verification of the runtime-issued provenance for one `jobs.submit` call.
 /// Fail-closed: an origin that contradicts the child handoff, a missing
 /// origin, a legacy origin without the approved tool name and any origin bound

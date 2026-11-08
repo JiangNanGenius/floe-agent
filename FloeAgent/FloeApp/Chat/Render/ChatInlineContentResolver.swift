@@ -108,16 +108,23 @@ enum ChatInlineContentResolver {
 }
 
 private struct ChatContentListTool: AgentTool {
-    struct Arguments: Decodable, Sendable { var runID: UUID?; var afterSequence: Int?; var eventLimit: Int? }
+    struct Arguments: Decodable, Sendable {
+        var runID: UUID?; var afterSequence: Int?; var eventLimit: Int?
+        var cursor: String?; var limit: Int?
+    }
     static let name = "chat.content.list"
-    static let toolDescription = "List saved native content references from this task. Returns directly copyable inlineMarkdown for charts, tables, images, audio/video/document output previews and message attachments; unsupported types retain file previews. Optional runID selects an older run from this task only. Without runID, scan the latest 20 runs; use conversation.read for older run IDs. For a selected run, afterSequence/eventLimit page its events; nextAfterSequence continues. No file paths or external URLs are accepted. " + ChatContentReference.modelInstructions
-    static let parametersJSON = #"{"type":"object","properties":{"runID":{"type":"string","format":"uuid"},"afterSequence":{"type":"integer","minimum":0},"eventLimit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false}"#
+    static let toolDescription = "List this task's saved inline content. Returns directly copyable inlineMarkdown for native chart/table/image/web cards, bounded synthesized-audio players, verified output-file preview cards and message attachments. Audio/video/PDF/Office/3D files use the existing preview entry unless a native producer returned an inline card. With no arguments, page through ALL task-owned runs then message attachments. Continue with nextCursor until hasMore=false, including empty pages. Optional runID/afterSequence selects events from one known run; nextCursor also resumes within a multi-item event. limit is returned items (1...64), eventLimit is scanned records (1...100). Cursors locate only this task's actual stored records and grant no permissions. No file paths/external URLs accepted. " + ChatContentReference.modelInstructions
+    static let parametersJSON = #"{"type":"object","properties":{"runID":{"type":"string","format":"uuid"},"afterSequence":{"type":"integer","minimum":0},"eventLimit":{"type":"integer","minimum":1,"maximum":100},"cursor":{"type":"string","maxLength":8192},"limit":{"type":"integer","minimum":1,"maximum":64}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
     let environment: AppEnvironment
     func validate(_ args: Arguments) throws {
-        guard (args.afterSequence ?? 0) >= 0, (1...100).contains(args.eventLimit ?? 50),
-              args.afterSequence == nil || args.runID != nil else { throw FloeError.validationFailed("Use a nonnegative event cursor with runID and eventLimit 1...100") }
+        guard (args.afterSequence ?? 0) >= 0, (1...100).contains(args.eventLimit ?? 100),
+              (1...64).contains(args.limit ?? 32), args.afterSequence == nil || args.runID != nil,
+              args.cursor == nil || (args.runID == nil && args.afterSequence == nil),
+              args.cursor.map({ !$0.isEmpty && $0.utf8.count <= 8_192 }) != false else {
+            throw FloeError.validationFailed("Use cursor alone to continue, or runID with a nonnegative event position; limit 1...64 and eventLimit 1...100")
+        }
     }
     @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         guard context.executionToolName == Self.name, !context.temporaryReadOnly, !context.publicWebOnly,
@@ -128,43 +135,12 @@ private struct ChatContentListTool: AgentTool {
               let conversation = try await environment.conversationStore.conversation(id: task),
               conversation.purpose != .temporary else { throw FloeError.unauthorized }
         try context.cancellation.throwIfCancelled()
-        let headers: [RunRecord]
-        if let id = args.runID {
-            guard let run = try await environment.runStore.run(id: id), run.conversationID == task else { throw FloeError.unauthorized }
-            headers = [run]
-        } else { headers = try await environment.runStore.recentRuns(conversationID: task, limit: 20) }
-        var items: [ChatContentDescriptor] = [], pages: [[String: String]] = []
-        for run in headers {
-            try context.cancellation.throwIfCancelled()
-            let events = if args.runID != nil {
-                try await environment.runStore.events(runID: run.id, afterSequence: args.afterSequence ?? 0, limit: args.eventLimit ?? 50)
-            } else { try await environment.runStore.recentEvents(runID: run.id, limit: 50) }
-            for event in events where event.kind == .toolResult {
-                guard let payload = ChatInlineContentResolver.payload(event), payload["status"] == "ok",
-                      let call = payload["id"], let tool = payload["tool"] else { continue }
-                items += ChatInlineContentCatalog.descriptors(artifacts: ChatInlineContentResolver.decode(payload["artifactRefsJSON"]),
-                    outputs: ChatInlineContentResolver.decode(payload["outputFilesJSON"]), runID: run.id, taskID: task, callID: call, tool: tool)
-            }
-            pages.append(["runID": run.id.uuidString,
-                "startAfterSequence": String(args.afterSequence ?? 0),
-                "mode": args.runID == nil ? "recent; select this runID with afterSequence=0 for earlier events" : "forward",
-                "nextAfterSequence": String(events.map(\.sequence).max() ?? (args.afterSequence ?? 0)),
-                "hasMore": args.runID != nil && events.count == (args.eventLimit ?? 50) ? "true" : "false"])
-        }
-        let messages = try await environment.conversationStore.recentMessages(conversationID: task, limit: 100)
-        for message in messages {
-            let parts = try await environment.conversationStore.parts(messageID: message.id)
-            for part in parts where part.kind == .file || part.kind == .image {
-                guard let id = part.attachmentID, let attachment = try await environment.conversationStore.attachment(id: id),
-                      attachment.conversationID == task,
-                      attachment.messageID == nil || attachment.messageID == message.id,
-                      let reference = ChatContentReference(kind: .attachment, ownerID: message.id, contentID: id.uuidString) else { continue }
-                items.append(.init(reference: reference, mimeType: UTType(attachment.uti)?.preferredMIMEType ?? "application/octet-stream", title: attachment.displayName))
-            }
-        }
-        var seen: Set<ChatContentReference> = []
-        let unique = items.filter { seen.insert($0.reference).inserted }
-        let data = try ChatInlineContentCatalog.listingData(unique, pages: pages)
+        let cancellation = context.cancellation
+        let data = try await ChatInlineContentIndex.page(taskID: task, cursor: args.cursor, runID: args.runID,
+            afterSequence: args.afterSequence ?? 0, limit: args.limit ?? 32,
+            scanLimit: args.eventLimit ?? (args.runID == nil ? 100 : 50),
+            conversations: environment.conversationStore, runs: environment.runStore,
+            checkCancellation: { try cancellation.throwIfCancelled(); try Task.checkCancellation() })
         return ToolExecutionOutput(digesting: String(decoding: data, as: UTF8.self), maximumSummaryCharacters: 65_536)
     }
 }

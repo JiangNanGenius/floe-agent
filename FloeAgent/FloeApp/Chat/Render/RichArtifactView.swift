@@ -23,6 +23,7 @@ struct RichArtifactGallery: View {
 struct RichArtifactView: View {
     let artifact: ToolArtifactReference
     var preverified: VerifiedChatInlineArtifact? = nil
+    var compactAudio = false
     @State private var data: Data?
     @State private var fileURL: URL?
     @State private var error: String?
@@ -73,19 +74,21 @@ struct RichArtifactView: View {
             if let html = String(data: data, encoding: .utf8) {
                 VStack(alignment: .leading, spacing: 8) {
                     SandboxedArtifactWebView(html: html)
-                        .frame(height: 320)
+                        .frame(height: compactAudio ? 120 : 320)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quaternary))
-                    HStack {
-                        Button("chat.rich_artifact_view.expand_interactive_preview", systemImage: "arrow.up.left.and.arrow.down.right") {
-                            showExpandedWeb = true
+                    if !compactAudio {
+                        HStack {
+                            Button("chat.rich_artifact_view.expand_interactive_preview", systemImage: "arrow.up.left.and.arrow.down.right") {
+                                showExpandedWeb = true
+                            }
+                            Spacer()
+                            ShareLink(item: fileURL) {
+                                Label("chat.rich_artifact_view.share", systemImage: "square.and.arrow.up")
+                            }
                         }
-                        Spacer()
-                        ShareLink(item: fileURL) {
-                            Label("chat.rich_artifact_view.share", systemImage: "square.and.arrow.up")
-                        }
+                        .font(FloeTheme.Typography.metadata)
                     }
-                    .font(FloeTheme.Typography.metadata)
                 }
             } else { invalidContent }
         default:
@@ -240,6 +243,8 @@ private struct SandboxedArtifactWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = .all
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator

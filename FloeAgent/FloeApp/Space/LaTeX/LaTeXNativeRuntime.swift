@@ -7,6 +7,7 @@ import FloeModels
 import FloePersistence
 import FloeSecurity
 import FloeTools
+import FloeExecution
 import FloeLaTeXCore
 import FloeLaTeXEngine
 import FloeLaTeXHostAdapter
@@ -100,6 +101,10 @@ import FloeLaTeXHostAdapter
             try cancellation.throwIfCancelled();try Task.checkCancellation()
             try await app.runStore.saveRun(.init(id:runID,conversationID:taskID,state:"preparing",goal:IDELanguageRunText.t("排版论文","Typeset document"),startedAt:Date(),executionBinding:pin))
             persisted=true
+            _ = try await app.runStore.appendEvent(runID:runID,kind:.status,
+                payloadJSON:try LaTeXNativeRunMetadata(runID:runID,conversationID:taskID,projectID:id,
+                    environmentID:pin.target.environmentID,
+                    operation:action=="prepare" ? .preparation:.typesetting).payloadJSON())
             var stores=composition.typedServiceStorePaths
             stores[TypedMutationContract.nativeStudioLibraryStoreKey]=try PersonalContentLibrary.applicationRoot().path
             let base=ToolContext(runID:runID,scope:pin.target.remoteHostID.map(ToolScope.host) ?? .local,

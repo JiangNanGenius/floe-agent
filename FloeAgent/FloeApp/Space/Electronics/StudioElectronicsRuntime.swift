@@ -58,12 +58,34 @@ import FloeElectronicsUI
                     validateOwner: @escaping @MainActor @Sendable () async throws -> Void) async throws -> ToolExecutionOutput {
         guard StudioElectronicsContract.runActions.contains(action) else { throw FloeError.validationFailed("Read electronicsCapabilities.runActions for implemented operations") }
         let allowed: Set<String> = action == "eda.export" ? ["expectedRevision", "boardID", "format", "variant"]
-            : ["eda.drc", "eda.forwardAnnotation"].contains(action) ? ["expectedRevision", "boardID"] : ["expectedRevision"]
+            : ["eda.drc", "eda.forwardAnnotation", "eda.refillCopper"].contains(action) ? ["expectedRevision", "boardID"] : ["expectedRevision"]
         let input = try options(inputJSON, allowed: allowed)
         try context.cancellation.throwIfCancelled(); try await validateOwner()
         var saved = try await personalPreviewOffMain { try ElectronicsSavedSnapshot(id: record.id, directory: directory) }
         guard String(saved.project.revision) == input.revision else { throw PersonalContentError.changedDocument }
         let boardID = try board(input.object["boardID"], project: saved.project)
+        if action == "eda.refillCopper" {
+            guard let boardID else { throw FloeError.validationFailed("This original has no PCB board") }
+            let session = try await ElectronicsProjectSession.open(id: record.id, directory: directory)
+            try context.cancellation.throwIfCancelled(); try await validateOwner(); try saved.validate()
+            let cancellation = context.cancellation
+            let report: EDACopperFillReport
+            do {
+                report = try await session.workbench.refillCopper(boardID:boardID,expectedRevision:saved.project.revision,
+                    cancelled:{cancellation.isCancelled})
+            } catch let failure as EDACopperFillFailure {
+                throw FloeError.validationFailed("Copper refill refused: " + String(decoding:try encoded(failure.issues),as:UTF8.self))
+            }
+            await session.awaitPublication()
+            saved = try await personalPreviewOffMain { try ElectronicsSavedSnapshot(id: record.id, directory: directory) }
+            try context.cancellation.throwIfCancelled(); try await validateOwner()
+            guard report.resultRevision == saved.project.revision else { throw PersonalContentError.changedDocument }
+            return try StudioToolOutput.make(Receipt(projectID:record.id,action:action,revision:String(saved.project.revision),
+                sourceSHA256:saved.digest,summary:["boardID":boardID.uuidString,"zones":String(report.zones.count),
+                    "polygons":String(report.zones.reduce(0){$0+$1.polygonCount})],
+                resultJSON:String(decoding:try encoded(report),as:UTF8.self),limitations:report.limitations,
+                openURL:"floe://work/"+record.id.uuidString.lowercased()))
+        }
         if action == "eda.forwardAnnotation" {
             guard let boardID else { throw FloeError.validationFailed("This original has no PCB board") }
             let session = try await ElectronicsProjectSession.open(id: record.id, directory: directory)
@@ -105,8 +127,13 @@ import FloeElectronicsUI
                 return .init(files: result.files, summary: [:], limitations: result.limitations)
             case "eda.export":
                 guard let format else { throw PersonalContentError.invalidProject }
-                let result = try EDAExchange.export(source.project, format: format, boardID: boardID, variant: variant, cancelled: cancelled)
-                return .init(files: result.files, summary: ["format": format.rawValue], limitations: result.limitations)
+                do {
+                    let result = try EDAExchange.export(source.project, format: format, boardID: boardID, variant: variant, cancelled: cancelled)
+                    return .init(files: result.files, summary: ["format": format.rawValue, "files": String(result.files.count), "boardID": boardID?.uuidString ?? ""], limitations: result.limitations)
+                } catch let failure as EDAManufacturingFailure {
+                    let details = String(decoding: try encoded(failure.issues), as: UTF8.self)
+                    throw FloeError.validationFailed("Manufacturing export requires explicit supported design data: " + details)
+                }
             default: throw PersonalContentError.invalidProject
             }
         }
@@ -130,7 +157,7 @@ import FloeElectronicsUI
             guard !file.name.isEmpty, file.name == (file.name as NSString).lastPathComponent, file.name != ".", file.name != ".." else { throw PersonalContentError.invalidProject }
             let url = stage.appendingPathComponent(file.name)
             try await personalPreviewOffMain { try file.data.write(to: url, options: .withoutOverwriting) }
-            let output = try await StudioResultPublication.publish(file: url, projectRoot: directory, action: action, context: context, validateSource: validate)
+            let output = try await StudioResultPublication.publish(file: url, projectRoot: directory, action: action, fileKey: file.name, context: context, validateSource: validate)
             files.append(output.file)
         }
         try await validate()

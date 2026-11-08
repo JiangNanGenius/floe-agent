@@ -185,13 +185,23 @@ public struct EDAPad: Codable, Hashable, Identifiable, Sendable {
     public var angle: Double
     public var shape: EDAPadShape
     public var drill: Double?
+    /// Nil means plating has not been specified. Never infer it from copper layers.
+    public var drillPlated: Bool?
     public var layers: [String]
     public init(id: UUID = UUID(), number: String, position: EDAPoint, size: EDAPoint = .init(1.5, 1.5),
                 angle: Double = 0, shape: EDAPadShape = .circle, drill: Double? = nil,
-                layers: [String] = ["F.Cu"]) {
+                layers: [String] = ["F.Cu"], drillPlated: Bool? = nil) {
         self.id = id; self.number = number; self.position = position; self.size = size
-        self.angle = angle; self.shape = shape; self.drill = drill; self.layers = layers
+        self.angle = angle; self.shape = shape; self.drill = drill; self.layers = layers; self.drillPlated = drillPlated
     }
+}
+
+/// Explicit layer metadata aligned by index with a parent's unchanged graphics array.
+/// Nil means unassigned. Layer IDs are relative to the front for footprint definitions.
+public struct EDAGraphicLayerAssignment: Codable, Hashable, Sendable {
+    public var layerID: String
+    public var kind: EDALayerKind
+    public init(layerID: String, kind: EDALayerKind) { self.layerID = layerID; self.kind = kind }
 }
 
 public struct EDAFootprintDefinition: Codable, Hashable, Identifiable, Sendable {
@@ -199,11 +209,14 @@ public struct EDAFootprintDefinition: Codable, Hashable, Identifiable, Sendable 
     public var name: String
     public var pads: [EDAPad]
     public var graphics: [EDAGraphic]
+    public var graphicLayers: [EDAGraphicLayerAssignment?]?
     public var fields: [String: String]
     public var modelReference: String?
     public init(id: UUID = UUID(), name: String, pads: [EDAPad] = [], graphics: [EDAGraphic] = [],
+                graphicLayers: [EDAGraphicLayerAssignment?]? = nil,
                 fields: [String: String] = [:], modelReference: String? = nil) {
         self.id = id; self.name = name; self.pads = pads; self.graphics = graphics
+        self.graphicLayers = graphicLayers
         self.fields = fields; self.modelReference = modelReference
     }
 }
@@ -302,6 +315,26 @@ public struct EDANetClass: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// Explicit design values. Nil on a legacy thermal zone is unspecified;
+/// refill never silently substitutes a thermal connection or a solid pad.
+public struct EDAThermalRelief: Codable, Hashable, Sendable {
+    public var gap: Double
+    public var spokeWidth: Double
+    /// Board XY degrees, independent of footprint rotation or board side.
+    public var spokeAngleDegrees: Double
+    public var spokeCount: Int
+    public init(gap: Double, spokeWidth: Double, spokeAngleDegrees: Double, spokeCount: Int) {
+        self.gap = gap; self.spokeWidth = spokeWidth
+        self.spokeAngleDegrees = spokeAngleDegrees; self.spokeCount = spokeCount
+    }
+    /// An explicit creation/action choice, never a decoder or refill fallback.
+    public static var creationDefault: Self {
+        .init(gap: 0.25, spokeWidth: 0.3, spokeAngleDegrees: 45, spokeCount: 4)
+    }
+}
+
+public enum EDAZoneFillState: String, Codable, Hashable, Sendable { case filled, empty }
+
 public struct EDAZone: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var netID: String
@@ -310,13 +343,18 @@ public struct EDAZone: Codable, Hashable, Identifiable, Sendable {
     public var priority: Int
     public var clearance: Double
     public var thermal: Bool
+    public var thermalRelief: EDAThermalRelief?
     public var filledPolygons: [[EDAPoint]]
     public var fillRevision: UInt64?
+    /// Derived by a successful refill commit. Nil preserves legacy semantics.
+    public var fillState: EDAZoneFillState?
     public init(id: UUID = UUID(), netID: String, layer: String = "F.Cu", outline: [EDAPoint],
-                priority: Int = 0, clearance: Double = 0.2, thermal: Bool = true) {
+                priority: Int = 0, clearance: Double = 0.2, thermal: Bool = true,
+                thermalRelief: EDAThermalRelief? = nil) {
         self.id = id; self.netID = netID; self.layer = layer; self.outline = outline
         self.priority = priority; self.clearance = clearance; self.thermal = thermal
-        filledPolygons = []; fillRevision = nil
+        self.thermalRelief = thermalRelief
+        filledPolygons = []; fillRevision = nil; fillState = nil
     }
 }
 
@@ -341,8 +379,11 @@ public struct EDAHole: Codable, Hashable, Identifiable, Sendable {
     public var position: EDAPoint
     public var diameter: Double
     public var plated: Bool
-    public init(id: UUID = UUID(), position: EDAPoint, diameter: Double, plated: Bool = false) {
-        self.id = id; self.position = position; self.diameter = diameter; self.plated = plated
+    /// A nonnil endpoint explicitly defines a straight routed slot of this
+    /// finished width. Nil retains the existing circular-hole geometry.
+    public var endPosition: EDAPoint?
+    public init(id: UUID = UUID(), position: EDAPoint, diameter: Double, plated: Bool = false, endPosition: EDAPoint? = nil) {
+        self.id = id; self.position = position; self.diameter = diameter; self.plated = plated; self.endPosition = endPosition
     }
 }
 
@@ -359,8 +400,11 @@ public struct EDABoard: Codable, Hashable, Identifiable, Sendable {
     public var zones: [EDAZone]
     public var keepouts: [EDAKeepout]
     public var graphics: [EDAGraphic]
+    public var graphicLayers: [EDAGraphicLayerAssignment?]?
     public var netClasses: [EDANetClass]
     public var boardEdgeClearance: Double
+    /// Nil is unspecified; it is not a non-plated-edge manufacturing instruction.
+    public var edgePlated: Bool?
     /// Explicit DRC minima. Nil means not configured, not a manufacturing pass.
     /// Optional so schema-1 originals created before DRC remain readable.
     public var drcConstraints: EDADRCConstraints?
@@ -368,8 +412,9 @@ public struct EDABoard: Codable, Hashable, Identifiable, Sendable {
                 outline: [EDAPoint] = [.init(0, 0), .init(100, 0), .init(100, 80), .init(0, 80)]) {
         self.id = id; self.name = name; self.layers = layers; self.outline = outline
         cutouts = []; holes = []; footprints = []; tracks = []; vias = []; zones = []
-        keepouts = []; graphics = []; netClasses = [.init()]; boardEdgeClearance = 0.25
+        keepouts = []; graphics = []; graphicLayers = nil; netClasses = [.init()]; boardEdgeClearance = 0.25
         drcConstraints = nil
+        edgePlated = nil
     }
 }
 

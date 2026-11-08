@@ -28,6 +28,14 @@
       "source": "https://github.com/orlandos-nl/Citadel.git"
     },
     {
+      "identity": "clipper2",
+      "license": "BSL-1.0",
+      "evidence": "ThirdParty/Clipper2/LICENSE",
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+      "revision": "b496b454df168a2280354857c1cd90bd6fa7b4dd",
+      "source": "https://github.com/PolyClipping/Clipper2.git"
+    },
+    {
       "identity": "cryptoswift",
       "license": "Zlib",
       "evidence": ".build/checkouts/cryptoswift/LICENSE",

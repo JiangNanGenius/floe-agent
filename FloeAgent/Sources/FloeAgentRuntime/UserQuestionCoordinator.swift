@@ -89,6 +89,7 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
     private let store: UserQuestionStore
     private let eventHandler: (@Sendable (UserQuestionEvent) async -> Void)?
     private let now: @Sendable () -> Date
+    private let defaultSettings: @Sendable () async -> UserQuestionDefaults
     private let answerNormalizer: (@Sendable (UserQuestionAnswer, UserQuestion, Bool) async throws -> UserQuestionAnswer)?
 
     /// One parked execution per request. The continuation is resumed by the
@@ -108,12 +109,14 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         store: UserQuestionStore,
         eventHandler: (@Sendable (UserQuestionEvent) async -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
-        answerNormalizer: (@Sendable (UserQuestionAnswer, UserQuestion, Bool) async throws -> UserQuestionAnswer)? = nil
+        answerNormalizer: (@Sendable (UserQuestionAnswer, UserQuestion, Bool) async throws -> UserQuestionAnswer)? = nil,
+        defaultSettings: @escaping @Sendable () async -> UserQuestionDefaults = { UserQuestionDefaults() }
     ) {
         self.store = store
         self.eventHandler = eventHandler
         self.now = now
         self.answerNormalizer = answerNormalizer
+        self.defaultSettings = defaultSettings
     }
 
     // MARK: - Tool entry point
@@ -130,11 +133,15 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         temporaryReadOnly: Bool
     ) async throws -> UserQuestionToolReceipt {
         guard !toolCallID.isEmpty else { throw UserQuestionError.missingToolCallID }
-        try request.validate()
+        let prepared = try request.resolvingDefaults(await defaultSettings())
+        try prepared.validate()
         let createdAt = now()
         let requestID = Self.requestID(runID: runID, toolCallID: toolCallID)
+        // Bind idempotency/recovery to the original tool arguments, not a
+        // mutable device preference. register returns an existing frozen
+        // request unchanged if this same call is replayed after settings change.
         let digest = try Self.digest(request)
-        let questions = try request.makeQuestions(
+        let questions = try prepared.makeQuestions(
             requestID: requestID,
             conversationID: conversationID,
             runID: runID,

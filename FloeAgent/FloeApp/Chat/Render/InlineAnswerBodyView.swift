@@ -51,11 +51,14 @@ private struct ChatInlineContentView: View {
                 }
             } else if let resolved {
                 switch resolved {
-                case .artifact:
+                case .artifact(_, _, let tool):
                     if let verifiedArtifact {
                         if ToolArtifactPresentation.isImage(verifiedArtifact.artifact) {
                             ArtifactImageView(artifact: verifiedArtifact.artifact, index: 0, preverified: verifiedArtifact)
-                        } else { RichArtifactView(artifact: verifiedArtifact.artifact, preverified: verifiedArtifact) }
+                        } else {
+                            RichArtifactView(artifact: verifiedArtifact.artifact, preverified: verifiedArtifact,
+                                compactAudio: tool == "audio.synthesize")
+                        }
                     } else { ProgressView().controlSize(.small) }
                 case .output(let receipt, let context): RunOutputFileView(receipt: receipt, context: context)
                 case .attachment(let attachment, let messageID):

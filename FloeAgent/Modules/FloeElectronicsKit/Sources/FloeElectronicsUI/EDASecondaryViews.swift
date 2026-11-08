@@ -62,26 +62,99 @@ private struct EDAExportDocument:FileDocument {
 }
 public struct EDAOutputsView:View {
     @Bindable var session:EDWorkbenchSession
+    let onExportPreview:((EDAExchangeFile,UInt64)->Void)?
     @State private var files:[EDAExchangeFile]=[]
     @State private var limitations:[String]=[]
+    @State private var exportIssues:[EDAManufacturingIssue]=[]
     @State private var selected:EDAExchangeFile?
     @State private var exporting=false
     @State private var boardID:UUID?
     @State private var variant=""
-    public init(session:EDWorkbenchSession){self.session=session}
+    @State private var sourceRevision:UInt64?
+    @State private var generationID:UUID?
+    @State private var generationTask:Task<Void,Never>?
+    @State private var generating=false
+    public init(session:EDWorkbenchSession,onExportPreview:((EDAExchangeFile,UInt64)->Void)?=nil){self.session=session;self.onExportPreview=onExportPreview}
     public var body:some View{List{
         Section{
             Picker("PCB",selection:$boardID){ForEach(session.project.boards){Text($0.name).tag(Optional($0.id))}}
             Picker(edText("装配变体","Assembly variant"),selection:$variant){ForEach(session.project.variants,id:\.self){Text($0).tag($0)}}
-            ForEach(EDAExportFormat.allCases,id:\.self){format in Button(title(format)){do{
-                let bundle=try EDAExchange.export(session.project,format:format,boardID:boardID,variant:variant);files=bundle.files;limitations=bundle.limitations
-            }catch{session.report(error,operation:"export")}}}
         }
-        if !files.isEmpty{Section(edText("已生成文件","Generated files")){ForEach(files.indices,id:\.self){i in Button{selected=files[i];exporting=true}label:{HStack{Label(files[i].name,systemImage:"doc");Spacer();Text(ByteCountFormatter.string(fromByteCount:Int64(files[i].data.count),countStyle:.file)).foregroundStyle(.secondary)}}}}}
-        if !limitations.isEmpty{Section(edText("导出说明","Export details")){ForEach(limitations,id:\.self){Text($0).font(.caption)}}}
+        Section(edText("工程与网络","Project and connectivity")){outputButtons([.project,.netlist])}
+        Section(edText("制造与装配","Fabrication and assembly")){outputButtons([.gerber,.excellon,.bom,.positions])}
+        Section(edText("图纸","Drawings")){outputButtons([.boardSVG,.schematicSVG])}
+        if generating{Section{ProgressView(edText("正在生成文件…","Generating files…"))}}
+        if let revision=sourceRevision,revision != session.revision{Section{Text(edText("工程已修改，请重新生成导出文件。","The design changed. Generate the files again.")).foregroundStyle(.orange)}}
+        if !files.isEmpty{Section(edText("已生成文件","Generated files")){ForEach(files.indices,id:\.self){i in outputRow(files[i])}}}
+        if !exportIssues.isEmpty{Section(edText("需要补全的设计信息","Design data required")){ForEach(Array(exportIssues.enumerated()),id:\.offset){_,issue in
+            VStack(alignment:.leading){Text(issueTitle(issue.code));DisclosureGroup(edText("定位详情","Location details")){Text(issue.path+(issue.objectID.map{" · "+$0.uuidString} ?? "")).font(.caption.monospaced()).textSelection(.enabled)}}
+        }}}
+        if !limitations.isEmpty{Section{DisclosureGroup(edText("导出范围与说明","Export scope and details")){ForEach(limitations,id:\.self){Text($0).font(.caption)}}}}
     }.onAppear{boardID=boardID ?? session.project.boards.first?.id;variant=session.project.variants.contains(variant) ? variant:(session.project.variants.contains("Default") ? "Default":session.project.variants.first ?? "")}
+    .onDisappear{generationTask?.cancel();generationID=nil;generating=false}
     .fileExporter(isPresented:$exporting,document:EDAExportDocument(data:selected?.data ?? Data()),contentType:.data,defaultFilename:selected?.name ?? "Project.floeeda"){result in if case .failure(let error)=result{session.report(error,operation:"export")}}}
-    private func title(_ format:EDAExportFormat)->String{switch format{case .project:edText("导出可编辑工程","Export editable project");case .netlist:edText("导出网表","Export netlist");case .bom:edText("导出物料清单","Export BOM");case .positions:edText("导出贴片坐标","Export placement positions");case .boardSVG:edText("导出 PCB 图纸（SVG）","Export board drawing (SVG)");case .schematicSVG:edText("导出原理图（SVG）","Export schematic drawings (SVG)")}}
+    // Matches the App's existing EngineeringPreviewKind.gerber extensions;
+    // a component-only host keeps the original export action by default.
+    private let previewExtensions:Set<String>=["gbr","ger","gerber","gtl","gbl","gts","gbs","gto","gbo","gko","gm1","gml","drl","xln"]
+    @ViewBuilder private func outputRow(_ file:EDAExchangeFile)->some View{
+        if let onExportPreview,previewExtensions.contains((file.name as NSString).pathExtension.lowercased()){
+            HStack(spacing:8){
+                Button{
+                    guard let revision=sourceRevision,revision==session.revision else{return}
+                    onExportPreview(file,revision)
+                }label:{HStack{
+                    Label(file.name,systemImage:"doc.viewfinder");Spacer()
+                    VStack(alignment:.trailing){Text(edText("预览","Preview"));Text(ByteCountFormatter.string(fromByteCount:Int64(file.data.count),countStyle:.file)).font(.caption).foregroundStyle(.secondary)}
+                }.frame(maxWidth:.infinity,minHeight:44).contentShape(Rectangle())}
+                .buttonStyle(.plain)
+                .accessibilityLabel(edText("预览 ","Preview ")+file.name)
+                .accessibilityIdentifier("electronics.output.preview."+file.name)
+                Button{selected=file;exporting=true}label:{Image(systemName:"square.and.arrow.up").frame(width:44,height:44).contentShape(Rectangle())}
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(edText("存储或分享 ","Save or share ")+file.name)
+                    .accessibilityIdentifier("electronics.output.export."+file.name)
+            }.disabled(sourceRevision != session.revision)
+        }else{
+            Button{selected=file;exporting=true}label:{HStack{Label(file.name,systemImage:"doc");Spacer();Text(ByteCountFormatter.string(fromByteCount:Int64(file.data.count),countStyle:.file)).foregroundStyle(.secondary)}.frame(minHeight:44)}
+                .disabled(sourceRevision != session.revision)
+                .accessibilityIdentifier("electronics.output.export."+file.name)
+        }
+    }
+    private func outputButtons(_ formats:[EDAExportFormat])->some View{ForEach(formats,id:\.self){format in Button(title(format)){generate(format)}.disabled(generating)}}
+    @MainActor private func generate(_ format:EDAExportFormat){
+        generationTask?.cancel();let token=UUID();generationID=token;generating=true;files=[];exportIssues=[];limitations=[];sourceRevision=nil
+        let targetBoard=boardID,targetVariant=variant
+        generationTask=Task{
+            defer{if generationID==token{generating=false}}
+            do{
+                try Task.checkCancellation()
+                let bundle=try await session.export(format:format,boardID:targetBoard,variant:targetVariant)
+                guard !Task.isCancelled,generationID==token,session.revision==bundle.revision else{return}
+                files=bundle.files;limitations=bundle.limitations;sourceRevision=bundle.revision
+            }catch{
+                guard !Task.isCancelled,generationID==token else{return}
+                if let failure=error as? EDAManufacturingFailure{exportIssues=failure.issues}
+                session.report(error,operation:"export")
+            }
+        }
+    }
+    private func title(_ format:EDAExportFormat)->String{switch format{
+        case .project:edText("可编辑工程","Editable project")
+        case .netlist:edText("网表","Netlist")
+        case .bom:edText("物料清单（BOM）","Bill of materials (BOM)")
+        case .positions:edText("贴片坐标","Component placement")
+        case .gerber:edText("Gerber 铜层与板框","Gerber copper layers and profile")
+        case .excellon:edText("Excellon 钻孔与槽孔","Excellon drill and slot files")
+        case .boardSVG:edText("PCB 图纸（SVG）","Board drawing (SVG)")
+        case .schematicSVG:edText("原理图（SVG）","Schematic drawings (SVG)")}}
+    private func issueTitle(_ code:String)->String{switch code{
+        case "zone_fill_not_current":edText("铜区尚无当前有效填充。","A copper zone needs a current fill.")
+        case "pad_drill_plating_unspecified":edText("请选择焊盘孔壁是否电镀。","Specify whether the pad hole is plated.")
+        case "round_rectangle_radius_missing":edText("圆角焊盘尚缺圆角半径。","A rounded pad is missing its corner radius.")
+        case "graphic_layer_unspecified":edText("图形尚未指定制造层。","A graphic has no assigned fabrication layer.")
+        case "missing_footprint_definition":edText("缺少封装定义。","A footprint definition is missing.")
+        case "no_drilling_geometry":edText("此板尚无钻孔或明确槽孔。","The board has no holes or explicit slots.")
+        default:edText("这项设计信息尚不支持导出。","This design data is not supported for export yet.")}}
 }
 
 public struct EDABoard3DView:View {
@@ -105,10 +178,18 @@ public struct EDABoard3DView:View {
         };path.close()}
         polygon(board.outline)
         for points in board.cutouts{polygon(Array(points.reversed()))}
-        let holes=board.holes.map{($0.position,$0.diameter)}+board.vias.map{($0.position,$0.drill)}+board.footprints.flatMap{fp -> [(EDAPoint,Double)] in
+        let holes=board.holes.filter{$0.endPosition == nil}.map{($0.position,$0.diameter)}+board.vias.map{($0.position,$0.drill)}+board.footprints.flatMap{fp -> [(EDAPoint,Double)] in
             (project.footprints.first{$0.id==fp.definitionID}?.pads ?? []).compactMap{pad in pad.drill.map{(fp.point(pad.position),$0)}}
         }
         for (center,diameter) in holes{polygon((0..<48).reversed().map{let a=Double($0)*2*Double.pi/48;return center + .init(cos(a)*diameter/2,sin(a)*diameter/2)})}
+        for hole in board.holes {
+            guard let end=hole.endPosition else{continue}
+            let angle=atan2(end.y-hole.position.y,end.x-hole.position.x),r=hole.diameter/2
+            var contour:[EDAPoint]=[]
+            for i in 0...24 {let a=angle-Double.pi/2+Double(i)*Double.pi/24;contour.append(end + EDAPoint(cos(a)*r,sin(a)*r))}
+            for i in 0...24 {let a=angle+Double.pi/2+Double(i)*Double.pi/24;contour.append(hole.position + EDAPoint(cos(a)*r,sin(a)*r))}
+            polygon(Array(contour.reversed()))
+        }
         let thickness=board.layers.reduce(0){$0+$1.thickness}
         let shape=SCNShape(path:path,extrusionDepth:CGFloat(max(0.01,thickness)))
 #if canImport(UIKit)

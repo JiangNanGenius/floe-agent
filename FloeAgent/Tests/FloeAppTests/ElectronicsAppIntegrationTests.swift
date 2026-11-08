@@ -79,8 +79,38 @@ import FloeElectronicsCore
             #expect(try ElectronicsSavedSnapshot(id: id, directory: location.url).digest == saved.digest)
             context.toolCallID = "synchronize-board-contract"
             _ = try await invoke("studio.run", ["projectID": raw, "action": "eda.forwardAnnotation", "inputJSON": text(["expectedRevision": "1"])], context)
-            let board = try ElectronicsSavedSnapshot(id: id, directory: location.url), revision = String(board.project.revision)
+            var board = try ElectronicsSavedSnapshot(id: id, directory: location.url)
             #expect(board.project.boards.first?.footprints.count == 1)
+            var physical = try #require(board.project.boards.first)
+            let net = try #require(physical.footprints.first?.padNets.values.sorted().first)
+            physical.holes = [.init(position: .init(40, 40), diameter: 1.2, plated: false)]
+            physical.zones = [.init(netID: net, outline: [.init(5, 5), .init(95, 5), .init(95, 75), .init(5, 75)], thermal: false)]
+            let nativeBoard = try JSONSerialization.jsonObject(with: JSONEncoder().encode(physical))
+            context.toolCallID = "save-real-copper-and-drill-contract"
+            _ = try await invoke("studio.edit", ["projectID": raw, "expectedRevision": String(board.project.revision),
+                "operationsJSON": text([["op": "native.put", "kind": "board", "value": nativeBoard]])], context)
+            board = try ElectronicsSavedSnapshot(id: id, directory: location.url)
+            context.toolCallID = "refill-real-copper-contract"
+            _ = try await invoke("studio.run", ["projectID": raw, "action": "eda.refillCopper",
+                "inputJSON": text(["expectedRevision": String(board.project.revision), "boardID": physical.id.uuidString])], context)
+            board = try ElectronicsSavedSnapshot(id: id, directory: location.url)
+            let filled = try #require(board.project.boards.first?.zones.first), revision = String(board.project.revision)
+            #expect(filled.fillState == .filled && filled.fillRevision == board.project.revision && !filled.filledPolygons.isEmpty)
+            for format in ["gerber", "excellon"] {
+                context.toolCallID = "publish-real-" + format
+                let result = try await invoke("studio.run", ["projectID": raw, "action": "eda.export",
+                    "inputJSON": text(["expectedRevision": revision, "boardID": physical.id.uuidString, "format": format])], context)
+                #expect(result.outputFiles.contains { $0.displayName.lowercased().hasSuffix(format == "gerber" ? ".gbr" : ".drl") })
+                for file in result.outputFiles {
+                    let bytes = try Data(contentsOf: FloeArtifactStore.root().appendingPathComponent(file.relativePath))
+                    #expect(bytes.count == file.byteCount && StudioToolOutput.hash(bytes) == file.sha256)
+                    if file.mimeType == "application/json" {
+                        let manifest = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+                        #expect(manifest["sourceRevision"] as? String == revision)
+                        #expect((manifest["projectID"] as? String).flatMap(UUID.init(uuidString:)) == id)
+                    }
+                }
+            }
             for action in ["eda.erc", "eda.drc", "eda.netlist", "eda.export"] {
                 context.toolCallID = "run-" + action
                 var options: [String: Any] = ["expectedRevision": revision]
@@ -111,6 +141,7 @@ import FloeElectronicsCore
             let importedProject = try ElectronicsSavedSnapshot(id: imported.id, directory: importedLocation.url).project
             #expect(imported.kind == .electronics && imported.id != id && importedProject.revision == 0)
             #expect(importedProject.components == board.project.components)
+            #expect(importedProject.boards.flatMap(\.zones).allSatisfy { $0.fillState == nil && $0.fillRevision == nil && $0.filledPolygons.isEmpty })
             let copy = try await PersonalLibraryFileActions.duplicate(try await library.resolve(id).record, title: "QA Electronics copy \(UUID().uuidString.prefix(8))", to: [])
             let folderName = "QA Electronics folder " + String(UUID().uuidString.prefix(8))
             try await library.createFolder(String(folderName), in: [])
@@ -119,6 +150,7 @@ import FloeElectronicsCore
             let movedLocation = try await library.resolve(copy.id)
             let movedSession = try await ElectronicsProjectSession.open(id: copy.id, directory: movedLocation.url)
             #expect(movedSession.workbench.project.components == board.project.components)
+            #expect(movedSession.workbench.project.boards.flatMap(\.zones).allSatisfy { $0.fillState == nil && $0.fillRevision == nil && $0.filledPolygons.isEmpty })
             #expect(await movedSession.flushForClose())
             try await PersonalLibraryFileActions.delete(try await library.resolve(imported.id).record, environment: environment)
             let folder = try #require(try await library.folderSnapshots(in: []).first { $0.components == [String(folderName)] })

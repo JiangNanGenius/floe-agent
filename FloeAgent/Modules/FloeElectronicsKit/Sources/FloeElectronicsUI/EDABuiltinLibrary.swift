@@ -36,7 +36,8 @@ public enum EDABuiltinLibrary {
     }
     public static func makeFootprints() -> [EDAFootprintDefinition] {
         func passive(_ name:String,_ spacing:Double,_ size:EDAPoint)->EDAFootprintDefinition {
-            .init(name:name,pads:[.init(number:"1",position:.init(-spacing/2,0),size:size,shape:.rectangle),.init(number:"2",position:.init(spacing/2,0),size:size,shape:.rectangle)],graphics:[.rectangle(.init(-spacing/2-1,-1),.init(spacing/2+1,1),width:0.15)])
+            .init(name:name,pads:[.init(number:"1",position:.init(-spacing/2,0),size:size,shape:.rectangle),.init(number:"2",position:.init(spacing/2,0),size:size,shape:.rectangle)],graphics:[.rectangle(.init(-spacing/2-1,-1),.init(spacing/2+1,1),width:0.15)],
+                  graphicLayers:[EDAGraphicLayerAssignment(layerID:"F.Fab",kind:.fabrication)])
         }
         let small = passive("0603",1.6,.init(0.9,0.95))
         let medium = passive("0805",2.0,.init(1.2,1.4))
@@ -48,12 +49,15 @@ public enum EDABuiltinLibrary {
         for i in 0..<8 {
             let x: Double = i<4 ? -3.81:3.81
             let y = Double(i<4 ? i:7-i)*2.54
-            dipPads.append(EDAPad(number:String(i+1),position:EDAPoint(x,y),size:.init(1.8,1.8),drill:0.8,layers:["F.Cu","B.Cu"]))
+            dipPads.append(EDAPad(number:String(i+1),position:EDAPoint(x,y),size:.init(1.8,1.8),drill:0.8,layers:["F.Cu","B.Cu"],drillPlated:true))
         }
-        let dip = EDAFootprintDefinition(name:"DIP-8",pads:dipPads,graphics:[.rectangle(.init(-2.54,-1.27),.init(2.54,8.89),width:0.2)])
+        // Explicit role for this new generic template, not a migration or a
+        // claim of manufacturer-qualified package dimensions.
+        let dip = EDAFootprintDefinition(name:"DIP-8",pads:dipPads,graphics:[.rectangle(.init(-2.54,-1.27),.init(2.54,8.89),width:0.2)],
+                                         graphicLayers:[EDAGraphicLayerAssignment(layerID:"F.Fab",kind:.fabrication)])
         let header = EDAFootprintDefinition(name:"Header 1x02",pads:[
-            EDAPad(number:"1",position:.zero,size:.init(1.8,1.8),drill:1,layers:["F.Cu","B.Cu"]),
-            EDAPad(number:"2",position:.init(0,2.54),size:.init(1.8,1.8),drill:1,layers:["F.Cu","B.Cu"])])
+            EDAPad(number:"1",position:.zero,size:.init(1.8,1.8),drill:1,layers:["F.Cu","B.Cu"],drillPlated:true),
+            EDAPad(number:"2",position:.init(0,2.54),size:.init(1.8,1.8),drill:1,layers:["F.Cu","B.Cu"],drillPlated:true)])
         return [small,medium,transistor,dip,header]
     }
 }

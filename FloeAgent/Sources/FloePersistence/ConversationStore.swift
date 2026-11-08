@@ -209,6 +209,7 @@ public protocol ConversationStore: Sendable {
         before cursor: ConversationMessageCursor?,
         limit: Int
     ) async throws -> ConversationMessagePage
+    func message(id: UUID, conversationID: UUID) async throws -> PersistedMessage?
     func parts(messageID: UUID) async throws -> [MessagePart]
 
     func saveAttachment(_ attachment: AttachmentRef) async throws
@@ -217,6 +218,17 @@ public protocol ConversationStore: Sendable {
 }
 
 public extension ConversationStore {
+    /// Compatibility for non-SQLite stores; durable SQLite uses one owned row.
+    func message(id: UUID, conversationID: UUID) async throws -> PersistedMessage? {
+        var cursor: ConversationMessageCursor?
+        repeat {
+            try Task.checkCancellation()
+            let page = try await messagePage(conversationID: conversationID, before: cursor, limit: 100)
+            if let found = page.messages.first(where: { $0.id == id && $0.conversationID == conversationID }) { return found }
+            guard page.hasEarlier, let next = page.earlierCursor, next != cursor else { return nil }
+            cursor = next
+        } while true
+    }
     func conversations(includeArchived: Bool) async throws -> [ConversationRecord] {
         guard !includeArchived else {
             throw FloeError.invalidConfiguration("This conversation store does not support archives")
@@ -645,6 +657,16 @@ public actor SQLiteConversationStore: ConversationStore {
                 },
                 hasEarlier: hasEarlier
             )
+        }
+    }
+
+    public func message(id: UUID, conversationID: UUID) async throws -> PersistedMessage? {
+        try await database.reader { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM messages WHERE id = ? AND conversation_id = ? LIMIT 1",
+                                            arguments: [id.uuidString, conversationID.uuidString]) else { return nil }
+            return PersistedMessage(id: id, conversationID: conversationID, role: row["role"], content: row["content"],
+                createdAt: try PersistenceCodec.decodeDate(row["created_at"]), parts: try Self.fetchParts(messageID: id, db: db),
+                runID: (row["run_id"] as String?).flatMap(UUID.init(uuidString:)))
         }
     }
 

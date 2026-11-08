@@ -256,10 +256,29 @@ public enum EDADRC {
             return ((selected.map(\.clearance) + [global].compactMap { $0 }).max(), selected.map(\.id) + (global == nil ? [] : [board.id]))
         }
 
+        mutating func inspectGraphics(_ graphics: [EDAGraphic], layers: [EDAGraphicLayerAssignment?]?,
+                                      ownerID: UUID, footprint: EDAFootprint? = nil) throws {
+            for index in graphics.indices {
+                try budget.step()
+                do {
+                    let resolved = try EDAGraphicLayers.resolve(layers?[index] ?? nil, index: index, board: board, footprintSide: footprint?.side)
+                    try EDAGraphicLayers.requireCopperProfileExclusion(resolved)
+                } catch let problem as EDAGraphicLayerFailure {
+                    let point = EDAGraphicLayers.position(graphics[index])
+                    try limitation(problem.code, rules: geometricRules,
+                        objects: [.init(kind: footprint == nil ? .board : .footprint, objectID: footprint?.id ?? ownerID, part: index)],
+                        position: footprint?.point(point) ?? point,
+                        severity: problem.code == "copper_graphic_unsupported" ? .error : .warning,
+                        details: ["ownerID": ownerID.uuidString, "graphicIndex": String(index), "layerID": problem.layerID ?? "unassigned"])
+                }
+            }
+        }
+
         mutating func collect() throws {
             let copperLayers = board.layers.filter { $0.kind == .copper }.map(\.id)
             let allLayers = Set(board.layers.map(\.id)), knownNets = Set(netlist.nets.map(\.id))
             let definitions = Dictionary(uniqueKeysWithValues: project.footprints.map { ($0.id, $0) })
+            try inspectGraphics(board.graphics, layers: board.graphicLayers, ownerID: board.id)
             for fp in board.footprints.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
                 try budget.step()
                 let object = EDADRCObject(kind: .footprint, objectID: fp.id)
@@ -269,6 +288,7 @@ public enum EDADRC {
                 guard let def = definitions[fp.definitionID] else {
                     try limitation("missing_footprint_definition", rules: geometricRules, objects: [object], position: fp.position, severity: .error); continue
                 }
+                try inspectGraphics(def.graphics, layers: def.graphicLayers, ownerID: def.id, footprint: fp)
                 for pad in def.pads.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
                     try budget.step()
                     let ref = EDADRCObject(kind: .pad, objectID: pad.id, footprintID: fp.id, padNumber: pad.number)
@@ -317,9 +337,13 @@ public enum EDADRC {
             for zone in board.zones {
                 try budget.step()
                 let object = EDADRCObject(kind: .zone, objectID: zone.id)
-                guard zone.fillRevision == project.revision && !zone.filledPolygons.isEmpty else {
+                guard zone.fillRevision == project.revision && (!zone.filledPolygons.isEmpty || zone.fillState == .empty) else {
                     try limitation(zone.filledPolygons.isEmpty ? "zone_fill_missing" : "zone_fill_stale", rules: geometricRules,
                                objects: [object], position: zone.outline[0]); continue
+                }
+                if zone.filledPolygons.isEmpty {
+                    try emit(.init(rule: .geometry, code: "zone_fill_empty", severity: .information,
+                                   objects: [object], layer: zone.layer, position: zone.outline[0]))
                 }
                 for (index, polygon) in zone.filledPolygons.enumerated() {
                     try append(.init(object: .init(kind: .zone, objectID: zone.id, part: index), net: nonempty(zone.netID), layer: zone.layer,

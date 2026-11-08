@@ -80,10 +80,15 @@ import FloeElectronicsUI
         guard let value = sessions[id] else { return }
         guard value.directory == directory.standardizedFileURL else { throw PersonalContentError.changedDocument }
         guard !value.workbench.busy, !value.workbench.isDirty,
-              !value.workbench.isChecking, !value.workbench.isRouting else { throw PersonalFileActionError.busy }
+              !value.workbench.isChecking, !value.workbench.isRouting,
+              !value.workbench.isFilling, !value.workbench.isExporting else { throw PersonalFileActionError.busy }
         await value.awaitPublication()
+        guard opening[id] == nil, sessions[id] === value,
+              !value.workbench.busy, !value.workbench.isDirty,
+              !value.workbench.isChecking, !value.workbench.isRouting,
+              !value.workbench.isFilling, !value.workbench.isExporting else { throw PersonalFileActionError.busy }
         await value.workbench.close()
-        guard value.workbench.isClosed else { throw PersonalFileActionError.busy }
+        guard value.workbench.isClosed, opening[id] == nil, sessions[id] === value else { throw PersonalFileActionError.busy }
         sessions[id] = nil
     }
 }

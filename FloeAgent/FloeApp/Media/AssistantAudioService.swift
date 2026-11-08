@@ -1219,6 +1219,7 @@ enum AssistantAudioInlinePlayer {
         let document = """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; media-src data:; style-src 'unsafe-inline'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
         <style>
         :root { color-scheme: light dark; }
         body { font: -apple-system-body; margin: 12px; color: CanvasText; background: Canvas; }

@@ -60,8 +60,10 @@ public enum EDAValidation {
                 try points([pad.position]); try finite(pad.angle); try positive(pad.size.x); try positive(pad.size.y)
                 guard !pad.layers.isEmpty else { throw EDAError.invalid("pad layers") }
                 if let drill = pad.drill { try positive(drill) }
+                if pad.drill == nil && pad.drillPlated != nil { throw EDAError.invalid("pad plating without drill") }
             }
             try graphics(definition.graphics)
+            try EDAGraphicLayers.validateLayout(graphics: definition.graphics, layers: definition.graphicLayers)
         }
         var parent: [UUID: UUID] = [:]
         for sheet in project.sheets {
@@ -118,11 +120,26 @@ public enum EDAValidation {
                 guard via.drill < via.diameter, copper.contains(via.startLayer), copper.contains(via.endLayer),
                       via.startLayer != via.endLayer else { throw EDAError.invalid("via geometry") }
             }
-            for hole in board.holes { try points([hole.position]); try positive(hole.diameter) }
+            for hole in board.holes {
+                try points([hole.position]); try positive(hole.diameter)
+                if let end = hole.endPosition {
+                    try points([end])
+                    guard end.distance(to: hole.position) > EDAGeometry.tolerance else { throw EDAError.invalid("slot endpoint") }
+                }
+            }
             for zone in board.zones {
                 try points(zone.outline, min: 3); try positive(zone.clearance)
                 guard copper.contains(zone.layer), EDAGeometry.simplePolygon(zone.outline) else { throw EDAError.invalid("zone") }
+                if let relief = zone.thermalRelief {
+                    try positive(relief.gap); try positive(relief.spokeWidth); try finite(relief.spokeAngleDegrees)
+                    guard relief.spokeCount == 4 else { throw EDAError.unsupported("thermal spoke count") }
+                }
+                if let state = zone.fillState {
+                    guard zone.fillRevision != nil,
+                          (state == .empty) == zone.filledPolygons.isEmpty else { throw EDAError.invalid("zone fill state") }
+                }
                 for polygon in zone.filledPolygons {
+                    try points(polygon, min: 3)
                     guard EDAGeometry.simplePolygon(polygon) else { throw EDAError.invalid("zone fill") }
                 }
             }
@@ -144,6 +161,7 @@ public enum EDAValidation {
                 if let v = rule.maxSkew { try positive(v) }
             }
             try graphics(board.graphics)
+            try EDAGraphicLayers.validateLayout(graphics: board.graphics, layers: board.graphicLayers)
         }
     }
 }

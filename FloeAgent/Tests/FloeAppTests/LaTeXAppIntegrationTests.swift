@@ -16,6 +16,34 @@ import FloeLaTeXHostAdapter
 @testable import FloeApp
 
 @MainActor final class LaTeXAppIntegrationTests:XCTestCase {
+    func testNativeLaTeXMetadataRequiresExactDurableStatus() throws {
+        let runID=UUID(),taskID=UUID(),projectID=UUID(),environmentID="synthetic-latex-environment"
+        let operations:[LaTeXNativeRunMetadata.Operation]=[.preparation,.typesetting,.maintenance]
+        for operation in operations {
+            let metadata=LaTeXNativeRunMetadata(runID:runID,conversationID:taskID,projectID:projectID,
+                environmentID:environmentID,operation:operation)
+            let event=RunEventRecord(runID:runID,sequence:0,kind:.status,payloadJSON:try metadata.payloadJSON())
+            func matches(_ value:RunEventRecord,run:UUID?=nil,task:UUID?=nil,tool:String="exec.shell",environment:String?="synthetic-latex-environment")->Bool {
+                LaTeXNativeRunMetadata.matches(value,runID:run ?? runID,conversationID:task ?? taskID,
+                    targetTool:tool,environmentID:environment)
+            }
+            XCTAssertTrue(matches(event))
+            XCTAssertFalse(matches(event,run:UUID()));XCTAssertFalse(matches(event,task:UUID()))
+            XCTAssertFalse(matches(event,tool:"exec.localService"));XCTAssertFalse(matches(event,environment:nil))
+            XCTAssertFalse(matches(event,environment:"another-environment"))
+            XCTAssertFalse(matches(.init(runID:UUID(),sequence:0,kind:.status,payloadJSON:event.payloadJSON)))
+            XCTAssertFalse(matches(.init(runID:runID,sequence:0,kind:.toolResult,payloadJSON:event.payloadJSON)))
+            let data=try XCTUnwrap(event.payloadJSON.data(using:.utf8))
+            let valid=try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any])
+            for (key,value) in [("activity","other" as Any),("version",2),("source","runtime"),("targetTool","exec.localService"),("operation","unknown")] {
+                var invalid=valid;invalid[key]=value
+                let payload=String(decoding:try JSONSerialization.data(withJSONObject:invalid),as:UTF8.self)
+                XCTAssertFalse(matches(.init(runID:runID,sequence:0,kind:.status,payloadJSON:payload)))
+            }
+            XCTAssertFalse(matches(.init(runID:runID,sequence:0,kind:.status,payloadJSON:"{}")))
+        }
+    }
+
     func testSpaceOriginalAndImportedZIPKeepNativeIdentity() async throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer {try? FileManager.default.removeItem(at:root)}
@@ -119,6 +147,9 @@ import FloeLaTeXHostAdapter
             let savedRun=try await app.runStore.run(id:runID)
             XCTAssertEqual(submitted.environmentID,savedRun?.executionBinding?.target.environmentID)
             XCTAssertEqual(submitted.conversationID,taskID)
+            let nativeEvents=try await app.runStore.events(runID:runID)
+            XCTAssertTrue(nativeEvents.contains {LaTeXNativeRunMetadata.matches($0,runID:runID,
+                conversationID:taskID,targetTool:submitted.targetTool,environmentID:submitted.environmentID)})
             let reopened=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
             XCTAssertNotNil(reopened.workbenchOperation)
             // Stop on the initiating editor cancels its Swift preparation
@@ -555,14 +586,18 @@ import FloeTestSupport
                 [.toolRequest(call),.completed(.init(stopReason:.toolUse))],
                 [.textDelta(.init(text:"The retained QA project operation completed.")),.completed(.init(stopReason:.endTurn))]
             ]
-            let backend=UnexpectedReviewBackend(),provider=TestFixtures.localhostProvider()
+            // A nonnil classifier switches this policy to approval-model,
+            // whose contract intentionally reviews even harmless reads.
+            // Exercise the normal automatic path, as the App Font contract
+            // does, without changing the production reviewing policy.
+            let policy=AutomaticApprovalPolicy(),provider=TestFixtures.localhostProvider()
             let running=ConversationRunService(configuration:.init(
                 conversationID:fixture.taskID,provider:provider,model:TestFixtures.testModel(providerID:provider.id),
                 allowedToolNames:["latex.inspect",tool,"exec.shell"],workspaceRootURL:root.url,
                 allowedWorkspacePaths:taskPolicy.filePaths,
                 pauseTimeout:0.2,verifyFinalAnswer:false,maxProviderRetries:0,
                 environmentID:fixture.environmentID,executionBinding:pin,localLinuxGuestEnvironment:true,
-                serviceStorePaths:paths),adapter:adapter,policy:AutomaticApprovalPolicy(backend:backend),
+                serviceStorePaths:paths),adapter:adapter,policy:policy,
                 executor:CatalogToolExecutor(runners:host.registry),checkpointStore:MockCheckpointStore(),
                 conversationStore:app.conversationStore,runStore:app.runStore,runID:runID)
             service=running
@@ -575,11 +610,13 @@ import FloeTestSupport
             }
             facts["toolResultCount"]=String(results.count)
             facts["toolResults"]=String(String(decoding:try JSONEncoder().encode(results),as:UTF8.self).prefix(16384))
-            facts["reviewBackendCalls"]=String(backend.calls)
+            facts["approvalPolicy"]=policy.policyName
             try retain("production-run-returned")
             try require(results.count==2,"Inspect and requested tool must both execute")
             try require(results.allSatisfy{$0["status"]=="ok"},"A real registered tool rejected the runtime request")
-            try require(backend.calls==0,"Ordinary scoped document operation unexpectedly required a second review")
+            try require(results.allSatisfy{$0["dispatched"]=="true"},"Both exact tools must actually dispatch")
+            try require(Set(results.compactMap{$0["id"]})==Set([inspect.id,call.id]),"Persisted results must belong to the exact inspection and requested call")
+            try require(policy.policyName=="automatic","This contract must use ordinary automatic approval")
             let savedRun=try await app.runStore.run(id:runID)
             let ended=try XCTUnwrap(savedRun)
             try require(ended.state=="completed" && ended.endedAt != nil,"Actual run is not terminal and successful")
@@ -618,15 +655,7 @@ import FloeTestSupport
         if !value {throw FloeError.validationFailed(message)}
     }
 
-    private nonisolated final class UnexpectedReviewBackend:ModelApprovalPolicy.DecisionBackend,@unchecked Sendable {
-        private let lock=NSLock()
-        private var count=0
-        var calls:Int {lock.withLock{count}}
-        func decide(_ action:ProposedAction) async throws -> ApprovalDecision {
-            lock.withLock{count+=1}
-            return .deny(reason:"Synthetic regression must use the ordinary task policy, not a manufactured extra approval")
-        }
-    }
+
 }
 
 @MainActor private enum LaTeXModelProbeOwners {

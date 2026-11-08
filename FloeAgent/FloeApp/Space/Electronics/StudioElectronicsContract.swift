@@ -15,6 +15,9 @@ nonisolated enum StudioElectronicsContract {
         let nativePutKinds: [String]
         let runActions: [String]
         let exportFormats: [String]
+        let manufacturingFields: [String: String]
+        let copperFillFields: [String: String]
+        let graphicLayerFields: [String: String]
         let assemblyVariants: [String]
         let commandFormats: [String: String]
         let examplesJSON: String
@@ -24,7 +27,7 @@ nonisolated enum StudioElectronicsContract {
         "symbol.move", "wire.put", "label.put", "junction.put", "noConnect.put", "schematic.remove", "board.remove", "native.put", "undo", "redo"]
     static let nativeKinds = ["symbolDefinition", "footprintDefinition", "component", "sheet", "symbolPlacement",
         "wire", "junction", "noConnect", "label", "bus", "sheetLink", "board", "footprint", "track", "via", "zone", "keepout", "hole", "simulation"]
-    static let runActions = ["eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.export"]
+    static let runActions = ["eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.refillCopper", "eda.export"]
     static let commandFormats: [String: String] = [
         "rename": "{op:rename,title:string}",
         "sheet.create": "{op:sheet.create,name:string,id?:new UUID}",
@@ -42,7 +45,7 @@ nonisolated enum StudioElectronicsContract {
         "undo": "[{op:undo}]. One command only, with the exact outer expectedRevision.",
         "redo": "[{op:redo}]. One command only, with the exact outer expectedRevision."
     ]
-    static let guide = "Use a plain JSON array of explicit commands listed in electronicsCapabilities. Each command has op and documented flat fields; copy its complete examples with actual sheet/symbol/board IDs from this original. Coordinates and widths are millimetres, angles degrees. native.put accepts one complete record as value, not EDAEdit's synthesized enum payload; missing/unknown fields return a path. An entire batch validates before one revision/CAS save. undo/redo must be a single command. Read the actual saved state after editing. studio.run supports eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.export with inputJSON.expectedRevision; drc/forwardAnnotation optionally take boardID, export additionally takes format and optional variant/boardID. inspectFrame accepts expectedRevision plus optional sheetID or boardID and maximumPixelSize."
+    static let guide = "Use a plain JSON array of explicit commands listed in electronicsCapabilities. Each command has op and documented flat fields; copy its complete examples with actual sheet/symbol/board IDs from this original. Coordinates and widths are millimetres, angles degrees. native.put accepts one complete record as value, not EDAEdit's synthesized enum payload; missing/unknown fields return a path. An entire batch validates before one revision/CAS save. undo/redo must be a single command. Read the actual saved state after editing. studio.run supports eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.refillCopper, eda.export with inputJSON.expectedRevision; drc/forwardAnnotation/refillCopper optionally take boardID, export additionally takes format and optional variant/boardID. Set copperFillFields through native.put before refill; never author derived fill polygons/revision/state. inspectFrame accepts expectedRevision plus optional sheetID or boardID and maximumPixelSize."
     static func capabilities(_ project: EDAProject) throws -> Capabilities {
         var examples: [[String: Any]] = [["op": "rename", "title": project.title]]
         if let sheet = project.sheets.first, let symbol = project.symbols.first {
@@ -58,15 +61,44 @@ nonisolated enum StudioElectronicsContract {
                 examples.append(["op": "native.put", "kind": "symbolDefinition", "value": try JSONSerialization.jsonObject(with: encoded)])
             }
         }
+        if let board = project.boards.first, let layer = board.layers.first(where: { $0.kind == .copper }) {
+            let zone = EDACopperFill.newZone(netID: "", layer: layer.id, outline: board.outline)
+            let encoded = try JSONEncoder().encode(zone)
+            if encoded.count <= 12_000 {
+                examples.append(["op":"native.put","kind":"zone","boardID":board.id.uuidString,"value":try JSONSerialization.jsonObject(with:encoded)])
+            }
+        }
+        if let footprint = project.footprints.first(where: { !$0.graphics.isEmpty }) {
+            let encoded = try JSONEncoder().encode(footprint)
+            if encoded.count <= 12_000 {
+                examples.append(["op":"native.put","kind":"footprintDefinition","value":try JSONSerialization.jsonObject(with:encoded)])
+            }
+        }
         let bytes = try JSONSerialization.data(withJSONObject: examples, options: [.sortedKeys])
         return .init(revision: String(project.revision), editCommands: commands, nativePutKinds: nativeKinds,
             runActions: runActions, exportFormats: EDAExportFormat.allCases.map(\.rawValue),
+            manufacturingFields: ["board.edgePlated":"optional boolean; nil is unspecified; true/false explicitly selects plated/non-plated edge",
+                "footprintDefinition.pads[].drillPlated":"optional boolean, required for Excellon when drill is present; no implicit plating",
+                "hole.endPosition":"optional {x,y} in board mm, finite and distinct from position; explicit straight slot, finished width=diameter; omit for the existing round hole"],
+            copperFillFields: [
+                "zone.thermal":"false = solid same-net pad connection; true requires explicit thermalRelief. Tracks and vias connect solidly.",
+                "zone.thermalRelief":"optional record with all four required fields gap/spokeWidth (mm), spokeAngleDegrees (board axes) and spokeCount (currently 4 only). Explicit creation/default-action values are 0.25/0.3/45/4; never infer them for legacy nil records. Gap must meet the stricter zone/netclass/global clearance; spokeWidth meets explicit minimumTrackWidth as a conservative filler floor, not a preferred netclass width.",
+                "zone.priority":"higher fills first. Lower different-net zones clear the actual higher fill. Conflicting equal-priority different-net zones refuse rather than invent an ordering.",
+                "zone.filledPolygons/fillRevision/fillState":"read-only derived output. Normal native.put clears all derived fills; only successful eda.refillCopper writes revision-bound filled/empty state. Inspect actual readback and refill issues."
+            ],
+            graphicLayerFields: [
+                "board.graphicLayers/footprintDefinition.graphicLayers":"optional array aligned with graphics. Omit for legacy all-unassigned; a nonnil array has exactly the graphics count. Each element is null (unassigned) or {layerID:string,kind:existing EDALayerKind}. Example: [null,{layerID:F.Fab,kind:fabrication}]. Never change EDAGraphic's existing enum encoding or discard geometry. Copy/delete/reorder both arrays together in a complete native.put record.",
+                "relativeSide":"Footprint layer IDs are front-relative; F./B. swap once for a B.Cu instance. Board graphic layers are already absolute. Actual copper requires a real board copper layer; inconsistent kind/layer IDs fail.",
+                "outputs":"Only explicit silkscreen/fabrication/courtyard graphics are excluded from this Cu/profile subset and listed individually in its manifest. Copper, mask, paste, Edge.Cuts, unknown or unassigned graphics refuse this output/refill; unsupported graphics remain visible in DRC coverage. This does not generate those omitted layer images or a complete factory set.",
+                "edits":"Explicit task-authorized layer assignment uses ordinary native.put/UI edits, existing permission scope, CAS and undo. New generic 0603/0805/DIP template rectangles explicitly use F.Fab/fabrication; old nil metadata is not guessed or migrated. Re-read the saved record after applying the requested layer change."
+            ],
             assemblyVariants: project.variants,
             commandFormats: commandFormats,
             examplesJSON: String(decoding: bytes, as: UTF8.self), limitations: [
                 "Examples are alternatives, not a request to insert test components. Use actual IDs from this original.",
                 "native.put replaces one complete native record. Copy all encoded fields, omit nil optional fields, and preserve unknown source content. Extra keys are rejected with a field path.",
-                "Manual 45-degree routing and supported DRC are available; shove routing, differential tuning, zone refill, Gerber/Excellon and external EDA import are not implemented yet.",
+                "Manual 45-degree routing, supported DRC and bounded vector zone refill are available. Refill shares the editor session/CAS/undo operation, retains isolated islands, reports precision, refuses unsupported geometry or incomplete four-spoke thermals, and does not implement neck minima, island removal or hatch fill. Shove routing, differential tuning and external EDA import remain unimplemented.",
+                "Gerber exports supported copper/profile artwork; Excellon exports represented holes and straight slots, separated by plating/span. Missing radius/current fill/plating fails explicitly. Mask/paste/silk/assembly and a complete factory data set are not generated. Set manufacturingFields through the existing native.put board/footprintDefinition/hole records before export; preserve full records and expectedRevision. Never delete unsupported graphics, zones or holes merely to get export success, and never invent fill geometry or plating.",
                 "3D currently extrudes the measured board, cutouts and holes; component model loading and SPICE simulation are not implemented."
             ])
     }

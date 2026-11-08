@@ -32,6 +32,15 @@ public enum ChatInlineContentCatalog {
             return artifact.byteCount <= 2 * 1_024 * 1_024
                 && artifact.relativePath == "PresentationArtifacts/\(runID.uuidString)/\(artifact.id.uuidString).\(suffix)"
         }
+        if tool == "audio.synthesize" {
+            // The native audio factory writes one bounded, self-contained
+            // data-URI player. Its filename UUID is independent of artifact.id.
+            guard path.count == 3, path[0] == "ChangeArtifacts",
+                  path[1] == Substring(runID.uuidString), artifact.mimeType == "text/html",
+                  artifact.byteCount <= 1_000_000, path[2].hasSuffix(".html"),
+                  let fileID = UUID(uuidString: String(path[2].dropLast(5))) else { return false }
+            return path[2] == Substring(fileID.uuidString.lowercased() + ".html")
+        }
         if tool == "cad.document" {
             // These are cad.document's real retained capture/observe outputs,
             // not arbitrary images quoted by another tool or another run.
@@ -102,7 +111,7 @@ public enum ChatInlineContentCatalog {
             switch artifact.mimeType {
             case "application/vnd.floe.chart+json": title = "Chart"
             case "application/vnd.floe.table+json": title = "Table"
-            case "text/html": title = "Interactive preview"
+            case "text/html": title = tool == "audio.synthesize" ? "Audio preview" : "Interactive preview"
             default: title = "Image"
             }
             return .init(reference: reference, mimeType: artifact.mimeType, title: title)

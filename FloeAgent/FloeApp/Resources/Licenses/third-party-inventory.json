@@ -670,6 +670,19 @@
       "section": "fonts"
     },
     {
+      "id": "clipper2",
+      "repositoryPath": "FloeApp/Resources/Licenses/Clipper2-LICENSE.txt",
+      "bundlePath": "Licenses/Clipper2-LICENSE.txt",
+      "titleKey": "settings.licenses.document.clipper2.title",
+      "titleFallback": "Clipper2 polygon clipping",
+      "titleArgument": null,
+      "license": "BSL-1.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": "settings.licenses.note.clipper2_vendor"
+    },
+    {
       "id": "citadel",
       "repositoryPath": "FloeApp/Resources/Licenses/Citadel-LICENSE.txt",
       "bundlePath": "Licenses/Citadel-LICENSE.txt",
@@ -1062,6 +1075,15 @@
       "section": "swift",
       "noteKey": null,
       "evidence": ".build/checkouts/zipfoundation/LICENSE"
+    },
+    {
+      "name": "clipper2",
+      "version": "2.0.1",
+      "license": "BSL-1.0",
+      "source": "https://github.com/PolyClipping/Clipper2/tree/b496b454df168a2280354857c1cd90bd6fa7b4dd",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.clipper2_vendor",
+      "evidence": "ThirdParty/Clipper2/LICENSE"
     },
     {
       "name": "citadel",
@@ -3010,6 +3032,11 @@
       "fallback": "Every Swift package license was read from the resolved checkout at the exact revision declared in the lock; scripts/license-evidence.json records the file, its sha256 and the pin revision+source, and this generator re-verifies them whenever a checkout is present."
     },
     {
+      "id": "clipper2_vendor",
+      "textKey": "settings.licenses.note.clipper2_vendor",
+      "fallback": "Clipper2 2.0.1 supplies polygon clipping and offsetting for PCB geometry and media exchange. The pinned upstream source and full Boost Software License 1.0 are retained; Floe's C adapter is separate."
+    },
+    {
       "id": "citadel_vendor",
       "textKey": "settings.licenses.note.citadel_vendor",
       "fallback": "Citadel retains its exact upstream source and full MIT license, with Floe's bounded authenticated file-channel API."
@@ -3026,8 +3053,8 @@
     }
   ],
   "counts": {
-    "components": 243,
-    "documents": 55,
-    "pins": 40
+    "components": 244,
+    "documents": 56,
+    "pins": 41
   }
 }

@@ -1,6 +1,91 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "settings.questions.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Question choices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择题"
+          }
+        }
+      }
+    },
+    "settings.questions.timeout_seconds %lld": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Small decisions: %lld seconds"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "小决定：%lld 秒"
+          }
+        }
+      }
+    },
+    "settings.questions.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "For small decisions with a displayed default. Important decisions still wait for your answer. Changes apply to new questions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "用于已显示默认值的小决定。重大决定仍等待你的回答。修改仅影响新问题。"
+          }
+        }
+      }
+    },
+    "user_question.card.fallback %@": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If unanswered, use: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未回答时使用：%@"
+          }
+        }
+      }
+    },
+    "user_question.card.fallback_sensitive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If unanswered, use the declared private default."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未回答时使用预设的私密默认值。"
+          }
+        }
+      }
+    },
     "memory.memory_view.pending_capacity": {
       "extractionState": "manual",
       "localizations": {
@@ -353,6 +438,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "化学引擎与离线资源"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.clipper2.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clipper2 polygon clipping"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clipper2 多边形裁剪"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.clipper2_vendor": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clipper2 2.0.1 provides polygon clipping and offsetting for PCB geometry and media exchange, with its full Boost Software License 1.0."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clipper2 2.0.1 为 PCB 几何与媒体交换提供多边形裁剪和偏移运算，并随附完整 Boost Software License 1.0 许可。"
           }
         }
       }

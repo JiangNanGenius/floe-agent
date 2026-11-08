@@ -56,6 +56,21 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
     }
 }
 
+/// Read-only keyset position; a cursor is never ownership authority.
+public struct ConversationRunCursor: Sendable, Codable, Hashable {
+    public var startedAt: Date
+    public var runID: UUID
+    public init(startedAt: Date, runID: UUID) { self.startedAt = startedAt; self.runID = runID }
+}
+public struct ConversationRunPage: Sendable, Hashable {
+    public var runs: [RunRecord]
+    public var earlierCursor: ConversationRunCursor?
+    public var hasEarlier: Bool
+    public init(runs: [RunRecord], earlierCursor: ConversationRunCursor?, hasEarlier: Bool) {
+        self.runs = runs; self.earlierCursor = earlierCursor; self.hasEarlier = hasEarlier
+    }
+}
+
 /// Durable run + event-thread access. Events are append-only and ordered by
 /// a per-run monotonic sequence; checkpoints upsert by run.
 public protocol RunStore: Sendable {
@@ -63,6 +78,7 @@ public protocol RunStore: Sendable {
     func run(id: UUID) async throws -> RunRecord?
     func runs(conversationID: UUID) async throws -> [RunRecord]
     func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord]
+    func runPage(conversationID: UUID, before cursor: ConversationRunCursor?, limit: Int) async throws -> ConversationRunPage
     func nonTerminalRuns() async throws -> [RunRecord]
     func updateRunState(id: UUID, state: String, endedAt: Date?) async throws
     func assignGoal(runID: UUID, goalID: UUID) async throws
@@ -91,6 +107,17 @@ public protocol RunStore: Sendable {
 }
 
 public extension RunStore {
+    /// Compatibility for mocks/RAM stores. SQLite overrides with bounded SQL.
+    func runPage(conversationID: UUID, before cursor: ConversationRunCursor?, limit: Int) async throws -> ConversationRunPage {
+        let ordered = try await runs(conversationID: conversationID).sorted {
+            ($0.startedAt, $0.id.uuidString) > ($1.startedAt, $1.id.uuidString)
+        }
+        let eligible = ordered.filter { run in
+            cursor.map { (run.startedAt, run.id.uuidString) < ($0.startedAt, $0.runID.uuidString) } ?? true
+        }
+        let page = Array(eligible.prefix(min(100, max(1, limit))))
+        return .init(runs: page, earlierCursor: page.last.map { .init(startedAt: $0.startedAt, runID: $0.id) }, hasEarlier: eligible.count > page.count)
+    }
     func earlierEvents(runID: UUID, beforeSequence: Int, limit: Int) async throws -> [RunEventRecord] {
         Array(try await events(runID: runID).filter { $0.sequence < beforeSequence }.suffix(max(1, limit)))
     }
@@ -384,6 +411,23 @@ public actor SQLiteRunStore: RunStore {
                 let time = try PersistenceCodec.decodeDate(row["started_at"])
                 return "run=\(id.uuidString) started=\(ISO8601DateFormatter().string(from: time)) state=\(state) events[\(counts)] receipts[\(receipts)]"
             }
+        }
+    }
+
+    public func runPage(conversationID: UUID, before cursor: ConversationRunCursor?, limit: Int) async throws -> ConversationRunPage {
+        let bounded = min(100, max(1, limit))
+        return try await database.reader { db in
+            var arguments: StatementArguments = [conversationID.uuidString]
+            let predicate: String
+            if let cursor {
+                predicate = "AND (started_at < ? OR (started_at = ? AND id < ?))"
+                let date = PersistenceCodec.encode(cursor.startedAt)
+                arguments += [date, date, cursor.runID.uuidString]
+            } else { predicate = "" }
+            arguments += [bounded + 1]
+            let rows = try Row.fetchAll(db, sql: "SELECT * FROM runs WHERE conversation_id = ? \(predicate) ORDER BY started_at DESC, id DESC LIMIT ?", arguments: arguments)
+            let page = try rows.prefix(bounded).map(Self.run(from:))
+            return .init(runs: page, earlierCursor: page.last.map { .init(startedAt: $0.startedAt, runID: $0.id) }, hasEarlier: rows.count > bounded)
         }
     }
 

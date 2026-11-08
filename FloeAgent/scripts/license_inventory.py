@@ -143,6 +143,18 @@ APP_ONLY_NOTICES = {
 # declared document path (compared byte for byte by --check).
 VENDORED_PACKAGES = (
     {
+        "identity": "clipper2", "path": "ThirdParty/Clipper2",
+        "revision": "b496b454df168a2280354857c1cd90bd6fa7b4dd", "version": "2.0.1",
+        "upstream": "https://github.com/PolyClipping/Clipper2.git", "license": "BSL-1.0",
+        "licenseSHA256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+        "note": ("clipper2_vendor", "Clipper2 2.0.1 supplies polygon clipping and offsetting for PCB geometry and media exchange. The pinned upstream source and full Boost Software License 1.0 are retained; Floe's C adapter is separate."),
+        "document": {
+            "id": "clipper2", "repositoryPath": "FloeApp/Resources/Licenses/Clipper2-LICENSE.txt",
+            "bundlePath": "Licenses/Clipper2-LICENSE.txt", "titleKey": "settings.licenses.document.clipper2.title",
+            "titleFallback": "Clipper2 polygon clipping", "kind": "full_text", "required": True, "section": "swift",
+        },
+    },
+    {
         "identity": "citadel", "path": "ThirdParty/Citadel",
         "revision": "ae8562f895de06ccb86fdb1cbb65fd99c8976e12",
         "upstream": "https://github.com/orlandos-nl/Citadel.git", "license": "MIT",
@@ -1415,6 +1427,10 @@ def classify_license(text: str) -> str | None:
         if "linking exception" in lowered:
             return "GPL-2.0 WITH libgit2 linking exception"
         return "GPL-3.0" if "version 3" in lowered else "GPL-2.0"
+    # BSL's grant shares MIT's opening phrase; its explicit versioned title
+    # must win before the generic grant-text fallback.
+    if re.search(r"(?im)^\s*boost software license\s*[-,]?\s*version 1\.0\b", text):
+        return "BSL-1.0"
     if "permission is hereby granted, free of charge" in lowered or "mit license" in lowered:
         return "MIT"
     if "redistribution and use in source and binary forms" in lowered:
@@ -1756,6 +1772,8 @@ def resolve_vendored_packages(
             )
             continue
         license_bytes = license_path.read_bytes()
+        if spec.get("licenseSHA256") and sha256_file(license_path) != spec["licenseSHA256"]:
+            problems.append(f"{identity}: vendored license differs from its reviewed source pin: {relative}")
         license_name = classify_license(license_bytes.decode("utf-8", errors="replace"))
         if license_name != spec["license"]:
             problems.append(
@@ -1771,7 +1789,7 @@ def resolve_vendored_packages(
         result["components"].append(
             {
                 "name": identity,
-                "version": spec["revision"],
+                "version": spec.get("version", spec["revision"]),
                 "license": license_name or spec["license"],
                 "source": f"{spec['upstream'].removesuffix('.git')}/tree/{spec['revision']}",
                 "section": "swift",

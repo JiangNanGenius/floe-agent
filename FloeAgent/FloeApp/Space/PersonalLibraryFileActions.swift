@@ -330,6 +330,7 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
                 copy.id = id; copy.title = title; copy.revision = 0; copy.createdAt = Date(); copy.modifiedAt = copy.createdAt
                 for board in copy.boards.indices { for zone in copy.boards[board].zones.indices {
                     copy.boards[board].zones[zone].filledPolygons = []; copy.boards[board].zones[zone].fillRevision = nil
+                    copy.boards[board].zones[zone].fillState = nil
                 } }
                 _ = try await EDAProjectStore.create(root: directory.appendingPathComponent("Electronics"), project: copy)
                 guard try await store.load().digest == saved.digest else { throw PersonalFileActionError.changed }

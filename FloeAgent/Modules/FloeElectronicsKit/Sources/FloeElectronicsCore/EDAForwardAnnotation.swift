@@ -78,7 +78,7 @@ public enum EDAForwardAnnotation {
         for i in board.vias.indices { board.vias[i].netID = updated(board.vias[i].netID) }
         for i in board.zones.indices {
             board.zones[i].netID = updated(board.zones[i].netID)
-            board.zones[i].filledPolygons = []; board.zones[i].fillRevision = nil
+            board.zones[i].filledPolygons = []; board.zones[i].fillRevision = nil; board.zones[i].fillState = nil
         }
         return .init(projectID: project.id, revision: project.revision, boardID: boardID, updatedBoard: board,
                      addedComponentIDs: added, orphanedFootprintIDs: orphaned,

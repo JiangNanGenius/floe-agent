@@ -10,10 +10,11 @@ struct EDAProjection {
     let size: CGSize
     let center: EDAPoint
     let scale: Double
-    init(bounds: CGRect, size: CGSize, center: EDAPoint? = nil, zoom: Double = 1) {
+    init(bounds: CGRect, size: CGSize, center: EDAPoint? = nil, zoom: Double = 1, padding: Double = 20) {
         self.bounds = bounds; self.size = size
         self.center = center ?? .init(bounds.midX, bounds.midY)
-        scale = max(0.001, min((size.width-40)/max(bounds.width, 1), (size.height-40)/max(bounds.height, 1))) * zoom
+        let inset = padding.isFinite ? max(0,padding)*2:40
+        scale = max(0.001, min((size.width-inset)/max(bounds.width, 1), (size.height-inset)/max(bounds.height, 1))) * zoom
     }
     func screen(_ p: EDAPoint) -> CGPoint { .init(x:size.width/2+(p.x-center.x)*scale,y:size.height/2-(p.y-center.y)*scale) }
     func world(_ p: CGPoint) -> EDAPoint { .init(center.x+(p.x-size.width/2)/scale,center.y-(p.y-size.height/2)/scale) }
@@ -44,7 +45,8 @@ enum EDAPlot {
                       width:max(30,(x.max() ?? first.x)-(x.min() ?? first.x)+20),height:max(25,(y.max() ?? first.y)-(y.min() ?? first.y)+20))
     }
     static func draw(project: EDAProject, context: EDADocumentContext?, projection p: EDAProjection,
-                     selected: Set<UUID> = [], in canvas: inout GraphicsContext) {
+                     selected: Set<UUID> = [], selectionOffset: EDAPoint = .zero, in canvas: inout GraphicsContext) {
+        func offset(_ id:UUID)->EDAPoint{selected.contains(id) ? selectionOffset:.zero}
         func line(_ points:[EDAPoint],_ color:Color,_ width:Double=0.2,closed:Bool=false,fill:Bool=false) {
             guard let first=points.first else{return};var path=Path();path.move(to:p.screen(first))
             for point in points.dropFirst(){path.addLine(to:p.screen(point))};if closed{path.closeSubpath()}
@@ -115,23 +117,37 @@ enum EDAPlot {
         switch self.context(project,context) {
         case .board(let id):
             guard let board=project.boards.first(where:{$0.id==id}) else{return}
-            line(board.outline,.green,0.3,closed:true,fill:true)
+            line(board.outline,.secondary,0.3,closed:true)
             for cutout in board.cutouts{line(cutout,.gray,closed:true)}
             for zone in board.zones.prefix(10_000){
-                if zone.fillRevision==project.revision{for polygon in zone.filledPolygons{line(polygon,.green,closed:true,fill:true)}}
-                else{line(zone.outline,.green,0.1,closed:true)}
+                let color:Color=selected.contains(zone.id) ? .cyan:(zone.layer=="B.Cu" ? .blue:.red)
+                let delta=offset(zone.id)
+                if zone.fillRevision==project.revision{
+                    var path=Path()
+                    for polygon in zone.filledPolygons{
+                        guard let first=polygon.first else{continue};path.move(to:p.screen(first+delta))
+                        for q in polygon.dropFirst(){path.addLine(to:p.screen(q+delta))};path.closeSubpath()
+                    }
+                    canvas.fill(path,with:.color(color.opacity(0.16)),style:FillStyle(eoFill:true))
+                }
+                line(zone.outline.map{$0+delta},color,selected.contains(zone.id) ? 0.35:0.1,closed:true)
             }
             for keepout in board.keepouts.prefix(10_000){line(keepout.outline,.purple,0.2,closed:true)}
-            for track in board.tracks.prefix(10_000){line(track.points,selected.contains(track.id) ? .cyan:(track.layer=="B.Cu" ? .blue:.red),track.width)}
-            for via in board.vias.prefix(10_000){circle(via.position,via.diameter/2,.orange);circle(via.position,via.drill/2,.white)}
-            for hole in board.holes.prefix(10_000){circle(hole.position,hole.diameter/2,.white);circle(hole.position,hole.diameter/2,.gray,fill:false)}
-            for item in board.footprints.prefix(10_000){if let definition=project.footprints.first(where:{$0.id==item.definitionID}){footprint(item,definition)}}
+            for track in board.tracks.prefix(10_000){line(track.points.map{$0+(track.locked ? .zero:offset(track.id))},selected.contains(track.id) ? .cyan:(track.layer=="B.Cu" ? .blue:.red),track.width)}
+            for via in board.vias.prefix(10_000){let position=via.position+offset(via.id);circle(position,via.diameter/2,selected.contains(via.id) ? .cyan:.orange);circle(position,via.drill/2,.white)}
+            for hole in board.holes.prefix(10_000){
+                let delta=offset(hole.id),color:Color=selected.contains(hole.id) ? .cyan:.gray
+                if let end=hole.endPosition {line([hole.position+delta,end+delta],color,hole.diameter+0.1);line([hole.position+delta,end+delta],.white,hole.diameter)}
+                else{circle(hole.position+delta,hole.diameter/2,.white);circle(hole.position+delta,hole.diameter/2,color,fill:false)}
+            }
+            for original in board.footprints.prefix(10_000){var item=original;if !item.locked{item.position=item.position+offset(item.id)};if let definition=project.footprints.first(where:{$0.id==item.definitionID}){footprint(item,definition)}}
             graphics(board.graphics)
         case .schematic(let id):
             guard let sheet=project.sheets.first(where:{$0.id==id}) else{return}
-            for wire in sheet.wires.prefix(10_000){line(wire.points,selected.contains(wire.id) ? .cyan:.green)}
-            for junction in sheet.junctions.prefix(10_000){circle(junction.position,0.4,.green)}
-            for item in sheet.symbols.prefix(10_000){
+            for wire in sheet.wires.prefix(10_000){line(wire.points.map{$0+offset(wire.id)},selected.contains(wire.id) ? .cyan:.green)}
+            for junction in sheet.junctions.prefix(10_000){circle(junction.position+offset(junction.id),0.4,selected.contains(junction.id) ? .cyan:.green)}
+            for original in sheet.symbols.prefix(10_000){
+                var item=original;item.position=item.position+offset(item.id)
                 guard let component=project.components.first(where:{$0.id==item.componentID}),let definition=project.symbols.first(where:{$0.id==component.symbolID}) else{continue}
                 func transform(_ q:EDAPoint)->EDAPoint{q.transformed(origin:item.position,angle:item.angle,mirrored:item.mirrored)}
                 let color:Color=selected.contains(item.id) ? .blue:.primary
@@ -139,7 +155,7 @@ enum EDAPlot {
                 for pin in definition.pins where pin.unit==0 || pin.unit==item.unit{circle(transform(pin.position),0.2,color);label(pin.number,transform(pin.position + .init(0,0.5)),color,0.9)}
                 label(component.reference+" "+component.value,item.position + .init(0,4),color)
             }
-            for item in sheet.labels.prefix(10_000){label(item.name,item.position,.red)}
+            for item in sheet.labels.prefix(10_000){label(item.name,item.position+offset(item.id),selected.contains(item.id) ? .cyan:.red)}
             for item in sheet.noConnects.prefix(10_000){line([item.position + .init(-0.6,-0.6),item.position + .init(0.6,0.6)],.blue);line([item.position + .init(-0.6,0.6),item.position + .init(0.6,-0.6)],.blue)}
             for bus in sheet.buses.prefix(10_000){line(bus.points,.blue,0.6);if let point=bus.points.first{label(bus.name,point,.blue)}}
             graphics(sheet.graphics)
@@ -195,6 +211,50 @@ enum EDAPlot {
     }
 }
 
+extension EDAPlot {
+    static func drawGrid(projection p:EDAProjection,spacing:Double,in canvas:inout GraphicsContext){
+        guard spacing.isFinite,spacing>0,p.scale.isFinite else{return}
+        var step=spacing
+        while step*p.scale<16{step *= 2}
+        let a=p.world(.zero),b=p.world(.init(x:p.size.width,y:p.size.height))
+        let x0=floor(min(a.x,b.x)/step)*step,y0=floor(min(a.y,b.y)/step)*step
+        let columns=min(200,Int(ceil(abs(b.x-a.x)/step))+2),rows=min(200,Int(ceil(abs(b.y-a.y)/step))+2)
+        var path=Path()
+        for x in 0..<columns{for y in 0..<rows{
+            let q=p.screen(.init(x0+Double(x)*step,y0+Double(y)*step))
+            path.addEllipse(in:.init(x:q.x-0.6,y:q.y-0.6,width:1.2,height:1.2))
+        }}
+        canvas.fill(path,with:.color(.secondary.opacity(0.35)))
+    }
+    static func drawPolylinePreview(_ points:[EDAPoint],projection p:EDAProjection,in canvas:inout GraphicsContext){
+        guard let first=points.first else{return};var path=Path();path.move(to:p.screen(first))
+        for point in points.dropFirst(){path.addLine(to:p.screen(point))}
+        canvas.stroke(path,with:.color(.accentColor),style:.init(lineWidth:1.5,dash:[6,4]))
+        for point in points.dropLast(){let q=p.screen(point);canvas.fill(Path(ellipseIn:.init(x:q.x-3,y:q.y-3,width:6,height:6)),with:.color(.accentColor))}
+    }
+    static func drawPlacement(project:EDAProject,context:EDADocumentContext,definitionID:UUID?,position:EDAPoint,
+                              angle:Double,flipped:Bool,projection:EDAProjection,in canvas:inout GraphicsContext){
+        guard let definitionID else{return}
+        var preview=project;preview.components=[];preview.sheets=[];preview.boards=[]
+        var selected:Set<UUID>=[]
+        switch context{
+        case .board(let id):
+            guard project.footprints.contains(where:{$0.id==definitionID}) else{return}
+            var board=EDABoard(id:id,outline:[])
+            let placed=EDAFootprint(definitionID:definitionID,position:position,angle:angle,side:flipped ? "B.Cu":"F.Cu")
+            board.footprints=[placed];preview.boards=[board];selected=[placed.id]
+        case .schematic(let id):
+            guard project.symbols.contains(where:{$0.id==definitionID}) else{return}
+            let component=EDAComponent(symbolID:definitionID)
+            let placed=EDASymbolPlacement(componentID:component.id,position:position,angle:angle,mirrored:flipped)
+            preview.components=[component];preview.sheets=[EDASheet(id:id,symbols:[placed])];selected=[placed.id]
+        default:return
+        }
+        var ghost=canvas;ghost.opacity=0.55
+        draw(project:preview,context:context,projection:projection,selected:selected,in:&ghost)
+    }
+}
+
 /// Saved snapshot only: no editor session, storage write, calculation or audio.
 public struct EDAPreviewView: View {
     let project: EDAProject
@@ -208,52 +268,147 @@ public struct EDAPreviewView: View {
     }
 }
 
+enum EDCanvasCommand:String {
+    case cancel,properties,rotate,flip,duplicate,delete
+}
+
+struct EDCanvasInputIdentity:Equatable{
+    let context:EDADocumentContext
+    let mode:EDCanvasMode
+    let generation:UUID
+    let center:EDAPoint
+    let scale:Double
+    let size:CGSize
+}
+
 #if canImport(UIKit)
 /// UIKit reports the input source; no hidden "saw Pencil" mode switching.
 struct EDAInputSurface: UIViewRepresentable {
     var fingerDrawing: Bool
+    let identity:EDCanvasInputIdentity
+    let editingEnabled:Bool
     let tap: (CGPoint)->Void
     let move: (CGPoint,CGPoint)->Void
     /// Drag location updates while a drawing gesture is in progress (preview).
     let stroke: ((CGPoint)->Void)?
+    let hover: (CGPoint)->Void
+    let select: (CGPoint)->Void
+    let cancel: ()->Void
+    let command: (EDCanvasCommand)->Void
+    let canCommand:(EDCanvasCommand)->Bool
     let pan: (CGSize)->Void
     let zoom: (CGFloat)->Void
     func makeUIView(context:Context)->InputView{let view=InputView();view.update(self);return view}
     func updateUIView(_ view:InputView,context:Context){view.update(self)}
-    final class InputView:UIView,UIGestureRecognizerDelegate {
+    final class InputView:UIView,UIGestureRecognizerDelegate,UIContextMenuInteractionDelegate {
         var input:EDAInputSurface?
+        private var activeInput:EDAInputSurface?
         private var start=CGPoint.zero
         private lazy var editTap=UITapGestureRecognizer(target:self,action:#selector(tapped))
         private lazy var editDrag=UIPanGestureRecognizer(target:self,action:#selector(dragged))
         private lazy var viewPan=UIPanGestureRecognizer(target:self,action:#selector(panned))
+        private lazy var selectionTap=UITapGestureRecognizer(target:self,action:#selector(selected))
+        private lazy var pointerHover=UIHoverGestureRecognizer(target:self,action:#selector(hovered))
         private lazy var pinch=UIPinchGestureRecognizer(target:self,action:#selector(pinched))
         override init(frame:CGRect){super.init(frame:frame);backgroundColor = .clear
-            for gesture in [editTap,editDrag,viewPan,pinch]{gesture.delegate=self;addGestureRecognizer(gesture)}
+            for gesture in [editTap,editDrag,viewPan,pinch,selectionTap,pointerHover]{gesture.delegate=self;addGestureRecognizer(gesture)}
             editTap.require(toFail:editDrag);editDrag.maximumNumberOfTouches=1
+            selectionTap.allowedTouchTypes=[NSNumber(value:UITouch.TouchType.direct.rawValue)]
+            selectionTap.require(toFail:viewPan)
             viewPan.allowedTouchTypes=[NSNumber(value:UITouch.TouchType.direct.rawValue)]
+            addInteraction(UIContextMenuInteraction(delegate:self))
         }
         required init?(coder:NSCoder){fatalError("init(coder:) is unavailable")}
-        func update(_ value:EDAInputSurface){input=value
-            var types=[NSNumber(value:UITouch.TouchType.pencil.rawValue),NSNumber(value:UITouch.TouchType.indirectPointer.rawValue)]
-            if value.fingerDrawing{types.append(NSNumber(value:UITouch.TouchType.direct.rawValue))}
+        func update(_ value:EDAInputSurface){
+            if let activeInput,activeInput.identity != value.identity || activeInput.fingerDrawing != value.fingerDrawing || !value.editingEnabled{
+                self.activeInput=nil
+                editDrag.isEnabled=false;editDrag.isEnabled=true
+                activeInput.cancel()
+            }
+            input=value
+            let types=Self.editingTouchTypes(fingerDrawing:value.fingerDrawing)
             editTap.allowedTouchTypes=types;editDrag.allowedTouchTypes=types
             viewPan.minimumNumberOfTouches=value.fingerDrawing ? 2:1
+            selectionTap.isEnabled = !value.fingerDrawing
         }
-        @objc private func tapped(_ g:UITapGestureRecognizer){input?.tap(g.location(in:self))}
+        static func editingTouchTypes(fingerDrawing:Bool)->[NSNumber]{
+            var types=[NSNumber(value:UITouch.TouchType.pencil.rawValue),NSNumber(value:UITouch.TouchType.indirectPointer.rawValue)]
+            if fingerDrawing{types.append(NSNumber(value:UITouch.TouchType.direct.rawValue))};return types
+        }
+        override var canBecomeFirstResponder:Bool{true}
+        @objc private func tapped(_ g:UITapGestureRecognizer){becomeFirstResponder();guard input?.editingEnabled==true else{return};input?.tap(g.location(in:self))}
+        @objc private func selected(_ g:UITapGestureRecognizer){becomeFirstResponder();input?.select(g.location(in:self))}
+        @objc private func hovered(_ g:UIHoverGestureRecognizer){if g.state == .began || g.state == .changed{input?.hover(g.location(in:self))}}
         @objc private func dragged(_ g:UIPanGestureRecognizer){
             switch g.state {
             case .began:
-                start=g.location(in:self);input?.stroke?(start)
+                guard input?.editingEnabled==true else{return}
+                becomeFirstResponder()
+                let point=g.location(in:self),delta=g.translation(in:self)
+                start=CGPoint(x:point.x-delta.x,y:point.y-delta.y);beginEditGesture(at:start);activeInput?.stroke?(point)
             case .changed:
-                input?.stroke?(g.location(in:self))
-            case .ended,.cancelled,.failed:
-                input?.move(start,g.location(in:self))
+                activeInput?.stroke?(g.location(in:self))
+            case .ended:
+                finishEditGesture(state:g.state,from:start,to:g.location(in:self))
+            case .cancelled,.failed:finishEditGesture(state:g.state,from:start,to:g.location(in:self))
+            default:break
+            }
+        }
+        func beginEditGesture(at point:CGPoint){
+            guard let input,input.editingEnabled else{return};activeInput=input;start=point;activeInput?.stroke?(point)
+        }
+        func finishEditGesture(state:UIGestureRecognizer.State,from:CGPoint,to:CGPoint){
+            guard let active=activeInput else{return}
+            switch state{
+            case .ended:
+                activeInput=nil
+                guard let input,active.identity==input.identity,active.fingerDrawing==input.fingerDrawing,input.editingEnabled else{active.cancel();return}
+                active.move(from,to)
+            case .cancelled,.failed:activeInput=nil;active.cancel()
             default:break
             }
         }
         @objc private func panned(_ g:UIPanGestureRecognizer){let t=g.translation(in:self);if g.state == .changed{input?.pan(.init(width:t.x,height:t.y));g.setTranslation(.zero,in:self)}}
         @objc private func pinched(_ g:UIPinchGestureRecognizer){if g.state == .changed{input?.zoom(g.scale);g.scale=1}}
-        func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldRecognizeSimultaneouslyWith otherGestureRecognizer:UIGestureRecognizer)->Bool{gestureRecognizer===pinch || otherGestureRecognizer===pinch}
+        override var keyCommands:[UIKeyCommand]?{[
+            UIKeyCommand(input:UIKeyCommand.inputEscape,modifierFlags:[],action:#selector(key)),
+            UIKeyCommand(input:"r",modifierFlags:[],action:#selector(key)),
+            UIKeyCommand(input:"f",modifierFlags:[],action:#selector(key)),
+            UIKeyCommand(input:"e",modifierFlags:[],action:#selector(key)),
+            UIKeyCommand(input:"d",modifierFlags:.command,action:#selector(key)),
+            UIKeyCommand(input:"\u{8}",modifierFlags:[],action:#selector(key))
+        ]}
+        @objc private func key(_ key:UIKeyCommand){
+            switch key.input{
+            case UIKeyCommand.inputEscape:input?.command(.cancel)
+            case "r":input?.command(.rotate)
+            case "f":input?.command(.flip)
+            case "e":input?.command(.properties)
+            case "d":input?.command(.duplicate)
+            case "\u{8}":input?.command(.delete)
+            default:break
+            }
+        }
+        func contextMenuInteraction(_ interaction:UIContextMenuInteraction,configurationForMenuAtLocation location:CGPoint)->UIContextMenuConfiguration?{
+            input?.select(location);becomeFirstResponder()
+            return UIContextMenuConfiguration(identifier:nil,previewProvider:nil){[weak self] _ in
+                UIMenu(children:[
+                    self?.menuAction(.properties,title:edText("属性","Properties"),image:"slider.horizontal.3"),
+                    self?.menuAction(.rotate,title:edText("旋转 90°","Rotate 90°"),image:"rotate.right"),
+                    self?.menuAction(.flip,title:edText("翻转","Flip"),image:"arrow.left.and.right"),
+                    self?.menuAction(.duplicate,title:edText("复制","Duplicate"),image:"plus.square.on.square"),
+                    self?.menuAction(.delete,title:edText("删除","Delete"),image:"trash")
+                ].compactMap{$0})
+            }
+        }
+        private func menuAction(_ value:EDCanvasCommand,title:String,image:String)->UIAction{
+            var attributes:UIMenuElement.Attributes=value == .delete ? .destructive:[]
+            if input?.canCommand(value) != true{attributes.insert(.disabled)}
+            return UIAction(title:title,image:UIImage(systemName:image),attributes:attributes){[weak self] _ in self?.input?.command(value)}
+        }
+        func gestureRecognizer(_ gestureRecognizer:UIGestureRecognizer,shouldRecognizeSimultaneouslyWith otherGestureRecognizer:UIGestureRecognizer)->Bool{
+            (gestureRecognizer===pinch && otherGestureRecognizer===viewPan) || (gestureRecognizer===viewPan && otherGestureRecognizer===pinch)
+        }
     }
 }
 #endif

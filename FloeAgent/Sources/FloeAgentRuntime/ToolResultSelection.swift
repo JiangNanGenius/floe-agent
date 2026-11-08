@@ -30,6 +30,13 @@ import Foundation
 import FloeModels
 import FloeProviders
 
+public enum ToolResultPagePolicy {
+    /// Runtime call identity, never a claim inside tool output.
+    public static func preservesWholePage(toolName: String) -> Bool {
+        toolName == ToolResultPagingTool.name || toolName == "chat.content.list"
+    }
+}
+
 /// One pending tool result offered to the planner. `text` is the complete
 /// post-redaction capture when retention has it; otherwise it is the bounded
 /// model-visible summary and `retentionAvailable` is false.
@@ -47,7 +54,7 @@ public struct ToolResultSelectionInput: Sendable, Equatable {
     public var executionReportedTruncation: Bool
     /// The complete output could not be retained; paging will not recover it.
     public var captureUnavailable: Bool
-    /// This result is the page returned by `tools.readResult` itself.
+    /// A runtime-owned byte/JSON page whose continuation must remain whole.
     public var isPagingPage: Bool
     /// Model-visible only for this request, never pageable. An over-budget
     /// sensitive value is omitted whole rather than partially exposed.
@@ -331,6 +338,9 @@ public enum ToolResultPlanner {
 
     static func pointerText(for input: ToolResultSelectionInput, totalBytes: Int) -> String {
         if input.isPagingPage {
+            if input.toolName == "chat.content.list" {
+                return "[chat.content.list page omitted whole: insufficient request budget. Retry same cursor/original args with smaller limit/eventLimit; do not advance nextCursor.]"
+            }
             return "[tools.readResult page not repeated in this request: \(totalBytes) bytes exceed the remaining budget. Request a smaller length or a later offset.]"
         }
         var text = "[tool result not repeated in this request: \(totalBytes) bytes"

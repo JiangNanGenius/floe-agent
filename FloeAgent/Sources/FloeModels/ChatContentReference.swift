@@ -52,7 +52,7 @@ public struct ChatContentReference: Sendable, Hashable, Codable {
         let clean = String(label).trimmingCharacters(in: .whitespacesAndNewlines)
         return "![\(clean.isEmpty ? "Content" : clean)](\(uri))"
     }
-    public static let modelInstructions = "To insert an existing native result between answer paragraphs, copy its inlineMarkdown verbatim on a complete standalone line, for example ![Title](floe-content://artifact/RUN_UUID/ARTIFACT_UUID). Do not put it in a code fence or invent IDs, file paths or URLs. The reference is resolved only from this task's saved receipts; it grants no permissions. Use chat.content.list to recover references to earlier task results. Images keep ordinary Markdown syntax. Unsupported files use the existing file preview rather than a fabricated renderer."
+    public static let modelInstructions = "To insert an existing native result between answer paragraphs, copy its inlineMarkdown verbatim on a complete standalone line, for example ![Title](floe-content://artifact/RUN_UUID/ARTIFACT_UUID). Do not put it in a code fence or invent IDs, file paths or URLs. The reference is resolved only from this task's saved receipts; it grants no permissions. Use chat.content.list to recover earlier results in this task; continue its nextCursor even after an empty page. Bounded native synthesized-audio previews require a user tap. Video, PDF, Office and 3D/CAD output references display file preview entries, not a new inline player, reader or model editor. Images keep ordinary Markdown syntax. Unsupported files use the existing file preview rather than a fabricated renderer."
 }
 
 public struct ChatContentDescriptor: Sendable, Codable, Hashable {

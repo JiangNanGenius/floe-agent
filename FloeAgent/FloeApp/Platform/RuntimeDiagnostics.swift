@@ -78,8 +78,8 @@ final class RuntimeDiagnostics: NSObject, MXMetricManagerSubscriber {
             + "\n== MetricKit full payloads ==\n" + reports.joined(separator: "\n")
     }
 
-    /// A valid JSON summary with metadata first in meaning, and only bounded
-    /// attributed-thread frames. Full payloads remain separate evidence.
+    /// Retain bounded stack evidence beyond the system framework preamble.
+    /// Full payloads remain local; feedback transport only sends this summary.
     nonisolated static func compactEvidence(_ data: Data) -> String {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return #"{"summaryError":"Stored MetricKit payload is incomplete or invalid; original evidence was retained"}"#
@@ -98,15 +98,37 @@ final class RuntimeDiagnostics: NSObject, MXMetricManagerSubscriber {
                    let stacks = tree["callStacks"] as? [[String: Any]] {
                     let selected = stacks.first { $0["threadAttributed"] as? Bool == true }
                     record["attributedThreadFound"] = selected != nil
-                    var pending = (selected?["callStackRootFrames"] as? [[String: Any]]) ?? []
+                    let selectedStacks = selected.map { [$0] } ?? Array(stacks.prefix(3))
                     var frames: [[String: Any]] = []
-                    while !pending.isEmpty && frames.count < 20 {
-                        let frame = pending.removeFirst()
-                        frames.append(frame.filter { ["binaryUUID", "binaryName", "offsetIntoBinaryTextSegment", "address"].contains($0.key) })
-                        pending.insert(contentsOf: (frame["subFrames"] as? [[String: Any]]) ?? [], at: 0)
+                    var applicationFrames: [[String: Any]] = []
+                    var visited = 0
+                    var scanTruncated = false
+                    for (stackIndex, stack) in selectedStacks.enumerated() {
+                        let roots = (stack["callStackRootFrames"] as? [[String: Any]]) ?? []
+                        var pending = roots.reversed().map { ($0, 0) }
+                        while let (frame, depth) = pending.popLast() {
+                            guard visited < 4_096 else { scanTruncated = true; break }
+                            visited += 1
+                            var evidence = frame.filter {
+                                ["binaryUUID", "binaryName", "offsetIntoBinaryTextSegment", "address", "sampleCount"].contains($0.key)
+                            }
+                            evidence["stackIndex"] = stackIndex
+                            evidence["depth"] = depth
+                            if frames.count < 20 { frames.append(evidence) }
+                            let name = (frame["binaryName"] as? String ?? "").lowercased()
+                            if (name.hasPrefix("floe") || name == "org.floeagent.ios"), applicationFrames.count < 12 {
+                                applicationFrames.append(evidence)
+                            }
+                            let children = (frame["subFrames"] as? [[String: Any]]) ?? []
+                            pending.append(contentsOf: children.reversed().map { ($0, depth + 1) })
+                        }
                     }
                     record["attributedFrames"] = frames
-                    record["framesOmitted"] = !pending.isEmpty
+                    record["applicationFrames"] = applicationFrames
+                    record["stackFramesVisited"] = visited
+                    record["stackScanTruncated"] = scanTruncated
+                    record["unattributedStacksSampled"] = selected == nil ? selectedStacks.count : 0
+                    record["framesOmitted"] = scanTruncated || visited > frames.count
                 }
                 records.append(record)
             }
@@ -116,9 +138,12 @@ final class RuntimeDiagnostics: NSObject, MXMetricManagerSubscriber {
             return #"{"summaryError":"MetricKit summary serialization failed"}"#
         }
         if encoded.count > 12_000 {
-            // Preserve exception/termination metadata before stack detail.
+            // Keep App frames before the system preamble when bytes are tight.
             result["diagnostics"] = records.map { record in
-                record.filter { $0.key != "attributedFrames" }
+                var compact = record.filter { $0.key != "attributedFrames" }
+                compact["applicationFrames"] = Array((record["applicationFrames"] as? [[String: Any]] ?? []).prefix(4))
+                compact["framesOmitted"] = true
+                return compact
             }
             encoded = (try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])) ?? encoded
         }

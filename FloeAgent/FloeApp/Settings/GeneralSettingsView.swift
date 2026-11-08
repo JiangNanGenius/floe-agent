@@ -10,6 +10,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
+import FloeModels
 
 struct GeneralSettingsView: View {
     @ObservedObject var center: SettingsCenter
@@ -89,6 +90,17 @@ struct GeneralSettingsView: View {
                     get: { center.verifyFinalAnswer },
                     set: { value in Task { await center.setVerifyFinalAnswer(value) } }
                 ))
+            }
+
+            Section("settings.questions.title") {
+                Stepper(value: Binding(
+                    get: { center.userQuestionDefaults.optionalTimeoutSeconds },
+                    set: { center.setUserQuestionTimeoutSeconds($0) }
+                ), in: UserQuestionRequest.minimumDeadlineSeconds...UserQuestionRequest.maximumDeadlineSeconds, step: 5) {
+                    Text("settings.questions.timeout_seconds \(center.userQuestionDefaults.optionalTimeoutSeconds)")
+                }
+                .accessibilityIdentifier("settings.questions.timeout")
+                Text("settings.questions.help").font(.caption).foregroundStyle(.secondary)
             }
 
             // Foldable adaptation is automatic on system-detected folding

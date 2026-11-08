@@ -88,6 +88,8 @@ final class SettingsCenter: ObservableObject {
     }
     /// Self-critique pass on the final answer before the run completes.
     @Published private(set) var verifyFinalAnswer: Bool = false
+    /// Used only when publishing a new explicitly optional choice with fallback.
+    @Published private(set) var userQuestionDefaults = UserQuestionDefaults()
     /// Model-written semantic summaries during context compaction (cloud
     /// models only; local models stay deterministic). Default on.
     @Published private(set) var semanticContextCompaction: Bool = true
@@ -438,6 +440,7 @@ final class SettingsCenter: ObservableObject {
     }
 
     private func loadUserDefaults() {
+        userQuestionDefaults = UserQuestionDefaults.load(from: defaults)
         let syncPreferences = SyncControlPreferences.load(from: defaults)
         overallSyncEnabled = syncPreferences.overallEnabled
         configurationSyncEnabled = syncPreferences.configurationEnabled
@@ -462,6 +465,14 @@ final class SettingsCenter: ObservableObject {
            let value = DateTimeDisplayStyle(rawValue: raw) {
             dateTimeStyle = value
         }
+    }
+
+    func setUserQuestionTimeoutSeconds(_ seconds: Int) {
+        do {
+            let value = UserQuestionDefaults(optionalTimeoutSeconds: seconds)
+            try value.save(to: defaults)
+            userQuestionDefaults = value
+        } catch { settingsSaveError = error.localizedDescription }
     }
 
     // MARK: - Setters (UserDefaults layer)

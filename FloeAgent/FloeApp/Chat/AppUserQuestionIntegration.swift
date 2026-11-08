@@ -22,6 +22,9 @@ final class AppUserQuestionIntegration: ObservableObject, UserQuestionNotificati
     }, answerNormalizer: { [weak self] answer, question, ephemeral in
         guard let self else { throw CancellationError() }
         return try await self.normalizeAnswer(answer, question: question, ephemeral: ephemeral)
+    }, defaultSettings: { [weak self] in
+        guard let self else { return UserQuestionDefaults() }
+        return await self.configuredQuestionDefaults()
     })
     private var backgroundObserver: AnyCancellable?
     private var observedConversations: Set<UUID> = []
@@ -40,6 +43,10 @@ final class AppUserQuestionIntegration: ObservableObject, UserQuestionNotificati
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in await self?.presentBackgroundQuestions() }
             }
+    }
+
+    private func configuredQuestionDefaults() -> UserQuestionDefaults {
+        environment?.settingsCenter.userQuestionDefaults ?? UserQuestionDefaults()
     }
 
     private func normalizeAnswer(_ answer: UserQuestionAnswer, question: UserQuestion,

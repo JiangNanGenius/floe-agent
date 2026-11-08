@@ -1989,7 +1989,7 @@ public struct SubagentRunner: Sendable {
         var clippedSettled: [(call: ToolCall, result: ToolResult)] = []
         var truncatedOutputs = 0
         for item in pendingSettled {
-            let isPaging = item.call.toolName == ToolResultPagingTool.name
+            let isPaging = ToolResultPagePolicy.preservesWholePage(toolName: item.call.toolName)
             var durable = item.result.durableProjection()
             let durableSummary = boundedPrefix(
                 item.result.outputSummary,

@@ -556,6 +556,31 @@ enum ProviderTransport {
     }
 }
 
+/// A Chat response owns its pump explicitly so rejecting an invalid stream
+/// cancels URLSession work immediately, including before task installation.
+final class SSEPumpCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var cancelled = false
+    func install(_ task: Task<Void, Never>) {
+        let cancelNow = lock.withLock {
+            if cancelled { return true }
+            self.task = task
+            return false
+        }
+        if cancelNow { task.cancel() }
+    }
+    func cancel() {
+        let running = lock.withLock {
+            cancelled = true
+            let running = task; task = nil
+            return running
+        }
+        running?.cancel()
+    }
+    deinit { cancel() }
+}
+
 /// Feeds an HTTP byte stream through `SSEParser` and emits decoded SSE
 /// events. Cancellation of the consuming task cancels the URLSession task.
 struct SSEBytePump: Sendable {
@@ -570,7 +595,7 @@ struct SSEBytePump: Sendable {
         self.session = session
     }
 
-    func events() -> AsyncThrowingStream<SSEEvent, Error> {
+    func events(cancellation: SSEPumpCancellation? = nil) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -631,6 +656,7 @@ struct SSEBytePump: Sendable {
                     }
                 }
             }
+            cancellation?.install(task)
             continuation.onTermination = { _ in task.cancel() }
         }
     }
@@ -905,8 +931,10 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                         urlRequest: urlRequest,
                         session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
                     )
+                    let responseCancellation = SSEPumpCancellation()
+                    defer { responseCancellation.cancel() }
                     let decoder = JSONDecoder()
-                    var aggregator = ToolCallAggregator()
+                    var boundary = ChatCompletionStreamBoundary(request: request)
                     var deferredCompletion: AgentEvent.CompletionInfo?
                     // Some OpenAI-compatible gateways (observed with Ark)
                     // repeat the same usage frame for one HTTP request. Usage
@@ -916,7 +944,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     // distinct values are all kept, and an identical report in
                     // a separate request starts with a fresh set and counts.
                     var emittedUsageReports = Set<AgentEvent.UsageReport>()
-                    for try await sseEvent in pump.events() {
+                    for try await sseEvent in pump.events(cancellation: responseCancellation) {
                         if let errorEvent = httpErrorEvent(from: sseEvent) {
                             if case .error(let error) = errorEvent {
                                 let status = error.httpStatus.map(String.init) ?? "none"
@@ -935,11 +963,8 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                             }) {
                                 await request.onToolArgumentsProgress?()
                             }
-                            for event in WireTranslator.translate(chunk, aggregator: &aggregator) {
-                                if case .toolRequest(var call) = event {
-                                    call.toolName = CompatToolNames.canonicalName(call.toolName, request: request)
-                                    continuation.yield(.toolRequest(call))
-                                } else if case .completed(let completion) = event {
+                            for event in boundary.consume(chunk) {
+                                if case .completed(let completion) = event {
                                     // OpenAI Chat Completions commonly sends a
                                     // separate usage-only chunk after the
                                     // finish_reason chunk. Do not terminate the
@@ -953,9 +978,13 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                                     continuation.yield(event)
                                 }
                             }
+                            // Reject before publishing machine text, then cancel this
+                            // HTTP response. Runtime grants at most one native-call
+                            // correction; do not drain an invalid token stream.
+                            if boundary.isRejected { break }
                         } catch {
                             logger.error("Chat chunk decode failed: \(error.localizedDescription)")
-                            if aggregator.hasCalls {
+                            if let rejection = boundary.droppedChunk() {
                                 // A dropped chunk while tool arguments were
                                 // streaming would otherwise concatenate
                                 // incomplete JSON and surface later as an
@@ -963,15 +992,12 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                                 // discard the partial aggregation and let the
                                 // runtime offer one bounded correction. The
                                 // malformed payload is never emitted.
-                                aggregator.reset()
-                                continuation.yield(.error(AgentEvent.NormalizedError(
-                                    kind: .malformedToolArguments,
-                                    providerMessage: "The provider stream dropped a tool-call fragment before its arguments completed; the tool call was not executed. Re-emit it with complete valid JSON arguments."
-                                )))
+                                continuation.yield(rejection)
                                 break
                             }
                         }
                     }
+                    for event in boundary.finish() { continuation.yield(event) }
                     if let deferredCompletion {
                         continuation.yield(.completed(deferredCompletion))
                     }
@@ -1136,11 +1162,15 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             model: request.model,
             policy: request.reasoningPolicy
         )
+        // History is evidence, not permission for another call. Make a
+        // DeepSeek tool-free turn explicit when native call history remains.
+        let explicitNoTools = tools.isEmpty && replaysReasoning
+            && messages.contains { !($0.toolCalls ?? []).isEmpty }
         return ChatRequest(
             model: request.model.remoteModelID,
             messages: messages,
-            tools: tools.isEmpty ? nil : tools,
-            toolChoice: tools.isEmpty ? nil : "auto",
+            tools: explicitNoTools ? [] : (tools.isEmpty ? nil : tools),
+            toolChoice: explicitNoTools ? "none" : (tools.isEmpty ? nil : "auto"),
             maxTokens: request.model.limits.configuredMaxOutputTokens,
             thinking: reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
             reasoningEffort: reasoning.reasoningEffort,

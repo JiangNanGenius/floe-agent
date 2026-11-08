@@ -532,7 +532,7 @@ public enum TypedMutationContract {
                    ["note","todo","decision","summary"].contains(action) { return [] }
             case "studio.run":
                 guard keys(["projectID","action","inputJSON"]), let action = arguments["action"] as? String,
-                      ["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.export"].contains(action), inputIsNative() else { return [] }
+                      ["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.refillCopper","eda.export"].contains(action), inputIsNative() else { return [] }
             case "studio.media":
                 guard keys(["projectID","toolID","inputJSON"]), let tool = arguments["toolID"] as? String,
                       nativeStudioMediaToolIDs.contains(tool), let json = text("inputJSON",262_144),

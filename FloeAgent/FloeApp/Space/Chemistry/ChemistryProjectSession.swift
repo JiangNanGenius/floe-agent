@@ -124,6 +124,7 @@ enum ChemistryHostFactory {
         let project = try await service.project(projectID)
         if let expectedRevision, project.revision != expectedRevision { throw PersonalContentError.changedDocument }
     }
+    func savedRunOwner(_ runID: UUID) -> ChemistryHostRunOwner? { owners[runID] }
     func recordOwner(runID: UUID, context: ToolContext, environmentID: String) throws {
         guard let conversationID = context.conversationID else { throw PersonalContentError.invalidProject }
         var next = owners

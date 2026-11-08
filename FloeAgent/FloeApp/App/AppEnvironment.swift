@@ -1550,6 +1550,9 @@ final class AppEnvironment: ObservableObject {
                     conversationID: job.conversationID, targetTool: job.targetTool)
                 || ChemistryNativeRunMetadata.matches($0, runID: job.runID,
                     conversationID: job.conversationID, targetTool: job.targetTool)
+                || LaTeXNativeRunMetadata.matches($0, runID: job.runID,
+                    conversationID: job.conversationID, targetTool: job.targetTool,
+                    environmentID: job.environmentID)
         }
         let content = "[Floe background job \(job.id.uuidString)] \(job.targetTool) finished with state=\(job.state.rawValue). "
             + "Evidence excerpt: \(String(evidence.prefix(1_000))). "

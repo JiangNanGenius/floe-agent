@@ -197,7 +197,7 @@ struct PersonalContentEditor: View {
                     case .latex(let session):
                         LaTeXEditorSurface(session:session)
                     case .electronics(let session):
-                        EDWorkbenchView(session: session.workbench)
+                        ElectronicsEditorSurface(session: session)
                     case .geography:
                         EmptyView() // GIS owns its qualified native split-view chrome above.
                     case .text(let document):

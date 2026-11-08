@@ -3,7 +3,7 @@ import Foundation
 import CryptoKit
 
 public enum EDAExportFormat:String,Codable,CaseIterable,Sendable {
-    case project,netlist,bom,positions,boardSVG,schematicSVG
+    case project,netlist,bom,positions,boardSVG,schematicSVG,gerber,excellon
 }
 public struct EDAExchangeFile:Sendable,Equatable {
     public let name:String
@@ -49,6 +49,9 @@ public enum EDAExchange {
     }
     public static func export(_ project:EDAProject,format:EDAExportFormat,boardID:UUID?=nil,
                               variant:String="Default",cancelled:@Sendable ()->Bool={false}) throws -> EDAExchangeBundle {
+        if format == .gerber || format == .excellon {
+            return try EDAManufacturing.export(project, format: format, boardID: boardID, cancelled: cancelled)
+        }
         try EDAValidation.validate(project)
         guard !cancelled() else{throw EDAError.cancelled}
         let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
@@ -56,6 +59,7 @@ public enum EDAExchange {
         let board=boardID.flatMap{id in project.boards.first{$0.id==id}} ?? project.boards.first
         if let boardID,board?.id != boardID{throw EDAError.missing("board")}
         switch format {
+        case .gerber, .excellon: throw EDAError.invalid("manufacturing dispatch")
         case .project:
             files=[.init(name:"Project.floeeda",mimeType:"application/json",data:try encoder.encode(Envelope(format:"org.floe.electronics.project",version:1,project:project)))]
         case .netlist:
@@ -137,7 +141,19 @@ public enum EDAExchange {
             for zone in board.zones {if zone.fillRevision==project.revision{for p in zone.filledPolygons{try line(p,color:"green",closed:true,fill:"#c5e4cc")}}else{try line(zone.outline,color:"green",width:0.1,closed:true)}}
             for track in board.tracks{try line(track.points,color:track.layer=="B.Cu" ? "blue":"red",width:track.width)}
             for via in board.vias{try circle(via.position,radius:via.diameter/2,color:"orange",fill:"orange");try circle(via.position,radius:via.drill/2,color:"black",fill:"white")}
-            for hole in board.holes{try circle(hole.position,radius:hole.diameter/2,color:"black",fill:"white")}
+            for hole in board.holes {
+                if let end=hole.endPosition {
+                    try check()
+                    let vector=end-hole.position,normal=EDAPoint(-vector.y,vector.x)*(hole.diameter/2/vector.length)
+                    let corners=[hole.position+normal,end+normal,end-normal,hole.position-normal]
+                    let extent=EDAPoint(hole.diameter/2,hole.diameter/2)
+                    for center in [hole.position,end] {points.append(center-extent);points.append(center+extent)}
+                    func point(_ p:EDAPoint)->String {number(p.x)+" "+number(-p.y)}
+                    let r=number(hole.diameter/2)
+                    let d="M "+point(corners[0])+" L "+point(corners[1])+" A "+r+" "+r+" 0 0 1 "+point(corners[2])+" L "+point(corners[3])+" A "+r+" "+r+" 0 0 1 "+point(corners[0])+" Z"
+                    body.append("<path d=\"\(d)\" fill=\"white\" stroke=\"black\" stroke-width=\"0.15\"/>")
+                } else {try circle(hole.position,radius:hole.diameter/2,color:"black",fill:"white")}
+            }
             for fp in board.footprints {
                 guard let definition=project.footprints.first(where:{$0.id==fp.definitionID}) else{throw EDAError.missing("footprint definition")}
                 try graphics(definition.graphics,transform:fp.point)

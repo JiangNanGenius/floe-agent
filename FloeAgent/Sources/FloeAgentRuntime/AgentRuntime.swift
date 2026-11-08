@@ -2599,6 +2599,7 @@ public actor FloeAgentRuntime {
         // offered whole when the window can carry it; otherwise it is deferred
         // honestly and history compaction has already had its chance.
         var schemaDeferredNote: String?
+        var borrowedDiscoveryReserve = false
         if supportsTools {
             let alwaysKeep: Set<String> = [
                 ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name
@@ -2611,19 +2612,41 @@ public actor FloeAgentRuntime {
             // Leave a realistic share of the window for the pending tool
             // result channel instead of spending nearly all of it on schemas.
             let toolResultReserve = min(window / 3, max(1_024, window / 4))
+            let ordinarySchemaBudget = ToolSchemaOfferPlanner.availableTokenBudget(
+                contextWindowTokens: window, reservedOutputTokens: outputReserve,
+                messageTokens: messageEstimate, imageTokens: imageEstimate,
+                replayTokens: 0, toolResultReserveTokens: toolResultReserve
+            )
+            let minimumDiscoveryTokens = catalogDescriptors
+                .first(where: { $0.name == ToolDiscovery.name })
+                .map(ToolSchemaOfferPlanner.tokenCost) ?? 0
             let schemaBudget = ToolSchemaOfferPlanner.availableTokenBudget(
                 contextWindowTokens: window,
                 reservedOutputTokens: outputReserve,
                 messageTokens: messageEstimate,
                 imageTokens: imageEstimate,
                 replayTokens: 0,
-                toolResultReserveTokens: toolResultReserve
+                toolResultReserveTokens: toolResultReserve,
+                minimumDiscoveryTokens: minimumDiscoveryTokens
             )
+            borrowedDiscoveryReserve = schemaBudget > ordinarySchemaBudget
             let plan = ToolSchemaOfferPlanner.plan(
                 descriptors: catalogDescriptors,
                 tokenBudget: schemaBudget,
-                alwaysKeep: alwaysKeep
+                alwaysKeep: alwaysKeep,
+                discoveryName: ToolDiscovery.name
             )
+            let hasUsableSchema = minimumDiscoveryTokens > 0
+                ? plan.offered.contains(where: { $0.name == ToolDiscovery.name })
+                : catalogDescriptors.isEmpty || !plan.offered.isEmpty
+            guard hasUsableSchema else {
+                await failRun(
+                    message: FloeL10n.isChinese ? "当前对话没有足够空间使用工具。请精简对话或选择更大上下文的模型。"
+                        : "There is not enough context space to use tools. Shorten the conversation or choose a model with a larger context window.",
+                    recoverable: true
+                )
+                return
+            }
             // Charge the requested/loaded schemas even when this request had
             // to defer one, so the next compaction budget sees the real
             // pressure instead of assuming the loaded tool was free. Capped at
@@ -3001,7 +3024,9 @@ public actor FloeAgentRuntime {
                     $0.callID == $1.callID && $0.output == $1.output
                 })
         )
-        if disclosesModelInput {
+        if disclosesModelInput || borrowedDiscoveryReserve {
+            // A reserve loan is not permission to exceed the assembled wire
+            // request: recheck actual late-added guidance, schemas and replay.
             let actualSize = ProviderRequestSizer.measure(messages: wireRequest.effectiveMessages,
                 schemas: wireRequest.toolSchemas, replayedToolPairs: wireRequest.replayedToolPairs,
                 contextWindowTokens: configuration.model.limits.contextTokens,
@@ -3010,7 +3035,11 @@ public actor FloeAgentRuntime {
                 + actualSize.reservedOutputTokens + actualSize.safetyMarginTokens
             guard fixed <= actualSize.contextWindowTokens,
                   wireRequest.toolResults.reduce(0, { $0 + $1.output.utf8.count }) <= min(actualSize.toolResultBudgetBytes, Self.maximumProviderToolResultBytes) else {
-                await failRun(message: "The disclosed user input does not fit this model's context window. Use an existing credential reference or a larger context model.", recoverable: true)
+                let message = borrowedDiscoveryReserve
+                    ? (FloeL10n.isChinese ? "当前对话没有足够空间使用工具。请精简对话或选择更大上下文的模型。"
+                        : "There is not enough context space to use tools. Shorten the conversation or choose a model with a larger context window.")
+                    : "The disclosed user input does not fit this model's context window. Use an existing credential reference or a larger context model."
+                await failRun(message: message, recoverable: true)
                 return
             }
         }
@@ -6172,7 +6201,7 @@ public actor FloeAgentRuntime {
     /// call identities, so a tool result (or model text) cannot opt out of
     /// ordinary compaction by claiming to be a paging page.
     private static func pagingCallIDs(in calls: [ToolCall]) -> Set<String> {
-        Set(calls.lazy.filter { $0.toolName == ToolResultPagingTool.name }.map(\.id))
+        Set(calls.lazy.filter { ToolResultPagePolicy.preservesWholePage(toolName: $0.toolName) }.map(\.id))
     }
 
     /// A settled pair plus the complete post-redaction body rehydrated from
@@ -6305,7 +6334,7 @@ public actor FloeAgentRuntime {
         candidates.reserveCapacity(pairs.count)
         for pair in pairs {
             let stored = pair.result.outputSummary
-            if pair.call.toolName == ToolResultPagingTool.name {
+            if ToolResultPagePolicy.preservesWholePage(toolName: pair.call.toolName) {
                 // A paging page is already the model-requested range; a
                 // second summary would make its own nextOffset header lie.
                 candidates.append(ReplayEvidenceCandidate(
@@ -6424,7 +6453,7 @@ public actor FloeAgentRuntime {
         var slots: [Slot] = []
         var fixedBytes = 0
         for pair in request.replayedToolPairs {
-            if pair.call.toolName == ToolResultPagingTool.name {
+            if ToolResultPagePolicy.preservesWholePage(toolName: pair.call.toolName) {
                 slots.append(.fixed(pair))
                 fixedBytes += pair.result.outputSummary.utf8.count
                 continue
@@ -7253,7 +7282,7 @@ public actor FloeAgentRuntime {
         clearCompletedProviderDispatch()
         messages.append(ConversationMessage(
             role: "system",
-            content: "Harness control: the previous structured tool request was rejected before recording or execution because its arguments were malformed. Emit one corrected native tool call with valid JSON, or explain the actionable failure without calling a tool. Do not repeat the invalid payload."
+            content: "Harness control: the previous tool-call attempt was rejected before recording or execution because its format or arguments were malformed. Emit one corrected native tool call using the provider API's structured tool_calls/tool_use channel and valid JSON, or explain the actionable failure without calling a tool. Do not serialize DSML, XML or tool-call markup in assistant text. Use only enabled tool names from the actual offered schemas or tools.search; history does not grant another tool. Do not repeat the invalid payload."
         ))
         modelTurnContinuationRequested = true
     }

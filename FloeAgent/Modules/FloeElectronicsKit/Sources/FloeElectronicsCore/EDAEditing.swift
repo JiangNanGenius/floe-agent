@@ -48,6 +48,60 @@ public struct EDAEditingSession: Sendable {
             }
         }
     }
+    /// All zones on one board are solved and committed together. A stale,
+    /// cancelled, unsupported or geometrically invalid plan mutates nothing.
+    /// The App uses this same operation after computing off the main actor.
+    @discardableResult
+    public mutating func applyCopperFill(_ plan: EDACopperFillPlan, expectedRevision: UInt64,
+                                        cancelled: @escaping @Sendable () -> Bool = { false }) throws -> EDACopperFillReport {
+        guard !readOnly else { throw EDAError.readOnly }
+        guard expectedRevision == project.revision else { throw EDAError.staleRevision(expected: expectedRevision, actual: project.revision) }
+        guard !cancelled() else { throw EDAError.cancelled }
+        guard plan.source == project else { throw EDAError.invalid("copper fill source changed") }
+        guard let i = project.boards.firstIndex(where: { $0.id == plan.report.boardID }) else { throw EDAError.missing("copper fill board") }
+        var report = plan.report
+        if project.boards[i].zones.allSatisfy({ $0.fillRevision == project.revision && $0.filledPolygons == plan.polygons[$0.id]
+            && $0.fillState == ($0.filledPolygons.isEmpty ? .empty : .filled) }) {
+            report.resultRevision = project.revision; return report
+        }
+        guard project.revision < .max else { throw EDAError.invalid("revision overflow") }
+        var candidate = project
+        candidate.revision += 1; candidate.modifiedAt = Date()
+        Self.rebindCurrentFills(&candidate, from: project.revision)
+        for j in candidate.boards[i].zones.indices {
+            let id = candidate.boards[i].zones[j].id
+            guard let polygons = plan.polygons[id] else { throw EDAError.invalid("copper fill zone missing") }
+            candidate.boards[i].zones[j].filledPolygons = polygons
+            candidate.boards[i].zones[j].fillRevision = candidate.revision
+            candidate.boards[i].zones[j].fillState = polygons.isEmpty ? .empty : .filled
+        }
+        try EDAValidation.validate(candidate)
+        let checked = try EDADRC.check(candidate, boardID: plan.report.boardID, cancelled: cancelled)
+        let failed = checked.issues.filter {
+            $0.severity == .error && [.copperClearance, .boardEdge, .keepout].contains($0.rule)
+                && $0.objects.contains(where: { $0.kind == .zone })
+        }
+        guard failed.isEmpty else {
+            throw EDACopperFillFailure(issues: failed.map { d in
+                .init(code: "fill_postcondition_" + d.code, severity: .error, boardID: plan.report.boardID,
+                      zoneID: d.objects.first(where: { $0.kind == .zone })?.objectID,
+                      objectID: d.objects.first(where: { $0.kind != .zone })?.objectID,
+                      position: d.position, path: "zone.filledPolygons", details: ["rule": d.rule.rawValue])
+            })
+        }
+        guard !cancelled() else { throw EDAError.cancelled }
+        record(candidate)
+        report.resultRevision = candidate.revision
+        return report
+    }
+    @discardableResult
+    public mutating func refillCopper(boardID: UUID, expectedRevision: UInt64,
+                                      cancelled: @escaping @Sendable () -> Bool = { false }) throws -> EDACopperFillReport {
+        guard !readOnly else { throw EDAError.readOnly }
+        guard expectedRevision == project.revision else { throw EDAError.staleRevision(expected: expectedRevision, actual: project.revision) }
+        let plan = try EDACopperFill.plan(project, boardID: boardID, cancelled: cancelled)
+        return try applyCopperFill(plan, expectedRevision: expectedRevision, cancelled: cancelled)
+    }
     public mutating func transaction(expectedRevision: UInt64, cancelled: @Sendable () -> Bool = { false },
                                      _ edit: (inout EDAProject) throws -> Void) throws {
         guard !readOnly else { throw EDAError.readOnly }
@@ -57,21 +111,21 @@ public struct EDAEditingSession: Sendable {
         try edit(&candidate)
         guard candidate.id == project.id, candidate.schemaVersion == project.schemaVersion,
               candidate.revision == project.revision else { throw EDAError.invalid("transaction identity") }
-        try EDAValidation.validate(candidate)
-        guard !cancelled() else { throw EDAError.cancelled }
         guard candidate != project else { return }
-        guard project.revision < .max else { throw EDAError.invalid("revision overflow") }
-        undoStates.append(project)
-        if undoStates.count > maximumUndo { undoStates.removeFirst(undoStates.count - maximumUndo) }
-        redoStates.removeAll()
-        candidate.revision += 1; candidate.modifiedAt = Date()
         for i in candidate.boards.indices {
             for j in candidate.boards[i].zones.indices {
                 candidate.boards[i].zones[j].filledPolygons = []
                 candidate.boards[i].zones[j].fillRevision = nil
+                candidate.boards[i].zones[j].fillState = nil
             }
         }
-        project = candidate
+        // Ordinary UI/native.put transactions cannot author derived copper.
+        // Strip it before validation, including model-supplied fillState.
+        try EDAValidation.validate(candidate)
+        guard !cancelled() else { throw EDAError.cancelled }
+        guard project.revision < .max else { throw EDAError.invalid("revision overflow") }
+        candidate.revision += 1; candidate.modifiedAt = Date()
+        record(candidate)
     }
     public mutating func undo(expectedRevision: UInt64) throws {
         guard !readOnly else { throw EDAError.readOnly }
@@ -79,7 +133,9 @@ public struct EDAEditingSession: Sendable {
         guard var value = undoStates.last else { return }
         guard project.revision < .max else { throw EDAError.invalid("revision overflow") }
         undoStates.removeLast(); redoStates.append(project)
-        value.revision = project.revision + 1; value.modifiedAt = Date(); project = value
+        let restoredRevision = value.revision
+        value.revision = project.revision + 1; value.modifiedAt = Date()
+        Self.rebindCurrentFills(&value, from: restoredRevision); project = value
     }
     public mutating func redo(expectedRevision: UInt64) throws {
         guard !readOnly else { throw EDAError.readOnly }
@@ -87,7 +143,23 @@ public struct EDAEditingSession: Sendable {
         guard var value = redoStates.last else { return }
         guard project.revision < .max else { throw EDAError.invalid("revision overflow") }
         redoStates.removeLast(); undoStates.append(project)
-        value.revision = project.revision + 1; value.modifiedAt = Date(); project = value
+        let restoredRevision = value.revision
+        value.revision = project.revision + 1; value.modifiedAt = Date()
+        Self.rebindCurrentFills(&value, from: restoredRevision); project = value
+    }
+    private mutating func record(_ candidate: EDAProject) {
+        undoStates.append(project)
+        if undoStates.count > maximumUndo { undoStates.removeFirst(undoStates.count - maximumUndo) }
+        redoStates.removeAll(); project = candidate
+    }
+    private static func rebindCurrentFills(_ value: inout EDAProject, from oldRevision: UInt64) {
+        // The complete restored value has the exact geometry/settings against
+        // which these fills were computed. Stale/missing fills stay stale.
+        for i in value.boards.indices {
+            for j in value.boards[i].zones.indices where value.boards[i].zones[j].fillRevision == oldRevision {
+                value.boards[i].zones[j].fillRevision = value.revision
+            }
+        }
     }
     public mutating func markSaved(_ snapshot: EDAStoredProject) throws {
         guard snapshot.project.id == project.id, snapshot.project.revision == project.revision,

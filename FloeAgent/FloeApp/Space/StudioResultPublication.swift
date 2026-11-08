@@ -17,9 +17,9 @@ nonisolated struct StudioPublishedResult: Sendable {
 @MainActor enum StudioResultPublication {
     /// The caller owns the real Studio location/use lease. Publication uses
     /// only its runtime context, never a model path or invented task binding.
-    static func publish(file url: URL, projectRoot: URL, action: String, context: ToolContext,
+    static func publish(file url: URL, projectRoot: URL, action: String, fileKey: String? = nil, context: ToolContext,
                         validateSource: @escaping @MainActor @Sendable () async throws -> Void) async throws -> StudioPublishedResult {
-        guard let producer = context.executionToolName, ["studio.run", "studio.machining", "latex.export"].contains(producer) else {
+        guard let producer = context.executionToolName, ["studio.run", "studio.machining", "studio.chemistry", "latex.export"].contains(producer) else {
             throw FloeError.validationFailed("A real native result call is required")
         }
         try context.cancellation.throwIfCancelled(); try await validateSource()
@@ -31,7 +31,17 @@ nonisolated struct StudioPublishedResult: Sendable {
             try original.sha256 { try token.throwIfCancelled(); try Task.checkCancellation() }
         }
         let type = UTType(filenameExtension: url.pathExtension)
-        let request = RunOutputSnapshotRequest(producerTool: producer, slot: "studio-" + action,
+        // A multi-file call needs one stable logical slot per original basename.
+        // Keep legacy single-output identities; never key a file by bytes, its
+        // temporary staging directory, or its position in an export bundle.
+        let slot: String
+        if let fileKey {
+            guard fileKey == original.url.lastPathComponent, RunOutputFile.isValidDisplayName(fileKey) else {
+                throw FloeError.validationFailed("A result file key must match its safe original basename")
+            }
+            slot = "studio-" + action + "-file-" + FloeDigest.sha256Hex(Data(fileKey.utf8))
+        } else { slot = "studio-" + action }
+        let request = RunOutputSnapshotRequest(producerTool: producer, slot: slot,
             commit: .init(sourceURL: original.url, sha256: hash, byteCount: Int(original.identity.size),
                 displayName: original.url.lastPathComponent, mimeType: type?.preferredMIMEType ?? "application/octet-stream", uti: type?.identifier))
         try await validateSource(); try original.validate(); try token.throwIfCancelled()

@@ -7,7 +7,9 @@ The host ``Package.resolved`` remains the committed pin authority. XcodeGen may
 also declare app-only remote packages and local path packages. A local path
 package's own committed ``Package.resolved`` is an independent App-local pin
 source: it supplies the transitive closure the host Swift package does not
-resolve, without trusting arbitrary extras found only in an Xcode lock.
+resolve, without trusting arbitrary extras found only in an Xcode lock. Two
+explicitly reviewed host-graph adapters are an exception: their standalone
+lock state is not authoritative when consumed by the App (see policy below).
 """
 import hashlib
 import json
@@ -263,6 +265,47 @@ def _first_party_package_dir(root, name, raw_path):
     return resolved
 
 
+# These reviewed adapters have ONLY local module + FloeAgent path dependencies.
+# Their standalone resolutions are not App pin authorities. SwiftPM explicitly
+# ignores a dependency's own Package.resolved in the parent resolution:
+# https://github.com/swiftlang/swift-package-manager/blob/main/Sources/PackageManagerDocs/Documentation.docc/ResolvingPackageVersions.md
+# Keep this exact name/path/manifest allowlist; an unknown dependency or source
+# in an adapter lock still fails. Other local-package lock policy is unchanged.
+HOST_GRAPH_ADAPTERS = {
+    "FloeLaTeXHostAdapter": {
+        "path": "Modules/FloeLaTeXKit/Integration/FloeLaTeXHostAdapter",
+        "manifestSHA256": "c90010ac7a7f5582e21fc200fdfbac159a587bcfe89f430337f8aa28f473a9f6",
+    },
+    "FloeHeavyEditorsHostAdapter": {
+        "path": "Qualification/HeavyEditors/Integration/FloeHeavyEditorsHostAdapter",
+        "manifestSHA256": "0cc810acd70f0ad6c8a75852a6cb1c21eb859465931c334d6e94bb7a1b36b796",
+    },
+}
+
+
+def _verify_host_graph_adapter(root, name, raw_path):
+    policy = HOST_GRAPH_ADAPTERS[name]
+    directory = root / raw_path
+    if raw_path != policy["path"] or directory.resolve() != directory.absolute():
+        raise ValueError(f"Host-graph adapter must keep its reviewed non-aliased path: {name}")
+    manifest = directory / "Package.swift"
+    if (manifest.is_symlink() or not manifest.is_file()
+            or hashlib.sha256(manifest.read_bytes()).hexdigest() != policy["manifestSHA256"]):
+        raise ValueError(f"Host-graph adapter manifest differs from reviewed local-only dependencies: {name}")
+    lock = directory / "Package.resolved"
+    if lock.is_symlink():
+        raise ValueError(f"Host-graph adapter lock must not be an alias: {name}")
+    if not lock.exists():
+        return
+    host = {pin["identity"]: pin for pin in resolved_pins(json.loads((root / "Package.resolved").read_text(encoding="utf-8")))}
+    for pin in resolved_pins(json.loads(lock.read_text(encoding="utf-8"))):
+        parent = host.get(pin["identity"])
+        if parent is None or not same_pin({**pin, "state": {}}, {**parent, "state": {}}):
+            raise ValueError(f"Host-graph adapter contains an unknown identity or source: {name}: {pin['identity']}")
+    # State in this standalone lock is intentionally not merged. The committed
+    # parent + actual App root resolution remain checked by verify_resolution.
+
+
 def application_local_pins(project, project_dir):
     """Read the committed lock closure of explicitly declared local packages.
 
@@ -271,7 +314,8 @@ def application_local_pins(project, project_dir):
     escape the project directory, and local packages without a lock contribute
     nothing. Every lock must be a valid immutable resolution. Two local locks
     may agree on the exact same pin, but a conflicting identity is rejected
-    instead of letting one lock silently replace another.
+    instead of letting one lock silently replace another. The two manifest-
+    reviewed host-graph adapters above contribute no independent pin state.
 
     One first-party sibling is allowlisted by name and exact path:
     ``FloeMacBridge`` at ``../FloeMacBridge``. It is accepted only as a real,
@@ -296,6 +340,9 @@ def application_local_pins(project, project_dir):
             raise ValueError(f"Xcode local package has an empty path: {name}")
         if name in FIRST_PARTY_SIBLING_PACKAGES:
             _first_party_package_dir(root, name, raw_path)
+            continue
+        if name in HOST_GRAPH_ADAPTERS:
+            _verify_host_graph_adapter(root, name, raw_path)
             continue
         package_dir = (root / raw_path).resolve()
         try:

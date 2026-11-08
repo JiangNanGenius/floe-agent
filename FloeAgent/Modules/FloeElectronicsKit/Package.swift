@@ -9,8 +9,9 @@ let package = Package(
         .library(name: "FloeElectronicsCore", targets: ["FloeElectronicsCore"]),
         .library(name: "FloeElectronicsUI", targets: ["FloeElectronicsUI"])
     ],
+    dependencies: [.package(path: "../../ThirdParty/Clipper2")],
     targets: [
-        .target(name: "FloeElectronicsCore"),
+        .target(name: "FloeElectronicsCore", dependencies: [.product(name: "Clipper2C", package: "Clipper2")]),
         .target(name: "FloeElectronicsUI", dependencies: ["FloeElectronicsCore"]),
         .testTarget(name: "FloeElectronicsCoreTests", dependencies: ["FloeElectronicsCore"]),
         .testTarget(name: "FloeElectronicsUITests", dependencies: ["FloeElectronicsUI"])

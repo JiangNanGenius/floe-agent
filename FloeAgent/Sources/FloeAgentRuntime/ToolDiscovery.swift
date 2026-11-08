@@ -182,8 +182,13 @@ enum ToolDiscovery {
                 descriptors: descriptors
             )
         }
+        // Source inspection is a semantic prerequisite, not backend ranking.
+        // Keep the full matched set; exact-name requests returned above stay exact.
+        let matched = descriptors.filter { groups.contains(group($0.name)) }
+        let inspections = NativeAuthoringGuidance.inspectionOrder.compactMap { name in matched.first { $0.name == name } }
+        let inspectionNames = Set(inspections.map(\.name))
         return appendingInterpreterFallback(
-            descriptors.filter { groups.contains(group($0.name)) },
+            inspections + matched.filter { !inspectionNames.contains($0.name) },
             query: query,
             descriptors: descriptors
         )
@@ -280,6 +285,7 @@ enum ToolDiscovery {
         let names = Set(descriptors.map(\.name))
         func n(_ name: String) -> String { wireSpelling(name, wireSafe: wireSafeNames) }
         var lines: [String] = []
+        lines.append(contentsOf: NativeAuthoringGuidance.contextLines(for: Array(names), displayName: n))
         if names.isSuperset(of: ["checklist.readPlan", "checklist.updatePlan"]) {
             lines.append("At task start, judge whether the request requires substantial multi-step work. If so, use \(n("checklist.readPlan")) and \(n("checklist.updatePlan")) to maintain a durable checklist while executing; simple questions need none. Revise the same checklist when new evidence or user steering changes the work: preserve step IDs, update the revision, and retain completed evidence. A checklist never enables Goal mode.")
         }

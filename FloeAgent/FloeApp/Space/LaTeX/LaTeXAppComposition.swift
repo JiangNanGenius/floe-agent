@@ -8,6 +8,7 @@ import FloeSecurity
 import FloeTools
 import FloeNotes
 import FloeExecution
+import FloeEnvironments
 import FloeLaTeXCore
 import FloeLaTeXEngine
 import FloeLaTeXHostAdapter
@@ -294,8 +295,8 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
     static let taskID=UUID(uuidString:"B7D40D04-9BB8-474C-85F6-FA7C97C97763")!
     static let projectID=UUID(uuidString:"D93F3745-3F0E-49E5-B215-60212E2E16D6")!
     static let environmentID="56b967db-cdb7-4af6-b73c-1ee4c13aeb48"
-    static let scriptSHA256="4de1017e9ff9b75d48fec332640a2cf61810387f77d092003990bf0a898f871c"
-    static let scriptBytes=13566
+    static let scriptSHA256="7a6665aebadee515ed4be5925b7582a3b054b6d5f78e926de1179fdd4f46b118"
+    static let scriptBytes=15511
     private weak var composition:LaTeXAppComposition?
     private var operationTask:Task<Void,Never>?
     private var cancelTask:Task<Void,Never>?
@@ -367,7 +368,7 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
         persist()
         do {
             let input=ProcessInfo.processInfo.environment
-            guard let encoded=input["FLOE_LATEX_MAINTENANCE_SCRIPT_BASE64"],encoded.utf8.count<=20000,
+            guard let encoded=input["FLOE_LATEX_MAINTENANCE_SCRIPT_BASE64"],encoded.utf8.count == ((Self.scriptBytes+2)/3)*4,
                   let data=Data(base64Encoded:encoded),data.count==Self.scriptBytes,LaTeXDigest.hash(data)==Self.scriptSHA256,
                   let script=String(data:data,encoding:.utf8),!script.contains("\nFLOE_FIXED_LATEX_RECOVERY\n") else {
                 throw FloeError.validationFailed("Only the reviewed, exact maintenance payload is accepted")
@@ -388,6 +389,27 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
                   pin.target.backend == .linuxVM,pin.target.environmentID==Self.environmentID,pin.target.remoteHostID==nil else {
                 throw FloeError.validationFailed("The retained QA execution pin changed")
             }
+            // Durable DB readiness intentionally does not initialize the
+            // lazy environment registry. Load its EXISTING snapshot through
+            // the normal registry API before reading record(id:).
+            facts["phase"]="loading-existing-environment-registry";persist()
+            let registryURL=EnvironmentRoots.shared.registryURL
+            let decoder=JSONDecoder();decoder.dateDecodingStrategy = .iso8601
+            let snapshot=try decoder.decode(EnvironmentRegistry.Snapshot.self,from:Data(contentsOf:registryURL))
+            let existingIDs=Set(snapshot.containers.map(\.id))
+            let baseRevision=await app.environmentRegistry.baseRevision
+            try require(snapshot.schemaVersion==EnvironmentRegistry.schemaVersion && existingIDs.count==snapshot.containers.count &&
+                existingIDs.contains(Self.environmentID) && existingIDs.contains(EnvironmentRegistry.sharedContainerID),
+                "Load only the existing retained registry; do not create an environment")
+            // This bounded QA operation never initiates a runtime migration
+            // or architecture reset in another Linux dependency layer.
+            try require(snapshot.baseRevision==baseRevision && snapshot.containers.allSatisfy{
+                $0.effectiveExecutionBackend != .linuxVM || $0.baseRevision==baseRevision
+            },"Finish any separately authorized environment migration before this fixed maintenance")
+            try await app.environmentRegistry.prepare()
+            let loadedIDs=Set(await app.environmentRegistry.all().map(\.id))
+            try require(loadedIDs==existingIDs,"Registry initialization changed the environment inventory")
+            facts["environmentRegistryPrepared"]="true";facts["phase"]="validating-existing-environment";persist()
             guard let environment=await app.environmentRegistry.record(id:Self.environmentID),environment.state != .deleting,
                   !environment.requiresRebuild,environment.pendingRuntimeResetID==nil else{throw PersonalContentError.changedDocument}
             let workspaces=SQLiteWorkspaceStore(database:app.database)
@@ -409,6 +431,9 @@ extension Notification.Name {static let floeLaTeXDocumentDidChange=Notification.
                 // and its exact binding, including for a native QA caller.
                 try await app.runStore.saveRun(.init(id:id,conversationID:Self.taskID,state:"executing",goal:"LaTeX toolchain maintenance QA",startedAt:Date(),executionBinding:pin))
                 saved=true;runID=id;facts["runID"]=id.uuidString;persist()
+                _ = try await app.runStore.appendEvent(runID:id,kind:.status,
+                    payloadJSON:try LaTeXNativeRunMetadata(runID:id,conversationID:Self.taskID,projectID:Self.projectID,
+                        environmentID:Self.environmentID,operation:.maintenance).payloadJSON())
                 let context=ToolContext(runID:id,scope:.local,allowedToolNames:["exec.shell"],workspaceRootURL:root.url,
                     serviceStorePaths:composition.typedServiceStorePaths,cancellation:cancellation,environmentID:Self.environmentID,
                     executionBindingGeneration:pin.generation,conversationID:Self.taskID,
