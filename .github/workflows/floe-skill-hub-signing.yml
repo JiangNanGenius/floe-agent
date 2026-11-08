@@ -9,7 +9,7 @@ name: floe-skill-hub-signing
 # commit S/X at the dispatch input (40-hex, exact object fetch) — and runs
 # one fixed helper from T (`scripts/sign_publication.py`, Python isolated
 # mode, current directory outside the data checkout). It signs review-record
-# envelopes or the gated release catalogs with the existing official signing
+# envelopes, gated release catalogs or domain-separated transport manifests with the existing official signing
 # secret and uploads the result as a run ARTIFACT only.
 #
 # What this workflow must never do: execute/import/install anything from the
@@ -41,8 +41,9 @@ on:
         options:
           - reviews
           - catalog
+          - transport
       source_commit:
-        description: 40-hex JiangNanGenius/floe-skill-hub commit — S (reviews) or X (catalog)
+        description: 40-hex Hub data snapshot for reviews, catalog or transport
         required: true
         type: string
 
@@ -58,7 +59,7 @@ env:
   # NON-DISPATCHABLE until the root substitutes the exact reviewed 40-hex
   # tooling commit HERE (after the bridge code lands on the Hub default
   # branch and the root has verified that commit):
-  TOOLING_COMMIT: 270b79617faffa94b321965c77d3c123777b09c1
+  TOOLING_COMMIT: 75e0df40f0714d3faf9347d8844cec3f2b2d16ab
 
 jobs:
   sign:
@@ -81,8 +82,8 @@ jobs:
             echo "source_commit must be exactly 40 lowercase hex" >&2
             exit 1
           fi
-          if [[ "$MODE" != "reviews" && "$MODE" != "catalog" ]]; then
-            echo "mode must be reviews or catalog" >&2
+          if [[ "$MODE" != "reviews" && "$MODE" != "catalog" && "$MODE" != "transport" ]]; then
+            echo "mode must be reviews, catalog or transport" >&2
             exit 1
           fi
       # Action refs pinned to the same immutable commits used by the existing
@@ -130,7 +131,7 @@ jobs:
           esac
           test -z "$(git -C tooling -c core.fsmonitor=false status --porcelain --untracked-files=all)"
       - name: Resolve the independent current publication baseline
-        if: inputs.mode == 'catalog'
+        if: inputs.mode == 'catalog' || inputs.mode == 'transport'
         env:
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_SYSTEM: /dev/null
@@ -154,7 +155,7 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP"
           baseline_args=()
-          if [[ "$MODE" == "catalog" ]]; then
+          if [[ "$MODE" == "catalog" || "$MODE" == "transport" ]]; then
             [[ "$PUBLISHED_Y" =~ ^[0-9a-f]{40}$ ]]
             baseline_args=(--published-y "$PUBLISHED_Y")
           fi
