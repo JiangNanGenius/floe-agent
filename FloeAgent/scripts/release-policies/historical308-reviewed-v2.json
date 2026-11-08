@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 2,
+  "purpose": "historical308-preparation-only-v2",
+  "app": {
+    "tag": "v1.7.67",
+    "tagObjectSHA": "d06a76c19c9787b3ee16d41f271847559a6a5286",
+    "sourceCommit": "3368baaf8045023043bfb70d9062374c17a48a1d",
+    "version": "1.7.67",
+    "build": "308",
+    "bundleIdentifier": "org.floeagent.ios"
+  },
+  "original": {
+    "runID": 41677588064,
+    "runAttempt": 1,
+    "artifactID": 13251103493,
+    "archiveSHA256": "bd9ddc2729e3e9741dd04f679de1d440e5fbca9cfb889783da4bdd3f42dc35da",
+    "archiveBytes": 826793065
+  },
+  "transport": {
+    "archiveSHA256": "a8a3684aa39ea6950dde49a09797026ed42dd5659ebc5c48f70dda36a541b284",
+    "archiveBytes": 1021318443,
+    "releaseID": 432964321,
+    "assetID": 706334297
+  },
+  "expectedManifest": {
+    "bytes": 1440637339,
+    "files": 5248,
+    "sha256": "75bdc29c8f8ac9b9e707f9d812b4ab7f0feb37853626ddb6758ded46ad38a19a"
+  },
+  "packagerSHA256": "92a3c3cae130e309cd012c384cebb90ddd7a12a8c5fa0bed29b8769994cd6f05",
+  "normalization": "apple-fixed-adhoc-remove-and-paired-appledouble-v2"
+}
