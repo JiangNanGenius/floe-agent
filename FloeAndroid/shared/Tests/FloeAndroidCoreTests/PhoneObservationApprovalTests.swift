@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 import XCTest
+import FloeCore
 import FloeModels
 import FloeSecurity
 @testable import FloeAgentRuntime
