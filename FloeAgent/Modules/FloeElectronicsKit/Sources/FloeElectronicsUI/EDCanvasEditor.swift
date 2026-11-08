@@ -267,7 +267,7 @@ struct EDCanvasEditor:View {
         case .hole:if case .board(let board)=context{apply([.putHole(board:board,.init(position:p,diameter:holeDiameter,plated:false))])}
         case .via:
             guard case .board(let board)=context,!netID.isEmpty else{session.report(EDAError.invalid(edText("请先选择过孔网络。","Choose a net for the via.")));return}
-            apply([.putVia(board:board,.init(netID:netID,position:p))])
+            apply([.putVia(board:board,.init(netID:netID,position:p,maskLayers:[]))])
         }
     }
     private func stroke(_ raw:EDAPoint,tolerance:Double){
@@ -356,7 +356,7 @@ struct EDCanvasEditor:View {
                 if case .pad(let padID)=EDLibraryEditing.hitFootprint(definition,at:p,tolerance:tolerance){session.selection = .init(context:context,objectIDs:[padID])}
                 else{session.selection = .init(context:context,objectIDs:[])}
             case .pad:
-                let pad=EDAPad(number:EDLibraryEditing.nextPadNumber(definition.pads),position:p)
+                let pad=EDAPad(number:EDLibraryEditing.nextPadNumber(definition.pads),position:p,layers:["F.Cu","F.Mask","F.Paste"])
                 definition.pads.append(pad);apply([.putFootprintDefinition(definition)])
                 session.selection = .init(context:context,objectIDs:[pad.id])
             case .erase:

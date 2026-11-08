@@ -280,10 +280,13 @@ public struct EDAVia: Codable, Hashable, Identifiable, Sendable {
     public var drill: Double
     public var startLayer: String
     public var endLayer: String
+    /// Explicit zero-expansion mask openings on reachable outer surfaces.
+    /// Nil is unspecified; [] explicitly tents all reachable surfaces.
+    public var maskLayers: [String]?
     public init(id: UUID = UUID(), netID: String, position: EDAPoint, diameter: Double = 0.6,
-                drill: Double = 0.3, startLayer: String = "F.Cu", endLayer: String = "B.Cu") {
+                drill: Double = 0.3, startLayer: String = "F.Cu", endLayer: String = "B.Cu", maskLayers: [String]? = nil) {
         self.id = id; self.netID = netID; self.position = position; self.diameter = diameter
-        self.drill = drill; self.startLayer = startLayer; self.endLayer = endLayer
+        self.drill = drill; self.startLayer = startLayer; self.endLayer = endLayer; self.maskLayers = maskLayers
     }
 }
 

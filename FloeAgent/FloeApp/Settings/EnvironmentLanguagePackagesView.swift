@@ -108,6 +108,19 @@ struct EnvironmentLanguagePackagesView: View {
             NavigationStack {
                 Form {
                     Section("packages.registry.source") {
+                        if language == .python, let catalog = try? LinuxPackageSourceCatalog.bundled() {
+                            ForEach(catalog.python) { preset in
+                                Button {
+                                    sourceDraft = preset.indexURL
+                                } label: {
+                                    HStack {
+                                        Text(preset.displayName)
+                                        Spacer()
+                                        if sourceDraft == preset.indexURL { Image(systemName: "checkmark") }
+                                    }
+                                }
+                            }
+                        }
                         TextField("https://", text: $sourceDraft).textInputAutocapitalization(.never)
                             .autocorrectionDisabled().keyboardType(.URL)
                         Button("packages.registry.restore") {

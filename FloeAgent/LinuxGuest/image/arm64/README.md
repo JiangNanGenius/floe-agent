@@ -23,6 +23,21 @@ basic image adds no science stack beyond the existing NumPy.
 2. Prepare /base with the exact basic package versions in the lock. Validate
    dpkg-query against it. Use the exact Debian archive/snapshot for a removed
    version; never substitute a current version. Keep copyright notices.
+   Run `python3 prepare-package-sources.py --root /path/to/clean/base`, then
+   the same command with `--check`. This uses the App's single reviewed
+   `Sources/FloeExecution/Resources/LinuxPackageSources.json` catalog:
+   official Debian is selected; Tsinghua TUNA is also prepared. Debian
+   security stays official and both profiles use the Debian archive keyring.
+   The catalog also carries the official and TUNA single-index PyPI presets
+   used by the App's existing Python dependency page. No extra index or TLS
+   bypass is configured. Original/custom APT files remain untouched; a
+   Floe-owned apt.conf fragment selects the profile and can be removed to
+   restore system configuration. Never run preparation on a used environment.
+   This changes future clean image bytes and requires a new qualified image
+   ID/manifest/archive; no existing frozen image is relabeled. On the later
+   real guest qualification, read `apt-config shell SOURCE
+   Dir::Etc::sourcelist/f PARTS Dir::Etc::sourceparts/d` and the selected
+   source file to verify effective paths, then qualify normal package work.
 3. Create an ext4 disk with /base and an empty /state, 4096-byte blocks, label
    FLOE_ARM64_BASE and 16 GiB logical capacity. Check it with e2fsck.
    Never copy a used project's mutable disk into a release.

@@ -74,6 +74,8 @@ public struct EDAOutputsView:View {
     @State private var generationID:UUID?
     @State private var generationTask:Task<Void,Never>?
     @State private var generating=false
+    @State private var surfaceLayers=Set(EDAGerberTechnicalLayer.maskPasteSilk.map(\.rawValue))
+    @State private var assemblyLayers=Set(EDAGerberTechnicalLayer.assemblyOutlines.map(\.rawValue))
     public init(session:EDWorkbenchSession,onExportPreview:((EDAExchangeFile,UInt64)->Void)?=nil){self.session=session;self.onExportPreview=onExportPreview}
     public var body:some View{List{
         Section{
@@ -81,7 +83,20 @@ public struct EDAOutputsView:View {
             Picker(edText("装配变体","Assembly variant"),selection:$variant){ForEach(session.project.variants,id:\.self){Text($0).tag($0)}}
         }
         Section(edText("工程与网络","Project and connectivity")){outputButtons([.project,.netlist])}
-        Section(edText("制造与装配","Fabrication and assembly")){outputButtons([.gerber,.excellon,.bom,.positions])}
+        Section(edText("制造与装配","Fabrication and assembly")){
+            DisclosureGroup("Gerber"){
+                outputButtons([.gerber])
+                DisclosureGroup(edText("阻焊、钢网与丝印","Solder mask, paste and silkscreen")){
+                    layerSelection(EDAGerberTechnicalLayer.maskPasteSilk,selection:$surfaceLayers)
+                    Button(edText("生成所选图层","Generate selected layers")){generate(.gerberTechnical,gerberLayers:surfaceLayers.sorted())}.disabled(generating || surfaceLayers.isEmpty)
+                }
+                DisclosureGroup(edText("装配轮廓","Assembly outlines")){
+                    layerSelection(EDAGerberTechnicalLayer.assemblyOutlines,selection:$assemblyLayers)
+                    Button(edText("生成装配轮廓","Generate assembly outlines")){generate(.gerberTechnical,gerberLayers:assemblyLayers.sorted())}.disabled(generating || assemblyLayers.isEmpty)
+                }
+            }
+            outputButtons([.excellon,.bom,.positions])
+        }
         Section(edText("图纸","Drawings")){outputButtons([.boardSVG,.schematicSVG])}
         if generating{Section{ProgressView(edText("正在生成文件…","Generating files…"))}}
         if let revision=sourceRevision,revision != session.revision{Section{Text(edText("工程已修改，请重新生成导出文件。","The design changed. Generate the files again.")).foregroundStyle(.orange)}}
@@ -121,14 +136,25 @@ public struct EDAOutputsView:View {
         }
     }
     private func outputButtons(_ formats:[EDAExportFormat])->some View{ForEach(formats,id:\.self){format in Button(title(format)){generate(format)}.disabled(generating)}}
-    @MainActor private func generate(_ format:EDAExportFormat){
+    @ViewBuilder private func layerSelection(_ layers:[EDAGerberTechnicalLayer],selection:Binding<Set<String>>)->some View{
+        ForEach(layers,id:\.self){layer in
+            Toggle(layerTitle(layer),isOn:Binding(get:{selection.wrappedValue.contains(layer.rawValue)},set:{enabled in if enabled{selection.wrappedValue.insert(layer.rawValue)}else{selection.wrappedValue.remove(layer.rawValue)}}))
+        }
+    }
+    private func layerTitle(_ layer:EDAGerberTechnicalLayer)->String{switch layer{
+        case .frontMask:edText("正面阻焊","Front solder mask");case .backMask:edText("背面阻焊","Back solder mask")
+        case .frontPaste:edText("正面钢网","Front solder paste");case .backPaste:edText("背面钢网","Back solder paste")
+        case .frontSilk:edText("正面丝印","Front silkscreen");case .backSilk:edText("背面丝印","Back silkscreen")
+        case .frontAssembly:edText("正面装配轮廓","Front assembly outline");case .backAssembly:edText("背面装配轮廓","Back assembly outline")
+    }}
+    @MainActor private func generate(_ format:EDAExportFormat,gerberLayers:[String]?=nil){
         generationTask?.cancel();let token=UUID();generationID=token;generating=true;files=[];exportIssues=[];limitations=[];sourceRevision=nil
         let targetBoard=boardID,targetVariant=variant
         generationTask=Task{
             defer{if generationID==token{generating=false}}
             do{
                 try Task.checkCancellation()
-                let bundle=try await session.export(format:format,boardID:targetBoard,variant:targetVariant)
+                let bundle=try await session.export(format:format,boardID:targetBoard,variant:targetVariant,gerberLayers:gerberLayers)
                 guard !Task.isCancelled,generationID==token,session.revision==bundle.revision else{return}
                 files=bundle.files;limitations=bundle.limitations;sourceRevision=bundle.revision
             }catch{
@@ -143,11 +169,17 @@ public struct EDAOutputsView:View {
         case .netlist:edText("网表","Netlist")
         case .bom:edText("物料清单（BOM）","Bill of materials (BOM)")
         case .positions:edText("贴片坐标","Component placement")
-        case .gerber:edText("Gerber 铜层与板框","Gerber copper layers and profile")
+        case .gerber:edText("铜层与板框","Copper layers and profile")
+        case .gerberTechnical:edText("阻焊、钢网与丝印","Solder mask, paste and silkscreen")
         case .excellon:edText("Excellon 钻孔与槽孔","Excellon drill and slot files")
         case .boardSVG:edText("PCB 图纸（SVG）","Board drawing (SVG)")
         case .schematicSVG:edText("原理图（SVG）","Schematic drawings (SVG)")}}
     private func issueTitle(_ code:String)->String{switch code{
+        case "via_mask_unspecified":edText("请选择表层过孔盖油或开窗。","Specify tenting or openings for surface vias.")
+        case "graphic_text_geometry_unspecified":edText("所选图层的文字尚缺字形轮廓。","Text on a selected layer needs explicit glyph outlines.")
+        case "graphic_dimension_style_unspecified":edText("所选图层的尺寸标注尚缺完整样式。","A dimension on a selected layer needs a complete drawing style.")
+        case "no_requested_layer_geometry":edText("所选图层没有已声明的开窗或图形。","The selected layers have no declared openings or graphics.")
+        case "requested_gerber_layer_unsupported":edText("请选择支持的阻焊、钢网、丝印或装配轮廓层。","Choose supported mask, paste, silkscreen or assembly outline layers.")
         case "zone_fill_not_current":edText("铜区尚无当前有效填充。","A copper zone needs a current fill.")
         case "pad_drill_plating_unspecified":edText("请选择焊盘孔壁是否电镀。","Specify whether the pad hole is plated.")
         case "round_rectangle_radius_missing":edText("圆角焊盘尚缺圆角半径。","A rounded pad is missing its corner radius.")

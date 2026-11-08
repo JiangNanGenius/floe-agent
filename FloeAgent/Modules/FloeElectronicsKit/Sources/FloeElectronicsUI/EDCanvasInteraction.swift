@@ -302,7 +302,8 @@ enum EDCanvasInteraction {
             guard ["F.Cu", "B.Cu"].contains(v.side), copper.contains("F.Cu"), copper.contains("B.Cu") else { throw EDAError.unsupported("footprint side") }
             v.side = v.side == "F.Cu" ? "B.Cu" : "F.Cu"; return .footprint(v)
         case .track(var v): v.layer = try layer(v.layer); return .track(v)
-        case .via(var v): let start = v.startLayer; v.startLayer = try layer(v.endLayer); v.endLayer = try layer(start); return .via(v)
+        case .via(var v): let start = v.startLayer; v.startLayer = try layer(v.endLayer); v.endLayer = try layer(start)
+            v.maskLayers = v.maskLayers?.map{ $0 == "F.Mask" ? "B.Mask":"F.Mask" }; return .via(v)
         case .zone(var v): v.layer = try layer(v.layer); return .zone(v)
         case .keepout(var v): v.layers = Set(try v.layers.map(layer)); return .keepout(v)
         case .hole: return item

@@ -1741,6 +1741,9 @@ targets:
       - path: Tests/FloeAppTests/TaskWorkspaceScanResponsivenessTests.swift
       - path: Tests/FloeAppTests/DelimitedReadSheetWorkflowTests.swift
       - path: Tests/FloeExecutionTests/ShellFailureComparisonTests.swift
+      - path: Tests/FloeExecutionTests/LinuxPackageSourceTests.swift
+      - path: Tests/FloeExecutionTests/LinuxGuestLanguagePackageTests.swift
+      - path: Tests/FloeAppTests/WorkURLLaunchRoutingTests.swift
       - path: Tests/FloeMarkdownTests/MarkdownBlockParseCacheTests.swift
       - path: Tests/FloeAppTests/ChemistryRunReceiptTests.swift
       - path: Tests/FloeAppTests/ChemistryOffMainPreparationTests.swift
@@ -1753,6 +1756,9 @@ targets:
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDBusEntryInteractionTests.swift
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDBusInspectorTests.swift
       - path: Tests/FloeAppTests/ElectronicsBusEntryContractTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsCoreTests/EDATechnicalManufacturingTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsUITests/EDATechnicalManufacturingUITests.swift
+      - path: Tests/FloeAppTests/ElectronicsGerberSurfaceContractTests.swift
       - path: Tests/FloeAppTests/EDCanvasInputTests.swift
       - path: Tests/FloePersistenceTests/InlineContentPagingStoreTests.swift
       - path: Tests/FloeToolsTests/ChatInlineAudioCatalogTests.swift

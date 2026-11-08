@@ -227,6 +227,24 @@ actor EnvironmentLanguagePackageService {
         } catch { await lease.finish(); throw error }
     }
 
+    func aptSource(environmentID: String, selection: String? = nil) async throws -> LinuxGuestAptSourceState {
+        guard !busy.contains(environmentID) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_dependency_transaction_has_not_finished")) }
+        busy.insert(environmentID)
+        defer { busy.remove(environmentID) }
+        let token = CancellationToken()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let lease = try await coordinator.acquireManagement(environmentID: environmentID, cancellation: token)
+            do {
+                guard let environment = lease.context.environment, environment.id == environmentID else { throw FloeError.invalidConfiguration(FloeL10n.l("execution.environment_language_package_service.environment_unresolved")) }
+                guard let linux else { throw FloeError.invalidConfiguration(ManagedPythonInstallService.linuxRequiredMessage) }
+                let state = try await linux.aptSource(environment: environment, selection: selection, cancellation: token)
+                await lease.finish()
+                return state
+            } catch { await lease.finish(); throw error }
+        } onCancel: { token.cancel() }
+    }
+
     func nodeManagerSelection(environmentID: String, set preference: NodePackageManagerPreference? = nil) async throws -> NodeManagerSelection {
         guard !busy.contains(environmentID) else { throw FloeError.validationFailed(FloeL10n.l("execution.environment_language_package_service.the_dependency_transaction_has_not_finished")) }
         busy.insert(environmentID)

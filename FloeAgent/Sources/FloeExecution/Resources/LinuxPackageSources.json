@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "distribution": "debian",
+  "suite": "trixie",
+  "apt": [
+    {
+      "id": "official",
+      "nameEN": "Debian official",
+      "nameZH": "Debian 官方",
+      "uri": "https://deb.debian.org/debian",
+      "suites": ["trixie", "trixie-updates"],
+      "components": ["main"],
+      "securityURI": "https://security.debian.org/debian-security",
+      "securitySuite": "trixie-security",
+      "signedBy": "/usr/share/keyrings/debian-archive-keyring.gpg"
+    },
+    {
+      "id": "tuna",
+      "nameEN": "Tsinghua TUNA",
+      "nameZH": "清华 TUNA",
+      "uri": "https://mirrors.tuna.tsinghua.edu.cn/debian",
+      "suites": ["trixie", "trixie-updates"],
+      "components": ["main"],
+      "securityURI": "https://security.debian.org/debian-security",
+      "securitySuite": "trixie-security",
+      "signedBy": "/usr/share/keyrings/debian-archive-keyring.gpg"
+    }
+  ],
+  "python": [
+    {
+      "id": "official",
+      "nameEN": "PyPI official",
+      "nameZH": "PyPI 官方",
+      "indexURL": "https://pypi.org/simple/"
+    },
+    {
+      "id": "tuna",
+      "nameEN": "Tsinghua TUNA",
+      "nameZH": "清华 TUNA",
+      "indexURL": "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+    }
+  ]
+}

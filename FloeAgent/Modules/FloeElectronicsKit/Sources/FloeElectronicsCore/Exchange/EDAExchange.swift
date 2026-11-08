@@ -3,7 +3,7 @@ import Foundation
 import CryptoKit
 
 public enum EDAExportFormat:String,Codable,CaseIterable,Sendable {
-    case project,netlist,bom,positions,boardSVG,schematicSVG,gerber,excellon
+    case project,netlist,bom,positions,boardSVG,schematicSVG,gerber,excellon,gerberTechnical
 }
 public struct EDAExchangeFile:Sendable,Equatable {
     public let name:String
@@ -48,7 +48,9 @@ public enum EDAExchange {
         }
     }
     public static func export(_ project:EDAProject,format:EDAExportFormat,boardID:UUID?=nil,
-                              variant:String="Default",cancelled:@Sendable ()->Bool={false}) throws -> EDAExchangeBundle {
+                              variant:String="Default",gerberLayers:[String]?=nil,cancelled:@Sendable ()->Bool={false}) throws -> EDAExchangeBundle {
+        if format == .gerberTechnical {return try EDAManufacturing.technical(project,boardID:boardID,layers:gerberLayers,cancelled:cancelled)}
+        guard gerberLayers == nil else{throw EDAError.invalid("gerberLayers requires gerberTechnical")}
         if format == .gerber || format == .excellon {
             return try EDAManufacturing.export(project, format: format, boardID: boardID, cancelled: cancelled)
         }
@@ -59,7 +61,7 @@ public enum EDAExchange {
         let board=boardID.flatMap{id in project.boards.first{$0.id==id}} ?? project.boards.first
         if let boardID,board?.id != boardID{throw EDAError.missing("board")}
         switch format {
-        case .gerber, .excellon: throw EDAError.invalid("manufacturing dispatch")
+        case .gerber, .excellon, .gerberTechnical: throw EDAError.invalid("manufacturing dispatch")
         case .project:
             files=[.init(name:"Project.floeeda",mimeType:"application/json",data:try encoder.encode(Envelope(format:"org.floe.electronics.project",version:1,project:project)))]
         case .netlist:

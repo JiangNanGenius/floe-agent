@@ -13,7 +13,7 @@ public struct EDAResolvedGraphicLayer: Codable, Hashable, Sendable {
     public let layerID: String
     /// This is a Cu/profile subset, not a request for other layer artwork.
     public var excludedFromCopperProfile: Bool {
-        [.silkscreen, .fabrication, .courtyard].contains(declared.kind)
+        [.silkscreen, .fabrication, .courtyard, .mask, .paste].contains(declared.kind)
     }
 }
 

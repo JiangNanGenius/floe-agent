@@ -80,6 +80,18 @@ public struct LinuxGuestLanguagePackages: Sendable {
         self.runner = runner
     }
 
+    /// Read or explicitly change Debian sources in this already-running
+    /// environment. Viewing never initializes APT or starts the guest.
+    public func aptSource(
+        environment: ToolEnvironment, selection: String? = nil,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestAptSourceState {
+        try await requireRunning(environment.id)
+        return try await LinuxGuestPackageSourceConfiguration.run(
+            environmentID: environment.id, selection: selection,
+            runner: runner, cancellation: cancellation)
+    }
+
     /// Resolves which guest cache directory an install must use. When the
     /// host exported the shared cache share and the running guest actually
     /// mounted it (`/proc/mounts`), the shared path wins; otherwise the

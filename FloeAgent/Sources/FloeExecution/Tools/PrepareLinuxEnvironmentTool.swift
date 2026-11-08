@@ -34,6 +34,7 @@ public struct PrepareLinuxEnvironmentTool: AgentTool {
     public static let name = "environment.prepareLinux"
     public static let toolDescription =
         "Prepare this device's Linux environment: download, verify and install the App-provided Linux image required to run Linux commands, Python 3, Node, apt packages or services. Call it explicitly when Linux is needed and the image is not installed, then wait for the result and resume the original command. This prepares the image only; it does not initialize a Python venv or guarantee pip is ready. The image is App-provided; no URL, script or custom image is accepted. Returns an honest failure with the reason when storage is unavailable, space is insufficient, the digest does not match, or the download is cancelled."
+        + LinuxPackageSourceCatalog.modelInstructions
     public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true

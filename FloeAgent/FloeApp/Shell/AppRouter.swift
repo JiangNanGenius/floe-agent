@@ -349,12 +349,18 @@ final class AppRouter: ObservableObject {
     /// Reconciles remote session state after a cold launch: any session
     /// not explicitly disconnected is honestly unknown (never paused).
     func reconcileOnLaunch(environment: AppEnvironment) {
+        reconcileInitialNavigation()
+        Task { @MainActor in
+            await environment.remoteSessionCenter.reconcileOnLaunch()
+        }
+    }
+
+    /// The existing launch default only; remote-session maintenance stays in
+    /// reconcileOnLaunch. Kept separate so routing contracts need no VM work.
+    func reconcileInitialNavigation() {
         if !hasExplicitLaunchTarget {
             startNewTask()
             hideInspector()
-        }
-        Task { @MainActor in
-            await environment.remoteSessionCenter.reconcileOnLaunch()
         }
     }
 
@@ -373,6 +379,10 @@ final class AppRouter: ObservableObject {
     /// Opens a concrete More destination on both idioms: a pushed screen
     /// on iPhone and the promoted sidebar section on iPad.
     func openMore(_ destination: MoreDestination) {
+        // Menu/sidebar actions and validated entry/intake deliveries are
+        // explicit navigation, just as openConversation is. A later launch
+        // reconciliation must not replace their destination with New Task.
+        hasExplicitLaunchTarget = true
         selection = .more
         sidebarSelection = .more(destination)
         morePath = [destination]

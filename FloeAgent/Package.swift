@@ -319,7 +319,7 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeExecution",
-            resources: [.copy("Resources/RemoteAgent"), .process("Resources/CapabilityCatalog.json"), .process("Resources/ToolCapabilityCatalog.json"), .process("Resources/deb_extract.py")],
+            resources: [.copy("Resources/RemoteAgent"), .process("Resources/CapabilityCatalog.json"), .process("Resources/ToolCapabilityCatalog.json"), .process("Resources/deb_extract.py"), .process("Resources/LinuxPackageSources.json"), .process("Resources/linux_package_sources.py")],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),

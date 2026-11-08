@@ -68,7 +68,7 @@ enum EDAManufacturing {
             try check(cancelled)
             do {
                 let layer = try EDAGraphicLayers.resolve(layers?[index] ?? nil, index: index, board: board, footprintSide: footprint?.side)
-                try EDAGraphicLayers.requireCopperProfileExclusion(layer)
+                if ![EDALayerKind.mask,.paste].contains(layer.declared.kind) { try EDAGraphicLayers.requireCopperProfileExclusion(layer) }
                 guard records.count < 20_000 else { throw EDAError.invalid("manufacturing graphic manifest budget") }
                 records.append(.init(ownerID: ownerID, footprintID: footprint?.id, graphicIndex: index,
                     declaredLayerID: layer.declared.layerID, resolvedLayerID: layer.layerID, kind: layer.declared.kind))
@@ -94,8 +94,9 @@ enum EDAManufacturing {
         case flash(Aperture, EDAPoint)
         case track(Aperture, [EDAPoint])
         case region([EDAPoint])
+        case arc(Aperture, start: EDAPoint, end: EDAPoint, center: EDAPoint, clockwise: Bool)
         var aperture: Aperture? {
-            switch self { case .flash(let a, _), .track(let a, _): return a; case .region: return nil }
+            switch self { case .flash(let a, _), .track(let a, _), .arc(let a, _, _, _, _): return a; case .region: return nil }
         }
     }
     private struct Drill {
@@ -175,6 +176,15 @@ enum EDAManufacturing {
                                            footprint: fp, into: &excludedGraphics, cancelled: cancelled)
                 for pad in definition.pads.sorted(by: uuidOrder) {
                     try check(cancelled)
+                    var copper:[String]=[]
+                    for raw in Set(pad.layers).sorted() {
+                        let layer=fp.side=="B.Cu" ? opposite(raw):raw
+                        if let known=board.layers.first(where:{$0.id==layer}) {
+                            if known.kind == .copper{copper.append(layer)}
+                        }else if EDAGerberTechnicalLayer(rawValue:layer)==nil{throw failure("pad_layer_unsupported","pad.layers",pad.id)}
+                    }
+                    // Explicit aperture-only pads do not invent copper or an annulus.
+                    guard !copper.isEmpty else{continue}
                     let center = fp.point(pad.position)
                     let axis = fp.point(EDAPoint(1, 0).transformed(origin: pad.position, angle: pad.angle)) - center
                     let angle = number(normalAngle(atan2(axis.y, axis.x) * 180 / .pi), decimals: 9)
@@ -191,11 +201,7 @@ enum EDAManufacturing {
                     if let drill = pad.drill, drill + EDAGeometry.tolerance >= min(pad.size.x, pad.size.y) {
                         throw failure("pad_drill_exceeds_copper", "pad.drill", pad.id)
                     }
-                    for rawLayer in Set(pad.layers).sorted() {
-                        let layer = fp.side == "B.Cu" ? opposite(rawLayer) : rawLayer
-                        guard let known = board.layers.first(where: { $0.id == layer }) else { throw failure("pad_layer_unsupported", "pad.layers", pad.id) }
-                        if known.kind == .copper { objects[layer, default: []].append(.flash(aperture, center)) }
-                    }
+                    for layer in copper { objects[layer, default: []].append(.flash(aperture, center)) }
                 }
             }
             for track in board.tracks.sorted(by: uuidOrder) {
@@ -268,6 +274,165 @@ enum EDAManufacturing {
         return .init(projectID: project.id, revision: project.revision, files: files, limitations: limitations)
     }
 
+    private struct TechnicalSource: Encodable {
+        let ownerID: UUID
+        let footprintID: UUID?
+        let path: String
+        let declaredLayers: [String]?
+        let resolvedLayers: [String]
+        let generatedLayers: [String]
+        let status: String
+    }
+    private struct OmittedLayer: Encodable { let layerID: String; let reason: String }
+    private struct TechnicalManifest: Encodable {
+        let format = "org.floe.electronics.manufacturing"
+        let version = 1
+        let output = "gerberTechnical"
+        let projectID: UUID
+        let sourceRevision: String
+        let boardID: UUID
+        let completeFabricationSet = false
+        let unit = "mm"
+        let coordinateResolutionMM = 0.000_001
+        let coordinates = "Original board XY viewed from top; footprint mirroring is applied once; no whole-bottom-layer mirror."
+        let aperturePolicy = "Only explicit pad.layers and via.maskLayers produce pad/via openings, at their modeled outline with zero expansion. No implicit SMD/THT/NPTH opening, paste, via tenting or clearance inheritance. Mask images represent absence of resist (Negative file polarity); Paste/Legend are Positive."
+        let requestedLayers: [String]
+        let omittedLayers: [OmittedLayer]
+        let sources: [TechnicalSource]
+        let files: [FileRecord]
+        let limitations: [String]
+    }
+    static func technical(_ project: EDAProject, boardID: UUID?, layers request: [String]?,
+                          cancelled: @Sendable () -> Bool) throws -> EDAExchangeBundle {
+        try check(cancelled)
+        let names = request ?? EDAGerberTechnicalLayer.maskPasteSilk.map(\.rawValue)
+        guard !names.isEmpty, names.count <= 8, Set(names).count == names.count,
+              names.allSatisfy({ EDAGerberTechnicalLayer(rawValue:$0) != nil }) else {
+            throw failure("requested_gerber_layer_unsupported", "gerberLayers")
+        }
+        let requested = EDAGerberTechnicalLayer.allCases.filter { names.contains($0.rawValue) }
+        let selected = Set(requested.map(\.rawValue))
+        // The shared whole-original validation contains polygon checks. Bound
+        // them before entering it even when copper layers were not requested.
+        var validationWork=0
+        for board in project.boards {
+            for polygon in [board.outline]+board.cutouts+board.keepouts.map(\.outline)+board.zones.flatMap({[$0.outline]+$0.filledPolygons}) {
+                try check(cancelled)
+                guard polygon.count<=20_000 else{throw EDAError.invalid("manufacturing polygon budget")}
+                validationWork += polygon.count*polygon.count
+                guard validationWork<=20_000_000 else{throw EDAError.invalid("manufacturing polygon budget")}
+            }
+        }
+        try EDAValidation.validate(project)
+        guard project.preservedSource.isEmpty else { throw failure("unmapped_preserved_source", "project.preservedSource") }
+        guard let board=boardID.flatMap({id in project.boards.first{$0.id==id}}) ?? (boardID == nil ? project.boards.first:nil) else {throw EDAError.missing("manufacturing board")}
+        let definitions=Dictionary(uniqueKeysWithValues:project.footprints.map{($0.id,$0)})
+        var objects:[String:[Copper]]=[:],sources:[TechnicalSource]=[],count=0
+        func add(_ value:Copper,to layer:String) throws {
+            try check(cancelled);count+=1;guard count<=100_000 else{throw EDAError.invalid("technical artwork object budget")}
+            objects[layer,default:[]].append(value)
+        }
+        func source(_ value:TechnicalSource) throws {
+            try check(cancelled);guard sources.count<100_000 else{throw EDAError.invalid("technical source manifest budget")};sources.append(value)
+        }
+        func graphics(_ values:[EDAGraphic],assignments:[EDAGraphicLayerAssignment?]?,owner:UUID,footprint:EDAFootprint?=nil) throws {
+            for index in values.indices {
+                try check(cancelled)
+                let path = footprint == nil ? "board.graphics[\(index)]":"footprintDefinition[\(owner)].graphics[\(index)]"
+                let resolved:EDAResolvedGraphicLayer
+                do{resolved=try EDAGraphicLayers.resolve(assignments?[index] ?? nil,index:index,board:board,footprintSide:footprint?.side)}
+                catch let error as EDAGraphicLayerFailure{throw failure(error.code,path,footprint?.id ?? owner)}
+                let wanted=selected.contains(resolved.layerID)
+                if wanted {
+                    guard let layer=EDAGerberTechnicalLayer(rawValue:resolved.layerID),layer.kind==resolved.declared.kind else{throw failure("technical_layer_kind_conflict",path,footprint?.id ?? owner)}
+                    for value in try graphic(values[index],footprint:footprint,path:path,id:footprint?.id ?? owner) {try add(value,to:layer.rawValue)}
+                }
+                try source(.init(ownerID:owner,footprintID:footprint?.id,path:path,declaredLayers:[resolved.declared.layerID],resolvedLayers:[resolved.layerID],generatedLayers:wanted ? [resolved.layerID]:[],status:wanted ? "rendered":"not_requested"))
+            }
+        }
+        try graphics(board.graphics,assignments:board.graphicLayers,owner:board.id)
+        for fp in board.footprints.sorted(by:uuidOrder) {
+            try check(cancelled)
+            guard ["F.Cu","B.Cu"].contains(fp.side) else{throw failure("footprint_side_unsupported","footprint.side",fp.id)}
+            guard let definition=definitions[fp.definitionID] else{throw failure("missing_footprint_definition","footprint.definitionID",fp.id)}
+            try graphics(definition.graphics,assignments:definition.graphicLayers,owner:definition.id,footprint:fp)
+            for pad in definition.pads.sorted(by:uuidOrder) {
+                try check(cancelled)
+                let path="footprintDefinition[\(definition.id)].pads[\(pad.id)]"
+                let resolved=Set(pad.layers.map{fp.side=="B.Cu" ? opposite($0):$0}).sorted()
+                for layer in resolved {
+                    guard board.layers.contains(where:{$0.id==layer}) || EDAGerberTechnicalLayer(rawValue:layer) != nil else{throw failure("pad_layer_unsupported",path+".layers",pad.id)}
+                    if let requested=EDAGerberTechnicalLayer(rawValue:layer),let physical=board.layers.first(where:{$0.id==layer}),physical.kind != requested.kind{throw failure("technical_layer_kind_conflict",path+".layers",pad.id)}
+                }
+                let generated=resolved.filter{selected.contains($0)}
+                if !generated.isEmpty {
+                    let center=fp.point(pad.position),axis=fp.point(EDAPoint(1,0).transformed(origin:pad.position,angle:pad.angle))-center
+                    let angle=number(normalAngle(atan2(axis.y,axis.x)*180 / .pi),decimals:9)
+                    let w=try dimension(pad.size.x,path:path+".size.x",id:pad.id),h=try dimension(pad.size.y,path:path+".size.y",id:pad.id)
+                    let aperture:Aperture
+                    switch pad.shape {
+                    case .circle:guard abs(pad.size.x-pad.size.y)<=EDAGeometry.tolerance else{throw failure("circle_pad_not_round",path+".size",pad.id)};aperture = .circle(w)
+                    case .rectangle:aperture = .rectangle(w,h,angle)
+                    case .oval:aperture = .oval(w,h,angle)
+                    case .roundRectangle:throw failure("round_rectangle_radius_missing",path+".shape",pad.id)
+                    }
+                    for layer in generated{try add(.flash(aperture,center),to:layer)}
+                }
+                try source(.init(ownerID:pad.id,footprintID:fp.id,path:path,declaredLayers:pad.layers,resolvedLayers:resolved,generatedLayers:generated,status:generated.isEmpty ? "no_requested_aperture_declared":"rendered_zero_expansion"))
+            }
+        }
+        for via in board.vias.sorted(by:uuidOrder) {
+            try check(cancelled)
+            let reachable=Set([via.startLayer,via.endLayer].compactMap{layer -> String? in layer=="F.Cu" ? "F.Mask":layer=="B.Cu" ? "B.Mask":nil})
+            let relevant=reachable.intersection(selected)
+            guard relevant.isEmpty || via.maskLayers != nil else{throw failure("via_mask_unspecified","via.maskLayers",via.id)}
+            let generated=(via.maskLayers ?? []).filter{selected.contains($0)}.sorted()
+            for layer in generated {try add(.flash(.circle(try dimension(via.diameter,path:"via.diameter",id:via.id)),via.position),to:layer)}
+            try source(.init(ownerID:via.id,footprintID:nil,path:"board.vias[\(via.id)]",declaredLayers:via.maskLayers,resolvedLayers:(via.maskLayers ?? []).sorted(),generatedLayers:generated,status:via.maskLayers == nil ? "mask_not_requested_or_not_surface_reachable":via.maskLayers!.isEmpty ? "explicitly_tented":generated.isEmpty ? "opening_not_requested":"rendered_zero_expansion"))
+        }
+        var files:[EDAExchangeFile]=[],records:[FileRecord]=[],omitted:[OmittedLayer]=[]
+        for layer in EDAGerberTechnicalLayer.allCases {
+            guard selected.contains(layer.rawValue) else{omitted.append(.init(layerID:layer.rawValue,reason:"not_requested"));continue}
+            let values=objects[layer.rawValue] ?? []
+            guard !values.isEmpty else{omitted.append(.init(layerID:layer.rawValue,reason:"no_represented_artwork"));continue}
+            let file=EDAExchangeFile(name:layer.fileName,mimeType:"application/vnd.gerber",data:try gerber(values,function:layer.function,project:project,board:board,cancelled:cancelled,polarity:layer.polarity))
+            try Self.add(file,to:&files);records.append(record(file,function:layer.function,layers:[],objects:values.count))
+        }
+        guard !files.isEmpty else{throw failure("no_requested_layer_geometry","gerberLayers",board.id)}
+        let limitations=[
+            "This is selected explicit layer artwork, not a complete fabrication/assembly data set or DFM acceptance. Copper/profile and Excellon are separate existing outputs.",
+            "Openings have zero expansion. No mask web merging, silk-to-mask clipping, paste reduction/windowing, font substitution, custom padstack or manufacturing compensation is inferred.",
+            "Only requested supported strokes and pad/via apertures are rendered. Unrequested geometry and empty requested layers are listed explicitly; no blank layer image is emitted.",
+            "F.Fab/B.Fab exports are auxiliary assembly outlines from assigned graphics only. No reference text, component body, placement layout or complete assembly instruction is invented.",
+            "Board mechanical holes/slots and via bores are drilling data, not automatic mask/paste apertures. Define any desired opening explicitly in the original; generate Excellon for represented drilling."]
+        let manifest=TechnicalManifest(projectID:project.id,sourceRevision:String(project.revision),boardID:board.id,requestedLayers:requested.map(\.rawValue),omittedLayers:omitted,sources:sources,files:records,limitations:limitations)
+        try check(cancelled);let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+        try Self.add(.init(name:"Gerber-surface-manifest.json",mimeType:"application/json",data:try encoder.encode(manifest)),to:&files)
+        return .init(projectID:project.id,revision:project.revision,files:files,limitations:limitations)
+    }
+    private static func graphic(_ graphic:EDAGraphic,footprint:EDAFootprint?,path:String,id:UUID) throws -> [Copper] {
+        func point(_ value:EDAPoint)->EDAPoint{footprint?.point(value) ?? value}
+        func stroke(_ width:Double)throws->Aperture{.circle(try dimension(width,path:path+".width",id:id))}
+        switch graphic {
+        case .line(let a,let b,let width):return [.track(try stroke(width),[point(a),point(b)])]
+        case .rectangle(let a,let b,let width):return [.track(try stroke(width),[a,.init(b.x,a.y),b,.init(a.x,b.y),a].map(point))]
+        case .circle(let center,let radius,let width):
+            _ = try dimension(radius,path:path+".radius",id:id)
+            let start=point(center + .init(radius,0))
+            return [.arc(try stroke(width),start:start,end:start,center:point(center),clockwise:false)]
+        case .arc(let center,let radius,let start,let sweep,let width):
+            _ = try dimension(radius,path:path+".radius",id:id)
+            guard abs(sweep)>0 else{throw failure("graphic_arc_zero_sweep",path,id)}
+            func polar(_ angle:Double)->EDAPoint{point(center + .init(cos(angle * .pi/180)*radius,sin(angle * .pi/180)*radius))}
+            let a=polar(start),b=polar(start+sweep)
+            let startCoordinate=try coordinate(a),endCoordinate=try coordinate(b)
+            if abs(sweep)<360 && startCoordinate == endCoordinate{throw failure("graphic_arc_below_resolution",path,id)}
+            return [.arc(try stroke(width),start:a,end:b,center:point(center),clockwise:(sweep<0) != (footprint?.side=="B.Cu"))]
+        case .text:throw failure("graphic_text_geometry_unspecified",path,id)
+        case .dimension:throw failure("graphic_dimension_style_unspecified",path,id)
+        }
+    }
+
     private static func drilling(_ board: EDABoard, layers: [Layer], definitions: [UUID: EDAFootprintDefinition],
                                  cancelled: @Sendable () -> Bool) throws -> [Drill] {
         var result: [Drill] = []
@@ -300,7 +465,7 @@ enum EDAManufacturing {
     }
 
     private static func gerber(_ objects: [Copper], function: String, project: EDAProject, board: EDABoard,
-                              cancelled: @Sendable () -> Bool) throws -> Data {
+                              cancelled: @Sendable () -> Bool, polarity: String = "Positive") throws -> Data {
         guard objects.count <= 100_000 else { throw EDAError.invalid("manufacturing copper budget") }
         let apertures = Set(objects.compactMap(\.aperture)).sorted { $0.key < $1.key }
         guard apertures.count <= 990 else { throw EDAError.invalid("Gerber aperture budget") }
@@ -308,7 +473,7 @@ enum EDAManufacturing {
         var writer = Writer()
         try writer.emit("G04 Floe project \(project.id.uuidString) board \(board.id.uuidString) revision \(project.revision)*")
         try writer.emit("%FSLAX66Y66*%"); try writer.emit("%MOMM*%")
-        try writer.emit("%TF.FileFunction,\(function)*%"); try writer.emit("%TF.FilePolarity,Positive*%")
+        try writer.emit("%TF.FileFunction,\(function)*%"); try writer.emit("%TF.FilePolarity,\(polarity)*%")
         try writer.emit("%LPD*%")
         for aperture in apertures {
             try check(cancelled)
@@ -343,6 +508,13 @@ enum EDAManufacturing {
                 } else {
                     for p in points.dropFirst() { try check(cancelled); try writer.emit(coordinate(p) + "D01*") }
                 }
+            case let .arc(aperture, start, end, center, clockwise):
+                try writer.emit("D\(codes[aperture]!)*"); try writer.emit("G75*")
+                try writer.emit(coordinate(start)+"D02*")
+                let ij=center-start
+                try writer.emit((clockwise ? "G02":"G03")+"*")
+                try writer.emit(coordinate(end)+"I\(Int64((ij.x*1_000_000).rounded()))J\(Int64((ij.y*1_000_000).rounded()))D01*")
+                try writer.emit("G01*")
             case .region(let points):
                 try writer.emit("G36*"); try writer.emit(coordinate(points[0]) + "D02*")
                 for p in points.dropFirst() { try check(cancelled); try writer.emit(coordinate(p) + "D01*") }

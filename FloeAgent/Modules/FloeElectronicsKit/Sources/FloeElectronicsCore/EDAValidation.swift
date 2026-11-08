@@ -131,6 +131,10 @@ public enum EDAValidation {
                 try points([via.position]); try positive(via.diameter); try positive(via.drill)
                 guard via.drill < via.diameter, copper.contains(via.startLayer), copper.contains(via.endLayer),
                       via.startLayer != via.endLayer else { throw EDAError.invalid("via geometry") }
+                if let openings=via.maskLayers {
+                    let reachable=Set([via.startLayer,via.endLayer].compactMap{layer -> String? in layer=="F.Cu" ? "F.Mask":layer=="B.Cu" ? "B.Mask":nil})
+                    guard openings.count<=2,Set(openings).count==openings.count,Set(openings).isSubset(of:reachable) else {throw EDAError.invalid("via mask layers")}
+                }
             }
             for hole in board.holes {
                 try points([hole.position]); try positive(hole.diameter)

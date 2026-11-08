@@ -276,7 +276,7 @@ public enum EDADRC {
 
         mutating func collect() throws {
             let copperLayers = board.layers.filter { $0.kind == .copper }.map(\.id)
-            let allLayers = Set(board.layers.map(\.id)), knownNets = Set(netlist.nets.map(\.id))
+            let allLayers = Set(board.layers.map(\.id)).union(EDAGraphicLayers.standardAssignments.filter{$0.kind != .copper}.map(\.layerID)), knownNets = Set(netlist.nets.map(\.id))
             let definitions = Dictionary(uniqueKeysWithValues: project.footprints.map { ($0.id, $0) })
             try inspectGraphics(board.graphics, layers: board.graphicLayers, ownerID: board.id)
             for fp in board.footprints.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
@@ -293,13 +293,6 @@ public enum EDADRC {
                     try budget.step()
                     let ref = EDADRCObject(kind: .pad, objectID: pad.id, footprintID: fp.id, padNumber: pad.number)
                     let position = fp.point(pad.position)
-                    guard pad.drill.map({ $0 + EDAGeometry.tolerance < min(pad.size.x, pad.size.y) }) ?? true else {
-                        try limitation("pad_drill_exceeds_copper", rules: geometricRules, objects: [ref], position: position, severity: .error); continue
-                    }
-                    guard let shape = EDADRCGeometry.pad(pad, in: fp) else {
-                        try limitation("pad_shape_unsupported", rules: geometricRules, objects: [ref], position: position,
-                                   details: ["shape": pad.shape.rawValue]); continue
-                    }
                     var layers: [String] = []
                     for raw in Set(pad.layers).sorted() {
                         let layer = fp.side == "B.Cu" ? (raw == "F.Cu" ? "B.Cu" : raw == "B.Cu" ? "F.Cu" : raw) : raw
@@ -307,6 +300,14 @@ public enum EDADRC {
                         else if !allLayers.contains(layer) {
                             try limitation("pad_layer_unsupported", rules: geometricRules, objects: [ref], position: position, details: ["layer": raw])
                         }
+                    }
+                    guard !layers.isEmpty else{continue} // Explicit non-copper apertures have no copper shape.
+                    guard pad.drill.map({ $0 + EDAGeometry.tolerance < min(pad.size.x, pad.size.y) }) ?? true else {
+                        try limitation("pad_drill_exceeds_copper", rules: geometricRules, objects: [ref], position: position, severity: .error); continue
+                    }
+                    guard let shape = EDADRCGeometry.pad(pad, in: fp) else {
+                        try limitation("pad_shape_unsupported", rules: geometricRules, objects: [ref], position: position,
+                                   details: ["shape": pad.shape.rawValue]); continue
                     }
                     if pad.drill != nil && layers.count > 1 {
                         try limitation("pad_plating_unspecified", rules: [.unconnectedNet], objects: [ref], position: position)

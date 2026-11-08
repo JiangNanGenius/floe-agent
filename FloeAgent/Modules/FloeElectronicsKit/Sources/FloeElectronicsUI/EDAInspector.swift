@@ -160,6 +160,7 @@ private struct EDViaProperties: View {
                     EDInspectorNumberField(edText("孔径 (mm)", "Drill (mm)"), value: draft.drill)
                 }
                 EDInspectorNetPicker(session: session, netID: draft.netID)
+                EDViaMaskFields(value:draft)
                 DisclosureGroup(edText("精确位置与层", "Position and layers")) {
                     VStack(alignment: .leading, spacing: 12) {
                         EDInspectorPointFields(draft.position)
@@ -339,6 +340,7 @@ private struct EDInspectorPadFields: View {
                     EDInspectorNumberField(edText("孔径 (mm)", "Drill (mm)"), value: Binding(get: { value.drill ?? 0.8 }, set: { value.drill = $0 }))
                     EDPlatingPicker(title: edText("孔壁电镀", "Hole plating"), value: $value.drillPlated)
                 }
+                EDPadOpeningFields(value:$value)
                 ForEach(value.layers.indices, id: \.self) { i in
                     HStack(alignment: .bottom) {
                         EDInspectorTextField(edText("图层", "Layer") + " \(i + 1)", text: $value.layers[i])
@@ -442,4 +444,33 @@ private struct EDPlatingPicker:View {
         Text(edText("不电镀","Non-plated")).tag(Optional(false))
         Text(edText("电镀","Plated")).tag(Optional(true))
     }}
+}
+
+private struct EDViaMaskFields:View {
+    @Binding var value:EDAVia
+    private var surfaces:Set<String>{Set([value.startLayer,value.endLayer])}
+    var body:some View {
+        Picker(edText("阻焊开窗","Solder mask openings"),selection:Binding(get:{value.maskLayers?.sorted()},set:{value.maskLayers=$0})){
+            Text(edText("未指定","Unspecified")).tag([String]?.none)
+            Text(edText("盖油","Tented")).tag(Optional([String]()))
+            if surfaces.contains("F.Cu"){Text(edText("正面开窗","Front opening")).tag(Optional(["F.Mask"]))}
+            if surfaces.contains("B.Cu"){Text(edText("背面开窗","Back opening")).tag(Optional(["B.Mask"]))}
+            if surfaces.contains("F.Cu") && surfaces.contains("B.Cu"){Text(edText("双面开窗","Both sides open")).tag(Optional(["B.Mask","F.Mask"]))}
+        }
+    }
+}
+private struct EDPadOpeningFields:View {
+    @Binding var value:EDAPad
+    private func opening(_ layer:String)->Binding<Bool>{Binding(get:{value.layers.contains(layer)},set:{enabled in
+        if enabled{if !value.layers.contains(layer){value.layers.append(layer)}}else{value.layers.removeAll{$0==layer}}
+    })}
+    var body:some View {
+        DisclosureGroup(edText("阻焊与钢网开窗","Mask and paste openings")){
+            Toggle(edText("正面阻焊","Front solder mask"),isOn:opening("F.Mask"))
+            Toggle(edText("背面阻焊","Back solder mask"),isOn:opening("B.Mask"))
+            Toggle(edText("正面钢网","Front solder paste"),isOn:opening("F.Paste"))
+            Toggle(edText("背面钢网","Back solder paste"),isOn:opening("B.Paste"))
+            Text(edText("开窗与焊盘同尺寸。","Openings match the pad size.")).font(.caption).foregroundStyle(.secondary)
+        }
+    }
 }

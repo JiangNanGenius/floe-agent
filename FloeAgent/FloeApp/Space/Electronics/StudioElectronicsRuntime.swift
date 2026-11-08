@@ -57,7 +57,7 @@ import FloeElectronicsUI
     static func run(record: PersonalContentRecord, directory: URL, action: String, inputJSON: String?, context: ToolContext,
                     validateOwner: @escaping @MainActor @Sendable () async throws -> Void) async throws -> ToolExecutionOutput {
         guard StudioElectronicsContract.runActions.contains(action) else { throw FloeError.validationFailed("Read electronicsCapabilities.runActions for implemented operations") }
-        let allowed: Set<String> = action == "eda.export" ? ["expectedRevision", "boardID", "format", "variant"]
+        let allowed: Set<String> = action == "eda.export" ? ["expectedRevision", "boardID", "format", "variant", "gerberLayers"]
             : ["eda.drc", "eda.forwardAnnotation", "eda.refillCopper"].contains(action) ? ["expectedRevision", "boardID"] : ["expectedRevision"]
         let input = try options(inputJSON, allowed: allowed)
         try context.cancellation.throwIfCancelled(); try await validateOwner()
@@ -107,6 +107,11 @@ import FloeElectronicsUI
             }
             format = value
         } else { format = nil }
+        let gerberLayers:[String]?
+        if let raw=input.object["gerberLayers"]{
+            guard let values=raw as? [String],(1...8).contains(values.count) else{throw FloeError.validationFailed("inputJSON.gerberLayers must be 1...8 supported layer IDs")}
+            gerberLayers=values
+        }else{gerberLayers=nil}
         let variant = input.object["variant"] as? String
             ?? (source.project.variants.contains("Default") ? "Default" : source.project.variants.first ?? "Default")
         if input.object["variant"] != nil && !(input.object["variant"] is String) { throw FloeError.validationFailed("inputJSON.variant must be a string") }
@@ -128,7 +133,7 @@ import FloeElectronicsUI
             case "eda.export":
                 guard let format else { throw PersonalContentError.invalidProject }
                 do {
-                    let result = try EDAExchange.export(source.project, format: format, boardID: boardID, variant: variant, cancelled: cancelled)
+                    let result = try EDAExchange.export(source.project, format: format, boardID: boardID, variant: variant, gerberLayers: gerberLayers, cancelled: cancelled)
                     return .init(files: result.files, summary: ["format": format.rawValue, "files": String(result.files.count), "boardID": boardID?.uuidString ?? ""], limitations: result.limitations)
                 } catch let failure as EDAManufacturingFailure {
                     let details = String(decoding: try encoded(failure.issues), as: UTF8.self)

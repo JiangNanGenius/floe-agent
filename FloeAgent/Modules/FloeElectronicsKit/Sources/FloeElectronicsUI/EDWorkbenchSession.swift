@@ -207,7 +207,7 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
     public func cancelExport() { exportTask?.cancel() }
     /// Own the bounded worker in the document session, preserve the saved
     /// source and fence both native edits and independent original writers.
-    public func export(format:EDAExportFormat,boardID:UUID?,variant:String) async throws -> EDAExchangeBundle {
+    public func export(format:EDAExportFormat,boardID:UUID?,variant:String,gerberLayers:[String]?=nil) async throws -> EDAExchangeBundle {
         try requireOpen()
         guard !isExporting else{throw EDAError.invalid("an export is already running")}
         isExporting=true;defer{exportTask=nil;isExporting=false}
@@ -215,7 +215,7 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
         let saved=try await save(),snapshot=saved.project
         guard !isClosed, !closing else { throw EDAError.cancelled }
         try Task.checkCancellation()
-        let task=Task.detached(priority:.userInitiated){try EDAExchange.export(snapshot,format:format,boardID:boardID,variant:variant,cancelled:{Task.isCancelled})}
+        let task=Task.detached(priority:.userInitiated){try EDAExchange.export(snapshot,format:format,boardID:boardID,variant:variant,gerberLayers:gerberLayers,cancelled:{Task.isCancelled})}
         exportTask=task
         let result=try await withTaskCancellationHandler(operation:{try await task.value},onCancel:{task.cancel()})
         try Task.checkCancellation()

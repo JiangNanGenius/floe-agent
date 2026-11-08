@@ -88,6 +88,36 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
 
     // MARK: Python
 
+    func testTUNAPresetUsesExistingSingleIndexPipPathWithoutChangingNodeSource() async throws {
+        let (environmentID, layer) = try makeLayer()
+        defer { try? FileManager.default.removeItem(at: layer) }
+        let preset = try XCTUnwrap(LinuxPackageSourceCatalog.bundled().python.first { $0.id == "tuna" })
+        var sources = LanguagePackageSources(pythonIndex: "https://custom.example.invalid/simple/", nodeRegistry: "https://node.example.invalid/")
+        try sources.save(in: layer)
+        sources.pythonIndex = preset.indexURL
+        try sources.save(in: layer)
+        let runner = ScriptedLinuxCommandRunner { argv, _, _ in
+            if argv.joined(separator: " ").contains("/proc/mounts") {
+                return LinuxCommandResult(stdout: "", stderr: "", exitCode: 1)
+            }
+            if let provision = Self.pythonProvisioningAnswers(argv) { return provision }
+            if argv.contains(where: { $0.contains("floePythonInventory") }) {
+                return LinuxCommandResult(stdout: "floePythonInventory=[{\"name\":\"demo\",\"version\":\"1.0\",\"location\":\"/floe/env/python/venv/lib/python3.13/site-packages\",\"writable\":true}]\n", stderr: "", exitCode: 0)
+            }
+            return LinuxCommandResult(stdout: "Successfully installed demo-1.0\n", stderr: "", exitCode: 0)
+        }
+        let packages = LinuxGuestLanguagePackages(runner: runner)
+        _ = try await packages.pythonInstall(specs: ["demo==1.0"], environment: makeEnvironment(environmentID, layer: layer), cancellation: nil)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+        let install = try XCTUnwrap(runner.calls.first { $0.argv.contains("pip") && $0.argv.contains("install") })
+        XCTAssertTrue(install.argv.contains("PIP_INDEX_URL=\(preset.indexURL)"))
+        XCTAssertTrue(install.argv.contains("PIP_EXTRA_INDEX_URL="))
+        XCTAssertTrue(install.argv.contains("PIP_TRUSTED_HOST="))
+        XCTAssertFalse(install.argv.contains("--extra-index-url"))
+        XCTAssertFalse(install.argv.contains("--trusted-host"))
+        XCTAssertEqual(try LanguagePackageSources.load(in: layer).nodeRegistry, "https://node.example.invalid/")
+    }
+
     func testPythonInstallRunsRealGuestPipInTheSharedVenv() async throws {
         let (environmentID, layer) = try makeLayer()
         defer { try? FileManager.default.removeItem(at: layer) }

@@ -178,10 +178,6 @@ public enum EDACopperFill {
                 try inspectGraphics(def.graphics, layers: def.graphicLayers, ownerID: def.id, footprint: fp)
                 for pad in def.pads.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
                     try clipper.step()
-                    guard pad.drill.map({ $0 + EDAGeometry.tolerance < min(pad.size.x, pad.size.y) }) ?? true,
-                          let shape = EDADRCGeometry.pad(pad, in: fp) else {
-                        throw fail("pad_shape_unsupported", object: pad.id, path: "pad.shape/size/drill", position: fp.point(pad.position))
-                    }
                     var resolved = Set<String>()
                     for raw in Set(pad.layers) {
                         if raw == "*.Cu" { resolved.formUnion(all) }
@@ -190,18 +186,23 @@ public enum EDACopperFill {
                             guard all.contains(actual) else { throw fail("pad_layer_unsupported", object: pad.id, path: "pad.layers", position: fp.point(pad.position)) }
                             resolved.insert(actual)
                         } else if all.contains(raw) { resolved.insert(raw) }
-                        else if !board.layers.contains(where: { $0.id == raw && $0.kind != .copper }) {
+                        else if !board.layers.contains(where: { $0.id == raw && $0.kind != .copper }) && !EDAGraphicLayers.standardAssignments.contains(where:{$0.layerID==raw && $0.kind != .copper}) {
                             throw fail("pad_layer_unsupported", object: pad.id, path: "pad.layers", position: fp.point(pad.position), details: ["layer": raw])
                         }
+                    }
+                    if let drill = pad.drill {
+                        let void = try clipper.outer(.capsule(fp.point(pad.position), fp.point(pad.position), drill / 2))
+                        for layer in layers { try addBore(void, layer: layer) }
+                    }
+                    guard !resolved.isEmpty else{continue} // Keep its real bore; do not invent copper for aperture-only pads.
+                    guard pad.drill.map({ $0 + EDAGeometry.tolerance < min(pad.size.x, pad.size.y) }) ?? true,
+                          let shape = EDADRCGeometry.pad(pad, in: fp) else {
+                        throw fail("pad_shape_unsupported", object: pad.id, path: "pad.shape/size/drill", position: fp.point(pad.position))
                     }
                     let net = fp.padNets[pad.number].flatMap { $0.isEmpty ? nil : $0 }
                     pads.append(.init(footprintID: fp.id, id: pad.id, net: net, layers: resolved,
                                       shape: shape, size: pad.size, position: fp.point(pad.position)))
                     guard pads.count + copper.count <= 10_000 else { throw EDAError.invalid("copper fill copper-object budget") }
-                    if let drill = pad.drill {
-                        let void = try clipper.outer(.capsule(fp.point(pad.position), fp.point(pad.position), drill / 2))
-                        for layer in layers { try addBore(void, layer: layer) }
-                    }
                 }
                 for key in fp.padNets.keys where !def.pads.contains(where: { $0.number == key }) {
                     throw fail("mapped_pad_missing", object: fp.id, path: "footprint.padNets", position: fp.position, details: ["pad": key])

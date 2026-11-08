@@ -66,11 +66,12 @@ struct EDAGraphicLayerTests {
         #expect(!drc.issues.contains{$0.code.hasPrefix("graphic_") || $0.code=="copper_graphic_unsupported"})
     }
 
-    @Test func unknownCopperMaskPasteProfileAndConflictsStillRefuseAndLimitDRC() throws {
+    @Test("Known mask/paste roles are supported; unknown/Cu/profile and conflicts still refuse")
+    func unknownCopperMaskPasteProfileAndConflictsStillRefuseAndLimitDRC() throws {
         let cases:[(EDAGraphicLayerAssignment?,String)]=[
             (nil,"graphic_layer_unspecified"),(cu,"copper_graphic_unsupported"),
-            (.init(layerID:"F.Mask",kind:.mask),"graphic_layer_kind_unsupported"),
-            (.init(layerID:"F.Paste",kind:.paste),"graphic_layer_kind_unsupported"),
+            (.init(layerID:"F.Mask",kind:.paste),"graphic_layer_kind_conflict"),
+            (.init(layerID:"F.Paste",kind:.mask),"graphic_layer_kind_conflict"),
             (.init(layerID:"Edge.Cuts",kind:.fabrication),"graphic_profile_geometry_unsupported"),
             (.init(layerID:"Unknown.Fab",kind:.fabrication),"graphic_layer_unsupported"),
             (.init(layerID:"F.Cu",kind:.fabrication),"graphic_layer_kind_conflict")]
