@@ -20,7 +20,7 @@ internal fun LinuxDesktopDiagnosticsAction(state: LinuxDesktopState) {
     if (state.failure != null && state.failureStage in setOf("packages", "session_bus", "vnc_tools", "desktop")) {
         FloeText(stringResource(R.string.linux_desktop_components_hint), color = Floe.colors.secondaryLabel)
     }
-    FloeCapsuleButton(stringResource(R.string.linux_desktop_diagnostics), onClick = { visible = true })
+    FloeCapsuleAction(stringResource(R.string.linux_desktop_diagnostics), onClick = { visible = true })
     if (visible) {
         fun safe(value: String?) = value?.takeIf { it.matches(Regex("[A-Za-z0-9_.:-]{1,128}")) } ?: "-"
         val text = stringResource(R.string.linux_desktop_diagnostic_content,

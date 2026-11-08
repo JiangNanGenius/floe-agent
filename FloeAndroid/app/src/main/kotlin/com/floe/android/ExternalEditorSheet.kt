@@ -49,89 +49,91 @@ internal fun ExternalEditorSheet(host: RuntimeHost, taskID: String, workspaceID:
             service.openAndroid(activity, owner, suggestedPath.trim(), existing?.id, forceChooser = false)
         }
     }
-    FloePageSheet(visible = true, onDismiss = onDismiss,
-        widthFraction = if (wide) 0.62f else 1f, heightFraction = 0.78f,
-        placement = if (wide) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM,
-        topInset = if (wide) 0.dp else FloeLayout.SettingsSheetTopInset) {
-        Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                FloeText(stringResource(R.string.external_edit_title), style = Floe.typography.title,
-                    modifier = Modifier.weight(1f))
-                FloeCapsuleAction(label = stringResource(R.string.external_edit_done), onClick = onDismiss)
-            }
-            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                FloeText(stringResource(R.string.external_edit_description), style = Floe.typography.metadata,
-                    color = Floe.colors.secondaryLabel)
-                FloeText(path, style = Floe.typography.evidence)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FloeCapsuleAction(label = stringResource(if (state.preparing) R.string.external_edit_preparing else R.string.external_edit_open),
-                        enabled = activity != null && path.isNotBlank() && !state.preparing && !selectedBusy,
-                        onClick = { activity?.let { service.openAndroid(it, owner, path) } })
-                    FloeCapsuleAction(label = stringResource(R.string.external_edit_choose_app),
-                        enabled = activity != null && path.isNotBlank() && !state.preparing && !selectedBusy,
-                        onClick = { activity?.let {
-                            val existing = rows.firstOrNull { row -> row.logicalPath == path && row.linuxWorkingPath == null &&
-                                row.phase in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED) }
-                            service.openAndroid(it, owner, path, existing?.id, forceChooser = true)
-                        } })
-                    FloeCapsuleAction(label = stringResource(R.string.external_edit_linux),
-                        enabled = path.isNotBlank() && !state.preparing && !selectedBusy,
-                        onClick = { onOpenLinux(path) })
+    FloeSettingsContentDensity(compact = !wide) {
+        FloePageSheet(visible = true, onDismiss = onDismiss,
+            widthFraction = if (wide) 0.62f else 1f, heightFraction = 0.78f,
+            placement = if (wide) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM,
+            topInset = if (wide) 0.dp else FloeLayout.SettingsSheetTopInset) {
+            Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    FloeText(stringResource(R.string.external_edit_title), style = Floe.typography.title,
+                        modifier = Modifier.weight(1f))
+                    FloeCapsuleAction(label = stringResource(R.string.external_edit_done), onClick = onDismiss)
                 }
-                state.failure?.let { code ->
-                    FloeText(stringResource(when (code) {
-                        "noEditor" -> R.string.external_edit_no_handler
-                        "editorAlreadyOpen" -> R.string.external_edit_already_open
-                        else -> if (selected == null) R.string.external_edit_open_error else R.string.external_edit_retry_error
-                    }), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-                    var details by remember(code) { mutableStateOf(false) }
-                    FloeCapsuleAction(label = stringResource(R.string.external_edit_details), onClick = { details = !details })
-                    if (details) FloeText(code.takeIf { it.matches(Regex("[A-Za-z0-9_:-]{1,80}")) }
-                        ?: "operationFailed", style = Floe.typography.evidence)
-                }
-                if (completed.isNotEmpty()) FloeCapsuleAction(
-                    label = if (showHistory) stringResource(R.string.external_edit_history_hide)
-                        else stringResource(R.string.external_edit_history_show, completed.size),
-                    onClick = { showHistory = !showHistory })
-                displayed.forEach { row ->
-                    FloeSectionHeader(row.displayName)
-                    val label = when (row.phase) {
-                        ExternalEditPhase.EDITING -> R.string.external_edit_waiting
-                        ExternalEditPhase.COMMITTING -> R.string.external_edit_saving
-                        ExternalEditPhase.SAVED -> R.string.external_edit_saved
-                        ExternalEditPhase.CONFLICT -> R.string.external_edit_conflict
-                        ExternalEditPhase.SOURCE_PENDING -> R.string.external_edit_source_pending
-                        ExternalEditPhase.PAUSED -> R.string.external_edit_retry_error
-                        ExternalEditPhase.FINISHED -> if (row.pendingSHA256 != null)
-                            R.string.external_edit_unconfirmed else R.string.external_edit_finished
-                    }
-                    FloeText(stringResource(label), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-                    if (row.errorCode == "noEditor") FloeText(stringResource(R.string.external_edit_no_handler))
-                    val busy = row.id in state.busy
-                    if (row.linuxWorkingPath == null && row.phase in setOf(
-                            ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED)) {
-                        FloeCapsuleAction(label = stringResource(R.string.external_edit_open),
-                            enabled = activity != null && !busy && !state.preparing,
-                            onClick = {
-                                path = row.logicalPath
-                                activity?.let { service.openAndroid(it, owner, row.logicalPath, row.id) }
-                            })
-                    }
+                Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FloeText(stringResource(R.string.external_edit_description), style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel)
+                    FloeText(path, style = Floe.typography.evidence)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FloeCapsuleAction(label = stringResource(R.string.external_edit_view_copy), enabled = activity != null,
-                            onClick = { activity?.let { service.viewCopy(it, row.id) } })
-                        FloeCapsuleAction(label = stringResource(R.string.external_edit_view_original), enabled = activity != null,
-                            onClick = { activity?.let { service.viewOriginal(it, row.id) } })
+                        FloeCapsuleAction(label = stringResource(if (state.preparing) R.string.external_edit_preparing else R.string.external_edit_open),
+                            enabled = activity != null && path.isNotBlank() && !state.preparing && !selectedBusy,
+                            onClick = { activity?.let { service.openAndroid(it, owner, path) } })
+                        FloeCapsuleAction(label = stringResource(R.string.external_edit_choose_app),
+                            enabled = activity != null && path.isNotBlank() && !state.preparing && !selectedBusy,
+                            onClick = { activity?.let {
+                                val existing = rows.firstOrNull { row -> row.logicalPath == path && row.linuxWorkingPath == null &&
+                                    row.phase in setOf(ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED) }
+                                service.openAndroid(it, owner, path, existing?.id, forceChooser = true)
+                            } })
+                        FloeCapsuleAction(label = stringResource(R.string.external_edit_linux),
+                            enabled = path.isNotBlank() && !state.preparing && !selectedBusy,
+                            onClick = { onOpenLinux(path) })
                     }
-                    if (row.phase == ExternalEditPhase.CONFLICT) FloeText(
-                        stringResource(R.string.external_edit_conflict_description), style = Floe.typography.metadata)
-                    if (row.id != selected?.id) ExternalEditActions(service, row, busy)
+                    state.failure?.let { code ->
+                        FloeText(stringResource(when (code) {
+                            "noEditor" -> R.string.external_edit_no_handler
+                            "editorAlreadyOpen" -> R.string.external_edit_already_open
+                            else -> if (selected == null) R.string.external_edit_open_error else R.string.external_edit_retry_error
+                        }), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                        var details by remember(code) { mutableStateOf(false) }
+                        FloeCapsuleAction(label = stringResource(R.string.external_edit_details), onClick = { details = !details })
+                        if (details) FloeText(code.takeIf { it.matches(Regex("[A-Za-z0-9_:-]{1,80}")) }
+                            ?: "operationFailed", style = Floe.typography.evidence)
+                    }
+                    if (completed.isNotEmpty()) FloeCapsuleAction(
+                        label = if (showHistory) stringResource(R.string.external_edit_history_hide)
+                            else stringResource(R.string.external_edit_history_show, completed.size),
+                        onClick = { showHistory = !showHistory })
+                    displayed.forEach { row ->
+                        FloeSectionHeader(row.displayName)
+                        val label = when (row.phase) {
+                            ExternalEditPhase.EDITING -> R.string.external_edit_waiting
+                            ExternalEditPhase.COMMITTING -> R.string.external_edit_saving
+                            ExternalEditPhase.SAVED -> R.string.external_edit_saved
+                            ExternalEditPhase.CONFLICT -> R.string.external_edit_conflict
+                            ExternalEditPhase.SOURCE_PENDING -> R.string.external_edit_source_pending
+                            ExternalEditPhase.PAUSED -> R.string.external_edit_retry_error
+                            ExternalEditPhase.FINISHED -> if (row.pendingSHA256 != null)
+                                R.string.external_edit_unconfirmed else R.string.external_edit_finished
+                        }
+                        FloeText(stringResource(label), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                        if (row.errorCode == "noEditor") FloeText(stringResource(R.string.external_edit_no_handler))
+                        val busy = row.id in state.busy
+                        if (row.linuxWorkingPath == null && row.phase in setOf(
+                                ExternalEditPhase.EDITING, ExternalEditPhase.SAVED, ExternalEditPhase.PAUSED)) {
+                            FloeCapsuleAction(label = stringResource(R.string.external_edit_open),
+                                enabled = activity != null && !busy && !state.preparing,
+                                onClick = {
+                                    path = row.logicalPath
+                                    activity?.let { service.openAndroid(it, owner, row.logicalPath, row.id) }
+                                })
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FloeCapsuleAction(label = stringResource(R.string.external_edit_view_copy), enabled = activity != null,
+                                onClick = { activity?.let { service.viewCopy(it, row.id) } })
+                            FloeCapsuleAction(label = stringResource(R.string.external_edit_view_original), enabled = activity != null,
+                                onClick = { activity?.let { service.viewOriginal(it, row.id) } })
+                        }
+                        if (row.phase == ExternalEditPhase.CONFLICT) FloeText(
+                            stringResource(R.string.external_edit_conflict_description), style = Floe.typography.metadata)
+                        if (row.id != selected?.id) ExternalEditActions(service, row, busy)
+                    }
                 }
+                // The selected edit's finish/conflict actions never scroll out
+                // beneath an unbounded list of previous edits or the keyboard.
+                selected?.let { ExternalEditActions(service, it, it.id in state.busy) }
             }
-            // The selected edit's finish/conflict actions never scroll out
-            // beneath an unbounded list of previous edits or the keyboard.
-            selected?.let { ExternalEditActions(service, it, it.id in state.busy) }
         }
     }
 }
