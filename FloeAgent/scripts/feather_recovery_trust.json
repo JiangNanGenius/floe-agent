@@ -22,5 +22,19 @@
     "ipaBytes": 738962981,
     "version": "1.7.14",
     "build": "255"
+  },
+  "v1.7.67": {
+    "mode": "historical-source-binding-v2",
+    "sourceCommit": "3368baaf8045023043bfb70d9062374c17a48a1d",
+    "packagingController": "9ea90ad402cf3329f144aad386305957a9ed3eca",
+    "controllerRef": "refs/tags/release-controller-historical308-roundtrip-20261109-r5",
+    "packagingRun": 42504940999,
+    "packagingRunAttempt": 1,
+    "signerWorkflow": ".github/workflows/prepare-historical308.yml",
+    "unsignedArtifactID": 13627406555,
+    "unsignedArtifactDigest": "sha256:efdbd63dc13d2f124685b09c5555c174dba3f71dd024382c8961b2fb608f1358",
+    "unsignedArtifactSize": 826173959,
+    "policySHA256": "b9c361fc3314659cbc1faefa2f219d20ba0ebd91010fe17f600284ec617f780c",
+    "reviewSHA256": "b0213ba9ac8c7d8317703abe365691f77ce15bef4e6c03c6b1e72b5a4dbfcd84"
   }
 }
