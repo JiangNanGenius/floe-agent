@@ -304,14 +304,15 @@ def apple_normalize(app, *, signed=False, require_unsigned=False):
             removed.add(path.relative_to(app).as_posix())
     result = projection.normalize_machos(app, signed=signed, require_unsigned=require_unsigned,
                                          evidence_directory=Path(app).parent.parent)
+    # Unsigned input signing entries were rejected before any Apple operation.
+    # Clean only this roundtrip's new signing resources; verify_output still
+    # requires the complete raw and post-roundtrip manifests to be identical.
     for path in sorted(Path(app).rglob('*'), key=lambda p: len(p.parts), reverse=True):
         bundle = path.parent
         signing_bundle = bundle.suffix in ('.app', '.appex', '.framework', '.xpc') and (bundle / 'Info.plist').is_file()
         if path.name == '_CodeSignature' and path.is_dir() and signing_bundle:
-            require(not require_unsigned, 'signedIPA', 'ipa', 'Unsigned output contains signing resources')
             shutil.rmtree(path)
         elif path.name == 'embedded.mobileprovision' and path.is_file() and signing_bundle:
-            require(not require_unsigned, 'signedIPA', 'ipa', 'Unsigned output contains provisioning material')
             path.unlink()
     return {'files': result['files'], 'removedSigningEntries': sorted(removed),
             'privateCommandLog': result['privateCommandLog']}

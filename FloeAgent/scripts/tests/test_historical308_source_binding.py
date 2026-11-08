@@ -268,6 +268,78 @@ class Historical308SourceBindingTests(unittest.TestCase):
                     checked = binding.resource_preservation(before, after, proof)
                     self.assertEqual(checked['verifiedMachOFiles'], 1)
 
+    def test_unsigned_output_roundtrip_cleans_only_new_tool_signing_entries_and_preserves_raw_manifest(self):
+        source_app = self.root / 'offline-review/transport/Payload/Floe Agent.app'
+        manifest, entries = binding.file_manifest(source_app)
+        review = {'manifest': manifest, 'entries': entries}
+        for mutation in (None, 'bytes', 'mode', 'type'):
+            work = self.root / ('output-tool-side-effects-' + str(mutation))
+            def temporary_apple_roundtrip(app, **kwargs):
+                self.assertTrue(kwargs['require_unsigned'])
+                app = Path(app)
+                self.assertFalse((app / '_CodeSignature').exists())
+                signature = app / '_CodeSignature'; signature.mkdir()
+                (signature / 'CodeResources').write_bytes(b'new temporary Apple signing resource')
+                asset = app / 'Asset.txt'
+                if mutation == 'bytes': asset.write_bytes(b'changed resource')
+                elif mutation == 'mode': asset.chmod((asset.stat().st_mode & 0o7777) ^ 0o100)
+                elif mutation == 'type': asset.unlink(); asset.mkdir()
+                # Inject only the Apple filesystem side effect. The production
+                # ZIP audit, extraction, cleanup and full manifests run for real;
+                # no returned hash is substituted for the actual file bytes.
+                return {'files': [], 'privateCommandLog': []}
+            with self.subTest(mutation=mutation), mock.patch.object(binding.projection,
+                    'normalize_machos', side_effect=temporary_apple_roundtrip) as apple:
+                if mutation is None:
+                    binding.verify_output(self.ipa, review, work, binding.apple_normalize)
+                    self.assertEqual(binding.file_manifest(binding.app_in(work)), (manifest, entries))
+                else:
+                    with self.assertRaises(binding.BindingError) as error:
+                        binding.verify_output(self.ipa, review, work, binding.apple_normalize)
+                    self.assertEqual(error.exception.code, 'outputNotCanonical')
+                apple.assert_called_once()
+                self.assertFalse((binding.app_in(work) / '_CodeSignature').exists())
+        self.assertEqual(binding.file_manifest(source_app), (manifest, entries))
+
+    def test_existing_unsigned_signing_resources_and_signed_macho_are_rejected_before_apple_tools(self):
+        from test_historical308_normalization_v2 import binary as normalization_binary
+        for material in ('_CodeSignature', 'embedded.mobileprovision', 'signed Mach-O'):
+            app = self.root / material / 'Floe Agent.app'; app.mkdir(parents=True)
+            (app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'Floe Agent'}))
+            (app / 'Floe Agent').write_bytes(normalization_binary(signed=material == 'signed Mach-O'))
+            if material == '_CodeSignature':
+                (app / material).mkdir(); (app / material / 'CodeResources').write_bytes(b'original signature')
+            elif material == 'embedded.mobileprovision': (app / material).write_bytes(b'original profile')
+            before = binding.file_manifest(app)
+            native_calls = []
+            real_normalize = binding.projection.normalize_machos
+            def forbidden_native(*args, **kwargs):
+                native_calls.append(args)
+                raise AssertionError('Original signing material must fail before any Apple command')
+            def actual_parser(*args, **kwargs):
+                return real_normalize(*args, **kwargs, invoke=forbidden_native)
+            with self.subTest(material=material), mock.patch.object(binding.projection,
+                    'normalize_machos', side_effect=actual_parser) as projection:
+                with self.assertRaises(ValueError): binding.apple_normalize(app, require_unsigned=True)
+                if material == 'signed Mach-O': projection.assert_called_once()
+                else: projection.assert_not_called()
+            self.assertEqual(native_calls, [])
+            self.assertEqual(binding.file_manifest(app), before)
+            if material != 'signed Mach-O':
+                # The real ZIP-level output audit must also reject original
+                # material before extraction can reach any Apple operation.
+                ipa = self.root / (material + '-zip') / binding.IPA_NAME; ipa.parent.mkdir()
+                with zipfile.ZipFile(self.ipa) as source, zipfile.ZipFile(ipa, 'w') as output:
+                    for info in source.infolist(): output.writestr(info, source.read(info))
+                    member = '_CodeSignature/CodeResources' if material == '_CodeSignature' else material
+                    output.writestr('Payload/Floe Agent.app/' + member, b'original signing material')
+                ipa.with_suffix('.ipa.sha256').write_text(binding.digest(ipa) + '  ' + ipa.name + '\n')
+                with mock.patch.object(binding.projection, 'normalize_machos', side_effect=forbidden_native) as projection:
+                    with self.assertRaises(ValueError):
+                        binding.verify_output(ipa, {}, self.root / (material + '-refused-output'))
+                    projection.assert_not_called()
+                self.assertEqual(native_calls, [])
+
     def test_unsigned_ipa_cannot_be_repaired_by_projection_before_comparison(self):
         # This ZIP still passes the actual arm64/IOS/version IPA audit. Its raw
         # executable bytes differ; a "repair" callback must not make it valid.
