@@ -25,3 +25,15 @@ After process death during a required question,Continue reattaches the original 
 准备记录：选择未占用的Alpha70/code96，同步Office对应源码入口及摘要。实际ARM64生产、Full／Play编译、最终包、设备与公开交付随后独立记录；本文件不单独表示已发版。
 
 Preparation: Alpha70/code96 and its matching Office source offer are selected.Native production,Full/Play compilation,actual APK,device behavior and public delivery remain separate evidence.This file alone is not publication proof.
+
+## Delivery evidence / 交付记录
+
+已公开于[Android Alpha70](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.70)，不可变源码`84c5b00b327a3fbd90cc32c5ecbb59b50a538fb0`。一个Full APK、Office／CAD按需组件、69→70增量、更新清单、摘要和对应源码共七附件，已完整匿名读回；APK SHA-256为`41efe3509fee2ba84398dc7121cb0b603895c61391e8adbf6b403d2614962353`，iOS Latest保持`v1.8.6`。
+
+4项实际运行时／SQLite、1项运行归属与10项签名检查通过；未改79项文件／诊断及29项身份／安装策略复用精确源码证据。实际ARM64生产、Full／Play Kotlin编译、58项封装、主包与运行组件API28／29签名验证、真实69→70重建及当前／保留Alpha65生产发现解析均通过。原打包预检／磁盘中止及早期夹具失败保持独立证据。
+
+**Android9／10旧版在线更新若仍报签名不可用，请下载本Release的完整APK覆盖安装一次，无需卸载。** 三星仍装实际Alpha69/code95，本版设备OTA与提问恢复未验收；索尼Android9修复后实机反馈亦待确认，不以模拟器或宿主代替。已导出生产回执并清理22处本版重复构件／完成暂存，SDK、AVD、源码、符号、当前及必要回滚保持。
+
+Published with seven exact anonymous-read-back assets on the immutable source above; iOS Latest remains unchanged.Four runtime/SQLite,one run-ownership and ten signing cases passed.Unchanged79 filesystem and29 policy cases were reused by exact inputs.ARM64 production,Full/Play compilation,58 package checks,API28/29 App/runtime signatures,actual69→70 reconstruction and current/retained Alpha65 discovery passed.Original failed attempts remain recorded.
+
+**If Android9/10’s old updater still reports unavailable signing information,install the full APK over the existing app once without uninstalling.** Samsung remains on actual Alpha69;70 OTA and question-recovery behavior are pending,as is Sony hardware feedback.Completed duplicate outputs and staging were cleaned after exporting receipts;source,symbols,current/rollback packages and SDK/AVD are retained.
