@@ -170,10 +170,15 @@ class ContentHubBuildTests(unittest.TestCase):
             source = root / "sources/providers/floe.providers.compatibility"
             content_path = source / "content.json"
             original = content_path.read_bytes()
+            published = json.loads((root / "index.json").read_bytes())["entries"]
+            published_version = next(entry["version"] for entry in published
+                                     if entry["id"] == "floe.providers.compatibility")
             for version, reason in (("1.1.1", "would downgrade"),
-                                    ("1.1.2", "same-version selected package rewrite")):
+                                    (published_version, "same-version selected package rewrite")):
                 content = json.loads(original)
                 content["version"] = version
+                # Exercise a real rewrite even after this candidate is promoted.
+                content["releaseNotes"]["en"] += " Changed without a version bump."
                 content_path.write_bytes(build.encoded(content))
                 with self.assertRaisesRegex(ValueError, reason):
                     self.selected_plan(root, repository)
