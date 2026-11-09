@@ -7,6 +7,7 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.graphics.Path
 import android.graphics.Rect
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -30,9 +31,25 @@ internal class AndroidPhoneUnlockDriver(
 ) : PhoneUnlockDriver {
     private val keyguard = service.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
     private val power = service.getSystemService(Context.POWER_SERVICE) as PowerManager
+    private val displays = service.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
     override val locked: Boolean get() = keyguard.isKeyguardLocked
     override val now: Long get() = SystemClock.elapsedRealtime()
     override val interactive: Boolean get() = runCatching { power.isInteractive }.getOrDefault(false)
+
+    /**
+     * The actual default-display power state: the platform must positively
+     * report both an interactive power state and STATE_ON panel state. Uncertain
+     * reads (missing display, throwing services) answer false, so reveal never
+     * dispatches into a dozing/AOD or half-transitioned panel.
+     * DisplayManager.getDisplay is API 17; Display.getState/STATE_ON are API 20, all
+     * below minSdk 28, so no API guard is needed; the window-side
+     * default-display membership keeps its real >= R guard.
+     */
+    private val displayPowerOn: Boolean
+        get() = interactive && runCatching {
+            displays.getDisplay(Display.DEFAULT_DISPLAY)?.state == Display.STATE_ON
+        }.getOrDefault(false)
+
     override fun suppressInput(until: Long) = suppress(until)
     override fun after(delay: Long, action: () -> Unit): () -> Unit {
         val work = Runnable { action() }
@@ -139,10 +156,30 @@ internal class AndroidPhoneUnlockDriver(
      * text, content or app windows enter the result.
      */
     override fun credentialVisible(): Boolean {
-        val resolved = resolveCredentialSurface() ?: return false
-        @Suppress("DEPRECATION")
-        resolved.root.recycle()
+        val resolved = scanCredentialSurface().surface ?: return false
+        @Suppress("DEPRECATION") resolved.root.recycle()
         return true
+    }
+
+    /**
+     * The ONE pre-reveal readiness observation. Actual default-display power
+     * decides first (no scan and no reveal plan while the panel is not
+     * genuinely awake); an awake panel then decides on the same trusted
+     * window scan that governs credential resolution, mapped through the pure
+     * [mapRevealReadiness]. The closed surface-change trace already emitted by
+     * the scan records which readiness layer decided, with no values.
+     */
+    override fun revealReadiness(): PhoneRevealReadiness {
+        if (!displayPowerOn) return PhoneRevealReadiness.DISPLAY_IDLE
+        val scan = scanCredentialSurface()
+        val readiness = mapRevealReadiness(displayPowerOn = true, observation = scan.observation)
+        scan.surface?.let { @Suppress("DEPRECATION") it.root.recycle() }
+        return readiness
+    }
+
+    /** Accepts only the published fixed wake-outcome labels; ignores everything else. */
+    override fun traceWakeStage(stage: String) {
+        if (stage in WAKE_OUTCOME_STAGES) trace(stage)
     }
 
     override fun requestLock(): Boolean =
@@ -158,7 +195,7 @@ internal class AndroidPhoneUnlockDriver(
      * between the visibility observation and this call can never receive input.
      */
     override fun enterCredential(secret: CharArray): Boolean {
-        val resolved = resolveCredentialSurface() ?: run {
+        val resolved = scanCredentialSurface().surface ?: run {
             trace("CREDENTIAL_ROOT_UNAVAILABLE"); return false
         }
         val root = resolved.root
@@ -212,15 +249,21 @@ internal class AndroidPhoneUnlockDriver(
     }
 
     /**
+     * One completed readiness scan: always the closed [SurfaceObservation]
+     * (traced on change), plus the resolved trusted credential surface when
+     * exactly one resolved. The surface root is owned by the caller and must be
+     * recycled exactly once; all other retrieved roots are recycled here.
+     */
+    private class SurfaceScan(val observation: SurfaceObservation, val surface: ResolvedSurface?)
+
+    /**
      * Freshly resolves the trusted default-display credential surface for the
      * current observation. The active-window root is kept as the fast path; if
      * it is null, foreign, stale or simply not the credential window, the
      * actually reported interactive window set decides via the pure selection,
      * with package/visibility/focus/lifecycle validation on every candidate.
-     * The returned root is owned by the caller and must be recycled exactly
-     * once; all other retrieved roots are recycled here.
      */
-    private fun resolveCredentialSurface(): ResolvedSurface? {
+    private fun scanCredentialSurface(): SurfaceScan {
         val displayInteractive = interactive
         // rootInActiveWindow may name a window on another logical display; the
         // interactive window set is the platform's own default-display view.
@@ -251,14 +294,17 @@ internal class AndroidPhoneUnlockDriver(
                     windowCandidates.getOrNull(observation.windowIndex)?.retrievedRoot()
                 else -> null
             }
-            return chosen?.let { surface ->
-                ResolvedSurface(
-                    root = surface,
-                    trustedWindowIds = defaultDisplayWindowIds
-                        ?: if (windows.isEmpty()) null
-                           else windows.mapNotNull { w -> runCatching { w.id }.getOrNull() }.toSet(),
-                )
-            }
+            return SurfaceScan(
+                observation,
+                chosen?.let { surface ->
+                    ResolvedSurface(
+                        root = surface,
+                        trustedWindowIds = defaultDisplayWindowIds
+                            ?: if (windows.isEmpty()) null
+                               else windows.mapNotNull { w -> runCatching { w.id }.getOrNull() }.toSet(),
+                    )
+                },
+            )
         } finally {
             if (activeRoot != null && activeRoot !== chosen) {
                 @Suppress("DEPRECATION") activeRoot.recycle()

@@ -11,7 +11,10 @@ import org.junit.Test
  * (wake-lease74). The fake mirrors the real driver's generation fence: renew
  * and release accept exactly the held generation and record stale calls, so a
  * lost or late callback can be proven unable to touch a replacement lease.
- * All event kinds are recorded as (kind, generation, timeoutMs).
+ * All event kinds are recorded as (kind, generation, timeoutMs). Readiness is
+ * likewise modeled as an actually observed state (power flag plus trusted
+ * SystemUI window), so reveal-side lease renewal only happens behind genuine
+ * readiness, and the never-awake timeout is proven to end inside the backstop.
  */
 class PhoneControlWakeLeaseTest {
     private val owner = PhoneControlOwner(UUID(1, 1), UUID(2, 2))
@@ -27,6 +30,8 @@ class PhoneControlWakeLeaseTest {
         override var locked = true
         override var now = 0L
         override var interactive = true
+        var systemUiWindow = true
+        val wakeStages = mutableListOf<String>()
         var inputCalls = 0
         var revealCalls = 0
         var lockCalls = 0
@@ -93,6 +98,13 @@ class PhoneControlWakeLeaseTest {
             cancelWakeExpiry?.invoke(); cancelWakeExpiry = null
         }
         override fun credentialVisible() = credentialShown
+        override fun revealReadiness(): PhoneRevealReadiness = when {
+            !interactive -> PhoneRevealReadiness.DISPLAY_IDLE
+            credentialShown -> PhoneRevealReadiness.CREDENTIAL_VISIBLE
+            systemUiWindow -> PhoneRevealReadiness.REVEAL_READY
+            else -> PhoneRevealReadiness.SYSTEM_UI_PENDING
+        }
+        override fun traceWakeStage(stage: String) { wakeStages += stage }
         override fun showCredential(onGestureResult: (Boolean) -> Unit): Boolean {
             revealCalls++
             after(gestureDelay) {
@@ -372,5 +384,28 @@ class PhoneControlWakeLeaseTest {
         assertEquals(NO_WAKE_LEASE, d.heldWake)
         assertEquals(0, d.kindCount("renew-stale"))
         assertEquals(0, d.kindCount("release-stale"))
+    }
+
+    @Test fun neverReadyDisplayTimesOutInsideBackstopWithNoRevealNoRenewal() {
+        // Explicit never-awake boundary for the wake resource: the readiness
+        // observation reports DISPLAY_IDLE for the whole bounded window, so
+        // the attempt must end as USER_REQUIRED with zero reveal and zero
+        // renewal, and its owned release must beat the 4s lease backstop.
+        val d = Driver().apply { interactive = false }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>(); val secret = dummyCredential()
+        x.unlock(owner, "call", secret, { true }, results::add)
+        d.advance(8_000)
+        assertEquals(listOf(PhoneUnlockResult.USER_REQUIRED), results)
+        assertEquals(listOf(WAKE_TIMEOUT), d.wakeStages)
+        assertEquals(0, d.revealCalls)
+        assertEquals(0, d.inputCalls)
+        assertEquals(1, d.kindCount("acquire"))
+        assertEquals(0, d.kindCount("renew"))
+        assertEquals(1, d.kindCount("release"))
+        assertEquals(0, d.kindCount("expire")) // the owned release beat the backstop
+        assertEquals(NO_WAKE_LEASE, d.heldWake)
+        assertTrue(secret.all { it == '\u0000' })
+        assertEquals(0, d.lockCalls)
+        assertEquals(PhoneRelockResult.ALREADY_LOCKED, x.lastRelockReceipt?.result)
     }
 }

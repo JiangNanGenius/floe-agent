@@ -15,6 +15,13 @@ class PhoneControlUnlockerTest {
      * Deterministic clock plus an Android-like async reveal: the gesture
      * callback lands on the queue and cannot be recalled, so fences, deadlines
      * and observed-state decisions are exercised exactly like the service host.
+     * Readiness is an actually modeled state, never an assumption:
+     * [revealReadiness] derives from the modeled power flag and the modeled
+     * trusted SystemUI window flag, exactly like the real driver's two-layer
+     * gate. These fixtures model a device that IS genuinely ready (the old
+     * reveal-on-timeout flows all ran on actually awake panels), so their
+     * original timings and assertions are preserved; the never-awake boundary
+     * is exercised in PhoneControlWakeReadinessTest.
      */
     private class Driver : PhoneUnlockDriver {
         private class Work(val at: Long, val order: Long, val action: () -> Unit) {
@@ -25,6 +32,8 @@ class PhoneControlUnlockerTest {
         override var locked = true
         override var now = 0L
         override var interactive = true
+        var systemUiWindow = true
+        val wakeStages = mutableListOf<String>()
         var inputCalls = 0
         var revealCalls = 0
         var lockCalls = 0
@@ -69,6 +78,13 @@ class PhoneControlUnlockerTest {
             heldWake = NO_WAKE_LEASE
         }
         override fun credentialVisible() = credentialShown
+        override fun revealReadiness(): PhoneRevealReadiness = when {
+            !interactive -> PhoneRevealReadiness.DISPLAY_IDLE
+            credentialShown -> PhoneRevealReadiness.CREDENTIAL_VISIBLE
+            systemUiWindow -> PhoneRevealReadiness.REVEAL_READY
+            else -> PhoneRevealReadiness.SYSTEM_UI_PENDING
+        }
+        override fun traceWakeStage(stage: String) { wakeStages += stage }
         override fun showCredential(onGestureResult: (Boolean) -> Unit): Boolean {
             revealCalls++
             if (!acceptReveal) return false

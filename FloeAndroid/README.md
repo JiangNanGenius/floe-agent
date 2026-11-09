@@ -12,11 +12,11 @@
 
 三星已通过明确的完整包入口从公开73在线升到main/runtime100，字节、原UID、5条任务和2个项目保持。回答后等待提示自动清除及真实终端输出已观察；自动解锁的新用例完成唤醒／滑动，但未识别凭据界面，未输入密码或通过计算／重锁，原记录保留。索尼具体启动原因及其余N01–N08事项继续推进。
 
-## Unreleased source — installed Linux recovery
+## Next source checkpoint — Android Alpha76
 
-A user-initiated recheck now rebinds the existing lanes when a live native generation exists but the shell/readiness lane is missing or stale, then measures prerequisites again. It never revives a stopped root, reinstalls Linux or fabricates readiness. Current-generation closed refusal stages survive the native invalidation summary; component, timeout and refused-handshake causes remain distinct. The real10-second future timeout and cancellation propagation are covered. Fifty-nine focused cases and actual Full/Play compilation passed. These repairs are not in the frozen Alpha75 APK, and the concrete Sony startup cause remains unverified.
+Alpha76/code102 combines installed Linux recovery and observed keyguard wake readiness. Recheck rebinds missing/stale lanes only for a live accepted native generation; closed startup causes distinguish component mismatch, connection timeout and handshake refusal. The single keyguard reveal requires actual interactive default-display power, STATE_ON and a trusted SystemUI window. A timeout never qualifies readiness; uncertain state ends with manual handling, without an extra gesture or credential attempt.
 
-未发布代码已修复已安装状态下“重新检查”的空操作，以及启动失败原因被统一状态覆盖的问题。只复用现有运行通路、代际及停止边界，不删除环境或用户数据；59项相关检查和Full／Play编译通过，索尼实机尚未验证。
+83项相关手机检查及10项受影响图形／协议检查通过，59项未改环境恢复证据按精确输入复用，Full／Play实际编译通过。公开75的原锁屏失败与本版源码修复分开记录；新APK、三星实测和索尼反馈仍分别验收。见[Alpha76准备记录](../docs/releases/ANDROID_ALPHA76_DELIVERY.md)。
 
 ## Previous delivery — Android Alpha73 (2026-11-10)
 

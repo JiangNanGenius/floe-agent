@@ -174,4 +174,49 @@ class PhoneControlCredentialSurfaceTest {
         assertFalse(acceptsNativeClickAction(false, true, true))
         assertFalse(acceptsNativeClickAction(true, false, false))
     }
+
+    // ------------------------------------------------------------------
+    // Pure pre-reveal readiness mapping (display-ready-next): an awake
+    // default display plus a live trusted SystemUI window is the only
+    // observation that may permit the one reveal; power decides first.
+    // ------------------------------------------------------------------
+
+    private fun obs(outcome: SurfaceStage) = SurfaceObservation(emptyList(), outcome)
+
+    @Test fun powerOffDecidesIdleBeforeAnySurfaceOutcome() {
+        // Even a fully resolved credential observation cannot make an
+        // un-interactive panel reveal-ready: uncertain/failed power reads
+        // arrive here as displayPowerOn=false and stay not-ready.
+        for (outcome in SurfaceStage.values()) {
+            assertEquals(PhoneRevealReadiness.DISPLAY_IDLE, mapRevealReadiness(false, obs(outcome)))
+        }
+    }
+
+    @Test fun liveTrustedWindowWithoutSurfaceIsTheOnlyRevealReadyOutcome() {
+        assertEquals(PhoneRevealReadiness.REVEAL_READY, mapRevealReadiness(true, obs(SurfaceStage.WINDOW_SURFACE_PENDING)))
+    }
+
+    @Test fun resolvedCredentialSurfacesMapToEnterNotSwipe() {
+        assertEquals(PhoneRevealReadiness.CREDENTIAL_VISIBLE,
+            mapRevealReadiness(true, obs(SurfaceStage.SURFACE_READY_ACTIVE_ROOT)))
+        assertEquals(PhoneRevealReadiness.CREDENTIAL_VISIBLE,
+            mapRevealReadiness(true, obs(SurfaceStage.SURFACE_READY_WINDOW)))
+    }
+
+    @Test fun untrustedOrAmbiguousWindowOutcomesNeverQualifyReveal() {
+        val notReady = listOf(
+            SurfaceStage.DISPLAY_IDLE, SurfaceStage.WINDOWS_EMPTY, SurfaceStage.WINDOWS_NO_CONTENT,
+            SurfaceStage.WINDOWS_FOREIGN, SurfaceStage.WINDOWS_STALE, SurfaceStage.SURFACE_AMBIGUOUS,
+            SurfaceStage.ACTIVE_ROOT_ABSENT, SurfaceStage.ACTIVE_ROOT_FOREIGN,
+            SurfaceStage.ACTIVE_ROOT_STALE, SurfaceStage.ACTIVE_ROOT_FOREIGN_DISPLAY,
+            SurfaceStage.ACTIVE_ROOT_NO_SURFACE,
+        )
+        for (outcome in notReady) {
+            val mapped = mapRevealReadiness(true, obs(outcome))
+            assertNotEquals(outcome.toString(), PhoneRevealReadiness.REVEAL_READY, mapped)
+            assertNotEquals(outcome.toString(), PhoneRevealReadiness.CREDENTIAL_VISIBLE, mapped)
+            if (outcome == SurfaceStage.DISPLAY_IDLE) assertEquals(PhoneRevealReadiness.DISPLAY_IDLE, mapped)
+            else assertEquals(outcome.toString(), PhoneRevealReadiness.SYSTEM_UI_PENDING, mapped)
+        }
+    }
 }

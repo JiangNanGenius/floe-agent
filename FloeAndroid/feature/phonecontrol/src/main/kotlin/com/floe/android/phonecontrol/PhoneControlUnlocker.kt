@@ -12,6 +12,20 @@ data class PhoneRelockReceipt(val owner: PhoneControlOwner, val result: PhoneRel
 /** Sentinel for "no wake lease owned"; generation counters inside a driver start above it. */
 internal const val NO_WAKE_LEASE = 0L
 
+/**
+ * The complete fixed closed set of wake-outcome labels. WAKE_READY_INITIAL
+ * proves the reveal was permitted by an actually observed power/window
+ * readiness at the first observation deadline; WAKE_READY_LATE proves the
+ * first deadline elapsed unready and genuine readiness appeared later inside
+ * the bounded window; WAKE_TIMEOUT proves the bounded window ended without
+ * any observed readiness, with zero reveal and zero credential input.
+ * Nothing else may ever reach the wake trace channel.
+ */
+internal const val WAKE_READY_INITIAL = "WAKE_READY_INITIAL"
+internal const val WAKE_READY_LATE = "WAKE_READY_LATE"
+internal const val WAKE_TIMEOUT = "WAKE_TIMEOUT"
+internal val WAKE_OUTCOME_STAGES = setOf(WAKE_READY_INITIAL, WAKE_READY_LATE, WAKE_TIMEOUT)
+
 /** Effects stay on the AccessibilityService main looper; tests use a deterministic clock. */
 internal interface PhoneUnlockDriver {
     val locked: Boolean
@@ -34,6 +48,23 @@ internal interface PhoneUnlockDriver {
     fun releaseWake(generation: Long)
     /** True only while the real native SystemUI keyguard observably shows a credential surface. */
     fun credentialVisible(): Boolean
+    /**
+     * The ONE pre-reveal readiness observation: actual default-display power
+     * state plus trusted native SystemUI window presence, decided by genuinely
+     * observed platform reads. Uncertain reads report a not-ready outcome.
+     * Only [PhoneRevealReadiness.REVEAL_READY] may permit the reveal swipe and
+     * only [PhoneRevealReadiness.CREDENTIAL_VISIBLE] may permit entering it;
+     * an accepted wake request or an elapsed deadline never qualifies.
+     */
+    fun revealReadiness(): PhoneRevealReadiness
+    /**
+     * Emits one fixed closed wake-outcome label ([PhoneControlUnlocker]
+     * publishes the exact set) as device evidence of which readiness branch
+     * actually ran. Hosts must ignore any string outside that set; nothing
+     * else — no ids, counts, text, credentials or exception payloads — is
+     * ever logged through this channel.
+     */
+    fun traceWakeStage(stage: String)
     /**
      * Returns dispatch acceptance only. [onGestureResult] reports the actual
      * gesture completion (true) or cancellation (false) exactly once; a lost
@@ -72,8 +103,16 @@ internal class PhoneControlUnlocker(
 
     private companion object {
         // Bounded observation windows. They only cap waiting; every success
-        // decision needs an actually observed keyguard/window state read.
+        // decision needs an actually observed keyguard/window state read, and
+        // no elapsed window ever dispatches the reveal by itself.
         const val WAKE_OBSERVE_MS = 400L
+        // Real devices legitimately exceed the first observation window while
+        // the panel finishes waking: past WAKE_OBSERVE_MS the reveal waits on
+        // genuinely observed power/window readiness inside this hard cap. The
+        // whole wake leg (400 + 3000 + poll granularity) stays inside the
+        // 4000ms attempt-lease backstop armed at acquisition, and the reveal
+        // leg re-arms it exactly as before.
+        const val REVEAL_READY_DEADLINE_MS = 3_000L
         const val GESTURE_CALLBACK_DEADLINE_MS = 2_000L
         const val SURFACE_SETTLE_MS = 1_500L
         const val UNLOCK_OBSERVE_MS = 2_500L
@@ -145,19 +184,63 @@ internal class PhoneControlUnlocker(
     /**
      * Bounded observation after wake: only an actually observed unlock or a
      * visibly displayed native credential surface advances the transaction.
+     * A merely elapsed window never advances to the reveal — it hands the
+     * decision to [observeRevealReady], which accepts genuinely observed
+     * power/window readiness only.
      */
     private fun observeWake(current: Attempt, deadline: Long) {
         if (attempt !== current) return
         if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
         else if (driver.credentialVisible()) submitCredential(current)
-        else if (driver.now >= deadline) reveal(current)
+        else if (driver.now >= deadline)
+            observeRevealReady(current, driver.now + REVEAL_READY_DEADLINE_MS, initialPass = true)
         else later(current, minOf(POLL_MS, deadline - driver.now)) { observeWake(current, deadline) }
     }
 
     /**
-     * The reveal is decided by the real gesture callback. The pre-armed
-     * deadline only bounds a lost callback; a dispatch return is never
-     * readiness, and the gesture is never re-dispatched.
+     * The ONE reveal is decided by actual readiness, never by the wake request,
+     * the lease or any deadline: only a [PhoneRevealReadiness.REVEAL_READY]
+     * observation (default display genuinely awake plus a live trusted SystemUI
+     * keyguard window) dispatches the single swipe, and a
+     * [PhoneRevealReadiness.CREDENTIAL_VISIBLE] observation enters the already
+     * resolved surface without swiping over it. Not-ready observations keep
+     * polling inside the overall bounded window; when readiness is never
+     * observed by its end the attempt ends as USER_REQUIRED with zero reveal
+     * and zero credential input, releasing the owned wake lease through the
+     * normal finish cleanup. The fixed closed stage proves which branch ran.
+     */
+    private fun observeRevealReady(current: Attempt, readyDeadline: Long, initialPass: Boolean) {
+        if (attempt !== current) return
+        if (!driver.locked) { finishAttempt(current, PhoneUnlockResult.UNLOCKED); return }
+        // An uncertain readiness read is a not-ready read: it never reveals.
+        val readiness = runCatching { driver.revealReadiness() }
+            .getOrDefault(PhoneRevealReadiness.DISPLAY_IDLE)
+        when (readiness) {
+            PhoneRevealReadiness.CREDENTIAL_VISIBLE -> {
+                driver.traceWakeStage(if (initialPass) WAKE_READY_INITIAL else WAKE_READY_LATE)
+                submitCredential(current)
+            }
+            PhoneRevealReadiness.REVEAL_READY -> {
+                driver.traceWakeStage(if (initialPass) WAKE_READY_INITIAL else WAKE_READY_LATE)
+                reveal(current)
+            }
+            PhoneRevealReadiness.DISPLAY_IDLE, PhoneRevealReadiness.SYSTEM_UI_PENDING -> {
+                if (driver.now >= readyDeadline) {
+                    driver.traceWakeStage(WAKE_TIMEOUT)
+                    finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+                } else later(current, minOf(POLL_MS, readyDeadline - driver.now)) {
+                    observeRevealReady(current, readyDeadline, initialPass = false)
+                }
+            }
+        }
+    }
+
+    /**
+     * Reached only after [observeRevealReady] genuinely observed awake
+     * power/window readiness. The reveal outcome itself is decided by the real
+     * gesture callback; the pre-armed deadline only bounds a lost callback, a
+     * dispatch return is never readiness, and the gesture is never
+     * re-dispatched.
      */
     private fun reveal(current: Attempt) {
         if (attempt !== current) return

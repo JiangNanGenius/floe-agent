@@ -928,3 +928,11 @@ Alpha75/code101已公开并通过七附件、来源和新旧客户端更新发�
 59项相关检查与Full／Play实际编译通过，尚未进入公开75，不宣称索尼恢复。后续APK须按同一来源构建并继续三星回归；索尼的具体触发条件以新版实际诊断为准。N01–N08继续，不重做183项全量审计。
 
 English: Public75 passed exact bytes/discovery and real Samsung74→75 delta OTA. Subsequent installed-runtime recovery repairs pass59 focused cases and Full/Play compilation, without changing native inputs or claiming Sony acceptance. They are a separate unreleased source checkpoint; the whole goal remains active.
+
+## 2026-11-10 Alpha76集中代码收口
+
+保留原N02／N05编号，合并已安装环境的重检／拒绝原因修复和真正醒屏就绪后才揭示锁屏的修复。83项手机检查及10项因运行通道修复受影响的图形／协议检查统一通过，59项未改恢复证据按输入一致性复用；Full／Play实际编译通过。App／运行组件／Office／CAD／对应源码统一准备为Alpha76/code102。
+
+原75锁屏用例34条最终记录和28条初始快照保留。Linux执行成功，可信SystemUI无凭据界面时返回手动处理；不将清理后的能力丢失当原根因，不重试旧任务。自己的任务、两份导出、临时凭据和授权已清，原5任务2项目保留并休眠。新包实测、索尼启动根因及其余功能继续，见[Alpha76准备记录](releases/ANDROID_ALPHA76_DELIVERY.md)。
+
+English: Alpha76 prepares the combined installed-runtime recovery and observed wake/window readiness fixes.93 fresh cases plus59 unchanged source-bound cases and Full/Play compilation passed. Prior75's native failure, original exports and restored device state are retained; APK, physical and public delivery remain distinct.

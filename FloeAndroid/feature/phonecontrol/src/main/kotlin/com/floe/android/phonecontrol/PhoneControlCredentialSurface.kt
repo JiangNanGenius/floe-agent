@@ -148,3 +148,47 @@ internal fun selectCredentialSurface(
  */
 internal fun acceptsNativeClickAction(enabled: Boolean, clickable: Boolean, offersClick: Boolean): Boolean =
     enabled && (clickable || offersClick)
+
+/**
+ * Closed outcomes of the ONE pre-reveal readiness observation: the actual
+ * default-display power state plus the trusted native SystemUI window presence
+ * that must be genuinely observed before the single reveal swipe may be
+ * dispatched. Like [SurfaceStage] these labels carry no identifiers, counts,
+ * text or content; they exist so a real run can prove which readiness layer
+ * decided. An uncertain read always lands on a not-ready outcome.
+ */
+internal enum class PhoneRevealReadiness {
+    /** A unique trusted credential surface resolved: enter it, never swipe over it. */
+    CREDENTIAL_VISIBLE,
+    /** The default display is genuinely on and interactive AND a live, trusted,
+     * default-display SystemUI window is reported while showing no credential
+     * surface yet. The only outcome on which the one reveal swipe legitimately acts. */
+    REVEAL_READY,
+    /** The actual default-display power state is not awake/interactive. */
+    DISPLAY_IDLE,
+    /** The display is awake but no trusted live SystemUI window is reported:
+     * empty, foreign, stale or content-less window sets, and ambiguous multiple
+     * credential surfaces all collapse here — nothing is swiped or typed blind. */
+    SYSTEM_UI_PENDING,
+}
+
+/**
+ * Pure mapping from one fresh power observation plus one fresh
+ * [selectCredentialSurface] observation to the single pre-reveal readiness
+ * outcome. Power decides first (never scan or swipe into a sleeping panel);
+ * an awake panel then decides strictly on the observed window outcome, so a
+ * deadline, an accepted wake request or a lease alone can never qualify.
+ */
+internal fun mapRevealReadiness(
+    displayPowerOn: Boolean,
+    observation: SurfaceObservation,
+): PhoneRevealReadiness {
+    if (!displayPowerOn) return PhoneRevealReadiness.DISPLAY_IDLE
+    return when (observation.outcome) {
+        SurfaceStage.DISPLAY_IDLE -> PhoneRevealReadiness.DISPLAY_IDLE
+        SurfaceStage.SURFACE_READY_ACTIVE_ROOT, SurfaceStage.SURFACE_READY_WINDOW ->
+            PhoneRevealReadiness.CREDENTIAL_VISIBLE
+        SurfaceStage.WINDOW_SURFACE_PENDING -> PhoneRevealReadiness.REVEAL_READY
+        else -> PhoneRevealReadiness.SYSTEM_UI_PENDING
+    }
+}

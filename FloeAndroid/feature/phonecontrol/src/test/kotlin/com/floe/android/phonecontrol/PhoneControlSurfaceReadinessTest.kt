@@ -14,7 +14,10 @@ import org.junit.Test
  * surface that becomes ready late inside the bounded observation must dispatch
  * at most once. The driver fake below models the new surface contract:
  * readiness may only appear through an actually observed surface flip, never
- * through gesture acceptance alone.
+ * through gesture acceptance alone. Post-reveal surface flips are scheduled as
+ * fake-queue callbacks on this fixture, exactly like the real window events, and
+ * the pre-reveal readiness layer is modeled by the same observable power/window
+ * state rather than assumed.
  */
 class PhoneControlSurfaceReadinessTest {
     private val owner = PhoneControlOwner(UUID(1, 1), UUID(2, 2))
@@ -29,6 +32,8 @@ class PhoneControlSurfaceReadinessTest {
         override var locked = true
         override var now = 0L
         override var interactive = true
+        var systemUiWindow = true
+        val wakeStages = mutableListOf<String>()
         var inputCalls = 0
         var revealCalls = 0
         var lockCalls = 0
@@ -72,6 +77,13 @@ class PhoneControlSurfaceReadinessTest {
             wakeReleases += 1
         }
         override fun credentialVisible() = credentialShown
+        override fun revealReadiness(): PhoneRevealReadiness = when {
+            !interactive -> PhoneRevealReadiness.DISPLAY_IDLE
+            credentialShown -> PhoneRevealReadiness.CREDENTIAL_VISIBLE
+            systemUiWindow -> PhoneRevealReadiness.REVEAL_READY
+            else -> PhoneRevealReadiness.SYSTEM_UI_PENDING
+        }
+        override fun traceWakeStage(stage: String) { wakeStages += stage }
         override fun showCredential(onGestureResult: (Boolean) -> Unit): Boolean {
             revealCalls++
             // The callback only reports the actual gesture result. Unlike the
