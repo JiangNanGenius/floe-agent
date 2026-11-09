@@ -252,6 +252,7 @@ class LinuxRootfsMaterializer(
     private fun copyLayer(source: Path, stage: Path, budget: CopyBudget,
                           cancelled: () -> Boolean, onCopyProgress: () -> Unit) {
         var operation = "walk"
+        var inputForDiagnostic: Path? = null
         try {
             Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
             private fun destination(path: Path): Path {
@@ -312,6 +313,7 @@ class LinuxRootfsMaterializer(
                             throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET)
                         }
                         operation = "open_input"
+                        inputForDiagnostic = file
                         FileChannel.open(file, READ, NOFOLLOW_LINKS).use { input ->
                             operation = "open_output"
                             FileChannel.open(out, CREATE_NEW, WRITE).use { output ->
@@ -383,7 +385,14 @@ class LinuxRootfsMaterializer(
             // One closed code for every raw copy-phase filesystem failure
             // (open/read/write/fsync/readdir); the original IOException stays
             // on the cause chain for debugger inspection only.
-            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io, operation)
+            // Only numeric inode facts from the exact source we tried to open;
+            // never retain its path in a log/receipt or infer a new read grant.
+            val inputAttributes = if (operation == "open_input") inputForDiagnostic?.let { path ->
+                runCatching { Files.readAttributes(path, "unix:mode,uid", NOFOLLOW_LINKS) }.getOrNull()
+            } else null
+            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io, operation,
+                (inputAttributes?.get("mode") as? Number)?.toInt()?.and(0xFFF),
+                (inputAttributes?.get("uid") as? Number)?.toInt()?.takeIf { it >= 0 })
         }
     }
 

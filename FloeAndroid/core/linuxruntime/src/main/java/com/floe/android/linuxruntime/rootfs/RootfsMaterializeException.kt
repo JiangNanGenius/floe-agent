@@ -34,12 +34,16 @@ class RootfsMaterializeException(
     val code: String,
     cause: Throwable? = null,
     val operation: String? = null,
+    val sourceMode: Int? = null,
+    val sourceOwnerUid: Int? = null,
 ) : IllegalStateException("Rootfs materialization refused: $code", cause) {
 
     init {
         require(code in CODES) { "Unknown rootfs materialization code" }
         require(operation == null || operation in setOf("walk", "remove", "mkdir", "stat", "symlink",
             "hardlink", "open_input", "open_output", "read", "write", "force_file", "mode", "timestamp", "force_dir"))
+        require(sourceMode == null || sourceMode in 0..0xFFF)
+        require(sourceOwnerUid == null || sourceOwnerUid >= 0)
     }
 
     companion object {

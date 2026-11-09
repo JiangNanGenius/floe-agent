@@ -118,6 +118,9 @@ class LinuxRootfsMaterializerRuntimeEntriesTest {
         }
         assertEquals(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, failure.code)
         assertEquals("open_input", failure.operation)
+        assertEquals(0, failure.sourceMode)
+        assertEquals((Files.getAttribute(base.resolve("etc/config"), "unix:uid") as Number).toInt(),
+            failure.sourceOwnerUid)
         // The original layer is untouched by a failed cold copy.
         assertFalse(Files.exists(child.resolve(".floe-linux-rootfs-v1")))
     }
