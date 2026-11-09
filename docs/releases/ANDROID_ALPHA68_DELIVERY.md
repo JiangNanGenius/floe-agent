@@ -43,3 +43,13 @@ Preparation: three skill contracts and 79 distinct filesystem, transaction, nest
 补充准备记录：37项签名选择、身份、组件安装和更新策略检查通过，Full／Play编译通过；原有v1控制列表断言遗漏已上线控制，已保留原失败并更新为精确24项列表。三星候选10已完成25,489项／993,861,620字节文件层准备，并在真实PTY执行printf得到输出。模型文件交付和最终包设备验证继续独立记录。
 
 Additional preparation: 37 signer, identity, component-install and update-policy cases passed, with Full/Play compilation. The stale v1 test omitted already-shipped controls; its original failure is retained and the exact24-operation assertion is updated. Samsung candidate10 completed the 25,489-entry, 993,861,620-byte layer and returned real printf output from its PTY. Model artifact delivery and the final APK device result remain separate.
+
+## 2026-11-09 delivery evidence / 交付补充
+
+[Alpha68公开预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.68)固定源`9f4f363270bdf7e5e0052b8db1a028f8855d3646`，Full APK摘要`c30d8095620c73591b7cbf9b2d858ad8e4474d80fd7b366483e2c1008c0bf42e`。七附件完整匿名读回、67→68实际增量重建、当前及保留Alpha65生产解析器的更新发现／已知问题展示通过，iOS Latest未改动。三个附件原直链504保留，使用同资产官方REST重定向验证完整字节。
+
+最终包三星真实Ark任务依次完成`skill.read`、两次`exec.shell`和`workspace.readFile`，工具回执均成功；新文件为16字节，点击结果直接进入App内全屏编辑器且内容正确。原Human策略保持，仅对本次两条已审阅命令分别授权。工程安装与OTA验收分开记录。索尼Android9尚未实机通过，不将此发行写成索尼故障已闭合。
+
+The immutable source and APK digest above bind the public intermediate release. All seven anonymous assets, actual67→68 reconstruction, and current/retained65 production discovery parsers passed; iOS Latest stayed unchanged. Three canonical-route504 failures remain recorded; the same public assets were verified through official REST redirects.
+
+On the final APK, the Samsung real Ark task read the guide, executed two shell commands, created the exact16-byte file, read it back and opened its result in the native full-screen editor. Existing Human approvals remained. ADB installation is separate from OTA acceptance. Sony Android9 remains unverified; this intermediate delivery does not close the whole N01–N08 goal.
