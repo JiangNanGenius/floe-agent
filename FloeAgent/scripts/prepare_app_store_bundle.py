@@ -106,6 +106,15 @@ REBUILT_TARGETS = {"shell": "shell.framework", "text": "text.framework"}
 REVIEWED_EMBEDDED_FRAMEWORKS = {
     "CPDFium.framework": "CPDFium",
     "FloeOfficeNative.framework": "FloeOfficeNative",
+    # Build326 exact framework review; unknown names still fail closed.
+    "Crypto.framework": None,
+    "FloeFieldsNative.framework": None,
+    "FloeLaTeXKit.framework": None,
+    "FloeMeshingNative.framework": None,
+    "FloeRapierNative.framework": None,
+    "FloeWasmRuntime.framework": "FloeWasmRuntime",
+    "SystemPackage_-32606F4011EB0AC2_PackageProduct.framework": "SystemPackage",
+    "ZIPFoundation_-14A6248D789D2CE9_PackageProduct.framework": "ZIPFoundation",
     # These engines link statically into the app; Xcode embeds codeless stubs.
     # The normal required-reason scan still rejects any later API use here.
     "FloeChemistryBridge.framework": None,
