@@ -387,7 +387,11 @@ private fun ConversationDestination(
             if (holder.snapshot.value?.selectedRunId != runID) {
                 holder.selectRun(runID)
             }
-            holder.retry()
+            if (holder.retry(runID) == com.floe.android.feature.conversation.ConversationFlowResult.Accepted) {
+                // Show the restored question or actual refusal on the task
+                // surface instead of leaving it behind this stale overlay.
+                continuitySheetVisible = false
+            }
         },
         onReviewQuestion = { requestID ->
             // Re-read the ORIGINAL question through the existing host

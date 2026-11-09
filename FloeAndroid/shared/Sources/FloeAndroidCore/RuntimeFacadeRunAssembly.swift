@@ -593,6 +593,7 @@ extension FacadeRunDomain {
             environmentID: resolvedExecutionTarget?.target.kind == .localLinux
                 ? resolvedExecutionTarget?.target.environmentID : environmentID)
         if !temporary, !isNotes {
+            configuration.userQuestionRecovery = UserQuestionHostAPI.shared.current(epoch: epoch)
             // Original persisted conversation/workspace ownership selects this
             // root. No App-root, first-project or temporary-directory fallback.
             // A Notes run is chat-only: it gets no Linux workspace root and no

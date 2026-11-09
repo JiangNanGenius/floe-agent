@@ -485,6 +485,9 @@ public actor FloeAgentRuntime {
         /// A closure (rather than stored state) keeps this durable truth in
         /// the persistence layer instead of a live in-memory shadow store.
         public var outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])?
+        /// The same generation's question store can reattach a pending ask
+        /// after process death without issuing a new question or tool action.
+        public var userQuestionRecovery: (any UserQuestionRuntimeRecovery)?
 
         public init(
             conversationID: UUID = UUID(),
@@ -521,7 +524,8 @@ public actor FloeAgentRuntime {
             environmentLifecycleWait: TimeInterval = 30,
             localLinuxGuestEnvironment: Bool = false,
             serviceStorePaths: [String: String] = [:],
-            outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil
+            outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil,
+            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -561,6 +565,7 @@ public actor FloeAgentRuntime {
             self.localLinuxGuestEnvironment = localLinuxGuestEnvironment
             self.serviceStorePaths = serviceStorePaths
             self.outstandingDependencies = outstandingDependencies
+            self.userQuestionRecovery = userQuestionRecovery
         }
     }
 
@@ -1057,6 +1062,9 @@ public actor FloeAgentRuntime {
         streamTask = nil
         // 2. Stop the in-flight tool cooperatively.
         cancellationToken.cancel()
+        // A restored question waits on its durable row, not the old process's
+        // cancellation token. Settle that exact run before draining the loop.
+        await configuration.userQuestionRecovery?.cancelPendingQuestions(runID: runID)
         // 3. Expire any pending approval and audit it. The escalation wait may
         // not have installed its continuation yet: the state publish can still
         // be awaiting its sink, or `policy.decide` can still be running. Close
@@ -1339,7 +1347,16 @@ public actor FloeAgentRuntime {
         for call in pendingToolCalls where restoredResultIDs.contains(call.id) {
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
-        repairInterruptedToolPairs()
+        // Recovery can park at an existing required question. Publish a live,
+        // cancellable state before that await; no provider request is sent.
+        let recoveryGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
+        await transition(to: .preparing(AgentState.PreparingInfo(
+            goal: recoveryGoal, resumedFromCheckpoint: true)))
+        await repairInterruptedToolPairs()
+        if cancellationToken.isCancelled || Task.isCancelled {
+            await quiesceCancellingRun()
+            return
+        }
         for call in pendingToolCalls {
             if let result = pendingToolResults.first(where: { $0.callID == call.id }) {
                 activateReadTools(toolCall: call, result: result)
@@ -1373,7 +1390,7 @@ public actor FloeAgentRuntime {
     /// was dispatched but before its result was committed. Pair that orphaned
     /// call with an explicit unknown-outcome result so recovery is valid and
     /// the model verifies remote state instead of blindly repeating a write.
-    private func repairInterruptedToolPairs() {
+    private func repairInterruptedToolPairs() async {
         var pairedIDs = Set(pendingToolResults.map(\.callID))
         for call in pendingToolCalls where !pairedIDs.contains(call.id) {
             let lifecycle = toolLifecycleByCallID[call.id]
@@ -1394,6 +1411,22 @@ public actor FloeAgentRuntime {
             }
             let result: ToolResult
             var outcomeUnknown = false
+            if call.toolName == UserAskTool.name,
+               let recovery = configuration.userQuestionRecovery,
+               let restored = await recovery.recoverInterruptedQuestion(
+                   runID: runID, conversationID: configuration.conversationID,
+                   call: call) {
+                // The persisted request/answer is authoritative. This never
+                // invokes the tool again and never turns an answer into a grant.
+                pendingToolResults.append(restored)
+                pairedIDs.insert(call.id)
+                executionLedger.record(call: call, result: restored,
+                    isSideEffecting: false, outcomeUnknown: false,
+                    outcomeUnknownReason: .interruptedDispatch)
+                setToolLifecycle(call: call, phase: .resultCommitted)
+                await emit(.toolResult(restored))
+                continue
+            }
             if let recovered = executionLedger.recoveredResult(
                 for: call,
                 isSideEffecting: isSideEffecting
@@ -1431,6 +1464,10 @@ public actor FloeAgentRuntime {
                 outcomeUnknownReason: .interruptedDispatch
             )
             setToolLifecycle(call: call, phase: .resultCommitted)
+            // Recovery outcomes belong in the durable task timeline as well
+            // as the provider pair. Otherwise a finished run leaves its old
+            // tool card permanently pending and exports omit the refusal.
+            await emit(.toolResult(result))
         }
         // Provider protocols require results in the same order as their
         // assistant tool calls. Older checkpoints may have persisted a

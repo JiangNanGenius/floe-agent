@@ -27,3 +27,12 @@ Preparation: Alpha69/code95 and the matching Office source offer are selected. F
 源码检查补充：9项当前宿主检查有通过回执，保留此前迁移目录误删及一次指南准备拒绝的原始失败。后者在独立和批次诊断未再现，原因尚未确立，不按无害销账；Android原生对象和设备结果继续单列。
 
 Source qualification: the current nine host cases have passing receipts. The original migration-deletion failure and one unclassified creator-setup refusal remain recorded. Later isolated and batch diagnostics did not reproduce that refusal; its cause is not established. Android production-object and App evidence remain separate.
+
+
+## 实际交付补记 / Delivery read-back
+
+固定源码`bd52f3cf1e19d2ec42d0896cc0c7e22cb6ee364c`的七附件公开完整字节、68→69真实补丁重建及当前／保留Alpha65实际生产更新解析器读回通过，iOS Latest保留。三星经App明确完整下载、系统主包及运行环境确认后安装code95，两包摘要、原UID、5条任务及2个项目保持；没有ADB覆盖或数据清除。
+
+新Ark任务实际创建指南、读取A、更新B；在持久提问处结束进程并继续后，原`user.ask`被合成为结果未知，后续读取未执行。原失败已导出，公开说明更正，冻结标签／附件未改。此用例不计为进程恢复或重启后的指南隔离通过。后续70源修复分开实施，不改写69的历史结果。
+
+All seven public artifacts, actual68→69 reconstruction and current/retained65 production update parsers were verified.Samsung completed the real full-package OTA for App/runtime95 with exact installed bytes,identities and original data retained.A new guide create/readA/updateB sequence succeeded; process death during its required question then exposed an unknown-outcome recovery failure.No subsequent guide read ran.The original failure remains preserved and public known issues were amended without changing the tag or artifacts.Full-App recovery and post-restart isolation were not accepted.

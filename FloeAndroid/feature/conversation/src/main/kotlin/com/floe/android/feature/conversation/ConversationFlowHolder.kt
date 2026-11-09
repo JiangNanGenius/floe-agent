@@ -1302,11 +1302,17 @@ class ConversationFlowHolder(
 
     /** ⇄ retry(): resume the durable selected run without duplicating its
      * user message; job-parked runs are never resumed by Continue. */
-    fun retry(): ConversationFlowResult {
+    fun retry(): ConversationFlowResult = retry(null)
+
+    fun retry(runId: String?): ConversationFlowResult {
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
-        if (state.selectedRunWaitingForJobs) return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
-        val runId = state.selectedRunId ?: return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
-        val started = host.retryRun(session, runId)
+        val targetRunId = runId ?: state.selectedRunId
+            ?: return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        if (targetRunId == state.selectedRunId && state.selectedRunWaitingForJobs)
+            return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        // A durable wait may belong to another run. Selection is reactive;
+        // never send Continue to the old snapshot while it catches up.
+        val started = host.retryRun(session, targetRunId)
         return if (started) { actionError = null; ConversationFlowResult.Accepted }
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
     }

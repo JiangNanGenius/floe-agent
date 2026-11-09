@@ -6,6 +6,18 @@ import org.junit.Test
 
 class ConversationRunActivityTest {
     @Test
+    fun durableWaitContinueUsesItsExactRunWhileSelectionSnapshotStillShowsTheOldRun() {
+        val host = RecordingHost()
+        val holder = ConversationFlowHolder(host, "recovery")
+        holder.applyHostSnapshot(threadState(holder.session, selectedRunId = "old-run"))
+        holder.selectRun("waiting-run")
+        assertEquals("old-run", holder.snapshot.value!!.selectedRunId)
+        assertEquals(ConversationFlowResult.Accepted, holder.retry("waiting-run"))
+        assertEquals(listOf(holder.session, "waiting-run"), host.lastArgs("retryRun"))
+        assertEquals(1, host.count("retryRun"))
+    }
+
+    @Test
     fun backgroundOwnerIsNotifiedFromCanonicalStateWithoutAViewOrHistoryRefresh() {
         lateinit var holder: ConversationFlowHolder
         val seen = mutableListOf<Pair<Boolean, String?>>()

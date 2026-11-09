@@ -157,7 +157,9 @@ internal object DeviceAccessToolCatalog {
 
     private fun phoneAct(): JSONObject = tool(
         name = PHONE_ACT,
-        description = "Act on one node of the current phone observation. " +
+        description = "Launch an authorized app with action=launch and packageName, omitting " +
+            "observationId so the existing launch path obtains current navigation state after approval. " +
+            "For other actions, act on one node of the current phone observation. " +
             "Supported actions: click, setText, scroll, swipe, back, home, " +
             "launch. The action is dispatched once, then re-observed; framework " +
             "acceptance is not reported as semantic success. A node ref from an " +
