@@ -365,4 +365,6 @@ data class PhoneControlStatus(
     val fenceGeneration: Long,
     val pageGeneration: Long,
     val screenshotSupport: PhoneControlScreenshotSupport,
+    val automationFinishing: Boolean = false,
+    val relockReceipt: PhoneRelockReceipt? = null,
 )

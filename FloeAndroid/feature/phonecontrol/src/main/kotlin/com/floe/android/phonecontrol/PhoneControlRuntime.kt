@@ -81,6 +81,8 @@ internal object PhoneControlRuntime {
             fenceGeneration = state?.fenceGeneration ?: lastFenceGeneration,
             pageGeneration = state?.pageGeneration ?: lastPageGeneration,
             screenshotSupport = PhoneControlPolicy.screenshotSupport(Build.VERSION.SDK_INT),
+            automationFinishing = session?.automationFinishing == true,
+            relockReceipt = session?.relockReceipt,
         )
     }
 

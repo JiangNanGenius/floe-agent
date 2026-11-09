@@ -4,6 +4,7 @@ package com.floe.android.host.deviceaccess
 import android.app.Activity
 import android.app.KeyguardManager
 import com.floe.android.phonecontrol.PhoneUnlockResult
+import com.floe.android.phonecontrol.PhoneRelockResult
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import android.app.PendingIntent
@@ -98,9 +99,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /**
@@ -399,7 +402,13 @@ internal class DeviceAccessHost(
         statusJobs += scope.launch {
             PhoneControlModule.status.collect { status ->
                 val tornDownBefore = phoneServiceTornDown(phoneStatus)
+                val previousRelock = phoneStatus.relockReceipt
                 phoneStatus = status
+                if (status.relockReceipt != previousRelock &&
+                    status.relockReceipt?.result == PhoneRelockResult.USER_REQUIRED) {
+                    error = DeviceAccessUiError(context.getString(R.string.phone_automation_relock_failed),
+                        "phone_relock_unconfirmed")
+                }
                 // Actual Accessibility/driver teardown revokes the RAM-only
                 // screen consent. A user Stop/Takeover is cleared by its own
                 // action; the transient blockers emitted while explicitly
@@ -2642,6 +2651,14 @@ internal class DeviceAccessHost(
         if (!PlatformToolsNativeLive.isLive(call.claim) || PlatformToolsNativeLive.shouldStop(call.claim))
             return@withLock PlatformToolOutcome.Failure("cancelled")
         if (settings.allowedPackages.isEmpty() || !phoneServiceUsable()) return@withLock null
+        if (phoneStatus.automationFinishing) {
+            val settled = withTimeoutOrNull(2_500) {
+                PhoneControlModule.status.first { !it.automationFinishing }
+            } ?: return@withLock PlatformToolOutcome.Failure("phone_finishing")
+            phoneStatus = settled
+            if (!PlatformToolsNativeLive.isLive(call.claim) || PlatformToolsNativeLive.shouldStop(call.claim))
+                return@withLock PlatformToolOutcome.Failure("cancelled")
+        }
         if (armedOwner == owner && phoneStatus.activeOwner == owner) return@withLock null
         if (!settings.automaticPhoneControl && explicitResumeOwner != owner) return@withLock null
         if (phoneStatus.activeOwner != null && phoneStatus.activeOwner != owner)

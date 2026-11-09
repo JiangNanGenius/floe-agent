@@ -2,168 +2,184 @@
 package com.floe.android.phonecontrol
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
-import android.app.KeyguardManager
-import android.content.Context
-import android.graphics.Path
-import android.os.Bundle
 import android.os.Handler
-import android.os.PowerManager
-import android.os.SystemClock
-import android.view.accessibility.AccessibilityNodeInfo
 
 /** Host-only result. No lock-screen nodes or credentials enter model observations. */
 enum class PhoneUnlockResult { ALREADY_UNLOCKED, UNLOCKED, USER_REQUIRED, CANCELLED, FAILED }
+enum class PhoneRelockResult { LOCKED, ALREADY_LOCKED, USER_TAKEN_OVER, USER_REQUIRED }
+data class PhoneRelockReceipt(val owner: PhoneControlOwner, val result: PhoneRelockResult)
 
-/** One bounded attempt per owner, including cancellation and uncertain outcomes. */
+/** Effects stay on the AccessibilityService main looper; tests use a deterministic clock. */
+internal interface PhoneUnlockDriver {
+    val locked: Boolean
+    val now: Long
+    fun after(delay: Long, action: () -> Unit): () -> Unit
+    fun suppressInput(until: Long)
+    fun wake()
+    fun showCredential(): Boolean
+    fun enterCredential(secret: CharArray): Boolean
+    fun requestLock(): Boolean
+}
+
+/** One bounded attempt and an observed, exact-owner cleanup; never adopts a prior process lease. */
 internal class PhoneControlUnlocker(
-    private val service: AccessibilityService,
-    private val handler: Handler,
-    private val suppressGeneratedEvents: (Long) -> Unit,
+    private val driver: PhoneUnlockDriver,
+    private val stateChanged: () -> Unit = {},
 ) {
-    private val keyguard = service.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-    private val power = service.getSystemService(Context.POWER_SERVICE) as PowerManager
+    constructor(service: AccessibilityService, handler: Handler,
+        suppressGeneratedEvents: (Long) -> Unit, stateChanged: () -> Unit = {}) :
+        this(AndroidPhoneUnlockDriver(service, handler, suppressGeneratedEvents), stateChanged)
+
+    private class Attempt(val owner: PhoneControlOwner, val token: String, val credential: CharArray,
+        val current: () -> Boolean, val complete: (PhoneUnlockResult) -> Unit) {
+        var effectIssued = false
+        var timer: (() -> Unit)? = null
+    }
+    private class Settlement(val owner: PhoneControlOwner, val deadline: Long, val mayComplete: Boolean) {
+        var lockRequested = false
+        var timer: (() -> Unit)? = null
+    }
     private val attempted = LinkedHashSet<PhoneControlOwner>()
+    private var attempt: Attempt? = null
     private var unlockedFor: PhoneControlOwner? = null
-    private var pending: Runnable? = null
-    private var abort: (() -> Unit)? = null
-    private var operationToken: String? = null
+    private var settlement: Settlement? = null
+    val isSettling: Boolean get() = settlement != null
+    var lastRelockReceipt: PhoneRelockReceipt? = null
+        private set
 
     fun userInteraction() {
-        // A human takes ownership immediately; task completion must not lock them out.
+        val owner = attempt?.owner ?: settlement?.owner ?: unlockedFor
         unlockedFor = null
-        abort?.invoke()
+        settlement?.timer?.invoke()
+        settlement = null
+        attempt?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED, human = true) }
+        if (owner != null) report(owner, PhoneRelockResult.USER_TAKEN_OVER)
     }
 
-    fun unlock(
-        owner: PhoneControlOwner,
-        token: String,
-        credential: CharArray,
-        isCurrent: () -> Boolean,
-        complete: (PhoneUnlockResult) -> Unit,
-    ) {
-        if (abort != null || !isCurrent()) {
-            credential.fill('\u0000')
-            complete(PhoneUnlockResult.CANCELLED)
-            return
+    fun unlock(owner: PhoneControlOwner, token: String, credential: CharArray,
+        isCurrent: () -> Boolean, complete: (PhoneUnlockResult) -> Unit) {
+        if (attempt != null || settlement != null || !runCatching(isCurrent).getOrDefault(false) ||
+            (unlockedFor != null && unlockedFor != owner)) {
+            credential.fill('\u0000'); complete(PhoneUnlockResult.CANCELLED); return
         }
-        if (!keyguard.isKeyguardLocked) {
-            credential.fill('\u0000')
-            complete(PhoneUnlockResult.ALREADY_UNLOCKED)
-            return
+        val locked = runCatching { driver.locked }.getOrNull()
+        if (locked == null) {
+            credential.fill('\u0000'); complete(PhoneUnlockResult.FAILED); return
+        }
+        if (!locked) {
+            credential.fill('\u0000'); complete(PhoneUnlockResult.ALREADY_UNLOCKED); return
         }
         if (credential.isEmpty() || credential.size > 64 || !attempted.add(owner)) {
-            credential.fill('\u0000')
-            complete(PhoneUnlockResult.USER_REQUIRED)
-            return
+            credential.fill('\u0000'); complete(PhoneUnlockResult.USER_REQUIRED); return
         }
         while (attempted.size > 64) attempted.remove(attempted.first())
-        operationToken = token
-        var finished = false
-        fun finish(result: PhoneUnlockResult) {
-            if (finished) return
-            finished = true
-            pending?.let { handler.removeCallbacks(it) }
-            pending = null
-            abort = null
-            operationToken = null
-            suppressGeneratedEvents(SystemClock.elapsedRealtime() + 150)
-            credential.fill('\u0000')
-            if (result == PhoneUnlockResult.UNLOCKED) unlockedFor = owner
-            complete(result)
-        }
-        abort = { finish(PhoneUnlockResult.CANCELLED) }
-        fun later(delay: Long, action: () -> Unit) {
-            val work = Runnable {
-                pending = null
-                if (finished) return@Runnable
-                if (!isCurrent()) finish(PhoneUnlockResult.CANCELLED) else action()
-            }
-            pending = work
-            handler.postDelayed(work, delay)
-        }
+        val current = Attempt(owner, token, credential, isCurrent, complete)
+        attempt = current
         try {
-            suppressGeneratedEvents(SystemClock.elapsedRealtime() + 6_000)
-            @Suppress("DEPRECATION")
-            power.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                "Floe:TaskUnlock").apply { acquire(4_000); release() }
-            later(400) {
-                if (!keyguard.isKeyguardLocked) {
-                    finish(PhoneUnlockResult.UNLOCKED)
-                } else {
-                    val metrics = service.resources.displayMetrics
-                    val path = Path().apply {
-                        moveTo(metrics.widthPixels * .5f, metrics.heightPixels * .82f)
-                        lineTo(metrics.widthPixels * .5f, metrics.heightPixels * .25f)
-                    }
-                    val gesture = GestureDescription.Builder()
-                        .addStroke(GestureDescription.StrokeDescription(path, 0, 300)).build()
-                    if (!service.dispatchGesture(gesture, null, handler)) finish(PhoneUnlockResult.USER_REQUIRED)
-                    else later(700) {
-                        if (!keyguard.isKeyguardLocked) finish(PhoneUnlockResult.UNLOCKED)
-                        else if (!enterCredential(credential)) finish(PhoneUnlockResult.USER_REQUIRED)
-                        else later(1_200) {
-                            finish(if (!keyguard.isKeyguardLocked) PhoneUnlockResult.UNLOCKED
-                                else PhoneUnlockResult.USER_REQUIRED)
-                        }
+            driver.suppressInput(driver.now + 6_000)
+            // Wake may itself complete a trusted system unlock. Any uncertain
+            // cancellation after an effect therefore needs observed settlement.
+            current.effectIssued = true
+            driver.wake()
+            later(current, 400) {
+                if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
+                else if (!driver.showCredential()) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+                else later(current, 700) {
+                    if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
+                    else if (!driver.enterCredential(current.credential)) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+                    else later(current, 1_200) {
+                        finishAttempt(current, if (!driver.locked) PhoneUnlockResult.UNLOCKED
+                            else PhoneUnlockResult.USER_REQUIRED)
                     }
                 }
             }
-        } catch (_: Exception) {
-            finish(PhoneUnlockResult.FAILED)
+        } catch (_: Exception) { finishAttempt(current, PhoneUnlockResult.FAILED) }
+    }
+
+    private fun later(current: Attempt, delay: Long, action: () -> Unit) {
+        current.timer = driver.after(delay) {
+            current.timer = null
+            if (attempt !== current) return@after
+            if (!runCatching(current.current).getOrDefault(false)) finishAttempt(current, PhoneUnlockResult.CANCELLED)
+            else try { action() } catch (_: Exception) { finishAttempt(current, PhoneUnlockResult.FAILED) }
         }
     }
 
-    private fun enterCredential(secret: CharArray): Boolean {
-        val root = service.rootInActiveWindow ?: return false
-        try {
-            if (root.packageName?.toString() != "com.android.systemui") return false
-            val fields = listOf("passwordEntry", "pinEntry", "password_entry", "pin_entry")
-            for (id in fields) {
-                val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
-                try {
-                    val field = nodes.firstOrNull { it.isEditable && it.isPassword }
-                    if (field != null && field.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }) {
-                        val value = String(secret)
-                        val accepted = field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
-                            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value)
-                        })
-                        if (!accepted) return false
-                        return click(root, listOf("key_enter", "key_enter_text", "password_confirm", "ok"))
-                    }
-                } finally { nodes.forEach { @Suppress("DEPRECATION") it.recycle() } }
-            }
-            if (!secret.all { it in '0'..'9' }) return false
-            for (digit in secret) {
-                if (!click(root, listOf("key$digit", "key_$digit"))) return false
-            }
-            // Some configured PIN screens submit the final digit themselves.
-            click(root, listOf("key_enter", "key_enter_text", "ok"))
-            return true
-        } finally { @Suppress("DEPRECATION") root.recycle() }
-    }
-
-    private fun click(root: AccessibilityNodeInfo, ids: List<String>): Boolean {
-        for (id in ids) {
-            val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
-            try {
-                for (node in nodes) if (node.isEnabled && node.isClickable &&
-                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-            } finally { nodes.forEach { @Suppress("DEPRECATION") it.recycle() } }
+    private fun finishAttempt(current: Attempt, result: PhoneUnlockResult, human: Boolean = false) {
+        if (attempt !== current) return
+        attempt = null
+        current.timer?.invoke(); current.timer = null
+        current.credential.fill('\u0000')
+        driver.suppressInput(driver.now + 150)
+        val actualUnlocked = runCatching { !driver.locked }.getOrDefault(false)
+        if (!human && actualUnlocked && current.effectIssued) unlockedFor = current.owner
+        val actualResult = if (result == PhoneUnlockResult.UNLOCKED && !actualUnlocked)
+            PhoneUnlockResult.USER_REQUIRED else result
+        if (!human && actualResult != PhoneUnlockResult.UNLOCKED && current.effectIssued) {
+            // An in-flight system transition may finish after Cancel. No more
+            // credential input is permitted; only observe and clean up our lease.
+            settle(current.owner, mayComplete = true)
         }
-        return false
+        current.complete(actualResult)
     }
 
     fun finish(owner: PhoneControlOwner) {
-        if (unlockedFor != owner) return
-        unlockedFor = null
-        if (!keyguard.isKeyguardLocked) service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)
+        val pending = attempt
+        if (pending?.owner == owner) {
+            finishAttempt(pending, PhoneUnlockResult.CANCELLED)
+        } else if (settlement?.owner == owner) {
+            return
+        } else if (unlockedFor == owner) {
+            settle(owner, mayComplete = false)
+        }
     }
 
-    fun cancel(token: String) { if (operationToken == token) abort?.invoke() }
+    private fun settle(owner: PhoneControlOwner, mayComplete: Boolean) {
+        if (settlement != null) return
+        val value = Settlement(owner, driver.now + 1_800, mayComplete)
+        settlement = value
+        stateChanged()
+        checkSettlement(value)
+    }
+
+    private fun checkSettlement(value: Settlement) {
+        if (settlement !== value) return
+        val locked = runCatching { driver.locked }.getOrNull()
+        if (locked == null) { endSettlement(value, PhoneRelockResult.USER_REQUIRED); return }
+        if (locked && value.lockRequested) { endSettlement(value, PhoneRelockResult.LOCKED); return }
+        if (locked && (!value.mayComplete || driver.now >= value.deadline)) {
+            endSettlement(value, PhoneRelockResult.ALREADY_LOCKED); return
+        }
+        if (!locked && !value.lockRequested) {
+            value.lockRequested = true
+            val accepted = runCatching { driver.requestLock() }.getOrDefault(false)
+            if (!accepted) { endSettlement(value, PhoneRelockResult.USER_REQUIRED); return }
+            // A true dispatch return is not proof of actual keyguard state.
+        }
+        if (driver.now >= value.deadline) { endSettlement(value, PhoneRelockResult.USER_REQUIRED); return }
+        try { value.timer = driver.after(100) { value.timer = null; checkSettlement(value) } }
+        catch (_: Exception) { endSettlement(value, PhoneRelockResult.USER_REQUIRED) }
+    }
+
+    private fun endSettlement(value: Settlement, result: PhoneRelockResult) {
+        if (settlement !== value) return
+        value.timer?.invoke()
+        settlement = null
+        if (unlockedFor == value.owner) unlockedFor = null
+        report(value.owner, result)
+    }
+
+    private fun report(owner: PhoneControlOwner, result: PhoneRelockResult) {
+        lastRelockReceipt = PhoneRelockReceipt(owner, result)
+        stateChanged()
+    }
+
+    fun cancel(token: String) {
+        attempt?.takeIf { it.token == token }?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED) }
+    }
 
     fun close() {
-        abort?.invoke()
+        attempt?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED) }
         unlockedFor?.let(::finish)
     }
 }

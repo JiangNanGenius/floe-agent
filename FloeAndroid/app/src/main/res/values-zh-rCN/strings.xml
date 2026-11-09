@@ -681,4 +681,5 @@
     <string name="workspace_document_cad_more_actions">更多操作</string>
     <string name="preview_components_download_cache">组件下载缓存</string>
     <string name="preview_components_clearing">正在清理下载缓存…</string>
+    <string name="phone_automation_relock_failed">未能确认任务结束后已锁屏，请手动锁定手机。</string>
 </resources>

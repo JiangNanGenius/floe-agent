@@ -59,9 +59,11 @@ internal class PhoneControlSession(
         private set
     @Volatile var lastUserInteractionWallMillis: Long = System.currentTimeMillis()
         private set
-    private val unlocker = PhoneControlUnlocker(service, mainHandler) { until ->
-        suppressUserTouchUntil = until
-    }
+    private val unlocker = PhoneControlUnlocker(service, mainHandler,
+        suppressGeneratedEvents = { until -> suppressUserTouchUntil = until },
+        stateChanged = { PhoneControlRuntime.publish() })
+    val automationFinishing: Boolean get() = unlocker.isSettling
+    val relockReceipt: PhoneRelockReceipt? get() = unlocker.lastRelockReceipt
 
     fun unlockForTask(principal: PhoneControlPrincipal, operationToken: String, credential: CharArray,
         isCurrent: () -> Boolean, complete: (PhoneUnlockResult) -> Unit) {
@@ -73,7 +75,13 @@ internal class PhoneControlSession(
         }
     }
 
-    fun finishAutomation(owner: PhoneControlOwner) { unlocker.finish(owner) }
+    fun finishAutomation(owner: PhoneControlOwner) {
+        unlocker.finish(owner)
+        // Ending a task must also release its actual service fence. Clearing
+        // only the host's armedOwner leaves the next task permanently busy.
+        // release is exact-owner guarded and invalidates old observations.
+        release(owner)
+    }
 
     private data class ObservationRecord(
         val observation: PhoneControlObservation,
@@ -142,7 +150,7 @@ internal class PhoneControlSession(
 
     fun arm(principal: PhoneControlPrincipal): PhoneControlResult<PhoneControlStatus> {
         if (closed) return PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED)
-        if (inFlightId != null) {
+        if (inFlightId != null || unlocker.isSettling) {
             return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
         }
         lockedDenial()?.let { return it }
