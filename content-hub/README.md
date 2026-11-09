@@ -36,18 +36,34 @@ deterministically; the bundled, canonical and content-package catalogs must agre
 `--check-offline` checks their local consistency and explicitly does not verify the
 upstream network snapshot.
 
-The `floe.providers.compatibility` candidate adds a separate Google Gemini conversation
-entry using the official compatible endpoint. The native image entry keeps its identity.
+`floe.providers.compatibility` 1.1.6 is published in the signed feed for App 1.7.69
+and later. It adds a separate Google Gemini conversation entry using the official
+compatible endpoint. The native image entry keeps its identity.
 Reviewed chat candidates exclude deprecated and specialized products; saved models and
 manual configuration remain available. Its source, immutable archive and signed feed are
-checked separately, so staged content is not reported as published.
+checked separately. Refreshing the provider catalog installs this online update;
+it does not require a new App build.
 
 `providers/curated-overrides.json` 单独记录经核对的官方对话、套餐及媒体模型资料，
 与固定的 models.dev 基线按确定规则合并；内置、规范目录和内容包正文保持一致。
 `--check-offline` 只检查本地一致性，不代替上游原始快照校验。
-兼容目录候选新增独立的 Google Gemini 对话条目，采用官方兼容接口；原生图片条目保持
+兼容目录 1.1.6 已纳入签名目录，支持 App 1.7.69 及以后版本。它新增独立的 Google Gemini
+对话条目，采用官方兼容接口；原生图片条目保持
 原有身份。新建聊天候选不包含已弃用及专用产品，已保存模型与手动配置继续可用。
-源文件、不可变归档和签名目录分别校验，待发布内容不视为已上线。
+源文件、不可变归档和签名目录分别校验。在 App 内刷新模型目录即可安装，无需另发 App。
+
+The [scoped publication](https://github.com/JiangNanGenius/floe-agent/actions/runs/42583183679)
+committed the signed index and passed the independent package boundary check.
+Its initial post-promotion test exposed a fixture tied to the old version; the
+corrected test and signed-feed checks passed in the
+[subsequent verification](https://github.com/JiangNanGenius/floe-agent/actions/runs/42583757128).
+The actual live index, signature and all six published archives were independently
+downloaded and verified. Other signed entries, including search 1.1.0, are unchanged.
+
+[单包发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/42583183679)已提交签名索引，
+并通过独立的包范围检查。最初的发布后测试使用了固定旧版本夹具；修正后，
+[后续验证](https://github.com/JiangNanGenius/floe-agent/actions/runs/42583757128)通过。
+线上索引、签名及六个已发布归档均已实际下载校验，搜索 1.1.0 等其余签名条目保持不变。
 
 To sign only one existing package, use `python3 content-hub/build.py --sign
 --only-package floe.providers.compatibility`. The existing signed feed and archives
