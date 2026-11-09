@@ -144,7 +144,9 @@ internal object DeviceAccessToolCatalog {
             "Returns the observation id, page identity and a bounded list of " +
             "actionable node refs (clickable/editable/scrollable). Password " +
             "fields, secure windows and the lock screen are never read. A " +
-            "fresh observation invalidates older refs.",
+            "fresh observation invalidates older refs. Pass the returned " +
+            "observation= id as observationId on the next phone.act: every " +
+            "phone.act action except launch requires it.",
         schema = schema(
             properties = JSONObject()
                 .put("includeInvisible", bool("Include nodes that are not visible.")),
@@ -157,9 +159,13 @@ internal object DeviceAccessToolCatalog {
 
     private fun phoneAct(): JSONObject = tool(
         name = PHONE_ACT,
-        description = "Launch an authorized app with action=launch and packageName, omitting " +
-            "observationId so the existing launch path obtains current navigation state after approval. " +
-            "For other actions, act on one node of the current phone observation. " +
+        description = "Act on the latest phone observation: every action except launch requires " +
+            "observationId, the id from the observation= line of the newest phone.observe result in " +
+            "this run; after an approval wait, a takeover or any screen change, observe again first. " +
+            "Only action=launch may omit observationId: launch an authorized app with action=launch " +
+            "and packageName, and the existing launch path obtains current navigation state after " +
+            "approval. If a call fails with phone_observation_required, call phone.observe again and " +
+            "act on its new id; never invent or reuse an older id. " +
             "Supported actions: click, setText, scroll, swipe, back, home, " +
             "launch. The action is dispatched once, then re-observed; framework " +
             "acceptance is not reported as semantic success. A node ref from an " +
@@ -177,7 +183,7 @@ internal object DeviceAccessToolCatalog {
             "visible. Never search the screen, files or other apps for a password.",
         schema = schema(
             properties = JSONObject()
-                .put("observationId", string("Observation id returned by phone.observe; optional only for launching an authorized app.", 1, 64))
+                .put("observationId", string("Required for every action except launch: the id from the latest phone.observe observation= line. Omit only for action=launch; back and home also require it.", 1, 64))
                 .put("action", enum(
                     "Action to perform.",
                     listOf("click", "setText", "scroll", "swipe", "back", "home", "launch"),

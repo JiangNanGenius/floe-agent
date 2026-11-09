@@ -29,8 +29,48 @@ import org.json.JSONObject
  *    persistence and non-replayability are enforced upstream by the shared
  *    Swift ToolArgumentSanitizer, because persistence happens before the
  *    host ever learns the target field's protection.
+ *
+ * Observation rule (enforced by [request], NOT by the advertised schema):
+ *  - every action except `launch` must carry a non-empty `observationId`
+ *    taken from the LATEST `phone.observe` result of this run; `launch`
+ *    alone may omit it (the approved current-navigation launch path);
+ *  - the trusted catalog schema stays inside the closed JSON-Schema subset
+ *    the shared Swift bind enforces, and that subset cannot express a
+ *    conditional `required` — any `oneOf`/`if`/`then` keyword would refuse
+ *    the WHOLE catalog at bind time. So the rule is decided here and the
+ *    host maps [Request.MissingObservation] to the precise, static and
+ *    bounded `phone_observation_required` failure code instead of folding
+ *    it into `invalid_arguments`;
+ *  - malformed action arguments keep the original precedence and still
+ *    classify as [Request.InvalidArguments] even when `observationId` is
+ *    also absent.
  */
 internal object PhoneActionArguments {
+
+    /**
+     * Exact host failure code for [Request.MissingObservation]. It matches
+     * the mailbox failure-code grammar (ASCII letter first, then
+     * alphanumeric/`_`/`-`, at most 64 characters) so it survives
+     * [BoundedResultText.token] unchanged, and the trusted catalog's
+     * `phone.act` description teaches the same token so the model can
+     * recover with a fresh phone.observe instead of guessing.
+     */
+    const val OBSERVATION_REQUIRED_CODE = "phone_observation_required"
+
+    /** The host-side `phone.act` contract decision for one argument object. */
+    sealed interface Request {
+        /** Parsed action plus the observation it names ("" = launch path). */
+        data class Dispatch(
+            val action: PhoneControlAction,
+            val observationId: String,
+        ) : Request
+
+        /** Well-formed non-launch action whose `observationId` was omitted. */
+        data object MissingObservation : Request
+
+        /** Malformed action arguments; identical to [PhoneActionArguments.parse] refusal. */
+        data object InvalidArguments : Request
+    }
 
     fun parse(arguments: JSONObject): PhoneControlAction? {
         val action = arguments.optString("action")
@@ -89,6 +129,22 @@ internal object PhoneActionArguments {
                 else PhoneControlAction.Launch(pkg)
             }
             else -> null
+        }
+    }
+
+    /**
+     * Full `phone.act` decision used by the host dispatch: [parse] first
+     * (malformed arguments keep the exact original refusal), then the
+     * non-launch observationId rule. A value is NEVER echoed into the
+     * classification; only the shape decides.
+     */
+    fun request(arguments: JSONObject): Request {
+        val action = parse(arguments) ?: return Request.InvalidArguments
+        val observationId = arguments.optString("observationId")
+        return if (observationId.isEmpty() && action !is PhoneControlAction.Launch) {
+            Request.MissingObservation
+        } else {
+            Request.Dispatch(action, observationId)
         }
     }
 }

@@ -858,3 +858,13 @@ English: Alpha72/code98 is a source candidate for authorized known-password entr
 另有两处测试后小修复已完成Full／Play与资源编译：活动恢复时刷新新装应用列表，以及中英文旧边界文案对齐。这些属于后续源码，不在不可变Alpha72包中。完成构件、源码／增量暂存和一次性宿主缓存已清理，当前、回退、符号、原始失败及下一步明确使用的依赖缓存保持。N01–N08总目标继续。
 
 English: Alpha72/code98 is public and the real Samsung71→72 update passed with original visible data retained. The first Ark Plan password run failed on a missing observation token and stopped without retry; its original evidence survives cleanup. The public issues disclose this failure. A bounded parameter-contract repair and the compiled app-list/copy follow-up belong to the next source/APK, not the frozen72 artifact. Sony startup and remaining N01–N08 cases remain open.
+
+## 2026-11-10 Alpha73 参数契约连贯源码检查点
+
+已完成非启动动作观察凭据要求的明确指引，以及后端 `phone_observation_required` 分类，保留启动兼容、错误优先级、真实输入、严格类型／互斥字段和全部权限／新鲜度检查。实际共享Schema校验器只接收固定关键字集合；不能添加不支持的条件关键字后宣称已校验，否则会使整个工具目录失效。本批使用已支持的目录指引和真实后端规则。
+
+新增9项参数契约检查，连同敏感输入、目录和错误边界共27项JVM检查及Full／Play实际编译通过。合入活动恢复时刷新新装应用和中英文旧文案的小修复，版本及Office对应源码链接准备为Alpha73/code99；新APK、封装、公开发行和真实填写分别验收，不把源码通过记为设备成功。
+
+原Alpha72用例已停止并退役；另备中性包名／普通状态资源ID的本地测试页，保留真正的系统密码框保护，避免测试页名称触发既有保守脱敏。原隐私启发式不因测试而放宽。后续仅在新任务使用Ark Plan／`ark-code-latest`验证，原失败证据和不可变72保持。见[Alpha73准备记录](releases/ANDROID_ALPHA73_DELIVERY.md)，总目标仍为N01–N08。
+
+English: The bounded Alpha73 source package passed 27 focused JVM cases and actual Full/Play compilation. It clarifies the supported observation contract and precise host error, alongside app-list/copy fixes; no unsupported conditional schema or privacy relaxation was introduced. A new APK and fresh device case remain separate. The original failed72 task is retired and immutable evidence is preserved.

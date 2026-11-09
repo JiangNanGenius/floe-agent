@@ -239,7 +239,6 @@ internal class DeviceAccessHost(
     private var busy: DeviceAccessBusyUi = DeviceAccessBusyUi.NONE
     private var error: DeviceAccessUiError? = null
     private var installedPackages: List<DeviceAccessPackageUi> = emptyList()
-    private var packagesLoaded = false
 
     @Volatile
     private var cachedRoots: List<FileRootCatalog.Root> = emptyList()
@@ -517,7 +516,8 @@ internal class DeviceAccessHost(
             if (pairingSessionOpen && discoveredPairingPort == null && !discoveryBlocked) {
                 discoverPairingPortInternal()
             }
-            if (!packagesLoaded) refreshPackages()
+            // Newly installed editors must appear when returning to Floe.
+            refreshPackages()
             publish()
         }
     }
@@ -1129,7 +1129,6 @@ internal class DeviceAccessHost(
             emptyList()
         }
         installedPackages = packages
-        packagesLoaded = true
     }
 
     /**
@@ -2782,15 +2781,28 @@ internal class DeviceAccessHost(
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
         val principal = phonePrincipal(call)
             ?: return PlatformToolOutcome.Failure("phone_arm_required")
-        val observationId = call.arguments.optString("observationId")
-        val action = PhoneActionArguments.parse(call.arguments)
-            ?: return PlatformToolOutcome.Failure("invalid_arguments")
+        val dispatch = when (val request = PhoneActionArguments.request(call.arguments)) {
+            is PhoneActionArguments.Request.InvalidArguments ->
+                return PlatformToolOutcome.Failure("invalid_arguments")
+            is PhoneActionArguments.Request.MissingObservation ->
+                // Precise, static and bounded recovery code instead of the
+                // undifferentiated invalid_arguments the Alpha72 trace showed:
+                // the closed advertised schema cannot express the conditional
+                // `required`, so the supported contract enforces it here. The
+                // model recovers by calling phone.observe again and passing
+                // the new observation= id; NO dispatch or device-side effect
+                // happens on this path and no argument value is ever echoed.
+                return PlatformToolOutcome.Failure(
+                    PhoneActionArguments.OBSERVATION_REQUIRED_CODE,
+                    "Call phone.observe first, then pass its observation id as observationId",
+                )
+            is PhoneActionArguments.Request.Dispatch -> request
+        }
+        val action = dispatch.action
+        val observationId = dispatch.observationId
         // The credential bytes live only in this dispatch path: the outcome
         // header marks the input as redacted and never includes the payload.
         val sensitiveInput = action is PhoneControlAction.SetText && action.sensitive
-        if (observationId.isEmpty() && action !is PhoneControlAction.Launch) {
-            return PlatformToolOutcome.Failure("invalid_arguments")
-        }
         bindPhoneCall(call)
         try {
             return when (val result = withTimeout(20_000) {

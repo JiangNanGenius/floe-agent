@@ -8,6 +8,12 @@
 
 This remains an intermediate build. Sony Android9 startup is unconfirmed, and the first password fixture run stopped when the model omitted the required observation token. That fill is not device-qualified. Contract repair and the remaining N01–N08 scenarios continue; the compiled app-list/copy follow-up is not part of the frozen72 APK.
 
+## Next source checkpoint — Android Alpha73 (code99)
+
+The observation-argument contract, installed-app refresh and bilingual phone guidance are code-ready. Twenty-seven focused App cases and actual Full/Play compilation passed. Matching package/source-offer versions are prepared; the new APK and device password fill are still pending. See the [source preparation](../docs/releases/ANDROID_ALPHA73_DELIVERY.md). Public Alpha72 remains immutable.
+
+下一源码检查点为 Alpha73/code99；27项定向检查与Full／Play编译通过，新包及完整密码填写实测仍待完成。原Alpha72失败任务已退役，不恢复重试；索尼问题及整轮N01–N08继续追踪。
+
 ## Previous delivery — Android Alpha71 (2026-11-10)
 
 [Alpha71/code97](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.71) is published from immutable source `e9f94bd602efda39be91a39e4486bf60abc578ee`. It scopes runtime installation callbacks to the real OS session and App build, retains the system confirmation entry, and reports measured setup stages, bytes, percentage and transfer rate. Thirty-two focused checks, related Full/Play/runtime compilation and package checks passed. The unchanged native33 input set was reused; all seven anonymous public asset bytes and production update discovery were read back. See the [delivery](../docs/releases/ANDROID_ALPHA71_DELIVERY.md).
