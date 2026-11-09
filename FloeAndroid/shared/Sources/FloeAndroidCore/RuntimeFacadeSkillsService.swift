@@ -2567,22 +2567,40 @@ public actor SkillsDomain {
             guard let data = try? Data(floeContentsOf: url, options: [.mappedIfSafe]),
                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   var journal = SkillUpgradeJournal.decode(object) else { continue }
-            switch journal.phase {
-            case "prepared":
-                let rows = try await store.all()
-                if let current = rows.first(where: { $0.id == journal.oldSkill.id }),
-                   current.rewrittenDigest == journal.newDigest {
-                    journal.phase = "complete"
-                    try? Self.canonicalData(try journal.jsonObject())
-                        .write(to: url, options: .atomic)
-                } else {
-                    await restoreUpgrade(journal: journal, journalDirectory: directory)
-                }
-            case "rollingBack":
-                await restoreUpgrade(journal: journal, journalDirectory: directory)
-            default:
-                break
+            guard journal.phase == "prepared" || journal.phase == "rollingBack" else { continue }
+            let removed = try await store.wasBundledSkillRemoved(id: journal.oldSkill.id)
+            let rows = try await store.all()
+            _ = try requireBinding()
+            let current = rows.first { $0.id == journal.oldSkill.id }
+            if removed || current == nil {
+                // Upgrade commits upsert the existing row atomically. A
+                // later removal/missing row is not permission to recreate
+                // its content or grants from an old journal. Retain the
+                // previous bytes for explicit recovery without resurrecting.
+                journal.phase = removed ? "removed" : "orphaned"
+            } else if let current,
+                      current.rewrittenDigest != journal.oldSkill.rewrittenDigest,
+                      current.rewrittenDigest != journal.newDigest {
+                // A later edit/install superseded this interrupted upgrade.
+                journal.phase = "superseded"
+            } else if journal.phase == "prepared", let current,
+                      current.rewrittenDigest == journal.newDigest,
+                      (try? SkillContentSnapshot(
+                        root: Self.packageDirectory(installationRoot: installationRoot,
+                                                    id: current.id),
+                        expectedDigest: journal.newDigest,
+                        manifestOverride: Self.sidecarManifest(for: current))) != nil {
+                journal.phase = "complete"
+            } else {
+                // Propagate a real restore failure; do not admit commands
+                // after pretending that recovery succeeded. Persist the
+                // terminal phase so the next launch cannot replay it.
+                try await performRestore(journal: journal, journalDirectory: directory)
+                _ = try requireBinding()
+                journal.phase = "rolledBack"
             }
+            try Self.canonicalData(try journal.jsonObject())
+                .write(to: url, options: .atomic)
         }
     }
 
