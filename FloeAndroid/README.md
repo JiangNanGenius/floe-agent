@@ -1,18 +1,20 @@
 # Floe for Android
 
-## Current delivery — Android Alpha72 (2026-11-10)
+## Current delivery — Android Alpha73 (2026-11-10)
+
+[Alpha73/code99](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.73) is published from immutable source `b0722808df5e006b5f035d4a2f43e2a8c1f3490e`. It clarifies the observation-token requirement for phone actions, returns a precise missing-token error, refreshes newly installed apps on resume and aligns the bilingual known-password guidance. Twenty-seven focused App cases, actual Full/Play compilation, native34 reuse by exact input identity, 58 package bindings, API28/29 signature verification and exact72→73 host delta reconstruction passed. Seven anonymous public assets and current/retained65 production update discovery were read back. See the [delivery](../docs/releases/ANDROID_ALPHA73_DELIVERY.md).
+
+三星通过“下载完整更新”从公开72在线升级到73；主程序／运行环境code99的实际字节及原UID匹配，原5条任务和2个项目可见。新装应用同进程刷新通过。新的Ark Plan本地密码框用例完成3次手机动作和1次观察，真实测试页PASS，工具输入记录脱敏；用例明确提示了观察参数，不代表自然提示或真实账号验收。测试任务、测试App和设备导出已清理，临时设置恢复。索尼Android9的具体启动根因、自动解锁等其余N01–N08事项仍开放。
+
+Samsung completed the public72→73 explicit full-package OTA with exact main/runtime99 bytes, original UIDs and visible baseline data retained. Same-process installed-app refresh passed. A new Ark Plan local protected-input fixture passed with three phone actions/one observation and redacted durable tool input; the prompt explicitly requested observation tokens, so this is not natural-prompt or real-account qualification. The test task/app/export were removed and settings restored. Sony Android9 startup and the remaining N01–N08 work continue.
+
+## Previous delivery — Android Alpha72 (2026-11-10)
 
 [Alpha72/code98](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.72) is published from immutable source `48a44a19226fce1fa59fdff7e8e0f947513a6d10`. It adds authorized known-password input, actual Android record/recovery scrubbing and post-extraction Linux readiness recovery. Sixty focused cases, actual ARM64/native34, Full/Play compilation and package/signature checks passed; seven anonymous assets and current/retained-client discovery were read back. Samsung completed a real public71→72 update with exact main/runtime98 bytes, original UIDs, five tasks, two projects and the existing environment retained. See the [delivery](../docs/releases/ANDROID_ALPHA72_DELIVERY.md).
 
-当前为中间版本。索尼 Android9 的具体启动故障尚未确认；首次密码填写实测因模型漏传观察凭据而被工具拒绝，失败后已停止，尚未验证成功。参数契约修复继续推进；自动解锁等其余 N01–N08 场景仍待闭合。新装应用列表刷新和旧边界文案的小修复已编译，未包含于不可变 Alpha72 包。
+Alpha72首次密码填写实测因模型漏传观察凭据而被工具拒绝，失败后停止，原记录保留。该参数契约、应用列表和文案修复随Alpha73交付，不改动不可变Alpha72包；索尼启动及其余N01–N08事项继续追踪。
 
-This remains an intermediate build. Sony Android9 startup is unconfirmed, and the first password fixture run stopped when the model omitted the required observation token. That fill is not device-qualified. Contract repair and the remaining N01–N08 scenarios continue; the compiled app-list/copy follow-up is not part of the frozen72 APK.
-
-## Next source checkpoint — Android Alpha73 (code99)
-
-The observation-argument contract, installed-app refresh and bilingual phone guidance are code-ready. Twenty-seven focused App cases and actual Full/Play compilation passed. Matching package/source-offer versions are prepared; the new APK and device password fill are still pending. See the [source preparation](../docs/releases/ANDROID_ALPHA73_DELIVERY.md). Public Alpha72 remains immutable.
-
-下一源码检查点为 Alpha73/code99；27项定向检查与Full／Play编译通过，新包及完整密码填写实测仍待完成。原Alpha72失败任务已退役，不恢复重试；索尼问题及整轮N01–N08继续追踪。
+The first Alpha72 fixture run stopped on the missing observation token; its original failure remains recorded. The contract, app-list and copy follow-up shipped in Alpha73 without changing the frozen72 artifact. Sony startup and the remaining N01–N08 scenarios stay open.
 
 ## Previous delivery — Android Alpha71 (2026-11-10)
 

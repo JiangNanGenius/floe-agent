@@ -867,4 +867,16 @@ English: Alpha72/code98 is public and the real Samsung71→72 update passed with
 
 原Alpha72用例已停止并退役；另备中性包名／普通状态资源ID的本地测试页，保留真正的系统密码框保护，避免测试页名称触发既有保守脱敏。原隐私启发式不因测试而放宽。后续仅在新任务使用Ark Plan／`ark-code-latest`验证，原失败证据和不可变72保持。见[Alpha73准备记录](releases/ANDROID_ALPHA73_DELIVERY.md)，总目标仍为N01–N08。
 
+## 2026-11-10 Alpha73 实际交付：完整包升级与密码填写
+
+Alpha73/code99已从固定源码`b0722808df5e006b5f035d4a2f43e2a8c1f3490e`公开预发布。27项相关检查、Full／Play编译、按精确输入复用native34、58项封装、API28／29签名及72→73真实宿主重建通过；七附件匿名字节、当前和保留65生产更新解析器读回完成，iOS Latest保留。发布后的实机补记仅追加正文，不更换附件或标签。
+
+三星本次明确点击“下载完整更新”，从公开72完成主程序／运行环境联合系统安装至code99；实际字节及原UID一致，原5条任务和2个项目可见。新装应用同进程刷新通过。新的Ark Plan／`ark-code-latest`本地密码框用例完成3次手机动作和1次观察，结果全部ok，真实测试页PASS；非启动动作携带对应新观察，输入工具记录脱敏。提示明确要求观察参数，本次不代表自然提示可靠性或真实账号验收；用户文本／模型总结中的公开合成输入不在工具字段脱敏断言内。
+
+49条原始回执先核对后保留，测试任务、测试App及设备导出已退役，范围／自动化／无障碍／电源恢复且三星休眠。22处完成构件与stage已清理并导出8份生产回执，删除窗口内置可用空间合计增加3,169,742,848字节；当前／回退／符号／原失败／SDK／AVD和明确下一用途缓存保留。原Alpha72失败不恢复、不覆盖。
+
+索尼XZ／Android9解压后终端不可用的具体启动根因尚未确认；不能据此归因为系统版本太低。自动解锁／重锁、新下载计量、其余N03／N05组合及全局UI精修继续按原编号推进，不以本次中间版交付关闭N01–N08。详见[Alpha73交付补记](releases/ANDROID_ALPHA73_DELIVERY.md)。
+
+English: Alpha73 is public with verified assets and production update discovery. Samsung completed the explicit full-package72→73 OTA and a fresh protected-input fixture; the original72 failure remains intact. Test residue/settings and completed staging outputs were cleaned. Sony startup and the remaining N01–N08 scope stay open.
+
 English: The bounded Alpha73 source package passed 27 focused JVM cases and actual Full/Play compilation. It clarifies the supported observation contract and precise host error, alongside app-list/copy fixes; no unsupported conditional schema or privacy relaxation was introduced. A new APK and fresh device case remain separate. The original failed72 task is retired and immutable evidence is preserved.
