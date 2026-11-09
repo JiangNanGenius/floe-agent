@@ -626,6 +626,14 @@ public actor FloeAgentRuntime {
     private let liveSystemContext: (@Sendable () async throws -> String)?
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
+    /// Pending call IDs restored from a checkpoint whose credential
+    /// arguments were intentionally scrubbed from the durable record
+    /// (`sensitiveToolCallIDs`). They must never be re-dispatched with
+    /// redacted bytes: recovery fails them closed and requires a rebuilt,
+    /// re-authorized request. In-process calls are detected at
+    /// checkpoint-write time via `ToolArgumentSanitizer`; this set carries
+    /// the marker across a process death.
+    private var sensitivePendingCallIDs: Set<String> = []
     /// Settled (call, result) pairs from every completed tool batch in this
     /// run, in settlement order. Each dispatch replays them as provider
     /// history (budget-trimmed at assembly; this record stays intact) so tool
@@ -1313,6 +1321,10 @@ public actor FloeAgentRuntime {
                 )
             }
         }
+        // The durable checkpoint intentionally omits credential arguments
+        // for these calls. Carry the non-replay marker so neither automatic
+        // resume nor a restored approval can dispatch redacted bytes.
+        sensitivePendingCallIDs = Set(checkpoint.sensitiveToolCallIDs ?? [])
         latestProviderDispatchRequest = checkpoint.providerDispatchRequest
         if let snapshot = checkpoint.providerDispatchRequest {
             let restoredRequest = snapshot.request()
@@ -1411,6 +1423,51 @@ public actor FloeAgentRuntime {
             }
             let result: ToolResult
             var outcomeUnknown = false
+            if sensitivePendingCallIDs.contains(call.id) {
+                // The durable checkpoint intentionally does not contain the
+                // phone.act text input (or other credential arguments) this
+                // call was dispatched with. Replaying a redacted request
+                // would change its meaning — typing "[redacted]" into the
+                // authorized field — so the runtime fails it closed and
+                // requires a rebuilt, re-authorized request. This covers both
+                // an automatic resume and a call that was parked at a
+                // pending approval when the interruption happened.
+                let neverDispatched = lifecycle?.phase == .recorded
+                    || lifecycle?.phase == .approved
+                if neverDispatched {
+                    result = ToolResult(
+                        callID: call.id,
+                        status: .failed,
+                        outputSummary: "The pending operation carried credential arguments that were intentionally removed from the durable checkpoint. It was NOT replayed and did not start. Re-issue it only with fresh, explicit user authorization and a rebuilt request.",
+                        outputDigest: ""
+                    )
+                } else {
+                    result = ToolResult(
+                        callID: call.id,
+                        status: .failed,
+                        outputSummary: "Execution was interrupted and its credential arguments were intentionally removed from the durable checkpoint, so the request was NOT replayed. Inspect current external state; if the read or action is still needed, rebuild the request with fresh, explicit user authorization.",
+                        outputDigest: ""
+                    )
+                    outcomeUnknown = isSideEffecting
+                }
+                sensitivePendingCallIDs.remove(call.id)
+                pendingToolResults.append(result)
+                pairedIDs.insert(call.id)
+                executionLedger.record(
+                    call: call,
+                    result: result,
+                    isSideEffecting: isSideEffecting,
+                    outcomeUnknown: outcomeUnknown,
+                    outcomeUnknownReason: outcomeUnknown
+                        ? .unattributed : .interruptedDispatch
+                )
+                setToolLifecycle(call: call, phase: .resultCommitted)
+                // Recovery outcomes belong in the durable task timeline as
+                // well as the provider pair: a finished run must not leave
+                // its old tool card permanently pending.
+                await emit(.toolResult(result))
+                continue
+            }
             if call.toolName == UserAskTool.name,
                let recovery = configuration.userQuestionRecovery,
                let restored = await recovery.recoverInterruptedQuestion(
@@ -2321,7 +2378,23 @@ public actor FloeAgentRuntime {
         }
         restoredProviderDispatchEnvelope = nil
         latestProviderDispatchEnvelope = dispatchEnvelope
-        latestProviderDispatchRequest = ProviderDispatchRequestSnapshot(request: request)
+        // The durable dispatch snapshot is recovery evidence, not the wire
+        // body: the live request keeps the exact authorized argument bytes,
+        // while this snapshot's copies scrub phone.act text inputs and other
+        // credential arguments. The envelope digests IDs only, so recovery
+        // identity stays byte-exact and a resumed run relies on
+        // `sensitiveToolCallIDs` to fail scrubbed calls closed.
+        var persistedDispatchSnapshot = ProviderDispatchRequestSnapshot(request: request)
+        persistedDispatchSnapshot.pendingToolCalls = persistedDispatchSnapshot
+            .pendingToolCalls.map(ToolArgumentSanitizer.sanitizedForPersistence)
+        if let pairs = persistedDispatchSnapshot.replayedToolPairs {
+            persistedDispatchSnapshot.replayedToolPairs = pairs.map { pair in
+                var copy = pair
+                copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
+                return copy
+            }
+        }
+        latestProviderDispatchRequest = persistedDispatchSnapshot
         logger.info(
             "promptAssembly run=\(runID.uuidString) digest=\(Self.promptAssemblyDigest(messages: legacyMessages, descriptors: catalogDescriptors)) tools=\(request.toolSchemas.count) pendingCalls=\(request.pendingToolCalls.count) pendingResults=\(request.toolResults.count) mode=\(configuration.conversationMode.rawValue)"
         )
@@ -5531,6 +5604,13 @@ public actor FloeAgentRuntime {
             persistedState = .preparing(AgentState.PreparingInfo(
                 goal: messages.last(where: { $0.role == "user" })?.content ?? ""
             ))
+        case .waitingApproval(var info):
+            // The durable approval record must not carry the raw phone.act
+            // text input (or any other credential arguments): the live card
+            // keeps the exact bytes for the authorized decision, the
+            // checkpoint keeps only the scrubbed copy plus the call identity.
+            info.toolCall = ToolArgumentSanitizer.sanitizedForPersistence(info.toolCall)
+            persistedState = .waitingApproval(info)
         default:
             persistedState = state
         }
@@ -5546,8 +5626,26 @@ public actor FloeAgentRuntime {
         // byte-identical to what the dispatch envelope digested so a resumed
         // run rebuilds a matching request, and so the first post-tool
         // checkpoint never encodes a full multi-megabyte result twice.
-        let checkpointCalls = activeProviderPendingCalls.isEmpty
+        // A checkpoint is durable evidence: scrub phone.act text inputs and
+        // other credential arguments from its CALL copies (the live dispatch
+        // keeps the exact authorized bytes) and remember which call IDs were
+        // scrubbed so a resume can never replay redacted input.
+        let rawCheckpointCalls = activeProviderPendingCalls.isEmpty
             ? pendingToolCalls : activeProviderPendingCalls
+        let scrubbedCallIDs = rawCheckpointCalls
+            .filter {
+                ToolArgumentSanitizer.containsSensitiveValues(
+                    $0.argumentsJSON,
+                    toolName: $0.toolName
+                )
+            }
+            .map(\.id)
+        let checkpointCalls = rawCheckpointCalls.map(
+            ToolArgumentSanitizer.sanitizedForPersistence
+        )
+        let sensitiveCallIDs = Array(
+            Set(scrubbedCallIDs).union(sensitivePendingCallIDs)
+        ).sorted()
         let checkpointPagingCallIDs = Set(
             checkpointCalls
                 .filter { ToolResultProjection.isPagingPage(toolName: $0.toolName) }
@@ -5574,8 +5672,7 @@ public actor FloeAgentRuntime {
             conversationID: configuration.conversationID,
             state: persistedState,
             messages: checkpointMessages,
-            pendingToolCalls: activeProviderPendingCalls.isEmpty
-                ? pendingToolCalls : activeProviderPendingCalls,
+            pendingToolCalls: checkpointCalls,
             pendingToolResults: checkpointPendingResults,
             approvals: grants,
             idempotencyKeys: executedIdempotencyKeys,
@@ -5591,8 +5688,16 @@ public actor FloeAgentRuntime {
             providerDispatchEnvelope: latestProviderDispatchEnvelope,
             providerDispatchRequest: latestProviderDispatchRequest,
             pendingAssistantReasoning: checkpointReasoning,
-            replayedToolPairs: replayableToolHistory,
-            ownedSystemContextID: ownedSystemContextID
+            replayedToolPairs: replayableToolHistory.map { pair in
+                // Settled provider history is durable evidence too: keep the
+                // exact result bytes, scrub only the call's credential
+                // arguments.
+                var copy = pair
+                copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
+                return copy
+            },
+            ownedSystemContextID: ownedSystemContextID,
+            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {

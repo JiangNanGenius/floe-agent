@@ -141,8 +141,26 @@ internal object PhoneControlPolicy {
         return null
     }
 
-    fun fieldActionDenial(record: PhoneControlNodeRecord): PhoneControlDenial? =
-        if (record.password || record.redacted) PhoneControlDenial.SENSITIVE_FIELD else null
+    /**
+     * Field-level privacy gate for text/swipe node actions.
+     *
+     * Ordinary text never touches a password or sensitive-view-id field.
+     * [sensitiveInput] = true is the explicit user-authorized credential
+     * route: it may fill an editable protected FIELD inside an already
+     * authorized non-system window, while every window-level guard
+     * ([isProtectedWindow], [nodeActionDenial], [navigationOnlyActionDenial])
+     * and the separate screenshot gate stay exactly as before. The supplied
+     * bytes are dispatched once and the field contents are never read back.
+     */
+    fun fieldActionDenial(
+        record: PhoneControlNodeRecord,
+        sensitiveInput: Boolean = false,
+    ): PhoneControlDenial? =
+        if (!sensitiveInput && (record.password || record.redacted)) {
+            PhoneControlDenial.SENSITIVE_FIELD
+        } else {
+            null
+        }
 
     fun launchDenial(
         targetPackage: String,
@@ -175,9 +193,12 @@ internal object PhoneControlPolicy {
     /**
      * System UI, permission-installer dialogs, Floe's own App/runtime windows,
      * lock/credential/enrollment screens, and system password dialogs are
-     * protected. A user app login screen is not a protected window, but its
-     * password fields are redacted and refuse setText; screenshots are still
-     * refused for any visible password field by [screenshotDenial].
+     * protected and refuse every node action, including a sensitive input.
+     * A user app login screen is not a protected window, but its password
+     * fields are redacted and refuse ordinary setText; only an explicit
+     * sensitive input may fill one, and its contents are never read back.
+     * Screenshots are still refused for any visible password field by
+     * [screenshotDenial].
      */
     fun isProtectedWindow(
         packageName: String?,

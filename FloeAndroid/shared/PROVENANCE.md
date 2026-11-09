@@ -1164,3 +1164,58 @@ C01 conversation pinning uses schema 50 and preserves R2 tables/selected_at. C03
 ## C02 Android Hub overlays (2026-11-02)
 
 The Android FloeSkills per-file source links were materialized byte-for-byte before the Android platform and full-catalog consumer changes. CuratedSkillHub/Models/Review/Upgrade and SkillDependency/RuntimeDependency reuse fixed iOS Git object a59b4d4005f616c611df67fab7620e9853c525b9; the legacy four-package client remains separate. Original frozen donors, compiled trust keys and the native iOS checkout were not changed. Android dependency preparation uses the existing selected guest exec.shell/jobs services and verifies signed evidence plus actual installed bytes; shell registration glue is a separately tracked integration dependency. These are uncompiled source changes pending the unified cohort.
+
+## phone.act known-password input protection (2026-11-10, n02-password-runtime72)
+
+`Sources/FloeAgentRuntime/ToolArgumentSanitizer.swift` is a narrow overlay
+copy of `FloeAgent/Sources/FloeAgentRuntime/ToolArgumentSanitizer.swift` in
+this source checkpoint. Both files have SHA256
+`eed6adee580141bb741a39c6901f179610894888b666d0863f0175449324b5cd`.
+The identical copy keeps the Android runtime subset self-contained; it is
+not an independently evolving scanner. Scope: header/cookie credential names plus the
+conservative phone.act rule (any root-level `text`/`sensitiveText` key,
+case-insensitive, action-agnostic; malformed/non-object phone.act payloads
+omitted whole; the `phone_act` alias normalised exactly). The live dispatch
+copy always keeps the exact authorized bytes.
+
+Android copied-runtime integration (the shipping runtime copies, NOT a
+blanket port of current iOS `AgentRuntime`):
+
+* `ConversationRunService.swift` — `toolRequest` event input is scrubbed over
+  the FULL argument data BEFORE the 32 KiB bounded projection (truncating raw
+  JSON first could cut a credential in half and defeat the scrubber).
+* `AgentRuntime.swift` — the pre-dispatch durable dispatch snapshot, the
+  recovery checkpoint's pending calls and settled replayed pairs, and a
+  persisted `.waitingApproval` state are written through
+  `ToolArgumentSanitizer.sanitizedForPersistence` COPIES; live dispatch,
+  approval and executor bytes are untouched. Scrubbed call IDs are persisted
+  as the new additive checkpoint field `sensitiveToolCallIDs` and restored
+  into a non-replay set on resume; `repairInterruptedToolPairs` fails those
+  calls closed (never-dispatched vs interrupted-after-dispatch variants) so
+  neither automatic resume nor a restored pending approval can dispatch
+  redacted input. Ordinary actions and user.ask recovery keep their prior
+  behavior; execution-ledger/digest semantics are unchanged.
+* `AgentCheckpoint.swift` — one optional `sensitiveToolCallIDs: [String]?`
+  (synthesized Codable, decode-if-present): older checkpoints decode
+  unchanged, no format-version bump, no migration stack.
+* `RuntimeFacadeRunEvents.swift` — the live pump RETAINS encoded harness
+  frames, so `handleTracked` ingests/classifies a scrubbed COPY of
+  argument-carrying events (toolLifecycle requested/started, approvalRequested)
+  via `FacadeRunDomain.sanitizedProjectionCopy(of:)`; the business run is
+  never mutated. The snapshot wire builder's pendingApproval page already
+  emits callID/tool/reason only (verified, no arguments on that path).
+* `Tests/FloeAndroidCoreTests/PhoneTextInputRedactionTests.swift` — synthetic
+  regressions on the real boundaries: exact fake-executor live bytes vs redacted durable event /
+  checkpoint / dispatch snapshot; pending-sensitive resume without dispatch;
+  unchanged ordinary action; additive marker round-trip incl. older-checkpoint
+  decode; facade durable event + live projection copy scrubbing across a
+  cancel/retry resume. The five focused host cases passed on the exact
+  production runtime after the checkpoint constructor was connected to its
+  sanitized pending-call copy. An already settled cancellation keeps its
+  denied receipt; only unpaired sensitive calls receive the non-replay
+  failure. Host evidence does not establish Android device acceptance.
+
+Frozen inputs untouched: the n02-known-password72 donor, the last public
+Android71/code97 source `e9f94bd602efda39be91a39e4486bf60abc578ee`, all
+`FloeAgent/` iOS sources and tests. No APK or device-delivery claim is made
+by this source record.

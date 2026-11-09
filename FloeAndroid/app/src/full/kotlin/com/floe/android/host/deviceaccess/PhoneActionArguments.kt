@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: MPL-2.0
+package com.floe.android.host.deviceaccess
+
+import com.floe.android.phonecontrol.PhoneControlAction
+import com.floe.android.phonecontrol.PhoneControlLimits
+import com.floe.android.phonecontrol.PhoneControlScrollDirection
+import com.floe.android.phonecontrol.PhoneControlSwipeDirection
+import org.json.JSONObject
+
+/**
+ * Pure host-side parsing of `phone.act` arguments into the phone-control
+ * action model, kept out of [DeviceAccessHost] so the sensitive-input wire
+ * rules are JVM-testable without an Android context.
+ *
+ * Wire rules for action=setText:
+ *  - EXACTLY one present text key: `text` for ordinary content, or the
+ *    explicit `sensitiveText` parameter for a credential the user already
+ *    provided in this authorized task. No vault prerequisite.
+ *  - The value must be a real JSON String. A missing key, JSON null, or a
+ *    coerced number/boolean/object is refused BEFORE dispatch: org.json's
+ *    `optString` would silently turn them into an empty payload, and an
+ *    accidental implicit clear of a live field is never acceptable. Only an
+ *    explicit empty String is a valid clear.
+ *  - Both keys together are mutually exclusive and refused as invalid;
+ *    there is no silent fallback from `sensitiveText` to `text`.
+ *  - A `sensitiveText` payload becomes a sensitive SetText dispatch: the
+ *    exact bytes go to the phone-control session once. Nothing here logs,
+ *    echoes, persists or retries the payload. Redaction of BOTH keys before
+ *    persistence and non-replayability are enforced upstream by the shared
+ *    Swift ToolArgumentSanitizer, because persistence happens before the
+ *    host ever learns the target field's protection.
+ */
+internal object PhoneActionArguments {
+
+    fun parse(arguments: JSONObject): PhoneControlAction? {
+        val action = arguments.optString("action")
+        val nodeRef = arguments.optString("nodeRef")
+        fun validRef(): Boolean =
+            nodeRef.isNotEmpty() && nodeRef.length <= 16 &&
+                nodeRef.all { it.isLetterOrDigit() }
+        return when (action) {
+            "click" -> if (validRef()) PhoneControlAction.Click(nodeRef) else null
+            "setText" -> {
+                val hasText = arguments.has("text")
+                val hasSensitiveText = arguments.has("sensitiveText")
+                // Exactly one present key; a missing pair is NOT an implicit
+                // clear.
+                if (hasText == hasSensitiveText) return null
+                // Strict type check: `opt` keeps JSON null as the NULL
+                // sentinel and never coerces numbers/booleans/objects into
+                // strings, so only a real String dispatches.
+                val raw = if (hasSensitiveText) {
+                    arguments.opt("sensitiveText")
+                } else {
+                    arguments.opt("text")
+                }
+                val payload = raw as? String ?: return null
+                if (!validRef() || payload.length > PhoneControlLimits.MAX_SET_TEXT_CHARS) {
+                    null
+                } else {
+                    PhoneControlAction.SetText(nodeRef, payload, sensitive = hasSensitiveText)
+                }
+            }
+            "scroll" -> {
+                val direction = when (arguments.optString("direction")) {
+                    "forward" -> PhoneControlScrollDirection.FORWARD
+                    "backward" -> PhoneControlScrollDirection.BACKWARD
+                    else -> null
+                }
+                if (!validRef() || direction == null) null
+                else PhoneControlAction.Scroll(nodeRef, direction)
+            }
+            "swipe" -> {
+                val direction = when (arguments.optString("direction")) {
+                    "up" -> PhoneControlSwipeDirection.UP
+                    "down" -> PhoneControlSwipeDirection.DOWN
+                    "left" -> PhoneControlSwipeDirection.LEFT
+                    "right" -> PhoneControlSwipeDirection.RIGHT
+                    else -> null
+                }
+                if (!validRef() || direction == null) null
+                else PhoneControlAction.Swipe(nodeRef, direction)
+            }
+            "back" -> PhoneControlAction.Back
+            "home" -> PhoneControlAction.Home
+            "launch" -> {
+                val pkg = arguments.optString("packageName")
+                if (pkg.isBlank() || pkg.length > PhoneControlLimits.MAX_PACKAGE_CHARS) null
+                else PhoneControlAction.Launch(pkg)
+            }
+            else -> null
+        }
+    }
+}

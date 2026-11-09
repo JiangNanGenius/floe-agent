@@ -16,6 +16,11 @@
     <string name="linux_environment_tools_pending">Local task execution is not ready yet.</string>
     <string name="linux_environment_tools_ready">Local task execution is ready.</string>
     <string name="linux_environment_tools_prepare_terminal">Open a terminal in a task to finish preparing local tasks.</string>
+    <string name="linux_environment_recheck">Recheck</string>
+    <string name="linux_environment_tools_probe_unavailable">The link to the Linux runtime could not be read. Recheck re-measures it — nothing is reinstalled or downloaded.</string>
+    <string name="linux_environment_tools_link_pending">The installed environment is not linked to the runtime yet. Recheck finishes the link; your files and installed software stay untouched.</string>
+    <string name="linux_environment_tools_component_mismatch">The runtime component does not match this Floe build. Update Floe and its Linux component together, then recheck.</string>
+    <string name="linux_environment_tools_attempt_failed">The last readiness check did not finish. Open a terminal in any task to complete preparation, or recheck to measure again.</string>
     <string name="linux_environment_local_network">Allow local network access</string>
     <string name="linux_failure_component">The runtime could not be prepared. Try again; if it repeats, send the diagnostic details.</string>
     <string name="linux_failure_component_archive">The runtime installer could not be read. Download a fresh full installer and try again.</string>

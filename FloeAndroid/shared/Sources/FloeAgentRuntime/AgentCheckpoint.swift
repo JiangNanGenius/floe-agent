@@ -299,6 +299,14 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// historical summary. Optional for checkpoints written by older builds.
     public var ownedSystemContextID: UUID?
 
+    /// Identifiers of pending tool calls whose credential arguments were
+    /// intentionally scrubbed from this checkpoint's durable copies. Recovery
+    /// fails these calls closed instead of replaying redacted bytes (a
+    /// redacted phone.act text input must never be re-dispatched). Optional
+    /// so checkpoints written before this field remain decodable; an absent
+    /// value keeps the previous conservative repair behavior.
+    public var sensitiveToolCallIDs: [String]?
+
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.
@@ -330,7 +338,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil,
         pendingAssistantReasoning: String? = nil,
         replayedToolPairs: [ReplayedToolPair]? = nil,
-        ownedSystemContextID: UUID? = nil
+        ownedSystemContextID: UUID? = nil,
+        sensitiveToolCallIDs: [String]? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -358,6 +367,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.replayedToolPairs = replayedToolPairs
         self.ownedSystemContextID = ownedSystemContextID
+        self.sensitiveToolCallIDs = sensitiveToolCallIDs
     }
 
     public func encoded() throws -> Data {

@@ -1153,8 +1153,19 @@ public actor ConversationRunService {
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName
             toolRequestedAt[call.id] = ContinuousClock.now
+            // Explicit phone.act text inputs (and Cookie/Authorization
+            // argument values) are scrubbed over the FULL argument data
+            // BEFORE the bounded event projection. Truncating raw JSON first
+            // could cut the value in half, leave an object unparsable, and
+            // make the fallback miss a nested credential. The live dispatch
+            // keeps the exact authorized bytes.
+            let fullySanitized = ToolArgumentSanitizer.redactedArgumentsJSON(
+                call.argumentsJSON,
+                toolName: call.toolName
+            )
+            let boundedInput = Data(fullySanitized.prefix(32 * 1_024))
             let input = SecretRedactor.redact(String(
-                decoding: call.argumentsJSON.prefix(32 * 1_024),
+                decoding: boundedInput,
                 as: UTF8.self
             ), secret: secretForRedaction)
             _ = await appendEventReliably(

@@ -197,6 +197,8 @@ class LinuxRuntimeReadinessController(
             reingressJob = null
             try {
                 ingressPrerequisites(target)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (failure: Exception) {
                 val code = refusalOf(failure)
                 invalidateInternal(target, code)

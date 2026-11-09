@@ -4,7 +4,7 @@
     <string name="settings_phone">手机</string>
     <string name="device_access_status_label">状态</string>
     <string name="device_access_root_enable">启用 Root 访问</string>
-    <string name="device_access_intro">每一层都需要单独授权。Floe 不会绕过密码、安全窗口或锁屏。</string>
+    <string name="device_access_intro">按需授权手机操作。助手可填写任务中已提供的密码，不读取密码框现有内容。</string>
 
     <string name="device_access_accessibility_section">手机操作（无障碍）</string>
     <string name="device_access_accessibility_disclosure">手机操作只读取当前页面的节点树，并且只在你启动的任务中执行。</string>
@@ -154,7 +154,7 @@
     <string name="device_access_error_phone_taken">你已接管设备。</string>
     <string name="device_access_error_phone_service">手机控制服务未连接。</string>
     <string name="device_access_error_phone_target">当前应用不在允许的目标列表中。</string>
-    <string name="device_access_error_phone_protected">密码字段、安全窗口和锁屏永远不会被读取或操作。</string>
+    <string name="device_access_error_phone_protected">当前界面或输入字段受到保护。</string>
     <string name="device_access_error_phone_stale">页面已变化，请重新观察。</string>
     <string name="device_access_error_phone_not_allowed">此任务不允许手机控制。</string>
     <string name="device_access_error_phone_not_enabled">未在 Android 设置中启用手机控制。</string>

@@ -26,6 +26,7 @@ import com.floe.android.R
 import com.floe.android.design.*
 import com.floe.android.terminalWorkspaceMappingPending
 import io.github.robinpcrd.cupertino.section.SectionItem
+import kotlinx.coroutines.launch
 
 /** Uses the same second-level modal and Floe components as other settings. */
 @Composable
@@ -160,12 +161,20 @@ fun LocalRuntimeSettingsCard() {
                     // names the ONE real next step instead of a dead end: when
                     // every prerequisite is live and only this task's receipt-
                     // backed workspace facts are still missing, the terminal's
-                    // own run-less first-use preparation produces them.
+                    // own run-less first-use preparation produces them. Any
+                    // other not-ready stage now ALSO names its honest cause
+                    // class and offers the SAME authorized user-initiated
+                    // recheck the Diagnostics surface uses — a bounded fresh
+                    // re-measure that never reinstalls, redownloads or resets
+                    // the installed environment.
                     var taskState by remember { mutableStateOf(LocalRuntimeTaskState.UNVERIFIED) }
+                    var readinessToken by remember { mutableStateOf<String?>(null) }
+                    var rechecking by remember { mutableStateOf(false) }
+                    val scope = rememberCoroutineScope()
                     LaunchedEffect(state.phase, state.localNetworkPermissionNeeded, state.pendingIntent != null) {
                         val ready = app.linuxTaskExecutionReady()
-                        taskState = localRuntimeTaskState(ready,
-                            if (ready) null else app.linuxTaskExecutionDiagnostic())
+                        readinessToken = if (ready) null else app.linuxTaskExecutionDiagnostic()
+                        taskState = localRuntimeTaskState(ready, readinessToken)
                     }
                     FloeText(stringResource(when (taskState) {
                         LocalRuntimeTaskState.READY -> R.string.linux_environment_tools_ready
@@ -173,6 +182,60 @@ fun LocalRuntimeSettingsCard() {
                             R.string.linux_environment_tools_prepare_terminal
                         LocalRuntimeTaskState.UNVERIFIED -> R.string.linux_environment_tools_pending
                     }), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                    if (taskState == LocalRuntimeTaskState.UNVERIFIED) {
+                        // Concise bilingual recovery copy for the observed
+                        // not-ready stage; the closed codes stay behind the
+                        // explicit details expander below.
+                        FloeText(stringResource(when (localRuntimeRecovery(readinessToken)) {
+                            LocalRuntimeRecovery.PROBE -> R.string.linux_environment_tools_probe_unavailable
+                            LocalRuntimeRecovery.LINK -> R.string.linux_environment_tools_link_pending
+                            LocalRuntimeRecovery.COMPONENT ->
+                                R.string.linux_environment_tools_component_mismatch
+                            LocalRuntimeRecovery.ATTEMPT_FAILED ->
+                                R.string.linux_environment_tools_attempt_failed
+                            // Defensive only: the UNVERIFIED branch never
+                            // classifies as NONE (ready / mapping-pending are
+                            // the other two task states).
+                            LocalRuntimeRecovery.NONE -> R.string.linux_environment_tools_link_pending
+                        }), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                        var readinessDetails by remember { mutableStateOf(false) }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            FloeCapsuleAction(label = stringResource(
+                                if (rechecking) R.string.checking else R.string.linux_environment_recheck),
+                                enabled = !rechecking, onClick = {
+                                    // ONE bounded user-initiated fresh re-ingress
+                                    // through the SAME authorized primitive the
+                                    // Diagnostics surface uses, then ONE fresh
+                                    // observation. Cancellation propagates and
+                                    // never publishes a stale readiness answer.
+                                    scope.launch {
+                                        try {
+                                            rechecking = true
+                                            app.retryLinuxTaskExecutionIngress()
+                                            val ready = app.linuxTaskExecutionReady()
+                                            readinessToken =
+                                                if (ready) null else app.linuxTaskExecutionDiagnostic()
+                                            taskState = localRuntimeTaskState(ready, readinessToken)
+                                        } finally {
+                                            rechecking = false
+                                        }
+                                    }
+                                })
+                            FloeCapsuleAction(label = stringResource(R.string.linux_failure_details),
+                                onClick = { readinessDetails = !readinessDetails })
+                        }
+                        if (readinessDetails) {
+                            val detailText = buildString {
+                                append(host.diagnosticDetails())
+                                readinessToken?.let { appendLine("Readiness: $it") }
+                            }
+                            FloeText(detailText, style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel)
+                            FloeCapsuleAction(label = stringResource(R.string.linux_failure_copy),
+                                onClick = { clipboard.setText(AnnotatedString(detailText)) })
+                        }
+                    }
                 }
             }
         }
@@ -246,3 +309,61 @@ internal fun localRuntimeTaskState(ready: Boolean, diagnostic: String?): LocalRu
         terminalWorkspaceMappingPending(diagnostic) -> LocalRuntimeTaskState.PREPARING_WORKSPACE
         else -> LocalRuntimeTaskState.UNVERIFIED
     }
+
+/**
+ * COPY-ONLY recovery-class projection of the SAME closed readiness stage
+ * token the card reads (`linuxTaskExecutionDiagnostic` vocabulary). It
+ * qualifies nothing, gates nothing and writes nothing: it maps the honest
+ * closed token onto the ONE real next-step class so the installed card can
+ * tell apart a generic capability-probe failure, a missing prerequisite
+ * link, a runtime-component mismatch and an actual failed readiness
+ * attempt — without ever inventing a cause or widening any gate. Pure,
+ * total, never throws.
+ */
+internal enum class LocalRuntimeRecovery {
+    /** Ready, or the exact run-less first-use shape where opening a terminal
+     *  produces the two workspace facts: the existing state copy already
+     *  names the real next step, so no recovery guidance is added. */
+    NONE,
+
+    /** The capability probe itself could not run or be read (lane unbound,
+     *  status unreadable or unknown): a recheck re-measures it. */
+    PROBE,
+
+    /** A prerequisite link between the installed rootfs and the live runtime
+     *  is missing (peer anchor, live epoch, suspension or an unaccepted
+     *  fact record): the recheck re-runs the SAME verified install-
+     *  completion ingress the transition uses. */
+    LINK,
+
+    /** The installed runtime component does not match this Floe build:
+     *  updating Floe and the component together is the real fix. */
+    COMPONENT,
+
+    /** The five prerequisites are live but a real readiness attempt recorded
+     *  a refusal/stage this generation: opening a terminal in a task (or a
+     *  recheck) is the honest recovery. */
+    ATTEMPT_FAILED,
+}
+
+/** Component-mismatch refusal tokens (the RuntimeComponentMatch closed set). */
+private val COMPONENT_REFUSALS = setOf(
+    "componentUnavailable", "componentVersionStale", "componentIdentityMismatch",
+)
+
+internal fun localRuntimeRecovery(diagnostic: String?): LocalRuntimeRecovery {
+    if (diagnostic.isNullOrEmpty()) return LocalRuntimeRecovery.PROBE
+    if (diagnostic == "ready") return LocalRuntimeRecovery.NONE
+    // Run-less first-use shapes stay on the existing "open a terminal" copy.
+    if (terminalWorkspaceMappingPending(diagnostic)) return LocalRuntimeRecovery.NONE
+    // Closed grammar: <cause>|refusal:<closed>|stage:<closed>. Extract the
+    // refusal/stage segments defensively; a token without the grammar is
+    // classified by its cause alone.
+    val refusal = diagnostic.substringAfter("refusal:", "").substringBefore('|', "")
+    val stage = diagnostic.substringAfterLast("stage:", "")
+    if (refusal in COMPONENT_REFUSALS) return LocalRuntimeRecovery.COMPONENT
+    val cause = diagnostic.substringBefore('|', diagnostic)
+    if (cause == "lane:unbound" || cause == "status:unreadable") return LocalRuntimeRecovery.PROBE
+    if (refusal.isNotEmpty() || stage.isNotEmpty()) return LocalRuntimeRecovery.ATTEMPT_FAILED
+    return LocalRuntimeRecovery.LINK
+}

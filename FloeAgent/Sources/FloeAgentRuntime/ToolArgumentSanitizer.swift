@@ -8,9 +8,22 @@
 // sanitizer returns a COPY for persistence and never mutates the live
 // `ToolCall`, so the real dispatch is unchanged.
 //
-// Scope is deliberately narrow: only header/argument names whose value is a
-// credential. It does not try to be a general secret scanner and does not
-// depend on a global registry.
+// Scope is deliberately narrow: header/argument names whose value is a
+// credential, plus the exact phone.act setText inputs. It does not try to be
+// a general secret scanner and does not depend on a global registry.
+//
+// Phone sensitive input (conservative v1 rule): the Android host learns
+// whether the target node is a protected field only at dispatch, which is
+// AFTER the tool request and checkpoint copies are written, and a dispatcher
+// can reject the call AFTER persistence. So for `phone.act`, ANY root-level
+// `text` or `sensitiveText` key is credential material REGARDLESS of the
+// declared action (a missing or invalid action must not leave a leaked
+// value), matched case-insensitively. Any malformed/unparseable or
+// non-object phone.act payload is omitted WHOLE rather than substring
+// scanned, because escaped key names and field order must never evade the
+// rule. Ordinary phone actions without text stay replayable and unrelated
+// document/file tools are never blanket-redacted. The live dispatch copy
+// always keeps the exact bytes.
 
 import Foundation
 import FloeModels
@@ -33,6 +46,31 @@ public enum ToolArgumentSanitizer {
         "storage", "localstorage", "sessionstorage", "cookiestorage", "storagearea"
     ]
 
+    /// The Android platform tool that carries text input. The legacy
+    /// underscore alias is normalised exactly like the browser helper, so a
+    /// wire name accepted by the dispatcher can never escape this rule.
+    /// Only this tool is affected; document, file and chat tools keep
+    /// ordinary text persistence behaviour.
+    static func isPhoneActTool(_ toolName: String?) -> Bool {
+        guard let toolName else { return false }
+        let canonical = toolName.lowercased().replacingOccurrences(of: "_", with: ".")
+        return canonical == "phone.act"
+    }
+
+    /// Conservative phone.act rule: any root-level `text`/`sensitiveText`
+    /// key (case-insensitive) is a credential regardless of the declared
+    /// action, and any NON-OBJECT parsed phone.act payload fails closed as
+    /// sensitive so it is omitted whole. Malformed bytes are handled by the
+    /// callers before structural scrubbing is possible.
+    static func phoneTextInputRequested(_ object: Any, toolName: String?) -> Bool {
+        guard isPhoneActTool(toolName) else { return false }
+        guard let dictionary = object as? [String: Any] else { return true }
+        return dictionary.keys.contains {
+            let lowered = $0.lowercased()
+            return lowered == "text" || lowered == "sensitivetext"
+        }
+    }
+
     public static func redactedArgumentsJSON(
         _ data: Data,
         toolName: String? = nil
@@ -47,16 +85,29 @@ public enum ToolArgumentSanitizer {
             }
             return Data(redactedText(String(decoding: data, as: UTF8.self)).utf8)
         }
+        if isPhoneActTool(toolName), object as? [String: Any] == nil {
+            // A non-object phone.act document (array or fragment) cannot be
+            // scrubbed field-wise: omit the whole payload instead of
+            // persisting it unchanged.
+            return Data(#"{"_redacted":"Phone text input arguments omitted"}"#.utf8)
+        }
+        let phoneText = phoneTextInputRequested(object, toolName: toolName)
         let scrubbed = scrub(
             object,
             credentialContext: false,
-            storageSetter: storageSetter
+            storageSetter: storageSetter,
+            sensitivePhoneText: phoneText
         )
         guard JSONSerialization.isValidJSONObject(scrubbed),
               let encoded = try? JSONSerialization.data(
                 withJSONObject: scrubbed,
                 options: [.sortedKeys, .withoutEscapingSlashes]
               ) else {
+            if phoneText {
+                // A phone text argument that cannot be re-encoded must never
+                // fall back to pattern substitution over the raw payload.
+                return Data(#"{"_redacted":"Phone text input arguments omitted"}"#.utf8)
+            }
             return Data(redactedText(String(decoding: data, as: UTF8.self)).utf8)
         }
         return encoded
@@ -77,9 +128,18 @@ public enum ToolArgumentSanitizer {
         toolName: String? = nil
     ) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
+            if isPhoneActTool(toolName) {
+                // Malformed or partial phone.act bytes are omitted whole:
+                // escaped key names and field order must never evade the
+                // detection by substring scanning.
+                return true
+            }
             let lowered = String(decoding: data, as: UTF8.self).lowercased()
             return isBrowserStorageSetter(toolName)
                 || sensitiveNames.contains { lowered.contains("\"\($0)\"") }
+        }
+        if phoneTextInputRequested(object, toolName: toolName) {
+            return true
         }
         let storageSetter = isBrowserStorageSetter(toolName)
             && (object as? [String: Any]).map {
@@ -176,7 +236,8 @@ public enum ToolArgumentSanitizer {
     private static func scrub(
         _ value: Any,
         credentialContext: Bool,
-        storageSetter: Bool
+        storageSetter: Bool,
+        sensitivePhoneText: Bool = false
     ) -> Any {
         if let dictionary = value as? [String: Any] {
             var result: [String: Any] = [:]
@@ -188,6 +249,17 @@ public enum ToolArgumentSanitizer {
                 && (dictionary["action"] as? String)?.lowercased() == "set"
             for (key, child) in dictionary {
                 let lowered = key.lowercased()
+                if sensitivePhoneText, lowered == "text" || lowered == "sensitivetext" {
+                    // phone.act shape (action-agnostic): {action?,
+                    // nodeRef:"n3", text|sensitiveText:"SECRET", ...}.
+                    // Keep the action/ref/id metadata; mask only the typed
+                    // value. The flag is consumed at this arguments root —
+                    // recursion below passes the default false, so nested
+                    // documents under other tools are never blanket-
+                    // redacted.
+                    result[key] = "[redacted]"
+                    continue
+                }
                 if isCredentialHeader, lowered == "value" {
                     result[key] = "[redacted]"
                     continue

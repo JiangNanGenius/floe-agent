@@ -125,8 +125,15 @@ extension FacadeRunDomain {
             return true // foreign/retired producer: drop, mutate nothing
         }
         let bundle = ownership.bundle
+        // The live pump RETAINS encoded frames for consumers, so a raw
+        // phone.act text input would survive in the projection ring even
+        // though the durable event row was already scrubbed by the service.
+        // Ingest (and classify) a scrubbed COPY: the business run and its
+        // authorized dispatch are untouched — only the retained UI record
+        // omits the credential bytes. Non-input events pass through exactly.
+        let projectedEvent = Self.sanitizedProjectionCopy(of: event)
         if let token = ownership.consumerToken {
-            let outcome = components.events.ingestLive(event, token: token)
+            let outcome = components.events.ingestLive(projectedEvent, token: token)
             switch outcome {
             case .detached, .fencedByEpoch:
                 // Priority saturation or an epoch fence detaches THIS
@@ -142,7 +149,7 @@ extension FacadeRunDomain {
                 break
             }
         }
-        switch event {
+        switch projectedEvent {
         case .toolLifecycle(let lifecycle):
             switch lifecycle {
             case .requested(let call), .started(let call):
@@ -257,6 +264,34 @@ extension FacadeRunDomain {
     /// terminal detaches them. No UI-emulated children exist here. The
     /// cross-check reads the run's OWN bundle (temporary sessions keep
     /// children in-memory by the original DelegateTool semantics).
+    /// Scrubbed COPY of one harness event for live-projection retention.
+    /// Only the argument-carrying shapes are copied through
+    /// `ToolArgumentSanitizer.sanitizedForPersistence`; every other event
+    /// returns unchanged. The original event (and the live tool dispatch it
+    /// describes) always keeps its exact authorized bytes — this copy exists
+    /// solely because the pump ring retains encoded frames for consumers.
+    static func sanitizedProjectionCopy(of event: HarnessEvent) -> HarnessEvent {
+        switch event {
+        case .toolLifecycle(let lifecycle):
+            switch lifecycle {
+            case .requested(let call):
+                return .toolLifecycle(.requested(
+                    ToolArgumentSanitizer.sanitizedForPersistence(call)))
+            case .started(let call):
+                return .toolLifecycle(.started(
+                    ToolArgumentSanitizer.sanitizedForPersistence(call)))
+            case .finished:
+                return event
+            }
+        case .approvalRequested(let request):
+            var copy = request
+            copy.toolCall = ToolArgumentSanitizer.sanitizedForPersistence(request.toolCall)
+            return .approvalRequested(copy)
+        default:
+            return event
+        }
+    }
+
     private func observeChild(runID: UUID, snapshot: ChildRunSnapshot,
                               bundle: RunPersistenceBundle) async {
         switch snapshot.state {

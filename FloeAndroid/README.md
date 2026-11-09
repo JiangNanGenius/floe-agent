@@ -1,6 +1,20 @@
 # Floe for Android
 
-## Current delivery — Android Alpha59 (2026-11-08)
+## Current delivery — Android Alpha71 (2026-11-10)
+
+[Alpha71/code97](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.71) is published from immutable source `e9f94bd602efda39be91a39e4486bf60abc578ee`. It scopes runtime installation callbacks to the real OS session and App build, retains the system confirmation entry, and reports measured setup stages, bytes, percentage and transfer rate. Thirty-two focused checks, related Full/Play/runtime compilation and package checks passed. The unchanged native33 input set was reused; all seven anonymous public asset bytes and production update discovery were read back. See the [delivery](../docs/releases/ANDROID_ALPHA71_DELIVERY.md).
+
+Samsung completed the actual public70→71 in-App upgrade, including both main/runtime97 system installations and exact installed bytes. The visible five tasks, two projects and existing installed Linux environment remain available. Host delta reconstruction passed separately; the actual Samsung transfer mode was not captured. Fresh Linux-download progress, Sony Android9 feedback, automatic unlock/relock and the remaining N01–N08 scenarios continue. Known-password input is under implementation and has no new APK/device pass yet.
+
+当前Alpha71/code97已公开；三星真实在线联合升级及安装字节核对通过，原任务、项目和已有Linux环境保留。新下载计量、索尼反馈及自动解锁等仍待各自实测，整轮N01–N08未收口；已知密码填写正在接通实际Android运行核心的记录与恢复保护。
+
+## Next source checkpoint — Android Alpha72 candidate (code98)
+
+Known-password entry uses the existing authorized phone tool and protected-field metadata. Tool cards, retained live frames and checkpoints scrub input copies; the executor keeps the exact live input, and interrupted sensitive input is not replayed from redacted records. Local environment settings now expose a real recheck and diagnostic details after extraction when terminal readiness is still unavailable. The installed environment and user files are preserved.
+
+这是源码候选，尚非公开安装包。系统／应用权限与窗口边界保持；密码只用于已授权任务，不读取密码框现有内容。解压完成后的不可用状态增加重新检查和诊断详情；索尼 Android9 的具体启动失败仍待实际错误信息确认，不宣称已恢复。相关编译、三星验证和发行结果分别追加。
+
+## Previous delivery — Android Alpha59 (2026-11-08)
 
 [Alpha59/code85](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.59) is published from immutable source `29eaf7cfcb448298c2aa0cdc3f6f5b9cf4b4e803`. Exact-observation evidence fixes the old Find/Save meaning used during phone approval. Thirteen focused host tests, actual ARM64 production and packaged identity/alignment passed. Seven anonymous public asset downloads and actual production update discovery were read back; iOS Latest remains preserved. See the [delivery](../docs/releases/ANDROID_ALPHA59_DELIVERY.md).
 

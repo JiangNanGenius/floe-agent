@@ -14,11 +14,18 @@ object PhoneControlObservationText {
                 .toString()
         }
         if (observation.truncated) out.append(" truncated")
-        out.append("\nflags: c=click e=setText s=scroll -=read-only h=hidden d=disabled")
+        out.append(
+            "\nflags: c=click e=setText s=scroll p=protected input " +
+                "(fill with setText sensitiveText) -=read-only h=hidden d=disabled",
+        )
 
         val byRef = observation.nodes.associateBy { it.ref }
         fun actionable(node: PhoneControlNode) = node.visible && node.enabled &&
             !node.password && !node.redacted && (node.clickable || node.editable || node.scrollable)
+        // Safe structural metadata for a protected field: identity, position
+        // and editability may be exposed, never the current contents.
+        fun protectedEditable(node: PhoneControlNode) =
+            (node.password || node.redacted) && node.visible && node.enabled && node.editable
         fun ownLabel(node: PhoneControlNode): String? =
             if (node.password || node.redacted) null else
                 sequenceOf(node.text, node.contentDescription, node.hintText)
@@ -47,6 +54,7 @@ object PhoneControlObservationText {
         val ranked = observation.nodes.sortedWith(
             compareBy<PhoneControlNode> {
                 when {
+                    protectedEditable(it) -> 0
                     actionable(it) && it.editable -> 0
                     actionable(it) -> 1
                     else -> 2
@@ -67,7 +75,10 @@ object PhoneControlObservationText {
             val flags = buildString {
                 if (!node.visible) append('h')
                 if (!node.enabled) append('d')
-                if (actionable(node)) {
+                if (node.password || node.redacted) {
+                    append('p')
+                    if (protectedEditable(node)) append('e')
+                } else if (actionable(node)) {
                     if (node.clickable) append('c')
                     if (node.editable) append('e')
                     if (node.scrollable) append('s')

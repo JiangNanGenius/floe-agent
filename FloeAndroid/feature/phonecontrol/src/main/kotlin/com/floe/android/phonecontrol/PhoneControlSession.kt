@@ -307,7 +307,10 @@ internal class PhoneControlSession(
                     PhoneControlDenial.NODE_UNAVAILABLE,
                 )
                 if (!node.editable) return PhoneControlResult.Denied(PhoneControlDenial.NODE_NOT_EDITABLE)
-                PhoneControlPolicy.fieldActionDenial(node)?.let {
+                PhoneControlPolicy.fieldActionDenial(
+                    node,
+                    sensitiveInput = action.sensitive,
+                )?.let {
                     return PhoneControlResult.Denied(it)
                 }
             }
@@ -374,6 +377,7 @@ internal class PhoneControlSession(
             is PhoneControlAction.SetText -> nodeAction(
                 effective, record, action.nodeRef, NodeRequirement.SET_TEXT, opId,
                 actionName = action.wireName, scrollDirection = null, setText = action.text,
+                sensitiveInput = action.sensitive,
             )
             is PhoneControlAction.Scroll -> nodeAction(
                 effective, record, action.nodeRef, NodeRequirement.SCROLL, opId,
@@ -397,6 +401,7 @@ internal class PhoneControlSession(
         actionName: String,
         scrollDirection: PhoneControlScrollDirection?,
         setText: String?,
+        sensitiveInput: Boolean = false,
     ) {
         val nodeRecord = record.records[nodeRef]
         if (nodeRecord == null) {
@@ -419,13 +424,18 @@ internal class PhoneControlSession(
                 return
             }
             try {
-                validateResolved(node, nodeRecord, record, effective, requirement)?.let {
+                validateResolved(
+                    node, nodeRecord, record, effective, requirement, sensitiveInput,
+                )?.let {
                     finishAction(PhoneControlResult.Denied(it))
                     return
                 }
                 suppressOwnInput()
                 val accepted = when (requirement) {
                     NodeRequirement.CLICK -> node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    // Exact bytes go to the framework once, including a
+                    // sensitive credential: nothing here logs, echoes,
+                    // persists or blindly retries the payload.
                     NodeRequirement.SET_TEXT -> node.performAction(
                         AccessibilityNodeInfo.ACTION_SET_TEXT,
                         Bundle().apply {
@@ -662,6 +672,7 @@ internal class PhoneControlSession(
         record: ObservationRecord,
         effective: Set<String>,
         requirement: NodeRequirement,
+        sensitiveInput: Boolean = false,
     ): PhoneControlDenial? {
         val className = node.className?.toString().orEmpty()
         if (className != nodeRecord.className) return PhoneControlDenial.NODE_UNAVAILABLE
@@ -690,7 +701,11 @@ internal class PhoneControlSession(
             NodeRequirement.SET_TEXT -> when {
                 !runCatching { node.isEditable }.getOrDefault(false) ->
                     PhoneControlDenial.NODE_NOT_EDITABLE
-                runCatching { node.isPassword }.getOrDefault(false) ->
+                // Fresh-tree recheck: a live protected field still refuses
+                // ordinary text. The explicit sensitive route may fill it,
+                // and the framework call alone is never treated as semantic
+                // success — the contents are never read back either.
+                !sensitiveInput && runCatching { node.isPassword }.getOrDefault(false) ->
                     PhoneControlDenial.SENSITIVE_FIELD
                 else -> null
             }

@@ -165,9 +165,16 @@ internal object DeviceAccessToolCatalog {
             "acceptance is not reported as semantic success. A node ref from an " +
             "expired or replaced observation is refused. Use only refs from the latest " +
             "actual observation in this run, never from narrative or history. Node flags " +
-            "c/e/s indicate click/setText/scroll; '-' is read-only. A label child " +
+            "c/e/s/p indicate click/setText/scroll/protected field; '-' is read-only. A label child " +
             "is not automatically clickable; use its returned actionable parent ref. " +
-            "An empty editable input is still listed as [empty input].",
+            "An empty editable input is still listed as [empty input]. A p field never shows " +
+            "its contents and refuses ordinary text: to fill one with a credential the user " +
+            "already provided in this conversation, send action=setText with sensitiveText " +
+            "(setText needs exactly one of text or sensitiveText, never both; an empty " +
+            "string clears the field). Persisted setText input is redacted for " +
+            "every field, an accepted fill is never read back, and an interrupted fill is " +
+            "never silently replayed. Screenshots stay refused while any password field is " +
+            "visible. Never search the screen, files or other apps for a password.",
         schema = schema(
             properties = JSONObject()
                 .put("observationId", string("Observation id returned by phone.observe; optional only for launching an authorized app.", 1, 64))
@@ -176,7 +183,12 @@ internal object DeviceAccessToolCatalog {
                     listOf("click", "setText", "scroll", "swipe", "back", "home", "launch"),
                 ))
                 .put("nodeRef", string("Node ref for click/setText/scroll/swipe.", 1, 16))
-                .put("text", string("Replacement text for setText (max 2000 characters).", 0, 2000))
+                .put("text", string(
+                    "Ordinary replacement text for setText (max 2000 characters). Refused on a protected (p) field; use sensitiveText there. The value is redacted from persisted arguments.", 0, 2000,
+                ))
+                .put("sensitiveText", string(
+                    "User-provided credential for a protected (p) field, used instead of text on action=setText and never together with it. Dispatched once, never read back, redacted from every durable record and non-replayable after interruption.", 0, 2000,
+                ))
                 .put("direction", enum(
                     "Direction for scroll or swipe.",
                     listOf("forward", "backward", "up", "down", "left", "right"),

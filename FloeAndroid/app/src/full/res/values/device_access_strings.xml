@@ -6,7 +6,7 @@
     <string name="settings_phone">Phone</string>
     <string name="device_access_status_label">Status</string>
     <string name="device_access_root_enable">Enable root access</string>
-    <string name="device_access_intro">Grant each layer separately. Floe never bypasses passwords, secure windows or the lock screen.</string>
+    <string name="device_access_intro">Authorize phone access as needed. The assistant can enter passwords provided for the task without reading existing field contents.</string>
 
     <string name="device_access_accessibility_section">Phone control (Accessibility)</string>
     <string name="device_access_accessibility_disclosure">Phone control reads the visible page’s node tree and acts only for the task you start.</string>
@@ -157,7 +157,7 @@
     <string name="device_access_error_phone_taken">You took the device back.</string>
     <string name="device_access_error_phone_service">Phone control service is not connected.</string>
     <string name="device_access_error_phone_target">The current app is not in the allowed target list.</string>
-    <string name="device_access_error_phone_protected">Password fields, secure windows and the lock screen are never touched.</string>
+    <string name="device_access_error_phone_protected">The current screen or input field is protected.</string>
     <string name="device_access_error_phone_stale">The page changed; observe it again.</string>
     <string name="device_access_error_phone_not_allowed">Phone control is not allowed for this task.</string>
     <string name="device_access_error_phone_not_enabled">Phone control is not enabled in Android settings.</string>

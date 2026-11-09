@@ -207,11 +207,25 @@ sealed interface PhoneControlAction {
         override val wireName: String get() = "click"
     }
 
-    /** Never logged or echoed; [toString] intentionally hides the payload. */
-    class SetText(val nodeRef: String, val text: String) : PhoneControlAction {
+    /**
+     * Never logged or echoed; [toString] intentionally hides the payload.
+     *
+     * [sensitive] is true when the payload arrived through the explicit
+     * `phone.act` `sensitiveText` parameter: a credential the user already
+     * supplied inside this authorized task (no vault prerequisite). The exact
+     * bytes are dispatched once to a live-owned, fresh, editable node, both
+     * wire keys are redacted before persistence, and an interrupted fill is
+     * never silently replayed. [sensitive] = false keeps the ordinary-text
+     * behaviour, which still refuses protected fields at the policy gate.
+     */
+    class SetText(
+        val nodeRef: String,
+        val text: String,
+        val sensitive: Boolean = false,
+    ) : PhoneControlAction {
         override val wireName: String get() = "setText"
         override fun toString(): String =
-            "SetText(nodeRef=$nodeRef, text=<redacted>, chars=${text.length})"
+            "SetText(nodeRef=$nodeRef, text=<redacted>, chars=${text.length}, sensitive=$sensitive)"
     }
 
     data class Scroll(

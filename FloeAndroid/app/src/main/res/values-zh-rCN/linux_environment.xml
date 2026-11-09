@@ -16,6 +16,11 @@
     <string name="linux_environment_tools_pending">终端任务暂不可用。</string>
     <string name="linux_environment_tools_ready">终端任务已可用。</string>
     <string name="linux_environment_tools_prepare_terminal">在任意任务中打开终端，即可完成本地任务的准备。</string>
+    <string name="linux_environment_recheck">重新检查</string>
+    <string name="linux_environment_tools_probe_unavailable">无法读取与 Linux 运行环境的连接，重新检查只会重新测量，不会重装或重新下载。</string>
+    <string name="linux_environment_tools_link_pending">已安装的环境尚未与运行环境完成关联，重新检查会完成关联，您的文件和已安装软件保持不变。</string>
+    <string name="linux_environment_tools_component_mismatch">运行组件与当前 Floe 版本不匹配，请一起更新 Floe 和 Linux 组件后重新检查。</string>
+    <string name="linux_environment_tools_attempt_failed">上一次就绪检查未完成。可在任意任务中打开终端完成准备，或重新检查再次测量。</string>
     <string name="linux_environment_local_network">允许局域网访问</string>
     <string name="linux_failure_component">运行环境准备失败。请重试；若仍失败，请附上诊断详情反馈。</string>
     <string name="linux_failure_component_archive">无法读取运行环境安装文件。请重新下载完整安装包后重试。</string>

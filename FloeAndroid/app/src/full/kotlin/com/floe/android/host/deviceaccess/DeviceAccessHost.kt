@@ -63,9 +63,7 @@ import com.floe.android.phonecontrol.PhoneControlOwner
 import com.floe.android.phonecontrol.PhoneControlPrincipal
 import com.floe.android.phonecontrol.PhoneControlResult
 import com.floe.android.phonecontrol.PhoneControlScreenshotRequest
-import com.floe.android.phonecontrol.PhoneControlScrollDirection
 import com.floe.android.phonecontrol.PhoneControlStatus
-import com.floe.android.phonecontrol.PhoneControlSwipeDirection
 import com.floe.android.phonecontrol.PhoneControlUnavailable
 import com.floe.android.rootsystem.AccessActionResult
 import com.floe.android.rootsystem.AdbStatus
@@ -104,7 +102,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONObject
 
 /**
  * FULL-channel, Application-owned device-access controller.
@@ -2786,8 +2783,11 @@ internal class DeviceAccessHost(
         val principal = phonePrincipal(call)
             ?: return PlatformToolOutcome.Failure("phone_arm_required")
         val observationId = call.arguments.optString("observationId")
-        val action = parsePhoneAction(call.arguments)
+        val action = PhoneActionArguments.parse(call.arguments)
             ?: return PlatformToolOutcome.Failure("invalid_arguments")
+        // The credential bytes live only in this dispatch path: the outcome
+        // header marks the input as redacted and never includes the payload.
+        val sensitiveInput = action is PhoneControlAction.SetText && action.sensitive
         if (observationId.isEmpty() && action !is PhoneControlAction.Launch) {
             return PlatformToolOutcome.Failure("invalid_arguments")
         }
@@ -2802,7 +2802,7 @@ internal class DeviceAccessHost(
                     if (userStopped || phonePause.isPaused(ownerOf(call)) || armedOwner != ownerOf(call)) {
                         PlatformToolOutcome.Failure("phone_stopped_by_user")
                     } else {
-                        actionOutcome(result.value)
+                        actionOutcome(result.value, sensitiveInput)
                     }
                 }
                 is PhoneControlResult.Denied -> deniedOutcome(result.reason)
@@ -2957,50 +2957,6 @@ internal class DeviceAccessHost(
         }
     }
 
-    private fun parsePhoneAction(arguments: JSONObject): PhoneControlAction? {
-        val action = arguments.optString("action")
-        val nodeRef = arguments.optString("nodeRef")
-        fun validRef(): Boolean =
-            nodeRef.isNotEmpty() && nodeRef.length <= 16 &&
-                nodeRef.all { it.isLetterOrDigit() }
-        return when (action) {
-            "click" -> if (validRef()) PhoneControlAction.Click(nodeRef) else null
-            "setText" -> {
-                val text = arguments.optString("text")
-                if (!validRef() || text.length > 2_000) null
-                else PhoneControlAction.SetText(nodeRef, text)
-            }
-            "scroll" -> {
-                val direction = when (arguments.optString("direction")) {
-                    "forward" -> PhoneControlScrollDirection.FORWARD
-                    "backward" -> PhoneControlScrollDirection.BACKWARD
-                    else -> null
-                }
-                if (!validRef() || direction == null) null
-                else PhoneControlAction.Scroll(nodeRef, direction)
-            }
-            "swipe" -> {
-                val direction = when (arguments.optString("direction")) {
-                    "up" -> PhoneControlSwipeDirection.UP
-                    "down" -> PhoneControlSwipeDirection.DOWN
-                    "left" -> PhoneControlSwipeDirection.LEFT
-                    "right" -> PhoneControlSwipeDirection.RIGHT
-                    else -> null
-                }
-                if (!validRef() || direction == null) null
-                else PhoneControlAction.Swipe(nodeRef, direction)
-            }
-            "back" -> PhoneControlAction.Back
-            "home" -> PhoneControlAction.Home
-            "launch" -> {
-                val pkg = arguments.optString("packageName")
-                if (pkg.isBlank() || pkg.length > 255) null
-                else PhoneControlAction.Launch(pkg)
-            }
-            else -> null
-        }
-    }
-
     // ------------------------------------------------------------ phone results
 
     private fun observationOutcome(observation: PhoneControlObservation): PlatformToolOutcome =
@@ -3011,9 +2967,11 @@ internal class DeviceAccessHost(
 
     private fun actionOutcome(
         result: com.floe.android.phonecontrol.PhoneControlActionResult,
+        sensitiveInput: Boolean = false,
     ): PlatformToolOutcome {
         val header = buildString {
             append("action=").append(result.action)
+            if (sensitiveInput) append(" input=redacted")
             append(" dispatch=").append(result.dispatch.name)
             result.screenChanged?.let { append(" screenChanged=").append(it) }
             result.gestureCompleted?.let { append(" gestureCompleted=").append(it) }
