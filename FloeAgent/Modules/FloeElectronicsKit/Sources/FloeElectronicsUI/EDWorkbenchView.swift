@@ -134,6 +134,7 @@ public struct EDWorkbenchView: View {
     @State private var showCrossProbeMessage = false
     @State private var crossProbeTask: Task<Void, Never>?
     @State private var locatingComponent = false
+    @State private var showingBackAnnotation = false
 
     public init(session: EDWorkbenchSession, onAssistant: (() -> Void)? = nil,
                 onExportPreview: ((EDAExchangeFile, UInt64) -> Void)? = nil) {
@@ -211,6 +212,9 @@ public struct EDWorkbenchView: View {
         .sheet(item: $crossProbeRequest) { request in
             EDCrossProbePicker(request: request, busy: locatingComponent,
                 select: { target in locate(request, targetID: target.id) }, cancel: { crossProbeRequest = nil })
+        }
+        .sheet(isPresented: $showingBackAnnotation) {
+            if let board = currentBoard { EDBackAnnotationSheet(session: session, boardID: board.id) }
         }
         .alert(edText("无法定位", "Cannot locate component"), isPresented: $showCrossProbeMessage) {
             Button(edText("好", "OK"), role: .cancel) { }
@@ -322,6 +326,13 @@ public struct EDWorkbenchView: View {
                     Button(edText("从原理图更新 PCB", "Update PCB from schematic"), systemImage: "arrow.triangle.2.circlepath") { updateBoard() }
                     Button(edText("重填铜区", "Refill copper zones"), systemImage: "square.dashed.inset.filled") { refillBoard() }
                         .disabled(session.busy || session.isFilling)
+                }
+                if tab == .schematic || tab == .board {
+                    Button(edText("从 PCB 更新原理图", "Update schematic from PCB"), systemImage: "arrow.triangle.2.circlepath") {
+                        showingBackAnnotation = true
+                    }
+                    .disabled(currentBoard == nil || session.busy || session.isClosed || session.isRouting || session.isFilling)
+                    .accessibilityIdentifier("electronics.backAnnotation.open")
                 }
             } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44).contentShape(Rectangle()) }
             .accessibilityLabel(edText("画布选项", "Canvas options"))

@@ -53,7 +53,12 @@ enum SimulationStudyDefaults {
             default: break
             }
             if !preset.values.isEmpty { prototypes["material"] = try json(SimulationMaterial(name:"Material",properties:preset.values)) }
-            return .init(kind:kind,name:study.name,configuration:try JSONDecoder().decode(SimulationJSONValue.self,from:study.configuration),materialPropertyUnits:preset.units,prototypes:prototypes)
+            var configuration=try JSONDecoder().decode(SimulationJSONValue.self,from:study.configuration)
+            if kind == .thermalStress,case .object(var values)=configuration {
+                values["temperatureResultID"] = .null;values["temperatureFrameID"] = .null
+                configuration = .object(values)
+            }
+            return .init(kind:kind,name:study.name,configuration:configuration,materialPropertyUnits:preset.units,prototypes:prototypes)
         }
     }
 }

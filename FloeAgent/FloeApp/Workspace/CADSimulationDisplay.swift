@@ -17,12 +17,14 @@ nonisolated enum CADSimulationDisplayBuilder {
             let exterior = try SimulationMeshTopology.exteriorFaces(mesh)
             guard exterior.count <= 300_000 else { throw SimulationError.resourceLimit("The display exceeds 300,000 surface triangles.") }
             let displacement = frame.fields.first { $0.id == "displacement" && $0.location == .node && $0.components == 3 }
+            let modeShape = frame.fields.first { $0.id == "mode_shape" }
+            let modalPositions = try modeShape.map { try SimulationModalShapeDisplay.positions(mesh:mesh,field:$0,scale:deformation) }
             let positions = mesh.nodes.enumerated().map { i, node -> SIMD3<Float> in
                 var p = node
                 if let displacement, i*3+2 < displacement.values.count {
                     p = p + SimulationVector3(displacement.values[i*3],displacement.values[i*3+1],displacement.values[i*3+2])*deformation
                 }
-                return point(p)
+                return point(modalPositions?[i] ?? p)
             }
             func magnitude(_ index: Int) -> Double? {
                 guard let field, index >= 0, (index+1)*field.components <= field.values.count else { return nil }
@@ -32,6 +34,7 @@ nonisolated enum CADSimulationDisplayBuilder {
             }
             let values: [Double?] = exterior.map { face in
                 guard let field else { return nil }
+                if field.location == .global { return magnitude(0) }
                 if field.location == .element { return magnitude(face.elementIndex) }
                 if field.location == .node {
                     let values = face.nodes.compactMap(magnitude)

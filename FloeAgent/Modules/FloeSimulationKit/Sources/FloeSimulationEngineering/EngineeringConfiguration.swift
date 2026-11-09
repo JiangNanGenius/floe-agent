@@ -73,6 +73,8 @@ public struct EngineeringSimulationConfiguration: Codable, Equatable, Sendable {
     public var initialTemperatureKelvin = 293.15
     public var referenceTemperatureKelvin = 293.15
     public var temperatureResultID: UUID?
+    /// nil selects the final saved temperature frame. This is a static snapshot.
+    public var temperatureFrameID: Int?
     public var time = SimulationTimeSettings(durationSeconds: 1, stepSeconds: 0.01, outputIntervalSeconds: 0.1)
     public var relativeTolerance = 1e-8
     public init() {}

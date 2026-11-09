@@ -1739,6 +1739,11 @@ targets:
       - path: Tests/FloeAppTests/MCPConnectionFailurePresentationTests.swift
       - path: Tests/FloeAppTests/BluetoothSerialAutoConnectionTests.swift
       - path: Tests/FloeAppTests/BluetoothAutoConnectionAppContractTests.swift
+      - path: Tests/FloeAppTests/ElectronicsBackAnnotationAppTests.swift
+      - path: Tests/FloeAppTests/ScientificWritingAppGuestQualificationTests.swift
+      - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsCoreTests/EDABackAnnotationTests.swift
+      - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/SimulationTet4Modal06Tests.swift
+      - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/SimulationThermoelastic07Tests.swift
       - path: Tests/FloeAppTests/ConfigSyncRecoveryTests.swift
       - path: Tests/FloeAppTests/LinuxGuestImageWebsiteFallbackTests.swift
       - path: Tests/FloeSkillsTests/GitHubTransportMirrorTransferWaitTests.swift
@@ -1925,6 +1930,8 @@ targets:
       - package: FloeSimulationKit
         product: FloeSimulationGeometry
       - package: FloeSimulationKit
+        product: FloeSimulationEngineering
+      - package: FloeSimulationKit
         product: FloeSimulationFields
       - package: FloeSimulationKit
         product: FloeSimulationPhysics
@@ -1936,6 +1943,8 @@ targets:
         product: FloePrintCore
       - package: FloeManufacturingKit
         product: FloeManufacturingCore
+      - package: FloeManufacturingKit
+        product: FloeEngineeringCore
       - package: FloeManufacturingKit
         product: FloeManufacturingUI
       - package: FloeMusicKit

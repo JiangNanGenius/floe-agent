@@ -18,6 +18,7 @@ nonisolated enum StudioElectronicsContract {
         let manufacturingFields: [String: String]
         let copperFillFields: [String: String]
         let graphicLayerFields: [String: String]
+        let backAnnotationFields: [String: String]
         let assemblyVariants: [String]
         let commandFormats: [String: String]
         let examplesJSON: String
@@ -27,7 +28,7 @@ nonisolated enum StudioElectronicsContract {
         "symbol.move", "wire.put", "bus.unfold", "label.put", "junction.put", "noConnect.put", "schematic.remove", "board.remove", "native.put", "undo", "redo"]
     static let nativeKinds = ["symbolDefinition", "footprintDefinition", "component", "sheet", "symbolPlacement",
         "wire", "junction", "noConnect", "label", "bus", "sheetLink", "board", "footprint", "track", "via", "zone", "keepout", "hole", "simulation"]
-    static let runActions = ["eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.refillCopper", "eda.export"]
+    static let runActions = ["eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.backAnnotation", "eda.refillCopper", "eda.export"]
     static let commandFormats: [String: String] = [
         "rename": "{op:rename,title:string}",
         "sheet.create": "{op:sheet.create,name:string,id?:new UUID}",
@@ -46,7 +47,7 @@ nonisolated enum StudioElectronicsContract {
         "undo": "[{op:undo}]. One command only, with the exact outer expectedRevision.",
         "redo": "[{op:redo}]. One command only, with the exact outer expectedRevision."
     ]
-    static let guide = "Use a plain JSON array of explicit commands listed in electronicsCapabilities. Each command has op and documented flat fields; copy its complete examples with actual sheet/symbol/board IDs from this original. Coordinates and widths are millimetres, angles degrees. native.put accepts one complete record as value, not EDAEdit's synthesized enum payload; missing/unknown fields return a path. An entire batch validates before one revision/CAS save. undo/redo must be a single command. Read the actual saved state after editing. studio.run supports eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.refillCopper, eda.export with inputJSON.expectedRevision; drc/forwardAnnotation/refillCopper optionally take boardID, export additionally takes format and optional variant/boardID; gerberTechnical alone accepts gerberLayers. See manufacturingFields for a complete current-original export example. Set copperFillFields through native.put before refill; never author derived fill polygons/revision/state. inspectFrame accepts expectedRevision plus optional sheetID or boardID and maximumPixelSize."
+    static let guide = "Use a plain JSON array of explicit commands listed in electronicsCapabilities. Each command has op and documented flat fields; copy its complete examples with actual sheet/symbol/board IDs from this original. Coordinates and widths are millimetres, angles degrees. native.put accepts one complete record as value, not EDAEdit's synthesized enum payload; missing/unknown fields return a path. An entire batch validates before one revision/CAS save. undo/redo must be a single command. Read the actual saved state after editing. studio.run supports eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.refillCopper, eda.export with inputJSON.expectedRevision; drc/forwardAnnotation/refillCopper optionally take boardID, export additionally takes format and optional variant/boardID; gerberTechnical alone accepts gerberLayers. See manufacturingFields for a complete current-original export example. Set copperFillFields through native.put before refill; never author derived fill polygons/revision/state. inspectFrame accepts expectedRevision plus optional sheetID or boardID and maximumPixelSize. eda.backAnnotation previews PCB-to-schematic reference/value/footprint changes; read backAnnotationFields for its exact preview/apply source binding and pagination."
     static func capabilities(_ project: EDAProject) throws -> Capabilities {
         var examples: [[String: Any]] = [["op": "rename", "title": project.title]]
         if let sheet = project.sheets.first, let symbol = project.symbols.first {
@@ -103,6 +104,11 @@ nonisolated enum StudioElectronicsContract {
                 "relativeSide":"Footprint layer IDs are front-relative; F./B. swap once for a B.Cu instance. Board graphic layers are already absolute. Actual copper requires a real board copper layer; inconsistent kind/layer IDs fail.",
                 "outputs":"Cu/profile lists explicit silk/fabrication/courtyard/mask/paste graphics as excluded. gerberTechnical renders selected explicit Mask/Paste/SilkS/Fab pad/via openings and line/rectangle/circle/arc strokes; unrequested layers are listed. Text without glyph outlines, dimensions without drawing style, roundrect pads without radius and unknown assignments refuse selected output. Copper/Edge.Cuts graphic support and DRC/refill coverage are unchanged. No complete factory set or inferred glyphs/openings.",
                 "edits":"Explicit task-authorized layer assignment uses ordinary native.put/UI edits, existing permission scope, CAS and undo. New generic 0603/0805/DIP template rectangles explicitly use F.Fab/fabrication; old nil metadata is not guessed or migrated. Re-read the saved record after applying the requested layer change."
+            ],
+            backAnnotationFields: [
+                "inputJSON": "{expectedRevision:string,boardID?:UUID,preview?:boolean,references?:boolean,values?:boolean,footprintAssignments?:boolean,previewSourceSHA256?:string,offset?:integer,limit?:integer}. preview defaults true; all three field switches default true. No net rewiring or reference-based relinking.",
+                "preview": "Read the same original's changes without saving. Return canApply, totalChanges/totalIssues, concise change field names and issue codes. offset defaults0, limit defaults20, max50; nextOffset pages both arrays. Full before/after records remain in studio.read electronicsDocument. A conflict on any page blocks the whole plan.",
+                "apply": "Set preview=false and previewSourceSHA256 to the preceding preview receipt's sourceSHA256, preserving its expectedRevision, boardID and field switches. The existing native session/CAS/undo performs one atomic update. Independent footprints are skipped, duplicate proposed references or incompatible pin-to-pad assignments block application. Board placement/copper routing and other component fields stay; derived fills become stale through the ordinary edit transaction."
             ],
             assemblyVariants: project.variants,
             commandFormats: commandFormats,

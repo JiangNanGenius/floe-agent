@@ -22,10 +22,10 @@ public enum EngineeringUnsupported: String, Codable, Sendable, CaseIterable {
         switch self {
         case .plasticity: return "linear-elastic constitutive only; no yield surfaces or hardening"
         case .largeDeformation: return "small-strain kinematics only"
-        case .dynamics: return "static solves only; no mass matrix or time integration"
+        case .dynamics: return "constrained isotropic tet4 modes are available via EngineeringModalRequest; no free-free modes, damping or structural time integration"
         case .contact: return "no contact constraints or gap elements"
-        case .buckling: return "no geometric stiffness or eigenvalue solve"
-        case .thermalStress: return "thermal and structural solves are separate; no coupling"
+        case .buckling: return "no geometric stiffness or buckling eigenproblem"
+        case .thermalStress: return "one-way isotropic tet4 temperature snapshots are available via ThermoelasticRequest; no two-way feedback or temperature-dependent constitutive law"
         case .cfd: return "no flow solver of any kind"
         case .multiphysics: return "single-physics solves only"
         case .meshFromSurface: return "requires a real volume mesher; FE from STL is not claimed"

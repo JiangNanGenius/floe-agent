@@ -244,6 +244,15 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
             try EDAForwardAnnotation.apply(plan, to: &candidate)
         }
     }
+    public func backAnnotation(_ plan: EDABackAnnotationPlan,
+                               cancelled: @escaping @Sendable () -> Bool = { false }) async throws {
+        try await perform("backAnnotation", expectedRevision: plan.sourceRevision, beforeCommit: {
+            try Task.checkCancellation()
+            guard !cancelled(), !self.isClosed, !self.closing else { throw EDAError.cancelled }
+        }) { candidate in
+            try EDABackAnnotation.apply(plan, to: &candidate, cancelled: cancelled)
+        }
+    }
     public func createCopperZone(boardID: UUID, netID: String, layer: String, outline: [EDAPoint],
                                  expectedRevision: UInt64? = nil, cancelBeforeCommit: Bool = false) async throws {
         let zone = EDACopperFill.newZone(netID: netID, layer: layer, outline: outline)

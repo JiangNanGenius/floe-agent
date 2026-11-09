@@ -228,6 +228,11 @@ private struct EngineeringSettings: View {
                     ForEach(results.filter { [.thermalSteady,.thermalTransient].contains($0.kind) }) { Text($0.name).tag(Optional($0.id)) }
                 }
                 SimulationNumberField(label:simulationText("Stress-free temperature","无应力温度"),value:$configuration.referenceTemperatureKelvin,unit:"K")
+                Toggle(simulationText("Use final temperature frame","使用最终温度帧"),isOn:Binding(get:{configuration.temperatureFrameID==nil},set:{configuration.temperatureFrameID = $0 ? nil:0}))
+                if configuration.temperatureFrameID != nil {
+                    Stepper(simulationText("Temperature frame","温度帧")+": \((configuration.temperatureFrameID ?? 0)+1)",value:Binding(get:{configuration.temperatureFrameID ?? 0},set:{configuration.temperatureFrameID=$0}),in:0...10_000)
+                }
+                Text(simulationText("Uses one saved temperature frame to calculate deformation and stress.","使用一帧已保存的温度计算变形与应力。")).font(.caption).foregroundStyle(.secondary)
             }
             SimulationNumberField(label:simulationText("Relative tolerance","相对误差"),value:$configuration.relativeTolerance)
         }

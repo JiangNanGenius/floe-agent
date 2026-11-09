@@ -147,7 +147,12 @@ private struct SimulationResultInspector: View {
                     }
                     if let imaginary = field.imaginaryValues { Text(simulationText("Imaginary","虚部")+": "+imaginary[start..<(start+field.components)].map { String(format:"%.5g",$0) }.joined(separator:", ")).font(.caption) }
                 }
-                LabeledContent(simulationText("Deformation","变形倍率")) { TextField("1",value:$model.deformationScale,format:.number).frame(maxWidth:80) }
+                if model.currentFrame?.fields.contains(where:{ $0.id == "mode_shape" }) == true {
+                    LabeledContent(simulationText("Mode preview scale","振型预览倍率")) { TextField("1",value:$model.deformationScale,format:.number).frame(maxWidth:80) }
+                    Text(simulationText("At scale 1, the largest movement is 2% of the model's diagonal. Mode shapes show relative motion without a physical amplitude.","倍率为 1 时，最大移动为模型对角线的 2%。振型表示相对运动，不代表实际振幅。")).font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent(simulationText("Deformation","变形倍率")) { TextField("1",value:$model.deformationScale,format:.number).frame(maxWidth:80) }
+                }
                 Button(simulationText("Export CSV","导出 CSV")) { Task { await model.export() } }.accessibilityIdentifier("simulation.export")
                 if let url = model.exportURL { ShareLink(item:url) { Label(simulationText("Share result","共享结果"),systemImage:"square.and.arrow.up") } }
             }

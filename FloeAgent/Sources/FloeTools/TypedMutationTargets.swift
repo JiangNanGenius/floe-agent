@@ -41,6 +41,7 @@
 //   revision/hash binding, replay and atomic commits stay in the tools/hosts.
 
 import Foundation
+import CoreFoundation
 import FloeCore
 import FloeModels
 
@@ -539,7 +540,13 @@ public enum TypedMutationContract {
                    ["note","todo","decision","summary"].contains(action) { return [] }
             case "studio.run":
                 guard keys(["projectID","action","inputJSON"]), let action = arguments["action"] as? String,
-                      ["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.refillCopper","eda.export"].contains(action), inputIsNative() else { return [] }
+                      ["calculate","exportSTL","exportToolpath","slice","renderWAV","renderMP3","exportMedia","exportOriginal","exportORA","exportPSD","exportOTIO","eda.erc","eda.drc","eda.netlist","eda.forwardAnnotation","eda.backAnnotation","eda.refillCopper","eda.export"].contains(action), inputIsNative() else { return [] }
+                if action == "eda.backAnnotation" {
+                    guard let json = arguments["inputJSON"] as? String,
+                          let input = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+                          let preview = input["preview"] as? NSNumber,
+                          CFGetTypeID(preview) == CFBooleanGetTypeID(), !preview.boolValue else { return [] }
+                }
             case "studio.media":
                 guard keys(["projectID","toolID","inputJSON"]), let tool = arguments["toolID"] as? String,
                       nativeStudioMediaToolIDs.contains(tool), let json = text("inputJSON",262_144),

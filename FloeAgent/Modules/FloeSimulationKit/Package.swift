@@ -31,7 +31,7 @@ let package = Package(
         .target(name: "FloeSimulationSamples", dependencies: ["FloeSimulationCore", "FloeSimulationRuntime", "FloeSimulationGeometry", "FloeSimulationEngineering", "FloeSimulationPhysics"], path:"Samples"),
         .target(name: "FloeSimulationEngineering", dependencies: ["FloeSimulationCore", .product(name: "FloeEngineeringCore", package: "FloeManufacturingKit")]),
         .testTarget(name: "FloeSimulationCoreTests", dependencies: ["FloeSimulationCore"]),
-        .testTarget(name: "FloeSimulationIntegrationTests", dependencies: ["FloeSimulationCore", "FloeSimulationRuntime", "FloeSimulationPhysics", "FloeSimulationAnimation", "FloeSimulationEngineering", "FloeSimulationGeometry", "FloeSimulationFields", "FloeSimulationUI"])
+        .testTarget(name: "FloeSimulationIntegrationTests", dependencies: [.product(name:"FloeEngineeringCore",package:"FloeManufacturingKit"), "FloeSimulationCore", "FloeSimulationRuntime", "FloeSimulationPhysics", "FloeSimulationAnimation", "FloeSimulationEngineering", "FloeSimulationGeometry", "FloeSimulationFields", "FloeSimulationUI"])
     ],
     swiftLanguageModes: [.v6]
 )

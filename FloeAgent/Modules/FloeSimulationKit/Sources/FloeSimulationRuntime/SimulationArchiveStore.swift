@@ -125,6 +125,10 @@ public actor SimulationArchiveStore {
     }
 
     public func readResult(_ id: UUID) throws -> SimulationResult {
+        try readResultSnapshot(id).result
+    }
+
+    public func readResultSnapshot(_ id: UUID) throws -> SimulationArchivedResult {
         let parent = directory.appendingPathComponent("results", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
         let manifestData = try boundedData(parent.appendingPathComponent("manifest.json"))
         let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData)
@@ -142,7 +146,7 @@ public actor SimulationArchiveStore {
             return restored
         }
         try manifest.request.validate(); try result.validate(for: manifest.request)
-        return result
+        return .init(request:manifest.request,result:result)
     }
 
     public func exportCSV(_ result: SimulationResult) throws -> URL {

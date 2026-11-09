@@ -34,6 +34,7 @@ public struct LaTeXWorkbench:View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var panel:Panel? = .files
     @State private var showingPreview=false
+    @State private var availableWidth:CGFloat=0
     @State private var insertion:LaTeXInsertion?
     @State private var importingAsset=false
     @State private var share:ShareItem?
@@ -59,6 +60,13 @@ public struct LaTeXWorkbench:View {
                     Divider();preview.frame(minWidth:280,maxWidth:.infinity,maxHeight:.infinity)
                 }
             }
+        }
+        .onGeometryChange(for:CGFloat.self) { $0.size.width } action: { width in
+            availableWidth=width
+            if sizeClass == .regular,width<1_050,showingPreview {panel=nil}
+        }
+        .onChange(of:panel) { _,value in
+            if value != nil,sizeClass == .regular,availableWidth<1_050,showingPreview {showingPreview=false}
         }
         .task {
             if session.manifest == nil {await session.load()}
@@ -97,6 +105,12 @@ public struct LaTeXWorkbench:View {
                 Button {session.undo()}label:{Image(systemName:"arrow.uturn.backward")}.disabled(!session.undoAvailable).accessibilityLabel(session.t("撤销","Undo"))
                 Button {session.redo()}label:{Image(systemName:"arrow.uturn.forward")}.disabled(!session.redoAvailable).accessibilityLabel(session.t("重做","Redo"))
                 if session.mode == .source {
+                    Menu {
+                        Button(session.t("折叠／展开当前区域","Toggle current fold")) {session.foldSource(.toggleCurrent)}
+                        Button(session.t("全部折叠","Fold all")) {session.foldSource(.collapseAll)}
+                        Button(session.t("全部展开","Expand all")) {session.foldSource(.expandAll)}
+                    }label:{Image(systemName:"chevron.down.square")}
+                        .accessibilityLabel(session.t("源码折叠","Source folding")).accessibilityIdentifier("latex.folding")
                     Menu {ForEach(session.sourceCompletions) {value in Button(value.title) {session.complete(value)}}}label:{Text(session.t("补全","Complete"))}
                         .disabled(session.sourceCompletions.isEmpty)
                 }
@@ -104,10 +118,10 @@ public struct LaTeXWorkbench:View {
                     ForEach(LaTeXInsertion.allCases) {kind in Button(kind.title(session)) {insertion=kind}}
                     Button(session.t("导入图片或文件","Import image or file")) {importingAsset=true}
                 }label:{Image(systemName:"plus")}.accessibilityLabel(session.t("插入","Insert"))
-                Button {endEditing();Task {await session.compile();showingPreview=true}}label:{Label(session.t("排版","Typeset"),systemImage:"play.fill")}.disabled(session.isBuilding || operation != nil).accessibilityIdentifier("latex.compile")
+                Button {endEditing();Task {await session.compile();setPreview(true)}}label:{Label(session.t("排版","Typeset"),systemImage:"play.fill")}.disabled(session.isBuilding || operation != nil).accessibilityIdentifier("latex.compile")
                 if session.isBuilding || operation != nil {Button {if let operation {operation.stop()}else {session.stop()}}label:{Image(systemName:"stop.fill")}.accessibilityLabel(operation?.stopLabel ?? session.t("停止排版","Stop typesetting"))}
-                Button {showingPreview.toggle()}label:{Image(systemName:"doc.richtext")}.accessibilityLabel(session.t("PDF 预览","PDF preview"))
-                Button {endEditing();session.revealPDF();showingPreview=true}label:{Image(systemName:"scope")}.accessibilityLabel(session.t("定位到 PDF","Locate in PDF"))
+                Button {setPreview(!showingPreview)}label:{Image(systemName:"doc.richtext")}.accessibilityLabel(session.t("PDF 预览","PDF preview"))
+                Button {endEditing();session.revealPDF();setPreview(true)}label:{Image(systemName:"scope")}.accessibilityLabel(session.t("定位到 PDF","Locate in PDF"))
                 Menu {
                     if let url=session.pdfURL {Button(session.t("导出 PDF","Export PDF")) {if session.pdfIsCurrent {share = .init(url:url)}else {session.error=session.t("先排版最新内容，再导出 PDF。","Typeset the latest content before exporting PDF.")}}}
                     Button(session.t("导出工程 ZIP","Export project ZIP")) {endEditing();Task {do {share = .init(url:try await session.exportZIP())}catch {session.report(error)}}}
@@ -141,6 +155,10 @@ public struct LaTeXWorkbench:View {
                 }))
             }else {ContentUnavailableView(session.t("论文预览","Document preview"),systemImage:"doc.richtext",description:Text(session.t("点击“排版”生成 PDF。","Choose Typeset to generate the PDF.")))}
         }
+    }
+    private func setPreview(_ visible:Bool) {
+        if visible,sizeClass == .regular,availableWidth<1_050 {panel=nil}
+        showingPreview=visible
     }
     private func endEditing() {session.commitInput()}
     private func title(_ panel:Panel)->String {switch panel {case .files:session.t("文件","Files");case .outline:session.t("大纲","Outline");case .references:session.t("文献","References");case .search:session.t("查找与替换","Find and replace");case .history:session.t("历史","History");case .builds:session.t("排版记录","Builds");case .settings:session.t("项目设置","Project settings")}}

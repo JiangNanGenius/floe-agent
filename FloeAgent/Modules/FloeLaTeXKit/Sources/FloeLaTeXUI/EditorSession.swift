@@ -46,6 +46,8 @@ public typealias LaTeXTypesetAction = @MainActor @Sendable (LaTeXProjectStore,In
     public var focusedBlock:Int?
     public var pdfLocation:LaTeXPDFLocation?
     public var sourceReveal=UUID()
+    public var sourceFoldingRequest:(id:UUID,path:String,command:LaTeXSourceFolding.Command)?
+    public func foldSource(_ command:LaTeXSourceFolding.Command) {commitInput();sourceFoldingRequest=(UUID(),path,command)}
     public var searchQuery=""
     public var searchRegex=false
     public var searchCaseSensitive=false

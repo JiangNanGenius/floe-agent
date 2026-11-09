@@ -94,13 +94,51 @@ import FloeElectronicsUI
     static func run(record: PersonalContentRecord, directory: URL, action: String, inputJSON: String?, context: ToolContext,
                     validateOwner: @escaping @MainActor @Sendable () async throws -> Void) async throws -> ToolExecutionOutput {
         guard StudioElectronicsContract.runActions.contains(action) else { throw FloeError.validationFailed("Read electronicsCapabilities.runActions for implemented operations") }
-        let allowed: Set<String> = action == "eda.export" ? ["expectedRevision", "boardID", "format", "variant", "gerberLayers"]
-            : ["eda.drc", "eda.forwardAnnotation", "eda.refillCopper"].contains(action) ? ["expectedRevision", "boardID"] : ["expectedRevision"]
+        let allowed: Set<String>
+        switch action {
+        case "eda.export": allowed = ["expectedRevision", "boardID", "format", "variant", "gerberLayers"]
+        case "eda.backAnnotation": allowed = ["expectedRevision", "boardID", "preview", "references", "values", "footprintAssignments", "previewSourceSHA256", "offset", "limit"]
+        case "eda.drc", "eda.forwardAnnotation", "eda.refillCopper": allowed = ["expectedRevision", "boardID"]
+        default: allowed = ["expectedRevision"]
+        }
         let input = try options(inputJSON, allowed: allowed)
         try context.cancellation.throwIfCancelled(); try await validateOwner()
         var saved = try await personalPreviewOffMain { try ElectronicsSavedSnapshot(id: record.id, directory: directory) }
         guard String(saved.project.revision) == input.revision else { throw PersonalContentError.changedDocument }
         let boardID = try board(input.object["boardID"], project: saved.project)
+        if action == "eda.backAnnotation" {
+            guard let boardID else { throw FloeError.validationFailed("This original has no PCB board") }
+            let previewOnly = try annotationBoolean(input.object, "preview")
+            let fields = EDABackAnnotationOptions(references: try annotationBoolean(input.object, "references"),
+                values: try annotationBoolean(input.object, "values"),
+                footprintAssignments: try annotationBoolean(input.object, "footprintAssignments"))
+            let offset = try annotationInteger(input.object, "offset", fallback: 0, range: 0...1_000_000)
+            let limit = try annotationInteger(input.object, "limit", fallback: 20, range: 1...50)
+            let source = saved, cancellation = context.cancellation
+            let plan = try await personalPreviewOffMain {
+                try EDABackAnnotation.plan(source.project, boardID: boardID, options: fields, cancelled: { cancellation.isCancelled })
+            }
+            try context.cancellation.throwIfCancelled(); try await validateOwner(); try source.validate()
+            if !previewOnly {
+                guard let digest = input.object["previewSourceSHA256"] as? String, digest == source.digest else {
+                    throw FloeError.validationFailed("Preview this original first; apply requires its exact previewSourceSHA256, expectedRevision, boardID and field switches")
+                }
+                let session = try await ElectronicsProjectSession.open(id: record.id, directory: directory)
+                try context.cancellation.throwIfCancelled(); try await validateOwner(); try source.validate()
+                try await session.workbench.backAnnotation(plan, cancelled: { cancellation.isCancelled })
+                await session.awaitPublication()
+                saved = try await personalPreviewOffMain { try ElectronicsSavedSnapshot(id: record.id, directory: directory) }
+                try context.cancellation.throwIfCancelled(); try await validateOwner()
+            }
+            let page = BackAnnotationPage(plan.preview, offset: offset, limit: limit, applied: !previewOnly)
+            return try StudioToolOutput.make(Receipt(projectID: record.id, action: action, revision: String(saved.project.revision),
+                sourceSHA256: saved.digest,
+                summary: ["boardID": boardID.uuidString, "status": previewOnly ? "preview" : "applied",
+                          "changedComponents": String(plan.preview.changes.count), "canApply": String(plan.preview.canApply)],
+                resultJSON: String(decoding: try encoded(page), as: UTF8.self),
+                limitations: ["Synchronizes linked reference/value/footprint assignments only; does not infer links or change net wiring. Use studio.read for complete original records."],
+                openURL: "floe://work/" + record.id.uuidString.lowercased()))
+        }
         if action == "eda.refillCopper" {
             guard let boardID else { throw FloeError.validationFailed("This original has no PCB board") }
             let session = try await ElectronicsProjectSession.open(id: record.id, directory: directory)
@@ -240,6 +278,63 @@ import FloeElectronicsUI
     private nonisolated static func encoded<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(value)
+    }
+    private struct BackAnnotationPage: Encodable {
+        struct Change: Encodable {
+            let componentID: UUID
+            let footprintID: UUID
+            let fields: [String]
+        }
+        struct Issue: Encodable {
+            let code: EDABackAnnotationIssue.Code
+            let blocking: Bool
+            let componentID: UUID?
+            let footprintID: UUID?
+        }
+        let options: EDABackAnnotationOptions
+        let sourceRevision: String
+        let applied: Bool
+        let canApply: Bool
+        let totalChanges: Int
+        let totalIssues: Int
+        let offset: Int
+        let limit: Int
+        let nextOffset: Int?
+        let changes: [Change]
+        let issues: [Issue]
+        init(_ value: EDABackAnnotationPreview, offset: Int, limit: Int, applied: Bool) {
+            options = value.options; sourceRevision = value.revision; self.applied = applied; canApply = value.canApply
+            totalChanges = value.changes.count; totalIssues = value.issues.count
+            self.offset = offset; self.limit = limit
+            let next = offset + limit
+            nextOffset = next < max(totalChanges, totalIssues) ? next : nil
+            changes = value.changes.dropFirst(offset).prefix(limit).map { change in
+                var fields: [String] = []
+                if change.before.reference != change.after.reference { fields.append("references") }
+                if change.before.value != change.after.value { fields.append("values") }
+                if change.before.footprintID != change.after.footprintID { fields.append("footprintAssignments") }
+                return .init(componentID: change.id, footprintID: change.footprintID, fields: fields)
+            }
+            issues = value.issues.dropFirst(offset).prefix(limit).map {
+                .init(code: $0.code, blocking: $0.blocking, componentID: $0.componentID, footprintID: $0.footprintID)
+            }
+        }
+    }
+    private static func annotationBoolean(_ input: [String: Any], _ key: String) throws -> Bool {
+        guard let raw = input[key] else { return true }
+        guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            throw FloeError.validationFailed("inputJSON.\(key) must be a boolean")
+        }
+        return number.boolValue
+    }
+    private static func annotationInteger(_ input: [String: Any], _ key: String, fallback: Int, range: ClosedRange<Int>) throws -> Int {
+        guard let raw = input[key] else { return fallback }
+        guard let value = raw as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
+              value.doubleValue.isFinite, value.doubleValue >= Double(range.lowerBound), value.doubleValue <= Double(range.upperBound),
+              value.doubleValue == Double(value.int64Value) else {
+            throw FloeError.validationFailed("inputJSON.\(key) must be an integer in \(range.lowerBound)...\(range.upperBound)")
+        }
+        return value.intValue
     }
     private static func options(_ json: String?, allowed: Set<String>) throws -> (revision: String, object: [String: Any]) {
         guard let json, json.utf8.count <= 256 * 1_024,

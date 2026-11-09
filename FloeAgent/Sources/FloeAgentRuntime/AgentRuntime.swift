@@ -341,7 +341,7 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputFiles: output.outputFiles,
                 // These tools enforce their own bounded JSON pages. A second 4K
                 // cut here destroys the JSON and its continuation cursor.
-                maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
+                maximumSummaryCharacters: ["notes.read", "notes.search", "studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining"].contains(call.toolName) ? 196_608 :
                     (["user.ask", "skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
                         (["conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control", "chat.content.list", "latex.create", "latex.inspect", "latex.edit", "latex.typeset", "latex.restore", "latex.export"].contains(call.toolName) ? 98_304 : 4096)),
                 capturedOutput: output.capturedOutput ?? output.summary,
