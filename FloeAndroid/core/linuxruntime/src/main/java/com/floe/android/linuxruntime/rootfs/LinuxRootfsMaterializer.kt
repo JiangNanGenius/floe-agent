@@ -251,6 +251,7 @@ class LinuxRootfsMaterializer(
      *  code so a rooted/restored oddity can never slip in silently. */
     private fun copyLayer(source: Path, stage: Path, budget: CopyBudget,
                           cancelled: () -> Boolean, onCopyProgress: () -> Unit) {
+        var operation = "walk"
         try {
             Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
             private fun destination(path: Path): Path {
@@ -275,18 +276,26 @@ class LinuxRootfsMaterializer(
 
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 val out = destination(dir)
+                operation = "remove"
                 if (Files.exists(out, NOFOLLOW_LINKS) && !Files.isDirectory(out, NOFOLLOW_LINKS)) removeTree(out)
+                operation = "mkdir"
                 if (!Files.exists(out, NOFOLLOW_LINKS)) Files.createDirectory(out)
+                operation = "stat"
                 budget.directoryModes[out] = mode(dir)
+                operation = "walk"
                 return FileVisitResult.CONTINUE
             }
 
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
                 if (source.relativize(file).toString() == marker) return FileVisitResult.CONTINUE
                 val out = destination(file)
+                operation = "remove"
                 if (Files.exists(out, NOFOLLOW_LINKS)) removeTree(out)
                 when {
-                    attrs.isSymbolicLink -> Files.createSymbolicLink(out, Files.readSymbolicLink(file))
+                    attrs.isSymbolicLink -> {
+                        operation = "symlink"
+                        Files.createSymbolicLink(out, Files.readSymbolicLink(file))
+                    }
                     attrs.isRegularFile -> {
                         // A transaction snapshot preserves hard links INSIDE
                         // its own independent copy, never links to writable
@@ -294,18 +303,23 @@ class LinuxRootfsMaterializer(
                         val key = if (budget.preserveMetadata) attrs.fileKey() else null
                         val earlier = key?.let { budget.hardLinks[it] }
                         if (earlier != null) {
+                            operation = "hardlink"
                             Files.createLink(out, earlier)
+                            operation = "walk"
                             return FileVisitResult.CONTINUE
                         }
                         if (attrs.size() > maxBytes - budget.bytes) {
                             throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET)
                         }
+                        operation = "open_input"
                         FileChannel.open(file, READ, NOFOLLOW_LINKS).use { input ->
+                            operation = "open_output"
                             FileChannel.open(out, CREATE_NEW, WRITE).use { output ->
                                 val buffer = ByteBuffer.allocate(64 * 1024)
                                 while (true) {
                                     if (cancelled()) throw RootfsPrepareCancelledException()
                                     buffer.clear()
+                                    operation = "read"
                                     val size = input.read(buffer)
                                     if (size < 0) break
                                     if (size.toLong() > maxBytes - budget.bytes) {
@@ -313,13 +327,16 @@ class LinuxRootfsMaterializer(
                                     }
                                     budget.bytes += size
                                     buffer.flip()
+                                    operation = "write"
                                     while (buffer.hasRemaining()) output.write(buffer)
                                 }
                                 // One real filesystem barrier below covers every
                                 // file; per-file fsync is pure cold-copy latency.
+                                operation = "force_file"
                                 if (durabilityBarrier == null) output.force(true)
                             }
                         }
+                        operation = "mode"
                         Files.setAttribute(out, "unix:mode", mode(file), NOFOLLOW_LINKS)
                         if (key != null) budget.hardLinks[key] = out
                     }
@@ -338,10 +355,12 @@ class LinuxRootfsMaterializer(
                 // literal target, never a followed metadata write; portable
                 // Java cannot promise symlink timestamps (including Bsd NIO).
                 if (budget.preserveMetadata && !attrs.isSymbolicLink) {
+                    operation = "timestamp"
                     Files.setAttribute(out, "basic:lastModifiedTime", attrs.lastModifiedTime(), NOFOLLOW_LINKS)
                 }
                 // Bounded progress: every 1024 entries, never per file/log byte.
                 if (budget.entries % 1024L == 0L) onCopyProgress()
+                operation = "walk"
                 return FileVisitResult.CONTINUE
             }
 
@@ -350,7 +369,9 @@ class LinuxRootfsMaterializer(
                 val out = stage.resolve(source.relativize(dir))
                 // syncfs flushes directory metadata too; only the legacy
                 // (no-barrier) path needs a per-directory fsync.
+                operation = "force_dir"
                 if (durabilityBarrier == null) forceDirectory(out)
+                operation = "walk"
                 return FileVisitResult.CONTINUE
             }
         })
@@ -362,7 +383,7 @@ class LinuxRootfsMaterializer(
             // One closed code for every raw copy-phase filesystem failure
             // (open/read/write/fsync/readdir); the original IOException stays
             // on the cause chain for debugger inspection only.
-            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io)
+            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io, operation)
         }
     }
 

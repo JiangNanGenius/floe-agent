@@ -299,7 +299,28 @@ class RuntimeKernel(context: Context) {
                         // discriminates EIO/EACCES/ENOSPC-class device facts
                         // without ever exposing a path or native message.
                         startFailureErrno(failure)?.let { errno -> failed.put("startFailureErrno", errno) }
-                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it errno=${startFailureErrno(failure) ?: 0}")
+                        val rootfs = failure as? com.floe.android.linuxruntime.rootfs.RootfsMaterializeException
+                        val io = rootfs?.cause
+                        val kind = when (io) {
+                            is java.nio.file.AccessDeniedException -> "access_denied"
+                            is java.nio.file.NoSuchFileException -> "not_found"
+                            is java.nio.file.FileAlreadyExistsException -> "exists"
+                            is java.nio.file.FileSystemException -> "filesystem"
+                            is java.io.IOException -> "io"
+                            else -> "other"
+                        }
+                        val reason = when ((io as? java.nio.file.FileSystemException)?.reason?.lowercase()) {
+                            "operation not supported" -> "not_supported"
+                            "permission denied" -> "permission_denied"
+                            "too many levels of symbolic links" -> "symlink_loop"
+                            "no such file or directory" -> "not_found"
+                            "invalid argument" -> "invalid_argument"
+                            "bad file descriptor" -> "bad_fd"
+                            "is a directory" -> "is_directory"
+                            "read-only file system" -> "read_only"
+                            else -> "unspecified"
+                        }
+                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it errno=${startFailureErrno(failure) ?: 0} op=${rootfs?.operation ?: "none"} kind=$kind reason=$reason")
                     }
                     (failure as? com.floe.android.workspacebridge.WorkspaceBridgeException)
                         ?.let { bridge ->
