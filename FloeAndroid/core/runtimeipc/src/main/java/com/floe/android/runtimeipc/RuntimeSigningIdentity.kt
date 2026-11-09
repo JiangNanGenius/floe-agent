@@ -2,6 +2,7 @@
 package com.floe.android.runtimeipc
 
 import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.content.pm.Signature
 import java.security.MessageDigest
 
@@ -10,6 +11,13 @@ import java.security.MessageDigest
  * A past signer is never substituted for the current certificate. Both
  * installers use this same reader and retain their exact-set policy. */
 object RuntimeSigningIdentity {
+    /** Pie and Q collect archive certificates only when GET_SIGNATURES is
+     * present. Request both flags so SigningInfo is populated; the deprecated
+     * PackageInfo.signatures array is never used as identity evidence. */
+    @Suppress("DEPRECATION")
+    fun archiveQueryFlags(sdkInt: Int): Int = PackageManager.GET_SIGNING_CERTIFICATES or
+        (if (sdkInt in 28..29) PackageManager.GET_SIGNATURES else 0)
+
     fun read(info: PackageInfo?): Set<String> {
         val signing = runCatching { info?.signingInfo }.getOrNull() ?: return emptySet()
         val multiple = runCatching { signing.hasMultipleSigners() }.getOrNull() ?: return emptySet()

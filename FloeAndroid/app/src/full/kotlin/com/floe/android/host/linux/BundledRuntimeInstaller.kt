@@ -88,7 +88,8 @@ class BundledRuntimeInstaller(private val context: Context) {
                     ComponentInstallRejection.DIGEST_MISMATCH))
             }
             @Suppress("DEPRECATION")
-            val archive = packages.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNING_CERTIFICATES)
+            val archive = packages.getPackageArchiveInfo(
+                apk.path, RuntimeSigningIdentity.archiveQueryFlags(Build.VERSION.SDK_INT))
             @Suppress("DEPRECATION")
             val own = packages.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
             val rejection = ComponentInstallPolicy.rejectIdentity(

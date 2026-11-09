@@ -111,7 +111,7 @@ internal class ApkIdentityReader(private val context: Context) {
         @Suppress("DEPRECATION")
         val info = context.packageManager.getPackageArchiveInfo(
             apk.absolutePath,
-            PackageManager.GET_SIGNING_CERTIFICATES,
+            RuntimeSigningIdentity.archiveQueryFlags(Build.VERSION.SDK_INT),
         ) ?: return null
         val abis = archiveAbis(apk)
         ApkIdentity(

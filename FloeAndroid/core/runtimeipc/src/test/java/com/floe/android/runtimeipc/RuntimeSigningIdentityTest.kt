@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.runtimeipc
 
+import android.content.pm.PackageManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,6 +10,24 @@ class RuntimeSigningIdentityTest {
     private val old = "a".repeat(64)
     private val current = "b".repeat(64)
     private val other = "c".repeat(64)
+
+    @Suppress("DEPRECATION")
+    @Test fun pieAndQArchivesRequestCertificateCollectionAndModernIdentity() {
+        for (sdk in listOf(28, 29)) {
+            val flags = RuntimeSigningIdentity.archiveQueryFlags(sdk)
+            // AOSP Pie/Q collectCertificates is guarded by GET_SIGNATURES;
+            // generatePackageInfo exposes SigningInfo through the modern flag.
+            assertTrue(flags and PackageManager.GET_SIGNATURES != 0)
+            assertTrue(flags and PackageManager.GET_SIGNING_CERTIFICATES != 0)
+        }
+    }
+    @Suppress("DEPRECATION")
+    @Test fun modernArchivesUseTheModernCollectionRoute() {
+        for (sdk in listOf(30, 33, 37)) {
+            assertEquals(PackageManager.GET_SIGNING_CERTIFICATES,
+                RuntimeSigningIdentity.archiveQueryFlags(sdk))
+        }
+    }
 
     @Test fun singleSignerUsesCurrentHistoryEntry() {
         assertEquals(setOf(current), RuntimeSigningIdentity.selectCurrent(false, setOf(current), listOf(old, current)))
