@@ -7,11 +7,14 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.PowerManager
 import android.os.SystemClock
+import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 
 /**
  * Android effects for the existing task-owned unlock transaction.
@@ -130,18 +133,16 @@ internal class AndroidPhoneUnlockDriver(
     }
 
     /**
-     * True only while the real native SystemUI keyguard observably shows a
-     * credential field, a labelled submit control or keypad digits. Metadata
-     * only: no node text, content or app windows are read into the result.
+     * True only while a fresh, trusted default-display SystemUI window actually
+     * observably shows a credential field, a labelled submit control or keypad
+     * digits, and the display is genuinely interactive. Metadata only: no node
+     * text, content or app windows enter the result.
      */
     override fun credentialVisible(): Boolean {
-        val root = service.rootInActiveWindow ?: return false
-        return try {
-            root.packageName?.toString() == SYSTEM_UI_PACKAGE &&
-                (anyVisible(root, credentialFieldIds) ||
-                    anyVisible(root, submitIds) ||
-                    anyVisible(root, keypadSampleIds))
-        } finally { @Suppress("DEPRECATION") root.recycle() }
+        val resolved = resolveCredentialSurface() ?: return false
+        @Suppress("DEPRECATION")
+        resolved.root.recycle()
+        return true
     }
 
     override fun requestLock(): Boolean =
@@ -152,19 +153,24 @@ internal class AndroidPhoneUnlockDriver(
      * means input was dispatched, not unlocked: some surfaces auto-submit the
      * final entry and others need one real submit action. The caller's observed
      * keyguard check decides the outcome; nothing here retries or replays input.
+     * The surface is re-resolved and its ownership rechecked immediately before
+     * the single dispatch, so a tree that went stale, foreign or ambiguous
+     * between the visibility observation and this call can never receive input.
      */
     override fun enterCredential(secret: CharArray): Boolean {
-        val root = service.rootInActiveWindow ?: run {
+        val resolved = resolveCredentialSurface() ?: run {
             trace("CREDENTIAL_ROOT_UNAVAILABLE"); return false
         }
+        val root = resolved.root
         try {
-            if (root.packageName?.toString() != SYSTEM_UI_PACKAGE) {
+            if (root.packageName?.toString() != SYSTEM_UI_PACKAGE || !resolved.ownershipTrusted) {
                 trace("CREDENTIAL_WINDOW_UNAVAILABLE"); return false
             }
             for (id in credentialFieldIds) {
                 val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
                 try {
-                    val field = nodes.firstOrNull { it.isEditable && it.isPassword && it.isVisibleToUser }
+                    val field = nodes.firstOrNull { it.isEditable && it.isPassword && it.isVisibleToUser &&
+                        it.packageName?.toString() == SYSTEM_UI_PACKAGE && it.windowId == root.windowId }
                     if (field != null && field.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }) {
                         val value = String(secret)
                         val accepted = field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
@@ -205,15 +211,112 @@ internal class AndroidPhoneUnlockDriver(
         runCatching { android.util.Log.i("FloePhoneUnlock", stage) }
     }
 
+    /**
+     * Freshly resolves the trusted default-display credential surface for the
+     * current observation. The active-window root is kept as the fast path; if
+     * it is null, foreign, stale or simply not the credential window, the
+     * actually reported interactive window set decides via the pure selection,
+     * with package/visibility/focus/lifecycle validation on every candidate.
+     * The returned root is owned by the caller and must be recycled exactly
+     * once; all other retrieved roots are recycled here.
+     */
+    private fun resolveCredentialSurface(): ResolvedSurface? {
+        val displayInteractive = interactive
+        // rootInActiveWindow may name a window on another logical display; the
+        // interactive window set is the platform's own default-display view.
+        val windows: List<AccessibilityWindowInfo> = if (displayInteractive)
+            runCatching { service.windows }.getOrDefault(emptyList()) else emptyList()
+        val defaultDisplayWindowIds: Set<Int>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            windows.mapNotNull { window ->
+                runCatching { if (window.displayId == Display.DEFAULT_DISPLAY) window.id else null }.getOrNull()
+            }.toSet()
+        else null
+        val activeRoot = if (displayInteractive) runCatching { service.rootInActiveWindow }.getOrNull() else null
+        val retrieved = ArrayList<AccessibilityNodeInfo>()
+        var chosen: AccessibilityNodeInfo? = null
+        try {
+            val windowCandidates = windows.map { WindowSurfaceCandidate(it, retrieved) { node ->
+                hasCredentialContent(node)
+            } }
+            val activeCandidate = if (activeRoot != null)
+                ActiveRootSurfaceCandidate(activeRoot, defaultDisplayWindowIds) {
+                    hasCredentialContent(activeRoot)
+                }
+            else null
+            val observation = selectCredentialSurface(displayInteractive, activeCandidate, windowCandidates)
+            traceSurfaceChange(observation)
+            chosen = when (observation.outcome) {
+                SurfaceStage.SURFACE_READY_ACTIVE_ROOT -> activeRoot
+                SurfaceStage.SURFACE_READY_WINDOW ->
+                    windowCandidates.getOrNull(observation.windowIndex)?.retrievedRoot()
+                else -> null
+            }
+            return chosen?.let { surface ->
+                ResolvedSurface(
+                    root = surface,
+                    trustedWindowIds = defaultDisplayWindowIds
+                        ?: if (windows.isEmpty()) null
+                           else windows.mapNotNull { w -> runCatching { w.id }.getOrNull() }.toSet(),
+                )
+            }
+        } finally {
+            if (activeRoot != null && activeRoot !== chosen) {
+                @Suppress("DEPRECATION") activeRoot.recycle()
+            }
+            retrieved.forEach { node ->
+                if (node !== chosen) runCatching { @Suppress("DEPRECATION") node.recycle() }
+            }
+            // Window metadata objects return to the platform pool even on the
+            // active-root fast path where no window root was ever retrieved.
+            windows.forEach { info -> runCatching { @Suppress("DEPRECATION") info.recycle() } }
+        }
+    }
+
+    private var lastSurfaceTrace: String? = null
+
+    /**
+     * Emits the closed readiness sequence only when it changes, so the bounded
+     * 100ms polls leave an actionable transition trace (for example
+     * ACTIVE_ROOT_ABSENT WINDOW_SURFACE_PENDING -> ACTIVE_ROOT_ABSENT
+     * SURFACE_READY_WINDOW) without values or log spam.
+     */
+    private fun traceSurfaceChange(observation: SurfaceObservation) {
+        val text = observation.traceText()
+        if (text == lastSurfaceTrace) return
+        lastSurfaceTrace = text
+        trace(text)
+    }
+
+    private fun hasCredentialContent(root: AccessibilityNodeInfo): Boolean =
+        anyVisible(root, credentialFieldIds) || anyVisible(root, submitIds) || anyVisible(root, keypadSampleIds)
+
+    private fun anyVisible(root: AccessibilityNodeInfo, ids: List<String>): Boolean {
+        for (id in ids) {
+            val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
+            try { if (nodes.any { it.isEnabled && it.isVisibleToUser }) return true }
+            finally { nodes.forEach { @Suppress("DEPRECATION") it.recycle() } }
+        }
+        return false
+    }
+
     private fun click(root: AccessibilityNodeInfo, ids: List<String>, allowSubmitAncestor: Boolean): Boolean {
         for (id in ids) {
             val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
             try {
                 for (node in nodes) {
                     if (node.packageName?.toString() != SYSTEM_UI_PACKAGE || !node.isEnabled) continue
-                    if (node.isClickable) {
+                    // Ownership recheck: the acting node must live in the very
+                    // window whose root was freshly resolved and validated.
+                    if (node.windowId != root.windowId) continue
+                    val offersClick = runCatching {
+                        node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+                    }.getOrDefault(false)
+                    if (acceptsNativeClickAction(node.isEnabled, node.isClickable, offersClick)) {
                         if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
-                        continue
+                        if (node.isClickable) continue
+                        // An offered-but-refused click on a node not marked
+                        // clickable may still act through its bounded SystemUI
+                        // ancestor; a plain clickable refusal stays final.
                     }
                     if (!allowSubmitAncestor) continue
                     // OEM submit labels (for example Samsung's nonclickable
@@ -232,13 +335,66 @@ internal class AndroidPhoneUnlockDriver(
         return false
     }
 
-    private fun anyVisible(root: AccessibilityNodeInfo, ids: List<String>): Boolean {
-        for (id in ids) {
-            val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
-            try { if (nodes.any { it.isEnabled && it.isVisibleToUser }) return true }
-            finally { nodes.forEach { @Suppress("DEPRECATION") it.recycle() } }
+    /** A caller-owned credential surface root plus the window ids validated for it. */
+    private class ResolvedSurface(val root: AccessibilityNodeInfo, val trustedWindowIds: Set<Int>?) {
+        /** Final ownership recheck before the single credential dispatch. */
+        val ownershipTrusted: Boolean
+            get() = trustedWindowIds == null || root.windowId in trustedWindowIds
+    }
+
+    /** The fast path root: trusted only while it is current and on the default display. */
+    private class ActiveRootSurfaceCandidate(
+        private val root: AccessibilityNodeInfo,
+        private val defaultDisplayWindowIds: Set<Int>?,
+        private val probe: () -> Boolean,
+    ) : SurfaceCandidate {
+        override val onDefaultDisplay: Boolean
+            get() = defaultDisplayWindowIds?.contains(root.windowId) ?: true
+        override val contentAvailable: Boolean get() = true
+        override val trustedSystemUiRoot: Boolean
+            get() = root.packageName?.toString() == SYSTEM_UI_PACKAGE
+        override val lifecycleConsistent: Boolean get() = root.windowId >= 0
+        override val inputFocused: Boolean get() = true
+        override fun showsCredentialContent(): Boolean = runCatching(probe).getOrDefault(false)
+    }
+
+    /**
+     * One window of the interactive set. Its root is retrieved lazily and only
+     * after the cheap display gate needs it; every retrieved root is tracked so
+     * the resolver recycles all but the finally chosen surface.
+     */
+    private class WindowSurfaceCandidate(
+        private val window: AccessibilityWindowInfo,
+        private val retrieved: MutableList<AccessibilityNodeInfo>,
+        private val probe: (AccessibilityNodeInfo) -> Boolean,
+    ) : SurfaceCandidate {
+        private var retrievedRoot: AccessibilityNodeInfo? = null
+        private var probed = false
+        fun retrievedRoot(): AccessibilityNodeInfo? = root()
+        private fun root(): AccessibilityNodeInfo? {
+            if (!probed) {
+                probed = true
+                retrievedRoot = runCatching { window.root }.getOrNull()?.also { retrieved += it }
+            }
+            return retrievedRoot
         }
-        return false
+        override val onDefaultDisplay: Boolean
+            get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                runCatching { window.displayId == Display.DEFAULT_DISPLAY }.getOrDefault(false)
+            else true // The interactive window set is default-display-only below API 30.
+        override val contentAvailable: Boolean get() = root() != null
+        override val trustedSystemUiRoot: Boolean
+            get() = root()?.packageName?.toString() == SYSTEM_UI_PACKAGE
+        override val lifecycleConsistent: Boolean
+            get() = root()?.let { r ->
+                runCatching { window.id == r.windowId }.getOrDefault(false)
+            } == true
+        override val inputFocused: Boolean
+            get() = runCatching { window.isActive || window.isFocused }.getOrDefault(false)
+        override fun showsCredentialContent(): Boolean {
+            val node = root() ?: return false
+            return runCatching { probe(node) }.getOrDefault(false)
+        }
     }
 
     private companion object {

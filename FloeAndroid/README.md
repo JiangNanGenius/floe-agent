@@ -6,9 +6,11 @@
 
 三星已通过明确的完整包入口从公开73在线升到main/runtime100，字节、原UID、5条任务和2个项目保持。回答后等待提示自动清除及真实终端输出已观察；自动解锁的新用例完成唤醒／滑动，但未识别凭据界面，未输入密码或通过计算／重锁，原记录保留。索尼具体启动原因及其余N01–N08事项继续推进。
 
-## Next source checkpoint — project graphical continuity
+## Next source checkpoint — Android Alpha75
 
-The viewer can retain its project CLI/display context after a proven viewer-only failure and reattach on an explicit reopen without creating a new environment or terminal. The retained launcher checks its display/desktop children; a live PTY alone does not claim a live graphical child. Hidden viewers do not force streaming, and failing replacements do not create a reconnect loop. Ten focused protocol/lifecycle cases and actual Full/Play compilation passed. This source is not in the immutable Alpha74 APK; fresh device qualification remains pending.
+Alpha75/code101 is prepared for trusted native keyguard-window resolution and project graphical continuity. It resolves a fresh, default-display SystemUI credential surface before the single input attempt and records only closed readiness stages. The viewer retains its project CLI/display context only after the original launcher and actual display/desktop children are confirmed alive; an explicit reopen reattaches without a new environment or terminal and without a failure-driven reconnect loop. Sixty-seven focused phone cases and actual Full/Play compilation passed; ten unchanged graphics/protocol cases are reused by exact input identity. APK, device and public delivery remain separate. See the [candidate record](../docs/releases/ANDROID_ALPHA75_DELIVERY.md).
+
+本批修复系统凭据窗口的实际查找、输入前再次确认和固定阶段诊断，并接入项目图形会话的存活确认与重开恢复。未增加密码重试或放宽原授权；索尼的具体启动根因及三星自动解锁仍待各自实测，不能按代码或编译销账。
 
 ## Previous delivery — Android Alpha73 (2026-11-10)
 

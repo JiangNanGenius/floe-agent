@@ -910,3 +910,11 @@ Alpha74/code100已公开并读回七附件完整字节、不可变来源及新�
 N05后续源码将查看器传输与项目图形进程的生命周期分开：同一所有者／环境／代际下，先核查原启动器及显示／桌面子进程，确实存活才保留运行上下文；只有PTY回声不算图形子进程存活。查看器在明确重开时用原profile／凭据／目标重连，不新建环境或终端，不在失败回调里循环重连；隐藏时不强制恢复帧流。10项真实脚本／生命周期检查及Full／Play实际编译通过，尚未进入新APK或实机验收。旧86断连的具体触发原因仍未确认，N01–N08总目标继续。
 
 English: Alpha74 public bytes/discovery and the real Samsung full73→74 OTA passed. A fresh question/banner/CLI case succeeded; its early phone request reached the expected active-user confirmation. A separate locked case reached the native driver but failed surface readiness before credential input. The next graphics source checkpoint passes ten focused cases and Full/Play compilation; it is not in the frozen74 APK and does not establish the old device-disconnect cause.
+
+## 2026-11-10 Alpha75凭据窗口与项目图形连续性
+
+本批保留原N02／N05编号，系统凭据查找补交互窗口集、默认显示器归属、最新系统窗口与输入前复核；不重试密码，不把手势成功视为解锁。增加固定就绪阶段以便下次实机故障定位。图形上下文只在原启动器及图形子进程真实存活时保留，明确重开再复用查看器，避免重新建环境及失败重连循环。
+
+67项相关手机检查与Full／Play实际编译通过，原44项检查断言未改；10项未改图形／协议证据按精确输入复用。编译遗漏与新夹具时钟失败保留后修正。版本统一准备为Alpha75/code101；安装包、三星新用例和公开发行分别验收。索尼下载解压后的启动根因仍未知，原环境保留并继续使用已有重新检查／诊断通路。见[Alpha75准备记录](releases/ANDROID_ALPHA75_DELIVERY.md)，N01–N08继续。
+
+English: Alpha75 prepares trusted native surface resolution and explicit project-viewer recovery. Sixty-seven fresh phone cases and Full/Play compilation passed; ten unchanged graphics/protocol cases are reused by input identity. APK/device/public delivery and the unresolved Sony startup remain separate; no whole-goal completion is claimed.
