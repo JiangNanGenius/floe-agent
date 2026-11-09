@@ -161,4 +161,18 @@ class PhoneControlUnlockerTest {
         assertTrue(secret.all { it == '\u0000' })
         assertEquals(0, d.inputCalls)
     }
+
+    @Test fun serviceLossCannotLeaveOldInputOrRelockAReplacementSession() {
+        val d = Driver().apply { unlockDelay = 500 }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>()
+        x.unlock(owner, "call", dummyCredential(), { true }, results::add)
+        d.advance(1_100)
+        x.close()
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.CANCELLED), results)
+        assertEquals(1, d.inputCalls)
+        assertEquals(0, d.lockCalls)
+        assertFalse(x.isSettling)
+        assertEquals(PhoneRelockResult.USER_REQUIRED, x.lastRelockReceipt?.result)
+    }
 }

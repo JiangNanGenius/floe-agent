@@ -52,7 +52,7 @@ internal class PhoneControlUnlocker(
         unlockedFor = null
         settlement?.timer?.invoke()
         settlement = null
-        attempt?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED, human = true) }
+        attempt?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED, relinquished = true) }
         if (owner != null) report(owner, PhoneRelockResult.USER_TAKEN_OVER)
     }
 
@@ -105,17 +105,17 @@ internal class PhoneControlUnlocker(
         }
     }
 
-    private fun finishAttempt(current: Attempt, result: PhoneUnlockResult, human: Boolean = false) {
+    private fun finishAttempt(current: Attempt, result: PhoneUnlockResult, relinquished: Boolean = false) {
         if (attempt !== current) return
         attempt = null
         current.timer?.invoke(); current.timer = null
         current.credential.fill('\u0000')
         driver.suppressInput(driver.now + 150)
         val actualUnlocked = runCatching { !driver.locked }.getOrDefault(false)
-        if (!human && actualUnlocked && current.effectIssued) unlockedFor = current.owner
+        if (!relinquished && actualUnlocked && current.effectIssued) unlockedFor = current.owner
         val actualResult = if (result == PhoneUnlockResult.UNLOCKED && !actualUnlocked)
             PhoneUnlockResult.USER_REQUIRED else result
-        if (!human && actualResult != PhoneUnlockResult.UNLOCKED && current.effectIssued) {
+        if (!relinquished && actualResult != PhoneUnlockResult.UNLOCKED && current.effectIssued) {
             // An in-flight system transition may finish after Cancel. No more
             // credential input is permitted; only observe and clean up our lease.
             settle(current.owner, mayComplete = true)
@@ -179,7 +179,17 @@ internal class PhoneControlUnlocker(
     }
 
     fun close() {
-        attempt?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED) }
-        unlockedFor?.let(::finish)
+        // Service teardown ends this incarnation's authority. Never leave a
+        // delayed cleanup capable of locking a replacement session/user.
+        val pending = attempt
+        val owner = pending?.owner ?: settlement?.owner ?: unlockedFor
+        val uncertainInput = pending?.effectIssued == true
+        settlement?.timer?.invoke()
+        settlement = null
+        unlockedFor = null
+        pending?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED, relinquished = true) }
+        if (owner != null) report(owner,
+            if (!uncertainInput && runCatching { driver.locked }.getOrDefault(false))
+                PhoneRelockResult.ALREADY_LOCKED else PhoneRelockResult.USER_REQUIRED)
     }
 }

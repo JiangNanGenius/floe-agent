@@ -20,6 +20,7 @@ internal object PhoneControlRuntime {
     @Volatile private var detachedBlocker: PhoneControlBlocker? = null
     @Volatile private var lastFenceGeneration = 0L
     @Volatile private var lastPageGeneration = 0L
+    @Volatile private var lastRelockReceipt: PhoneRelockReceipt? = null
 
     private val mutableStatus = MutableStateFlow(
         PhoneControlStatus(
@@ -45,6 +46,7 @@ internal object PhoneControlRuntime {
             old
         }
         previous?.shutdown(PhoneControlBlocker.SERVICE_DISCONNECTED)
+        previous?.relockReceipt?.let { lastRelockReceipt = it }
         publish()
         return newSession
     }
@@ -65,6 +67,7 @@ internal object PhoneControlRuntime {
             detachedBlocker = blocker
         }
         removed?.shutdown(blocker)
+        removed?.relockReceipt?.let { lastRelockReceipt = it }
         publish()
     }
 
@@ -82,7 +85,7 @@ internal object PhoneControlRuntime {
             pageGeneration = state?.pageGeneration ?: lastPageGeneration,
             screenshotSupport = PhoneControlPolicy.screenshotSupport(Build.VERSION.SDK_INT),
             automationFinishing = session?.automationFinishing == true,
-            relockReceipt = session?.relockReceipt,
+            relockReceipt = session?.relockReceipt ?: lastRelockReceipt,
         )
     }
 
