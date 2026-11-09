@@ -16,7 +16,15 @@ internal interface PhoneUnlockDriver {
     fun after(delay: Long, action: () -> Unit): () -> Unit
     fun suppressInput(until: Long)
     fun wake()
-    fun showCredential(): Boolean
+    /** True only while the real native SystemUI keyguard observably shows a credential surface. */
+    fun credentialVisible(): Boolean
+    /**
+     * Returns dispatch acceptance only. [onGestureResult] reports the actual
+     * gesture completion (true) or cancellation (false) exactly once; a lost
+     * callback is bounded by the caller's deadline and never assumed ready.
+     */
+    fun showCredential(onGestureResult: (Boolean) -> Unit): Boolean
+    /** Hands the credential to the system at most once; true means dispatched, never unlocked. */
     fun enterCredential(secret: CharArray): Boolean
     fun requestLock(): Boolean
 }
@@ -33,7 +41,18 @@ internal class PhoneControlUnlocker(
     private class Attempt(val owner: PhoneControlOwner, val token: String, val credential: CharArray,
         val current: () -> Boolean, val complete: (PhoneUnlockResult) -> Unit) {
         var effectIssued = false
+        var gestureReported = false
         var timer: (() -> Unit)? = null
+    }
+
+    private companion object {
+        // Bounded observation windows. They only cap waiting; every success
+        // decision needs an actually observed keyguard/window state read.
+        const val WAKE_OBSERVE_MS = 400L
+        const val GESTURE_CALLBACK_DEADLINE_MS = 2_000L
+        const val SURFACE_SETTLE_MS = 1_500L
+        const val UNLOCK_OBSERVE_MS = 2_500L
+        const val POLL_MS = 100L
     }
     private class Settlement(val owner: PhoneControlOwner, val deadline: Long, val mayComplete: Boolean) {
         var lockRequested = false
@@ -81,19 +100,89 @@ internal class PhoneControlUnlocker(
             // cancellation after an effect therefore needs observed settlement.
             current.effectIssued = true
             driver.wake()
-            later(current, 400) {
-                if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
-                else if (!driver.showCredential()) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
-                else later(current, 700) {
-                    if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
-                    else if (!driver.enterCredential(current.credential)) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
-                    else later(current, 1_200) {
-                        finishAttempt(current, if (!driver.locked) PhoneUnlockResult.UNLOCKED
-                            else PhoneUnlockResult.USER_REQUIRED)
-                    }
-                }
-            }
+            observeWake(current, driver.now + WAKE_OBSERVE_MS)
         } catch (_: Exception) { finishAttempt(current, PhoneUnlockResult.FAILED) }
+    }
+
+    /**
+     * Bounded observation after wake: only an actually observed unlock or a
+     * visibly displayed native credential surface advances the transaction.
+     */
+    private fun observeWake(current: Attempt, deadline: Long) {
+        if (attempt !== current) return
+        if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
+        else if (driver.credentialVisible()) submitCredential(current)
+        else if (driver.now >= deadline) reveal(current)
+        else later(current, minOf(POLL_MS, deadline - driver.now)) { observeWake(current, deadline) }
+    }
+
+    /**
+     * The reveal is decided by the real gesture callback. The pre-armed
+     * deadline only bounds a lost callback; a dispatch return is never
+     * readiness, and the gesture is never re-dispatched.
+     */
+    private fun reveal(current: Attempt) {
+        if (attempt !== current) return
+        later(current, GESTURE_CALLBACK_DEADLINE_MS) { reportGesture(current, false, observedFallback = true) }
+        val dispatched = runCatching {
+            driver.showCredential { completed ->
+                // Callback delivery is outside the timer wrapper, so it needs its own fence.
+                try { reportGesture(current, completed) }
+                catch (_: Exception) { finishAttempt(current, PhoneUnlockResult.FAILED) }
+            }
+        }.getOrDefault(false)
+        if (!dispatched) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+    }
+
+    /**
+     * Gesture completion/cancellation arrives through exactly one fenced,
+     * at-most-once path. Only the lost-callback deadline may fall back to an
+     * actually observed native surface; an explicit cancellation is final.
+     */
+    private fun reportGesture(current: Attempt, completed: Boolean, observedFallback: Boolean = false) {
+        if (attempt !== current || current.gestureReported) return
+        if (!runCatching(current.current).getOrDefault(false)) {
+            finishAttempt(current, PhoneUnlockResult.CANCELLED); return
+        }
+        current.gestureReported = true
+        current.timer?.invoke(); current.timer = null
+        val ready = completed || (observedFallback && runCatching { driver.credentialVisible() }.getOrDefault(false))
+        if (!ready) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+        else observeSurface(current, driver.now + SURFACE_SETTLE_MS)
+    }
+
+    /** Even a completed gesture is not proof of readiness; the keyguard state decides. */
+    private fun observeSurface(current: Attempt, deadline: Long) {
+        if (attempt !== current) return
+        if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
+        else if (driver.credentialVisible()) submitCredential(current)
+        else if (driver.now >= deadline) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+        else later(current, minOf(POLL_MS, deadline - driver.now)) { observeSurface(current, deadline) }
+    }
+
+    /**
+     * One credential hand-off per attempt. Acceptance is only "the system took
+     * the input"; success always requires the observed unlock in [observeUnlock].
+     */
+    private fun submitCredential(current: Attempt) {
+        if (attempt !== current) return
+        if (!runCatching(current.current).getOrDefault(false)) {
+            finishAttempt(current, PhoneUnlockResult.CANCELLED); return
+        }
+        if (!driver.locked) { finishAttempt(current, PhoneUnlockResult.UNLOCKED); return }
+        // Keep our own async input echoes inside the takeover-suppression window.
+        driver.suppressInput(driver.now + UNLOCK_OBSERVE_MS + 500)
+        val dispatched = runCatching { driver.enterCredential(current.credential) }.getOrDefault(false)
+        if (!dispatched) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+        else observeUnlock(current, driver.now + UNLOCK_OBSERVE_MS)
+    }
+
+    /** System auto-submit and slow OEM unlocks land here; timeout never re-enters the credential. */
+    private fun observeUnlock(current: Attempt, deadline: Long) {
+        if (attempt !== current) return
+        if (!driver.locked) finishAttempt(current, PhoneUnlockResult.UNLOCKED)
+        else if (driver.now >= deadline) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
+        else later(current, minOf(POLL_MS, deadline - driver.now)) { observeUnlock(current, deadline) }
     }
 
     private fun later(current: Attempt, delay: Long, action: () -> Unit) {

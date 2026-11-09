@@ -1,7 +1,7 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
 
-日期：2026-11-06，实测更新至2026-11-10。当前：[Alpha71/code97已公开](releases/ANDROID_ALPHA71_DELIVERY.md)，固定App源`e9f94bd602efda39be91a39e4486bf60abc578ee`。七附件完整匿名字节、真实70→71重建及当前／保留Alpha65生产更新解析器读回通过，iOS Latest保留。三星已完成App内公开70→71联合升级，主程序与运行环境均97，安装字节与原UID匹配；原5个任务、2个项目及已有Linux环境保留。此次设备实际传输模式未捕获，不把宿主增量重建写成设备增量下载通过。新下载计量、索尼反馈、提问恢复及自动解锁／重锁继续分别实测，N01–N08总目标保持进行中。
+日期：2026-11-06，实测更新至2026-11-10。当前：[Alpha73/code99已公开](releases/ANDROID_ALPHA73_DELIVERY.md)，固定App源`b0722808df5e006b5f035d4a2f43e2a8c1f3490e`。七附件匿名字节、72→73真实宿主重建及当前／保留65生产更新发现读回通过，iOS Latest保持。三星明确选择完整包从公开72在线联合安装至主程序／运行环境99，实际字节与原UID一致，原5条任务／2个项目可见。同进程新装应用刷新和全新本地密码框填写用例通过；原72失败独立保留。索尼具体启动根因、自动解锁／重锁、新下载计量及其余N01–N08事项继续，不以中间版代替整轮收口。
 
 以下Alpha69–70记录保留各自原检查点状态，不替代上述当前交付与后续逐项证据。
 
@@ -878,5 +878,13 @@ Alpha73/code99已从固定源码`b0722808df5e006b5f035d4a2f43e2a8c1f3490e`公开
 索尼XZ／Android9解压后终端不可用的具体启动根因尚未确认；不能据此归因为系统版本太低。自动解锁／重锁、新下载计量、其余N03／N05组合及全局UI精修继续按原编号推进，不以本次中间版交付关闭N01–N08。详见[Alpha73交付补记](releases/ANDROID_ALPHA73_DELIVERY.md)。
 
 English: Alpha73 is public with verified assets and production update discovery. Samsung completed the explicit full-package72→73 OTA and a fresh protected-input fixture; the original72 failure remains intact. Test residue/settings and completed staging outputs were cleaned. Sony startup and the remaining N01–N08 scope stay open.
+
+## 2026-11-10 N02 后续源码：自动解锁的实际完成与回调归属
+
+解锁驱动已改为接收实际手势完成回调，并有界观察原生凭据界面和真实锁屏状态，不再以固定延迟或动作分派成功代替解锁。三星确认标签只沿已观察的 SystemUI 范围寻找可点击父控件；没有合格目标时保留手动处理，不伪造已提交。异步回调和凭据交付前重新检查当前授权，撤销后不继续输入。补只含固定阶段代码的诊断，不记录密码、按键、节点、标识或输入内容。
+
+28项相关模块检查和实际Full消费者编译通过；原测试入口选择失败保留后更正为本仓库实际启用的Debug单测任务，未降低断言。该源码尚未进入新APK。公开73的独立三星用例真实执行Linux命令并读回输出，但后续进入手动解锁等待，自动解锁／计算／重锁未通过；观察期无障碍持续连接。旧用例停止且原始记录保留，不把清理权限后出现的能力变化当作原驱动根因。测试凭据、任务、设备导出及临时授权已清理，原5条任务保留。
+
+English: The next source checkpoint uses real gesture completion and bounded keyguard observation, rechecks callback authority and adds credential-free stage diagnostics. Twenty-eight focused cases and actual Full compilation passed. There is no new APK/device pass yet; the public73 baseline reached manual-unlock fallback after a successful Linux command. Original evidence and baseline data survive test cleanup. N01–N08 remains active.
 
 English: The bounded Alpha73 source package passed 27 focused JVM cases and actual Full/Play compilation. It clarifies the supported observation contract and precise host error, alongside app-list/copy fixes; no unsupported conditional schema or privacy relaxation was introduced. A new APK and fresh device case remain separate. The original failed72 task is retired and immutable evidence is preserved.

@@ -11,6 +11,11 @@ class PhoneControlUnlockerTest {
     private val other = PhoneControlOwner(UUID(3, 3), UUID(4, 4))
     private fun dummyCredential() = charArrayOf('0', '0')
 
+    /**
+     * Deterministic clock plus an Android-like async reveal: the gesture
+     * callback lands on the queue and cannot be recalled, so fences, deadlines
+     * and observed-state decisions are exercised exactly like the service host.
+     */
     private class Driver : PhoneUnlockDriver {
         private class Work(val at: Long, val order: Long, val action: () -> Unit) {
             var cancelled = false
@@ -20,10 +25,17 @@ class PhoneControlUnlockerTest {
         override var locked = true
         override var now = 0L
         var inputCalls = 0
+        var revealCalls = 0
         var lockCalls = 0
         var unlockDelay = 100L
+        var gestureDelay = 700L
         var acceptLock = true
         var completeLock = true
+        var gestureCallback = true
+        var gestureCompletes = true
+        var acceptReveal = true
+        var credentialShown = false
+        var wakeUnlockDelay = -1L
         override fun after(delay: Long, action: () -> Unit): () -> Unit {
             val value = Work(now + delay, ++order, action)
             queue.add(value)
@@ -38,11 +50,24 @@ class PhoneControlUnlockerTest {
             now = to
         }
         override fun suppressInput(until: Long) = Unit
-        override fun wake() = Unit
-        override fun showCredential() = true
+        override fun wake() {
+            if (wakeUnlockDelay >= 0) after(wakeUnlockDelay) { locked = false }
+        }
+        override fun credentialVisible() = credentialShown
+        override fun showCredential(onGestureResult: (Boolean) -> Unit): Boolean {
+            revealCalls++
+            if (!acceptReveal) return false
+            after(gestureDelay) {
+                if (!gestureCallback) return@after
+                if (gestureCompletes) credentialShown = true
+                onGestureResult(gestureCompletes)
+            }
+            return true
+        }
         override fun enterCredential(secret: CharArray): Boolean {
             inputCalls++
-            after(unlockDelay) { locked = false }
+            // unlockDelay < 0 models a dispatch the system never completes.
+            if (unlockDelay >= 0) after(unlockDelay) { locked = false }
             return true
         }
         override fun requestLock(): Boolean {
@@ -171,6 +196,155 @@ class PhoneControlUnlockerTest {
         d.advance(4_000)
         assertEquals(listOf(PhoneUnlockResult.CANCELLED), results)
         assertEquals(1, d.inputCalls)
+        assertEquals(0, d.lockCalls)
+        assertFalse(x.isSettling)
+        assertEquals(PhoneRelockResult.USER_REQUIRED, x.lastRelockReceipt?.result)
+    }
+
+    // ------------------------------------------------------------------
+    // Async reveal/readiness boundaries (driver74).
+    // ------------------------------------------------------------------
+
+    @Test fun cancelledRevealGestureNeverEntersCredential() {
+        val d = Driver().apply { gestureCompletes = false }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>(); val secret = dummyCredential()
+        x.unlock(owner, "call", secret, { true }, results::add)
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.USER_REQUIRED), results)
+        assertEquals(1, d.revealCalls)
+        assertEquals(0, d.inputCalls)
+        assertEquals(0, d.lockCalls)
+        assertTrue(secret.all { it == '\u0000' })
+        assertEquals(PhoneRelockResult.ALREADY_LOCKED, x.lastRelockReceipt?.result)
+    }
+
+    @Test fun lostGestureCallbackWithoutObservedSurfaceRequiresUserOnce() {
+        val d = Driver().apply { gestureCallback = false }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>(); val secret = dummyCredential()
+        x.unlock(owner, "call", secret, { true }, results::add)
+        d.advance(6_000)
+        assertEquals(listOf(PhoneUnlockResult.USER_REQUIRED), results)
+        assertEquals(1, d.revealCalls)
+        assertEquals(0, d.inputCalls)
+        assertEquals(0, d.lockCalls)
+        assertTrue(secret.all { it == '\u0000' })
+        assertEquals(PhoneRelockResult.ALREADY_LOCKED, x.lastRelockReceipt?.result)
+    }
+
+    @Test fun deadlineRecoveryUsesObservedSurfaceWhenCallbackIsLost() {
+        val d = Driver().apply { gestureCallback = false }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>()
+        x.unlock(owner, "call", dummyCredential(), { true }, results::add)
+        d.advance(600)
+        // The window is actually observed before the callback deadline fires.
+        d.credentialShown = true
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.UNLOCKED), results)
+        assertEquals(1, d.revealCalls)
+        assertEquals(1, d.inputCalls)
+    }
+
+    @Test fun inputDispatchWithoutObservedUnlockNeverReportsUnlocked() {
+        val d = Driver().apply { unlockDelay = -1L }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>(); val secret = dummyCredential()
+        x.unlock(owner, "call", secret, { true }, results::add)
+        d.advance(8_000)
+        assertEquals(listOf(PhoneUnlockResult.USER_REQUIRED), results)
+        assertEquals(1, d.inputCalls)
+        assertEquals(1, d.revealCalls)
+        assertEquals(0, d.lockCalls)
+        assertTrue(secret.all { it == '\u0000' })
+        assertEquals(PhoneRelockResult.ALREADY_LOCKED, x.lastRelockReceipt?.result)
+    }
+
+    @Test fun revealDispatchRefusalEndsImmediatelyWithoutCallbackWaiting() {
+        val d = Driver().apply { acceptReveal = false }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>(); val secret = dummyCredential()
+        x.unlock(owner, "call", secret, { true }, results::add)
+        d.advance(400)
+        assertEquals(listOf(PhoneUnlockResult.USER_REQUIRED), results)
+        assertEquals(1, d.revealCalls)
+        assertEquals(0, d.inputCalls)
+        assertTrue(secret.all { it == '\u0000' })
+        d.advance(4_000)
+        assertEquals(0, d.lockCalls)
+        assertEquals(PhoneRelockResult.ALREADY_LOCKED, x.lastRelockReceipt?.result)
+    }
+
+    @Test fun wakeCompletedUnlockNeedsNoRevealOrInput() {
+        val d = Driver().apply { wakeUnlockDelay = 200 }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>()
+        x.unlock(owner, "call", dummyCredential(), { true }, results::add)
+        d.advance(400)
+        assertEquals(listOf(PhoneUnlockResult.UNLOCKED), results)
+        assertEquals(0, d.revealCalls)
+        assertEquals(0, d.inputCalls)
+        x.finish(owner); d.advance(1_500)
+        assertEquals(1, d.lockCalls)
+        assertEquals(PhoneRelockResult.LOCKED, x.lastRelockReceipt?.result)
+    }
+
+    @Test fun preDisplayedCredentialSurfaceSkipsReveal() {
+        val d = Driver().apply { credentialShown = true }; val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>()
+        x.unlock(owner, "call", dummyCredential(), { true }, results::add)
+        d.advance(400)
+        assertEquals(listOf(PhoneUnlockResult.UNLOCKED), results)
+        assertEquals(0, d.revealCalls)
+        assertEquals(1, d.inputCalls)
+    }
+
+    @Test fun cancelDuringPendingGestureIgnoresLateCallbackWithoutInput() {
+        val d = Driver(); val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>(); val secret = dummyCredential()
+        x.unlock(owner, "call", secret, { true }, results::add)
+        d.advance(600)
+        x.cancel("call")
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.CANCELLED), results)
+        assertEquals(0, d.inputCalls)
+        assertEquals(0, d.lockCalls)
+        assertTrue(secret.all { it == '\u0000' })
+        assertEquals(PhoneRelockResult.ALREADY_LOCKED, x.lastRelockReceipt?.result)
+    }
+
+    @Test fun revokedAuthorityBeforeGestureCallbackNeverEntersCredential() {
+        val d = Driver(); val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>(); val secret = dummyCredential()
+        var current = true
+        x.unlock(owner, "call", secret, { current }, results::add)
+        d.advance(600)
+        current = false
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.CANCELLED), results)
+        assertEquals(0, d.inputCalls)
+        assertEquals(0, d.lockCalls)
+        assertTrue(secret.all { it == '\u0000' })
+    }
+
+    @Test fun takeoverDuringPendingGestureNeverTypesOrLocks() {
+        val d = Driver(); val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>()
+        x.unlock(owner, "call", dummyCredential(), { true }, results::add)
+        d.advance(600)
+        x.userInteraction()
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.CANCELLED), results)
+        assertEquals(0, d.inputCalls)
+        assertEquals(0, d.lockCalls)
+        assertTrue(d.locked)
+        assertEquals(PhoneRelockResult.USER_TAKEN_OVER, x.lastRelockReceipt?.result)
+    }
+
+    @Test fun closeDuringPendingGestureStopsLateCallbackFromNewState() {
+        val d = Driver(); val x = PhoneControlUnlocker(d)
+        val results = mutableListOf<PhoneUnlockResult>()
+        x.unlock(owner, "call", dummyCredential(), { true }, results::add)
+        d.advance(600)
+        x.close()
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.CANCELLED), results)
+        assertEquals(0, d.inputCalls)
         assertEquals(0, d.lockCalls)
         assertFalse(x.isSettling)
         assertEquals(PhoneRelockResult.USER_REQUIRED, x.lastRelockReceipt?.result)
