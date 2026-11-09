@@ -918,3 +918,13 @@ English: Alpha74 public bytes/discovery and the real Samsung full73→74 OTA pas
 67项相关手机检查与Full／Play实际编译通过，原44项检查断言未改；10项未改图形／协议证据按精确输入复用。编译遗漏与新夹具时钟失败保留后修正。版本统一准备为Alpha75/code101；安装包、三星新用例和公开发行分别验收。索尼下载解压后的启动根因仍未知，原环境保留并继续使用已有重新检查／诊断通路。见[Alpha75准备记录](releases/ANDROID_ALPHA75_DELIVERY.md)，N01–N08继续。
 
 English: Alpha75 prepares trusted native surface resolution and explicit project-viewer recovery. Sixty-seven fresh phone cases and Full/Play compilation passed; ten unchanged graphics/protocol cases are reused by input identity. APK/device/public delivery and the unresolved Sony startup remain separate; no whole-goal completion is claimed.
+
+## 2026-11-10 N05已安装状态恢复与下一源码检查点
+
+Alpha75/code101已公开并通过七附件、来源和新旧客户端更新发现读回。三星真实74→75增量重组及系统／PlayProtect安装完成，main/runtime101字节与原UID核对通过；该证据与新的自动解锁、图形连续性分开。
+
+索尼链路另查到两个确定源码缺口：已安装卡片在通道未绑定／代际不符时“重新检查”不做测量，且原生统一失效摘要覆盖了启动拒绝原因。后续代码只在仍有实际原生代际时复用已有通道绑定与前置事实测量，不复活已停止环境或伪造就绪；以当前代际的闭合词表保留原因，组件不符、超时和握手拒绝分类区分。真实内部10秒Future超时及取消身份也已覆盖，原错误因果保留。
+
+59项相关检查与Full／Play实际编译通过，尚未进入公开75，不宣称索尼恢复。后续APK须按同一来源构建并继续三星回归；索尼的具体触发条件以新版实际诊断为准。N01–N08继续，不重做183项全量审计。
+
+English: Public75 passed exact bytes/discovery and real Samsung74→75 delta OTA. Subsequent installed-runtime recovery repairs pass59 focused cases and Full/Play compilation, without changing native inputs or claiming Sony acceptance. They are a separate unreleased source checkpoint; the whole goal remains active.

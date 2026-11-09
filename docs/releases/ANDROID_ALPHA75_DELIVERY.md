@@ -26,3 +26,14 @@ Samsung automatic unlock/action/relock and the new graphical continuity require 
 ## Delivery policy / 发行边界
 
 Publish one Full ARM64 APK with necessary checksums/update/source/optional-preview files, using one immutable source tag. Preserve iOS Latest, validate exact public bytes and current/retained-client update discovery, then record real Samsung upgrade and changed-flow outcomes. Keep original failures, current/required rollback artifacts and native symbols; retire only completed, unused generated outputs.
+
+## Delivery appendix / 交付补记 — 2026-11-10
+
+[Alpha75/code101](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.75) is public from immutable source `54435f1744e8c61766e6c7d5d2b7062863556cc0`. The source-preparation statements above are retained as historical stage evidence.
+
+- Full ARM64 APK:164,714,299 bytes; SHA-256 `75315736dc2accbdd27f3cf028ae872744b29b7b3491c5f6db82961f8ffeb6da`. Actual native34 input identity/58 package bindings, main/runtime API28/29 signatures and exact74→75 host delta reconstruction passed.
+- All seven anonymous public asset bytes, immutable source binding and current/retained65 update discovery passed, preserving iOS Latest.
+- Samsung selected the regular Update action in public74 using its saved GH-Proxy source. The first preparing-state placeholder showed the full size; the final verified receipt explicitly confirmed reconstruction from the smaller delta. Normal main/runtime confirmations and Play Protect scanning completed. Both installed code101 packages exactly match the public APK/embedded runtime, and original UIDs10346/10348 remain. No ADB replacement, uninstall or downgrade was used.
+- Twenty-three unused packaging/source/delta outputs were retired after eight producer receipts and current artifacts were exported. The deletion window measured3,161,395,200 additional internal free bytes; external space changed by−36,864 bytes during concurrent activity. Earlier unused native scratch/unit HTML cleanup measured another992,399,360 bytes. Current75, rollback74, original72/73 failures, native34 raw symbols, original evidence, SDK/AVD and immediately useful Kotlin/Gradle classes remain.
+
+Automatic unlock/action/relock, graphical continuity and remaining N01–N08 acceptance continue independently. Subsequent source repairs for an installed-state recheck no-op and masked startup refusal have passed59 relevant cases/Full/Play compilation, but are not in this immutable75 package. Sony XZ/Android9 physical recovery is not claimed.

@@ -1,16 +1,22 @@
 # Floe for Android
 
-## Current delivery — Android Alpha74 (2026-11-10)
+## Current delivery — Android Alpha75 (2026-11-10)
+
+[Alpha75/code101](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.75) is public from immutable source `54435f1744e8c61766e6c7d5d2b7062863556cc0`. It adds trusted native credential-window resolution and project graphical continuity. Sixty-seven fresh phone cases plus ten unchanged graphics/protocol cases, actual Full/Play compilation, native34 input reuse, 58 package bindings, API28/29 signatures,74→75 host reconstruction and all seven anonymous public asset bytes passed. Current and retained65 update discovery passed; iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA75_DELIVERY.md).
+
+三星已从公开74通过真实增量重建、主程序／运行组件确认和PlayProtect扫描升至101；实际安装字节和原UID匹配，原项目仍可见。新的自动解锁和图形连续性仍待各自实机结果，索尼启动原因未确认。
+
+## Previous delivery — Android Alpha74 (2026-11-10)
 
 [Alpha74/code100](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.74) is public from immutable source `322f6e3cefb3039922f821acd58ade79edfe96b1`. It observes actual keyguard completion, retains a bounded task-owned wake lease and refreshes canonical waiting state. Forty-four focused cases, actual Full/Play compilation, exact native34 reuse, 58 package bindings, API28/29 signatures, actual73→74 host reconstruction and all seven anonymous asset bytes passed; current and retained65 update parsers discover it, preserving iOS Latest. See the [delivery record](../docs/releases/ANDROID_ALPHA74_DELIVERY.md).
 
 三星已通过明确的完整包入口从公开73在线升到main/runtime100，字节、原UID、5条任务和2个项目保持。回答后等待提示自动清除及真实终端输出已观察；自动解锁的新用例完成唤醒／滑动，但未识别凭据界面，未输入密码或通过计算／重锁，原记录保留。索尼具体启动原因及其余N01–N08事项继续推进。
 
-## Next source checkpoint — Android Alpha75
+## Unreleased source — installed Linux recovery
 
-Alpha75/code101 is prepared for trusted native keyguard-window resolution and project graphical continuity. It resolves a fresh, default-display SystemUI credential surface before the single input attempt and records only closed readiness stages. The viewer retains its project CLI/display context only after the original launcher and actual display/desktop children are confirmed alive; an explicit reopen reattaches without a new environment or terminal and without a failure-driven reconnect loop. Sixty-seven focused phone cases and actual Full/Play compilation passed; ten unchanged graphics/protocol cases are reused by exact input identity. APK, device and public delivery remain separate. See the [candidate record](../docs/releases/ANDROID_ALPHA75_DELIVERY.md).
+A user-initiated recheck now rebinds the existing lanes when a live native generation exists but the shell/readiness lane is missing or stale, then measures prerequisites again. It never revives a stopped root, reinstalls Linux or fabricates readiness. Current-generation closed refusal stages survive the native invalidation summary; component, timeout and refused-handshake causes remain distinct. The real10-second future timeout and cancellation propagation are covered. Fifty-nine focused cases and actual Full/Play compilation passed. These repairs are not in the frozen Alpha75 APK, and the concrete Sony startup cause remains unverified.
 
-本批修复系统凭据窗口的实际查找、输入前再次确认和固定阶段诊断，并接入项目图形会话的存活确认与重开恢复。未增加密码重试或放宽原授权；索尼的具体启动根因及三星自动解锁仍待各自实测，不能按代码或编译销账。
+未发布代码已修复已安装状态下“重新检查”的空操作，以及启动失败原因被统一状态覆盖的问题。只复用现有运行通路、代际及停止边界，不删除环境或用户数据；59项相关检查和Full／Play编译通过，索尼实机尚未验证。
 
 ## Previous delivery — Android Alpha73 (2026-11-10)
 

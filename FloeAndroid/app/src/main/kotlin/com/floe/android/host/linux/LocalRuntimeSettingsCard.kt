@@ -361,7 +361,14 @@ internal fun localRuntimeRecovery(diagnostic: String?): LocalRuntimeRecovery {
     // classified by its cause alone.
     val refusal = diagnostic.substringAfter("refusal:", "").substringBefore('|', "")
     val stage = diagnostic.substringAfterLast("stage:", "")
-    if (refusal in COMPONENT_REFUSALS) return LocalRuntimeRecovery.COMPONENT
+    // The component codes may ride EITHER closed segment: the readiness
+    // ingress surfaces them in `refusal:` (epoch-tagged controller record),
+    // while a preflight/grant-lane recording puts the same closed vocabulary
+    // into `stage:`. Checking only `refusal:` left a recorded component
+    // mismatch misclassified as a generic attempt failure with futile
+    // "open a terminal / recheck" guidance.
+    if (refusal in COMPONENT_REFUSALS || stage in COMPONENT_REFUSALS)
+        return LocalRuntimeRecovery.COMPONENT
     val cause = diagnostic.substringBefore('|', diagnostic)
     if (cause == "lane:unbound" || cause == "status:unreadable") return LocalRuntimeRecovery.PROBE
     if (refusal.isNotEmpty() || stage.isNotEmpty()) return LocalRuntimeRecovery.ATTEMPT_FAILED

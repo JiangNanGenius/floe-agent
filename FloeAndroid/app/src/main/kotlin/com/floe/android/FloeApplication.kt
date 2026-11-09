@@ -988,12 +988,48 @@ class FloeApplication : Application() {
      * full prerequisite re-ingress for the CURRENT accepted epoch (the SAME
      * authorized primitive the verified install transition uses). Never
      * fabricates qualification; every attempt re-measures live proof and
-     * refuses on any real drift. */
+     * refuses on any real drift.
+     *
+     * N05-sony-installed-next (2026-11-10): the installed card's recheck copy
+     * promises a fresh measure ("重新检查…再次测量 / 会完成关联"), but the old
+     * form returned false WITHOUT any measurement whenever the shell mailbox
+     * or the readiness lane was unbound for the CURRENT accepted native root
+     * generation — the shape left stranded once the bootstrap pump retry
+     * budget (LINUX_LANE_START_ATTEMPTS) was exhausted, with the card still
+     * telling the user to recheck or open a terminal. For exactly that shape
+     * the recheck now replays the EXISTING bounded lane-bind sequence ONCE
+     * (startLinuxLanes: same stop/drain fence, mailbox bind and independent
+     * readiness ingress as bootstrap — no download, no install, no userdata
+     * change), then runs the SAME onInstallVerified primitive against the
+     * generation that actually ended bound. Every unproven drain, refused
+     * bind, drifted peer or failed ingress still fails closed exactly as
+     * before; the steady-state call sequence is unchanged. */
     internal suspend fun retryLinuxTaskExecutionIngress(): Boolean =
         if (!::linuxReadiness.isInitialized) false
         else kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val nativeEpoch = runtimeHost?.nativeRootEpoch() ?: 0L
+            val plan = linuxIngressRetryPlan(linuxShell.boundNativeEpoch,
+                linuxReadiness.boundEpoch, nativeEpoch)
+            if (plan == LinuxIngressRetryPlan.REPLAY_LANE_BIND) {
+                runCatching { startLinuxLanes(nativeEpoch) }
+            }
             val epoch = linuxShell.boundNativeEpoch
-            if (epoch <= 0) false else linuxReadiness.onInstallVerified(epoch)
+            if (epoch <= 0) false
+            else {
+                // startLinuxLanes returns early for an already-bound shell;
+                // if only the READINESS lane was missing for the generation
+                // the shell ACTUALLY holds (same live native generation),
+                // bind it through its own original start primitive (which
+                // creates the generation, ingresses from fresh proof and
+                // arms the bounded owned re-ingress on refusal exactly like
+                // bootstrap) before the re-ingress. A shell still holding an
+                // OLD, fenced generation is never re-qualified by a recheck:
+                // onInstallVerified stays false for it as before.
+                if (plan == LinuxIngressRetryPlan.REPLAY_LANE_BIND &&
+                    epoch == nativeEpoch && linuxReadiness.boundEpoch != epoch
+                ) runCatching { linuxReadiness.start(epoch) }
+                linuxReadiness.onInstallVerified(epoch)
+            }
         }
 
     /** Trusted-host read for the Settings local-environment card: the
@@ -1059,3 +1095,26 @@ class FloeApplication : Application() {
         private const val LINUX_LANE_START_BACKOFF_MILLIS = 5_000L
     }
 }
+
+/**
+ * Pure decision for the user-initiated readiness recheck
+ * (N05-sony-installed-next). `INGRESS_ONLY` keeps the ORIGINAL recheck
+ * behaviour byte-for-byte: re-ingress for the already-bound shell epoch,
+ * false when no shell epoch exists at all (including no native root —
+ * a stopped/never-started Root is NEVER revived by a recheck).
+ * `REPLAY_LANE_BIND` is returned ONLY when a live accepted native root
+ * generation exists but the shell mailbox or the readiness lane is not
+ * bound to exactly THAT generation — the shape where the old recheck was a
+ * proven no-op while the card copy promised a fresh measure. Total, never
+ * throws, qualifies and gates nothing.
+ */
+internal enum class LinuxIngressRetryPlan { INGRESS_ONLY, REPLAY_LANE_BIND }
+
+internal fun linuxIngressRetryPlan(shellEpoch: Long, readinessEpoch: Long,
+                                  nativeEpoch: Long): LinuxIngressRetryPlan =
+    when {
+        nativeEpoch <= 0L -> LinuxIngressRetryPlan.INGRESS_ONLY
+        shellEpoch == nativeEpoch && readinessEpoch == nativeEpoch ->
+            LinuxIngressRetryPlan.INGRESS_ONLY
+        else -> LinuxIngressRetryPlan.REPLAY_LANE_BIND
+    }

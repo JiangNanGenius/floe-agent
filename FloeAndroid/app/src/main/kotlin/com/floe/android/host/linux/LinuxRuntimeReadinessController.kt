@@ -247,7 +247,30 @@ class LinuxRuntimeReadinessController(
         // lease guards.
         componentRefusal()?.let { error(it) }
         val client = target.connection ?: RuntimeConnection(context).also { fresh ->
-            fresh.connect().get(15, TimeUnit.SECONDS)
+            // N05-sony-installed-next: name the ONE peer-startup stage the
+            // opaque collapse hid. refusalOf() maps JVM exception MESSAGES
+            // through a no-space ASCII filter, and the runtime-IPC lane's
+            // messages ("Runtime connection timed out", "Runtime component
+            // unavailable", SecurityException peer refusals…) all contain
+            // spaces, so every bind failure surfaced as the single token
+            // `ingress_failed` — the exact class a stuck installed-but-not-
+            // ready device needs named. A TimeoutException at the bounded
+            // get() means the service never answered the handshake within
+            // 15 s (cold process / OEM bind pressure); an ExecutionException
+            // means the handshake itself was refused (peer verification,
+            // descriptor or binding failure). The failure SEMANTICS are
+            // preserved byte-for-byte: both still throw out of this method
+            // into the same invalidate + bounded fresh re-ingress path with
+            // no partial facts; only the closed refusal NAME gets finer.
+            // CancellationException and every other throwable keep their
+            // exact existing propagation.
+            try {
+                fresh.connect().get(15, TimeUnit.SECONDS)
+            } catch (timeout: java.util.concurrent.TimeoutException) {
+                throw IllegalStateException("connectTimeout", timeout)
+            } catch (refused: java.util.concurrent.ExecutionException) {
+                throw IllegalStateException(connectionFailureStage(refused), refused)
+            }
             // REAL callback: the actual Binder object death / disconnect of
             // the anchored peer falls ALL facts for the generation NOW
             // (dispatch AND discovery fence together) instead of waiting for
@@ -298,6 +321,15 @@ class LinuxRuntimeReadinessController(
             .put("receiptDigest", receipt).put("rootfsVersion", version))
         ingestOrThrow("singleWorkloadAcknowledged", target.epoch, JSONObject()
             .put("contractVersion", workloadContract))
+        // A COMPLETE fresh prerequisite ingress clears the epoch-tagged
+        // diagnostic refusal inside the same publication fence, so the exact
+        // run-less mapping-pending shape (`...|refusal:|stage:`) stays
+        // byte-identical after recovery and a stale refusal can never be
+        // surfaced for a generation whose ingress just fully re-measured.
+        publish.lock()
+        try {
+            if (bound === target) lastIngressRefusal = null
+        } finally { publish.unlock() }
     }
 
     /**
@@ -483,6 +515,22 @@ class LinuxRuntimeReadinessController(
         closedStageToken(token)?.let { lastPreflightStage = epoch to it }
     }
 
+    /**
+     * N05-sony-installed-next (2026-11-10): the LAST closed ingress refusal
+     * recorded by THIS controller for a generation, epoch-tagged with the
+     * SAME write-side fence as [lastPreflightStage]. Core's `invalidate`
+     * deliberately replaces its stored reason with the shape
+     * `invalidated:<kind|all>` (LinuxReadinessIngress.invalidate), so every
+     * controller-side refusal — component gate, peer handshake, unmeasurable
+     * proof, unverified rootfs, transport drift — was invisible in the
+     * `refusal:` segment the installed card classifies, and the shipped
+     * classified-reason surface collapsed all startup causes into one
+     * masked token. DIAGNOSTIC-ONLY: recording qualifies nothing, gates
+     * nothing and touches no admission; only a closed-set token is ever
+     * recorded, and a COMPLETE fresh prerequisite ingress clears it.
+     */
+    @Volatile private var lastIngressRefusal: Pair<Long, String>? = null
+
     /** Read-only diagnostic summary for the Diagnostics & About surface:
      * composed ONLY from the existing readiness status authority (the same
      * `floe_linux_readiness_status` read [activateAndVerify] consults) plus
@@ -494,7 +542,8 @@ class LinuxRuntimeReadinessController(
     fun diagnosticSnapshot(): String {
         val epoch = bound?.epoch ?: 0L
         if (epoch <= 0) return "lane:unbound"
-        return diagnosticStage(statusObject(), epoch, stageForEpoch(lastPreflightStage, epoch))
+        return diagnosticStage(statusObject(), epoch, stageForEpoch(lastPreflightStage, epoch),
+            stageForEpoch(lastIngressRefusal, epoch))
     }
 
     /**
@@ -669,7 +718,15 @@ class LinuxRuntimeReadinessController(
         target ?: return
         publish.lock()
         try {
-            if (bound === target) runCatching { LinuxReadinessNative.invalidate(null, reason.take(48)) }
+            if (bound === target) {
+                runCatching { LinuxReadinessNative.invalidate(null, reason.take(48)) }
+                // Diagnostic-only epoch-tagged record (see lastIngressRefusal):
+                // only a closed-set token is recorded; the invalidation, the
+                // publication fence and every admission check are unchanged.
+                closedStageToken(reason)?.takeIf { it != REDACTED }?.let {
+                    lastIngressRefusal = target.epoch to it
+                }
+            }
             target.anchoredProof = null
             target.rootfsReceipt = null
             target.rootfsVersion = null
@@ -803,6 +860,13 @@ class LinuxRuntimeReadinessController(
             "exchangeFailed", "ingress_failed", "peer_boundary_drift",
             "engine_identity_lost", "peer_generation_drift", "rootfs_drift",
             "transport_lost", "preflight_peer_retired",
+            // N05-sony-installed-next: enumerated from the ACTUAL producers
+            // in this file — handlePeerLoss / stop / the install-lifecycle
+            // observer / generation replacement reach invalidateInternal with
+            // these reasons, and the bounded peer handshake now names its
+            // two stages instead of collapsing both into `ingress_failed`.
+            "engine_binder_lost", "root_stopped", "install_changed", "epoch_replace",
+            "connectTimeout", "connectRefused",
             // G03-R3 App-upgrade component gate (RuntimeComponentMatch).
             "componentUnavailable", "componentVersionStale", "componentIdentityMismatch",
             // Core LinuxReadinessIngress refusal codes (lastRefusal values).
@@ -850,11 +914,22 @@ class LinuxRuntimeReadinessController(
          * here qualifies anything — it only NAMES the honest current stage. */
         /** JSON adapter over the pure core (org.json is not JVM-testable;
          * the decision itself lives in the snapshot overload below). */
-        internal fun diagnosticStage(status: JSONObject?, epoch: Long, lastStage: String?): String {
+        internal fun connectionFailureStage(failure: java.util.concurrent.ExecutionException): String {
+            val cause = failure.cause
+            if (cause is kotlinx.coroutines.CancellationException) throw cause
+            // RuntimeConnection's own 10-second timer completes the future
+            // exceptionally before this caller's 15-second get() deadline.
+            return if (cause is java.util.concurrent.TimeoutException ||
+                (cause is IllegalStateException && cause.message == "Runtime connection timed out")
+            ) "connectTimeout" else "connectRefused"
+        }
+
+        internal fun diagnosticStage(status: JSONObject?, epoch: Long, lastStage: String?,
+                                     typedIngressRefusal: String? = null): String {
             if (epoch <= 0) return "lane:unbound"
             if (status == null) return "status:unreadable"
             return diagnosticStage(ReadinessSnapshot.from(status),
-                status.optString("lastRefusal"), epoch, lastStage)
+                status.optString("lastRefusal"), epoch, lastStage, typedIngressRefusal)
         }
 
         /** Pure decision core — TOTAL, never throws (Main review
@@ -862,7 +937,8 @@ class LinuxRuntimeReadinessController(
          * accepted-record mismatch must NOT hit a `first{}`
          * NoSuchElementException). */
         internal fun diagnosticStage(snapshot: ReadinessSnapshot?, lastRefusal: String?,
-                                     epoch: Long, lastStage: String?): String {
+                                     epoch: Long, lastStage: String?,
+                                     typedIngressRefusal: String? = null): String {
             if (epoch <= 0) return "lane:unbound"
             if (snapshot == null) return "status:unreadable"
             if (ReadinessSnapshot.allSevenLiveAt(snapshot, epoch)) return "ready"
@@ -890,7 +966,23 @@ class LinuxRuntimeReadinessController(
                     }
                 }
             }
-            val refusal = closedStageToken(lastRefusal ?: "") ?: ""
+            val coreRefusal = closedStageToken(lastRefusal ?: "") ?: ""
+            // The `invalidated:<kind|all>` shape is Core's deliberate reason
+            // DISCARD (LinuxReadinessIngress.invalidate overwrites the passed
+            // reason): it names the invalidation, never the typed cause.
+            // When — and ONLY when — the CURRENT generation's controller
+            // recorded a closed ingress refusal for this same masked reading,
+            // surface that honest cause instead; the recorded token is
+            // re-checked against the closed membership here too, so no
+            // arbitrary text can ever pass. A direct Core refusal
+            // (mailboxClosed, admissionSuspended, mappingReceipt…) always
+            // keeps precedence; with nothing recorded the segment stays
+            // exactly as before, so the run-less mapping-pending shape and
+            // every previously produced token are byte-identical.
+            val refusal = if (coreRefusal.startsWith("invalidated:") &&
+                    typedIngressRefusal != null &&
+                    closedStageToken(typedIngressRefusal) == typedIngressRefusal
+            ) typedIngressRefusal else coreRefusal
             val stage = closedStageToken(lastStage ?: "") ?: ""
             return "$cause|refusal:$refusal|stage:$stage"
         }
