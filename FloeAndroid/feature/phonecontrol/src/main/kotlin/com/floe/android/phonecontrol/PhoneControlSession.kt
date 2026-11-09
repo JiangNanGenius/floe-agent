@@ -987,7 +987,13 @@ internal class PhoneControlSession(
     // Fences / lifecycle events
     // ---------------------------------------------------------------------
 
-    fun stop() = applyGlobalBlocker(PhoneControlBlocker.STOPPED)
+    fun stop() {
+        // An explicit safety stop ends the task wake lease immediately; the
+        // STOPPED blocker itself is not a user takeover, so ownership and the
+        // existing relock receipts stay exactly as they were.
+        unlocker.releaseTaskWake()
+        applyGlobalBlocker(PhoneControlBlocker.STOPPED)
+    }
 
     fun takeover() {
         unlocker.userInteraction()
@@ -1005,6 +1011,10 @@ internal class PhoneControlSession(
     fun release(owner: PhoneControlOwner) {
         if (closed) return
         if (fence.release(owner)) {
+            // The task's automatic UI ownership ends here even when the host
+            // closed the client before finish(); the wake-lease drop is
+            // exact-owner guarded and idempotent after any earlier finish path.
+            unlocker.releaseTaskWake(owner)
             latest = null
             abortInFlight(null, "the owning run ended; in-flight effect is unverified")
             PhoneControlRuntime.publish()
@@ -1013,6 +1023,10 @@ internal class PhoneControlSession(
 
     fun onScreenOff() {
         if (closed) return
+        // End owned wake resources before anything else touches the screen-off
+        // path: never fight a manual power key, and a pending unlock attempt
+        // conservatively settles as user takeover instead of re-waking.
+        unlocker.onScreenOff()
         fence.block(PhoneControlBlocker.LOCKED)
         latest = null
         abortInFlight(PhoneControlBlocker.LOCKED, "the device screen turned off")

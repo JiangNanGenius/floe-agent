@@ -9,13 +9,29 @@ enum class PhoneUnlockResult { ALREADY_UNLOCKED, UNLOCKED, USER_REQUIRED, CANCEL
 enum class PhoneRelockResult { LOCKED, ALREADY_LOCKED, USER_TAKEN_OVER, USER_REQUIRED }
 data class PhoneRelockReceipt(val owner: PhoneControlOwner, val result: PhoneRelockResult)
 
+/** Sentinel for "no wake lease owned"; generation counters inside a driver start above it. */
+internal const val NO_WAKE_LEASE = 0L
+
 /** Effects stay on the AccessibilityService main looper; tests use a deterministic clock. */
 internal interface PhoneUnlockDriver {
     val locked: Boolean
     val now: Long
+    /** The display is actually on; uncertain reads must answer false so no lease survives blindly. */
+    val interactive: Boolean
     fun after(delay: Long, action: () -> Unit): () -> Unit
     fun suppressInput(until: Long)
-    fun wake()
+    /**
+     * Takes or re-wakes ONE owned bounded wake lease and returns its generation
+     * (> [NO_WAKE_LEASE]); 0 means no lease was taken, which never aborts the
+     * attempt (the display may already be interactive). The timeout is only a
+     * crash/leak backstop: the real end is the owner-matched [releaseWake].
+     * A new acquisition must not stack counts behind an older unowned lease.
+     */
+    fun acquireWake(timeoutMs: Long): Long
+    /** Re-arms the backstop of exactly the given still-held generation; stale generations no-op. */
+    fun renewWake(generation: Long, timeoutMs: Long)
+    /** Releases exactly the given generation; a stale callback can never drop a replacement lease. */
+    fun releaseWake(generation: Long)
     /** True only while the real native SystemUI keyguard observably shows a credential surface. */
     fun credentialVisible(): Boolean
     /**
@@ -43,7 +59,16 @@ internal class PhoneControlUnlocker(
         var effectIssued = false
         var gestureReported = false
         var timer: (() -> Unit)? = null
+        var wakeGeneration: Long = NO_WAKE_LEASE
     }
+
+    /**
+     * The same owned wake lease carried from a successfully observed unlock
+     * through the task-owned automatic UI phase. Renewal checks this exact
+     * holder's live ownership and the real display state; it ends on
+     * finish/takeover/screen-off/close and its backstop bounds any lost cleanup.
+     */
+    private class TaskWake(val owner: PhoneControlOwner, val generation: Long, val live: () -> Boolean)
 
     private companion object {
         // Bounded observation windows. They only cap waiting; every success
@@ -53,6 +78,13 @@ internal class PhoneControlUnlocker(
         const val SURFACE_SETTLE_MS = 1_500L
         const val UNLOCK_OBSERVE_MS = 2_500L
         const val POLL_MS = 100L
+        // Wake-lease backstops. Android releases the lease itself if every
+        // owner-matched release path is lost; each attempt leg below is
+        // bounded well under the leg backstop, and every task-phase renewal
+        // first re-checks live ownership plus an actually interactive display.
+        const val WAKE_LEG_BACKSTOP_MS = 4_000L
+        const val WAKE_TASK_BACKSTOP_MS = 45_000L
+        const val WAKE_TASK_RENEW_MS = 30_000L
     }
     private class Settlement(val owner: PhoneControlOwner, val deadline: Long, val mayComplete: Boolean) {
         var lockRequested = false
@@ -62,6 +94,8 @@ internal class PhoneControlUnlocker(
     private var attempt: Attempt? = null
     private var unlockedFor: PhoneControlOwner? = null
     private var settlement: Settlement? = null
+    private var taskWake: TaskWake? = null
+    private var taskWakeTimer: (() -> Unit)? = null
     val isSettling: Boolean get() = settlement != null
     var lastRelockReceipt: PhoneRelockReceipt? = null
         private set
@@ -69,6 +103,7 @@ internal class PhoneControlUnlocker(
     fun userInteraction() {
         val owner = attempt?.owner ?: settlement?.owner ?: unlockedFor
         unlockedFor = null
+        owner?.let { releaseTaskWake(it) }
         settlement?.timer?.invoke()
         settlement = null
         attempt?.let { finishAttempt(it, PhoneUnlockResult.CANCELLED, relinquished = true) }
@@ -99,7 +134,10 @@ internal class PhoneControlUnlocker(
             // Wake may itself complete a trusted system unlock. Any uncertain
             // cancellation after an effect therefore needs observed settlement.
             current.effectIssued = true
-            driver.wake()
+            // Own the wake resource across the whole asynchronous reveal /
+            // observation instead of a transient poke: the lease lives until
+            // an owner-matched release, with the timeout as crash backstop.
+            current.wakeGeneration = driver.acquireWake(WAKE_LEG_BACKSTOP_MS)
             observeWake(current, driver.now + WAKE_OBSERVE_MS)
         } catch (_: Exception) { finishAttempt(current, PhoneUnlockResult.FAILED) }
     }
@@ -123,6 +161,9 @@ internal class PhoneControlUnlocker(
      */
     private fun reveal(current: Attempt) {
         if (attempt !== current) return
+        // This leg can run up to callback deadline + surface settle; re-arm the
+        // bounded backstop only while this exact live attempt owns the lease.
+        driver.renewWake(current.wakeGeneration, WAKE_LEG_BACKSTOP_MS)
         later(current, GESTURE_CALLBACK_DEADLINE_MS) { reportGesture(current, false, observedFallback = true) }
         val dispatched = runCatching {
             driver.showCredential { completed ->
@@ -172,6 +213,9 @@ internal class PhoneControlUnlocker(
         if (!driver.locked) { finishAttempt(current, PhoneUnlockResult.UNLOCKED); return }
         // Keep our own async input echoes inside the takeover-suppression window.
         driver.suppressInput(driver.now + UNLOCK_OBSERVE_MS + 500)
+        // The unlock-observation leg follows dispatch; re-arm the bounded
+        // backstop for this exact live attempt before handing the credential.
+        driver.renewWake(current.wakeGeneration, WAKE_LEG_BACKSTOP_MS)
         val dispatched = runCatching { driver.enterCredential(current.credential) }.getOrDefault(false)
         if (!dispatched) finishAttempt(current, PhoneUnlockResult.USER_REQUIRED)
         else observeUnlock(current, driver.now + UNLOCK_OBSERVE_MS)
@@ -204,6 +248,18 @@ internal class PhoneControlUnlocker(
         if (!relinquished && actualUnlocked && current.effectIssued) unlockedFor = current.owner
         val actualResult = if (result == PhoneUnlockResult.UNLOCKED && !actualUnlocked)
             PhoneUnlockResult.USER_REQUIRED else result
+        if (!relinquished && actualResult == PhoneUnlockResult.UNLOCKED && actualUnlocked &&
+            current.effectIssued) {
+            // The task actually got this device unlocked: carry the same owned
+            // lease into the task-owned automatic UI phase instead of releasing
+            // it mid-round-trip. Renewal stays bound to the attempt's live
+            // ownership callback and the real display state.
+            adoptTaskWake(current)
+        } else {
+            // Failure, cancel or relinquish: release our exact generation now.
+            driver.releaseWake(current.wakeGeneration)
+            current.wakeGeneration = NO_WAKE_LEASE
+        }
         if (!relinquished && actualResult != PhoneUnlockResult.UNLOCKED && current.effectIssued) {
             // An in-flight system transition may finish after Cancel. No more
             // credential input is permitted; only observe and clean up our lease.
@@ -219,6 +275,9 @@ internal class PhoneControlUnlocker(
         } else if (settlement?.owner == owner) {
             return
         } else if (unlockedFor == owner) {
+            // Exact-owner task end: the automatic UI no longer needs the
+            // display, so drop the wake lease before relock settlement.
+            releaseTaskWake(owner)
             settle(owner, mayComplete = false)
         }
     }
@@ -254,8 +313,96 @@ internal class PhoneControlUnlocker(
         if (settlement !== value) return
         value.timer?.invoke()
         settlement = null
+        releaseTaskWake(value.owner)
         if (unlockedFor == value.owner) unlockedFor = null
         report(value.owner, result)
+    }
+
+    /**
+     * A real display-off signal ends every owned wake resource: never fight a
+     * manual power-key screen-off, and a pending attempt ends conservatively as
+     * takeover. A stale event whose display is actually interactive (our own
+     * bounded wake still racing the broadcast) keeps the live attempt.
+     * Pending relock settlement and existing ownership receipts are untouched.
+     */
+    fun onScreenOff() {
+        // Conservative: an uncertain interactive read is treated as screen-off.
+        if (runCatching { driver.interactive }.getOrDefault(false)) return
+        taskWake?.let { releaseTaskWake(it) }
+        val current = attempt ?: return
+        finishAttempt(current, PhoneUnlockResult.CANCELLED, relinquished = true)
+        report(current.owner, PhoneRelockResult.USER_TAKEN_OVER)
+    }
+
+    /** Exact-owner prompt drop at task-level end paths (fence release/close ordering races). */
+    fun releaseTaskWake(owner: PhoneControlOwner) {
+        taskWake?.takeIf { it.owner == owner }?.let { releaseTaskWake(it) }
+    }
+
+    /**
+     * Safety-stop boundary: end the task wake lease now without touching any
+     * ownership/relock receipt. The single holder slot means this can only be
+     * the current owner's own lease; a replacement holder is impossible until
+     * the existing ownership guard clears.
+     */
+    fun releaseTaskWake() {
+        taskWake?.let { releaseTaskWake(it) }
+    }
+
+    /**
+     * Ownership transfer is one-way: the attempt's generation moves into the
+     * single holder slot, so no stale attempt path can release or renew it,
+     * and a replacement owner is impossible while this holder exists (the
+     * existing [unlockedFor] guard keeps rejecting foreign/partial transactions).
+     */
+    private fun adoptTaskWake(current: Attempt) {
+        val generation = current.wakeGeneration
+        current.wakeGeneration = NO_WAKE_LEASE
+        if (generation == NO_WAKE_LEASE) return
+        val holder = TaskWake(current.owner, generation, current.current)
+        taskWake = holder
+        val live = runCatching { holder.live() }.getOrDefault(false)
+        val screenOn = runCatching { driver.interactive }.getOrDefault(false)
+        if (!live || !screenOn) { releaseTaskWake(holder); return }
+        try {
+            // The attempt's short backstop cannot bridge the first 30s task
+            // tick. Transfer its lifetime now while ownership is still live.
+            driver.renewWake(generation, WAKE_TASK_BACKSTOP_MS)
+            scheduleTaskWakeRenewal(holder)
+        } catch (_: Exception) { releaseTaskWake(holder) }
+    }
+
+    private fun releaseTaskWake(holder: TaskWake) {
+        if (taskWake !== holder) return
+        taskWake = null
+        taskWakeTimer?.invoke(); taskWakeTimer = null
+        driver.releaseWake(holder.generation)
+    }
+
+    /**
+     * Bounded renewal driven only by the existing lease holder: each firing
+     * re-checks this exact holder, its live ownership callback and an actually
+     * interactive display before re-arming the same backstop. When the lease
+     * ends no timer remains, so this is never an idle poller.
+     */
+    private fun scheduleTaskWakeRenewal(holder: TaskWake) {
+        taskWakeTimer?.invoke()
+        taskWakeTimer = try {
+            driver.after(WAKE_TASK_RENEW_MS) {
+                taskWakeTimer = null
+                if (taskWake !== holder) return@after
+                val live = runCatching { holder.live() }.getOrDefault(false)
+                val screenOn = runCatching { driver.interactive }.getOrDefault(false)
+                if (!live || !screenOn) { releaseTaskWake(holder); return@after }
+                try {
+                    driver.renewWake(holder.generation, WAKE_TASK_BACKSTOP_MS)
+                    scheduleTaskWakeRenewal(holder)
+                } catch (_: Exception) { releaseTaskWake(holder) }
+            }
+        } catch (_: Exception) {
+            releaseTaskWake(holder)
+            null
+        }
     }
 
     private fun report(owner: PhoneControlOwner, result: PhoneRelockResult) {
@@ -269,10 +416,13 @@ internal class PhoneControlUnlocker(
 
     fun close() {
         // Service teardown ends this incarnation's authority. Never leave a
-        // delayed cleanup capable of locking a replacement session/user.
+        // delayed cleanup capable of locking a replacement session/user, and
+        // never carry an owned wake lease past this process/session boundary.
         val pending = attempt
         val owner = pending?.owner ?: settlement?.owner ?: unlockedFor
         val uncertainInput = pending?.effectIssued == true
+        owner?.let { releaseTaskWake(it) }
+        taskWake?.let { releaseTaskWake(it) }
         settlement?.timer?.invoke()
         settlement = null
         unlockedFor = null

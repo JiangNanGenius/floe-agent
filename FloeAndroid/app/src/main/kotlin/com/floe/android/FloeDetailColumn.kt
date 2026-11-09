@@ -317,8 +317,19 @@ private fun ConversationDestination(
     LaunchedEffect(conversationId, temporary) {
         if (temporary == null) runtimeHost.executionTargets.load(conversationId)
     }
-    LaunchedEffect(conversationId, temporary) {
-        if (temporary == null) runtimeHost.taskContinuity.load(conversationId)
+    val continuitySignals by androidx.compose.runtime.remember(holder) {
+        androidx.compose.runtime.derivedStateOf(androidx.compose.runtime.structuralEqualityPolicy()) {
+            val current = holder.snapshot.value
+            Triple(current?.runs?.map { it.id to it.stateName },
+                current?.liveStateName, holder.userQuestionSnapshot)
+        }
+    }
+    LaunchedEffect(conversationId, temporary, continuitySignals) {
+        // Read canonical waits on real run/question transitions; streaming text
+        // does not invalidate these keys. An owned resume keeps its own callback.
+        if (temporary == null && !runtimeHost.taskContinuity.state.value.busy) {
+            runtimeHost.taskContinuity.load(conversationId)
+        }
     }
     Box(Modifier.fillMaxSize()) {
         // C02: the existing tool card's retained-result reader resolves its
@@ -340,7 +351,12 @@ private fun ConversationDestination(
                     if (temporary == null && TaskContinuityPresentation.shouldShowBanner(continuityState)) {
                         TaskContinuityBanner(
                             state = continuityState,
-                            onClick = { continuitySheetVisible = true },
+                            onClick = {
+                                if (!runtimeHost.taskContinuity.state.value.busy) {
+                                    runtimeHost.taskContinuity.load(conversationId)
+                                }
+                                continuitySheetVisible = true
+                            },
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                         )
                     }

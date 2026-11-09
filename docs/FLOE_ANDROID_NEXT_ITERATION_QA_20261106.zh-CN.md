@@ -888,3 +888,14 @@ English: Alpha73 is public with verified assets and production update discovery.
 English: The next source checkpoint uses real gesture completion and bounded keyguard observation, rechecks callback authority and adds credential-free stage diagnostics. Twenty-eight focused cases and actual Full compilation passed. There is no new APK/device pass yet; the public73 baseline reached manual-unlock fallback after a successful Linux command. Original evidence and baseline data survive test cleanup. N01–N08 remains active.
 
 English: The bounded Alpha73 source package passed 27 focused JVM cases and actual Full/Play compilation. It clarifies the supported observation contract and precise host error, alongside app-list/copy fixes; no unsupported conditional schema or privacy relaxation was introduced. A new APK and fresh device case remain separate. The original failed72 task is retired and immutable evidence is preserved.
+
+
+## 2026-11-10 Alpha74源码收口与原提问恢复实测
+
+公开73的三星新用例已完成真实主进程结束、重开同一任务并恢复原提问。回答后继续读取原指南快照及更新后的当前版本，六次工具结果成功，没有重复创建、更新或新增运行。原始67条导出和进程证据保留；自己的任务、设备导出已清理，指南按既有可恢复移除机制退役，原5条任务保持。
+
+该用例结束后仍显示等待提示，手动刷新确认后端已无等待；本批在真实运行／提问状态变化及打开详情时读取最新状态，不按终态掩盖真实待处理项。自动解锁另补真实任务所属的亮屏锁、有界续期及结束／接管／熄屏／服务丢失释放；成功交接时立即延长短超时，避免早于第一次任务续期失效。
+
+44项相关检查和实际Full／Play Kotlin编译通过，初始超时回归和新夹具错误记录保留。版本／组件／对应源码统一准备为Alpha74/code100，单份Full APK、签名／封装、真实三星自动解锁及公开发行随后分别验收，不将编译或旧73的手动等待记为实机通过。服务端现有接收元数据未发现Android9记录，索尼启动根因仍未定位，不据此要求刷机。见[Alpha74源码记录](releases/ANDROID_ALPHA74_DELIVERY.md)，N01–N08继续。
+
+English: A fresh Alpha73 Samsung case passed same-run/question process recovery and retained guide snapshot pagination. Alpha74 adds canonical wait refresh and a bounded owned wake lifetime, including the first-renewal bridge; 44 focused cases and actual Full/Play compilation passed. A new APK and physical unlock remain separate. Sony startup and the remaining N01–N08 scope stay open.

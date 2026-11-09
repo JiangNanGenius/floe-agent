@@ -29,17 +29,71 @@ internal class AndroidPhoneUnlockDriver(
     private val power = service.getSystemService(Context.POWER_SERVICE) as PowerManager
     override val locked: Boolean get() = keyguard.isKeyguardLocked
     override val now: Long get() = SystemClock.elapsedRealtime()
+    override val interactive: Boolean get() = runCatching { power.isInteractive }.getOrDefault(false)
     override fun suppressInput(until: Long) = suppress(until)
     override fun after(delay: Long, action: () -> Unit): () -> Unit {
         val work = Runnable { action() }
         check(handler.postDelayed(work, delay))
         return { handler.removeCallbacks(work) }
     }
-    override fun wake() {
-        trace("WAKE_REQUESTED")
-        @Suppress("DEPRECATION")
+
+    /**
+     * One reusable, single-reference wake lease with generation fencing. The
+     * timeout is only Android's own backstop (process death or a lost cleanup
+     * path can never strand the display); every normal end is the owner-matched
+     * [releaseWake]. Renewals replace the same reference, so counts cannot
+     * accumulate, and a stale generation can neither renew nor release a
+     * replacement owner's lease.
+     */
+    @Suppress("DEPRECATION")
+    private val wakeLock: PowerManager.WakeLock =
         power.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-            "Floe:TaskUnlock").apply { acquire(4_000); release() }
+            "Floe:TaskUnlock").apply { setReferenceCounted(false) }
+    private var wakeSequence = 0L
+    private var wakeHeldGeneration = NO_WAKE_LEASE
+
+    override fun acquireWake(timeoutMs: Long): Long {
+        trace("WAKE_REQUESTED")
+        if (timeoutMs <= 0) return NO_WAKE_LEASE
+        return try {
+            if (wakeHeldGeneration != NO_WAKE_LEASE) {
+                // Defensive: only one owner can exist at a time, so any prior
+                // reference is already unowned; drop it instead of stacking.
+                wakeHeldGeneration = NO_WAKE_LEASE
+                runCatching { wakeLock.release() }
+            }
+            wakeSequence += 1
+            wakeHeldGeneration = wakeSequence
+            wakeLock.acquire(timeoutMs)
+            trace("WAKE_LEASE_ACQUIRED")
+            wakeHeldGeneration
+        } catch (_: Exception) {
+            // No lease: the attempt continues (the display may already be on),
+            // and every later renew/release on generation 0 stays a no-op.
+            wakeHeldGeneration = NO_WAKE_LEASE
+            trace("WAKE_LEASE_UNAVAILABLE")
+            NO_WAKE_LEASE
+        }
+    }
+
+    override fun renewWake(generation: Long, timeoutMs: Long) {
+        if (generation == NO_WAKE_LEASE || generation != wakeHeldGeneration || timeoutMs <= 0) return
+        try {
+            // Replace rather than accumulate: release + re-acquire keeps exactly
+            // one live reference behind a fresh bounded backstop.
+            runCatching { wakeLock.release() }
+            wakeLock.acquire(timeoutMs)
+            trace("WAKE_LEASE_RENEWED")
+        } catch (_: Exception) {
+            wakeHeldGeneration = NO_WAKE_LEASE
+        }
+    }
+
+    override fun releaseWake(generation: Long) {
+        if (generation == NO_WAKE_LEASE || generation != wakeHeldGeneration) return
+        wakeHeldGeneration = NO_WAKE_LEASE
+        runCatching { wakeLock.release() }
+        trace("WAKE_LEASE_RELEASED")
     }
 
     /**

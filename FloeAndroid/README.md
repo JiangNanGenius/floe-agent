@@ -1,5 +1,9 @@
 # Floe for Android
 
+## Next source checkpoint — Android Alpha74 (2026-11-10)
+
+Alpha74/code100 prepares actual keyguard completion, bounded task-owned wake lifetime and canonical waiting-state refresh. Forty-four focused cases and Full/Play Kotlin compilation passed. A new APK, physical unlock and publication remain separate; see the [source-stage record](../docs/releases/ANDROID_ALPHA74_DELIVERY.md). Alpha73 remains the current public package below.
+
 ## Current delivery — Android Alpha73 (2026-11-10)
 
 [Alpha73/code99](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.73) is published from immutable source `b0722808df5e006b5f035d4a2f43e2a8c1f3490e`. It clarifies the observation-token requirement for phone actions, returns a precise missing-token error, refreshes newly installed apps on resume and aligns the bilingual known-password guidance. Twenty-seven focused App cases, actual Full/Play compilation, native34 reuse by exact input identity, 58 package bindings, API28/29 signature verification and exact72→73 host delta reconstruction passed. Seven anonymous public assets and current/retained65 production update discovery were read back. See the [delivery](../docs/releases/ANDROID_ALPHA73_DELIVERY.md).

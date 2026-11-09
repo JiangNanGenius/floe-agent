@@ -24,6 +24,7 @@ class PhoneControlUnlockerTest {
         private var order = 0L
         override var locked = true
         override var now = 0L
+        override var interactive = true
         var inputCalls = 0
         var revealCalls = 0
         var lockCalls = 0
@@ -36,6 +37,9 @@ class PhoneControlUnlockerTest {
         var acceptReveal = true
         var credentialShown = false
         var wakeUnlockDelay = -1L
+        // Generation-fenced lease mirror of the real driver contract.
+        private var nextWake = 0L
+        var heldWake = NO_WAKE_LEASE
         override fun after(delay: Long, action: () -> Unit): () -> Unit {
             val value = Work(now + delay, ++order, action)
             queue.add(value)
@@ -50,8 +54,19 @@ class PhoneControlUnlockerTest {
             now = to
         }
         override fun suppressInput(until: Long) = Unit
-        override fun wake() {
+        override fun acquireWake(timeoutMs: Long): Long {
+            if (timeoutMs <= 0) return NO_WAKE_LEASE
+            nextWake += 1
+            heldWake = nextWake
             if (wakeUnlockDelay >= 0) after(wakeUnlockDelay) { locked = false }
+            return heldWake
+        }
+        override fun renewWake(generation: Long, timeoutMs: Long) {
+            if (generation == NO_WAKE_LEASE || generation != heldWake || timeoutMs <= 0) return
+        }
+        override fun releaseWake(generation: Long) {
+            if (generation == NO_WAKE_LEASE || generation != heldWake) return
+            heldWake = NO_WAKE_LEASE
         }
         override fun credentialVisible() = credentialShown
         override fun showCredential(onGestureResult: (Boolean) -> Unit): Boolean {
