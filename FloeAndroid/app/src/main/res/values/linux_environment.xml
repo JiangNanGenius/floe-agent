@@ -10,7 +10,7 @@
     <string name="linux_environment_installing">Preparing environment…</string>
     <string name="linux_environment_installed">Environment installed</string>
     <string name="linux_environment_stopping">Stopping installation…</string>
-    <string name="linux_environment_failed">Could not prepare the environment. Check your connection and available storage, then try again.</string>
+    <string name="linux_environment_failed">Environment setup is incomplete. See the reason below.</string>
     <string name="linux_environment_continue">Continue</string>
     <string name="linux_environment_prepare">Prepare environment</string>
     <string name="linux_environment_tools_pending">Local task execution is not ready yet.</string>
@@ -20,6 +20,8 @@
     <string name="linux_failure_component">The runtime could not be prepared. Try again; if it repeats, send the diagnostic details.</string>
     <string name="linux_failure_component_archive">The runtime installer could not be read. Download a fresh full installer and try again.</string>
     <string name="linux_failure_component_verify">The runtime installer could not be verified. Download the matching full Floe installer and try again.</string>
+    <string name="linux_failure_component_certificate">The system did not return complete signing information. Open diagnostic details to check the cause.</string>
+    <string name="linux_failure_component_signature">The app and runtime component have different signing identities. Reinstall a full package from the same source.</string>
     <string name="linux_failure_component_version">The runtime installer does not match this Floe version. Update using a full installer, then try again.</string>
     <string name="linux_failure_component_copy">The runtime installer could not be copied. Check free space, then try again.</string>
     <string name="linux_failure_component_install">Android could not complete the runtime install. Check the system prompt, then try again or send the diagnostic details.</string>

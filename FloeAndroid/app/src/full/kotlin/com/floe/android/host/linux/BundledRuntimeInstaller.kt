@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import com.floe.android.runtimeipc.RuntimePackages
+import com.floe.android.runtimeipc.RuntimeSigningIdentity
 import java.io.File
 import java.security.MessageDigest
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -95,12 +96,12 @@ class BundledRuntimeInstaller(private val context: Context) {
                     ComponentIdentity(
                         packageName = it.packageName,
                         longVersionCode = it.longVersionCode,
-                        signerSha256 = certificateDigests(it.signingInfo?.apkContentsSigners),
+                        signerSha256 = RuntimeSigningIdentity.read(it),
                     )
                 },
                 expectedPackage = pair.runtime,
                 ownVersionCode = own.longVersionCode,
-                ownSignerSha256 = certificateDigests(own.signingInfo?.apkContentsSigners),
+                ownSignerSha256 = RuntimeSigningIdentity.read(own),
             )
             if (rejection != null) throw LinuxSetupException(ComponentInstallPolicy.diagnostic(rejection))
             val parameters = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
@@ -138,11 +139,6 @@ class BundledRuntimeInstaller(private val context: Context) {
         }
     }
 
-    /** Public certificate digests only; null/absent signers become an empty set. */
-    private fun certificateDigests(signers: Array<android.content.pm.Signature>?): Set<String> =
-        signers.orEmpty().map { signature ->
-            MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).joinToString("") { "%02x".format(it) }
-        }.toSet()
 }
 
 /** Process-local UI handoff only; PackageInstaller owns durable session state. */

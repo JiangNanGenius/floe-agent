@@ -10,7 +10,7 @@
     <string name="linux_environment_installing">正在准备环境…</string>
     <string name="linux_environment_installed">环境已安装</string>
     <string name="linux_environment_stopping">正在停止安装…</string>
-    <string name="linux_environment_failed">暂时无法准备环境，请检查网络和剩余空间后重试。</string>
+    <string name="linux_environment_failed">环境准备未完成，请查看下方原因。</string>
     <string name="linux_environment_continue">继续</string>
     <string name="linux_environment_prepare">准备环境</string>
     <string name="linux_environment_tools_pending">终端任务暂不可用。</string>
@@ -20,6 +20,8 @@
     <string name="linux_failure_component">运行环境准备失败。请重试；若仍失败，请附上诊断详情反馈。</string>
     <string name="linux_failure_component_archive">无法读取运行环境安装文件。请重新下载完整安装包后重试。</string>
     <string name="linux_failure_component_verify">运行环境安装文件校验失败。请重新下载匹配的 Floe 完整安装包后重试。</string>
+    <string name="linux_failure_component_certificate">系统未返回完整的签名信息，请打开诊断详情查看原因。</string>
+    <string name="linux_failure_component_signature">应用与运行组件的签名不一致，请重新安装来源一致的完整安装包。</string>
     <string name="linux_failure_component_version">运行环境安装文件与当前 Floe 版本不匹配。请使用完整安装包更新后重试。</string>
     <string name="linux_failure_component_copy">无法复制运行环境安装文件。请确认本机空间充足后重试。</string>
     <string name="linux_failure_component_install">系统未能完成运行环境安装。请检查系统安装提示后重试；若仍失败，请提交诊断详情。</string>

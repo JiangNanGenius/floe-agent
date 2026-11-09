@@ -92,8 +92,9 @@ fun LocalRuntimeSettingsCard() {
                         "component" -> when (failure.code) {
                             "COMPONENT_ASSET_UNAVAILABLE", "COMPONENT_ARCHIVE_UNREADABLE",
                             "COMPONENT_SIZE_EXCEEDED" -> R.string.linux_failure_component_archive
-                            "COMPONENT_DIGEST_MISMATCH", "COMPONENT_CERTIFICATE_UNAVAILABLE",
-                            "COMPONENT_IDENTITY_MISMATCH" -> R.string.linux_failure_component_verify
+                            "COMPONENT_DIGEST_MISMATCH" -> R.string.linux_failure_component_verify
+                            "COMPONENT_CERTIFICATE_UNAVAILABLE" -> R.string.linux_failure_component_certificate
+                            "COMPONENT_IDENTITY_MISMATCH" -> R.string.linux_failure_component_signature
                             "COMPONENT_PACKAGE_MISMATCH", "COMPONENT_VERSION_MISMATCH" -> R.string.linux_failure_component_version
                             "COMPONENT_COPY_FAILED" -> R.string.linux_failure_component_copy
                             "COMPONENT_SESSION_FAILED", "COMPONENT_INSTALL_FAILED" -> R.string.linux_failure_component_install

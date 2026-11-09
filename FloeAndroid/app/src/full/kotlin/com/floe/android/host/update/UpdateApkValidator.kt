@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import java.io.File
-import java.security.MessageDigest
+import com.floe.android.runtimeipc.RuntimeSigningIdentity
 import java.util.zip.ZipFile
 
 /**
@@ -73,7 +73,7 @@ internal class ApkIdentityReader(private val context: Context) {
         ApkIdentity(
             packageName = info.packageName,
             longVersionCode = info.longVersionCode,
-            signerSha256 = certificateDigests(info.signingInfo?.apkContentsSigners),
+            signerSha256 = RuntimeSigningIdentity.read(info),
             minSdk = 0,
             hasArm64Libraries = true,
             hasForeignAbiLibraries = false,
@@ -117,7 +117,7 @@ internal class ApkIdentityReader(private val context: Context) {
         ApkIdentity(
             packageName = info.packageName ?: return null,
             longVersionCode = info.longVersionCode,
-            signerSha256 = certificateDigests(info.signingInfo?.apkContentsSigners),
+            signerSha256 = RuntimeSigningIdentity.read(info),
             minSdk = info.applicationInfo?.minSdkVersion ?: 0,
             hasArm64Libraries = abis.contains("arm64-v8a"),
             hasForeignAbiLibraries = abis.any { it != "arm64-v8a" },
@@ -146,15 +146,6 @@ internal class ApkIdentityReader(private val context: Context) {
         val candidate = read(apk) ?: return false
         val installed = installed() ?: return false
         return UpdateSettlementPolicy.isInstalledArtifact(candidate, installed)
-    }
-
-    private fun certificateDigests(signatures: Array<android.content.pm.Signature>?): Set<String> {
-        if (signatures == null) return emptySet()
-        return signatures.mapTo(LinkedHashSet()) { signature ->
-            MessageDigest.getInstance("SHA-256")
-                .digest(signature.toByteArray())
-                .joinToString("") { "%02x".format(it) }
-        }
     }
 
     private fun archiveAbis(apk: File): Set<String> {

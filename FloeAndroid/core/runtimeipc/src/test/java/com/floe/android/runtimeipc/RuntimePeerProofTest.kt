@@ -11,7 +11,7 @@ import org.junit.Test
  * additive internal controls.
  */
 class RuntimePeerProofTest {
-    @Test fun wireV1PreservesLegacyAndThreeInternalControls() {
+    @Test fun wireV1PreservesLegacyAndReviewedInternalControls() {
         assertEquals(1, RuntimeWire.VERSION)
         assertEquals("runtimeWorkspaceCopies.clear", RuntimeWire.CLEANUP)
         assertTrue(RuntimeWire.operations.contains(RuntimeWire.CLEANUP))
@@ -21,12 +21,16 @@ class RuntimePeerProofTest {
                 "shell.resize", "shell.cancel")) {
             assertTrue("missing $operation", RuntimeWire.operations.contains(operation))
         }
-        // Exactly the reviewed internal controls; no model tool or extra operation.
+        // C01 managed stdio/services, G07 snapshots/export and Settings storage
+        // were subsequently added to v1. Keep the COMPLETE finite allowlist;
+        // these authenticated controls are not model-facing execution aliases.
         assertEquals(setOf("status", "request.status", "install.start", "install.cancel",
             "install.status", "environment.list", "shell.start", "shell.poll", "shell.input",
-            "shell.resize", "shell.cancel", RuntimeWire.CLEANUP, RuntimeWire.PREFLIGHT,
-            RuntimeWire.PREFLIGHT_CANCEL), RuntimeWire.operations)
-        assertEquals(14, RuntimeWire.operations.size)
+            "shell.resize", "shell.cancel", "stdio.start", "stdio.write", "stdio.poll", "stdio.stdinEof",
+            "service.readiness", RuntimeWire.CLEANUP, RuntimeWire.PREFLIGHT, RuntimeWire.PREFLIGHT_CANCEL,
+            RuntimeWire.FILES_TREE, RuntimeWire.FILES_READ, RuntimeWire.EXPORT_STATUS,
+            RuntimeWire.STORAGE_INVENTORY, RuntimeWire.STORAGE_CLEANUP), RuntimeWire.operations)
+        assertEquals(24, RuntimeWire.operations.size)
     }
 
     @Test fun asciiTokensRejectSpacesControlCharsAndOversize() {

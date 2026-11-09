@@ -20,18 +20,26 @@ Owned mode-000 files and directories no longer block inherited-layer copying. Fi
 
 Temporary source permissions require an idle Linux runtime. A required change with live sibling work returns `rootfs_source_busy`; existing sessions stay open and capacity limits remain. Prepared layers can still be reused.
 
+运行组件安装和在线更新共用当前签名读取：单签名优先取有序历史末项，多签名保留完整集合；不将旧证书或矛盾信息当作当前身份。保留摘要、版本、包名、证书集合和独立UID校验。区分文件摘要失败、系统未返回签名信息和签名不一致，准备失败不再一律提示检查网络／空间。
+
+Runtime installation and updates share current-signer reading: the last ordered-history certificate for a single signer, or the exact complete set for multiple signers. Past certificates and conflicting facts never substitute for current identity. Hash, version, package, certificate-set and separate-UID checks remain. Setup now distinguishes digest failure, unavailable signing information and differing signing identities.
+
 ## Known issues / 已知问题
 
 - 这是中间版本，N01–N08 尚未结束；自动解锁／条件重新锁屏、部分后台跨 App 接续和全局 UI 精修继续推进。
 - 技能读取当前安装版本；运行中升级后的持久任务快照隔离仍未接通。不能把工具名称或成功字符串当作执行成果。
-- Android9 索尼组件报障、早期 VNC 断连、完整设备恢复及不同硬件／提供商组合仍有未闭合项。
+- Android9 索尼 Alpha67 组件校验报障仍待设备反馈；官方67主包及内置组件按API28的签名验证均通过，不代表索尼安装检查已通过。此次当前证书读取和提示调整仍需该设备实测。早期 VNC 断连、完整设备恢复及不同硬件／提供商组合继续保留。
 - 远端部分签名指南仍含 iOS 专属内容，保留签名和平台校验，不改版本绕过；兼容的用户配置服务继续开放。
 
 - Intermediate build: automatic unlock/relock, some background cross-App continuation and whole-App interface polish remain open.
 - Skill reads use the currently installed version; durable task snapshots across an in-flight upgrade are not yet connected. Tool discovery or a success string does not prove a readable artifact.
-- The reported Sony Android9 component failure, earlier VNC disconnect, full-device restoration and hardware/provider combinations remain open.
+- The Sony Android9 Alpha67 component-verification report still needs device feedback. API28-configured signature verification passed for the exact official67 APK pair; that does not prove Sony installation. The updated reader and messages need that device check. Earlier VNC disconnect, full-device restoration and hardware/provider combinations remain open.
 - Some signed remote guides still contain iOS-specific content. Signature/platform checks remain enforced; compatible user-configured services remain available.
 
 准备记录：3项技能合同及79项相关文件层／事务／嵌套恢复／启动诊断／回传检查通过，无跳过；59项来源未改的当前结果与20项后续App结果按输入摘要合并，不重跑已通过部分。Full调试和Play生产Kotlin编译通过；原生31实际对象／链接证据按精确输入复用。候选03／04模型读取指南成功但没有生成文件；三星候选06确认自有000文件、候选08确认自有000目录读取被拒。修复后的实际设备成果及公开交付另记，原始失败保留。
 
 Preparation: three skill contracts and 79 distinct filesystem, transaction, nested recovery, diagnostic and host-propagation cases passed without skips. Input hashes bind 59 earlier passing cases and 20 subsequent App cases. Full-debug and Play-release Kotlin checks passed; exact-input native31 object/link evidence is reused. Earlier Samsung candidates read the guide but produced no file; candidate06 identified an owned mode-000 file denial and candidate08 an owned mode-000 directory denial. Original failures remain recorded. Post-fix device results and public delivery are separate.
+
+补充准备记录：37项签名选择、身份、组件安装和更新策略检查通过，Full／Play编译通过；原有v1控制列表断言遗漏已上线控制，已保留原失败并更新为精确24项列表。三星候选10已完成25,489项／993,861,620字节文件层准备，并在真实PTY执行printf得到输出。模型文件交付和最终包设备验证继续独立记录。
+
+Additional preparation: 37 signer, identity, component-install and update-policy cases passed, with Full/Play compilation. The stale v1 test omitted already-shipped controls; its original failure is retained and the exact24-operation assertion is updated. Samsung candidate10 completed the 25,489-entry, 993,861,620-byte layer and returned real printf output from its PTY. Model artifact delivery and the final APK device result remain separate.
