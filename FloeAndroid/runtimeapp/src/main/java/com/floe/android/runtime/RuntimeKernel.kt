@@ -322,7 +322,7 @@ class RuntimeKernel(context: Context) {
                         }
                         val mode = rootfs?.sourceMode?.toString(8) ?: "unknown"
                         val owned = rootfs?.sourceOwnerUid?.let { uid -> uid == android.os.Process.myUid() }
-                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it errno=${startFailureErrno(failure) ?: 0} op=${rootfs?.operation ?: "none"} kind=$kind reason=$reason mode=$mode owned=${owned ?: "unknown"}")
+                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it errno=${startFailureErrno(failure) ?: 0} op=${rootfs?.operation ?: "none"} kind=$kind reason=$reason mode=$mode owned=${owned ?: "unknown"} directory=${rootfs?.sourceIsDirectory ?: "unknown"}")
                     }
                     (failure as? com.floe.android.workspacebridge.WorkspaceBridgeException)
                         ?.let { bridge ->

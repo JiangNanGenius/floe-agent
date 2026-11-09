@@ -374,7 +374,7 @@ class LinuxRootfsMaterializer(
             }
 
             override fun postVisitDirectory(dir: Path, exc: java.io.IOException?): FileVisitResult {
-                if (exc != null) throw exc
+                if (exc != null) { operation = "walk"; inputForDiagnostic = dir; throw exc }
                 val out = stage.resolve(source.relativize(dir))
                 // syncfs flushes directory metadata too; only the legacy
                 // (no-barrier) path needs a per-directory fsync.
@@ -382,6 +382,12 @@ class LinuxRootfsMaterializer(
                 if (durabilityBarrier == null) forceDirectory(out)
                 operation = "walk"
                 return FileVisitResult.CONTINUE
+            }
+
+            override fun visitFileFailed(file: Path, exc: java.io.IOException): FileVisitResult {
+                operation = "walk"
+                inputForDiagnostic = file
+                throw exc
             }
         })
         } catch (cancel: InterruptedException) {
@@ -394,12 +400,13 @@ class LinuxRootfsMaterializer(
             // on the cause chain for debugger inspection only.
             // Only numeric inode facts from the exact source we tried to open;
             // never retain its path in a log/receipt or infer a new read grant.
-            val inputAttributes = if (operation == "open_input") inputForDiagnostic?.let { path ->
+            val inputAttributes = if (operation == "open_input" || operation == "walk") inputForDiagnostic?.let { path ->
                 runCatching { Files.readAttributes(path, "unix:mode,uid", NOFOLLOW_LINKS) }.getOrNull()
             } else null
             throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io, operation,
                 (inputAttributes?.get("mode") as? Number)?.toInt()?.and(0xFFF),
-                (inputAttributes?.get("uid") as? Number)?.toInt()?.takeIf { it >= 0 })
+                (inputAttributes?.get("uid") as? Number)?.toInt()?.takeIf { it >= 0 },
+                (inputAttributes?.get("mode") as? Number)?.toInt()?.let { it and 0xF000 == 0x4000 })
         }
     }
 

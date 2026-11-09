@@ -131,6 +131,22 @@ class LinuxRootfsMaterializerRuntimeEntriesTest {
         assertEquals(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET, failure.code)
     }
 
+    @Test fun unreadableDirectoryKeepsItsWalkFailureAndNumericFacts() = fixture { _, child, base ->
+        val directory = base.resolve("etc")
+        Files.setAttribute(directory, "unix:mode", 0)
+        try {
+            assertFalse(Files.isReadable(directory))
+            val failure = assertThrows(RootfsMaterializeException::class.java) {
+                LinuxRootfsMaterializer().prepare(parentPlan(child, base)) { false }
+            }
+            assertEquals(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, failure.code)
+            assertEquals("walk", failure.operation)
+            assertEquals(0, failure.sourceMode)
+            assertEquals(true, failure.sourceIsDirectory)
+            assertEquals((Files.getAttribute(directory, "unix:uid") as Number).toInt(), failure.sourceOwnerUid)
+        } finally { Files.setAttribute(directory, "unix:mode", 0x1ED) }
+    }
+
     @Test fun markerMismatchIsARefusalNotASilentReset() = fixture { parent, child, base ->
         val materializer = LinuxRootfsMaterializer()
         materializer.prepare(parentPlan(parent, base)) { false }

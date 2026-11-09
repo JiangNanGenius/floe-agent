@@ -36,6 +36,7 @@ class RootfsMaterializeException(
     val operation: String? = null,
     val sourceMode: Int? = null,
     val sourceOwnerUid: Int? = null,
+    val sourceIsDirectory: Boolean? = null,
 ) : IllegalStateException("Rootfs materialization refused: $code", cause) {
 
     init {
