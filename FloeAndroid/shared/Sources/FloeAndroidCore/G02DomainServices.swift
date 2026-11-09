@@ -31,6 +31,7 @@
 import Foundation
 import GRDB
 import FloePersistence
+import FloeSkills
 import FloeAgentRuntime
 import FloeModels
 import FloeProviders
