@@ -742,3 +742,24 @@ public struct G02WorkspaceCleaning: ConversationOwnedWorkspaceCleaning {
         return .removed
     }
 }
+
+/// Post-commit deletion adapter releasing the per-run pinned Skill
+/// snapshots of the deleted task (n07-skill-snapshots69). Thin and
+/// synchronous over the SAME accepted generation's SkillsDomain — the
+/// conversation domain already guarantees (real quiescence gate + durable
+/// commit + OWN pre-cascade durable run ids) before this is called, so the
+/// adapter performs no re-checks of its own and can never release another
+/// task's trees (release is exact-run-id scoped inside the domain).
+public struct G02SkillsRunSnapshotCleaning: ConversationRunSnapshotCleaning {
+    private let domain: SkillsDomain
+
+    public init(domain: SkillsDomain) {
+        self.domain = domain
+    }
+
+    public func releaseSnapshots(runIDs: [UUID]) async {
+        for runID in runIDs {
+            await domain.releaseRunSkillSnapshots(runID: runID)
+        }
+    }
+}

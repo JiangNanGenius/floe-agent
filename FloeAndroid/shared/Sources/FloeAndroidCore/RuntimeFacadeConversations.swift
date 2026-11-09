@@ -686,6 +686,20 @@ public protocol ConversationCredentialDeletionDraining: Sendable {
     func drainDeletionQueue() async -> CredentialDeletionDrainSummary
 }
 
+/// Optional binding for releasing the per-run pinned Skill snapshots of a
+/// deleted task (n07-skill-snapshots69). The adapter targets the REAL
+/// `SkillsDomain.releaseRunSkillSnapshots(runID:)` over the SAME accepted
+/// generation's installation root; an unbound seam simply keeps every
+/// pinned tree (retirement/rebind fences readers but never purges durable
+/// snapshots — only real task deletion releases them). This port is called
+/// ONLY from the post-commit cleanup of `delete(conversationID:revision:)`
+/// with the conversation's OWN pre-cascade durable run ids — an unfinished
+/// run of a live task never reaches it, and the deletion's real quiescence
+/// gate has already settled before it runs.
+public protocol ConversationRunSnapshotCleaning: Sendable {
+    func releaseSnapshots(runIDs: [UUID]) async
+}
+
 /// The truthful on-disk effect of ONE private-task workspace directory
 /// removal. `.absent` is distinct from `.removed`: the lifecycle goal (no
 /// directory after the owning task stopped) was already satisfied, so the
@@ -2653,6 +2667,7 @@ public actor FacadeConversationDomain {
     private let lifecycle: (any ConversationDeletionLifecycle)?
     private let credentialDrain: (any ConversationCredentialDeletionDraining)?
     private let workspaceCleaning: (any ConversationOwnedWorkspaceCleaning)?
+    private let runSnapshotCleaning: (any ConversationRunSnapshotCleaning)?
     /// Host flow policy: bind newly created conversations to the explicit
     /// trusted default shared workspace inside the same commit transaction.
     /// Never implies "pick the first workspace" — an absent context fails
@@ -2677,7 +2692,8 @@ public actor FacadeConversationDomain {
                 context: ConversationFacadeContext,
                 lifecycle: (any ConversationDeletionLifecycle)?,
                 credentialDrain: (any ConversationCredentialDeletionDraining)?,
-                workspaceCleaning: (any ConversationOwnedWorkspaceCleaning)?) {
+                workspaceCleaning: (any ConversationOwnedWorkspaceCleaning)?,
+                runSnapshotCleaning: (any ConversationRunSnapshotCleaning)? = nil) {
         self.database = database
         self.conversationStore = conversationStore
         self.runStore = runStore
@@ -2689,6 +2705,7 @@ public actor FacadeConversationDomain {
         self.lifecycle = lifecycle
         self.credentialDrain = credentialDrain
         self.workspaceCleaning = workspaceCleaning
+        self.runSnapshotCleaning = runSnapshotCleaning
         self.bindsNewConversationsToDefaultWorkspace = false
         self.clock = { Date() }
         self.faultInjection = nil
@@ -2705,6 +2722,7 @@ public actor FacadeConversationDomain {
          lifecycle: (any ConversationDeletionLifecycle)?,
          credentialDrain: (any ConversationCredentialDeletionDraining)?,
          workspaceCleaning: (any ConversationOwnedWorkspaceCleaning)?,
+         runSnapshotCleaning: (any ConversationRunSnapshotCleaning)? = nil,
          bindsNewConversationsToDefaultWorkspace: Bool,
          clock: @escaping @Sendable () -> Date,
          faultInjection: (@Sendable (Int) throws -> Void)?) {
@@ -2719,6 +2737,7 @@ public actor FacadeConversationDomain {
         self.lifecycle = lifecycle
         self.credentialDrain = credentialDrain
         self.workspaceCleaning = workspaceCleaning
+        self.runSnapshotCleaning = runSnapshotCleaning
         self.bindsNewConversationsToDefaultWorkspace = bindsNewConversationsToDefaultWorkspace
         self.clock = clock
         self.faultInjection = faultInjection
@@ -4173,6 +4192,16 @@ public actor FacadeConversationDomain {
             var credentialStatus: ConversationCredentialDrainStatus = .deferredUnbound
             if let credentialDrain = self.credentialDrain {
                 credentialStatus = .drained(await credentialDrain.drainDeletionQueue())
+            }
+
+            // Release this task's per-run pinned Skill snapshots AFTER the
+            // durable commit (n07-skill-snapshots69): the ids are the OWN
+            // pre-cascade durable run ids and the deletion's real quiescence
+            // gate has settled; an unbound seam keeps the trees (only real
+            // task deletion releases pins — retirement never purges). An
+            // unfinished run of a LIVE task never reaches this path.
+            if let runSnapshotCleaning = self.runSnapshotCleaning {
+                await runSnapshotCleaning.releaseSnapshots(runIDs: admission.durableRunIDs)
             }
 
             // Release staged content handles for the deleted conversation

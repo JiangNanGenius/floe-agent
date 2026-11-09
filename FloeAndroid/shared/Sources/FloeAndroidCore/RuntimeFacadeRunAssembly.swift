@@ -611,6 +611,28 @@ extension FacadeRunDomain {
                 try? await checklist.latest(conversationID: conversationID)
             }
         }
+        if !temporary, !isNotes {
+            // RB4 ordinary-run skill composition caller (the declared
+            // "SkillsDomain.runtimeSelection ⇄ FloeAgentRuntime.Configuration"
+            // port): enabled-guide ROUTING METADATA only. The selection is
+            // computed from the CURRENT stores for this exact runID and binds
+            // activeSkillIDs/relatedSkillIDsByTool — the same two fields the
+            // iOS ConversationCenter binds. It is NEVER a replacement tool
+            // ceiling: allowedToolNames from the selection is deliberately
+            // NOT applied (guides never replace the conversation's tool
+            // universe), no grant is invented, and a missing/retired domain
+            // simply leaves the runtime defaults (empty metadata) instead of
+            // failing the launch. Pinning of per-run validated bytes stays
+            // lazy at the exact skill.read seam (SkillManaging.read(id:runID:)).
+            if let installed = G02RuntimeComposition.shared.installedComposition,
+               installed.epoch == epoch {
+                if let selection = try? await installed.skillsDomain
+                    .runtimeSelection(runID: runID) {
+                    configuration.activeSkillIDs = selection.activeSkillIDs
+                    configuration.relatedSkillIDsByTool = selection.relatedSkillIDsByTool
+                }
+            }
+        }
         // The ORIGINAL executor over the run-scoped registry; availability
         // and descriptor authority stay the registry's truth.
         let executor = CatalogToolExecutor(runners: notesRegistry ?? components.registry)

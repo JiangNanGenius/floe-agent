@@ -664,6 +664,7 @@ extension RB3TestBed {
                            lifecycle: (any ConversationDeletionLifecycle)?,
                            credentialDrain: (any ConversationCredentialDeletionDraining)? = nil,
                            workspaceCleaning: (any ConversationOwnedWorkspaceCleaning)? = nil,
+                           runSnapshotCleaning: (any ConversationRunSnapshotCleaning)? = nil,
                            bindsDefaultWorkspace: Bool = false,
                            defaultWorkspaceID: UUID? = nil,
                            clock: (@Sendable () -> Date)? = nil,
@@ -690,6 +691,7 @@ extension RB3TestBed {
             lifecycle: lifecycle,
             credentialDrain: credentialDrain,
             workspaceCleaning: workspaceCleaning,
+            runSnapshotCleaning: runSnapshotCleaning,
             bindsNewConversationsToDefaultWorkspace: bindsDefaultWorkspace,
             clock: clock ?? { Date() },
             faultInjection: faultInjection)

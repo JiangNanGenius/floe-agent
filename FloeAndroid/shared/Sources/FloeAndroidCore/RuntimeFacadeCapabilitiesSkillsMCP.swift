@@ -952,7 +952,11 @@ public enum RuntimeFacadeCapabilitiesBindings {
         "RunOwnedToolCancellation ⇄ FacadeToolWorkCoordinator (mcp-refresh/skill staging workers; honest false otherwise — per-call runtime task tree is RB4-owned)",
         // RB4/RB5 temporary ceiling composition:
         "FacadeTemporaryCeiling ⇄ RunToolAssembly/AgentRuntime temp projection",
-        // RB4 per-run skill selection (Configuration inputs):
+        // RB4 per-run skill selection (Configuration inputs; BOUND at
+        // RuntimeFacadeRunAssembly.makeService for ordinary non-temporary,
+        // non-Notes runs — routing metadata only, never a tool ceiling;
+        // per-run pinned snapshot bytes stay durable across retirement and
+        // are released only by real task deletion):
         "SkillsDomain.runtimeSelection ⇄ FloeAgentRuntime.Configuration",
         // RB2 shared web-search resolver feeding capabilities:
         "CapabilitiesWebSearchProviding ⇄ ModelConfigurationFacade websearch state",

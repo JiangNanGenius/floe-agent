@@ -860,7 +860,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
             context: ConversationFacadeContext(hostEpoch: epoch),
             lifecycle: runHandles?.1,
             credentialDrain: G02VaultCredentialDrain(vault: vault),
-            workspaceCleaning: G02WorkspaceCleaning(root: cluster.identity.root))
+            workspaceCleaning: G02WorkspaceCleaning(root: cluster.identity.root),
+            runSnapshotCleaning: G02SkillsRunSnapshotCleaning(domain: skillsDomain))
 
         // 8. Settings defaults / usage.
         let defaultsAdapter = FacadeSettingsDefaultsAdapter(database: database)

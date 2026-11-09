@@ -550,6 +550,11 @@ public actor SkillsDomain {
     private let stagingRoot: URL
     private let validator: SkillPackageValidator
     private let fileManager: FileManager
+    /// Durable per-run pinned snapshots (`.run-snapshots/<runID>/<skillID>`;
+    /// iOS SkillsCenter.snapshot(for:runID:) layout parity). First validated
+    /// exact enabled read of a run pins the bytes; later pages and
+    /// process-death recovery never combine revisions.
+    private let runSnapshots: SkillRunSnapshotStore
 
     // Trusted host seams + ownership ports.
     private let hostContext: any SkillsHostContextProviding
@@ -650,6 +655,7 @@ public actor SkillsDomain {
         self.stagingRoot = services.stagingRoot
         self.validator = SkillPackageValidator()
         self.fileManager = .default
+        self.runSnapshots = SkillRunSnapshotStore(installationRoot: services.installationRoot)
         self.hostContext = services.hostContext
         // Per-source selection (validated source identity, never a
         // model-supplied id) is transport-level: official/curated Hub
@@ -3578,6 +3584,13 @@ public struct SkillsDomainManagingFacade: SkillManaging, Sendable {
     public func read(id: String?) async throws -> [ManagedSkill] {
         try await domain.readManaged(id: id)
     }
+    /// The REAL runID seam: an exact enabled read of an ordinary run pins
+    /// and serves this run's validated snapshot, so pagination and recovery
+    /// never combine revisions (the protocol default would have dropped the
+    /// runID onto the current-install read).
+    public func read(id: String?, runID: UUID) async throws -> [ManagedSkill] {
+        try await domain.readManaged(id: id, runID: runID)
+    }
     public func manage(_ request: SkillManageTool.Arguments) async throws -> String {
         try await domain.manageViaTool(request)
     }
@@ -3586,37 +3599,99 @@ public struct SkillsDomainManagingFacade: SkillManaging, Sendable {
 extension SkillsDomain {
     /// The ORIGINAL SkillManaging.read shape minus the G03 python probe
     /// enrichment (SkillsCenter:669-695): metadata for list reads; full
-    /// markdown + requiredToolNames for an exact id read.
+    /// markdown + requiredToolNames for an exact id read. With a REAL runID
+    /// the exact enabled read pins the run's snapshot on first use and
+    /// serves exactly those bytes afterwards (iOS
+    /// SkillsCenter.snapshot(for:runID:) parity); without a runID the
+    /// historical current-install read is preserved for legacy seams.
     func readManaged(id: String?) async throws -> [ManagedSkill] {
+        try await readManaged(id: id, runID: nil)
+    }
+
+    func readManaged(id: String?, runID: UUID?) async throws -> [ManagedSkill] {
         _ = try requireBinding()
         let rows = try await store.all()
+        // Retained epoch check (primary review 2026-11-09): a retired root
+        // must not keep serving reads or create late pins after its stores
+        // were awaited — re-prove the binding before any snapshot write.
+        _ = try requireBinding()
         let registered = Set(registry.allDescriptors.map(\.name))
         var output: [ManagedSkill] = []
         for row in rows {
             if let id, row.id != id { continue }
+            let enabled = row.status == "enabled"
             var required = Set(Self.sidecarManifest(for: row)?.tools ?? [])
             if let definition = Self.bundledDefinition(for: row) {
                 required.formUnion(definition.automaticallyLoadedToolNames)
             }
             required.formIntersection(registered)
-            let enabled = row.status == "enabled"
             var descriptionText: String?
             if let metadata = try? validator.parseSkillMarkdown(Data(row.skillMarkdown.utf8)) {
                 descriptionText = String(metadata.description.prefix(1_024))
             }
+            // Exact enabled read with a REAL run: pin (first use) or re-read
+            // (later pages / process recovery) the run's validated snapshot.
+            // The pinned digest/version/description are this run's execution
+            // revision; currentDigest remains the ACTUAL installed CAS for
+            // skill.manage. A disabled row keeps the historical
+            // metadata-only shape and never pins.
+            var pinnedMarkdown: String?
+            var pinnedDigest: String?
+            var pinnedVersion: String?
+            if let id, enabled, let runID {
+                let snapshot = try runSnapshots.pinnedSnapshot(
+                    currentInstallRoot: Self.packageDirectory(installationRoot: installationRoot,
+                                                              id: row.id),
+                    expectedDigest: row.rewrittenDigest,
+                    manifestOverride: Self.sidecarManifest(for: row),
+                    runID: runID,
+                    skillID: row.id)
+                pinnedMarkdown = String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self)
+                pinnedDigest = snapshot.package.canonicalSHA256
+                pinnedVersion = snapshot.package.manifest.version
+                if let pinnedMarkdown,
+                   let metadata = try? validator.parseSkillMarkdown(Data(pinnedMarkdown.utf8)) {
+                    descriptionText = String(metadata.description.prefix(1_024))
+                }
+                required = Set(snapshot.package.manifest.tools)
+                if let definition = Self.bundledDefinition(for: row) {
+                    required.formUnion(definition.automaticallyLoadedToolNames)
+                }
+                required.formIntersection(registered)
+            }
             let packageURL = Self.packageDirectory(installationRoot: installationRoot, id: row.id)
             output.append(ManagedSkill(
-                id: row.id, name: row.name, version: row.version,
+                id: row.id, name: row.name,
+                version: pinnedVersion ?? row.version,
                 enabled: enabled,
-                digest: row.rewrittenDigest,
-                markdown: id == nil || !enabled ? nil : Self.text(at: packageURL
-                    .appendingPathComponent("SKILL.md"), fileManager: .default),
+                digest: pinnedDigest ?? row.rewrittenDigest,
+                markdown: pinnedMarkdown ?? (id == nil || !enabled ? nil : Self.text(at: packageURL
+                    .appendingPathComponent("SKILL.md"), fileManager: .default)),
                 requiredToolNames: !enabled || required.isEmpty ? nil : required.sorted(),
                 currentDigest: row.rewrittenDigest,
                 description: descriptionText))
         }
+        // Final retained epoch check before returning durable pin effects.
         _ = try requireBinding()
         return output
+    }
+
+    // MARK: Per-run pinned snapshot lifecycle (trusted owners only)
+
+    /// Task-deletion hook: release EXACTLY the pinned trees of the deleted
+    /// task's durable run ids. Called by the conversation deletion flow only
+    /// after its real quiescence gate and durable commit; an unfinished run
+    /// of a live task and a plain generation retirement/rebind are never
+    /// passed here (retirement fences readers but deliberately keeps the
+    /// durable pins for unfinished-run recovery of the same root).
+    public func releaseRunSkillSnapshots(runID: UUID) {
+        _ = runSnapshots.release(runID: runID)
+    }
+
+    /// Bounded inspection for the trusted lifecycles/qualification hosts.
+    /// Only marker-verified REAL per-run pins are listed.
+    public func pinnedRunSkillSnapshotRunIDs() -> [UUID] {
+        runSnapshots.pinnedRunIDs()
     }
 
     /// The ORIGINAL tool-path manage (SkillsCenter.manageSkill :697-757).
