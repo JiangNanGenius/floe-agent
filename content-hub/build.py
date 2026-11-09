@@ -9,6 +9,8 @@ signed-content update core can verify both catalogs the same way.
 Modes:
   python3 build.py                 build packages and unsigned index.json
   python3 build.py --sign          refresh generatedAt, sign index.json
+  python3 build.py --sign --only-package ID
+                                  update one existing package, retaining all other signed entries
   python3 build.py --check         read-only verification of published bytes
   python3 build.py --fixture DIR   write a self-signed fixture under DIR
   python3 build.py --check --fixture DIR
@@ -488,12 +490,40 @@ def build_repo():
     print(f"Built {len(entries)} content packages and unsigned index.json")
 
 
-def sign_repo():
+def selected_package_plan(root, package_root, prefix, public_key_path, identifier):
+    """Select one existing package after verifying the current signed feed.
+
+    Unselected entries come from the verified feed, never staged sources.
+    Their pointers, hashes and metadata are retained exactly. Unknown IDs,
+    downgrades and same-version rewrites cannot become a partial publication.
+    """
+    validate_id(identifier)
+    published = check(root, package_root, prefix, public_key_path)
+    entries, packages = plan(root / "sources", prefix)
+    previous = next((entry for entry in published["entries"] if entry["id"] == identifier), None)
+    candidate = next((entry for entry in entries if entry["id"] == identifier), None)
+    if previous is None or candidate is None:
+        raise ContentError(f"{identifier}: selected id must exist in both signed feed and sources")
+    if version_tuple(candidate["version"]) < version_tuple(previous["version"]):
+        raise ContentError(f"{identifier}: selected package would downgrade the signed version")
+    if candidate["version"] == previous["version"] and candidate != previous:
+        raise ContentError(f"{identifier}: same-version selected package rewrite is forbidden")
+    merged = [candidate if entry["id"] == identifier else entry for entry in published["entries"]]
+    relative = candidate["path"][len(prefix):]
+    return merged, {relative: packages[relative]}
+
+
+def sign_repo(only_package=None):
+    selected = None
+    if only_package is not None:
+        selected = selected_package_plan(
+            ROOT, REPO, PATH_PREFIX, ROOT / "public-key.json", only_package
+        )
     key = signing_key()
     pinned = json.loads((ROOT / "public-key.json").read_bytes())
     if pinned.get("keyID") != KEY_ID or public_record(key, KEY_ID) != pinned:
         raise ContentError("signing key does not match the pinned content-hub public identity")
-    entries, archive = plan(ROOT / "sources", PATH_PREFIX)
+    entries, archive = selected if selected is not None else plan(ROOT / "sources", PATH_PREFIX)
     write_packages(ROOT, archive)
     payload = build_index(entries, ROOT, sign=True)
     (ROOT / "index.json").write_bytes(payload)
@@ -541,6 +571,8 @@ def make_fixture(destination):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sign", action="store_true", help="sign index.json with FLOE_CONTENT_HUB_SIGNING_KEY")
+    parser.add_argument("--only-package", action="append", metavar="ID",
+                        help="with --sign, update exactly one existing package and retain other signed entries")
     parser.add_argument("--check", action="store_true", help="read-only verification; exit 1 on mismatch")
     parser.add_argument("--fixture", metavar="DIR", help="write or verify a self-signed fixture")
     args = parser.parse_args(argv)
@@ -549,6 +581,8 @@ def main(argv=None):
             raise ContentError("--sign and --fixture cannot be combined")
         if args.sign and args.check:
             raise ContentError("--sign and --check cannot be combined")
+        if args.only_package and (not args.sign or args.fixture or len(args.only_package) != 1):
+            raise ContentError("--only-package requires --sign and exactly one package ID, without --fixture")
         if args.fixture:
             destination = Path(args.fixture)
             if args.check:
@@ -560,7 +594,7 @@ def main(argv=None):
             check(ROOT, REPO, PATH_PREFIX, ROOT / "public-key.json")
             print("Verified signed content-hub index and packages")
         elif args.sign:
-            sign_repo()
+            sign_repo(only_package=args.only_package[0] if args.only_package else None)
         else:
             build_repo()
     except (ContentError, OSError, json.JSONDecodeError) as error:

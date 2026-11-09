@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": "2026-11-04.1",
-  "reviewedAt": "2026-11-04T00:00:00Z",
+  "revision": "2026-11-09.1",
+  "reviewedAt": "2026-11-09T00:00:00Z",
   "upstreamPin": {
     "project": "models.dev",
     "url": "https://models.dev",
@@ -11,7 +11,7 @@
   },
   "policy": {
     "mergeOrder": "pinned models.dev baseline first, then providerPatches keyed by presetID, then additionalProviders in declared order",
-    "officialFacts": "Provider patches and additional provider entries are first-party official Floe review facts. They are not models.dev data and must never be attributed to models.dev.",
+    "officialFacts": "Provider patches and additional provider entries are first-party official Floe review facts, including conversation, plan and media candidates. They are not models.dev data and must never be attributed to models.dev.",
     "noDiscovery": "Plan entries declare reviewed model identifiers only; they do not declare or imply a /models listing capability.",
     "sourceOfTruth": "This file is the only manual source for catalog overrides. The importer must not hardcode these facts and must not read the generated app catalog."
   },
@@ -70,6 +70,98 @@
         }
       ],
       "note": "PAYG keys, endpoints and models are never merged into this plan entry."
+    },
+    "google": {
+      "scope": "Legacy native image identity: reviewed separate Gemini conversation offer only",
+      "sources": [
+        {
+          "url": "https://aistudio.google.com/docs/models",
+          "usedFor": "Current Gemini conversation model families and separate specialized products"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/deprecations",
+          "usedFor": "Deprecated and shut down IDs are not recommended for new configuration; saved and custom IDs stay unchanged"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/openai",
+          "usedFor": "OpenAI Chat Completions compatible root and bearer API-key authentication"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3-flash-preview",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.1-flash-lite",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.1-pro-preview",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.5-flash-lite",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.6-flash",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.8-flash",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-4-argon",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        }
+      ],
+      "note": "Stable and preview IDs are exact official IDs. Deprecated, retired, Live, image and agent products are not new-chat recommendations. Discovery and manual entry remain available; this catalog does not modify saved models or user capability overrides."
+    },
+    "google-gemini-chat": {
+      "scope": "Official Google Gemini conversation candidates, connection and model metadata",
+      "sources": [
+        {
+          "url": "https://aistudio.google.com/docs/models",
+          "usedFor": "Current Gemini conversation model families and separate specialized products"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/deprecations",
+          "usedFor": "Deprecated and shut down IDs are not recommended for new configuration; saved and custom IDs stay unchanged"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/openai",
+          "usedFor": "OpenAI Chat Completions compatible root and bearer API-key authentication"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3-flash-preview",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.1-flash-lite",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.1-pro-preview",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.5-flash-lite",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.6-flash",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-3.8-flash",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        },
+        {
+          "url": "https://aistudio.google.com/docs/models/gemini-4-argon",
+          "usedFor": "Reviewed conversation model ID, text output, multimodal inputs, function calling and token metadata"
+        }
+      ],
+      "note": "Stable and preview IDs are exact official IDs. Deprecated, retired, Live, image and agent products are not new-chat recommendations. Discovery and manual entry remain available; this catalog does not modify saved models or user capability overrides."
     }
   },
   "providerPatches": {
@@ -162,9 +254,290 @@
     },
     "volcengine": {
       "name": "Volcengine Ark"
+    },
+    "google": {
+      "serviceOffers": [
+        {
+          "role": "conversation",
+          "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai",
+          "authStyle": "bearer",
+          "protocols": [
+            "openai-chat-completions"
+          ],
+          "models": [
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.8-flash",
+            "gemini-4-argon"
+          ]
+        }
+      ],
+      "modelMetadata": {
+        "gemini-4-argon": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.8-flash": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.6-flash": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.5-flash-lite": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.1-flash-lite": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.1-pro-preview": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3-flash-preview": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        }
+      }
     }
   },
   "additionalProviders": [
+    {
+      "presetID": "google-gemini-chat",
+      "name": "Google Gemini",
+      "aliases": [
+        "Google",
+        "谷歌",
+        "Gemini",
+        "Google AI",
+        "Google Gemini Chat",
+        "Gemini 对话"
+      ],
+      "kind": "custom",
+      "defaultProtocol": "openai-chat-completions",
+      "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "domains": [
+        "generativelanguage.googleapis.com"
+      ],
+      "models": [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.8-flash",
+        "gemini-4-argon"
+      ],
+      "availability": "available",
+      "unsupportedReason": null,
+      "upstreamID": "google-gemini-official",
+      "authStyle": "bearer",
+      "toolNameCompatibility": false,
+      "modelMetadata": {
+        "gemini-4-argon": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.8-flash": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.6-flash": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.5-flash-lite": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.1-flash-lite": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3.1-pro-preview": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        },
+        "gemini-3-flash-preview": {
+          "input": [
+            "audio",
+            "image",
+            "pdf",
+            "text",
+            "video"
+          ],
+          "output": [
+            "text"
+          ],
+          "toolCall": true,
+          "reasoning": true,
+          "contextTokens": 1048576,
+          "maxOutputTokens": 65536
+        }
+      }
+    },
     {
       "presetID": "volcengine-agent-plan",
       "name": "Volcengine Agent Plan",

@@ -30,21 +30,34 @@ content-hub/
 
 ### Provider model catalog / 模型目录
 
-`providers/curated-overrides.json` records reviewed official plan and media facts
+`providers/curated-overrides.json` records reviewed official conversation, plan and media facts
 separately from the pinned models.dev baseline. The importer merges these declarations
 deterministically; the bundled, canonical and content-package catalogs must agree.
 `--check-offline` checks their local consistency and explicitly does not verify the
 upstream network snapshot.
 
-`floe.providers.compatibility` 1.1.2 requires App 1.7.64 and is included in the signed
-feed. Its source, immutable archive and index signature are checked together. The App bundles
-the same reviewed model catalog, so these entries do not require a separate download.
+The `floe.providers.compatibility` candidate adds a separate Google Gemini conversation
+entry using the official compatible endpoint. The native image entry keeps its identity.
+Reviewed chat candidates exclude deprecated and specialized products; saved models and
+manual configuration remain available. Its source, immutable archive and signed feed are
+checked separately, so staged content is not reported as published.
 
-`providers/curated-overrides.json` 单独记录经核对的官方套餐及媒体模型资料，
+`providers/curated-overrides.json` 单独记录经核对的官方对话、套餐及媒体模型资料，
 与固定的 models.dev 基线按确定规则合并；内置、规范目录和内容包正文保持一致。
 `--check-offline` 只检查本地一致性，不代替上游原始快照校验。
-兼容目录 1.1.2 的最低 App 版本为 1.7.64，已纳入签名目录；源文件、不可变归档与索引
-签名一并校验。App 内置相同模型目录，使用这些条目不需要另行下载。
+兼容目录候选新增独立的 Google Gemini 对话条目，采用官方兼容接口；原生图片条目保持
+原有身份。新建聊天候选不包含已弃用及专用产品，已保存模型与手动配置继续可用。
+源文件、不可变归档和签名目录分别校验，待发布内容不视为已上线。
+
+To sign only one existing package, use `python3 content-hub/build.py --sign
+--only-package floe.providers.compatibility`. The existing signed feed and archives
+are verified first; other signed entries retain their published metadata and pointers.
+The content-only workflow accepts the same optional `only_package` input for this package.
+An independent post-publication check compares the two indexes and changed archive paths.
+
+仅发布一个既有包时，使用上述 `--only-package` 命令。工具先验证原签名目录及归档，
+其余条目保留已发布的元数据与地址。现有内容发布流程可通过同名输入仅选择兼容包；
+发布后另行比较前后索引与归档变更，避免带入其他待发布内容。
 
 ## Index schema / 索引结构
 

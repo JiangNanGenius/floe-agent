@@ -154,12 +154,10 @@ CURATED = [
         toolNameCompatibility=False, modelFilter=None,
     ),
     dict(
-        # Floe's googleGemini preset is image-only (native generateContent),
-        # so only image-output models are listed for the main search list.
-        # The declared conversation offer is the documented OpenAI-compatible
-        # route (v1beta/openai, Bearer API key): a DIFFERENT endpoint/auth
-        # shape from the native image route, so the resolver reports it as a
-        # separate connection instead of sharing the image credential.
+        # This legacy identity remains the native image connection. The
+        # independently reviewed conversation entry and its compatible offer
+        # are declared in curated-overrides.json; upstream text/tool flags
+        # alone cannot distinguish chat from Live, agents or media products.
         presetID="google", upstream=["google"], name="Google Gemini Images",
         aliases=["Google", "谷歌", "Gemini", "Google AI"],
         kind="googleGemini", defaultProtocol="openai-chat-completions",
@@ -167,15 +165,6 @@ CURATED = [
         domains=["generativelanguage.googleapis.com"],
         authStyle="apiKeyHeader", availability="available", unsupportedReason=None,
         toolNameCompatibility=False, modelFilter="output_image",
-        serviceOffers=[
-            dict(
-                role="conversation",
-                baseURL="https://generativelanguage.googleapis.com/v1beta/openai",
-                authStyle="bearer",
-                protocols=["openai-chat-completions"],
-                modelFilter="output_text_tool",
-            ),
-        ],
     ),
     dict(
         presetID="alibaba", upstream=["alibaba", "alibaba-cn"],
@@ -1283,7 +1272,7 @@ def make_source_record(raw, document, fetched_at, overrides=None,
             "additionalProviderCount": len(overrides["additionalProviders"]),
             "patchedProviderCount": len(overrides["providerPatches"]),
             "note": (
-                "Official plan entries and PAYG media rows come from first-party "
+                "Official conversation, plan and PAYG media entries come from first-party "
                 "Floe review, not models.dev. The models.dev documentSHA256 pin "
                 "covers the upstream baseline only."
             ),
@@ -1293,7 +1282,7 @@ def make_source_record(raw, document, fetched_at, overrides=None,
             "Floe curates, filters and maps the data to its own provider kinds, protocols and auth styles.",
             "No upstream code, JS SDK content, API keys or user credentials are copied.",
             "Merged upstream ids are listed in each provider's upstreamIDs field.",
-            "Official Volcengine Agent Plan / Alibaba Token Plan entries and the patched PAYG media rows are first-party Floe review facts declared in curated-overrides.json; they are not models.dev content.",
+            "Official Google Gemini conversation candidates, Volcengine Agent Plan / Alibaba Token Plan entries and patched PAYG media rows are first-party Floe review facts declared in curated-overrides.json; they are not models.dev content.",
         ],
     }
     if revision is None:

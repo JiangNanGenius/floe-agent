@@ -39,7 +39,7 @@ STAGED_IDS = set()
 # equality applies again. A downgrade, an unapproved candidate, or a
 # same-version rewrite is rejected.
 STAGED_VERSIONS = {
-    "floe.providers.compatibility": ("1.1.2", "1.1.5"),
+    "floe.providers.compatibility": ("1.1.2", "1.1.6"),
     "floe.search.providers": ("1.1.0", "1.2.1"),
 }
 
@@ -52,6 +52,7 @@ IMMUTABLE_PROVIDER_PACKAGE_SHA256 = {
     "1.1.0": "290e7962f9659eb8d22d08586176bb9559c4b98532a50a57abe72fe444a1f33d",
     "1.1.2": "18918f534afa7fd9b378d7f18dce457f28935f8e7675ea004e2af2916b546ec9",
     "1.1.3": "d1451266092fd058489bac8b9a6d59d261abb33b908c847b8e19daa69655ca56",
+    "1.1.5": "ea1e15dd73e1d3d0207cc072697cade4c5776527f7dbbc59241f3f5a2af633ae",
 }
 
 # Historical search archives remain immutable before and after promotion.
@@ -71,11 +72,11 @@ PINNED_PUBLIC_KEY = {
 # sources by build.plan(); these constants ensure a future source drift cannot
 # slip through without an explicit version/review update.
 PROVIDER_CANDIDATE = {
-    "version": "1.1.5",
+    "version": "1.1.6",
     "minimumAppVersion": "1.7.69",
-    "size": 161665,
-    "sha256": "ea1e15dd73e1d3d0207cc072697cade4c5776527f7dbbc59241f3f5a2af633ae",
-    "contentDigest": "2fc87f118c289bd3c0a08eed0ca868bc107d3bccceb2656a2604999b27289bbf"
+    "size": 160811,
+    "sha256": "4754ab8b99ec35236bdf6825c046b8a8ce70711451b93ce24e9996f08c1fc16a",
+    "contentDigest": "d3964cea8ec4b2ee0283e41be5f85e2f13088c967674e7b847ea775f39a13691"
 }
 
 # Exact reviewed search-catalog candidate. It includes the Moonshot adapter
@@ -132,13 +133,99 @@ class ContentHubBuildTests(unittest.TestCase):
         published = json.loads((build.ROOT / "index.json").read_bytes())["entries"]
         return entries, published
 
+    def selected_plan(self, root, repository, identifier="floe.providers.compatibility"):
+        return build.selected_package_plan(
+            root, repository, build.PATH_PREFIX, root / "public-key.json", identifier
+        )
+
+    def test_selected_package_preserves_unselected_signed_entries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository, root = self.mirror_published_repository(temporary)
+            before = {name: (root / name).read_bytes() for name in ("index.json", "index.sig")}
+            published = json.loads(before["index.json"])["entries"]
+            selected, packages = self.selected_plan(root, repository)
+            old = {entry["id"]: entry for entry in published}
+            current = {entry["id"]: entry for entry in selected}
+            self.assertEqual(set(current), set(old))
+            for identifier in old:
+                if identifier != "floe.providers.compatibility":
+                    self.assertEqual(build.encoded(current[identifier]), build.encoded(old[identifier]))
+            self.assertEqual(current["floe.search.providers"]["version"], "1.1.0")
+            candidate = current["floe.providers.compatibility"]
+            self.assertEqual(candidate["version"], PROVIDER_CANDIDATE["version"])
+            self.assertEqual(list(packages), [candidate["path"][len(build.PATH_PREFIX):]])
+            self.assertEqual(hashlib.sha256(next(iter(packages.values()))).hexdigest(),
+                             candidate["sha256"])
+            self.assertEqual(before, {name: (root / name).read_bytes() for name in before})
+            relative = candidate["path"][len(build.PATH_PREFIX):]
+            (root / relative).write_bytes(b"tampered candidate archive")
+            with self.assertRaisesRegex(ValueError, "published version is immutable"):
+                build.write_packages(root, packages)
+
+    def test_selected_package_rejects_id_and_version_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository, root = self.mirror_published_repository(temporary)
+            with self.assertRaisesRegex(ValueError, "must exist in both"):
+                self.selected_plan(root, repository, "floe.missing.package")
+            source = root / "sources/providers/floe.providers.compatibility"
+            content_path = source / "content.json"
+            original = content_path.read_bytes()
+            for version, reason in (("1.1.1", "would downgrade"),
+                                    ("1.1.2", "same-version selected package rewrite")):
+                content = json.loads(original)
+                content["version"] = version
+                content_path.write_bytes(build.encoded(content))
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.selected_plan(root, repository)
+            content_path.write_bytes(original)
+            duplicate = root / "sources/help/floe.providers.compatibility"
+            shutil.copytree(source, duplicate)
+            duplicate_content = json.loads(original)
+            duplicate_content["kind"] = "help"
+            (duplicate / "content.json").write_bytes(build.encoded(duplicate_content))
+            with self.assertRaisesRegex(ValueError, "duplicate package id"):
+                self.selected_plan(root, repository)
+            shutil.rmtree(duplicate)
+            shutil.rmtree(source)
+            with self.assertRaisesRegex(ValueError, "must exist in both"):
+                self.selected_plan(root, repository)
+
+    def test_selected_package_rejects_untrusted_baseline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository, root = self.mirror_published_repository(temporary)
+            signature = (root / "index.sig").read_bytes()
+            envelope = json.loads(signature)
+            envelope["signature"] = base64.b64encode(bytes(64)).decode()
+            (root / "index.sig").write_bytes(build.encoded(envelope))
+            with self.assertRaisesRegex(ValueError, "signature verification failed"):
+                self.selected_plan(root, repository)
+            (root / "index.sig").write_bytes(signature)
+            published = json.loads((root / "index.json").read_bytes())["entries"]
+            unselected = next(entry for entry in published if entry["id"] == "floe.search.providers")
+            archive = repository / unselected["path"]
+            archive.write_bytes(archive.read_bytes() + b"tampered")
+            with self.assertRaisesRegex(ValueError, "package size mismatch"):
+                self.selected_plan(root, repository)
+
+    def test_only_package_cli_requires_single_signing_selection(self):
+        for arguments in (
+            ["--only-package", "floe.providers.compatibility"],
+            ["--check", "--only-package", "floe.providers.compatibility"],
+            ["--sign", "--only-package", "floe.providers.compatibility",
+             "--only-package", "floe.providers.compatibility"],
+        ):
+            result = subprocess.run([sys.executable, str(Path(build.__file__)), *arguments],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("--only-package requires --sign and exactly one package ID", result.stderr)
+
     def test_committed_repo_artifacts_match_sources(self):
         self.assertEqual(
             json.loads((build.ROOT / "public-key.json").read_bytes()),
             PINNED_PUBLIC_KEY,
         )
         # The signed feed keeps its old entries and signature, while the
-        # approved 1.1.5 candidate package must already carry exactly the
+        # approved 1.1.6 candidate package must already carry exactly the
         # deterministic archive built from the current sources.
         state = build.check_staged(
             build.ROOT,
@@ -263,7 +350,9 @@ class ContentHubBuildTests(unittest.TestCase):
         source_downgrade = copy.deepcopy(entries)
         source_provider = next(entry for entry in source_downgrade if entry["id"] == identifier)
         source_provider["version"] = "1.1.2"
-        source_provider["path"] = source_provider["path"].replace("/1.1.5/", "/1.1.2/")
+        source_provider["path"] = source_provider["path"].replace(
+            f"/{PROVIDER_CANDIDATE['version']}/", "/1.1.2/"
+        )
         with self.assertRaisesRegex(ValueError, "is not the approved staged candidate"):
             build.validate_staged_sources(source_downgrade, published, EXPECTED_IDS, STAGED_IDS, STAGED_VERSIONS)
         moved = copy.deepcopy(published)
@@ -273,7 +362,7 @@ class ContentHubBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "neither the pinned published"):
             build.validate_staged_sources(
                 entries, moved, EXPECTED_IDS, STAGED_IDS,
-                {identifier: ("1.1.2", "1.1.5")},
+                STAGED_VERSIONS,
             )
 
     def test_staged_validation_rejects_rewrites_and_requires_exact_promotion(self):
@@ -288,7 +377,7 @@ class ContentHubBuildTests(unittest.TestCase):
         promoted = copy.deepcopy(entries)
         provider = next(entry for entry in promoted if entry["id"] == identifier)
         provider["releaseNotes"]["en"] = "Promoted with rewritten metadata"
-        with self.assertRaisesRegex(ValueError, "promoted 1.1.5 source differs"):
+        with self.assertRaisesRegex(ValueError, f"promoted {PROVIDER_CANDIDATE['version']} source differs"):
             build.validate_staged_sources(entries, promoted, EXPECTED_IDS, STAGED_IDS, STAGED_VERSIONS)
 
         source_provider = next(entry for entry in entries if entry["id"] == identifier)

@@ -170,7 +170,6 @@ class ModelMetadataTests(unittest.TestCase):
 UNTOUCHED_PROVIDER_DIGESTS = {
     'openai': '6094cde564a6dd902127b8dbcadf8ef051cea1ec2f1471515c4a5403fe71a3e6',
     'anthropic': '18dcb6d4cebe6d0cca5a2079ce754e4294383f227990a1ba0da9c56b1d6688ca',
-    'google': 'ca819aaa9e6e24e6df55291d7824350fa08d9bbdbce0104efa0cb7d9f31ba0c8',
     'deepseek': '60fb04639556045b4d1bd129f6c0f876bffd0606e786ce4033de2d4b9b50052b',
     'moonshot': 'ff51d55979404d00064154e4dbbcf26c178d944e66cd92372c0bc4e64c2c32dd',
     'zhipu': '8c63d48982778f72f4d51710a4292a07b57ae76e8be7c4013545583bf841ebd5',
@@ -191,6 +190,13 @@ ALIBABA_MODELS_DIGEST = '4df38185723829d601fe5d1613f949cd0405cc506b722bdc41ee24d
 ALIBABA_BASE_METADATA_DIGEST = 'b259ada0a6a21c53a8cc425e4f88779d4f73a7cd1810158c3287e48303a4044f'
 ALIBABA_STABLE_FIELDS_DIGEST = 'ea276cb53b24777c31b35caafbfbe16f7553cf2c2c4706f03a580879b37a08b5'
 VOLCENGINE_STABLE_FIELDS_DIGEST = '3840e13de407ee4b6a4e6d2600520f5563d2e986bd6281ef468c563eaa7d95bd'
+GOOGLE_IMAGE_STABLE_FIELDS_DIGEST = 'aba1214c88523ff8a9f748bbb386db39c32642d4677ebda0f88721baafdb3bb9'
+GOOGLE_IMAGE_METADATA_DIGEST = 'e720a717c6ce06ec82cd61d96d9829fa2dd4e8c1c69084c9079eb4d4591bc09d'
+GEMINI_CHAT_MODELS = sorted([
+    'gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.6-flash',
+    'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite',
+    'gemini-3.1-pro-preview', 'gemini-3-flash-preview',
+])
 PIN = '4f5cb775b475a8f3dc0253c986223ca8dcd55a21f29ab3e036e397e560879eef'
 AGENT_PLAN_MODELS = [
     "ark-code-latest",
@@ -323,9 +329,43 @@ class CommittedCatalogTests(unittest.TestCase):
             if provider["availability"] == "available":
                 offered += 1
                 self.assertIsNotNone(provider["baseURL"])
-        self.assertEqual(offered, 18)
-        self.assertEqual(model_count, 609)
-        self.assertEqual(metadata_count, 462)
+        self.assertEqual(offered, 19)
+        self.assertEqual(model_count, 616)
+        self.assertEqual(metadata_count, 456)
+
+    def test_gemini_conversation_identity_and_legacy_image_offer_agree(self):
+        providers = self.providers()
+        chat = providers['google-gemini-chat']
+        image = providers['google']
+        self.assertEqual(chat['name'], 'Google Gemini')
+        self.assertEqual(chat['kind'], 'custom')
+        self.assertEqual(chat['baseURL'], 'https://generativelanguage.googleapis.com/v1beta/openai')
+        self.assertEqual(chat['authStyle'], 'bearer')
+        self.assertEqual(chat['defaultProtocol'], 'openai-chat-completions')
+        self.assertEqual(chat['availability'], 'available')
+        self.assertEqual(chat['models'], GEMINI_CHAT_MODELS)
+        offer = next(item for item in image['serviceOffers'] if item['role'] == 'conversation')
+        self.assertEqual(offer['models'], chat['models'])
+        self.assertEqual(offer['baseURL'], chat['baseURL'])
+        self.assertEqual(offer['authStyle'], chat['authStyle'])
+        for model_id in chat['models']:
+            facts = chat['modelMetadata'][model_id]
+            self.assertEqual(facts, image['modelMetadata'][model_id])
+            self.assertEqual(facts['output'], ['text'])
+            self.assertIn('image', facts['input'])
+            self.assertTrue(facts['toolCall'])
+            self.assertEqual(facts['contextTokens'], 1_048_576)
+        self.assertTrue(set(chat['models']).isdisjoint({
+            'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3.7-flash',
+            'gemini-3.5-flash', 'gemini-3.1-flash-lite-preview',
+            'gemini-3.1-flash-live-preview', 'gemini-3-pro-image-preview',
+        }))
+        # The existing image route, IDs and image metadata are unchanged.
+        self.assertEqual(digest({key: value for key, value in image.items()
+                                 if key not in {'serviceOffers', 'modelMetadata'}}),
+                         GOOGLE_IMAGE_STABLE_FIELDS_DIGEST)
+        self.assertEqual(digest({key: value for key, value in image['modelMetadata'].items()
+                                 if key in image['models']}), GOOGLE_IMAGE_METADATA_DIGEST)
 
     def test_plan_entries_preserve_image_video_and_context_updates(self):
         providers = self.providers()
@@ -481,12 +521,12 @@ class CommittedCatalogTests(unittest.TestCase):
         self.assertEqual(source["documentSHA256"], PIN)
         self.assertEqual(source["fetchedAt"], "2026-10-15T12:36:41Z")
         self.assertEqual(source["providerCount"], len(document["providers"]))
-        self.assertEqual(source["availableCount"], 18)
+        self.assertEqual(source["availableCount"], 19)
         self.assertEqual(source["unsupportedCount"], 4)
-        self.assertEqual(source["modelEntryCount"], 609)
-        self.assertEqual(source["modelMetadataEntryCount"], 462)
+        self.assertEqual(source["modelEntryCount"], 616)
+        self.assertEqual(source["modelMetadataEntryCount"], 456)
         self.assertEqual(source["serviceOfferCount"], 7)
-        self.assertEqual(source["serviceOfferModelEntryCount"], 42)
+        self.assertEqual(source["serviceOfferModelEntryCount"], 26)
         self.assertEqual(source["generatedBy"], "content-hub/providers/import_models_dev.py")
         self.assertEqual(
             source["generatedWith"],
@@ -500,13 +540,13 @@ class CommittedCatalogTests(unittest.TestCase):
         self.assertEqual(curated["sha256"], hashlib.sha256(overrides_raw).hexdigest())
         self.assertEqual(curated["revision"], overrides["revision"])
         self.assertEqual(curated["upstreamDocumentSHA256"], PIN)
-        self.assertEqual(curated["additionalProviderCount"], 2)
-        self.assertEqual(curated["patchedProviderCount"], 2)
+        self.assertEqual(curated["additionalProviderCount"], 3)
+        self.assertEqual(curated["patchedProviderCount"], 3)
         self.assertIn("not models.dev", curated["note"])
 
     def test_content_source_version_and_plan_mappings(self):
         content = json.loads(CONTENT.read_text(encoding="utf-8"))
-        self.assertEqual(content["version"], "1.1.5")
+        self.assertEqual(content["version"], "1.1.6")
         self.assertEqual(content["minimumAppVersion"], "1.7.69")
         self.assertEqual(content["id"], "floe.providers.compatibility")
         self.assertEqual(content["kind"], "providers")
@@ -530,7 +570,7 @@ class DeclarativeOverrideTests(unittest.TestCase):
     def test_config_is_versioned_pinned_and_provenanced(self):
         overrides, raw = self.load()
         self.assertEqual(overrides["schemaVersion"], 1)
-        self.assertEqual(overrides["revision"], "2026-11-04.1")
+        self.assertEqual(overrides["revision"], "2026-11-09.1")
         self.assertEqual(overrides["upstreamPin"]["documentSHA256"], PIN)
         self.assertEqual(overrides["upstreamPin"]["fetchedAt"], "2026-10-15T12:36:41Z")
         expected = set(overrides["providerPatches"]) | {

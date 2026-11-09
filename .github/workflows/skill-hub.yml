@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: false
+      only_package:
+        description: Optional content-only package (floe.providers.compatibility); empty publishes all content sources
+        required: false
+        type: string
+        default: ''
       publish_android:
         description: Sign and commit only the Android skill catalog (legacy iOS feed and content hub stay untouched)
         required: false
@@ -88,6 +93,15 @@ jobs:
             echo "$unexpected"
             exit 1
           fi
+      - name: Verify selected compatibility publication independently
+        if: ${{ needs.publish.outputs.commit != '' && needs.publish.outputs.channels == 'content' && inputs.only_package != '' }}
+        env:
+          DISPATCHED: ${{ github.sha }}
+          PUBLISHED: ${{ needs.publish.outputs.commit }}
+          ONLY_PACKAGE: ${{ inputs.only_package }}
+        run: |
+          python content-hub/verify_selected_publication.py \
+            --before "$DISPATCHED" --after "$PUBLISHED" --only-package "$ONLY_PACKAGE"
       - run: python -m unittest discover -s content-hub -p 'test_*.py'
       - run: python content-hub/build.py --check
       - name: Reject changes to published ZIP versions
@@ -108,7 +122,7 @@ jobs:
     outputs:
       commit: ${{ steps.commit.outputs.sha }}
       channels: ${{ steps.scope.outputs.channels }}
-    if: github.event_name == 'workflow_dispatch' && (inputs.publish || inputs.publish_android || inputs.publish_content)
+    if: github.event_name == 'workflow_dispatch' && (inputs.publish || inputs.publish_android || inputs.publish_content || inputs.only_package != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,7 +142,18 @@ jobs:
       # Android-only route is selected only when publish is false.
       - name: Resolve publication channels
         id: scope
+        env:
+          ONLY_PACKAGE: ${{ inputs.only_package }}
         run: |
+          if [ -n "$ONLY_PACKAGE" ]; then
+            if [ "$ONLY_PACKAGE" != "floe.providers.compatibility" ] || \
+               [ "${{ inputs.publish_content }}" != "true" ] || \
+               [ "${{ inputs.publish }}" = "true" ] || \
+               [ "${{ inputs.publish_android }}" = "true" ]; then
+              echo 'A package selection requires compatibility-only content publication.'
+              exit 1
+            fi
+          fi
           if [ "${{ inputs.publish }}" = "true" ]; then
             echo "channels=both" >> "$GITHUB_OUTPUT"
           elif [ "${{ inputs.publish_android }}" = "true" ] && [ "${{ inputs.publish_content }}" = "true" ]; then
@@ -153,8 +178,13 @@ jobs:
         if: ${{ inputs.publish_content && !inputs.publish && !inputs.publish_android }}
         env:
           FLOE_CONTENT_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+          ONLY_PACKAGE: ${{ inputs.only_package }}
         run: |
-          python content-hub/build.py --sign
+          if [ -n "$ONLY_PACKAGE" ]; then
+            python content-hub/build.py --sign --only-package "$ONLY_PACKAGE"
+          else
+            python content-hub/build.py --sign
+          fi
           python content-hub/build.py --check
       - name: Build signed Android skill catalog
         if: ${{ inputs.publish || inputs.publish_android }}
@@ -170,11 +200,16 @@ jobs:
           PUBLISH_LEGACY: ${{ inputs.publish }}
           PUBLISH_ANDROID: ${{ inputs.publish || inputs.publish_android }}
           PUBLISH_CONTENT: ${{ inputs.publish || inputs.publish_content }}
+          ONLY_PACKAGE: ${{ inputs.only_package }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ "$PUBLISH_CONTENT" = "true" ]; then
-            git add content-hub/index.json content-hub/index.sig content-hub/packages
+            if [ -n "$ONLY_PACKAGE" ]; then
+              git add content-hub/index.json content-hub/index.sig "content-hub/packages/$ONLY_PACKAGE"
+            else
+              git add content-hub/index.json content-hub/index.sig content-hub/packages
+            fi
           fi
           if [ "$PUBLISH_LEGACY" = "true" ]; then
             git add skill-hub/catalog.json skill-hub/catalog.sig skill-hub/packages \
@@ -199,6 +234,14 @@ jobs:
             unexpected="$(git diff --cached --name-only | grep -Ev '^content-hub/(index\.(json|sig)$|packages/)' || true)"
             if [ -n "$unexpected" ]; then
               echo 'Content-only publication staged unrelated paths:'
+              echo "$unexpected"
+              exit 1
+            fi
+          fi
+          if [ -n "$ONLY_PACKAGE" ]; then
+            unexpected="$(git diff --cached --name-only | grep -Ev '^content-hub/(index\.(json|sig)$|packages/floe\.providers\.compatibility/)' || true)"
+            if [ -n "$unexpected" ]; then
+              echo 'Compatibility-only publication staged unrelated paths:'
               echo "$unexpected"
               exit 1
             fi

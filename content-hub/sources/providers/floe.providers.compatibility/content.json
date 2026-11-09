@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.providers.compatibility",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "kind": "providers",
   "minimumAppVersion": "1.7.69",
   "sourceRevision": "",
@@ -9,8 +9,8 @@
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "zh-Hans": "简化供应商名称，保留 Agent Plan、Token Plan 等套餐标识。模型和接口配置保持不变。",
-    "en": "Simplifies provider names while retaining Agent Plan, Token Plan and other plan labels. Model and endpoint configuration is unchanged."
+    "zh-Hans": "新增 Google Gemini 对话服务，更新聊天模型目录，并保留独立的图片服务。已有配置保持不变。",
+    "en": "Adds Google Gemini conversation service, refreshes chat model candidates and keeps image services separate. Existing configurations are preserved."
   },
   "privacy": {
     "zh-Hans": "本包不包含 API 密钥、令牌或带凭据的地址；凭据只保存在已批准的凭据存储中。",
@@ -113,6 +113,16 @@
       }
     },
     {
+      "id": "google-gemini-chat",
+      "displayName": "Google Gemini",
+      "defaultProtocol": "openai-chat-completions",
+      "supportedProtocols": [
+        "openai-chat-completions"
+      ],
+      "authStyle": "bearer",
+      "supportsModelDiscovery": true
+    },
+    {
       "id": "google-gemini-images",
       "displayName": "Google Gemini Images",
       "defaultProtocol": "openai-chat-completions",
@@ -151,7 +161,7 @@
   ],
   "catalog": "ProviderCatalog.json",
   "catalogNotice": {
-    "zh-Hans": "ProviderCatalog.json 与内置资源一致，包含 models.dev 基线以及经 Floe 审阅的官方套餐与媒体条目；套餐条目只列出已审阅的模型 ID，不声明 /models 列表。目录不含密钥或带凭据的地址，且必须通过应用内严格校验后才会生效。",
-    "en": "ProviderCatalog.json matches the bundled resource and contains the models.dev baseline plus reviewed official plan and media entries. Plan entries list reviewed model identifiers only and claim no /models listing. The catalog contains no keys or credential-bearing URLs and only activates after the app-side strict validation gate."
+    "zh-Hans": "目录包含 models.dev 基线与经审阅的官方对话、套餐和媒体条目；套餐条目不声明模型刷新。目录不含密钥，并经应用内校验后生效。",
+    "en": "Includes the models.dev baseline and reviewed official conversation, plan and media entries. Plan entries claim no model listing. The catalog contains no keys and activates after app validation."
   }
 }
