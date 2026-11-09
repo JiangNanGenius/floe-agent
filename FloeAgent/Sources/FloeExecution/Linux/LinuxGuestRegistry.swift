@@ -649,10 +649,11 @@ public actor LinuxGuestRegistry {
 
     /// True only when the owned guest is running and accepts new work.
     public func supports(environmentID: String) async -> Bool {
-        guard await environments.linuxGuestEnvironment(id: environmentID) != nil else {
+        guard let descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             await stop(environmentID: environmentID)
             return false
         }
+        guard descriptor.imageResolutionFailure == nil else { return false }
         return (try? await runningSessionForNewWork(environmentID: environmentID)) != nil
     }
 
@@ -661,7 +662,11 @@ public actor LinuxGuestRegistry {
         var imageInstalled: Bool?
         var imageFailure: String?
         var distributable: Bool?
-        if let imageID = descriptor?.imageID {
+        if let failure = descriptor?.imageResolutionFailure {
+            imageInstalled = false
+            imageFailure = failure
+            distributable = false
+        } else if let imageID = descriptor?.imageID, !imageID.isEmpty {
             imageInstalled = await images.linuxGuestImage(id: imageID) != nil
             imageFailure = await images.linuxGuestImageVerificationFailure(id: imageID)
             distributable = LinuxGuestImageDistributionCatalog.entry(id: imageID) != nil
@@ -694,7 +699,7 @@ public actor LinuxGuestRegistry {
                 imageID: session.image.id,
                 ramMB: limits.clampedRAMMB(session.descriptor.ramMB),
                 startedAt: session.startedAt,
-                lastError: lastErrors[environmentID],
+                lastError: descriptor?.imageResolutionFailure ?? lastErrors[environmentID],
                 imageInstalled: imageInstalled,
                 imageVerificationFailure: imageFailure,
                 imageDistributable: distributable,
@@ -710,9 +715,9 @@ public actor LinuxGuestRegistry {
         return LinuxGuestStatus(
             environmentID: environmentID,
             running: false,
-            imageID: descriptor?.imageID,
+            imageID: descriptor.flatMap { $0.imageID.isEmpty ? nil : $0.imageID },
             ramMB: descriptor?.ramMB,
-            lastError: lastErrors[environmentID],
+            lastError: descriptor?.imageResolutionFailure ?? lastErrors[environmentID],
             imageInstalled: imageInstalled,
             imageVerificationFailure: imageFailure,
             imageDistributable: distributable,
@@ -1100,7 +1105,12 @@ public actor LinuxGuestRegistry {
         taskID: String?,
         explicitShape: GuestResourceRequest?
     ) async throws -> Bool {
-        let imageID = await environments.linuxGuestEnvironment(id: environmentID)?.imageID
+        let selected = await environments.linuxGuestEnvironment(id: environmentID)
+        if let failure = selected?.imageResolutionFailure {
+            lastErrors[environmentID] = failure
+            throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: failure)
+        }
+        let imageID = selected?.imageID
         return try await bootAssetStart(imageID: imageID, environmentID: environmentID) {
             try await self.startGated(
                 environmentID: environmentID,
@@ -1183,6 +1193,10 @@ public actor LinuxGuestRegistry {
         guard !restoringInitialState else { throw LinuxGuestError.guestBusy(environmentID: environmentID) }
         guard var descriptor = await environments.linuxGuestEnvironment(id: environmentID) else {
             return false
+        }
+        if let failure = descriptor.imageResolutionFailure {
+            lastErrors[environmentID] = failure
+            throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: failure)
         }
         if factory.usesResidentMachine, let saved = factory.preferredSharedConfiguration {
             descriptor.vcpus = saved.vcpus
@@ -3158,7 +3172,12 @@ public actor LinuxGuestRegistry {
         guard lifecycleTransactions[environmentID] == token else {
             throw LinuxGuestError.guestBusy(environmentID: environmentID)
         }
-        let imageID = await environments.linuxGuestEnvironment(id: environmentID)?.imageID
+        let selected = await environments.linuxGuestEnvironment(id: environmentID)
+        if let failure = selected?.imageResolutionFailure {
+            lastErrors[environmentID] = failure
+            throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: failure)
+        }
+        let imageID = selected?.imageID
         return try await bootAssetStart(imageID: imageID, environmentID: environmentID) {
             try await self.start(
                 environmentID: environmentID,

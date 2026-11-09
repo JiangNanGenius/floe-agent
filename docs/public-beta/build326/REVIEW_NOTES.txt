@@ -1,0 +1,11 @@
+Floe 1.8.6 (326) — TestFlight update
+
+Floe is a personal AI and document workspace for iPad and iPhone. This beta adds and refines native workbenches for schematic/PCB editing, LaTeX, biology, CAD analysis and music, and improves file management, connection tools and the existing interpreted Linux workspace.
+
+No Floe account or demo sign-in is required. Open Space to create or import a local work, use its editor and preview, then save and reopen it. LaTeX offers source folding and PDF search. PCB offers canvas editing, design-rule checks and schematic/PCB synchronization with a change preview. Available engineering analyses are limited to the study types supported in the app; this beta does not claim a complete professional EDA or multiphysics suite. Native USB serial drivers are not included.
+
+Cloud AI services use credentials configured by the user. Local file browsing and editor entry points remain available without a cloud model. Optional Linux resources and dependencies are downloaded through the existing user-controlled environment setup. Existing environments retain their original image instead of being reset to the new default.
+
+Please focus on editor entry points, layout, previews, saving and reopening, assistant tool results, file batch actions and connection feedback. Physical-device voice, network and peripheral behavior will continue to be assessed through beta feedback.
+
+This update is for internal and external TestFlight. It does not replace the existing App Store submission or change its release settings.

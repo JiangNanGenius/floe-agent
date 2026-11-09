@@ -111,6 +111,16 @@ final class LocalTerminalOwner: Identifiable {
         await task.value
     }
 
+    private func residentImageFailure() async -> (imageID: String?, status: String) {
+        do {
+            return (try await FloePlatformServices.shared.activeLinuxImageID(),
+                String(localized: "environment.backend.image_missing"))
+        } catch {
+            return ((error as? LinuxResidentImageResolutionError)?.recoverableImageID,
+                error.localizedDescription)
+        }
+    }
+
     private func performOpen(generation: UUID, token: CancellationToken) async {
         defer {
             if openingGeneration == generation {
@@ -131,8 +141,10 @@ final class LocalTerminalOwner: Identifiable {
         } catch let error as LinuxGuestError {
             guard openingGeneration == generation, !token.isCancelled else { return }
             if case .imageNotQualified = error {
-                missingImageID = LinuxGuestImageDistributionCatalog.defaultImageID
-                status = String(localized: "environment.backend.image_missing")
+                let failure = await residentImageFailure()
+                guard openingGeneration == generation, !token.isCancelled else { return }
+                missingImageID = failure.imageID
+                status = failure.status
             } else {
                 status = String(describing: error)
             }
@@ -282,8 +294,10 @@ final class LocalTerminalOwner: Identifiable {
             guard self.sessionID == sessionID else { return 0 }
             alive = false
             if case .imageNotQualified = error {
-                missingImageID = LinuxGuestImageDistributionCatalog.defaultImageID
-                status = String(localized: "environment.backend.image_missing")
+                let failure = await residentImageFailure()
+                guard self.sessionID == sessionID else { return 0 }
+                missingImageID = failure.imageID
+                status = failure.status
             } else {
                 status = String(describing: error)
             }

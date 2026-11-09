@@ -53,9 +53,7 @@ final class SetupResourcePreparation: ObservableObject {
 
     init(center: ConversationCenter) {
         self.center = center
-        self.runtime = LinuxImageInstallModel(
-            imageID: LinuxGuestImageDistributionCatalog.defaultImageID
-        )
+        self.runtime = LinuxImageInstallModel()
     }
 
     // MARK: - Subscription (teardown unsubscribes only)

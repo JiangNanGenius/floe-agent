@@ -467,6 +467,9 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
     public var shares: [LinuxGuestShare]
     /// Identifier of the guest image manifest (bios/kernel/rootfs).
     public var imageID: String
+    /// Keeps Linux ownership while a resident origin cannot be resolved.
+    /// Start/status must surface this failure, never fall back to another base.
+    public var imageResolutionFailure: String?
     public var ramMB: Int?
     /// vCPUs granted by the resource pool (1 or 2). nil defaults to one hart;
     /// the registry sets this from the pool lease/admission at start time.
@@ -484,6 +487,7 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
         writableDirectory: URL? = nil,
         shares: [LinuxGuestShare] = [],
         imageID: String,
+        imageResolutionFailure: String? = nil,
         ramMB: Int? = nil,
         vcpus: Int? = nil,
         networkEnabled: Bool = false,
@@ -495,6 +499,7 @@ public struct LinuxGuestEnvironmentDescriptor: Sendable {
         self.writableDirectory = writableDirectory
         self.shares = shares
         self.imageID = imageID
+        self.imageResolutionFailure = imageResolutionFailure
         self.ramMB = ramMB
         self.vcpus = vcpus
         self.networkEnabled = networkEnabled
@@ -626,29 +631,6 @@ public struct LinuxGuestImageProvenance: Sendable, Equatable, Codable {
         self.buildConfigurationURL = buildConfigurationURL
         self.license = license
         self.distributionAllowed = distributionAllowed
-    }
-}
-
-/// A base disk image this manifest may adopt as an existing environment disk.
-///
-/// An environment disk is a mutable clone of one base disk and its sidecar
-/// records the exact image id, SHA-512 and byte count it was cloned from; a
-/// later catalog image whose disk differs byte-for-byte would otherwise be a
-/// conflict. A runner-only component release ships the same base image with
-/// just `/usr/local/bin/floe-exec` replaced, so it declares the exact
-/// predecessor here: only an origin that matches all three recorded fields is
-/// adopted, the mutable disk and its original `origin.json` stay untouched,
-/// and the runner is replaced in-guest from the verified standalone runner
-/// artifact. Any other origin is still a conflict and is never overwritten.
-public struct LinuxGuestCompatibleDiskOrigin: Sendable, Equatable, Codable {
-    public var imageID: String
-    public var artifactSHA512: String
-    public var artifactBytes: Int64
-
-    public init(imageID: String, artifactSHA512: String, artifactBytes: Int64) {
-        self.imageID = imageID
-        self.artifactSHA512 = artifactSHA512
-        self.artifactBytes = artifactBytes
     }
 }
 

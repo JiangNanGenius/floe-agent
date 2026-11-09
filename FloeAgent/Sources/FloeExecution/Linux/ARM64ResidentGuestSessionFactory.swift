@@ -229,7 +229,7 @@ private actor ARM64ResidentGuestOwner {
         // Reuse the existing verified, sparse/COW disk preparer. All overlays
         // live on this one private disk, never one physical disk per task.
         let prepared = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
-            environmentID: "resident-arm64", writableDirectory: root)
+            environmentID: LinuxResidentDiskStorage.environmentID, writableDirectory: root)
         func asset(_ role: LinuxGuestImageArtifact.Role, _ path: String?) throws -> ARM64VerifiedBootAsset? {
             guard let path else { return nil }
             guard let declared = image.artifactDigest(role: role) else {
@@ -378,11 +378,11 @@ private actor ARM64ResidentGuestOwner {
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: staging) }
         _ = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
-            environmentID: "resident-arm64", writableDirectory: staging)
+            environmentID: LinuxResidentDiskStorage.environmentID, writableDirectory: staging)
         let fresh = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: staging,
-            environmentID: "resident-arm64")
+            environmentID: LinuxResidentDiskStorage.environmentID)
         let current = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: root,
-            environmentID: "resident-arm64")
+            environmentID: LinuxResidentDiskStorage.environmentID)
         try Task.checkCancellation()
         if fm.fileExists(atPath: current.path) {
             guard (try fm.attributesOfItem(atPath: current.path))[.type] as? FileAttributeType == .typeDirectory else {

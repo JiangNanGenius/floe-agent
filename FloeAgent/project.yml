@@ -608,8 +608,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.5"
-        CURRENT_PROJECT_VERSION: "325"
+        MARKETING_VERSION: "1.8.6"
+        CURRENT_PROJECT_VERSION: "326"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -692,8 +692,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.5"
-        CURRENT_PROJECT_VERSION: "325"
+        MARKETING_VERSION: "1.8.6"
+        CURRENT_PROJECT_VERSION: "326"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -743,8 +743,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.5"
-        CURRENT_PROJECT_VERSION: "325"
+        MARKETING_VERSION: "1.8.6"
+        CURRENT_PROJECT_VERSION: "326"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -787,8 +787,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.5"
-        CURRENT_PROJECT_VERSION: "325"
+        MARKETING_VERSION: "1.8.6"
+        CURRENT_PROJECT_VERSION: "326"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -840,8 +840,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.5"
-        CURRENT_PROJECT_VERSION: "325"
+        MARKETING_VERSION: "1.8.6"
+        CURRENT_PROJECT_VERSION: "326"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1741,6 +1741,7 @@ targets:
       - path: Tests/FloeAppTests/BluetoothAutoConnectionAppContractTests.swift
       - path: Tests/FloeAppTests/ElectronicsBackAnnotationAppTests.swift
       - path: Tests/FloeAppTests/ScientificWritingAppGuestQualificationTests.swift
+      - path: Tests/FloeAppTests/LinuxResidentImageAppTests.swift
       - path: Modules/FloeElectronicsKit/Tests/FloeElectronicsCoreTests/EDABackAnnotationTests.swift
       - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/SimulationTet4Modal06Tests.swift
       - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/SimulationThermoelastic07Tests.swift

@@ -43,6 +43,23 @@ final class PinnedImageSource: @unchecked Sendable {
     }
 }
 
+/// Reconnect-safe, read-only source shared by guest descriptors and UI/preparation.
+final class ResidentImageSource: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resolver: LinuxResidentImageResolver?
+
+    func set(_ resolver: LinuxResidentImageResolver?) {
+        lock.withLock { self.resolver = resolver }
+    }
+
+    func imageID() async throws -> String {
+        guard let resolver = lock.withLock({ resolver }) else {
+            throw LinuxResidentImageResolutionError.storageUnavailable
+        }
+        return try await resolver.resolve()
+    }
+}
+
 /// Maps Floe environment records onto Linux guest descriptors. Only
 /// environments explicitly declared `executionBackend == .linuxVM` are owned
 /// by the guest backend; deleted environments disappear immediately.
@@ -56,7 +73,7 @@ final class PinnedImageSource: @unchecked Sendable {
 /// deliberately captures no Runtime v2 environment-share answer.
 struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     let registry: EnvironmentRegistry
-    let defaultImageID: String
+    let residentImageSource: ResidentImageSource
     /// Dynamic resolver for the image whose kernel/BIOS a pinned environment
     /// boots with (its immutable template's root base image). Read at
     /// descriptor-build time so reconnect takes effect; nil/absent keeps the
@@ -72,13 +89,13 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
 
     init(
         registry: EnvironmentRegistry,
-        defaultImageID: String,
+        residentImageSource: ResidentImageSource,
         pinnedImageSource: PinnedImageSource,
         workspaceStore: any WorkspaceStore,
         sharedDownloadCacheURL: URL? = nil
     ) {
         self.registry = registry
-        self.defaultImageID = defaultImageID
+        self.residentImageSource = residentImageSource
         self.pinnedImageSource = pinnedImageSource
         self.workspaceStore = workspaceStore
         self.sharedDownloadCacheURL = sharedDownloadCacheURL
@@ -107,9 +124,17 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             }
         }
 
-        // One physical ARM64 base is shared. Legacy template pins cannot select
-        // an incompatible RISC-V image for this machine.
-        let imageID = defaultImageID
+        // Preserve the physical disk's existing base. A failure keeps Linux
+        // ownership but cannot quietly select the new catalog default.
+        let imageID: String
+        let imageResolutionFailure: String?
+        do {
+            imageID = try await residentImageSource.imageID()
+            imageResolutionFailure = nil
+        } catch {
+            imageID = (error as? LinuxResidentImageResolutionError)?.recoverableImageID ?? ""
+            imageResolutionFailure = error.localizedDescription
+        }
         return LinuxGuestEnvironmentDescriptor(
             id: record.id,
             ownerID: record.ownerID,
@@ -117,6 +142,7 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             writableDirectory: layer,
             shares: Array(shares.prefix(LinuxGuestShare.maximumShares)),
             imageID: imageID,
+            imageResolutionFailure: imageResolutionFailure,
             ramMB: nil,
             vcpus: nil,
             // Linux environments need apt/pip to install python3 and packages.
@@ -270,13 +296,13 @@ enum LinuxGuestBackendAssembly {
             )
             wiring = PreparedGuestWiring(
                 images: UnavailableLinuxGuestImageResolver(), runtimeV2: nil,
-                runtimeV2Status: nil, pinnedProbe: nil,
+                runtimeV2Status: nil, residentImageResolver: nil, pinnedProbe: nil,
                 officialTemplates: nil, officialTemplateRuntime: nil
             )
         }
         let environmentProvider = AppLinuxGuestEnvironmentProvider(
             registry: registry,
-            defaultImageID: defaultImageID,
+            residentImageSource: FloePlatformServices.shared.linuxResidentImageSource,
             pinnedImageSource: FloePlatformServices.shared.linuxPinnedImageSource,
             workspaceStore: workspaceStore,
             sharedDownloadCacheURL: wiring.runtimeV2 == nil ? nil : (try? RuntimeV2Layout.production())?.cacheDirectory
@@ -308,6 +334,7 @@ enum LinuxGuestBackendAssembly {
         let images: any LinuxGuestImageResolving
         let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
         let runtimeV2Status: LinuxGuestRuntimeV2ImageStatus?
+        let residentImageResolver: LinuxResidentImageResolver?
         let pinnedProbe: (@Sendable (String) async -> String?)?
         let officialTemplates: RuntimeV2OfficialTemplateService?
         let officialTemplateRuntime: LinuxOfficialTemplateRuntime?
@@ -326,7 +353,9 @@ enum LinuxGuestBackendAssembly {
             // probe is explicitly cleared, other hooks stay as launch left.
             return PreparedGuestWiring(
                 images: legacy, runtimeV2: nil,
-                runtimeV2Status: nil, pinnedProbe: nil,
+                runtimeV2Status: nil,
+                residentImageResolver: makeResidentImageResolver(artifactRoot: artifactRoot, imageService: imageService, runtimeV2Status: nil),
+                pinnedProbe: nil,
                 officialTemplates: nil, officialTemplateRuntime: nil
             )
         }
@@ -436,10 +465,37 @@ enum LinuxGuestBackendAssembly {
         )
         return PreparedGuestWiring(
             images: images, runtimeV2: integrator,
-            runtimeV2Status: runtimeV2Status, pinnedProbe: pinnedProbe,
+            runtimeV2Status: runtimeV2Status,
+            residentImageResolver: makeResidentImageResolver(artifactRoot: artifactRoot, imageService: imageService, runtimeV2Status: runtimeV2Status),
+            pinnedProbe: pinnedProbe,
             officialTemplates: officialTemplates,
             officialTemplateRuntime: officialTemplateRuntime
         )
+    }
+
+    /// Reads installed image truth without invoking environment migration or preparation.
+    private static func makeResidentImageResolver(
+        artifactRoot: URL,
+        imageService: LinuxGuestImageInstallationService,
+        runtimeV2Status: LinuxGuestRuntimeV2ImageStatus?
+    ) -> LinuxResidentImageResolver {
+        LinuxResidentImageResolver(
+            residentRoot: artifactRoot.appendingPathComponent("LinuxGuest/ResidentARM64", isDirectory: true),
+            defaultImageID: defaultImageID,
+            trustedImageIDs: LinuxGuestImageDistributionCatalog.bundled.map(\.id)
+        ) { id in
+            guard LinuxGuestImageDistributionCatalog.entry(id: id) != nil else { return nil }
+            let legacy = await imageService.status(id: id)
+            var image = legacy.installed && legacy.verificationIssue == nil ? legacy.image : nil
+            if let runtimeV2Status, let check = await runtimeV2Status.health(id, nil) {
+                guard case .health(let health) = check, health.readiness == .verified else { return nil }
+                image = health.image
+            }
+            guard let image, image.id == id, image.qualified,
+                  let disk = image.artifactDigest(role: .disk) else { return nil }
+            return LinuxResidentImageCandidate(imageID: id, diskSHA512: disk.sha512,
+                diskBytes: disk.bytes, compatibleOrigins: image.compatibleOrigins ?? [])
+        }
     }
 
     /// Publishes prepared hooks. Used by launch assembly after the fresh
@@ -448,6 +504,7 @@ enum LinuxGuestBackendAssembly {
     private static func publishGuestWiring(_ wiring: PreparedGuestWiring) {
         let services = FloePlatformServices.shared
         services.setLinuxImageRuntimeV2(wiring.runtimeV2Status)
+        services.linuxResidentImageSource.set(wiring.residentImageResolver)
         services.setLinuxPinnedImageIDProbe(wiring.pinnedProbe)
         if let officialTemplates = wiring.officialTemplates {
             services.setLinuxOfficialTemplateService(officialTemplates)

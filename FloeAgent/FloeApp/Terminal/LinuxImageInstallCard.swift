@@ -14,7 +14,8 @@ import FloeTools
 import FloeCore
 @MainActor
 final class LinuxImageInstallModel: ObservableObject {
-    let imageID: String
+    private let requestedImageID: String?
+    @Published private(set) var imageID: String
     @Published private(set) var state: LinuxGuestInstallState = .storageInitializing
     @Published private(set) var sizeBytes: Int64?
     @Published private(set) var probingSize = true
@@ -46,8 +47,39 @@ final class LinuxImageInstallModel: ObservableObject {
     static let jobPrefix = "linux-image:"
     var jobID: String { Self.jobPrefix + imageID }
 
-    init(imageID: String) {
-        self.imageID = imageID
+    /// nil follows the resident origin; a supplied id remains an explicit
+    /// image download/repair choice and never changes that origin.
+    init(imageID: String? = nil) {
+        self.requestedImageID = imageID
+        self.imageID = imageID ?? ""
+    }
+
+    private func selectedImageID() async throws -> String {
+        if let requestedImageID { return requestedImageID }
+        return try await FloePlatformServices.shared.activeLinuxImageID()
+    }
+
+    private func acceptImageID(_ id: String) {
+        guard imageID != id else { return }
+        imageID = id
+        didProbe = false
+        sizeBytes = nil
+        probingSize = true
+        completedInstall = false
+        completionGate = LinuxGuestInstallCompletionGate()
+    }
+
+    private func showResolutionFailure(_ error: Error) {
+        let recoverable = (error as? LinuxResidentImageResolutionError)?.recoverableImageID
+        imageID = recoverable ?? ""
+        imageIssue = nil
+        completedInstall = false
+        probingSize = false
+        if recoverable != nil {
+            state = .imageRepairRequired(transient: false, message: error.localizedDescription)
+        } else {
+            state = .repairRequired(environmentID: environmentIDHint, message: error.localizedDescription)
+        }
     }
 
     var running: Bool { jobs.running.contains(jobID) }
@@ -63,9 +95,15 @@ final class LinuxImageInstallModel: ObservableObject {
 
     func probeOnce() async {
         guard !didProbe else { return }
-        didProbe = true
-        sizeBytes = await LinuxGuestImageHTTPDownloader.probePinnedArchiveBytes()
-        probingSize = false
+        do {
+            acceptImageID(try await selectedImageID())
+            didProbe = true
+            sizeBytes = await LinuxGuestImageHTTPDownloader.probePinnedArchiveBytes(imageID: imageID)
+            probingSize = false
+        } catch {
+            guard !Task.isCancelled else { return }
+            showResolutionFailure(error)
+        }
     }
 
     /// Re-reads every fact and derives the single state. `environmentIDHint`
@@ -132,6 +170,15 @@ final class LinuxImageInstallModel: ObservableObject {
                 imageIssue = nil
                 return
             }
+        }
+        do {
+            let selected = try await selectedImageID()
+            guard isCurrent() else { return }
+            acceptImageID(selected)
+        } catch {
+            guard isCurrent() else { return }
+            showResolutionFailure(error)
+            return
         }
         // The status read hashes real image bytes when the success
         // fingerprint is stale; without the caller's cancel signal a
@@ -207,6 +254,7 @@ final class LinuxImageInstallModel: ObservableObject {
     // MARK: actions
 
     func startDownload() {
+        guard !imageID.isEmpty else { Task { await refresh() }; return }
         // Runs the same shared, cancellable job as automatic first-use
         // preparation; concurrent callers share one download.
         cancelling = false
@@ -223,6 +271,7 @@ final class LinuxImageInstallModel: ObservableObject {
     }
 
     func cancelDownload() {
+        guard !imageID.isEmpty else { return }
         // Immediate feedback, then the real cancellation path: the shared
         // job's owner token and the in-flight install task are both
         // signalled, so the download/extraction/hash stops at its next
@@ -266,6 +315,7 @@ final class LinuxImageInstallModel: ObservableObject {
     /// the check is running instead of accepting a second tap that would
     /// start another full hash of the same bytes.
     func reverifyImage() async {
+        guard !imageID.isEmpty else { await refresh(); return }
         reverifying = true
         defer { reverifying = false }
         _ = await FloePlatformServices.shared.reverifyLinuxImage(imageID: imageID)
@@ -277,6 +327,7 @@ final class LinuxImageInstallModel: ObservableObject {
     /// Runs under the same shared job as a normal download, so it stays
     /// cancellable and coalesced.
     func repairImage() {
+        guard !imageID.isEmpty else { Task { await refresh() }; return }
         cancelling = false
         Task {
             do {
@@ -472,7 +523,14 @@ struct LinuxImageInstallCard: View {
                 .font(.caption)
                 .foregroundStyle(FloeTheme.destructive)
                 .textSelection(.enabled)
-            if allowsManualStart, let environmentID {
+            if model.imageID.isEmpty {
+                Button {
+                    Task { await model.retryStorage() }
+                } label: {
+                    Label("action.retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+            } else if allowsManualStart, let environmentID {
                 Button {
                     Task { await model.startGuest(environmentID: environmentID) }
                 } label: {

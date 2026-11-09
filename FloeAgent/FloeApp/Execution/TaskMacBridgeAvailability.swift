@@ -38,7 +38,7 @@ struct TaskMacBridgeAvailability: View {
 private struct MacBackupRuntimeSheet: View {
     let onUse: () -> Void
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var model = LinuxImageInstallModel(imageID: LinuxGuestImageDistributionCatalog.defaultImageID)
+    @StateObject private var model = LinuxImageInstallModel()
 
     var body: some View {
         NavigationStack {

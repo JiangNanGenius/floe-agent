@@ -983,7 +983,7 @@ private struct EnvironmentDetailView: View {
             // conversation's environment, so they are presented once and
             // separately from the per-environment state below.
             Section("environment.backend.shared_runtime_section") {
-                LabeledContent("environment.backend.base_image", value: linuxComponent?.id ?? guestStatus?.imageID ?? LinuxGuestBackendAssembly.defaultImageID)
+                LabeledContent("environment.backend.base_image", value: linuxComponent?.id ?? guestStatus?.imageID ?? "—")
                 LabeledContent("environment.backend.runtime_version", value: runtimeVersionLabel)
                 LabeledContent("environment.backend.component_status", value: componentStatusLabel)
                 if let update = componentUpdateNeeded {
@@ -1408,11 +1408,17 @@ private struct EnvironmentDetailView: View {
         await FloePlatformServices.shared.ensureLinuxImageService()
         imageStorageAvailable = FloePlatformServices.shared.linuxGuestImageStorageAvailable()
         guestStatus = await FloePlatformServices.shared.linuxEnvironmentStatus(id: report.id)
-        let imageID = guestStatus?.imageID ?? LinuxGuestBackendAssembly.defaultImageID
-        linuxComponent = await FloePlatformServices.shared.linuxImageStatus(id: imageID)
-        componentUpdateNeeded = await FloePlatformServices.shared.linuxComponentUpdateNeeded(
-            id: imageID
-        )
+        let automaticImageID: String?
+        if guestStatus?.imageID == nil { automaticImageID = try? await FloePlatformServices.shared.activeLinuxImageID() }
+        else { automaticImageID = nil }
+        let imageID = guestStatus?.imageID ?? automaticImageID
+        if let imageID {
+            linuxComponent = await FloePlatformServices.shared.linuxImageStatus(id: imageID)
+            componentUpdateNeeded = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
+        } else {
+            linuxComponent = nil
+            componentUpdateNeeded = nil
+        }
         repairHold = await FloePlatformServices.shared.linuxRepairHoldStatus(id: report.id)
         repairRecoverable = await FloePlatformServices.shared.linuxRepairRecoverable(id: report.id)
         await refreshGuestRuntimes()

@@ -26,7 +26,7 @@ struct ExecutionEnvironmentView: View {
     /// same App-shared install job the environment manager and the terminal
     /// empty state use, so a first-use download here is shared, cancellable
     /// and retryable rather than a second implementation.
-    @State private var linuxImageModel: LinuxImageInstallModel? = LinuxImageInstallModel(imageID: LinuxGuestImageDistributionCatalog.defaultImageID)
+    @State private var linuxImageModel: LinuxImageInstallModel? = LinuxImageInstallModel()
     @State private var linuxImageStatus: LinuxGuestImageInstallationService.ImageStatus?
     @State private var linuxEnvironmentID: String?
     @State private var stopEnvironmentID: String?
@@ -438,7 +438,8 @@ struct ExecutionEnvironmentView: View {
                 try await FloePlatformServices.shared.restoreLinuxInitialState()
                 runtimeRecoveryNotice = String(localized: "execution.runtime_reset.complete")
             case .redownload:
-                try await FloePlatformServices.shared.redownloadLinuxImage(imageID: LinuxGuestImageDistributionCatalog.defaultImageID)
+                let imageID = try await FloePlatformServices.shared.activeLinuxImageID()
+                try await FloePlatformServices.shared.redownloadLinuxImage(imageID: imageID)
                 runtimeRecoveryNotice = String(localized: "execution.runtime_redownload.complete")
             case .stopShared:
                 try await FloePlatformServices.shared.stopSharedLinuxRuntime()
@@ -490,13 +491,20 @@ struct ExecutionEnvironmentView: View {
         // No storage guard: the install model performs recoverable init and
         // reports its own real state; environment reports below are
         // independent of image storage.
-        let imageID = LinuxGuestImageDistributionCatalog.defaultImageID
+        let imageID: String?
+        do { imageID = try await FloePlatformServices.shared.activeLinuxImageID() }
+        catch { imageID = nil; linuxError = error.localizedDescription }
         if linuxImageModel == nil {
-            linuxImageModel = LinuxImageInstallModel(imageID: imageID)
+            linuxImageModel = LinuxImageInstallModel()
         }
         await linuxImageModel?.probeOnce()
-        linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID, force: force)
-        linuxUpdateNotice = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
+        if let imageID {
+            linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID, force: force)
+            linuxUpdateNotice = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
+        } else {
+            linuxImageStatus = nil
+            linuxUpdateNotice = nil
+        }
         if let service = center.environment.linuxGuestService {
             sharedConfiguration = await service.sharedGuestConfiguration()
             sharedCPUs = sharedConfiguration?.vcpus ?? 2

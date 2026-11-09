@@ -57,6 +57,7 @@ final class FloePlatformServices: @unchecked Sendable {
     /// closure inside the provider. nil/absent means preparation uses the
     /// shared default image.
     let linuxPinnedImageSource = PinnedImageSource()
+    let linuxResidentImageSource = ResidentImageSource()
     /// Late-injection, single-slot notification seam installed once by the
     /// production `AppEnvironment` after full initialization. It receives the
     /// environment id only after the runtime owner confirms a Linux guest has
@@ -549,6 +550,15 @@ final class FloePlatformServices: @unchecked Sendable {
         return service
     }
 
+    /// Selects the base already bound to the shared resident disk. Only an
+    /// absent disk/origin may choose the catalog default for first creation.
+    func activeLinuxImageID() async throws -> String {
+        guard await ensureLinuxImageService() else {
+            throw LinuxResidentImageResolutionError.storageUnavailable
+        }
+        return try await linuxResidentImageSource.imageID()
+    }
+
     /// Re-verifies an installed image without any download (a transient file
     /// I/O condition may clear). Returns the fresh status. Runtime v2 images
     /// are re-verified against their actual expanded bytes with the cached
@@ -560,7 +570,10 @@ final class FloePlatformServices: @unchecked Sendable {
     func reverifyLinuxImage(imageID: String? = nil) async -> LinuxGuestImageInstallationService.ImageStatus? {
         guard await ensureLinuxImageService(),
               let images = linuxImageBox.value else { return nil }
-        let id = imageID ?? LinuxGuestImageDistributionCatalog.defaultImageID
+        let automaticID: String?
+        if imageID == nil { automaticID = try? await activeLinuxImageID() }
+        else { automaticID = nil }
+        guard let id = imageID ?? automaticID else { return nil }
         // A re-verify changes the truth this cache serves.
         linuxImageStatusCache.bumpRevision()
         let cancelCheck: @Sendable () -> Bool = { Task.isCancelled }
@@ -590,9 +603,11 @@ final class FloePlatformServices: @unchecked Sendable {
         imageID: String? = nil,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
     ) async throws {
+        let selectedID: String
+        if let imageID { selectedID = imageID }
+        else { selectedID = try await activeLinuxImageID() }
         _ = try await prepareLinuxImage(
-            imageID: imageID ?? LinuxGuestImageDistributionCatalog.defaultImageID,
-            cancellation: CancellationToken(), onProgress: onProgress
+            imageID: selectedID, cancellation: CancellationToken(), onProgress: onProgress
         )
     }
 
@@ -635,8 +650,17 @@ final class FloePlatformServices: @unchecked Sendable {
         }
         _ = try await EnvironmentPackageJobs.shared.runShared(id: "linux-runtime-reset",
             title: String(localized: "execution.runtime_reset.progress"), cancellation: CancellationToken()) { _, cancellation in
+            // An explicit restore selects the current initial image even
+            // when the retained resident disk still uses an older base.
+            // Download/verification must finish before any existing work or
+            // dependency layer is stopped or reset.
+            let initialImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+            _ = try await self.prepareLinuxImage(imageID: initialImageID,
+                cancellation: cancellation, onProgress: { _, _ in })
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
             let resetID = UUID().uuidString
-            let receipt = try await guests.restoreInitialState(imageID: LinuxGuestImageDistributionCatalog.defaultImageID) {
+            let receipt = try await guests.restoreInitialState(imageID: initialImageID) {
                 let records = try await registry.beginRuntimeReset(id: resetID)
                 // Descendants release their work before their project/shared
                 // dependencies are replaced. The durable fences already cover all.
@@ -877,9 +901,9 @@ final class FloePlatformServices: @unchecked Sendable {
         guard await ensureLinuxImageService() else {
             throw FloeError.invalidConfiguration(String(localized: "environment.backend.image_store_unavailable"))
         }
-        // One resident ARM64 base serves every project. Legacy template pins
-        // cannot trigger a RISC-V download after the architecture cutover.
-        let resolvedImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+        // Missing/corrupt/unknown provenance fails before any download.
+        // An existing resident disk never follows a new catalog default.
+        let resolvedImageID = try await activeLinuxImageID()
         try cancellation.throwIfCancelled()
         try Task.checkCancellation()
         // Fast path: a verified installed image is answered before any task

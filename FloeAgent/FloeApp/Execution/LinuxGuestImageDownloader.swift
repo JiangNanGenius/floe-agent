@@ -307,8 +307,10 @@ nonisolated struct LinuxGuestImageHTTPDownloader: LinuxGuestImageDownloading {
         return .responseRejected(status: status, detail: "HTTP \(status)")
     }
 
-    static func probePinnedArchiveBytes() async -> Int64? {
-        guard let url = LinuxGuestImageDistributionCatalog.bundled.first?.archiveURL else { return nil }
+    static func probePinnedArchiveBytes(imageID: String) async -> Int64? {
+        guard let image = LinuxGuestImageDistributionCatalog.entry(id: imageID) else { return nil }
+        if let bytes = image.assetPin?.bytes { return bytes }
+        let url = image.archiveURL
         let session = URLSession(configuration: .ephemeral, delegate: LinuxImageDownloadRedirectGuard(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url); request.httpMethod = "HEAD"; request.timeoutInterval = 30
