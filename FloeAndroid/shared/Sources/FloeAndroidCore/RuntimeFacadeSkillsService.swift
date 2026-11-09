@@ -3570,7 +3570,9 @@ extension SkillsDomain {
     /// enrichment (SkillsCenter:669-695): metadata for list reads; full
     /// markdown + requiredToolNames for an exact id read.
     func readManaged(id: String?) async throws -> [ManagedSkill] {
+        _ = try requireBinding()
         let rows = try await store.all()
+        let registered = Set(registry.allDescriptors.map(\.name))
         var output: [ManagedSkill] = []
         for row in rows {
             if let id, row.id != id { continue }
@@ -3578,6 +3580,8 @@ extension SkillsDomain {
             if let definition = Self.bundledDefinition(for: row) {
                 required.formUnion(definition.automaticallyLoadedToolNames)
             }
+            required.formIntersection(registered)
+            let enabled = row.status == "enabled"
             var descriptionText: String?
             if let metadata = try? validator.parseSkillMarkdown(Data(row.skillMarkdown.utf8)) {
                 descriptionText = String(metadata.description.prefix(1_024))
@@ -3585,14 +3589,15 @@ extension SkillsDomain {
             let packageURL = Self.packageDirectory(installationRoot: installationRoot, id: row.id)
             output.append(ManagedSkill(
                 id: row.id, name: row.name, version: row.version,
-                enabled: row.status == "enabled",
+                enabled: enabled,
                 digest: row.rewrittenDigest,
-                markdown: id == nil ? nil : Self.text(at: packageURL
+                markdown: id == nil || !enabled ? nil : Self.text(at: packageURL
                     .appendingPathComponent("SKILL.md"), fileManager: .default),
-                requiredToolNames: required.isEmpty ? nil : required.sorted(),
+                requiredToolNames: !enabled || required.isEmpty ? nil : required.sorted(),
                 currentDigest: row.rewrittenDigest,
                 description: descriptionText))
         }
+        _ = try requireBinding()
         return output
     }
 

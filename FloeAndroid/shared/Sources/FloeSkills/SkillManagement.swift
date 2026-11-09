@@ -118,7 +118,7 @@ public struct SkillReadTool: AgentTool {
         public init(id: String? = nil, offset: Int? = nil, limit: Int? = nil) { self.id = id; self.offset = offset; self.limit = limit }
     }
     public static let name = "skill.read"
-    public static let toolDescription = "List installed skill metadata, or read one exact skill ID with pinned Markdown, audited scripts and digest. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. Reading loads available tool schemas; it never executes scripts or grants permissions. Task snapshots keep the reviewed version across upgrades and recovery. For skill.manage use currentDigest (or the metadata list digest), not an older pinned execution digest."
+    public static let toolDescription = "List installed skill metadata, or read one exact enabled skill ID with its currently installed Markdown and digest. Disabled guides return metadata only. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script; if the digest changes, read the new version from offset zero. Reading loads available tool schemas; it never executes scripts, enables a guide or grants permissions. For skill.manage use currentDigest (or the metadata list digest)."
     public static let parametersJSON = #"{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false

@@ -393,9 +393,11 @@ public struct G02ConfigEffectSink: ConfigOperationEffectRecording {
 
 public struct G02SkillsHostContextProvider: SkillsHostContextProviding {
     private let rootFingerprint: String
+    private let epoch: UInt64
 
-    public init(rootFingerprint: String) {
+    public init(rootFingerprint: String, epoch: UInt64) {
         self.rootFingerprint = rootFingerprint
+        self.epoch = epoch
     }
 
     public func appVersion() -> String? {
@@ -406,9 +408,9 @@ public struct G02SkillsHostContextProvider: SkillsHostContextProviding {
     }
 
     public func rootFingerprint(epoch: UInt64) -> String? {
-        // Fingerprint is epoch-independent process-local truth; the caller
-        // validates the epoch itself.
-        rootFingerprint
+        // A retained tool/domain from an earlier root must never bind its
+        // old store to a newer generation's pumps.
+        epoch == self.epoch ? rootFingerprint : nil
     }
 }
 

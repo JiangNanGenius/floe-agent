@@ -13,19 +13,21 @@ import FloeTools
 public func registerSkillTools(
     registry: ToolRunnerRegistry = .shared,
     creator: any SkillCreating,
-    manager: (any SkillManaging)? = nil
+    manager: (any SkillManaging)? = nil,
+    isAvailable: @escaping @Sendable () -> Bool = { true }
 ) -> any SkillCreating {
-    ToolCatalog.register(SkillCreateTool.self)
-    registry.register(SkillCreateTool(creator: creator))
+    func register<T: AgentTool>(_ tool: T) {
+        ToolCatalog.register(T.self)
+        var runner = AnyAgentTool(tool)
+        runner.isAvailable = isAvailable
+        registry.register(runner)
+    }
+    register(SkillCreateTool(creator: creator))
     if let manager {
-        ToolCatalog.register(SkillListTool.self)
-        registry.register(SkillListTool(manager: manager))
-        ToolCatalog.register(SkillSearchTool.self)
-        ToolCatalog.register(SkillReadTool.self)
-        ToolCatalog.register(SkillManageTool.self)
-        registry.register(SkillReadTool(manager: manager))
-        registry.register(SkillSearchTool(manager: manager))
-        registry.register(SkillManageTool(manager: manager))
+        register(SkillListTool(manager: manager))
+        register(SkillReadTool(manager: manager))
+        register(SkillSearchTool(manager: manager))
+        register(SkillManageTool(manager: manager))
     }
     return creator
 }

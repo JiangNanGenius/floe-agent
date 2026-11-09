@@ -361,7 +361,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
             registry: RuntimeOwnedWorkRegistry.shared,
             epochProvider: G02CompositionEpochProvider())
         let hostContext = G02SkillsHostContextProvider(
-            rootFingerprint: cluster.identity.root.fingerprint)
+            rootFingerprint: cluster.identity.root.fingerprint, epoch: epoch)
         // A real skills-init refusal fails the whole build closed (the
         // caller rolls back the self-installed lanes).
         // ONE qualified HTTP service for BOTH skills transports
@@ -405,6 +405,18 @@ public final class G02InstalledComposition: @unchecked Sendable {
             trustedKeys: nil)) else {
             return nil
         }
+        // Recover before seeding and before ordinary command/run admission.
+        // Await this generation-owned startup work instead of detaching a
+        // seed task that could race model discovery or a root retirement.
+        do {
+            try await skillsDomain.recoverInterruptedUpgrades()
+        } catch {
+            return nil
+        }
+        _ = await skillsDomain.seedBundledDomainGuides()
+        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: epoch, owner: gen.owner) else {
+            return nil
+        }
         // C01 separated stdio: ONE provider instance owns the live-peer
         // contract check and the real three-pipe channel. The SAME instance is
         // passed to the original MCP factory and to the C02 setup installation.
@@ -440,13 +452,6 @@ public final class G02InstalledComposition: @unchecked Sendable {
             hostContext: hostContext,
             registry: .shared))
         let skillsRouter = SkillsCommandRouter(domain: skillsDomain)
-        // N07-platform-guides67: install/upgrade the app-bundled Android
-        // guides so model-facing discovery/skill.read surface registry-true
-        // guidance. Non-blocking and per-guide isolated (never fails this
-        // composition); user-managed packages, user edits, enabled state,
-        // grants and explicit removal markers stay authoritative inside the
-        // domain seeder.
-        Task { await skillsDomain.seedBundledDomainGuides() }
         let mcpRouter = MCPCommandRouter(domain: mcpDomain, routeContext: routeContext)
         let capabilitiesRouter = CapabilitiesCommandRouter(domain: capabilitiesDomain)
 
@@ -984,6 +989,17 @@ public final class G02InstalledComposition: @unchecked Sendable {
         guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: epoch, owner: gen.owner) else {
             return nil
         }
+        // Use the existing validated install/manage/read adapters over the
+        // SAME domain as Settings. Registration does not widen task/model,
+        // Notes or temporary-chat ceilings, nor grant skill capabilities.
+        registerSkillTools(
+            registry: runComponents.registry,
+            creator: SkillsDomainCreatingFacade(domain: skillsDomain),
+            manager: SkillsDomainManagingFacade(domain: skillsDomain),
+            isAvailable: {
+                guard let pumps = AndroidRuntimeBootstrap.currentPumps() else { return false }
+                return pumps.storeReady && pumps.epoch == epoch
+            })
         registerTaskChecklistTools(store: taskChecklist, registry: runComponents.registry)
         // G09-R2 media.project: the ORIGINAL portable tool over the REAL
         // accepted-root media host. Registration is unconditional for this
