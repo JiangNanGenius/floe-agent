@@ -27,6 +27,7 @@ import com.floe.android.feature.integrations.McpTransportKindUi
 import com.floe.android.feature.integrations.McpTransportUi
 import com.floe.android.feature.integrations.SkillAvailabilityUi
 import com.floe.android.feature.integrations.SkillCatalogCardUi
+import com.floe.android.feature.integrations.CatalogCardStateUi
 import com.floe.android.feature.integrations.SkillCreatorDraftUi
 import com.floe.android.feature.integrations.SkillDetailDependenciesUi
 import com.floe.android.feature.integrations.SkillDetailDependencyProfileUi
@@ -853,20 +854,10 @@ class IntegrationsHostController internal constructor(
         installed: List<SkillInstalledRowUi>,
     ): List<SkillCatalogCardUi> {
         val installedById = installed.associateBy { it.skillId }
+        val sourceMismatch = actionString(com.floe.android.feature.integrations.R.string.skills_catalog_source_conflict)
         val legacyCards = snapshotCatalogEntries.map { entry ->
             val row = installedById[entry.id]
-            val newer = row != null &&
-                IntegrationsWire.isNewerVersion(entry.version, row.version)
-            val state: com.floe.android.feature.integrations.CatalogCardStateUi = when {
-                row == null -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.NotInstalled
-                newer -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.UpdateTo(entry.version)
-                !row.enabled -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.InstalledNeedsEnable
-                else -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.InstalledReady
-            }
+            val state = IntegrationsWire.catalogCardState(row, entry.version, sourceMismatch)
             SkillCatalogCardUi(
                 skillId = entry.id,
                 name = entry.id,
@@ -879,8 +870,6 @@ class IntegrationsHostController internal constructor(
         val curatedCards = curatedCardAccumulated.mapNotNull { card ->
             if (!legacyIds.add(card.id)) return@mapNotNull null
             val row = installedById[card.id]
-            val newer = row != null &&
-                IntegrationsWire.isNewerVersion(card.version, row.version)
             val state: com.floe.android.feature.integrations.CatalogCardStateUi = when {
                 card.offer == "incompatible" -> com.floe.android.feature.integrations
                     .CatalogCardStateUi.Unavailable(
@@ -888,14 +877,7 @@ class IntegrationsHostController internal constructor(
                 card.offer != "installable" -> com.floe.android.feature.integrations
                     .CatalogCardStateUi.Unavailable(
                         actionString(com.floe.android.feature.integrations.R.string.plugins_catalog_unavailable))
-                row == null -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.NotInstalled
-                newer -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.UpdateTo(card.version)
-                !row.enabled -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.InstalledNeedsEnable
-                else -> com.floe.android.feature.integrations
-                    .CatalogCardStateUi.InstalledReady
+                else -> IntegrationsWire.catalogCardState(row, card.version, sourceMismatch)
             }
             SkillCatalogCardUi(
                 skillId = card.id,
@@ -1255,7 +1237,8 @@ class IntegrationsHostController internal constructor(
         if (!admitted() || destinationState.value.skills.isWorking) return false
         val rootEpoch = host.nativeRootEpoch() ?: return false
         updateDestination {
-            it.copy(skills = it.skills.copy(isWorking = true, errorMessage = null, bundledRestoreNotice = null))
+            it.copy(skills = it.skills.copy(isWorking = true, errorMessage = null,
+                bundledRestoreNotice = null, bundledRestoreFailed = false))
         }
         host.trackOperation(
             HostCommandRequest(
@@ -1268,18 +1251,15 @@ class IntegrationsHostController internal constructor(
             ),
         ) { outcome ->
             if (!admitted() || host.nativeRootEpoch() != rootEpoch) return@trackOperation
-            val outcomes = ((outcome as? HostOperationOutcome.Completed)?.value as? JsonObject)
-                ?.get("outcomes") as? JsonObject
-            val complete = outcomes?.isNotEmpty() == true && outcomes.values.all {
-                (it as? JsonPrimitive)?.content in setOf("installed", "upgraded", "unchanged", "userModified", "userManaged")
-            }
+            val complete = outcome is HostOperationOutcome.Completed &&
+                IntegrationsWire.bundledRestoreSucceeded(outcome.value)
             updateDestination {
                 it.copy(skills = it.skills.copy(
                     isWorking = false,
-                    errorMessage = if (complete) null else actionString(
-                        com.floe.android.feature.integrations.R.string.skills_restore_bundled_failed),
-                    bundledRestoreNotice = if (complete) actionString(
-                        com.floe.android.feature.integrations.R.string.skills_restore_bundled_complete) else null,
+                    bundledRestoreFailed = !complete,
+                    bundledRestoreNotice = actionString(if (complete)
+                        com.floe.android.feature.integrations.R.string.skills_restore_bundled_complete
+                    else com.floe.android.feature.integrations.R.string.skills_restore_bundled_failed),
                 ))
             }
             refreshSkills()
@@ -1844,6 +1824,7 @@ class IntegrationsHostController internal constructor(
                     skillName = row.name,
                     installedVersion = row.version,
                     isOfficial = row.sourceKind == SkillSourceKindUi.OFFICIAL_HUB,
+                    isBundled = row.sourceKind == SkillSourceKindUi.BUNDLED,
                     savedSource = row.savedSource,
                     // Catalog metadata is an update hint, not a staged
                     // review. Only a completed check can enable Apply.
@@ -3399,6 +3380,21 @@ internal class LocalNetworkAccessBroker(
 
 /** Strict-tolerant wire decoders for the Skills/MCP owner pages. */
 internal object IntegrationsWire {
+    fun catalogCardState(row: SkillInstalledRowUi?, version: String, sourceMismatch: String): CatalogCardStateUi = when {
+        row == null -> CatalogCardStateUi.NotInstalled
+        row.sourceKind != SkillSourceKindUi.OFFICIAL_HUB -> CatalogCardStateUi.Unavailable(sourceMismatch)
+        catalogUpdateVersion(row, version) != null -> CatalogCardStateUi.UpdateTo(version)
+        !row.enabled -> CatalogCardStateUi.InstalledNeedsEnable
+        else -> CatalogCardStateUi.InstalledReady
+    }
+
+    fun bundledRestoreSucceeded(value: JsonElement?): Boolean {
+        val outcomes = (value as? JsonObject)?.get("outcomes") as? JsonObject ?: return false
+        return outcomes.isNotEmpty() && outcomes.values.all {
+            (it as? JsonPrimitive)?.content in setOf("installed", "upgraded", "unchanged", "userModified", "userManaged")
+        }
+    }
+
 
     /** One live staged review echoed by `skills.list` snapshot rows:
      *  `reviewToken`, `skillID`, `kind` and the REAL echoed revision pair
@@ -3544,7 +3540,9 @@ internal object IntegrationsWire {
                 // membership are not projected by the original row, so a
                 // non-official row is reported through its own installed
                 // identity only (CREATOR is the honest fallback class).
-                sourceKind = if (obj.bool("official") == true) {
+                sourceKind = if (obj.bool("bundled") == true) {
+                    SkillSourceKindUi.BUNDLED
+                } else if (obj.bool("official") == true) {
                     SkillSourceKindUi.OFFICIAL_HUB
                 } else {
                     SkillSourceKindUi.CREATOR

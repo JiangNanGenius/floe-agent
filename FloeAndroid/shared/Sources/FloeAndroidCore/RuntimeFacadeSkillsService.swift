@@ -773,21 +773,24 @@ public actor SkillsDomain {
         var projections: [[String: Any]] = []
         projections.reserveCapacity(rows.count)
         for row in rows {
+            let bundled = Self.bundledDefinition(for: row)
             var descriptionText = ""
             if let metadata = try? validator.parseSkillMarkdown(Data(row.skillMarkdown.utf8)) {
                 descriptionText = String(metadata.description.prefix(1_024))
             }
             var object: [String: Any] = [
                 "id": row.id,
-                "name": row.name,
+                "name": row.name == row.id ? (bundled?.name ?? row.name) : row.name,
                 "version": row.version,
                 "enabled": row.status == "enabled",
                 "digest": row.rewrittenDigest,
                 "revision": ["resourceID": "skill.\(row.id)",
                              "version": row.rewrittenDigest],
                 "updatedAt": Self.iso8601String(from: row.updatedAt),
-                "official": OfficialSkillHub.skillIDs.contains(row.id)
-                    || verifiedCuratedReceipt(for: row) != nil,
+                "bundled": bundled != nil,
+                "official": bundled == nil && ((OfficialSkillHub.skillIDs.contains(row.id)
+                    && row.rewriteModelID == "official-hub")
+                    || verifiedCuratedReceipt(for: row) != nil),
                 "bundledSeedSuppressed": try await store.wasBundledSkillRemoved(id: row.id),
                 "description": descriptionText,
                 "rollbackAvailable": rollbackIDs.contains(row.id),

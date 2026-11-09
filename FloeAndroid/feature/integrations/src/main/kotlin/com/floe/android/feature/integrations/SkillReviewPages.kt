@@ -166,7 +166,7 @@ fun SkillUpgradePage(
     }
 
     val inFlight = upgrade.applyInFlight || upgrade.checkInFlight
-    val source = if (upgrade.isOfficial) {
+    val source = if (upgrade.isOfficial || upgrade.isBundled) {
         null
     } else {
         GitHubSourceFieldsUi(owner = owner, repository = repository, ref = ref, path = path)
@@ -205,7 +205,7 @@ fun SkillUpgradePage(
             } else {
                 "skills.upgradeApply"
             },
-            showConfirm = needsCheck,
+            showConfirm = needsCheck && !upgrade.isBundled,
         )
         FloeText(
             upgrade.skillName,
@@ -221,6 +221,9 @@ fun SkillUpgradePage(
                 .weight(1f)
                 .verticalScroll(rememberScrollState()),
         ) {
+            if (upgrade.isBundled) {
+                IntegrationSectionFooter(stringResource(R.string.skills_bundled_updates_with_app))
+            }
             FloeSettingsSectionCard(title = null) {
                 ReviewValueRow(
                     label = stringResource(R.string.skills_update_installed),
@@ -285,7 +288,7 @@ fun SkillUpgradePage(
             }
 
             if (detailsOpen) {
-                if (!upgrade.isOfficial) {
+                if (!upgrade.isOfficial && !upgrade.isBundled) {
                     FloeSettingsSectionCard(title = stringResource(R.string.skills_update_source_section)) {
                         FloeFormTextField(
                             label = stringResource(R.string.skills_update_owner),

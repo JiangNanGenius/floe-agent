@@ -309,6 +309,8 @@
     <string name="mcp_stdio_empty_tasks">请先在此项目中添加任务。</string>
     <string name="mcp_stdio_task_hint">命令在此任务的 Linux 环境中运行，任务或环境停止时，进程也会停止。</string>
     <string name="skills_restore_bundled">恢复内置指南</string>
+    <string name="skills_bundled_updates_with_app">内置指南随 App 更新。</string>
+    <string name="skills_catalog_source_conflict">此技能由其他来源管理，请到“已安装”中查看。</string>
     <string name="skills_restore_bundled_hint">恢复缺少的指南，保留已有修改和启用状态。</string>
     <string name="skills_restore_bundled_complete">已检查内置指南，缺少的指南已恢复。</string>
     <string name="skills_restore_bundled_failed">部分指南未能恢复，请等其他技能操作结束后重试。</string>

@@ -509,6 +509,7 @@ data class SkillUpgradeUi(
     /** Structured outcome for the last dispatched apply/rollback effect,
      * keyed by [effectToken]; consumed once (see holder). */
     val lastEffect: UpgradeEffectUi? = null,
+    val isBundled: Boolean = false,
 )
 
 data class UpgradeEffectUi(
@@ -960,6 +961,7 @@ data class SkillsHubUiState(
     val catalogHasMore: Boolean = false,
     val catalogPagingBusy: Boolean = false,
     val bundledRestoreNotice: String? = null,
+    val bundledRestoreFailed: Boolean = false,
 ) {
     val installedIds: Set<String> get() = installed.mapTo(HashSet()) { it.skillId }
 }

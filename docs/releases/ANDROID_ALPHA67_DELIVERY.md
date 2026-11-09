@@ -4,11 +4,15 @@
 
 内置指南与签名 Hub、社区安装来源分别保留身份。启动安装不会覆盖用户管理的包、修改或停用状态；显式删除的指南不再自动复活。“恢复内置指南”提供实际恢复通路，并显示结果或失败，不恢复执行授权。签名、平台、摘要及原安装/回退校验保持。
 
+目录同名不能把内置或社区安装变成 Hub 升级；内置详情明确随 App 更新，并隐藏不适用的来源编辑和检查按钮。恢复的部分失败单独保留，不被列表刷新清掉。
+
 技能更新后的回退入口随实际安装状态及时刷新。公共表单顶部栏减少留白、保留点击区域，更新页移除重复的应用按钮；忙碌时取消入口不可用。手机操作指引要求等待授权或界面改变后重新观察，继续保留旧观察拒绝和失败停止规则。
 
 This intermediate GitHub prerelease adds 12 Android-authored built-in guides to the real skill discovery/read path. Model work prefers the resolved task Linux environment through `exec.shell`; the graphical desktop is primarily for users operating professional software. Lightweight text, Markdown and code editing remain in Floe.
 
 Bundled guides retain a distinct source identity. Startup preserves user-managed packages, edits, disabled states and explicit removal. An explicit restore action reinstalls missing guides and reports actual outcomes without restoring execution grants or bypassing Hub verification. The update sheet refreshes rollback availability, shared form chrome uses less space, and phone guidance requires fresh observations after approval waits or UI changes.
+
+Catalog name collisions cannot redirect bundled or community installations. Built-in details explain that updates ship with the app and omit inapplicable source/check controls. Partial restore failures remain visible across list refreshes.
 
 ## Known issues / 已知问题
 
@@ -22,4 +26,4 @@ Bundled guides retain a distinct source identity. Startup preserves user-managed
 - The reported Sony Android9 component issue, earlier VNC disconnect, full-device restoration and untested hardware/provider combinations remain explicit. Startup invocation of interrupted skill-upgrade recovery is a remaining code item, not a platform limitation.
 - Some existing signed remote catalog guides retain iOS-specific instructions. Their content must be updated by its publisher; this App does not bypass signatures or rewrite versions. Compatible user-configured services and skills remain available.
 
-版本、来源索引与发布说明已准备。当前已通过 Full/Play Kotlin 编译及 6 项真实指南模块检查；实际 ARM64、APK、三星行为和公开字节读回另行记录。本准备记录不代表已经构建或发布。
+版本、来源索引与发布说明已准备。当前已通过 Full/Play Kotlin 编译、6 项真实指南模块检查及7项实际来源/结果投影检查。候选01三星已验证停用、删除、冷重开和恢复；其目录来源误判原包保留，后续来源修正的实际 ARM64、APK及三星表现分别记录。本文准备记录不代表已经公开发布。

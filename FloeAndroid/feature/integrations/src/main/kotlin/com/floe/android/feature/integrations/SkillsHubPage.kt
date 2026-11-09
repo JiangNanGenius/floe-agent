@@ -80,7 +80,7 @@ fun SkillsHubPage(
             rows = skills.installed,
             query = query,
             nameOf = { it.name },
-            summaryOf = { it.summary },
+            summaryOf = { listOfNotNull(it.summary, it.skillId).joinToString(" ") },
         )
     }
     val cards = remember(skills.catalogCards, query) {
@@ -273,7 +273,9 @@ fun SkillsHubPage(
                     )
                 }
                 IntegrationSectionFooter(stringResource(R.string.skills_restore_bundled_hint))
-                skills.bundledRestoreNotice?.let { IntegrationMetaLine(it) }
+                skills.bundledRestoreNotice?.let {
+                    if (skills.bundledRestoreFailed) IntegrationIssueLine(it) else IntegrationMetaLine(it)
+                }
 
                 // ⇄ center.catalogError (secondary) / center.errorMessage (red)
                 skills.catalogError?.let {

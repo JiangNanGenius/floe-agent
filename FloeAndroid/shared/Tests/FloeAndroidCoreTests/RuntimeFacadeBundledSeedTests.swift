@@ -52,6 +52,11 @@ final class RuntimeFacadeBundledSeedTests: XCTestCase {
         XCTAssertEqual(rows.count, AndroidBundledSkillGuides.all.count)
         XCTAssertTrue(rows.allSatisfy { $0.enabled })
         XCTAssertTrue(rows.allSatisfy { $0.digest == $0.currentDigest && !$0.digest.isEmpty })
+        let snapshot = try await domain.snapshot(cursor: nil)
+        let projected = try XCTUnwrap(snapshot["skills"] as? [[String: Any]])
+        XCTAssertEqual(projected.count, AndroidBundledSkillGuides.all.count)
+        XCTAssertTrue(projected.allSatisfy { $0["bundled"] as? Bool == true })
+        XCTAssertTrue(projected.allSatisfy { $0["official"] as? Bool == false })
         // Truthful, distinct app-bundled identity — never a fabricated hub
         // receipt or a signed-source binding.
         let store = SQLiteSkillStore(database: fixture.database)

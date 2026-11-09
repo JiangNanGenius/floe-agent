@@ -1,6 +1,8 @@
 package com.floe.android.host
 
 import com.floe.android.feature.integrations.GitHubSourceFieldsUi
+import com.floe.android.feature.integrations.SkillSourceKindUi
+import com.floe.android.feature.integrations.CatalogCardStateUi
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -9,6 +11,31 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SkillUpdateSourceProjectionTest {
+    @Test
+    fun bundledGuideIdentityCannotBeRedirectedByACatalogNameCollision() {
+        val value = Json.parseToJsonElement("""
+            {"skills":[{"id":"floe-pdf","version":"1.0.0","bundled":true,"official":true,
+              "revision":{"version":"digest"}}]}
+        """)
+        val row = checkNotNull(IntegrationsWire.decodeSkillsSnapshot(value)).installed.single()
+        assertEquals(SkillSourceKindUi.BUNDLED, row.sourceKind)
+        assertNull(IntegrationsWire.catalogUpdateVersion(row, "9.0.0"))
+        assertTrue(IntegrationsWire.catalogCardState(row, "9.0.0", "different source") is CatalogCardStateUi.Unavailable)
+        assertFalse(row.isBundledReadOnlyGuide)
+    }
+
+    @Test
+    fun restoringGuidesRequiresDefiniteOutcomesForEveryReportedGuide() {
+        assertTrue(IntegrationsWire.bundledRestoreSucceeded(Json.parseToJsonElement("""
+            {"outcomes":{"floe-pdf":"installed","floe-shell":"unchanged","local":"userManaged"}}
+        """)))
+        for (value in listOf("null", "{}", "{\"outcomes\":{}}", "{\"outcomes\":[]}",
+            "{\"outcomes\":{\"guide\":\"failed\"}}", "{\"outcomes\":{\"guide\":\"inFlight\"}}",
+            "{\"outcomes\":{\"guide\":\"unknown\"}}", "{\"outcomes\":{\"guide\":null}}")) {
+            assertFalse(value, IntegrationsWire.bundledRestoreSucceeded(Json.parseToJsonElement(value)))
+        }
+    }
+
     @Test
     fun catalogNameCollisionCannotRedirectACommunityInstallation() {
         for (official in listOf(false, true)) {
@@ -19,6 +46,9 @@ class SkillUpdateSourceProjectionTest {
             val row = checkNotNull(IntegrationsWire.decodeSkillsSnapshot(value)).installed.single()
             assertEquals(if (official) "1.0.1" else null,
                 IntegrationsWire.catalogUpdateVersion(row, "1.0.1"))
+            val state = IntegrationsWire.catalogCardState(row, "1.0.1", "different source")
+            if (official) assertEquals(CatalogCardStateUi.UpdateTo("1.0.1"), state)
+            else assertTrue(state is CatalogCardStateUi.Unavailable)
             assertNull(IntegrationsWire.catalogUpdateVersion(row, "1.0.0"))
         }
     }
