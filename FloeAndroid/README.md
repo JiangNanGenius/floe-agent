@@ -1,6 +1,14 @@
 # Floe for Android
 
-## Current delivery — Android Alpha71 (2026-11-10)
+## Current delivery — Android Alpha72 (2026-11-10)
+
+[Alpha72/code98](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.72) is published from immutable source `48a44a19226fce1fa59fdff7e8e0f947513a6d10`. It adds authorized known-password input, actual Android record/recovery scrubbing and post-extraction Linux readiness recovery. Sixty focused cases, actual ARM64/native34, Full/Play compilation and package/signature checks passed; seven anonymous assets and current/retained-client discovery were read back. Samsung completed a real public71→72 update with exact main/runtime98 bytes, original UIDs, five tasks, two projects and the existing environment retained. See the [delivery](../docs/releases/ANDROID_ALPHA72_DELIVERY.md).
+
+当前为中间版本。索尼 Android9 的具体启动故障尚未确认；首次密码填写实测因模型漏传观察凭据而被工具拒绝，失败后已停止，尚未验证成功。参数契约修复继续推进；自动解锁等其余 N01–N08 场景仍待闭合。新装应用列表刷新和旧边界文案的小修复已编译，未包含于不可变 Alpha72 包。
+
+This remains an intermediate build. Sony Android9 startup is unconfirmed, and the first password fixture run stopped when the model omitted the required observation token. That fill is not device-qualified. Contract repair and the remaining N01–N08 scenarios continue; the compiled app-list/copy follow-up is not part of the frozen72 APK.
+
+## Previous delivery — Android Alpha71 (2026-11-10)
 
 [Alpha71/code97](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.71) is published from immutable source `e9f94bd602efda39be91a39e4486bf60abc578ee`. It scopes runtime installation callbacks to the real OS session and App build, retains the system confirmation entry, and reports measured setup stages, bytes, percentage and transfer rate. Thirty-two focused checks, related Full/Play/runtime compilation and package checks passed. The unchanged native33 input set was reused; all seven anonymous public asset bytes and production update discovery were read back. See the [delivery](../docs/releases/ANDROID_ALPHA71_DELIVERY.md).
 
@@ -8,11 +16,11 @@ Samsung completed the actual public70→71 in-App upgrade, including both main/r
 
 当前Alpha71/code97已公开；三星真实在线联合升级及安装字节核对通过，原任务、项目和已有Linux环境保留。新下载计量、索尼反馈及自动解锁等仍待各自实测，整轮N01–N08未收口；已知密码填写正在接通实际Android运行核心的记录与恢复保护。
 
-## Next source checkpoint — Android Alpha72 candidate (code98)
+## Shipped source checkpoint — Android Alpha72 (code98)
 
 Known-password entry uses the existing authorized phone tool and protected-field metadata. Tool cards, retained live frames and checkpoints scrub input copies; the executor keeps the exact live input, and interrupted sensitive input is not replayed from redacted records. Local environment settings now expose a real recheck and diagnostic details after extraction when terminal readiness is still unavailable. The installed environment and user files are preserved.
 
-这是源码候选，尚非公开安装包。系统／应用权限与窗口边界保持；密码只用于已授权任务，不读取密码框现有内容。解压完成后的不可用状态增加重新检查和诊断详情；索尼 Android9 的具体启动失败仍待实际错误信息确认，不宣称已恢复。相关编译、三星验证和发行结果分别追加。
+以上代码已进入公开 Alpha72。系统／应用权限与窗口边界保持；密码只用于已授权任务，不读取密码框现有内容。解压完成后的不可用状态增加重新检查和诊断详情；索尼 Android9 的具体启动失败仍待实际错误信息确认，不宣称已恢复。实际密码任务的参数失败与后续修复按当前交付记录追踪。
 
 ## Previous delivery — Android Alpha59 (2026-11-08)
 

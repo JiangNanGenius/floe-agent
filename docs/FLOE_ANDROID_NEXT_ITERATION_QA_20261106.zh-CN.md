@@ -846,3 +846,15 @@ Full／Play／运行组件编译与32项聚焦检查、58项原生字节绑定�
 候选采用统一版本 Alpha72/code98，Office 对应源码链接随版本更新。25项手机字段／权限JVM检查、10项公共脱敏检查，以及5项实际运行核心／SQLite／界面帧与恢复检查已通过；原始失败及修复保留。已结算的取消操作保留原拒绝回执，不伪造重复结果；未结算的敏感输入恢复时明确不重放。Full／Play编译、实际ARM64、单份Full APK、三星及公开发行仍分别验收。本段为候选代码状态，尚未发布新安装包，N01–N08总目标继续。
 
 English: Alpha72/code98 is a source candidate for authorized known-password entry, actual Android record/recovery protection and post-extraction readiness recovery. A real checkpoint-copy defect was repaired without changing live input bytes. Installed-state recheck and diagnostic details retain the environment; the Sony-specific startup cause is still unknown. Build, device and public delivery remain separate from this source checkpoint.
+
+## 2026-11-10 Alpha72 实际交付与参数契约后续
+
+固定源码 `48a44a19226fce1fa59fdff7e8e0f947513a6d10`、native34、单份 Full ARM64 APK 已公开为 Alpha72/code98。60项定向检查、实际原生对象／链接、Full／Play、58项封装绑定及API28／29签名检查通过。七附件完整匿名字节、真实71→72宿主重建及当前／保留Alpha65生产更新发现读回通过，iOS Latest保留。见[Alpha72交付](releases/ANDROID_ALPHA72_DELIVERY.md)。
+
+三星通过公开Alpha71的App更新入口和正常系统／PlayProtect确认升至主程序与运行组件98；安装字节和原UID匹配，原5任务、2项目及已安装环境重开保持。实机传输模式未捕获，不把宿主重建当作实机增量证据；已有环境也不作为索尼或全新下载进度证明。
+
+仅用Ark Plan／`ark-code-latest`的首次已知密码实测，在观察、启动测试App和再次观察后，因填写请求漏传 `observationId` 而被拒绝；按首次失败停止，未重试／切换提供商，未点击验证或宣称PASS。49行原始导出已回读保存，再退役该自建任务、测试App和设备导出；无障碍、应用范围、自动控制及临时常亮已恢复。公开已知问题同步追加实际结果。后续修复模型侧参数契约和明确错误提示，保留既有观察新鲜度与授权校验；不恢复这个已失败任务。
+
+另有两处测试后小修复已完成Full／Play与资源编译：活动恢复时刷新新装应用列表，以及中英文旧边界文案对齐。这些属于后续源码，不在不可变Alpha72包中。完成构件、源码／增量暂存和一次性宿主缓存已清理，当前、回退、符号、原始失败及下一步明确使用的依赖缓存保持。N01–N08总目标继续。
+
+English: Alpha72/code98 is public and the real Samsung71→72 update passed with original visible data retained. The first Ark Plan password run failed on a missing observation token and stopped without retry; its original evidence survives cleanup. The public issues disclose this failure. A bounded parameter-contract repair and the compiled app-list/copy follow-up belong to the next source/APK, not the frozen72 artifact. Sony startup and remaining N01–N08 cases remain open.

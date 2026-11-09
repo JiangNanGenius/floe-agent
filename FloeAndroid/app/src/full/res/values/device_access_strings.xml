@@ -18,7 +18,7 @@
     <string name="device_access_open_settings">Open Accessibility settings</string>
     <string name="device_access_boundary_title">Limits</string>
     <string name="device_access_boundary_nodes">Only the visible page of the active task is observed.</string>
-    <string name="device_access_boundary_secrets">Password fields, secure windows and the lock screen are never read or filled.</string>
+    <string name="device_access_boundary_secrets">Known passwords can be entered for authorized tasks; existing protected values are not read. Secure windows and the lock screen stay protected.</string>
     <string name="device_access_boundary_actions">Actions are read back after they run; gestures are not replayed blindly.</string>
     <string name="device_access_boundary_screenshots">A screenshot is captured only when the task asks for the observed page.</string>
 

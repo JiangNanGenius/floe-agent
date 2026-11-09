@@ -16,7 +16,7 @@
     <string name="device_access_open_settings">打开无障碍设置</string>
     <string name="device_access_boundary_title">边界</string>
     <string name="device_access_boundary_nodes">仅观察当前任务正在显示的页面。</string>
-    <string name="device_access_boundary_secrets">不会读取或填写密码框、安全窗口和锁屏。</string>
+    <string name="device_access_boundary_secrets">已授权任务可填写已提供的密码，不读取密码框已有内容。安全窗口和锁屏仍受保护。</string>
     <string name="device_access_boundary_actions">动作执行后会重新读取；不会盲目重放手势。</string>
     <string name="device_access_boundary_screenshots">仅在任务请求时截取正在观察的页面。</string>
 
