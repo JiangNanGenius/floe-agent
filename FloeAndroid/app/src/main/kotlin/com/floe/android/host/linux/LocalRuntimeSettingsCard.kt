@@ -1,6 +1,10 @@
 @file:OptIn(io.github.robinpcrd.cupertino.ExperimentalCupertinoApi::class)
 package com.floe.android.host.linux
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import android.text.format.Formatter
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -43,7 +47,11 @@ fun LocalRuntimeSettingsCard() {
                 }, verticalAlignment = Alignment.CenterVertically) {
                     FloeText(stringResource(R.string.linux_environment_title), style = Floe.typography.body,
                         color = Floe.colors.label, modifier = Modifier.weight(1f))
-                    FloeText(stringResource(R.string.linux_environment_open), style = Floe.typography.metadata,
+                    FloeText(if (state.phase == LocalRuntimeSetupHost.Phase.INSTALLING ||
+                            state.phase == LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING)
+                            state.progress?.percent?.let { stringResource(R.string.linux_progress_percent, it) }
+                                ?: stringResource(R.string.linux_progress_active)
+                        else stringResource(R.string.linux_environment_open), style = Floe.typography.metadata,
                         color = Floe.colors.secondaryLabel)
                 }
             })
@@ -64,10 +72,11 @@ fun LocalRuntimeSettingsCard() {
                 }
                 FloeText(stringResource(R.string.linux_environment_description), style = Floe.typography.body,
                     color = Floe.colors.secondaryLabel)
-                FloeText(stringResource(when (state.phase) {
+                if (state.progress == null || state.phase == LocalRuntimeSetupHost.Phase.FAILED ||
+                    state.phase == LocalRuntimeSetupHost.Phase.STOPPING) FloeText(stringResource(when (state.phase) {
                     LocalRuntimeSetupHost.Phase.UNKNOWN -> R.string.linux_environment_loading
                     LocalRuntimeSetupHost.Phase.COMPONENT_REQUIRED -> R.string.linux_environment_component
-                    LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING -> R.string.linux_environment_component_installing
+                    LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING -> R.string.linux_component_waiting_system
                     LocalRuntimeSetupHost.Phase.SETUP_REQUIRED -> R.string.linux_environment_setup
                     LocalRuntimeSetupHost.Phase.INSTALL_REQUIRED -> R.string.linux_environment_install_needed
                     LocalRuntimeSetupHost.Phase.INSTALLING -> R.string.linux_environment_installing
@@ -110,14 +119,14 @@ fun LocalRuntimeSettingsCard() {
                             onClick = { clipboard.setText(AnnotatedString(host.diagnosticDetails())) })
                     }
                 }
-                if (state.total > 0 && state.phase == LocalRuntimeSetupHost.Phase.INSTALLING) {
-                    FloeText("${state.bytes / 1_048_576} / ${state.total / 1_048_576} MB",
-                        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-                }
+                if (state.phase == LocalRuntimeSetupHost.Phase.INSTALLING ||
+                    state.phase == LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING)
+                    state.progress?.let { LinuxSetupProgressPanel(it) }
                 val busy = state.phase == LocalRuntimeSetupHost.Phase.INSTALLING || state.phase == LocalRuntimeSetupHost.Phase.STOPPING ||
                     state.phase == LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING
                 if (state.pendingIntent != null) {
-                    FloeCapsuleAction(label = stringResource(R.string.linux_environment_continue), onClick = {
+                    FloeCapsuleAction(label = stringResource(if (state.componentSessionID != null)
+                        R.string.linux_component_view_installer else R.string.linux_environment_continue), onClick = {
                         host.consumeIntent()?.let { intent ->
                             try { context.startActivity(intent) }
                             catch (_: android.content.ActivityNotFoundException) { host.refresh() }
@@ -131,6 +140,9 @@ fun LocalRuntimeSettingsCard() {
                             notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
                         } else host.prepare()
                     })
+                }
+                if (state.phase == LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING && state.componentSessionID != null) {
+                    FloeCapsuleAction(label = stringResource(R.string.cancel), onClick = { host.cancelComponentInstall() })
                 }
                 if (state.phase == LocalRuntimeSetupHost.Phase.INSTALLING) {
                     FloeCapsuleAction(label = stringResource(R.string.cancel), onClick = { host.cancelInstall() })
@@ -163,6 +175,48 @@ fun LocalRuntimeSettingsCard() {
                     }), style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                 }
             }
+        }
+    }
+}
+
+/** Compact measured progress, kept in the application-owned setup host across sheet dismissal. */
+@Composable
+private fun LinuxSetupProgressPanel(value: LinuxSetupProgress) {
+    val context = LocalContext.current
+    fun size(bytes: Long) = Formatter.formatShortFileSize(context, bytes.coerceAtLeast(0))
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FloeText(stringResource(when (value.stage) {
+                LinuxSetupStage.COMPONENT_FILE -> R.string.linux_progress_component_file
+                LinuxSetupStage.COMPONENT_INSTALL -> R.string.linux_component_waiting_system
+                LinuxSetupStage.PREFLIGHT -> R.string.linux_progress_preflight
+                LinuxSetupStage.DOWNLOAD -> R.string.linux_progress_download
+                LinuxSetupStage.VERIFY -> R.string.linux_progress_verify
+                LinuxSetupStage.EXTRACT -> R.string.linux_progress_extract
+                LinuxSetupStage.PUBLISH -> R.string.linux_progress_publish
+                LinuxSetupStage.CONFIGURE -> R.string.linux_progress_configure
+            }), style = Floe.typography.metadata, color = Floe.colors.label, modifier = Modifier.weight(1f))
+            value.percent?.let { FloeText(stringResource(R.string.linux_progress_percent, it),
+                style = Floe.typography.metadata, color = Floe.colors.secondaryLabel) }
+        }
+        value.percent?.let { percent ->
+            Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp))
+                .background(Floe.colors.secondaryLabel.copy(alpha = .15f))) {
+                Box(Modifier.fillMaxHeight().fillMaxWidth(percent / 100f).background(Floe.colors.accent))
+            }
+        }
+        if (value.transfer) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FloeText(if (value.total > 0) stringResource(R.string.linux_progress_bytes,
+                    size(value.bytes), size(value.total)) else size(value.bytes),
+                    style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
+                    modifier = Modifier.weight(1f))
+                value.bytesPerSecond?.let { FloeText(stringResource(R.string.linux_progress_rate, size(it)),
+                    style = Floe.typography.metadata, color = Floe.colors.secondaryLabel) }
+            }
+        } else if (value.stage == LinuxSetupStage.EXTRACT) {
+            FloeText(stringResource(R.string.linux_progress_extracted, value.entries, size(value.extractedBytes)),
+                style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
         }
     }
 }

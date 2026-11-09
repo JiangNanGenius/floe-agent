@@ -25,4 +25,18 @@
     <string name="linux_failure_component_version">运行环境安装文件与当前 Floe 版本不匹配。请使用完整安装包更新后重试。</string>
     <string name="linux_failure_component_copy">无法复制运行环境安装文件。请确认本机空间充足后重试。</string>
     <string name="linux_failure_component_install">系统未能完成运行环境安装。请检查系统安装提示后重试；若仍失败，请提交诊断详情。</string>
+    <string name="linux_progress_percent">%1$d%%</string>
+    <string name="linux_progress_active">准备中</string>
+    <string name="linux_component_waiting_system">正在等待 Android 完成安装，可查看安装窗口中的确认或扫描提示。</string>
+    <string name="linux_component_view_installer">查看安装窗口</string>
+    <string name="linux_progress_component_file">正在准备运行组件</string>
+    <string name="linux_progress_preflight">正在检查安装条件</string>
+    <string name="linux_progress_download">正在下载 Linux 环境</string>
+    <string name="linux_progress_verify">正在校验下载文件</string>
+    <string name="linux_progress_extract">正在解压文件</string>
+    <string name="linux_progress_publish">正在完成安装</string>
+    <string name="linux_progress_configure">正在配置环境</string>
+    <string name="linux_progress_bytes">%1$s / %2$s</string>
+    <string name="linux_progress_rate">%1$s/s</string>
+    <string name="linux_progress_extracted">已处理 %1$d 项 · %2$s</string>
 </resources>

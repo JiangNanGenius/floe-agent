@@ -12,6 +12,7 @@ import android.os.Build
 import android.provider.Settings
 import com.floe.android.runtimeipc.RuntimePackages
 import com.floe.android.runtimeipc.RuntimeSigningIdentity
+import com.floe.android.BuildConfig
 import java.io.File
 import java.security.MessageDigest
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,12 +28,16 @@ class BundledRuntimeInstaller(private val context: Context) {
     }
 
     /** Invoke off-main after an explicit user action. This never bypasses Android consent. */
-    fun install(): Action {
+    fun install(progress: (Long, Long) -> Unit = { _, _ -> }): Action {
         if (!context.packageManager.canRequestPackageInstalls()) {
             return Action.GrantInstallPermission(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:${context.packageName}")))
         }
         val packages = context.packageManager
+        try { RuntimeInstallState.begin(context) }
+        catch (failure: Exception) {
+            throw ComponentInstallPolicy.failure(ComponentInstallRejection.SESSION_FAILED, failure)
+        }
         // Explicit user retry may replace only this Core app's unfinished
         // installation of its exact runtime component. Installed data stays.
         for (pending in packages.packageInstaller.mySessions.filter { it.appPackageName == pair.runtime }) {
@@ -54,6 +59,10 @@ class BundledRuntimeInstaller(private val context: Context) {
                 throw LinuxSetupException(ComponentInstallPolicy.diagnostic(
                     ComponentInstallRejection.ASSET_UNAVAILABLE))
             }
+            val total = runCatching { java.util.zip.ZipFile(context.applicationInfo.sourceDir).use {
+                it.getEntry("assets/linux-runtime/runtime.apk")?.size ?: -1L
+            } }.getOrDefault(-1L)
+            progress(0, total)
             val digest = MessageDigest.getInstance("SHA-256")
             val source = try {
                 context.assets.open("linux-runtime/runtime.apk")
@@ -65,6 +74,7 @@ class BundledRuntimeInstaller(private val context: Context) {
                     java.io.FileOutputStream(apk).use { output ->
                         val buffer = ByteArray(64 * 1024)
                         var bytes = 0L
+                        var nextProgress = 512L * 1024
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
@@ -74,8 +84,13 @@ class BundledRuntimeInstaller(private val context: Context) {
                                     ComponentInstallRejection.SIZE_EXCEEDED))
                             }
                             digest.update(buffer, 0, count); output.write(buffer, 0, count)
+                            if (bytes >= nextProgress) {
+                                nextProgress = bytes + 512L * 1024
+                                progress(bytes, total)
+                            }
                         }
                         output.fd.sync()
+                        progress(bytes, total)
                     }
                 }
             } catch (failure: LinuxSetupException) {
@@ -117,6 +132,7 @@ class BundledRuntimeInstaller(private val context: Context) {
                 throw ComponentInstallPolicy.failure(ComponentInstallRejection.SESSION_FAILED, failure)
             }
             try {
+                RuntimeInstallState.bind(context, sessionID, own.longVersionCode)
                 installer.openSession(sessionID).use { session ->
                     session.openWrite("runtime.apk", 0, apk.length()).use { output ->
                         apk.inputStream().use { it.copyTo(output) }; session.fsync(output)
@@ -149,8 +165,27 @@ object RuntimeInstallState {
         data class Confirmation(val sessionID: Int, val intent: Intent) : Result
         data class Finished(val sessionID: Int, val success: Boolean, val status: Int = Int.MIN_VALUE) : Result
     }
-    internal val mutable = MutableStateFlow<Result>(Result.Idle)
+    private val gate = Any()
+    private val mutable = MutableStateFlow<Result>(Result.Idle)
     val state = mutable.asStateFlow()
+
+    internal fun begin(context: Context) = synchronized(gate) {
+        check(context.getSharedPreferences("linux_component_install", Context.MODE_PRIVATE).edit().clear().commit())
+        mutable.value = Result.Idle
+    }
+    internal fun bind(context: Context, sessionID: Int, coreVersion: Long) = synchronized(gate) {
+        check(context.getSharedPreferences("linux_component_install", Context.MODE_PRIVATE).edit()
+            .putInt("session", sessionID).putLong("version", coreVersion).commit())
+    }
+    internal fun publish(context: Context, sessionID: Int, result: Result) = synchronized(gate) {
+        val saved = context.getSharedPreferences("linux_component_install", Context.MODE_PRIVATE)
+        if (!ComponentInstallPolicy.acceptsCallback(saved.getInt("session", -1),
+                saved.getLong("version", -1), sessionID, BuildConfig.VERSION_CODE.toLong())) return@synchronized
+        // Reject at the producer as well: one StateFlow must never let an old
+        // abandoned session conflate away the current confirmation Intent.
+        mutable.value = result
+        if (result is Result.Finished) saved.edit().clear().commit()
+    }
 }
 
 class RuntimeInstallReceiver : BroadcastReceiver() {
@@ -162,13 +197,15 @@ class RuntimeInstallReceiver : BroadcastReceiver() {
                 @Suppress("DEPRECATION")
                 val confirmation = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
                     else intent.getParcelableExtra(Intent.EXTRA_INTENT)
-                if (confirmation != null) RuntimeInstallState.mutable.value =
-                    RuntimeInstallState.Result.Confirmation(sessionID, confirmation)
+                if (confirmation != null) RuntimeInstallState.publish(context, sessionID,
+                    RuntimeInstallState.Result.Confirmation(sessionID, confirmation))
                 // The visible UI presents the system confirmation. A broadcast
                 // never launches an Activity from the background.
             }
-            PackageInstaller.STATUS_SUCCESS -> RuntimeInstallState.mutable.value = RuntimeInstallState.Result.Finished(sessionID, true)
-            else -> RuntimeInstallState.mutable.value = RuntimeInstallState.Result.Finished(sessionID, false, status)
+            PackageInstaller.STATUS_SUCCESS -> RuntimeInstallState.publish(context, sessionID,
+                RuntimeInstallState.Result.Finished(sessionID, true))
+            else -> RuntimeInstallState.publish(context, sessionID,
+                RuntimeInstallState.Result.Finished(sessionID, false, status))
         }
     }
 }

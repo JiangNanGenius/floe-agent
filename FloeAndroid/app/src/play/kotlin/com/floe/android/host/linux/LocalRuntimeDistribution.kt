@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.emptyFlow
 
 internal object LocalRuntimeDistribution {
     val results: Flow<ComponentInstallEvent> = emptyFlow()
-    fun prepareComponent(context: Context): ComponentPreparation = ComponentPreparation(Intent(Intent.ACTION_VIEW,
+    fun prepareComponent(context: Context, progress: (Long, Long) -> Unit = { _, _ -> }): ComponentPreparation = ComponentPreparation(Intent(Intent.ACTION_VIEW,
         Uri.parse("https://play.google.com/store/apps/details?id=" + RuntimePackages.forCore(context.packageName).runtime)))
+    fun cancelComponent(context: Context, sessionID: Int) = Unit
 }

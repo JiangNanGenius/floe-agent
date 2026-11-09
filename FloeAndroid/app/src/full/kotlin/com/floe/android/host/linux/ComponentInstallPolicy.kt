@@ -51,6 +51,11 @@ internal enum class ComponentInstallRejection {
 internal object ComponentInstallPolicy {
     const val STAGE = "component"
 
+    /** Used only AFTER the private callback's framework/original session IDs
+     * match. A previous attempt or previous App build cannot replace current UI. */
+    fun acceptsCallback(activeSessionID: Int, activeVersion: Long, sessionID: Int, coreVersion: Long): Boolean =
+        sessionID >= 0 && activeSessionID == sessionID && coreVersion > 0 && activeVersion == coreVersion
+
     fun rejectIdentity(
         candidate: ComponentIdentity?,
         expectedPackage: String,

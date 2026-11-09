@@ -420,6 +420,10 @@ internal class LinuxRuntimeOperations(
                 ?: failure.javaClass.simpleName
             progress.set(JSONObject().put("phase", if (cancelPreparation.get()) "cancelled" else "failed")
                 .put("requestID", request.id).put("failureCode", code)
+                .put("archiveBytes", previous.optLong("archiveBytes", 0))
+                .put("archiveTotal", previous.optLong("archiveTotal", -1))
+                .put("entries", previous.optLong("entries", 0))
+                .put("extractedBytes", previous.optLong("extractedBytes", 0))
                 .put("failureStage", previous.optString("phase", "configure"))
                 .put("failureType", failure.javaClass.simpleName))
             throw failure

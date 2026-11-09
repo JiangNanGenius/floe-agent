@@ -26,10 +26,13 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal sealed interface ComponentInstallEvent {
-    data class Confirm(val intent: Intent) : ComponentInstallEvent
-    data class Finished(val success: Boolean, val status: Int = Int.MIN_VALUE) : ComponentInstallEvent
+    val sessionID: Int
+    data class Confirm(override val sessionID: Int, val intent: Intent) : ComponentInstallEvent
+    data class Finished(override val sessionID: Int, val success: Boolean,
+        val status: Int = Int.MIN_VALUE) : ComponentInstallEvent
 }
-internal data class ComponentPreparation(val intent: Intent?, val awaitingSystem: Boolean = false)
+internal data class ComponentPreparation(val intent: Intent?, val awaitingSystem: Boolean = false,
+    val sessionID: Int? = null)
 
 /** Installation only: never invents a task/project or grants model tool admission. */
 class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope) {
@@ -38,11 +41,14 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
     enum class Phase { UNKNOWN, COMPONENT_REQUIRED, COMPONENT_INSTALLING, SETUP_REQUIRED, INSTALL_REQUIRED, INSTALLING, INSTALLED, STOPPING, FAILED }
     data class State(val phase: Phase = Phase.UNKNOWN, val bytes: Long = 0, val total: Long = -1,
                      val pendingIntent: Intent? = null, val localNetworkPermissionNeeded: Boolean = false,
-                     val failure: LinuxSetupDiagnostic? = null)
+                     val failure: LinuxSetupDiagnostic? = null,
+                     internal val progress: LinuxSetupProgress? = null,
+                     internal val componentSessionID: Int? = null)
     private val diagnostics = context.getSharedPreferences("linux_setup_diagnostic", Context.MODE_PRIVATE)
-    private val mutable = MutableStateFlow(loadFailure()?.let { State(Phase.FAILED, failure = it) } ?: State())
+    private val mutable = MutableStateFlow(loadFailure()?.let { State(Phase.FAILED, diagnostics.getLong("bytes", 0), diagnostics.getLong("total", -1), failure = it) } ?: State())
     val state = mutable.asStateFlow()
     private val actions = Mutex()
+    private val componentHandoff = ComponentInstallHandoff(actions)
     private val installRequest = AtomicReference<String?>()
     private val stopInstall = AtomicBoolean()
     private val foreground = RunForegroundController.forApplication(context)
@@ -52,18 +58,26 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
         scope.launch {
             LocalRuntimeDistribution.results.collect { event ->
                 if (!engaged) return@collect
-                when (event) {
-                    is ComponentInstallEvent.Confirm -> mutable.value = State(Phase.COMPONENT_REQUIRED, pendingIntent = event.intent)
-                    is ComponentInstallEvent.Finished -> if (event.success) refresh() else {
-                        val code = when (event.status) {
-                            android.content.pm.PackageInstaller.STATUS_FAILURE_ABORTED -> "COMPONENT_CANCELLED"
-                            android.content.pm.PackageInstaller.STATUS_FAILURE_BLOCKED -> "COMPONENT_BLOCKED"
-                            android.content.pm.PackageInstaller.STATUS_FAILURE_STORAGE -> "INSTALL_FAILED_INSUFFICIENT_STORAGE"
-                            android.content.pm.PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
-                            android.content.pm.PackageInstaller.STATUS_FAILURE_CONFLICT -> "COMPONENT_INCOMPATIBLE"
-                            else -> "COMPONENT_INSTALL_FAILED"
+                componentHandoff.route(event.sessionID) {
+                    when (event) {
+                        is ComponentInstallEvent.Confirm -> mutable.value = mutable.value.copy(
+                            phase = Phase.COMPONENT_REQUIRED, pendingIntent = event.intent,
+                            componentSessionID = event.sessionID, progress = null)
+                        is ComponentInstallEvent.Finished -> {
+                            componentHandoff.completed()
+                            mutable.value = mutable.value.copy(pendingIntent = null, componentSessionID = null)
+                            if (event.success) refresh() else {
+                                val code = when (event.status) {
+                                    android.content.pm.PackageInstaller.STATUS_FAILURE_ABORTED -> "COMPONENT_CANCELLED"
+                                    android.content.pm.PackageInstaller.STATUS_FAILURE_BLOCKED -> "COMPONENT_BLOCKED"
+                                    android.content.pm.PackageInstaller.STATUS_FAILURE_STORAGE -> "INSTALL_FAILED_INSUFFICIENT_STORAGE"
+                                    android.content.pm.PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
+                                    android.content.pm.PackageInstaller.STATUS_FAILURE_CONFLICT -> "COMPONENT_INCOMPATIBLE"
+                                    else -> "COMPONENT_INSTALL_FAILED"
+                                }
+                                fail(LinuxSetupDiagnostic.fromFields(code, "component"))
+                            }
                         }
-                        fail(LinuxSetupDiagnostic.fromFields(code, "component"))
                     }
                 }
             }
@@ -123,9 +137,16 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
                 if (!componentMatches()) {
                     // Package updates kill the runtime: unresolved work is not idle.
                     ensureComponentIdle()
-                    val prepared = LocalRuntimeDistribution.prepareComponent(context)
-                    mutable.value = State(if (prepared.awaitingSystem) Phase.COMPONENT_INSTALLING else Phase.COMPONENT_REQUIRED,
-                        pendingIntent = prepared.intent)
+                    componentHandoff.begin()
+                    val componentMeter = LinuxSetupProgressMeter()
+                    val prepared = LocalRuntimeDistribution.prepareComponent(context) { bytes, total ->
+                        mutable.value = State(Phase.COMPONENT_INSTALLING, bytes, total,
+                            progress = componentMeter.sample(LinuxSetupStage.COMPONENT_FILE, bytes, total,
+                                android.os.SystemClock.elapsedRealtime()))
+                    }
+                    componentHandoff.bind(prepared.sessionID)
+                    mutable.value = mutable.value.copy(phase = if (prepared.awaitingSystem) Phase.COMPONENT_INSTALLING else Phase.COMPONENT_REQUIRED,
+                        pendingIntent = prepared.intent, componentSessionID = prepared.sessionID, progress = null)
                     return@withLock
                 }
                 if (!notificationsEnabled()) { openNotificationSettings(); return@withLock }
@@ -152,10 +173,15 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
                     }
                     val receipt = result(envelope)
                     check(receipt.getString("requestID") == id)
+                    val meter = LinuxSetupProgressMeter()
                     val installed = completeReceipt(client, id) {
                         val progress = result(client.exchange("install.status"))
-                        mutable.value = State(if (stopInstall.get()) Phase.STOPPING else Phase.INSTALLING,
-                            progress.optLong("archiveBytes", 0), progress.optLong("archiveTotal", -1))
+                        if (progress.optString("requestID") == id) mutable.value = State(if (stopInstall.get()) Phase.STOPPING else Phase.INSTALLING,
+                            progress.optLong("archiveBytes", 0), progress.optLong("archiveTotal", -1),
+                            progress = meter.sample(LinuxSetupStage.fromWire(progress.optString("phase")),
+                                progress.optLong("archiveBytes", 0), progress.optLong("archiveTotal", -1),
+                                android.os.SystemClock.elapsedRealtime(), progress.optLong("entries", 0),
+                                progress.optLong("extractedBytes", 0)))
                     }
                     check(installed.optString("phase") == "installed")
                 }
@@ -215,7 +241,10 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
     fun consumeIntent(): Intent? {
         val value = mutable.value
         val intent = value.pendingIntent ?: return null
-        mutable.value = value.copy(pendingIntent = null)
+        // Keep the exact attested system confirmation reachable while its session is pending.
+        // Returning from Android installer is not proof of success/cancellation.
+        mutable.value = if (value.componentSessionID != null)
+            value.copy(phase = Phase.COMPONENT_INSTALLING) else value.copy(pendingIntent = null)
         return intent
     }
 
@@ -230,6 +259,20 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
                     android.content.ComponentName(pair.runtime, RuntimePackages.ACCESS)))
             } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (error: Exception) { fail(LinuxSetupDiagnostic.fromThrowable(error, "local_network")) }
+        }
+    }
+
+    fun cancelComponentInstall() = scope.launch(Dispatchers.IO) {
+        actions.withLock {
+            val id = mutable.value.componentSessionID ?: return@withLock
+            try {
+                LocalRuntimeDistribution.cancelComponent(context, id)
+                componentHandoff.completed()
+                mutable.value = State(Phase.COMPONENT_REQUIRED)
+                refresh()
+            } catch (failure: Exception) {
+                fail(LinuxSetupDiagnostic.fromThrowable(failure, "component"))
+            }
         }
     }
 
@@ -286,7 +329,7 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
                 "completed" -> return value.getJSONObject("result")
                 "failed", "unknown" -> {
                     val progress = result(client.exchange("install.status"))
-                    throw LinuxSetupException(if (progress.optString("phase") == "failed") wireFailure(progress)
+                    throw LinuxSetupException(if (progress.optString("phase") == "failed" && progress.optString("requestID") == id) wireFailure(progress)
                         else LinuxSetupDiagnostic.fromFields("OPERATION_FAILED", "prepare"))
                 }
             }
@@ -295,14 +338,19 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
         }
     }
 
-    private fun wireFailure(value: JSONObject) = LinuxSetupDiagnostic.fromFields(
-        value.optString("failureCode", "OPERATION_FAILED"), value.optString("failureStage", "prepare"),
-        value.optString("failureType"))
+    private fun wireFailure(value: JSONObject): LinuxSetupDiagnostic {
+        mutable.value = mutable.value.copy(bytes = value.optLong("archiveBytes", mutable.value.bytes),
+            total = value.optLong("archiveTotal", mutable.value.total))
+        return LinuxSetupDiagnostic.fromFields(value.optString("failureCode", "OPERATION_FAILED"),
+            value.optString("failureStage", "prepare"), value.optString("failureType"))
+    }
 
     private fun fail(failure: LinuxSetupDiagnostic, phase: Phase = Phase.FAILED) {
         diagnostics.edit().putString("code", failure.code).putString("stage", failure.stage)
-            .putString("type", failure.exceptionType).apply()
-        mutable.value = mutable.value.copy(phase = phase, pendingIntent = null, failure = failure)
+            .putString("type", failure.exceptionType).putLong("bytes", mutable.value.bytes)
+            .putLong("total", mutable.value.total).apply()
+        mutable.value = mutable.value.copy(phase = phase, pendingIntent = null, failure = failure,
+            progress = mutable.value.progress?.copy(bytesPerSecond = null))
     }
     private fun loadFailure(): LinuxSetupDiagnostic? = diagnostics.getString("code", null)?.let {
         LinuxSetupDiagnostic.fromFields(it, diagnostics.getString("stage", "unknown").orEmpty(),
@@ -320,6 +368,6 @@ class LocalRuntimeSetupHost(context: Context, private val scope: CoroutineScope)
         mutable.value.failure?.let {
             appendLine("Stage: ${it.stage}"); appendLine("Code: ${it.code}"); appendLine("Type: ${it.exceptionType}")
         }
-        appendLine("Downloaded bytes: ${mutable.value.bytes}/${mutable.value.total}")
+        appendLine("Processed bytes: ${mutable.value.bytes}/${mutable.value.total}")
     }
 }

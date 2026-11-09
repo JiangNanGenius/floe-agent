@@ -71,6 +71,9 @@ class RootfsArchiveFetcher(
         var received = 0L
         var nextDiskCheck = DISK_CHECK_STRIDE
         var nextProgress = 0L
+        var lastProgressNanos = 0L
+        val catalogTotal = entry.knownArchiveBytes.takeIf { it > 0 } ?: -1L
+        progress?.onProgress(RootfsInstallProgress(InstallPhase.DOWNLOAD, 0, catalogTotal, 0, 0))
         try {
             ops.createNewFile(part).use { sink ->
                 val fetched = transport.open(entry.httpsUrl)
@@ -107,12 +110,14 @@ class RootfsArchiveFetcher(
                                 )
                             }
                         }
-                        if (received >= nextProgress) {
-                            nextProgress += PROGRESS_STRIDE
+                        val now = System.nanoTime()
+                        if (received >= nextProgress || now - lastProgressNanos >= 250_000_000L) {
+                            nextProgress = received + PROGRESS_STRIDE
+                            lastProgressNanos = now
                             progress?.onProgress(
                                 RootfsInstallProgress(
                                     InstallPhase.DOWNLOAD, received,
-                                    fetched.contentLength, 0L, 0L,
+                                    fetched.contentLength.takeIf { it > 0 } ?: catalogTotal, 0L, 0L,
                                 ),
                             )
                         }

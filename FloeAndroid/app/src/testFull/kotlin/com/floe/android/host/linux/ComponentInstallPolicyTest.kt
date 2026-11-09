@@ -14,6 +14,13 @@ import org.junit.Test
  * a fallback or unsigned acceptance.
  */
 class ComponentInstallPolicyTest {
+    @Test fun callbacksFromOtherSessionsOrAppBuildsCannotReplaceCurrentConfirmation() {
+        assertTrue(ComponentInstallPolicy.acceptsCallback(19, 97, 19, 97))
+        assertFalse(ComponentInstallPolicy.acceptsCallback(19, 97, 18, 97))
+        assertFalse(ComponentInstallPolicy.acceptsCallback(-1, 97, 19, 97))
+        assertFalse(ComponentInstallPolicy.acceptsCallback(19, 96, 19, 97))
+        assertFalse(ComponentInstallPolicy.acceptsCallback(19, 0, 19, 0))
+    }
 
     private fun identity(
         packageName: String = "com.floe.agent.runtime.full",

@@ -25,4 +25,18 @@
     <string name="linux_failure_component_version">The runtime installer does not match this Floe version. Update using a full installer, then try again.</string>
     <string name="linux_failure_component_copy">The runtime installer could not be copied. Check free space, then try again.</string>
     <string name="linux_failure_component_install">Android could not complete the runtime install. Check the system prompt, then try again or send the diagnostic details.</string>
+    <string name="linux_progress_percent">%1$d%%</string>
+    <string name="linux_progress_active">Preparing</string>
+    <string name="linux_component_waiting_system">Waiting for Android to complete installation. Open the installer to check for confirmation or scanning.</string>
+    <string name="linux_component_view_installer">View installation</string>
+    <string name="linux_progress_component_file">Preparing the runtime installer</string>
+    <string name="linux_progress_preflight">Checking installation requirements</string>
+    <string name="linux_progress_download">Downloading the Linux environment</string>
+    <string name="linux_progress_verify">Verifying the download</string>
+    <string name="linux_progress_extract">Extracting files</string>
+    <string name="linux_progress_publish">Completing installation</string>
+    <string name="linux_progress_configure">Configuring the environment</string>
+    <string name="linux_progress_bytes">%1$s / %2$s</string>
+    <string name="linux_progress_rate">%1$s/s</string>
+    <string name="linux_progress_extracted">%1$d items · %2$s</string>
 </resources>
