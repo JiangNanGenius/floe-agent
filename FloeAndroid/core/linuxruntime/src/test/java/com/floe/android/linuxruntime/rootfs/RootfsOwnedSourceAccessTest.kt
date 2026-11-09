@@ -282,4 +282,30 @@ class RootfsOwnedSourceAccessTest {
         assertEquals(0, mode(parent)); assertFalse(Files.exists(child.resolve("restricted")))
         assertFalse(Files.exists(child.resolve(".floe-linux-rootfs-v1")))
     }
+
+    @Test fun ownedLayerMergeReplacesLowerFilesLinksAndDirectories() = fixture { home, base, file, uid ->
+        val outside = Files.writeString(home.resolve("outside"), "untouched")
+        Files.createSymbolicLink(base.resolve("link-to-file"), outside)
+        Files.createSymbolicLink(base.resolve("link-to-dir"), outside)
+        Files.createDirectory(base.resolve("dir-to-file"))
+        Files.writeString(base.resolve("dir-to-file/lower"), "lower")
+        Files.writeString(base.resolve(".floe-read-mode-dir-to-file.journal"), "ordinary guest data")
+        Files.writeString(base.resolve("file-to-dir"), "lower")
+        val root = Files.createDirectory(home.resolve("task"))
+        Files.writeString(root.resolve("restricted"), "upper override")
+        Files.writeString(root.resolve("link-to-file"), "upper file")
+        Files.writeString(root.resolve("dir-to-file"), "upper replacement")
+        Files.createDirectory(root.resolve("link-to-dir")); Files.writeString(root.resolve("link-to-dir/upper"), "upper directory")
+        Files.createDirectory(root.resolve("file-to-dir")); Files.writeString(root.resolve("file-to-dir/upper"), "upper directory")
+        LinuxRootfsMaterializer(ownerUid = uid).prepare(LinuxRootfsMaterializer.Plan("task", "base", root.toFile(),
+            listOf(root.toFile(), base.toFile()))) { false }
+        assertEquals("upper override", Files.readString(root.resolve("restricted")))
+        assertEquals("upper file", Files.readString(root.resolve("link-to-file")))
+        assertEquals("upper replacement", Files.readString(root.resolve("dir-to-file")))
+        assertEquals("upper directory", Files.readString(root.resolve("link-to-dir/upper")))
+        assertEquals("upper directory", Files.readString(root.resolve("file-to-dir/upper")))
+        assertEquals("untouched", Files.readString(outside))
+        assertEquals("ordinary guest data", Files.readString(root.resolve(".floe-read-mode-dir-to-file.journal")))
+        assertTrue(Files.isSymbolicLink(base.resolve("link-to-file"))); assertEquals(0, mode(file))
+    }
 }

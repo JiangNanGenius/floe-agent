@@ -533,6 +533,10 @@ class LinuxRootfsMaterializer(
     }
 
     private fun removeTree(path: Path) {
+        if (!Files.isDirectory(path, NOFOLLOW_LINKS)) {
+            Files.delete(path) // unlink a file/guest link; never traverse its target
+            return
+        }
         val visitor = object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 // These are transaction-owned staging/backup paths. Make their

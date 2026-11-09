@@ -226,7 +226,9 @@ internal class RootfsOwnedSourceAccess(
      * walker handles already-owned disposable trees without restoring nodes
      * that deletion has just removed. Never use deleting for a source tree. */
     fun walk(visitor: FileVisitor<Path>, deleting: Boolean = false) {
-        recover()
+        // A disposable subtree's parent may itself be guest data. Its sibling
+        // files must never be interpreted as service recovery authority.
+        if (!deleting) recover()
         checkRoot(); requireSafe(!walking); walking = true
         var terminated = false
         val nestedRoots = mutableSetOf<Path>()
