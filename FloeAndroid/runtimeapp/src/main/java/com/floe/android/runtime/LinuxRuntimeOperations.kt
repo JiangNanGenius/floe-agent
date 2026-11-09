@@ -114,7 +114,8 @@ internal class LinuxRuntimeOperations(
         val barrier: ((java.nio.file.Path) -> Unit)? = if (kernel != null && reportsSyncfsWritebackErrors(kernel)) {
             { path -> PosixBridge.syncfsDirectory(path.toString()) }
         } else null
-        LinuxEnvironmentTransaction(LinuxRootfsMaterializer(durabilityBarrier = barrier))
+        LinuxEnvironmentTransaction(LinuxRootfsMaterializer(durabilityBarrier = barrier,
+            ownerUid = android.os.Process.myUid()))
     }
     // Designed never-started cleanup retries only. The original held lease
     // remains the positive owner until rollback AND abandon are acknowledged.
@@ -623,6 +624,7 @@ internal class LinuxRuntimeOperations(
             } else null
             val materialized = LinuxRootfsMaterializer(
                 durabilityBarrier = barrier,
+                ownerUid = android.os.Process.myUid(),
                 progress = { value ->
                     RuntimeExecutionTrace.materializeProgress(
                         value.phase.name, value.entries, value.bytes, value.elapsedMillis)
@@ -974,6 +976,7 @@ internal class LinuxRuntimeOperations(
             } else null
             val materialized = LinuxRootfsMaterializer(
                 durabilityBarrier = barrier,
+                ownerUid = android.os.Process.myUid(),
                 progress = { value ->
                     RuntimeExecutionTrace.materializeProgress(
                         value.phase.name, value.entries, value.bytes, value.elapsedMillis)

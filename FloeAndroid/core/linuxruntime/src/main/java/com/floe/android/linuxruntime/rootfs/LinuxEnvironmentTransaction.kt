@@ -269,6 +269,7 @@ class LinuxEnvironmentTransaction(
         val content: String, val inode: String?)
     private fun image(root: Path, cancelled: () -> Boolean = { false }): Image {
         trusted(root)
+        copier.recoverSourcePermissions(root)
         val nodes = ArrayList<Node>()
         val fileHashes = HashMap<String, String>()
         var bytes = 0L
@@ -291,7 +292,7 @@ class LinuxEnvironmentTransaction(
                             require(attrs.size() <= maxBytes - bytes)
                             val hash = MessageDigest.getInstance("SHA-256")
                             var size = 0L
-                            FileChannel.open(path, READ, NOFOLLOW_LINKS).use { input ->
+                            copier.openSourceInput(root, path).use { input ->
                                 val buffer = ByteBuffer.allocate(64 * 1024)
                                 while (true) {
                                     if (cancelled()) throw InterruptedException("Environment snapshot cancelled")

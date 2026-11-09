@@ -12,6 +12,10 @@ Model execution prefers `exec.shell` in the selected task Linux environment. The
 
 Linux layer preparation now skips non-copyable Unix socket/FIFO endpoints from inherited live layers while preserving source content and refusing device nodes. Bounded preparation-stage codes and available numeric errno distinguish failures without reflecting paths or native text. Reviewed stage codes reach the existing model/terminal error-code surface.
 
+修复继承环境中运行组件自有的 `000` 权限普通文件阻断复制：受控打开后立即恢复原权限，中断记录在下一次准备、包括已有文件层复用前恢复。快照先写入时间戳，再应用最终文件权限。文件内容、原权限和既有任务授权保留。
+
+Owned mode-000 regular files no longer block inherited-layer copying. A journaled owner-read window closes before the input channel is returned; interrupted permission changes recover before preparation or marked-layer reuse. Snapshots apply timestamps before final restrictive modes. File bytes, original modes and existing task authorization remain intact.
+
 ## Known issues / 已知问题
 
 - 这是中间版本，N01–N08 尚未结束；自动解锁／条件重新锁屏、部分后台跨 App 接续和全局 UI 精修继续推进。
@@ -24,4 +28,6 @@ Linux layer preparation now skips non-copyable Unix socket/FIFO endpoints from i
 - The reported Sony Android9 component failure, earlier VNC disconnect, full-device restoration and hardware/provider combinations remain open.
 - Some signed remote guides still contain iOS-specific content. Signature/platform checks remain enforced; compatible user-configured services remain available.
 
-准备记录：3项注册／读取／退役／审批合同检查及61项文件层／事务／启动诊断相关检查通过，无跳过，Full调试和Play生产Kotlin编译通过；原生31实际对象／链接证据按精确输入复用。候选03三星已证明读取指南成功，但首次文件层准备失败，原始回执保留；下一候选的实际设备成果及公开交付分别记录，本文不宣称已完成。
+准备记录：3项技能合同检查及48项当前文件层／事务／恢复／启动诊断检查通过，无跳过；另20项未改的启动泵证据复用，合计68项相关行为。Full调试和Play生产Kotlin编译通过；原生31实际对象／链接证据按精确输入复用。候选03／04模型读取指南成功但没有生成文件；候选06三星独立终端取证确认自有000源文件打开被拒，原始失败保留。修复后的实际设备成果及公开交付另记，本文不宣称已完成。
+
+Preparation: three skill contracts and 48 current filesystem, transaction, recovery and diagnostic cases passed without skips; 20 unchanged pump cases are reused. Full-debug and Play-release Kotlin checks passed, with exact-input native31 object/link evidence reused. Earlier Samsung candidates read the guide but produced no file; candidate06 independently identified an owned mode-000 source denial. The original failures remain recorded. Post-fix device results and public delivery are separate.

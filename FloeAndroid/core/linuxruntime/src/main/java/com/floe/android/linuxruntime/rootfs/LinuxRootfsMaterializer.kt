@@ -42,6 +42,8 @@ class LinuxRootfsMaterializer(
     private val durabilityBarrier: ((Path) -> Unit)? = null,
     /** Bounded counts/durations only (no paths/IDs); diagnostics for the cold run. */
     private val progress: ((Progress) -> Unit)? = null,
+    /** Set only by the trusted runtime owner, never by a model/request. */
+    private val ownerUid: Int? = null,
 ) {
     enum class Phase { COPY, BARRIER, PUBLISHED }
     data class Progress(val phase: Phase, val entries: Long, val bytes: Long, val elapsedMillis: Long)
@@ -115,6 +117,7 @@ class LinuxRootfsMaterializer(
         val layers = plan.orderedLayers.map(::trustedRoot)
         require(layers.size in 2..16 && layers.first() == root && layers.distinct().size == layers.size)
         require(layers.none { it != root && (it.startsWith(root) || root.startsWith(it)) })
+        for (layer in layers) recoverSourcePermissions(layer)
         val parent = root.parent
         readMarker(root)?.let {
             // A marker naming a DIFFERENT environment/base is a refused
@@ -314,7 +317,7 @@ class LinuxRootfsMaterializer(
                         }
                         operation = "open_input"
                         inputForDiagnostic = file
-                        FileChannel.open(file, READ, NOFOLLOW_LINKS).use { input ->
+                        openSourceInput(source, file).use { input ->
                             operation = "open_output"
                             FileChannel.open(out, CREATE_NEW, WRITE).use { output ->
                                 val buffer = ByteBuffer.allocate(64 * 1024)
@@ -338,8 +341,6 @@ class LinuxRootfsMaterializer(
                                 if (durabilityBarrier == null) output.force(true)
                             }
                         }
-                        operation = "mode"
-                        Files.setAttribute(out, "unix:mode", mode(file), NOFOLLOW_LINKS)
                         if (key != null) budget.hardLinks[key] = out
                     }
                     else -> if (isGuestRuntimeEndpoint(file, attrs)) {
@@ -359,6 +360,12 @@ class LinuxRootfsMaterializer(
                 if (budget.preserveMetadata && !attrs.isSymbolicLink) {
                     operation = "timestamp"
                     Files.setAttribute(out, "basic:lastModifiedTime", attrs.lastModifiedTime(), NOFOLLOW_LINKS)
+                }
+                // NOFOLLOW timestamp setters may need a readable descriptor.
+                // Apply restrictive final modes only after all metadata writes.
+                if (attrs.isRegularFile) {
+                    operation = "mode"
+                    Files.setAttribute(out, "unix:mode", mode(file), NOFOLLOW_LINKS)
                 }
                 // Bounded progress: every 1024 entries, never per file/log byte.
                 if (budget.entries % 1024L == 0L) onCopyProgress()
@@ -402,6 +409,7 @@ class LinuxRootfsMaterializer(
     internal fun copyTransactionSnapshot(sourceFile: File, destination: Path,
         cancelled: () -> Boolean): Long {
         val source = trustedRoot(sourceFile)
+        recoverSourcePermissions(source)
         require(destination.parent == source.parent && destination != source)
         require(Files.isDirectory(destination, NOFOLLOW_LINKS) && !Files.isSymbolicLink(destination))
         Files.newDirectoryStream(destination).use { require(!it.iterator().hasNext()) }
@@ -483,6 +491,17 @@ class LinuxRootfsMaterializer(
     private fun forceDirectory(path: Path) { FileChannel.open(path, READ).use { it.force(true) } }
 
     private fun mode(path: Path): Int = (Files.getAttribute(path, "unix:mode", NOFOLLOW_LINKS) as Int) and 0xFFF
+
+    internal fun recoverSourcePermissions(root: Path) {
+        try { ownerUid?.let { RootfsOwnedSourceAccess(root, it).recover() } }
+        catch (failure: java.io.IOException) {
+            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, failure, "mode")
+        }
+    }
+
+    internal fun openSourceInput(root: Path, file: Path): FileChannel =
+        ownerUid?.let { RootfsOwnedSourceAccess(root, it).open(file) }
+            ?: FileChannel.open(file, READ, NOFOLLOW_LINKS)
 
     private fun realDirectoryWithin(root: Path, directory: Path): Boolean {
         check(directory.startsWith(root))

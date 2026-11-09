@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-// Regression sources for the Alpha68 Samsung materialization-start failure
-// (job-d169dd02bbb941bd): a task-only environment inherits a LIVE
-// project/shared layer whose earlier GUI guest sessions left unix-socket
-// endpoints behind; the layer copier used to refuse the whole start with a
-// generic swallowed failure. These tests pin: sockets/FIFOs are skipped and
+// Runtime-entry coverage added during Alpha68 materialization investigation
+// (job-d169dd02bbb941bd), not proof of the actual Samsung root cause.
+// A live layer can retain guest socket endpoints. These tests pin:
+// sockets/FIFOs are skipped and
 // counted (never fatal), devices still refuse with a typed code, every raw
 // copy-phase IOException carries the closed rootfs_copy_io code, and
 // cancellation stays an InterruptedException subtype.
