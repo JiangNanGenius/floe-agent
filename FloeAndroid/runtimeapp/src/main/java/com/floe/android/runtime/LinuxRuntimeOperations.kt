@@ -634,6 +634,7 @@ internal class LinuxRuntimeOperations(
             latency.mark(LinuxRuntimePhaseTiming.Phase.MATERIALIZE)
             check(!isCancelled())
             RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZED)
+            android.util.Log.i("FloeLinuxStart", "ROOTFS_ENDPOINTS_SKIPPED count=${materialized.skippedRuntimeEntries}")
             if (transactional) {
                 environmentSnapshot = environmentTransactions.prepare(lease.environmentID, writable) { isCancelled() }
                 check(!isCancelled())

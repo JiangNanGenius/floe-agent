@@ -53,7 +53,14 @@ class LinuxRootfsMaterializer(
         /** Original authority order, writable first and verified base last. */
         val orderedLayers: List<File>,
     )
-    data class Result(val rootfs: File, val copiedBytes: Long, val reused: Boolean)
+    data class Result(
+        val rootfs: File,
+        val copiedBytes: Long,
+        val reused: Boolean,
+        /** Guest runtime endpoints (sockets/FIFOs) skipped while copying an
+         *  inherited live layer. Zero for reuse and for clean base layers. */
+        val skippedRuntimeEntries: Int = 0,
+    )
 
     private val marker = ".floe-linux-rootfs-v1"
 
@@ -110,8 +117,11 @@ class LinuxRootfsMaterializer(
         require(layers.none { it != root && (it.startsWith(root) || root.startsWith(it)) })
         val parent = root.parent
         readMarker(root)?.let {
-            check(it.getProperty("environment") == plan.environmentId && it.getProperty("base") == plan.baseRevision) {
-                "Existing rootfs needs an explicit rebuild"
+            // A marker naming a DIFFERENT environment/base is a refused
+            // rebuild, never a silent reset of the user's layer.
+            if (it.getProperty("environment") != plan.environmentId ||
+                it.getProperty("base") != plan.baseRevision) {
+                throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_MARKER_MISMATCH)
             }
             return Result(root.toFile(), 0, true)
         }
@@ -145,42 +155,51 @@ class LinuxRootfsMaterializer(
                 report(Phase.COPY)
             }
             report(Phase.COPY)
-            if (cancelled()) throw InterruptedException("Rootfs preparation cancelled")
+            if (cancelled()) throw RootfsPrepareCancelledException()
             // Make every copied byte and attribute durable BEFORE the marker
             // can claim a complete stage. A failure/cancel here leaves the
             // unmarked stage unpublished and the original layer intact.
             report(Phase.BARRIER)
-            durabilityBarrier?.invoke(stage)
-            if (cancelled()) throw InterruptedException("Rootfs preparation cancelled")
-            writeProperties(stage.resolve(marker), metadata)
-            // Keep directories writable while merging; apply their final
-            // inherited modes only after the last layer and marker are ready.
-            for ((directory, mode) in budget.directoryModes.entries.sortedByDescending { it.key.nameCount }) {
-                // A later layer may have replaced a lower ancestor with a
-                // guest link. NOFOLLOW_LINKS on just the last component would
-                // still traverse that ancestor and chmod an outside directory.
-                if (realDirectoryWithin(stage, directory)) Files.setAttribute(directory, "unix:mode", mode, NOFOLLOW_LINKS)
-            }
-            forceDirectory(stage)
-            // The registry path never changes; the journal owns only these two
-            // generated siblings and lets the next owner finish/roll back.
-            writeProperties(journal, metadata)
-            forceDirectory(parent)
-            atomicMove(root, backup)
-            forceDirectory(parent)
-            try { atomicMove(stage, root); forceDirectory(parent) }
+            try { durabilityBarrier?.invoke(stage) }
             catch (failure: Exception) {
-                if (!Files.exists(root, NOFOLLOW_LINKS)) { atomicMove(backup, root); forceDirectory(parent) }
-                throw failure
+                if (failure is RootfsMaterializeException) throw failure
+                throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_BARRIER_IO, failure)
             }
-            published = true
-            // Confirm the exact committed marker before pruning the old copy.
-            check(readMarker(root)?.getProperty("nonce") == nonce)
-            removeTree(backup)
-            Files.delete(journal)
-            forceDirectory(parent)
+            if (cancelled()) throw RootfsPrepareCancelledException()
+            try {
+                writeProperties(stage.resolve(marker), metadata)
+                // Keep directories writable while merging; apply their final
+                // inherited modes only after the last layer and marker are ready.
+                for ((directory, mode) in budget.directoryModes.entries.sortedByDescending { it.key.nameCount }) {
+                    // A later layer may have replaced a lower ancestor with a
+                    // guest link. NOFOLLOW_LINKS on just the last component would
+                    // still traverse that ancestor and chmod an outside directory.
+                    if (realDirectoryWithin(stage, directory)) Files.setAttribute(directory, "unix:mode", mode, NOFOLLOW_LINKS)
+                }
+                forceDirectory(stage)
+                // The registry path never changes; the journal owns only these two
+                // generated siblings and lets the next owner finish/roll back.
+                writeProperties(journal, metadata)
+                forceDirectory(parent)
+                atomicMove(root, backup)
+                forceDirectory(parent)
+                try { atomicMove(stage, root); forceDirectory(parent) }
+                catch (failure: Exception) {
+                    if (!Files.exists(root, NOFOLLOW_LINKS)) { atomicMove(backup, root); forceDirectory(parent) }
+                    throw failure
+                }
+                published = true
+                // Confirm the exact committed marker before pruning the old copy.
+                check(readMarker(root)?.getProperty("nonce") == nonce)
+                removeTree(backup)
+                Files.delete(journal)
+                forceDirectory(parent)
+            } catch (failure: Exception) {
+                if (failure is RootfsMaterializeException) throw failure
+                throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_PUBLISH_IO, failure)
+            }
             report(Phase.PUBLISHED)
-            return Result(root.toFile(), budget.bytes, false)
+            return Result(root.toFile(), budget.bytes, false, budget.skippedRuntimeEntries)
         } finally {
             // A failed journalled transaction is recovered on the next call.
             // Never delete its only recovery copy or an arbitrary caller path.
@@ -218,15 +237,27 @@ class LinuxRootfsMaterializer(
         val hardLinks = mutableMapOf<Any, Path>()
         var bytes = 0L
         var entries = 0
+        var skippedRuntimeEntries = 0
         val directoryModes = mutableMapOf<Path, Int>()
     }
 
+    /** Guest runtime endpoints (unix sockets, FIFOs) left inside a LIVE layer
+     *  by earlier guest sessions carry no durable data: they are runtime
+     *  rendezvous artifacts, exactly like the device nodes the installer
+     *  already excludes from the base. Copying them is impossible (a socket
+     *  has no byte content to reopen) and refusing them wedges later
+     *  environments that inherit the layer, so they are skipped and counted.
+     *  A device node is NOT skippable: refuse it with a typed
+     *  code so a rooted/restored oddity can never slip in silently. */
     private fun copyLayer(source: Path, stage: Path, budget: CopyBudget,
                           cancelled: () -> Boolean, onCopyProgress: () -> Unit) {
-        Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
+        try {
+            Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
             private fun destination(path: Path): Path {
-                if (cancelled()) throw InterruptedException("Rootfs preparation cancelled")
-                check(++budget.entries <= maxEntries) { "Rootfs entry budget exceeded" }
+                if (cancelled()) throw RootfsPrepareCancelledException()
+                if (++budget.entries > maxEntries) {
+                    throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_ENTRY_BUDGET)
+                }
                 val relative = source.relativize(path)
                 val output = stage.resolve(relative).normalize()
                 check(output.startsWith(stage))
@@ -235,8 +266,8 @@ class LinuxRootfsMaterializer(
                 var cursor = stage
                 for (index in 0 until (relative.nameCount - 1).coerceAtLeast(0)) {
                     cursor = cursor.resolve(relative.getName(index))
-                    check(Files.isDirectory(cursor, NOFOLLOW_LINKS) && !Files.isSymbolicLink(cursor)) {
-                        "Layer attempts to write through a guest symlink"
+                    if (!Files.isDirectory(cursor, NOFOLLOW_LINKS) || Files.isSymbolicLink(cursor)) {
+                        throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_SYMLINK)
                     }
                 }
                 return output
@@ -266,16 +297,20 @@ class LinuxRootfsMaterializer(
                             Files.createLink(out, earlier)
                             return FileVisitResult.CONTINUE
                         }
-                        check(attrs.size() <= maxBytes - budget.bytes) { "Rootfs byte budget exceeded" }
+                        if (attrs.size() > maxBytes - budget.bytes) {
+                            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET)
+                        }
                         FileChannel.open(file, READ, NOFOLLOW_LINKS).use { input ->
                             FileChannel.open(out, CREATE_NEW, WRITE).use { output ->
                                 val buffer = ByteBuffer.allocate(64 * 1024)
                                 while (true) {
-                                    if (cancelled()) throw InterruptedException("Rootfs preparation cancelled")
+                                    if (cancelled()) throw RootfsPrepareCancelledException()
                                     buffer.clear()
                                     val size = input.read(buffer)
                                     if (size < 0) break
-                                    check(size.toLong() <= maxBytes - budget.bytes) { "Rootfs byte budget exceeded" }
+                                    if (size.toLong() > maxBytes - budget.bytes) {
+                                        throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET)
+                                    }
                                     budget.bytes += size
                                     buffer.flip()
                                     while (buffer.hasRemaining()) output.write(buffer)
@@ -288,7 +323,16 @@ class LinuxRootfsMaterializer(
                         Files.setAttribute(out, "unix:mode", mode(file), NOFOLLOW_LINKS)
                         if (key != null) budget.hardLinks[key] = out
                     }
-                    else -> error("Unsupported filesystem entry in environment layer")
+                    else -> if (isGuestRuntimeEndpoint(file, attrs)) {
+                        // Leftover guest runtime endpoint (socket/FIFO) in a
+                        // live inherited layer: no durable bytes, never
+                        // materializable state; skip it like the installer
+                        // excludes device nodes from the base.
+                        budget.skippedRuntimeEntries += 1
+                        return FileVisitResult.CONTINUE
+                    } else {
+                        throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_UNSUPPORTED)
+                    }
                 }
                 // Preserve regular-file timestamps. A symlink is always a
                 // literal target, never a followed metadata write; portable
@@ -310,6 +354,16 @@ class LinuxRootfsMaterializer(
                 return FileVisitResult.CONTINUE
             }
         })
+        } catch (cancel: InterruptedException) {
+            throw cancel
+        } catch (typed: RootfsMaterializeException) {
+            throw typed
+        } catch (io: java.io.IOException) {
+            // One closed code for every raw copy-phase filesystem failure
+            // (open/read/write/fsync/readdir); the original IOException stays
+            // on the cause chain for debugger inspection only.
+            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io)
+        }
     }
 
     /** Service-owned package snapshots reuse the established bounded copier.

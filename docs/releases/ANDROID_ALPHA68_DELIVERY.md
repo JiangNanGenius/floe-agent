@@ -8,6 +8,10 @@ Ordinary tasks now register the existing skill list/search/read/create/manage to
 
 Model execution prefers `exec.shell` in the selected task Linux environment. The graphical desktop is primarily for manual user work; lightweight text, Markdown and code editing remain in Floe.
 
+补齐 Linux 文件层准备：继承已有环境时，Unix socket／FIFO 运行端点不再导致整层复制被拒绝，原层和用户文件保留；设备节点仍拒绝。文件准备、校验及发布失败带有受限阶段码和可用的 errno，模型／终端能通过现有错误入口读取阶段码，敏感路径和原生错误文本不进入回执。
+
+Linux layer preparation now skips non-copyable Unix socket/FIFO endpoints from inherited live layers while preserving source content and refusing device nodes. Bounded preparation-stage codes and available numeric errno distinguish failures without reflecting paths or native text. Reviewed stage codes reach the existing model/terminal error-code surface.
+
 ## Known issues / 已知问题
 
 - 这是中间版本，N01–N08 尚未结束；自动解锁／条件重新锁屏、部分后台跨 App 接续和全局 UI 精修继续推进。
@@ -20,4 +24,4 @@ Model execution prefers `exec.shell` in the selected task Linux environment. The
 - The reported Sony Android9 component failure, earlier VNC disconnect, full-device restoration and hardware/provider combinations remain open.
 - Some signed remote guides still contain iOS-specific content. Signature/platform checks remain enforced; compatible user-configured services remain available.
 
-准备记录：3项注册／读取／退役／审批合同检查通过，使用最终元数据说明增量编译后仍为3项，不重复累计。实际ARM64、APK、三星及公开交付分别记录，本文不宣称它们已完成。Alpha67 原失败任务及不可变产物保留。
+准备记录：3项注册／读取／退役／审批合同检查及61项文件层／事务／启动诊断相关检查通过，无跳过，Full调试和Play生产Kotlin编译通过；原生31实际对象／链接证据按精确输入复用。候选03三星已证明读取指南成功，但首次文件层准备失败，原始回执保留；下一候选的实际设备成果及公开交付分别记录，本文不宣称已完成。

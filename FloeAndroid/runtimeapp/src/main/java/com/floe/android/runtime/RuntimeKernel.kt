@@ -294,7 +294,12 @@ class RuntimeKernel(context: Context) {
                     val failed = JSONObject().put("state", "failed").put("code", "operation_failed")
                     if (traceStart) startFailureCode(failure)?.let {
                         failed.put("startFailureCode", it)
-                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it")
+                        // Optional bounded numeric errno (1..4095) from the
+                        // original ErrnoException cause, when one exists: it
+                        // discriminates EIO/EACCES/ENOSPC-class device facts
+                        // without ever exposing a path or native message.
+                        startFailureErrno(failure)?.let { errno -> failed.put("startFailureErrno", errno) }
+                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it errno=${startFailureErrno(failure) ?: 0}")
                     }
                     (failure as? com.floe.android.workspacebridge.WorkspaceBridgeException)
                         ?.let { bridge ->
@@ -433,7 +438,7 @@ class RuntimeKernel(context: Context) {
 
     companion object {
         /** Closed diagnostic vocabulary; never log an exception message,
-         * path, command, identifier or arbitrary provider/native text. */
+         *  path, command, identifier or arbitrary provider/native text. */
         internal fun startFailureCode(failure: Exception): String? {
             if (failure is com.floe.android.workspacebridge.WorkspaceBridgeException) {
                 return failure.code.takeIf { it in setOf(
@@ -445,14 +450,50 @@ class RuntimeKernel(context: Context) {
                     "inputBaselineAdoptionFailed", "inputBaselineAdoptionUncertain",
                 ) } ?: "workspace_transfer_failed"
             }
+            // Rootfs materialization/start preparation refusals carry their
+            // own reviewed closed code; anything outside the fixed set is
+            // dropped so an unexpected token can never reach a receipt.
+            if (failure is com.floe.android.linuxruntime.rootfs.RootfsMaterializeException) {
+                return failure.code.takeIf { it in com.floe.android.linuxruntime.rootfs.RootfsMaterializeException.CODES }
+            }
+            // A cancelled rootfs preparation is an honest lifecycle refusal,
+            // never a materialization defect; keep it distinguishable from
+            // the typed defect codes. (Other InterruptedException origins —
+            // transaction snapshots, workspace imports — keep their legacy
+            // generic mapping.)
+            if (failure is com.floe.android.linuxruntime.rootfs.RootfsPrepareCancelledException) {
+                return "rootfs_cancelled"
+            }
             return when (failure.message) {
                 "workspaceOwnerUnavailable" -> "workspace_owner_unavailable"
                 "inputOwnerUnavailable" -> "workspace_input_owner_unavailable"
                 "newWorkspaceInputsUnavailable" -> "workspace_inputs_unavailable"
                 "workspaceIdentityChanged" -> "workspace_identity_changed"
+                "Workspace snapshot contains unsupported entries" -> "workspace_unsupported_entries"
+                "Linux process was not admitted" -> "process_admission_refused"
+                "Linux process launch failed" -> "process_launch_failed"
                 else -> null
             }
         }
+
+        /**
+         * Best-effort numeric errno from an original `android.system`/
+         * `libcore.io` ErrnoException in the cause chain (matched by class
+         * name so host JVM tests and Android runtime behave identically).
+         * Bounded to 1..4095; null on any lookup failure. Never includes
+         * text: the device fact is the NUMBER only.
+         */
+        internal fun startFailureErrno(failure: Throwable): Int? =
+            generateSequence<Throwable>(failure) { it.cause }
+                .take(8)
+                .firstOrNull {
+                    it.javaClass.name == "android.system.ErrnoException" ||
+                        it.javaClass.name == "libcore.io.ErrnoException"
+                }
+                ?.let { errnoHolder ->
+                    runCatching { errnoHolder.javaClass.getField("errno").getInt(errnoHolder) }.getOrNull()
+                }
+                ?.takeIf { it in 1..4095 }
 
         /** Real single-workload engine contract (single-slot executor plus
          *  the exclusive-start admission above). Ingested as a FACT only

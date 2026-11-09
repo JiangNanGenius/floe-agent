@@ -306,7 +306,20 @@ class LinuxEnvironmentTransaction(
                             hash.digest().joinToString("") { "%02x".format(it) }.also { fileHashes[inode] = it }
                         }
                     }
-                    else -> error("Unsupported entry in environment snapshot")
+                    else -> {
+                        // Guest runtime endpoints (sockets/FIFOs) are ephemeral
+                        // rendezvous artifacts with no durable bytes; they are
+                        // excluded from the transaction image exactly as the
+                        // copier skips them, so a daemon's socket appearing
+                        // or vanishing mid-transaction never masquerades as
+                        // an environment content change. Anything else is a
+                        // typed refusal, never silently hashed.
+                        if (isGuestRuntimeEndpoint(path, attrs)) {
+                            return@entry
+                        }
+                        throw RootfsMaterializeException(
+                            RootfsMaterializeException.CODE_ROOTFS_SNAPSHOT_UNSUPPORTED)
+                    }
                 }
                 nodes += Node(relative, kind, mode(path),
                     if (attrs.isSymbolicLink) 0L else attrs.lastModifiedTime().toMillis(), content, inode)

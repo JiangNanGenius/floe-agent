@@ -29,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /** App-owned transient transport. Original Swift services remain job/run authority. */
 class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
@@ -77,6 +78,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
      *  operations; planned or post-hoc actions are never counted here. */
     internal data class FailedStartEvidence(val failureCode: String, val recovery: JsonObject)
 
+    /** The runtime engine's OWN bounded start-failure token (a closed
+     *  lowercase snake_case `code`, plus an optional bounded numeric errno).
+     *  It rides the SAME kernel failed terminal as the workspace addenda but
+     *  needs no recovery object and no session-key echo: the exact-request
+     *  origin at capture plus the epoch re-check at completion are its whole
+     *  binding. */
+    internal data class RuntimeStartFailure(val code: String, val errno: Int?)
+    private data class StartFailureCapture(
+        val workspace: FailedStartEvidence?, val runtime: RuntimeStartFailure?)
+
     private inner class OwnedSession(val controlID: String, val nativeEpoch: Long, val runID: String,
                                      val toolCallID: String?, val stdio: Boolean = false) {
         /** G07.1 terminal04: bounded host-side phase composition for THIS
@@ -97,12 +108,15 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
          *  ONLY until the original failed-start claim is completed after the
          *  REAL drain/quiescence AND the original grant/CoreIO close inside
          *  [finish]. A captured-but-unbound receipt is never published. */
-        @Volatile private var failedStartEvidence: FailedStartEvidence? = null
+        private val startFailure = AtomicReference<StartFailureCapture?>()
         fun recordStartFailure(value: JSONObject) {
-            if (failedStartEvidence != null) return
-            failedStartEvidence = sanitizeFailedStartReceipt(value.toString(), controlID)
+            val text = value.toString()
+            startFailure.compareAndSet(null, StartFailureCapture(
+                sanitizeFailedStartReceipt(text, controlID),
+                sanitizeStartFailureCode(text, controlID)))
         }
-        fun failedStartEvidenceOrNull(): FailedStartEvidence? = failedStartEvidence
+        fun failedStartEvidenceOrNull(): FailedStartEvidence? = startFailure.get()?.workspace
+        fun runtimeStartFailureOrNull(): RuntimeStartFailure? = startFailure.get()?.runtime
         val connectionLock = Mutex()
         val settlementLock = Mutex()
         private var settledProof: String? = null
@@ -1770,6 +1784,17 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
 
         private val FAILED_START_TOKEN = Regex("^[!-~]{1,48}$")
         private val FAILED_START_SESSION_KEY = Regex("^[0-9a-f]{32}$")
+        // The runtime engine's own token is a CLOSED lowercase snake_case
+        // vocabulary (stage/type families like rootfs_copy_io); anything
+        // else on the receipt is dropped, never partially forwarded.
+        private val RUNTIME_START_FAILURE_CODE = Regex("^[a-z0-9_]{1,32}$")
+        private const val RUNTIME_START_FAILURE_ERRNO_MAX = 4095
+        // IPC vocabulary only: the host intentionally does not link the
+        // separate-UID runtime engine or its filesystem implementation.
+        private val ROOTFS_START_FAILURE_CODES = setOf(
+            "rootfs_copy_io", "rootfs_copy_unsupported_entry", "rootfs_copy_symlink_refused",
+            "rootfs_copy_entry_budget", "rootfs_copy_byte_budget", "rootfs_marker_mismatch",
+            "rootfs_barrier_io", "rootfs_publish_io", "rootfs_snapshot_unsupported")
         private val FAILED_START_RUN =
             Regex("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
         private val FAILED_START_CLOSED_FIELDS = setOf(
@@ -1858,6 +1883,45 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         internal fun boundedToken(text: String): String =
             text.takeIf { it.isNotEmpty() && it.length <= 32 && it.all { c -> c.code in 0x21..0x7e } }
                 ?: "preflight_failed"
+
+        /** The runtime engine's own bounded start-failure token for exactly
+         *  [controlID]: accepted ONLY as a genuine same-request failed terminal
+         *  carrying a closed-vocabulary `startFailureCode`, with an optional
+         *  exact integer `startFailureErrno` in 1..4095. Any violation (wrong
+         *  state, foreign id, bad grammar, fractional/negative/overflow errno,
+         *  string/bool errno) returns null: absence stays absence and the
+         *  legacy settlement keeps its exact legacy bytes. */
+        internal fun sanitizeStartFailureCode(receiptJson: String, controlID: String): RuntimeStartFailure? {
+            val value = runCatching {
+                kotlinx.serialization.json.Json.parseToJsonElement(receiptJson) as? JsonObject
+            }.getOrNull() ?: return null
+            if (value.stringValue("state") != "failed") return null
+            if (value.stringValue("requestID") != controlID) return null
+            val code = value.stringValue("startFailureCode")
+                ?.takeIf { RUNTIME_START_FAILURE_CODE.matches(it) } ?: return null
+            val errno = value["startFailureErrno"]?.let { raw ->
+                (raw as? JsonPrimitive)?.takeIf { !it.isString }
+                    ?.contentOrNull?.toIntOrNull()
+                    ?.takeIf { it in 1..RUNTIME_START_FAILURE_ERRNO_MAX } ?: return null
+            }
+            return RuntimeStartFailure(code, errno)
+        }
+
+        /** Completion-time binding for [RuntimeStartFailure]: the capture was
+         *  already exact-request; at publication the claim must still belong
+         *  to the current native generation and to a really-dispatched grant.
+         *  The token carries no identity fields of its own, so the re-check
+         *  is deliberately NOT weaker than the workspace addenda's. */
+        internal fun bindsRuntimeStartFailure(runtime: RuntimeStartFailure, grantSessionKey: String?,
+                                              epochMatches: Boolean): Boolean =
+            epochMatches && grantSessionKey != null
+
+        // The native transport already renders its bounded `code` field in
+        // tool/terminal errors. Promote only a reviewed rootfs-stage token;
+        // legacy/foreign/arbitrary values retain their generic code.
+        internal fun reportedStartFailureCode(generic: String, runtime: RuntimeStartFailure): String =
+            if (runtime.code in ROOTFS_START_FAILURE_CODES)
+                runtime.code else generic
     }
 
     private suspend fun jobOwnership(claim: Long, query: JSONObject, acceptedEpoch: Long): JSONObject {
@@ -1903,6 +1967,17 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
      *  evidence keeps the legacy value byte-identical — never fake zeros. */
     private fun failedStartProof(owned: OwnedSession, genericCode: String): JSONObject {
         val value = JSONObject().put("code", genericCode)
+        // Reviewed rootfs failures use the existing native code surface;
+        // optional errno remains diagnostic data. Legacy failures keep the
+        // original generic code when the exact bound token is absent.
+        owned.runtimeStartFailureOrNull()?.let { runtime ->
+            if (bindsRuntimeStartFailure(runtime, owned.grantSessionKey,
+                    epoch.get() == owned.nativeEpoch)) {
+                value.put("code", reportedStartFailureCode(genericCode, runtime))
+                value.put("startFailureCode", runtime.code)
+                runtime.errno?.let { value.put("startFailureErrno", it) }
+            }
+        }
         val evidence = owned.failedStartEvidenceOrNull() ?: return value
         if (!bindsFailedStartEvidence(evidence, owned.grantSessionKey, owned.runID,
                                       epoch.get() == owned.nativeEpoch)) return value
