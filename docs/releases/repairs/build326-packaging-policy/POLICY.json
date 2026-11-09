@@ -1,0 +1,184 @@
+{
+  "schema": "floe-exact-embedded-framework-packaging-policy/v1",
+  "reviewedAt": "2026-11-09",
+  "scope": "Exact Build 326 framework privacy packaging data only; no App executable or source change.",
+  "frozenAppSourceCommit": "9bbe87ca91acc4c7ca7c57555be584df07c6866a",
+  "frozenTag": "v1.8.6",
+  "normalizerPath": "FloeAgent/scripts/prepare_app_store_bundle.py",
+  "normalizerSHA256": "9fb443f7c08cc83f44d9907e0ee64bdff7bf0d5e4db4a2052ad533bb02f6d0a0",
+  "appleReference": "https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype",
+  "unknownFrameworks": "fail",
+  "frameworks": [
+    {
+      "framework": "Crypto.framework",
+      "binary": "Crypto",
+      "sha256": "0beedcd52cc47aafb93e44eb4530585e02b640128dbc2b6686d145f1e17b1e9f",
+      "bytes": 2567160,
+      "requiredReasonAPIs": {},
+      "reviewedManifest": null,
+      "controlledManifest": null,
+      "sourcePin": {
+        "upstream": "https://github.com/apple/swift-crypto.git",
+        "revision": "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
+        "version": "3.15.1",
+        "sourceKind": "vendored at frozen App source",
+        "license": "Apache-2.0"
+      },
+      "usageRationale": "No RR symbols or keys in the actual Release executable. Keep the upstream empty/privacy-no-tracking resource already present at App root swift-crypto_Crypto.bundle unchanged."
+    },
+    {
+      "framework": "FloeFieldsNative.framework",
+      "binary": "FloeFieldsNative",
+      "sha256": "6d3f834095c8c1cd16bda6f1dfd7b145577600904e61c03e91e0185cc259edcf",
+      "bytes": 33136,
+      "requiredReasonAPIs": {},
+      "reviewedManifest": null,
+      "controlledManifest": null,
+      "sourcePin": {
+        "sourceCommit": "9bbe87ca91acc4c7ca7c57555be584df07c6866a",
+        "upstream": "MFEM4.8",
+        "manifest": "FloeAgent/Modules/FloeSimulationKit/Vendor/FloeFieldsNative.manifest.json",
+        "licenseEvidence": "Vendor/FieldsNotices/MFEM-4.8-LICENSE"
+      },
+      "usageRationale": "Actual33136-byte embedded shell has no undefined or exported symbols and no RR keys. The static native engine in the App executable remains subject to the normal App privacy scan."
+    },
+    {
+      "framework": "FloeLaTeXKit.framework",
+      "binary": "FloeLaTeXKit",
+      "sha256": "92a27506f0d13efd17d8de6a6ed7f2f6b39b37ed67b96f48cbf8b21d66916ed9",
+      "bytes": 2293968,
+      "requiredReasonAPIs": {},
+      "reviewedManifest": null,
+      "controlledManifest": null,
+      "sourcePin": {
+        "sourceCommit": "9bbe87ca91acc4c7ca7c57555be584df07c6866a",
+        "path": "FloeAgent/Modules/FloeLaTeXKit",
+        "license": "repository MPL-2.0"
+      },
+      "usageRationale": "Actual Release executable has no RR symbols or keys. SourceEditor systemUptime is DEBUG-only; LinuxEngine fstat text is guest Python, not a Darwin host API call."
+    },
+    {
+      "framework": "FloeMeshingNative.framework",
+      "binary": "FloeMeshingNative",
+      "sha256": "928417f16bc50cb250ad4cfea6ac5b16749a9e415b5c7fd4a67493a448c23045",
+      "bytes": 33136,
+      "requiredReasonAPIs": {},
+      "reviewedManifest": null,
+      "controlledManifest": null,
+      "sourcePin": {
+        "sourceCommit": "9bbe87ca91acc4c7ca7c57555be584df07c6866a",
+        "upstream": "Netgen6.2.2507",
+        "manifest": "FloeAgent/Modules/FloeSimulationKit/Vendor/FloeMeshingNative.manifest.json",
+        "licenseEvidence": "Vendor/MeshingNotices/Netgen-LICENSE"
+      },
+      "usageRationale": "Actual33136-byte embedded shell has no undefined or exported symbols and no RR keys. No exemption for the engine in the App executable."
+    },
+    {
+      "framework": "FloeRapierNative.framework",
+      "binary": "FloeRapierNative",
+      "sha256": "29a260cdc97b62c79fc95ff4cb7ec504000c23d7ae414438fd054568855e602d",
+      "bytes": 33136,
+      "requiredReasonAPIs": {},
+      "reviewedManifest": null,
+      "controlledManifest": null,
+      "sourcePin": {
+        "sourceCommit": "9bbe87ca91acc4c7ca7c57555be584df07c6866a",
+        "upstream": "Rapier0.36.1",
+        "manifest": "FloeAgent/Modules/FloeSimulationKit/Vendor/FloeRapierNative.manifest.json",
+        "licenseEvidence": "Vendor/RapierNotices and manifest dependency inventory"
+      },
+      "usageRationale": "Actual33136-byte embedded shell has no undefined or exported symbols and no RR keys. No exemption for the engine in the App executable."
+    },
+    {
+      "framework": "FloeWasmRuntime.framework",
+      "binary": "FloeWasmRuntime",
+      "sha256": "1f78bcc7f5ed914861bf458450de4b8fb44b034d3cdac8b7080f52446343d969",
+      "bytes": 1388624,
+      "requiredReasonAPIs": {
+        "NSPrivacyAccessedAPICategoryFileTimestamp": [
+          "_fstat",
+          "_fstatat"
+        ]
+      },
+      "reviewedManifest": "FloeWasmRuntime",
+      "controlledManifest": {
+        "path": "manifests/FloeWasmRuntime/PrivacyInfo.xcprivacy",
+        "sha256": "a82d1b5d9285a2b75f67ff6756ebc9f6a5565d3d4400cfd4fa8747a0b380ae58",
+        "reasons": {
+          "NSPrivacyAccessedAPICategoryFileTimestamp": [
+            "C617.1",
+            "3B52.1"
+          ]
+        }
+      },
+      "sourcePin": {
+        "sourceCommit": "9bbe87ca91acc4c7ca7c57555be584df07c6866a",
+        "upstream": "https://github.com/swiftwasm/WasmKit/tree/0.3.1",
+        "version": "0.3.1",
+        "upstreamArchiveSHA256": "bdde81dccfedb18cfbaca91ae20c04adbdbfe8cbdc0c13652b9e2201f0870f48",
+        "license": "MIT"
+      },
+      "usageRationale": "WASI FileDescriptor attributes and attributes(at:) wrap fstat/fstatat. Floe explicitly preopens the resolved workspace/current directory and private temporary directory. C617.1 covers app-private metadata;3B52.1 covers user-authorized project files. Manifest bytes reuse the frozen controlled dash declaration; only its destination name is new."
+    },
+    {
+      "framework": "SystemPackage_-32606F4011EB0AC2_PackageProduct.framework",
+      "binary": "SystemPackage_-32606F4011EB0AC2_PackageProduct",
+      "sha256": "8756c2967e65ad94291ce2a44be44ffc3f5f8beafc9d58c7d087ca2c30087cd6",
+      "bytes": 248184,
+      "requiredReasonAPIs": {
+        "NSPrivacyAccessedAPICategoryFileTimestamp": [
+          "_fstat",
+          "_fstatat",
+          "_lstat",
+          "_stat"
+        ]
+      },
+      "reviewedManifest": "SystemPackage",
+      "controlledManifest": {
+        "path": "manifests/SystemPackage/PrivacyInfo.xcprivacy",
+        "sha256": "9a2f930cedb8d58309a581b9bf9bf3673685ec02ae2197d9f1c56828b718dffd",
+        "reasons": {
+          "NSPrivacyAccessedAPICategoryFileTimestamp": [
+            "0A2A.1"
+          ]
+        }
+      },
+      "sourcePin": {
+        "upstream": "https://github.com/apple/swift-system",
+        "revision": "704705c5c51156ede21172a38654d522ce487074",
+        "version": "1.8.0",
+        "license": "Apache-2.0"
+      },
+      "usageRationale": "Public Stat/FileDescriptor metadata initializers are caller-invoked wrappers around stat/lstat/fstat/fstatat. This general operating-system library is not primarily an RR-API wrapper and has no independent telemetry/network purpose.0A2A.1 is a new Floe-controlled SDK-wrapper declaration; upstream did not supply this manifest. Its plist bytes match the minimal reviewed SDK-wrapper declaration."
+    },
+    {
+      "framework": "ZIPFoundation_-14A6248D789D2CE9_PackageProduct.framework",
+      "binary": "ZIPFoundation_-14A6248D789D2CE9_PackageProduct",
+      "sha256": "653baf9571873896a01f842eb1e1b87d5a3ee781187d1413aa670107d30d580e",
+      "bytes": 283664,
+      "requiredReasonAPIs": {
+        "NSPrivacyAccessedAPICategoryFileTimestamp": [
+          "NSFileModificationDate",
+          "_lstat"
+        ]
+      },
+      "reviewedManifest": "ZIPFoundation",
+      "controlledManifest": {
+        "path": "manifests/ZIPFoundation/PrivacyInfo.xcprivacy",
+        "sha256": "9a2f930cedb8d58309a581b9bf9bf3673685ec02ae2197d9f1c56828b718dffd",
+        "reasons": {
+          "NSPrivacyAccessedAPICategoryFileTimestamp": [
+            "0A2A.1"
+          ]
+        }
+      },
+      "sourcePin": {
+        "upstream": "https://github.com/weichsel/ZIPFoundation.git",
+        "revision": "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+        "version": "0.9.20",
+        "license": "MIT"
+      },
+      "usageRationale": "Archive+Writing and FileManager+ZIP use lstat and modification-date metadata during caller archive operations. Promote the exact upstream0A2A.1 manifest already embedded in the SDK resource bundle to framework root using a controlled copy."
+    }
+  ]
+}
