@@ -115,7 +115,7 @@ internal class LinuxRuntimeOperations(
             { path -> PosixBridge.syncfsDirectory(path.toString()) }
         } else null
         LinuxEnvironmentTransaction(LinuxRootfsMaterializer(durabilityBarrier = barrier,
-            ownerUid = android.os.Process.myUid()))
+            ownerUid = android.os.Process.myUid(), sourceMutationsAllowed = { running.isEmpty() }))
     }
     // Designed never-started cleanup retries only. The original held lease
     // remains the positive owner until rollback AND abandon are acknowledged.
@@ -625,6 +625,7 @@ internal class LinuxRuntimeOperations(
             val materialized = LinuxRootfsMaterializer(
                 durabilityBarrier = barrier,
                 ownerUid = android.os.Process.myUid(),
+                sourceMutationsAllowed = { running.isEmpty() },
                 progress = { value ->
                     RuntimeExecutionTrace.materializeProgress(
                         value.phase.name, value.entries, value.bytes, value.elapsedMillis)
@@ -977,6 +978,7 @@ internal class LinuxRuntimeOperations(
             val materialized = LinuxRootfsMaterializer(
                 durabilityBarrier = barrier,
                 ownerUid = android.os.Process.myUid(),
+                sourceMutationsAllowed = { running.isEmpty() },
                 progress = { value ->
                     RuntimeExecutionTrace.materializeProgress(
                         value.phase.name, value.entries, value.bytes, value.elapsedMillis)

@@ -44,6 +44,7 @@ class LinuxRootfsMaterializer(
     private val progress: ((Progress) -> Unit)? = null,
     /** Set only by the trusted runtime owner, never by a model/request. */
     private val ownerUid: Int? = null,
+    private val sourceMutationsAllowed: () -> Boolean = { true },
 ) {
     enum class Phase { COPY, BARRIER, PUBLISHED }
     data class Progress(val phase: Phase, val entries: Long, val bytes: Long, val elapsedMillis: Long)
@@ -231,9 +232,16 @@ class LinuxRootfsMaterializer(
 
     private fun readMarker(root: Path): Properties? {
         val path = root.resolve(marker)
-        if (!Files.exists(path, NOFOLLOW_LINKS)) return null
-        require(Files.isRegularFile(path, NOFOLLOW_LINKS) && Files.size(path) <= 2048)
-        return Properties().apply { Files.newInputStream(path, NOFOLLOW_LINKS).use { load(it) } }
+        try {
+            val attrs = try { Files.readAttributes(path, BasicFileAttributes::class.java, NOFOLLOW_LINKS) }
+            catch (_: java.nio.file.NoSuchFileException) { return null }
+            require(attrs.isRegularFile && attrs.size() <= 2048)
+            return Properties().apply { Files.newInputStream(path, NOFOLLOW_LINKS).use { load(it) } }
+        } catch (failure: java.io.IOException) {
+            // EACCES is not an absent marker: falling back to a lower base
+            // could otherwise resurrect a full ancestor's deleted files.
+            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, failure, "stat")
+        }
     }
 
     private inner class CopyBudget(val preserveMetadata: Boolean = false) {
@@ -242,6 +250,7 @@ class LinuxRootfsMaterializer(
         var entries = 0
         var skippedRuntimeEntries = 0
         val directoryModes = mutableMapOf<Path, Int>()
+        val directoryModified = mutableMapOf<Path, java.nio.file.attribute.FileTime>()
     }
 
     /** Guest runtime endpoints (unix sockets, FIFOs) left inside a LIVE layer
@@ -256,8 +265,9 @@ class LinuxRootfsMaterializer(
                           cancelled: () -> Boolean, onCopyProgress: () -> Unit) {
         var operation = "walk"
         var inputForDiagnostic: Path? = null
+        val access = sourceAccess(source)
         try {
-            Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
+            val visitor = object : SimpleFileVisitor<Path>() {
             private fun destination(path: Path): Path {
                 if (cancelled()) throw RootfsPrepareCancelledException()
                 if (++budget.entries > maxEntries) {
@@ -285,7 +295,8 @@ class LinuxRootfsMaterializer(
                 operation = "mkdir"
                 if (!Files.exists(out, NOFOLLOW_LINKS)) Files.createDirectory(out)
                 operation = "stat"
-                budget.directoryModes[out] = mode(dir)
+                budget.directoryModes[out] = access?.originalMode(dir) ?: mode(dir)
+                if (budget.preserveMetadata) budget.directoryModified[out] = attrs.lastModifiedTime()
                 operation = "walk"
                 return FileVisitResult.CONTINUE
             }
@@ -317,7 +328,7 @@ class LinuxRootfsMaterializer(
                         }
                         operation = "open_input"
                         inputForDiagnostic = file
-                        openSourceInput(source, file).use { input ->
+                        (access?.open(file) ?: FileChannel.open(file, READ, NOFOLLOW_LINKS)).use { input ->
                             operation = "open_output"
                             FileChannel.open(out, CREATE_NEW, WRITE).use { output ->
                                 val buffer = ByteBuffer.allocate(64 * 1024)
@@ -389,7 +400,8 @@ class LinuxRootfsMaterializer(
                 inputForDiagnostic = file
                 throw exc
             }
-        })
+            }
+            if (access != null) access.walk(visitor) else Files.walkFileTree(source, visitor)
         } catch (cancel: InterruptedException) {
             throw cancel
         } catch (typed: RootfsMaterializeException) {
@@ -445,9 +457,9 @@ class LinuxRootfsMaterializer(
             Files.getLastModifiedTime(originalMarker, NOFOLLOW_LINKS), NOFOLLOW_LINKS)
         for ((directory, permissions) in budget.directoryModes.entries.sortedByDescending { it.key.nameCount }) {
             check(realDirectoryWithin(destination, directory))
-            Files.setAttribute(directory, "unix:mode", permissions, NOFOLLOW_LINKS)
             Files.setAttribute(directory, "basic:lastModifiedTime",
-                Files.getLastModifiedTime(source.resolve(destination.relativize(directory)), NOFOLLOW_LINKS), NOFOLLOW_LINKS)
+                requireNotNull(budget.directoryModified[directory]), NOFOLLOW_LINKS)
+            Files.setAttribute(directory, "unix:mode", permissions, NOFOLLOW_LINKS)
         }
         if (cancelled()) throw InterruptedException("Environment snapshot cancelled")
         durabilityBarrier?.invoke(destination)
@@ -500,15 +512,14 @@ class LinuxRootfsMaterializer(
     private fun mode(path: Path): Int = (Files.getAttribute(path, "unix:mode", NOFOLLOW_LINKS) as Int) and 0xFFF
 
     internal fun recoverSourcePermissions(root: Path) {
-        try { ownerUid?.let { RootfsOwnedSourceAccess(root, it).recover() } }
+        try { sourceAccess(root)?.recover() }
         catch (failure: java.io.IOException) {
             throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, failure, "mode")
         }
     }
 
-    internal fun openSourceInput(root: Path, file: Path): FileChannel =
-        ownerUid?.let { RootfsOwnedSourceAccess(root, it).open(file) }
-            ?: FileChannel.open(file, READ, NOFOLLOW_LINKS)
+    internal fun sourceAccess(root: Path): RootfsOwnedSourceAccess? =
+        ownerUid?.let { RootfsOwnedSourceAccess(root, it, sourceMutationsAllowed) }
 
     private fun realDirectoryWithin(root: Path, directory: Path): Boolean {
         check(directory.startsWith(root))
@@ -522,7 +533,7 @@ class LinuxRootfsMaterializer(
     }
 
     private fun removeTree(path: Path) {
-        Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
+        val visitor = object : SimpleFileVisitor<Path>() {
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 // These are transaction-owned staging/backup paths. Make their
                 // directories deletable without following any guest symlink.
@@ -536,6 +547,7 @@ class LinuxRootfsMaterializer(
                 if (exc != null) throw exc
                 Files.delete(dir); return FileVisitResult.CONTINUE
             }
-        })
+        }
+        sourceAccess(path)?.walk(visitor, deleting = true) ?: Files.walkFileTree(path, visitor)
     }
 }

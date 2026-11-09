@@ -80,6 +80,7 @@ class RootfsMaterializeException(
             "rootfs_barrier_io",
             "rootfs_publish_io",
             "rootfs_snapshot_unsupported",
+            "rootfs_source_busy",
         )
 
         internal const val CODE_ROOTFS_COPY_IO = "rootfs_copy_io"
@@ -91,6 +92,7 @@ class RootfsMaterializeException(
         internal const val CODE_ROOTFS_BARRIER_IO = "rootfs_barrier_io"
         internal const val CODE_ROOTFS_PUBLISH_IO = "rootfs_publish_io"
         internal const val CODE_ROOTFS_SNAPSHOT_UNSUPPORTED = "rootfs_snapshot_unsupported"
+        internal const val CODE_ROOTFS_SOURCE_BUSY = "rootfs_source_busy"
     }
 }
 

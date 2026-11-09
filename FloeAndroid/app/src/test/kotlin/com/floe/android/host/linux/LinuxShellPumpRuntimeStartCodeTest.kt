@@ -88,6 +88,8 @@ class LinuxShellPumpRuntimeStartCodeTest {
     @Test fun rootfsStageReachesTheExistingNativeErrorCodeField() {
         val token = LinuxShellPump.sanitizeStartFailureCode(runtimeReceipt(), CONTROL)!!
         assertEquals("rootfs_copy_io", LinuxShellPump.reportedStartFailureCode("runtime_start_failed", token))
+        assertEquals("rootfs_source_busy", LinuxShellPump.reportedStartFailureCode("runtime_start_failed",
+            requireNotNull(LinuxShellPump.sanitizeStartFailureCode(runtimeReceipt(code = "rootfs_source_busy"), CONTROL))))
         assertEquals("runtime_start_failed", LinuxShellPump.reportedStartFailureCode(
             "runtime_start_failed", LinuxShellPump.RuntimeStartFailure("unknown_token", null)))
     }

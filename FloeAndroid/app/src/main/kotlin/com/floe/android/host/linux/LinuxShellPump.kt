@@ -1794,7 +1794,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         private val ROOTFS_START_FAILURE_CODES = setOf(
             "rootfs_copy_io", "rootfs_copy_unsupported_entry", "rootfs_copy_symlink_refused",
             "rootfs_copy_entry_budget", "rootfs_copy_byte_budget", "rootfs_marker_mismatch",
-            "rootfs_barrier_io", "rootfs_publish_io", "rootfs_snapshot_unsupported")
+            "rootfs_barrier_io", "rootfs_publish_io", "rootfs_snapshot_unsupported", "rootfs_source_busy")
         private val FAILED_START_RUN =
             Regex("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
         private val FAILED_START_CLOSED_FIELDS = setOf(

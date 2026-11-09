@@ -270,11 +270,12 @@ class LinuxEnvironmentTransaction(
     private fun image(root: Path, cancelled: () -> Boolean = { false }): Image {
         trusted(root)
         copier.recoverSourcePermissions(root)
+        val access = copier.sourceAccess(root)
         val nodes = ArrayList<Node>()
         val fileHashes = HashMap<String, String>()
         var bytes = 0L
-        fun mode(path: Path) = (Files.getAttribute(path, "unix:mode", NOFOLLOW_LINKS) as Int) and 0xFFF
-        Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+        fun mode(path: Path) = access?.originalMode(path) ?: ((Files.getAttribute(path, "unix:mode", NOFOLLOW_LINKS) as Int) and 0xFFF)
+        val visitor = object : SimpleFileVisitor<Path>() {
             fun entry(path: Path, attrs: BasicFileAttributes, directory: Boolean) {
                 if (cancelled()) throw InterruptedException("Environment snapshot cancelled")
                 require(nodes.size < maxEntries)
@@ -292,7 +293,7 @@ class LinuxEnvironmentTransaction(
                             require(attrs.size() <= maxBytes - bytes)
                             val hash = MessageDigest.getInstance("SHA-256")
                             var size = 0L
-                            copier.openSourceInput(root, path).use { input ->
+                            (access?.open(path) ?: FileChannel.open(path, READ, NOFOLLOW_LINKS)).use { input ->
                                 val buffer = ByteBuffer.allocate(64 * 1024)
                                 while (true) {
                                     if (cancelled()) throw InterruptedException("Environment snapshot cancelled")
@@ -327,7 +328,8 @@ class LinuxEnvironmentTransaction(
             }
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult { entry(dir, attrs, true); return FileVisitResult.CONTINUE }
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult { entry(file, attrs, false); return FileVisitResult.CONTINUE }
-        })
+        }
+        if (access != null) access.walk(visitor) else Files.walkFileTree(root, visitor)
         val hash = MessageDigest.getInstance("SHA-256")
         val linkNames = HashMap<String, String>()
         for (node in nodes.sortedBy { it.path }) {
