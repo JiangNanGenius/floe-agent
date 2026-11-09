@@ -121,7 +121,10 @@ internal object LinuxDesktopCommands {
             while IFS= read -r gui_action; do
               gui_action="${'$'}{gui_action%${'$'}'\r'}"
               case "${'$'}gui_action" in
-                ping:*) printf '\nFLOE_PONG:%s\n' "${'$'}{gui_action#ping:}" ;;
+                ping:*)
+                  if kill -0 "${'$'}gui_vnc" 2>/dev/null && kill -0 "${'$'}gui_wm" 2>/dev/null; then
+                    printf '\nFLOE_PONG:%s\n' "${'$'}{gui_action#ping:}"
+                  else printf '\nFLOE_PING_FAILED:%s\n' "${'$'}{gui_action#ping:}"; fi ;;
                 run:*)
                   gui_spec="${'$'}{gui_action#run:}"; gui_editor="${'$'}{gui_spec%%:*}"; gui_ack="${'$'}{gui_spec#*:}"
                   case "${'$'}gui_editor" in mousepad|pcmanfm|xterm|libreoffice|gimp|inkscape|blender) ;; *) continue ;; esac

@@ -899,3 +899,14 @@ English: The bounded Alpha73 source package passed 27 focused JVM cases and actu
 44项相关检查和实际Full／Play Kotlin编译通过，初始超时回归和新夹具错误记录保留。版本／组件／对应源码统一准备为Alpha74/code100，单份Full APK、签名／封装、真实三星自动解锁及公开发行随后分别验收，不将编译或旧73的手动等待记为实机通过。服务端现有接收元数据未发现Android9记录，索尼启动根因仍未定位，不据此要求刷机。见[Alpha74源码记录](releases/ANDROID_ALPHA74_DELIVERY.md)，N01–N08继续。
 
 English: A fresh Alpha73 Samsung case passed same-run/question process recovery and retained guide snapshot pagination. Alpha74 adds canonical wait refresh and a bounded owned wake lifetime, including the first-renewal bridge; 44 focused cases and actual Full/Play compilation passed. A new APK and physical unlock remain separate. Sony startup and the remaining N01–N08 scope stay open.
+
+
+## 2026-11-10 Alpha74实机与N05后续源码
+
+Alpha74/code100已公开并读回七附件完整字节、不可变来源及新旧生产更新解析器。三星真实通过完整包入口从公开73升到main/runtime100，安装字节、原UID、5条任务和2个项目保持。新提问回答、等待提示自动刷新及Linux真实输出已观察；第一次手机操作早于主测锁屏23.32秒，触发正常使用中确认，不能记为解锁失败或成功。该用例原始41条记录已保留后退役。
+
+另一个及时锁屏的新用例确实进入解锁驱动，完成唤醒与实际滑动回调，但未观察到凭据界面，释放亮屏锁并返回手动处理；未输入密码或通过计算／重锁。只将这一实际就绪边界交给一个Normal／auto代码包，保留单次尝试、当前授权、手动接管和凭据隔离，不通过重试或只加长延时销账。
+
+N05后续源码将查看器传输与项目图形进程的生命周期分开：同一所有者／环境／代际下，先核查原启动器及显示／桌面子进程，确实存活才保留运行上下文；只有PTY回声不算图形子进程存活。查看器在明确重开时用原profile／凭据／目标重连，不新建环境或终端，不在失败回调里循环重连；隐藏时不强制恢复帧流。10项真实脚本／生命周期检查及Full／Play实际编译通过，尚未进入新APK或实机验收。旧86断连的具体触发原因仍未确认，N01–N08总目标继续。
+
+English: Alpha74 public bytes/discovery and the real Samsung full73→74 OTA passed. A fresh question/banner/CLI case succeeded; its early phone request reached the expected active-user confirmation. A separate locked case reached the native driver but failed surface readiness before credential input. The next graphics source checkpoint passes ten focused cases and Full/Play compilation; it is not in the frozen74 APK and does not establish the old device-disconnect cause.

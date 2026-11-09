@@ -18,7 +18,7 @@ class LinuxDesktopCommandsTest {
         }
         executable("stty", "exit 0")
         executable("vncpasswd", "cat")
-        executable("Xtigervnc", "exec sleep 30")
+        executable("Xtigervnc", "printf '%s' \"${'$'}${'$'}\" > \"${'$'}FLOE_TEST_VNC_PID_FILE\"; exec sleep 30")
         executable("dbus-run-session", "test \"\$1\" = -- && shift; export DBUS_SESSION_BUS_ADDRESS=synthetic-project-bus; exec \"\$@\"")
         executable("openbox", "printf '%s' \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$WMTRACE\"; exec sleep 30")
         executable("inkscape", "printf '%s|%s|%s' \"\$DISPLAY\" \"\${1:-}\" \"\$DBUS_SESSION_BUS_ADDRESS\" > \"\$TRACE\"")
@@ -40,6 +40,7 @@ class LinuxDesktopCommandsTest {
             environment()["TMPDIR"] = root.absolutePath
             environment()["TRACE"] = root.resolve("trace").absolutePath
             environment()["WMTRACE"] = root.resolve("wm-trace").absolutePath
+            environment()["FLOE_TEST_VNC_PID_FILE"] = root.resolve("vnc-pid").absolutePath
             environment()["PCMANFMTRACE"] = root.resolve("pcmanfm-trace").absolutePath
             environment()["PCMANFMCOUNT"] = root.resolve("pcmanfm-count").absolutePath
             redirectErrorStream(true)
@@ -89,6 +90,16 @@ class LinuxDesktopCommandsTest {
             process.outputStream.flush()
             awaitLine("FLOE_INSTALLED:" + "e".repeat(32))
             awaitLine("FLOE_PONG:" + "f".repeat(32))
+            // A live PTY control loop cannot prove that its graphical child
+            // survived. Exercise the real generated protocol after that child
+            // exits, rather than feeding a guessed boolean to the host seam.
+            val vncProcess = ProcessHandle.of(awaitTrace(root.resolve("vnc-pid")).trim().toLong()).orElseThrow()
+            assertTrue(vncProcess.isAlive)
+            assertTrue(vncProcess.destroy())
+            vncProcess.onExit().get(5, TimeUnit.SECONDS)
+            process.outputStream.write(("ping:" + "9".repeat(32) + "\n").toByteArray())
+            process.outputStream.flush()
+            awaitLine("FLOE_PING_FAILED:" + "9".repeat(32))
             process.outputStream.write("stop\n".toByteArray()); process.outputStream.flush()
             assertTrue(process.waitFor(5, TimeUnit.SECONDS))
             assertEquals(0, process.exitValue())

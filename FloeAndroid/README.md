@@ -1,10 +1,16 @@
 # Floe for Android
 
-## Next source checkpoint — Android Alpha74 (2026-11-10)
+## Current delivery — Android Alpha74 (2026-11-10)
 
-Alpha74/code100 prepares actual keyguard completion, bounded task-owned wake lifetime and canonical waiting-state refresh. Forty-four focused cases and Full/Play Kotlin compilation passed. A new APK, physical unlock and publication remain separate; see the [source-stage record](../docs/releases/ANDROID_ALPHA74_DELIVERY.md). Alpha73 remains the current public package below.
+[Alpha74/code100](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.74) is public from immutable source `322f6e3cefb3039922f821acd58ade79edfe96b1`. It observes actual keyguard completion, retains a bounded task-owned wake lease and refreshes canonical waiting state. Forty-four focused cases, actual Full/Play compilation, exact native34 reuse, 58 package bindings, API28/29 signatures, actual73→74 host reconstruction and all seven anonymous asset bytes passed; current and retained65 update parsers discover it, preserving iOS Latest. See the [delivery record](../docs/releases/ANDROID_ALPHA74_DELIVERY.md).
 
-## Current delivery — Android Alpha73 (2026-11-10)
+三星已通过明确的完整包入口从公开73在线升到main/runtime100，字节、原UID、5条任务和2个项目保持。回答后等待提示自动清除及真实终端输出已观察；自动解锁的新用例完成唤醒／滑动，但未识别凭据界面，未输入密码或通过计算／重锁，原记录保留。索尼具体启动原因及其余N01–N08事项继续推进。
+
+## Next source checkpoint — project graphical continuity
+
+The viewer can retain its project CLI/display context after a proven viewer-only failure and reattach on an explicit reopen without creating a new environment or terminal. The retained launcher checks its display/desktop children; a live PTY alone does not claim a live graphical child. Hidden viewers do not force streaming, and failing replacements do not create a reconnect loop. Ten focused protocol/lifecycle cases and actual Full/Play compilation passed. This source is not in the immutable Alpha74 APK; fresh device qualification remains pending.
+
+## Previous delivery — Android Alpha73 (2026-11-10)
 
 [Alpha73/code99](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.73) is published from immutable source `b0722808df5e006b5f035d4a2f43e2a8c1f3490e`. It clarifies the observation-token requirement for phone actions, returns a precise missing-token error, refreshes newly installed apps on resume and aligns the bilingual known-password guidance. Twenty-seven focused App cases, actual Full/Play compilation, native34 reuse by exact input identity, 58 package bindings, API28/29 signature verification and exact72→73 host delta reconstruction passed. Seven anonymous public assets and current/retained65 production update discovery were read back. See the [delivery](../docs/releases/ANDROID_ALPHA73_DELIVERY.md).
 

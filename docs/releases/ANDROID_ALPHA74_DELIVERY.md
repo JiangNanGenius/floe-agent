@@ -28,3 +28,17 @@ Unlock now observes actual native completion, rechecks live authority and uses o
 The Alpha73 Samsung baseline passed same-run/question process recovery and guide snapshot pagination. Its separate automatic-unlock attempt reached manual fallback and remains a failure. New74 unlock/action/relock and banner behavior require fresh physical-device evidence.
 
 Sony XZ/Android9 post-extraction startup remains unresolved. Existing received diagnostic metadata contained no Android9 event; this does not prove that every attempted upload reached the server or establish the startup cause. Fresh-download metering, remaining N03/N05 combinations and whole-App UI polish retain their open status. N01–N08 remains active.
+
+
+## Delivery appendix / 交付补记 — 2026-11-10
+
+[Alpha74/code100](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.74) is published from immutable source `322f6e3cefb3039922f821acd58ade79edfe96b1`. The preparation statements above are retained as the original source-stage record.
+
+- Actual Full ARM64 APK: 164,688,671 bytes; SHA-256 `da7e9022f4a3814ae0c0acda3e84f6b8823750fd9b283c4e121ec63a4cfd4897`. Exact native34 input reuse, 58 package bindings, main/runtime API28/29 signatures and actual73→74 host delta reconstruction passed. These are not Sony hardware qualification.
+- All seven allowlisted anonymous public asset bytes, immutable tag/source and current/retained65 production update discovery passed. iOS Latest remained `v1.8.6` at read-back.
+- Samsung explicitly selected the complete update in public73, downloaded through its saved GH-Proxy choice and completed normal main/runtime confirmations plus Play Protect scanning. Both installed packages are code100 with exact public bytes and original UIDs; five baseline tasks and two projects remained visible. No ADB replacement, downgrade or Floe uninstall was used.
+- A new same-run question answered successfully and its waiting banner cleared without manual refresh; the Linux command returned the actual expected marker. Its phone request preceded the tester's screen-off by 23.32 seconds and correctly reached the active-user confirmation. That original 41-record case was retained and retired; it is not an automatic-unlock attempt. Permission cleanup influenced the final discarded phone result, which does not establish a driver cause.
+- A separate, timely locked case reached the actual unlock driver with continuously bound accessibility: wake lease acquired, reveal accepted/completed, then USER_REQUIRED because no credential surface was observed. No credential-input/submit stage or actual unlock was observed before cleanup. This is a real failed readiness boundary; active-root/window selection and display readiness remain hypotheses under repair, not confirmed hardware causes. No retry or successful calculator/relock is claimed.
+- Twenty-three unused outputs/stages were retired after eight producer receipts and exact assets were exported. The internal-volume deletion window measured 3,177,918,464 additional free bytes; concurrent APFS activity can affect whole-volume measurements. Current74, required73 rollback/72 original failure, native34 raw libraries/symbols, original failures, SDK/AVD and useful warm classes/dependencies remain. Retired stage paths must not be blindly replayed.
+
+公开完整包在线升级与原数据保持已确认；自动解锁仍未通过，后续只针对已观察到的凭据界面就绪断点修复。索尼XZ／Android9具体启动原因及其余N01–N08工作继续，不能据本轮要求用户刷机或宣布整轮完成。

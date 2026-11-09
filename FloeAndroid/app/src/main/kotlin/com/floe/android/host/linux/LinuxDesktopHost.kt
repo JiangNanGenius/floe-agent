@@ -46,6 +46,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     @Volatile private var terminalID: String? = null
     private var vncID: String? = null
     private var profileID: String? = null
+    private var endpointID: String? = null
     private var credential: C05VncPasswordRef? = null
     private var remoteOwner: C05RemoteOwner? = null
     private var outputClose: (() -> Unit)? = null
@@ -55,6 +56,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     private val editReaders = ConcurrentHashMap<String, suspend (java.io.File) -> String>()
     private val fileOpens = ConcurrentHashMap<String, Job>()
     @Volatile private var visible = false
+    private val reconnecting = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var epoch = 0L
     @Volatile private var displayNumber: Int? = null
     @Volatile private var inventoryNonce: String? = null
@@ -64,9 +66,15 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         initialApplication: String = "pcmanfm") {
         require(initialApplication in LinuxDesktopCommands.applications)
         if (task?.isActive == true) return
-        if (live() && terminalID != null && state.value.workspaceID == workspaceID &&
+        if (live() && terminalID != null &&
+            state.value.workspaceID.equals(workspaceID, ignoreCase = true) &&
             state.value.phase == "running" && state.value.desktop == desktop) {
-            visible = true; return
+            // Reopening the same owned session never tears it down. Workspace
+            // identity compares case-insensitively exactly like every other
+            // ownership check in this host, so a differently-cased reopen of
+            // the same project cannot destroy a live display and its CLI
+            // context. setVisible also re-arms a proven viewer reconnect.
+            setVisible(true); return
         }
         task = scope.launch(Dispatchers.IO) { serial.withLock {
             stopped = true
@@ -132,6 +140,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                             }
                             controlAcks.forEach { (id, ack) ->
                                 if (received.contains("FLOE_PONG:$id")) ack.complete("pong")
+                                if (received.contains("FLOE_PING_FAILED:$id")) ack.complete("unavailable")
                                 if (received.contains("FLOE_APP_STARTED:$id")) ack.complete("started")
                                 Regex("FLOE_APP_FAILED:$id:(missing|exit|file|startup)[\\r\\n]")
                                     .find(received)?.let { ack.complete(it.groupValues[1]) }
@@ -189,10 +198,15 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     val detail = vncClient.profileSaveVNCOnly(C05VncProfileDraft(null, "Linux", "linux",
                         listOf(C05VncEndpointDraft(null, "Linux", "direct", "127.0.0.1", port, credential))), owner)
                     profileID = detail.summary.id
+                    endpointID = detail.vncEndpoints.firstOrNull()?.id
                     stage = "vnc_connect"
                     val session = vncClient.connect(detail.summary.id, detail.vncEndpoints.firstOrNull()?.id, null, owner)
                     vncID = session.id
-                    visible = true
+                    // Viewer visibility is owned exclusively by the viewer attach
+                    // lifecycle (setVisible). The sheet already marked itself visible
+                    // before Start was pressed; if it was dismissed while this start
+                    // was in flight, forcing visible=true here would keep streaming
+                    // frames and input for a background GUI nobody is watching.
                     val lane = C05VNCInputLane(
                         sink = { events ->
                             try { checkLive(); vncClient.input(session.id, events, owner) }
@@ -203,18 +217,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     input = lane
                     inputJob = scope.launch(Dispatchers.IO) { lane.run() }
                     mutable.value = state.value.copy(phase = "running", vnc = presentation(session, null), failure = null)
-                    frames = scope.launch(Dispatchers.IO) {
-                        try { readFrames(session.id, owner) }
-                        catch (cancelled: CancellationException) { throw cancelled }
-                        catch (failure: Exception) {
-                            if (live() && vncID == session.id) {
-                                reportOperationFailure("frames", failure)
-                                mutable.value = state.value.copy(phase = "failed",
-                                    vnc = state.value.vnc?.copy(state = "failed"),
-                                    failure = "desktop_disconnected")
-                            }
-                        }
-                    }
+                    frames = viewerFramesLane(session.id, owner)
                     refreshSoftware()
                     // Launch only for this new owned session, after its control
                     // channel is ready. Reopening a view never launches again.
@@ -247,7 +250,10 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     private fun live() = !stopped && host.nativeRootEpoch() == epoch
     private fun checkLive() { check(live()) }
     /** Read-only facts for the exact environment already resolved by Core.
-     * Publishing DISPLAY never grants authority to a different workspace. */
+     * Publishing DISPLAY never grants authority to a different workspace.
+     * The context remains available while the viewer lane is merely hidden or
+     * in the proven viewer_disconnected state (the guest control channel still
+     * answers); it is withdrawn only for a session the host could not prove. */
     fun environmentMetadata(environmentID: String): org.json.JSONObject? {
         val current = state.value
         if (!live() || current.phase != "running" ||
@@ -263,7 +269,10 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             .put("workspaceID", session.workspaceID)
             .put("runtimeGeneration", session.runtimeGeneration)
     }
-    fun setVisible(value: Boolean) { visible = value; if (!value) releaseInput() }
+    fun setVisible(value: Boolean) {
+        visible = value
+        if (!value) releaseInput() else requestViewerReconnect()
+    }
     fun input(event: C05VncInput) { if (live() && state.value.phase == "running") input?.offer(event) }
     fun releaseInput() {
         val id = vncID ?: return
@@ -315,18 +324,147 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
         operation.start()
     }
 
-    private suspend fun commandReply(token: String, nonce: String, bytes: ByteArray): String {
+    private suspend fun commandReply(token: String, nonce: String, bytes: ByteArray,
+        replyTimeoutMillis: Long = 15_000): String {
         val admittedEpoch = epoch
         check(live() && terminalID == token)
         val ack = CompletableDeferred<String>()
         controlAcks[nonce] = ack
         try {
             checkNotNull(host.workspaceTerminal).transportForTab(token).write(bytes)
-            val answer = withTimeout(15_000) { ack.await() }
+            val answer = withTimeout(replyTimeoutMillis) { ack.await() }
             check(live() && epoch == admittedEpoch && terminalID == token)
             return answer
         } finally { controlAcks.remove(nonce) }
     }
+
+    /**
+     * Authoritative guest-life proof: the SAME fenced control channel already
+     * used for launches and pings. The retained launcher answers PONG only
+     * while its display server and window manager children remain alive.
+     */
+    private suspend fun controlSessionAlive(token: String): Boolean {
+        val nonce = UUID.randomUUID().toString().replace("-", "")
+        return try {
+            commandReply(token, nonce, "ping:$nonce\n".toByteArray(), replyTimeoutMillis = 5_000) == "pong"
+        } catch (_: TimeoutCancellationException) { false }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
+    }
+
+    /**
+     * One closed classification for every viewer-lane loss (status closed/failed
+     * or a transport exception). A proven guest keeps the running session, its
+     * DISPLAY context for CLI work and all running-gated operations; the viewer
+     * lane alone is marked failed. Without proof the existing session failure
+     * and its recovery (explicit stop/Start) stay exactly as before.
+     */
+    private suspend fun handleViewerLoss(sessionID: String, stage: String, code: String, laneState: String) {
+        if (LinuxDesktopViewerRecovery.onViewerLoss(live(), vncID == sessionID,
+                state.value.phase, controlProvedAlive = false) == LinuxDesktopViewerRecovery.Loss.ignore) return
+        val token = terminalID ?: return
+        val proved = try { controlSessionAlive(token) } catch (_: CancellationException) { return }
+        // The probe suspended: a stop, a root regeneration or a newer lane may
+        // have taken ownership in the meantime. Re-fence before writing.
+        val disposition = LinuxDesktopViewerRecovery.onViewerLoss(live(), vncID == sessionID,
+            state.value.phase, proved)
+        if (disposition != LinuxDesktopViewerRecovery.Loss.ignore) {
+            android.util.Log.w("FloeLinuxDesktop", "viewer_loss stage=$stage code=$code proved=$proved")
+        }
+        when (disposition) {
+            LinuxDesktopViewerRecovery.Loss.ignore -> return
+            LinuxDesktopViewerRecovery.Loss.viewerDisconnected -> {
+                // The lane is gone: stop offering input against a dead session so
+                // a stray input failure cannot overwrite the bounded diagnostic.
+                input?.close(); input = null
+                inputJob?.cancel(); inputJob = null
+                mutable.value = state.value.copy(vnc = state.value.vnc?.copy(state = laneState),
+                    failure = LinuxDesktopViewerRecovery.viewerFailure,
+                    failureStage = stage, failureCode = code)
+                // Retry only on an explicit viewer reopen/foreground edge.
+                // A repeatedly failing new lane must not create a retry loop.
+            }
+            LinuxDesktopViewerRecovery.Loss.sessionFailed -> {
+                mutable.value = state.value.copy(phase = "failed",
+                    vnc = state.value.vnc?.copy(state = laneState),
+                    failure = LinuxDesktopViewerRecovery.sessionFailure,
+                    failureStage = stage, failureCode = code)
+            }
+        }
+    }
+
+    private fun viewerFramesLane(sessionID: String, owner: C05RemoteOwner): Job =
+        scope.launch(Dispatchers.IO) {
+            try { readFrames(sessionID, owner) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { handleViewerLoss(sessionID, "frames", diagnosticCode(failure), "failed") }
+        }
+
+    /** Single-flight bounded reattachment of the viewer to the SAME live display. */
+    private fun requestViewerReconnect() {
+        if (!LinuxDesktopViewerRecovery.shouldReconnect(visible, state.value.phase, state.value.failure)) return
+        if (!reconnecting.compareAndSet(false, true)) return
+        scope.launch(Dispatchers.IO) {
+            try { serial.withLock { reconnectViewerLocked() } }
+            finally { reconnecting.set(false) }
+        }
+    }
+
+    /**
+     * Reconnect never creates a second environment, terminal tab, profile or
+     * credential: it retires only the dead client session and reconnects the
+     * existing owned profile to the same loopback display under the same
+     * epoch/task fence. A failed attempt keeps the honest viewer_disconnected
+     * state for the next reopen edge; nothing is claimed as reconnected.
+     */
+    private suspend fun reconnectViewerLocked() {
+        val owner = remoteOwner ?: return
+        val profile = profileID ?: return
+        if (!live() || state.value.phase != "running" ||
+            state.value.failure != LinuxDesktopViewerRecovery.viewerFailure) return
+        val old = vncID
+        val admittedEpoch = epoch
+        runCatching { old?.let { vncClient.close(it, owner) } }
+        val session = try { vncClient.connect(profile, endpointID, null, owner) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            if (live() && vncID == old) mutable.value = state.value.copy(
+                failure = LinuxDesktopViewerRecovery.viewerFailure,
+                failureStage = "reconnect", failureCode = diagnosticCode(failure))
+            return
+        }
+        if (!live() || epoch != admittedEpoch || vncID != old) {
+            // Ownership moved while connecting: retire the unadopted session and
+            // leave the retained (or newer) lane untouched.
+            runCatching { vncClient.close(session.id, owner) }
+            return
+        }
+        vncID = session.id
+        val lane = C05VNCInputLane(
+            sink = { events ->
+                try { checkLive(); vncClient.input(session.id, events, owner) }
+                catch (_: Exception) { mutable.value = state.value.copy(failure = "input_failed") }
+                Unit
+            },
+            onIssue = { mutable.value = state.value.copy(failure = "input_failed") })
+        input?.close()
+        input = lane
+        inputJob?.cancel()
+        inputJob = scope.launch(Dispatchers.IO) { lane.run() }
+        mutable.value = state.value.copy(vnc = presentation(session, null), failure = null,
+            failureStage = null, failureCode = null)
+        frames?.cancel()
+        frames = viewerFramesLane(session.id, owner)
+    }
+
+    private fun diagnosticCode(failure: Exception): String =
+        when (failure) {
+            is CommandFailure -> failure.code
+            is LinuxDesktopFileBridge.Failure -> failure.code
+            is G04WorkspaceBridgeClient.Failure -> failure.code
+            is C05RemoteFailure -> failure.code
+            else -> failure.javaClass.simpleName
+        }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
 
     private suspend fun awaitControl(token: String) {
         val nonce = UUID.randomUUID().toString().replace("-", "")
@@ -508,6 +646,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
                     // releaseAll refuses a retired session and blocks cleanup.
                     check(vncClient.close(id, owner).complete)
                     vncID = null
+                    endpointID = null
                 }
                 closeStage = "profile"
                 profileID?.let { id ->
@@ -536,13 +675,7 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
     }
 
     private fun reportOperationFailure(stage: String, failure: Exception) {
-        val code = when (failure) {
-            is CommandFailure -> failure.code
-            is LinuxDesktopFileBridge.Failure -> failure.code
-            is G04WorkspaceBridgeClient.Failure -> failure.code
-            is C05RemoteFailure -> failure.code
-            else -> failure.javaClass.simpleName
-        }.takeIf { it.matches(Regex("[A-Za-z0-9_]{1,80}")) } ?: "unknown"
+        val code = diagnosticCode(failure)
         mutable.value = state.value.copy(failureStage = stage, failureCode = code)
         android.util.Log.w("FloeLinuxDesktop", "operation_failed stage=$stage code=$code")
     }
@@ -554,11 +687,10 @@ internal class LinuxDesktopHost(private val host: RuntimeHost) {
             if (!live() || vncID != sessionID) return
             if (session.state in setOf("closed", "failed")) {
                 val safeCode = Regex("[A-Za-z0-9_]{1,80}")
-                mutable.value = state.value.copy(phase = "failed",
-                    vnc = state.value.vnc?.copy(state = session.state),
-                    failure = "desktop_disconnected",
-                    failureStage = session.failure?.stage?.takeIf { it.matches(safeCode) } ?: "frame_status",
-                    failureCode = session.failure?.code?.takeIf { it.matches(safeCode) } ?: "session_${session.state}")
+                handleViewerLoss(sessionID,
+                    session.failure?.stage?.takeIf { it.matches(safeCode) } ?: "frame_status",
+                    session.failure?.code?.takeIf { it.matches(safeCode) } ?: "session_${session.state}",
+                    session.state)
                 return
             }
             val meta = C05VNCVideoNative.acquireFrame(epoch, owner.token, sessionID)
