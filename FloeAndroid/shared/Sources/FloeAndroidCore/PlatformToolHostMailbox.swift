@@ -54,6 +54,53 @@ public struct PlatformToolArtifactRootBinding: Sendable, Equatable {
     }
 }
 
+/// The ONE App-owned workspace-APK inbox this mailbox commits verified
+/// transfer bytes into. Minted only by trusted composition from the live
+/// generation's validated `RuntimeStorageRoot` (never from model JSON, the
+/// host environment or a temporary fallback) and generation-fenced exactly
+/// like the artifact root: `<owned root>/FloeAgent/WorkspaceApkInbox`.
+/// Kotlin `ApkStagingStore.adoptWorkspaceFile` moves/copies and re-verifies
+/// the committed bytes; this binding never exposes a model route.
+public struct PlatformToolWorkspaceApkInboxBinding: Sendable, Equatable {
+    public let path: String
+    public let epoch: UInt64
+
+    public init(path: String, epoch: UInt64) {
+        self.path = path
+        self.epoch = epoch
+    }
+}
+
+/// Live currency of ONE claimed ticket, re-proved by the staging loop before
+/// every page. `fenced` covers rebind/close/retire and any ticket whose
+/// generation left the current epoch; `cancelled` is the owning call's own
+/// cancellation request.
+public enum PlatformToolClaimCurrency: Sendable, Equatable {
+    case current
+    case cancelled
+    case fenced
+}
+
+/// Snapshot of the trusted ownership/fencing context for ONE CLAIMED ticket.
+/// Minted only by `PlatformToolHostMailbox.claimedContext(claim:)` while the
+/// ticket is claimed (state 1), belongs to the current bound epoch and the
+/// mailbox is open. A snapshot is never authority by itself: the workspace
+/// APK stager re-proves `currency()` before every page and honours
+/// `deadline` (the ticket's own mailbox budget).
+public struct PlatformToolClaimContext: Sendable {
+    public let claim: Int64
+    public let toolName: String
+    public let owner: PlatformToolOwner
+    public let deadline: DispatchTime
+    fileprivate let mailbox: PlatformToolHostMailbox
+
+    public func currency() -> PlatformToolClaimCurrency {
+        mailbox.claimCurrency(claim: claim)
+    }
+
+    public var expired: Bool { DispatchTime.now() >= deadline }
+}
+
 /// Exact runtime-issued ownership recorded with one ticket. These values are
 /// opaque identity to the host; it never decides authority from them.
 public struct PlatformToolOwner: Sendable, Equatable {
@@ -101,6 +148,9 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
     private final class Ticket {
         let claim: Int64
         let toolName: String
+        /// Runtime-issued ownership captured at submit; the workspace-APK
+        /// staging seam re-derives task/run authority ONLY from this value.
+        let owner: PlatformToolOwner
         let descriptor: Data
         let payload: Data
         let createdEpoch: UInt64
@@ -111,8 +161,9 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                                               PlatformToolTransportError>?
 
         init(claim: Int64, toolName: String, descriptor: Data, payload: Data,
-             epoch: UInt64, deadline: DispatchTime,
+             owner: PlatformToolOwner, epoch: UInt64, deadline: DispatchTime,
              cancellation: CancellationToken) {
+            self.owner = owner
             self.claim = claim
             self.toolName = toolName
             self.descriptor = descriptor
@@ -151,6 +202,13 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
     /// Monotonic retirement fence: a retired epoch can never be rebound,
     /// even when the old root path is supplied again.
     private var artifactRootHighWater: UInt64 = 0
+    /// The ONE App-owned workspace-APK inbox bound by trusted composition
+    /// (same root discipline and generation fencing as `artifactRoot`). nil
+    /// refuses every claimed workspace-APK transfer (no temporary fallback).
+    private var workspaceApkInboxRoot: URL?
+    private var workspaceApkInboxEpoch: UInt64 = 0
+    /// Monotonic retirement fence mirroring `artifactRootHighWater`.
+    private var workspaceApkInboxHighWater: UInt64 = 0
     /// Trusted durable-ceiling snapshot published by the Full host for the
     /// bound generation through `setAutoAdmission`. nil means ordinary
     /// automatic task calls keep the actual interactive/model gate.
@@ -255,6 +313,70 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         artifactRoot = nil
         artifactRootEpoch = 0
         artifactRootHighWater = 0
+    }
+
+    // MARK: Actual owned workspace-APK inbox (trusted composition only)
+
+    /// Binds `<ownedRoot>/FloeAgent/WorkspaceApkInbox` for the EXACT live
+    /// native root epoch. `ownedRootPath` must be the validated standardized
+    /// owned root from `RuntimeStorageRoot` (the SAME root the generation's
+    /// database and runtime use). Every managed component — the `FloeAgent`
+    /// parent and the inbox leaf — must be a REAL directory, never a symlink
+    /// a compromised host could point outside the accepted owned root.
+    ///
+    /// A same-epoch rebind of the identical root is idempotent. A different
+    /// root at the same epoch, an older epoch, or a retired epoch is refused.
+    @discardableResult
+    public func bindWorkspaceApkInbox(ownedRootPath: String, epoch: UInt64) -> Bool {
+        guard epoch != 0,
+              let storage = RuntimeStorageRoot(validatingAbsoluteDirectory: ownedRootPath),
+              currentEpoch() == epoch
+        else { return false }
+        guard let root = PlatformToolWorkspaceApkStager.prepareInbox(
+            ownedRootPath: storage.path), currentEpoch() == epoch else { return false }
+        condition.lock()
+        defer { condition.unlock() }
+        if workspaceApkInboxEpoch == epoch {
+            return workspaceApkInboxRoot?.path == root.path
+        }
+        guard epoch > workspaceApkInboxEpoch,
+              epoch > workspaceApkInboxHighWater else { return false }
+        workspaceApkInboxRoot = root
+        workspaceApkInboxEpoch = epoch
+        return true
+    }
+
+    /// Clears ONLY the binding this exact epoch minted and advances the
+    /// monotonic fence. Called from the SAME generation retirement path that
+    /// calls `retireArtifactRoot`.
+    public func retireWorkspaceApkInbox(epoch: UInt64) {
+        guard epoch != 0 else { return }
+        condition.lock(); defer { condition.unlock() }
+        workspaceApkInboxHighWater = max(workspaceApkInboxHighWater, epoch)
+        guard workspaceApkInboxEpoch == epoch else { return }
+        workspaceApkInboxRoot = nil
+        workspaceApkInboxEpoch = 0
+    }
+
+    /// Trusted test reset owned by the composition's `resetForTesting()`
+    /// producer; paired with `resetArtifactRootBindingForTesting`.
+    func resetWorkspaceApkInboxBindingForTesting() {
+        condition.lock(); defer { condition.unlock() }
+        workspaceApkInboxRoot = nil
+        workspaceApkInboxEpoch = 0
+        workspaceApkInboxHighWater = 0
+    }
+
+    /// Exact inbox readback for the trusted Full App host, never a model
+    /// route. Returns nil unless the bound inbox still belongs to the
+    /// CURRENT live root epoch.
+    public func workspaceApkInboxBinding() -> PlatformToolWorkspaceApkInboxBinding? {
+        let live = currentEpoch()
+        condition.lock(); defer { condition.unlock() }
+        guard let root = workspaceApkInboxRoot, workspaceApkInboxEpoch != 0,
+              workspaceApkInboxEpoch == live else { return nil }
+        return PlatformToolWorkspaceApkInboxBinding(
+            path: root.path, epoch: workspaceApkInboxEpoch)
     }
 
     /// Exact root readback for the trusted Full App host, never a model
@@ -784,6 +906,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 toolName: entry.name,
                 descriptor: descriptor,
                 payload: argumentsJSON,
+                owner: owner,
                 epoch: epoch,
                 deadline: DispatchTime.now()
                     + .milliseconds(PlatformToolHostLimits.budgetMillis(toolName: entry.name)),
@@ -904,6 +1027,39 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         guard let ticket = tickets[claim], ticket.state == 1,
               ticket.createdEpoch == epoch, !closed else { return 1 }
         return ticket.cancellation.isCancelled ? 1 : 0
+    }
+
+    /// Trusted-host context snapshot for ONE claimed ticket: the workspace
+    /// APK staging seam (`floe_platform_tool_stage_workspace_apk`) derives
+    /// task/run/epoch authority ONLY from this value, never from model text.
+    /// nil unless the ticket exists, is claimed (state 1), belongs to the
+    /// current bound epoch and the mailbox is open.
+    public func claimedContext(claim: Int64) -> PlatformToolClaimContext? {
+        condition.lock()
+        guard let ticket = tickets[claim], ticket.state == 1,
+              ticket.createdEpoch == epoch, !closed else {
+            condition.unlock()
+            return nil
+        }
+        let snapshot = PlatformToolClaimContext(
+            claim: claim,
+            toolName: ticket.toolName,
+            owner: ticket.owner,
+            deadline: ticket.deadline,
+            mailbox: self)
+        condition.unlock()
+        return snapshot
+    }
+
+    /// Live currency re-proof for ONE claimed ticket. `cancelled` is reported
+    /// only while the owning call's own cancellation token fired; every other
+    /// deviation (settled, queued, rebind, close, epoch change) is `fenced`,
+    /// so a stale generation can never present itself as a fresh refusal.
+    public func claimCurrency(claim: Int64) -> PlatformToolClaimCurrency {
+        condition.lock(); defer { condition.unlock() }
+        guard let ticket = tickets[claim], ticket.state == 1, !closed,
+              ticket.createdEpoch == epoch else { return .fenced }
+        return ticket.cancellation.isCancelled ? .cancelled : .current
     }
 
     /// Settles one claimed ticket exactly once. `status == 0` requires a
@@ -1502,4 +1658,77 @@ public func floePlatformToolReadiness(_ buffer: UnsafeMutablePointer<CChar>?,
                                       _ capacity: Int32) -> Int32 {
     platformToolCopyCString(PlatformToolHostMailbox.shared.readinessJSON(),
                             buffer: buffer, capacity: capacity)
+}
+
+/// Claimed task-workspace APK staging for the trusted Full host (Kotlin
+/// `PlatformToolsNative.stageWorkspaceApk`). Streams the CURRENT task Linux
+/// content — through the REAL split-UID live-files lane while ONE live
+/// current-run session exists, otherwise from the CURRENT verified exported
+/// workspace snapshot under an explicit no-live-writer proof — into the
+/// App-owned verified inbox and returns <= 8 KiB metadata JSON. APK bytes
+/// never cross this ABI. Returns >= 0 (reply UTF-8 byte length, NUL-
+/// terminated when capacity allows) or a typed negative transport refusal
+/// with no reply body (`staleClaim` when the claim is not live for the
+/// current generation).
+@_cdecl("floe_platform_tool_stage_workspace_apk")
+public func floePlatformToolStageWorkspaceApk(
+    _ claim: Int64,
+    _ path: UnsafePointer<UInt8>?,
+    _ pathLength: Int32,
+    _ reply: UnsafeMutablePointer<CChar>?,
+    _ capacity: Int32
+) -> Int32 {
+    guard let path, pathLength > 0,
+          pathLength <= Int32(PlatformToolHostLimits.maximumStageWorkspaceApkPathBytes),
+          let reply, capacity >= 2 else {
+        return PlatformToolHostStatus.shape
+    }
+    let pathBytes = Data(bytes: path, count: Int(pathLength))
+    guard !pathBytes.contains(0) else { return PlatformToolHostStatus.shape }
+    let mailbox = PlatformToolHostMailbox.shared
+    guard let context = mailbox.claimedContext(claim: claim) else {
+        return PlatformToolHostStatus.staleClaim
+    }
+    // Held bridge (LinuxWorkspaceAuthority.bridge precedent): the JNI/binder
+    // thread stays attached until the transfer REALLY settles; the ticket's
+    // own deadline bounds the loop, so a settlement always arrives and no
+    // detached work can outlive the call. The post-read no-live-writer probe
+    // closes the exported-snapshot race: any same-conversation session that
+    // became live during the read turns the commit into a typed refusal and
+    // the partial file is discarded.
+    let ownerTaskID = context.owner.taskID
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = WorkspaceBridgeBox<Result<PlatformToolWorkspaceApkMetadata,
+                                        PlatformToolWorkspaceApkError>>()
+    let task = Task {
+        let components = RuntimeFacadeLinuxBindings.shared.components
+        let result = await PlatformToolWorkspaceApkStager.stage(
+            context: context,
+            relativePathUTF8: pathBytes,
+            resolver: PlatformToolWorkspaceApkProductionResolver(),
+            transport: components?.liveFiles,
+            inbox: mailbox.workspaceApkInboxBinding(),
+            liveConversationProbe: {
+                guard let backend = RuntimeFacadeLinuxBindings.shared.components?.backend
+                else { return false }
+                let sessions = await backend.ownedSessions()
+                return sessions.contains {
+                    !$0.leaseReleased && $0.conversationID == ownerTaskID
+                }
+            })
+        box.value = result
+        semaphore.signal()
+    }
+    _ = task
+    semaphore.wait()
+    let json: String
+    switch box.value ?? .failure(.stagingUnavailable) {
+    case .success(let metadata):
+        json = PlatformToolWorkspaceApkStager.replyJSON(metadata)
+            ?? #"{"version":1,"ok":false,"code":"staging_unavailable"}"#
+    case .failure(let error):
+        json = PlatformToolWorkspaceApkStager.replyJSON(error)
+            ?? #"{"version":1,"ok":false,"code":"staging_unavailable"}"#
+    }
+    return platformToolCopyCString(json, buffer: reply, capacity: capacity)
 }

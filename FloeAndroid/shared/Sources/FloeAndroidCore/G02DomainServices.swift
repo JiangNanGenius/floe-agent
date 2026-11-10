@@ -1043,6 +1043,16 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // `artifactRootBound:false` in readiness.
         _ = PlatformToolHostMailbox.shared.bindArtifactRoot(
             ownedRootPath: cluster.identity.root.path, epoch: epoch)
+        if PlatformToolHostMailbox.shared.bindWorkspaceApkInbox(
+            ownedRootPath: cluster.identity.root.path, epoch: epoch) {
+            PlatformToolWorkspaceApkTargetComposition.install(
+                epoch: epoch,
+                resolver: PlatformToolWorkspaceApkDomainTargetResolver(
+                    domain: executionTargets.domain))
+            if let inbox = PlatformToolHostMailbox.shared.workspaceApkInboxBinding() {
+                _ = PlatformToolWorkspaceApkStager.sweepAbandoned(inbox: inbox)
+            }
+        }
         guard skillsCredentialLease.bind(installed) else { return nil }
         return installed
     }

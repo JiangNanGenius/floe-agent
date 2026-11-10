@@ -45,6 +45,7 @@ final class AndroidBundledSkillGuidesTests: XCTestCase {
         "preview", "memory", "conversation", "checklist", "calendar", "contacts",
         "todo", "mail", "font", "device", "nfc", "location", "health",
         "task", "user", "delegate", "tools", "skill", "ssh", "bluetooth",
+        "system", "phone",
     ]
 
     func testGuideSetIsNonEmptyAndIdentityStable() throws {

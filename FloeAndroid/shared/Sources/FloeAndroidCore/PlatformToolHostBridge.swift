@@ -52,6 +52,12 @@ public enum PlatformToolHostLimits {
     public static let maximumEnumValues = 16
     public static let maximumSchemaTextCharacters = 256
     public static let maximumTicketDescriptorBytes = 2 * 1024
+    /// Claimed workspace-APK staging wire bounds (N02 transfer seam, settled
+    /// ABI `stageWorkspaceApk`): the UTF-8 relative path from the trusted
+    /// host and the metadata-JSON reply capacity. APK bytes never cross this
+    /// ABI in either direction.
+    public static let maximumStageWorkspaceApkPathBytes = 2048
+    public static let maximumStageWorkspaceApkReplyBytes = 8192
     /// Same ceiling the runtime already applies to tool arguments.
     public static let maximumArgumentsBytes = toolArgumentsMaxBytes
     public static let maximumArgumentArrayItems = 256

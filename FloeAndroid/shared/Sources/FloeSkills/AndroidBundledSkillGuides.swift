@@ -96,6 +96,14 @@ public enum AndroidBundledSkillGuides {
         "floe-data-code": ["exec.shell", "jobs.submit", "jobs.status", "jobs.result",
                            "jobs.cancel", "preview.start", "preview.reload", "preview.stop",
                            "image.models", "image.generate"],
+        "floe-android-device": ["system.access.status", "system.packages.query",
+                                "system.packages.staged", "system.packages.stage",
+                                "system.packages.install", "system.packages.uninstall",
+                                "system.packages.forceStop", "system.packages.setEnabled",
+                                "system.packages.removeForUser", "system.packages.restore",
+                                "system.files.list", "system.files.read", "system.files.write",
+                                "system.files.move", "system.files.delete",
+                                "phone.observe", "phone.act", "phone.screenshot", "exec.shell"],
     ]
 
     public static let all: [BundledDomainSkills.Definition] = [
@@ -165,6 +173,24 @@ public enum AndroidBundledSkillGuides {
             """
         ),
         // MARK: Hidden built-ins
+        BundledDomainSkills.Definition(
+            id: "floe-android-device",
+            name: "Android Apps & Device Access",
+            description: "Use Android apps, selected device files and available ADB or Root tools with real system receipts. Install, update or uninstall apps through the typed device tools; ordinary Linux commands stay in the task environment.",
+            version: "1.0.0",
+            exposed: false,
+            markdown: """
+            ## Android apps and device access
+            Discover the currently available tools and read `system.access.status` first. ADB runs as Android's shell user, not Root. Only the user's enabled categories, selected applications and granted file roots are available; this guide never grants access. Ordinary permitted actions use the task's automatic policy. If a category is off or a system refusal occurs, report the actionable reason instead of repeatedly requesting the same operation.
+            ### Install, update and uninstall
+            - For an APK downloaded or prepared with `exec.shell`, finish the command in the CURRENT task Linux environment and verify the real file. Call `system.packages.stage` with sources of origin `workspace` and a workspace-relative `.apk` path. An authorized phone directory uses origin `fileRoot`, the actual granted root ID and a relative path. Never pass a guest absolute path, guessed host path or content URI as authority.
+            - Inspect `system.packages.staged`, retain the exact returned staged IDs, and read the current `system.packages.install` schema before installing. Updating an app requires an actual compatible package/signature/version result; a download or staged file is not an installed app. Batches have at most eight items. Report each real system outcome and preserve partial results; after cancellation or an unknown result query actual state before deciding what remains.
+            - `system.packages.query` confirms the installed package and version for the authorized user. Use `system.packages.uninstall` only for the task's intended application identities, then verify absence. Ordinary uninstall does not remove system-image applications. The separately enabled advanced `system.packages.removeForUser` and `system.packages.restore` paths manage eligible preinstalled apps for that user without deleting the system image; `system.packages.setEnabled` changes the selected application's enabled state. Protected components and actual OS refusals remain authoritative.
+            ### Files and external apps
+            - `system.files.list`/`system.files.read` inspect the exact selected root; write/move/delete require the user's writable scope. ADB cannot read arbitrary app-private data. Keep originals and verify saved results. Lightweight text/code edits belong in the existing in-app editor; use an appropriate Android app for professional editing, or the project Linux tools when more capability is needed.
+            - For UI-only external-app steps use a fresh `phone.observe`, then `phone.act` with that observation's actual identifiers and current schema, and observe the result. Use `phone.screenshot` only when the available structure is insufficient. Respect the existing user-takeover/pause and application-target controls; desktop sessions are primarily for the user, not a prerequisite for model command execution.
+            """
+        ),
         BundledDomainSkills.Definition(
             id: "floe-shell",
             name: "Local Shell & Packages",

@@ -473,6 +473,8 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         // G08: a failed build must not leave the artifact-root binding live
         // for an epoch that never published composition.
         PlatformToolHostMailbox.shared.retireArtifactRoot(epoch: epoch)
+        PlatformToolHostMailbox.shared.retireWorkspaceApkInbox(epoch: epoch)
+        PlatformToolWorkspaceApkTargetComposition.uninstall(epoch: epoch)
         // C02: a failed build must not leave a guided-setup bridge for an
         // epoch that never published composition. Epoch-guarded.
         C02MCPSetupIntegration.uninstall(epoch: epoch)
@@ -529,6 +531,8 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         // a newer generation's binding is untouched and a retired epoch can
         // never be rebound (monotonic fence inside the mailbox).
         PlatformToolHostMailbox.shared.retireArtifactRoot(epoch: epoch)
+        PlatformToolHostMailbox.shared.retireWorkspaceApkInbox(epoch: epoch)
+        PlatformToolWorkspaceApkTargetComposition.uninstall(epoch: epoch)
 
         // 0b. G06 Notes authority retirement: exact-epoch close of the one
         //     service-owned NotesStore. A stale epoch is a no-op and never
@@ -659,6 +663,8 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         AttachmentStagingFacade.uninstallAllForTesting()
         RunDomainFacade.uninstall()
         PlatformToolHostMailbox.shared.resetArtifactRootBindingForTesting()
+        PlatformToolHostMailbox.shared.resetWorkspaceApkInboxBindingForTesting()
+        PlatformToolWorkspaceApkTargetComposition.resetForTesting()
         // G03-R3 lanes owned by THIS composition's G02DomainServices build:
         // the workspace authority install slot and the live readiness
         // ingress. Same producer-ownership reset discipline; production
