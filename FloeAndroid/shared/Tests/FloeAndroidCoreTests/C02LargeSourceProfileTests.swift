@@ -27,11 +27,11 @@ final class C02LargeSourceProfileTests: XCTestCase {
     func testStandardProfileBoundsPreservedAndExplicitLargeAccepted() throws {
         // Old feeds carry no profile key at all: the binding must default to
         // the unchanged standard envelope.
-        let standard = try verifiedFixtureFeed(mutatePackage: { _ in })
+        let standard = try Self.verifiedFixtureFeed(mutatePackage: { _ in })
         XCTAssertEqual(standard.feed.entry(id: "fixture-large")?.package?.profile, .standard)
 
         // 8 MiB + 1 is refused without a profile (the old assertion shape).
-        XCTAssertThrowsError(try verifiedFixtureFeed(mutatePackage: { package in
+        XCTAssertThrowsError(try Self.verifiedFixtureFeed(mutatePackage: { package in
             package["size"] = 8_388_609
         })) { error in
             guard case CuratedSkillHubFailure.feed(let reason) = error else {
@@ -41,7 +41,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         }
 
         // The explicit opt-in accepts a 30 MiB signed archive.
-        let opted = try verifiedFixtureFeed(profile: "large-source-v1", archiveBlob: 30 * 1_024 * 1_024)
+        let opted = try Self.verifiedFixtureFeed(profile: "large-source-v1", archiveBlob: 30 * 1_024 * 1_024)
         let binding = try XCTUnwrap(opted.feed.entry(id: "fixture-large")?.package)
         XCTAssertEqual(binding.profile, .largeSourceV1)
         XCTAssertEqual(binding.size, 30 * 1_024 * 1_024)
@@ -56,7 +56,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         // "standard-v1" is NOT the wire spelling; neither is any future name.
         for unknown in ["standard-v1", "unbounded-v1", "large-source-v2"] {
             XCTAssertThrowsError(
-                try verifiedFixtureFeed(profile: unknown, archiveBlob: 30 * 1_024 * 1_024),
+                try Self.verifiedFixtureFeed(profile: unknown, archiveBlob: 30 * 1_024 * 1_024),
                 "profile \(unknown) must be rejected") { error in
                 guard case CuratedSkillHubFailure.feed(let reason) = error else {
                     return XCTFail("expected feed failure for \(unknown), got \(error)")
@@ -66,7 +66,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         }
         // Even with the large profile, the declared profile total is a hard
         // ceiling (64 MiB archive+uncompressed).
-        XCTAssertThrowsError(try verifiedFixtureFeed(
+        XCTAssertThrowsError(try Self.verifiedFixtureFeed(
             profile: "large-source-v1", archiveBlob: 67_108_865))
     }
 
@@ -75,7 +75,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
     func testCapabilityProjectionGuards() async throws {
         // A large entry inside the standard full projection is refused even
         // when every signature verifies.
-        let files = try largeSourceFixtureFiles()
+        let files = try Self.largeSourceFixtureFiles()
         var wrong = files
         wrong["android/catalog-full.json"] = files["android/catalog-large-source-v1.json"]
         wrong["android/catalog-full.sig"] = files["android/catalog-large-source-v1.sig"]
@@ -83,7 +83,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         await XCTAssertThrowsCuratedFailure(.feed) {
             _ = try await CuratedSkillHub.loadPublication(
                 channel: .android, mode: Self.fixtureMode(), layout: .full,
-                resolve: badTransport.resolve, fetch: badTransport.fetch)
+                resolve: { try await badTransport.resolve($0) }, fetch: { try badTransport.fetch($0, commit: $1, path: $2) })
         }
 
         // The capability projection must be a full superset of the standard
@@ -94,7 +94,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
                 channel: .android, mode: Self.fixtureMode(),
                 layout: .largeSourceV1,
                 requiredProjectionIDs: ["fixture-large", "missing-standard-entry"],
-                resolve: transport.resolve, fetch: transport.fetch)
+                resolve: { try await transport.resolve($0) }, fetch: { try transport.fetch($0, commit: $1, path: $2) })
         }
 
         // Same-Y pinning: the capability projection reuses the standard
@@ -102,13 +102,13 @@ final class C02LargeSourceProfileTests: XCTestCase {
         let pinned = SyntheticHubTransport(files: files)
         let standard = try await CuratedSkillHub.loadPublication(
             channel: .android, mode: Self.fixtureMode(), layout: .full,
-            resolve: pinned.resolve, fetch: pinned.fetch)
+            resolve: { try await pinned.resolve($0) }, fetch: { try pinned.fetch($0, commit: $1, path: $2) })
         let commit = standard.publicationCommit
         let capability = try await CuratedSkillHub.loadPublication(
             channel: .android, mode: Self.fixtureMode(),
             layout: .largeSourceV1,
             requiredProjectionIDs: Set(standard.feed.entries.map(\.id)),
-            resolve: { _ in commit }, fetch: pinned.fetch)
+            resolve: { _ in commit }, fetch: { try pinned.fetch($0, commit: $1, path: $2) })
         XCTAssertEqual(capability.layout, .largeSourceV1)
         XCTAssertEqual(capability.publicationCommit, standard.publicationCommit)
         XCTAssertEqual(capability.feed.entry(id: "fixture-large")?.package?.profile, .largeSourceV1)
@@ -117,11 +117,11 @@ final class C02LargeSourceProfileTests: XCTestCase {
     // MARK: 3. Stage requires the authenticated route; receipt persists profile
 
     func testLargeStageRequiresVerifiedRouteAndPersistsProfile() async throws {
-        let files = try largeSourceFixtureFiles()
+        let files = try Self.largeSourceFixtureFiles()
         let transport = SyntheticHubTransport(files: files)
         let publication = try await CuratedSkillHub.loadPublication(
             channel: .android, mode: Self.fixtureMode(), layout: .largeSourceV1,
-            resolve: transport.resolve, fetch: transport.fetch)
+            resolve: { try await transport.resolve($0) }, fetch: { try transport.fetch($0, commit: $1, path: $2) })
         let root = Self.stagingRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -129,7 +129,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         await XCTAssertThrowsCuratedFailure(.compatibility) {
             _ = try await CuratedSkillHub.stage(
                 publication, entryID: "fixture-large", appVersion: "999.0.0",
-                at: root, fetch: transport.fetch)
+                at: root, fetch: { try transport.fetch($0, commit: $1, path: $2) })
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
 
@@ -137,7 +137,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         // binds owner/repository/immutable commit/path/declared size.
         let staged = try await CuratedSkillHub.stage(
             publication, entryID: "fixture-large", appVersion: "999.0.0",
-            at: root, fetch: transport.fetch,
+            at: root, fetch: { try transport.fetch($0, commit: $1, path: $2) },
             fetchPackage: { source, commit, path, authorization in
                 let bound = try authorization.maximumBytes(
                     owner: source.owner, repository: source.repository,
@@ -188,17 +188,17 @@ final class C02LargeSourceProfileTests: XCTestCase {
     // MARK: 4. Install/reopen under the signed profile; profile never relaxes gates
 
     func testLargeProfileInstallReopenAndSafetyCaps() async throws {
-        let files = try largeSourceFixtureFiles()
+        let files = try Self.largeSourceFixtureFiles()
         let transport = SyntheticHubTransport(files: files)
         let publication = try await CuratedSkillHub.loadPublication(
             channel: .android, mode: Self.fixtureMode(), layout: .largeSourceV1,
-            resolve: transport.resolve, fetch: transport.fetch)
+            resolve: { try await transport.resolve($0) }, fetch: { try transport.fetch($0, commit: $1, path: $2) })
         let base = Self.stagingRoot()
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: base) }
         let staged = try await CuratedSkillHub.stage(
             publication, entryID: "fixture-large", appVersion: "999.0.0",
-            at: base.appendingPathComponent("stage"), fetch: transport.fetch,
+            at: base.appendingPathComponent("stage"), fetch: { try transport.fetch($0, commit: $1, path: $2) },
             fetchPackage: { source, commit, path, authorization in
                 _ = try authorization.maximumBytes(
                     owner: source.owner, repository: source.repository, ref: commit, path: path)
@@ -241,24 +241,22 @@ final class C02LargeSourceProfileTests: XCTestCase {
         XCTAssertThrowsError(try SignedContentArchive.extract(
             try Self.zip(["assets/too-big.bin": Data(repeating: 65, count: 2_097_153)]),
             at: Self.stagingRoot(), limits: limits,
-            allowedTopLevel: SkillPackageValidator.packageTopLevelEntries))
+            allowedTopLevel: ["SKILL.md", "floe.json", "assets"]))
         XCTAssertThrowsError(try SignedContentArchive.extract(
             try Self.zip(["../escape": Data("x".utf8)]),
             at: Self.stagingRoot(), limits: limits,
-            allowedTopLevel: SkillPackageValidator.packageTopLevelEntries))
+            allowedTopLevel: ["SKILL.md", "floe.json", "assets"]))
         var many: [String: Data] = [:]
         for index in 0..<2049 { many["assets/\(index).txt"] = Data([65]) }
         XCTAssertThrowsError(try SignedContentArchive.extract(
             try Self.zip(many), at: Self.stagingRoot(), limits: limits,
-            allowedTopLevel: SkillPackageValidator.packageTopLevelEntries))
+            allowedTopLevel: ["SKILL.md", "floe.json", "assets"]))
     }
 
     // MARK: 5. Transport budget token facts + fail-closed default transport
 
-    func testTransportBudgetTokenBindsEveryRetrievalFact() throws {
-        let files = try largeSourceFixtureFiles()
-        let transport = SyntheticHubTransport(files: files)
-        let publication = Self.makePublication(
+    func testTransportBudgetTokenBindsEveryRetrievalFact() async throws {
+        let publication = try Self.makePublication(
             commit: "c0123456789abcdef0123456789abcdef0123456")
         let binding = try XCTUnwrap(
             publication.feed.entry(id: "fixture-large")?.package)
@@ -283,15 +281,20 @@ final class C02LargeSourceProfileTests: XCTestCase {
         // The default protocol transport has no authenticated budget: an
         // authorized request fails closed instead of silently downgrading.
         let unavailable = SkillsRemoteTransportUnavailable()
-        XCTAssertThrowsError(try await unavailable.fetch(
-            publication.source, commit: publication.publicationCommit,
-            path: binding.path,
-            verifiedPackage: token))
+        do {
+            _ = try await unavailable.fetch(
+                publication.source, commit: publication.publicationCommit,
+                path: binding.path, verifiedPackage: token)
+            XCTFail("The unimplemented transport must refuse the authorized fetch")
+        } catch { }
         // nil authorization keeps the ordinary bounded fetch (which throws
         // unavailable here only because this adapter is the honest stub).
-        XCTAssertThrowsError(try await unavailable.fetch(
-            publication.source, commit: publication.publicationCommit,
-            path: binding.path, verifiedPackage: nil))
+        do {
+            _ = try await unavailable.fetch(
+                publication.source, commit: publication.publicationCommit,
+                path: binding.path, verifiedPackage: nil)
+            XCTFail("The unimplemented transport must refuse the ordinary fetch")
+        } catch { }
     }
 
     // MARK: 6. Taste floor: the 0.1.1 client compatibility constant
@@ -299,12 +302,17 @@ final class C02LargeSourceProfileTests: XCTestCase {
     func testTasteFloorUsesProjectedFeedMinimumWith011Client() throws {
         // The coordinator-owned author override projects the Android Taste
         // floor into the ordinary feed minimumAppVersion; the consumer uses
-        // the existing offer gate, not a new mechanism.
-        let feed = try verifiedFixtureFeed(mutatePackage: { _ in },
-                                           mutateEntry: { entry in
-            entry["minimumAppVersion"] = "0.1.1"
-        })
-        let entry = try XCTUnwrap(feed.feed.entry(id: "fixture-large"))
+        // the existing offer gate, not a new mechanism. The gate's
+        // `.installable` answer exists only for a qualified offer in a
+        // production-status feed, so this decodes the production spelling of
+        // the same synthetic catalog (the floor itself is the offer gate over
+        // the decoded entry).
+        let feed = try CuratedSkillFeed.decode(
+            bytes: Self.productionCatalogBytes(mutateEntry: { entry in
+                entry["minimumAppVersion"] = "0.1.1"
+            }),
+            expectedChannel: .android)
+        let entry = try XCTUnwrap(feed.entry(id: "fixture-large"))
         XCTAssertEqual(C02AndroidSkillCompatibility.version, "0.1.1")
         XCTAssertEqual(CuratedSkillHub.offerState(
             for: entry, mode: .production,
@@ -325,7 +333,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         let current = base.appendingPathComponent("current")
         let members = try SignedContentArchive.extract(zip, at: current,
             limits: SkillPackageResourceProfile.largeSourceV1.archiveLimits,
-            allowedTopLevel: SkillPackageValidator.packageTopLevelEntries)
+            allowedTopLevel: ["SKILL.md", "floe.json", "assets"])
         let digest = SignedContentArchive.canonicalDigest(members)
         let authority = SkillPackageResourceAuthorization(profile: .largeSourceV1,
             skillID: "fixture-large", version: "2.0.0", contentDigest: digest)
@@ -333,6 +341,10 @@ final class C02LargeSourceProfileTests: XCTestCase {
             requested == digest ? authority : nil
         }
         let root = base.appendingPathComponent("installed")
+        // The store publishes under <installationRoot>/.run-snapshots without
+        // creating intermediate directories, so the installation root itself
+        // must already exist (it is the live install root in the iOS layout).
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let pins = SkillRunSnapshotStore(installationRoot: root)
         let run = UUID()
         let first = try pins.pinnedSnapshot(currentInstallRoot: current,
@@ -516,7 +528,11 @@ final class C02LargeSourceProfileTests: XCTestCase {
                 "sha256": sha256Hex(reviewBytes),
                 "keyID": CuratedSkillHub.fixtureKeyID,
             ],
-            "installOffer": "qualified",
+            // Fixture feeds refuse qualified offers at decode (they are
+            // production-only); fixture-simulated is the fixture-feed offer
+            // kind for an installable entry, still backed by the signed
+            // package + review bindings above.
+            "installOffer": "fixture-simulated",
         ]
         var standardEntry = entry
         standardEntry["id"] = "fixture-standard"
@@ -532,6 +548,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         largeEntry["planNumber"] = 2
         func catalog(_ entries: [[String: Any]]) -> [String: Any] {
             let packaged = entries.filter { $0["package"] is [String: Any] }.count
+            let qualifiedOffers = entries.filter { $0["installOffer"] as? String == "qualified" }.count
             return [
                 "schemaVersion": 3, "publisher": CuratedSkillHub.publisher,
                 "channel": "android", "feedStatus": "fixture",
@@ -544,7 +561,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
                 "entries": entries,
                 "counts": ["total": entries.count, "builtin": 0, "optional": entries.count,
                     "deepAdaptation": 0, "packaged": packaged, "reviewed": packaged,
-                    "qualified": packaged, "offerQualified": packaged],
+                    "qualified": packaged, "offerQualified": qualifiedOffers],
             ]
         }
         let standardBytes = try JSONSerialization.data(
@@ -570,7 +587,7 @@ final class C02LargeSourceProfileTests: XCTestCase {
         mutatePackage: (inout [String: Any]) throws -> Void = { _ in },
         mutateEntry: (inout [String: Any]) throws -> Void = { _ in }
     ) throws -> CuratedSkillHub.VerifiedFeed {
-        var files = try largeSourceFixtureFiles(archiveBlob: archiveBlob)
+        var files = try Self.largeSourceFixtureFiles(archiveBlob: archiveBlob)
         let key = "android/catalog-large-source-v1.json"
         var root = try XCTUnwrap(JSONSerialization.jsonObject(
             with: try XCTUnwrap(files[key])) as? [String: Any])
@@ -592,25 +609,58 @@ final class C02LargeSourceProfileTests: XCTestCase {
             channel: .android, mode: fixtureMode())
     }
 
+    /// The production-feed spelling of the same synthetic graph. A qualified
+    /// offer may only exist in a production-status feed (fixture feeds refuse
+    /// it at decode), so the offer-gate tests that need `.installable` under
+    /// `.production` trust decode THIS shape — the same schema-3 decode path
+    /// the production consumer uses; signature verification is the separate
+    /// `verifiedFeed` gate and is not what the offer gate tests exercise.
+    static func productionCatalogBytes(
+        mutateEntry: (inout [String: Any]) throws -> Void = { _ in }
+    ) throws -> Data {
+        let files = try Self.largeSourceFixtureFiles()
+        let key = "android/catalog-large-source-v1.json"
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: try XCTUnwrap(files[key])) as? [String: Any])
+        root["feedStatus"] = "production"
+        root["sourceCommit"] = "d0123456789abcdef0123456789abcdef0123456"
+        var entries = try XCTUnwrap(root["entries"] as? [[String: Any]])
+        let index = try XCTUnwrap(entries.firstIndex { $0["id"] as? String == "fixture-large" })
+        var entry = entries[index]
+        entry["installOffer"] = "qualified"
+        // This helper tests schema/offer gating only; no review signature or
+        // install authority is minted. Production-status decode requires a
+        // non-fixture review-key label, as in the existing Android Hub tests.
+        var review = try XCTUnwrap(entry["review"] as? [String: Any])
+        review["keyID"] = "synthetic-production-review-decode-only"
+        entry["review"] = review
+        try mutateEntry(&entry)
+        entries[index] = entry
+        root["entries"] = entries
+        var counts = try XCTUnwrap(root["counts"] as? [String: Any])
+        counts["offerQualified"] = entries
+            .filter { $0["installOffer"] as? String == "qualified" }.count
+        root["counts"] = counts
+        return try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+    }
+
     /// Builds a Publication directly from the synthetic fixture graph for
-    /// token-binding tests that do not need a transport.
-    static func makePublication(commit: String) -> CuratedSkillHub.Publication {
-        do {
-            let files = try largeSourceFixtureFiles()
-            let catalogBytes = try XCTUnwrap(files["android/catalog-large-source-v1.json"])
-            let verified = try CuratedSkillHub.verifiedFeed(
-                bytes: catalogBytes,
-                signature: try signedEnvelope(over: catalogBytes),
-                channel: .android, mode: fixtureMode())
-            let source = try GitHubSkillSource(
-                owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository,
-                ref: "main", path: "android/catalog-large-source-v1.json")
-            return CuratedSkillHub.Publication(
-                source: source, layout: .largeSourceV1, publicationCommit: commit,
-                verifiedFeed: verified, mode: Self.fixtureMode())
-        } catch {
-            fatalError("synthetic publication fixture must build: \(error)")
-        }
+    /// token-binding tests that do not need a transport. Throws instead of
+    /// trapping so a malformed fixture reports an ordinary test failure and
+    /// never aborts the whole host.
+    static func makePublication(commit: String) throws -> CuratedSkillHub.Publication {
+        let files = try Self.largeSourceFixtureFiles()
+        let catalogBytes = try XCTUnwrap(files["android/catalog-large-source-v1.json"])
+        let verified = try CuratedSkillHub.verifiedFeed(
+            bytes: catalogBytes,
+            signature: try signedEnvelope(over: catalogBytes),
+            channel: .android, mode: fixtureMode())
+        let source = try GitHubSkillSource(
+            owner: CuratedSkillHub.owner, repository: CuratedSkillHub.repository,
+            ref: "main", path: "android/catalog-large-source-v1.json")
+        return CuratedSkillHub.Publication(
+            source: source, publicationCommit: commit,
+            verifiedFeed: verified, mode: Self.fixtureMode(), layout: .largeSourceV1)
     }
 
     static func stagingRoot() -> URL {

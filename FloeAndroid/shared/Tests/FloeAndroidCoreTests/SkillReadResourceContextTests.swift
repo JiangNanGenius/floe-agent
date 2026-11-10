@@ -9,7 +9,7 @@
 import XCTest
 import Foundation
 import FloeCore
-import FloeSkills
+@testable import FloeSkills
 import FloeTools
 
 final class SkillReadResourceContextTests: XCTestCase {
@@ -57,12 +57,12 @@ final class SkillReadResourceContextTests: XCTestCase {
     private func context(temporary: Bool = false, workspace: Bool = true) -> ToolContext {
         ToolContext(
             runID: UUID(),
-            environmentID: "env-1",
-            conversationID: UUID(),
             workspaceRootURL: workspace
                 ? FileManager.default.temporaryDirectory.appendingPathComponent("floe-ctx-\(UUID().uuidString)")
                 : nil,
             cancellation: CancellationToken(),
+            environmentID: "env-1",
+            conversationID: UUID(),
             temporaryReadOnly: temporary)
     }
 

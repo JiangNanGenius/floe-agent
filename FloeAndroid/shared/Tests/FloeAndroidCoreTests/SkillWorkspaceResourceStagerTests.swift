@@ -12,13 +12,21 @@ import FloeCore
 import FloeSkills
 import FloeTools
 
+private actor ResolverCallCounter {
+    private(set) var count = 0
+    func next() -> Int {
+        count += 1
+        return count
+    }
+}
+
 final class SkillWorkspaceResourceStagerTests: XCTestCase, @unchecked Sendable {
 
     private var root: URL!
     private var workspace: URL!
     private var packages: URL!
 
-    override func setUp() throws {
+    override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-skillstager-\(UUID().uuidString)")
         workspace = root.appendingPathComponent("Workspace", isDirectory: true)
@@ -46,8 +54,9 @@ final class SkillWorkspaceResourceStagerTests: XCTestCase, @unchecked Sendable {
                                                 withIntermediateDirectories: true)
         try scriptBytes.write(to: package.appendingPathComponent("scripts/run.sh"), options: .atomic)
         let manifest = SkillManifest(id: id, version: "1.0.0",
-                                     capabilities: ["workspace.read"],
-                                     tools: ["exec.shell"], platforms: ["linux"])
+                                     capabilities: ["workspace.read", "execution.remote"],
+                                     tools: ["exec.shell"], platforms: ["linux"],
+                                     scriptRuntime: .remote)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let manifestBytes = try encoder.encode(manifest)
@@ -325,13 +334,13 @@ final class SkillWorkspaceResourceStagerTests: XCTestCase, @unchecked Sendable {
         let (snapshot, digest) = try makeSnapshot(id: "stager-guide")
         let rebound = root.appendingPathComponent("ReboundWorkspace", isDirectory: true)
         try FileManager.default.createDirectory(at: rebound, withIntermediateDirectories: true)
-        var calls = 0
+        let calls = ResolverCallCounter()
         let stager = SkillWorkspaceResourceStager(
             resolve: { _, _ in
-                calls += 1
+                let call = await calls.next()
                 // First (initial) resolution answers the original root; the
                 // mandatory pre-publish re-check observes the rebound root.
-                return calls == 1
+                return call == 1
                     ? .local(workspaceRoot: self.workspace, guestWorkspaceRoot: "/workspace")
                     : .local(workspaceRoot: rebound, guestWorkspaceRoot: "/workspace")
             })
@@ -341,7 +350,8 @@ final class SkillWorkspaceResourceStagerTests: XCTestCase, @unchecked Sendable {
             return XCTFail("expected refusal, got \(outcome)")
         }
         XCTAssertEqual(reason, SkillStageReason.taskWorkspaceUnavailable)
-        XCTAssertGreaterThanOrEqual(calls, 2)
+        let resolvedCallCount = await calls.count
+        XCTAssertGreaterThanOrEqual(resolvedCallCount, 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: stagedLeaf(digest).path))
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: rebound.appendingPathComponent(".floe").path))
@@ -349,11 +359,11 @@ final class SkillWorkspaceResourceStagerTests: XCTestCase, @unchecked Sendable {
 
     func testPrePublishLostTargetRefusesAndCleansOwnTemporary() async throws {
         let (snapshot, digest) = try makeSnapshot(id: "stager-guide")
-        var calls = 0
+        let calls = ResolverCallCounter()
         let stager = SkillWorkspaceResourceStager(
             resolve: { _, _ in
-                calls += 1
-                return calls == 1
+                let call = await calls.next()
+                return call == 1
                     ? .local(workspaceRoot: self.workspace, guestWorkspaceRoot: "/workspace")
                     : .unavailable(reason: SkillStageReason.noLocalExecutionTarget)
             })
