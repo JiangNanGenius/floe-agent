@@ -1,5 +1,7 @@
 # Signed component embedding and public corresponding-source runbook (G03-R3)
 
+Current Android distribution policy (2026-11-10): self-distributed Full APK only. The Play line is retired. Retained Full/Play packaging comparisons below document the legacy design and do not require new Play builds, channel-exclusion qualification or Store preparation.
+
 Build interfaces and verification boundaries only. Credential values, keys and
 private device data must never enter build scripts or public release material.
 The release owner runs signing, artifact inspection, device acceptance and publication.
@@ -143,7 +145,7 @@ bash <<'SH'
 source FloeAndroid/scripts/env.sh
 cd FloeAndroid
 # debug iteration (unchanged behaviour):
-./gradlew :app:assembleFullDebug :app:assemblePlayDebug --console=plain
+./gradlew :app:assembleFullDebug --console=plain
 
 # release candidate (identity + one version input, values never stored here;
 # the two *Password env references must be exported by Main's helper first;

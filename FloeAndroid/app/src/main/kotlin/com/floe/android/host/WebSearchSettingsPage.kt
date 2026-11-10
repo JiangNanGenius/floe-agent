@@ -71,7 +71,18 @@ fun WebSearchSettingsPage(controller: WebSearchHostController) {
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        FloeSettingsSectionCard(title = stringResource(R.string.websearch_providers)) {
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.websearch_providers),
+            // iOS grouped-list footer: the explanation sits under the card at
+            // reading height instead of occupying a 48dp cell of its own.
+            caption = {
+                FloeText(
+                    stringResource(R.string.websearch_providers_footer),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            },
+        ) {
             if (state.loading && !state.loaded) {
                 FloeSectionRow(title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -138,14 +149,6 @@ fun WebSearchSettingsPage(controller: WebSearchHostController) {
                 onClick = { controller.openNewCustomProvider() },
                 enabled = !state.listSaveInFlight,
             )
-            FloeSectionRow(title = {
-                FloeText(
-                    stringResource(R.string.websearch_providers_footer),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.secondaryLabel,
-                    modifier = Modifier.padding(vertical = 8.dp),
-                )
-            })
         }
         if (state.lastSaved) {
             FloeSettingsSectionCard(title = stringResource(R.string.websearch_status)) {
@@ -349,29 +352,27 @@ private fun WebSearchEditorSheet(
                             }
                         })
                         if (editor.draft.kind == WebSearchProviderKind.BOCHA_WEB) {
-                            FloeSectionRow(title = {
-                                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        FloeText(
-                                            stringResource(R.string.websearch_summary),
-                                            style = Floe.typography.body,
-                                            color = Floe.colors.label,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        FloeInlineSwitch(
-                                            checked = editor.draft.options["summaryEnabled"] != "false",
-                                            onCheckedChange = controller::updateSummaryEnabled,
-                                            description = stringResource(R.string.websearch_summary),
-                                            enabled = !inFlight,
-                                        )
-                                    }
+                            // The explanation rides inside the summary cell
+                            // (row caption) instead of a second full-height
+                            // grouped row under the switch.
+                            FloeSectionRow(
+                                title = {
                                     FloeText(
-                                        stringResource(R.string.websearch_summary_caption),
-                                        style = Floe.typography.metadata,
-                                        color = Floe.colors.secondaryLabel,
+                                        stringResource(R.string.websearch_summary),
+                                        style = Floe.typography.body,
+                                        color = Floe.colors.label,
                                     )
-                                }
-                            })
+                                },
+                                trailing = {
+                                    FloeInlineSwitch(
+                                        checked = editor.draft.options["summaryEnabled"] != "false",
+                                        onCheckedChange = controller::updateSummaryEnabled,
+                                        description = stringResource(R.string.websearch_summary),
+                                        enabled = !inFlight,
+                                    )
+                                },
+                                caption = stringResource(R.string.websearch_summary_caption),
+                            )
                         }
                         if (editor.draft.kind == WebSearchProviderKind.CUSTOM ||
                             editor.draft.kind == WebSearchProviderKind.VOLCENGINE

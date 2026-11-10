@@ -116,8 +116,57 @@ fun C03VoiceSettingsCard(
     var transcriptionLanguageDraft by remember(settings.transcriptionLanguage) {
         mutableStateOf(settings.transcriptionLanguage.orEmpty())
     }
+    // Group explanations ride the section footer (card caption, iOS grouped
+    // list) instead of naked text slots inside the card: a raw composable in
+    // section content still becomes its own measured cell with hairlines on
+    // both sides and no row insets. The input note keeps its original
+    // cloud-only predicate; the chunking note stays with the files section.
+    val inputCaption = if ((page == null || page == C03VoiceSettingsPage.INPUT) &&
+        settings.inputEngine == C03VoiceEngine.CLOUD
+    ) {
+        C03Strings.t(
+            "Records one short utterance, then transcribes it. It is not a continuous stream.",
+            "只录制一段短语音后转写，不会持续监听。",
+        )
+    } else {
+        null
+    }
+    val filesCaption = if (page == null || page == C03VoiceSettingsPage.FILES) {
+        C03Strings.t(
+            "Long files are transcribed in chunks within the upload limit, without using the system recognizer.",
+            "长音频会按上传上限分段转写，不使用系统识别器。",
+        )
+    } else {
+        null
+    }
 
-    FloeSettingsSectionCard(page?.let(::c03VoiceSettingsTitle) ?: C03Strings.t("Voice", "语音"), modifier) {
+    FloeSettingsSectionCard(
+        title = page?.let(::c03VoiceSettingsTitle) ?: C03Strings.t("Voice", "语音"),
+        modifier = modifier,
+        caption = if (inputCaption == null && filesCaption == null) {
+            null
+        } else {
+            (@Composable {
+                Column {
+                    inputCaption?.let { text ->
+                        FloeText(
+                            text,
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                    filesCaption?.let { text ->
+                        FloeText(
+                            text,
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                            modifier = if (inputCaption != null) Modifier.padding(top = 2.dp) else Modifier,
+                        )
+                    }
+                }
+            })
+        },
+    ) {
         if (page == null || page == C03VoiceSettingsPage.INPUT) {
             SectionItem(title = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -230,14 +279,6 @@ fun C03VoiceSettingsCard(
                             }
                         },
                         enabled = snapshot.capabilities.cloudReady,
-                    )
-                    FloeText(
-                        C03Strings.t(
-                            "Records one short utterance, then transcribes it. It is not a continuous stream.",
-                            "只录制一段短语音后转写，不会持续监听。",
-                        ),
-                        style = Floe.typography.metadata,
-                        color = Floe.colors.secondaryLabel,
                     )
                 }
             }
@@ -489,12 +530,17 @@ fun C03VoiceSettingsCard(
 
         }
         if (page == null || page == C03VoiceSettingsPage.FILES) {
-            FloeText(
-                C03Strings.t("Media transcription", "媒体转写"),
-                style = Floe.typography.bodyEmphasized,
-                color = Floe.colors.label,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            )
+            // The FILES subpage already carries this label in its navigation
+            // title and card title; only the legacy combined page still
+            // needs the in-card section header.
+            if (page == null) {
+                FloeText(
+                    C03Strings.t("Media transcription", "媒体转写"),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.label,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
             val asrModels = snapshot.capabilities.asrModels
             if (asrModels.isEmpty()) {
                 FloeValueRow(
@@ -564,15 +610,6 @@ fun C03VoiceSettingsCard(
             FloeValueRow(
                 C03Strings.t("Chunk limit", "分片上限"),
                 "${snapshot.capabilities.maxChunkBytes / (1024L * 1024L)} MiB",
-            )
-            FloeText(
-                C03Strings.t(
-                    "Long audio is decoded into sequential PCM16 WAV chunks; each upload stays below the provider limit. The system recognizer is never used for long files.",
-                    "长音频会解码为连续的 PCM16 WAV 分片，每次上传都低于提供商上限；长文件不会使用系统识别器。",
-                ),
-                style = Floe.typography.metadata,
-                color = Floe.colors.secondaryLabel,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             )
 
         }

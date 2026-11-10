@@ -1,5 +1,7 @@
 # Android stage-release asset runbook
 
+From 2026-11-10, Android releases use the independently distributed Full APK only. The Google Play line is retired; Play builds, channel-exclusion checks and Store readiness are not prerequisites for this runbook. Preserve historical evidence and shared Full inputs when removing obsolete Play outputs.
+
 `prepare-stage-release.py` prepares the upload asset set for one verified
 Android stage release. It is deliberately **not** a publisher and has no Git,
 GitHub, signing, build, ADB or device action. The Main owner supplies the

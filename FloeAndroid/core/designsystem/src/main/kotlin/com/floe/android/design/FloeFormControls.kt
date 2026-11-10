@@ -129,7 +129,7 @@ fun SectionScope.FloeSectionRow(
                 if (leading != null) leading()
                 Box(Modifier.weight(1f)) {
                     if (caption != null) {
-                        Column {
+                        Column(Modifier.padding(vertical = 4.dp)) {
                             title()
                             FloeText(
                                 caption,

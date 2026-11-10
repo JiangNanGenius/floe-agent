@@ -1,14 +1,24 @@
 # Floe for Android
 
-## Current delivery — Android Alpha77 (2026-11-10)
+Distribution policy (2026-11-10): Android is independently distributed as the Full APK. The Google Play line is discontinued and is no longer a development, build, qualification or publication target. Keep GitHub/in-App full-package, delta and mirror updates; historical Play source and evidence remain archival, while retired installers and variant-only outputs are removed.
+
+## Current delivery — Android Alpha78 (2026-11-10)
+
+[Alpha78/code104](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.78) is public from immutable source `cb562a704677e25d7f2c4a0c790582a8c06a43f5`. It refines existing grouped-setting explanations and selects a complete trusted native PIN keypad before typing.39 focused phone cases, unchanged runtime/native evidence, actual Full/Play compilation,58 native/package bindings, API28/29 signatures,77→78 host reconstruction, all seven anonymous public asset downloads and current/legacy update discovery passed. iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA78_DELIVERY.md).
+
+三星已通过App内保存的镜像源从77完成完整包联合升级，主包／运行组件104的实际字节、原UID、原5任务2项目均保持；完成状态和版本位于展开的已知问题之前，安装入口可直接点击。独立交回的语音、网页搜索和模型设置精修已通过实际Full消费端编译，尚未进入新APK；Play已停止，不再编译。
+
+Samsung completed the in-App mirror/full-package upgrade from77. Both code104 packages match the published bytes, retaining their UIDs, five original tasks and two projects. The next voice/search/model-settings refinement passed actual Full consumer compilation; it is not yet in a new APK. Future builds exclude the retired Play line.
+
+## Previous delivery — Android Alpha77 (2026-11-10)
 
 [Alpha77/code103](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.77) is public from immutable source `5fa8272714d955fdb895e8f70ff3a5ffdcd3a17d`. It includes the first compact Linux launcher/control refinement, bounded durable rootfs materialization, task links from schedule history and update-completion visibility.56 fresh focused cases, retained unchanged phone/native evidence, Full/Play compilation, package/signature and delta checks, all seven anonymous asset downloads and current/legacy update discovery passed. iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA77_DELIVERY.md).
 
 三星已通过App内镜像增量从76升到77，主包／运行组件103的实际字节、原UID、原5任务2项目保持。Ark Plan任务执行终端并生成文本，成果在内置轻量IDE全屏打开正确。新版自动解锁仍在系统确认后保持锁屏，首故障及41条原记录保留，未宣称解锁／重锁通过；自建任务、导出和敏感测试配置已清理。
 
-## Next source batch — settings density and native PIN entry
+## Source batch shipped in Alpha78 — settings density and native PIN entry
 
-The independent UI and component lines have both handed off. Existing setting explanations now share their owning control or grouped footer instead of occupying separate full-height rows; interactive targets, callbacks and tablet navigation are retained. A complete trusted native PIN keypad is selected before input when available, with no replay after partial failure.39 focused phone lifecycle/submit regressions and actual phone-module Release compilation passed. Actual Full/Play consumer compilation also passed after one recorded nullable-Compose-lambda correction. The next actual APK follows; this unshipped source does not turn the original77 unlock failure into a pass.
+The independent UI and component lines have both handed off. Existing setting explanations now share their owning control or grouped footer instead of occupying separate full-height rows; interactive targets, callbacks and tablet navigation are retained. A complete trusted native PIN keypad is selected before input when available, with no replay after partial failure.39 focused phone lifecycle/submit regressions and actual phone-module Release compilation passed. Actual Full/Play consumer compilation also passed after one recorded nullable-Compose-lambda correction. This source shipped in the immutable78 APK; fresh device acceptance follows, and the original77 unlock failure remains retained.
 
 ## Previous delivery — Android Alpha76 (2026-11-10)
 
@@ -459,7 +469,7 @@ bash <<'SH'
 source FloeAndroid/scripts/env.sh
 bash FloeAndroid/scripts/build-swift.sh
 cd FloeAndroid
-./gradlew :app:assembleFullDebug :app:assemblePlayDebug --console=plain
+./gradlew :app:assembleFullDebug --console=plain
 SH
 ```
 
