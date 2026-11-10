@@ -946,3 +946,13 @@ English: Alpha76 prepares the combined installed-runtime recovery and observed w
 后续几行布局修复将下载完成、版本与增量状态置于长篇已知问题之前，保持问题展开及安装入口；Full消费者实际编译通过，但不在不可变76包中，也不宣称已做新包实测。24处完成构件／stage退役、8份生产回执保存，删除窗口内置可用空间实际增加3,169,894,400字节；当前76、回退75、原失败、源码、符号、SDK／AVD和下一步明确用途缓存保留。索尼启动原因、新版自动解锁、图形组合及其他既定功能继续，N01–N08总目标保持进行中。
 
 English: Alpha76 is public with immutable assets and current/retained-client discovery. Samsung passed real75→76 delta OTA, exact installed bytes/UIDs, visible baseline data and a fresh manual terminal command/reopen. Test residue and completed staging outputs were cleaned. The compiled completion-layout follow-up is source-only; Sony startup and remaining N01–N08 acceptance stay open.
+
+## 2026-11-10 N02提交与N03锁屏条件回执
+
+Alpha76新的三星用例已到达实际凭据界面，接受一次填写请求后因未完成系统确认返回人工处理；未通过解锁、计算或自动重锁。47条原始记录及清理前故障保留，不将清理后的能力失效误当原因。后续源码仅补受控原生确认通路：同一输入窗口重新解析、可见范围内唯一目标、既有点击拒绝不绕过、不读取密码框内容或重放输入。18项定向检查及Full实际编译通过，尚不在公开76包中，仍需新包实机。
+
+N03在三星锁屏后注入一次Android充电状态变化，通过真实接收器／WorkManager／原生调度／Ark Plan完成一个终端命令，读取实际输出并保留22条原始回执。144次系统观察均保持锁屏；真实原生入口只接受一次，重复同一充电状态变化未增加运行。它是系统框架边界验证，不冒充充电器硬件或重启／全部定时模式验收。自己的计划／任务／导出已清，原0计划5任务2项目、电池和后台授权保持；临时常亮明确交给紧接的N05手动图形准备，结束仍需恢复。
+
+已发现两次新任务的首条命令均多出约45秒准备时间，单个Normal／auto代码包只处理该实证延迟；不放宽真实环境归属、就绪、取消或超时边界，也不以更长等待和重试掩盖问题。N03历史显示完成但缺到对应成果的直接入口，任务中心可读回真实结果；该入口、固定／重复／网络与重启场景、N05图形组合和整体UI仍按原编号继续。
+
+English: The new76 unlock attempt failed at native confirmation; the following bounded submit source passes18 focused cases/Full compilation but has no new APK/device pass. A real locked Samsung framework-condition run passed through the canonical scheduler and ArkPlan with one actual CLI result, retained22 original records and no duplicate run. Synthetic battery edges are separate from physical charger or reboot acceptance. Residue and temporary exemptions were restored; first-command latency, result navigation and remaining N01–N08 stay open.

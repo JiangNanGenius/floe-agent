@@ -47,3 +47,15 @@ The first mode observation could not see status below long expanded issues; that
 After producer receipts and public evidence were saved,24 completed APK/JNI/source/delta/HTML targets were retired and8 receipts retained. The deletion window measured3,169,894,400 additional internal free bytes. Source/delta staging paths are retired and must not be blindly replayed. Current76, required75 rollback, original independent failures, raw native34 symbols, source, SDK/AVD and caches with an immediate next use remain.
 
 Sony XZ/Android9 post-extraction startup remains unconfirmed. The new76 automatic-unlock driver, graphical combinations, fresh-download metering and remaining N01–N08 work stay open. Prior75 failure is not relabelled a pass. This intermediate delivery does not close the whole goal.
+
+## Fresh76 lock-screen failure and following source
+
+A new Samsung76 run really reached WAKE_READY_LATE, the credential surface and one accepted SET_TEXT request, then SUBMIT_UNAVAILABLE/USER_REQUIRED. Input acceptance is not delivery proof. No unlock, calculator or automatic relock passed.47 original records retain explicit ArkPlan identity and a successful Linux command; the pre-cleanup native trace, rather than the later teardown-related capability error, names the failure. Own task/export/temporary credential/scope were removed without resuming the failed run.
+
+The subsequent source adds a unique bounded native touch submit only where the trusted current credential control offers no click route. Current input-window identity, visible bounds, refusals, one-attempt input and actual keyguard completion remain authoritative; there is no password-content readback or input retry.18 selected cases and actual Full compilation passed. This is source-only after76, with no new device acceptance claim.
+
+## Bounded background condition acceptance
+
+Samsung completed one injected Android battery charging edge through the real receiver, WorkManager and native scheduler while144 passive observations remained locked. One durable positive edge, one native acceptance, one occurrence and one ArkAgentPlanQA/ark-code-latest run produced an actual exit0 printf result; repeated charging-true state changes did not add a run.22 original export records and the native condition trace were retained. The test did not press Run now and does not prove real charger hardware, OS reboot or every scheduled-task mode.
+
+The own schedule/conversation/device export were removed; original0 schedules,5 tasks and2 projects remain. Battery simulation and the temporary battery-optimization exemption were reset. Temporary always-awake is transferred only to the immediately following manual GUI preparation and still requires final restoration. Current first-command summaries include roughly45seconds of preparation; this remains a measured issue under investigation. History rows expose completion but no direct result shortcut; the result was read through Task Center and that shortcut remains open.

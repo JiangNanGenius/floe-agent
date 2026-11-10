@@ -217,7 +217,9 @@ internal class AndroidPhoneUnlockDriver(
                         if (!accepted) return false
                         // One best-effort submit while still locked; a refused or
                         // absent submit stays for the observer/auto-submit path.
-                        if (locked) clickSubmit(root)
+                        // Secure fields may hide their content even after an
+                        // accepted write. Never read it back or replay input.
+                        if (locked) clickSubmit(root.windowId)
                         return true
                     }
                 } finally { nodes.forEach { @Suppress("DEPRECATION") it.recycle() } }
@@ -232,15 +234,58 @@ internal class AndroidPhoneUnlockDriver(
             }
             trace("KEYPAD_INPUT_DISPATCHED")
             // Some configured PIN screens submit the final digit themselves.
-            if (locked) clickSubmit(root)
+            if (locked) clickSubmit(root.windowId)
             return true
         } finally { @Suppress("DEPRECATION") root.recycle() }
     }
 
-    private fun clickSubmit(root: AccessibilityNodeInfo): Boolean {
-        val accepted = click(root, submitIds, allowSubmitAncestor = true)
-        trace(if (accepted) "SUBMIT_ACCEPTED" else "SUBMIT_UNAVAILABLE")
-        return accepted
+    /**
+     * The ONE submit attempt on the freshly validated surface. The proven
+     * native click channel (the control itself or its bounded clickable
+     * SystemUI ancestor) keeps priority and unchanged accept/refuse
+     * semantics. Only when it resolves to nothing does the OEM touch
+     * fallback decide: a uniquely resolved, currently trusted native submit
+     * control that advertises no click channel at all (recorded Samsung
+     * key_enter_text on API 33) may act through one real bounded tap
+     * gesture. Submission re-resolves the credential surface in the same
+     * native window that received this attempt's input; bounds are limited
+     * to that window's visible display area. Password contents are not read.
+     * Any outcome remains dispatch-only: the caller's observed keyguard
+     * read is the sole decider of an unlock.
+     */
+    private fun clickSubmit(inputWindowId: Int): Boolean {
+        val resolved = scanCredentialSurface().surface ?: run {
+            trace("SUBMIT_UNAVAILABLE")
+            return false
+        }
+        val root = resolved.root
+        try {
+            if (!locked || !displayPowerOn || !resolved.ownershipTrusted ||
+                root.windowId != inputWindowId) {
+                trace("SUBMIT_UNAVAILABLE")
+                return false
+            }
+            if (click(root, submitIds, allowSubmitAncestor = true)) {
+                trace("SUBMIT_ACCEPTED")
+                return true
+            }
+            val rect = Rect().also { root.getBoundsInScreen(it) }
+            val metrics = service.resources.displayMetrics
+            val visibleWindow = intArrayOf(
+                rect.left.coerceAtLeast(0), rect.top.coerceAtLeast(0),
+                rect.right.coerceAtMost(metrics.widthPixels), rect.bottom.coerceAtMost(metrics.heightPixels),
+            )
+            val tap = resolveNativeSubmitTap(root, visibleWindow)
+            when {
+                tap == null -> trace("SUBMIT_UNAVAILABLE")
+                dispatchSubmitTap(tap) -> {
+                    trace("SUBMIT_TAP_ACCEPTED")
+                    return true
+                }
+                else -> trace("SUBMIT_TAP_REFUSED")
+            }
+            return false
+        } finally { @Suppress("DEPRECATION") root.recycle() }
     }
 
     /** Closed stage labels only: never ids, text, counts, credentials or exception messages. */
@@ -372,13 +417,74 @@ internal class AndroidPhoneUnlockDriver(
                     val owned = ArrayList<AccessibilityNodeInfo>()
                     try {
                         val target = findBoundedClickableSubmitAncestor(
-                            AccessibilitySubmitWalkNode(node, owned), SUBMIT_ANCESTOR_MAX_HOPS) ?: continue
+                            AccessibilitySubmitWalkNode(node, root.windowId, owned),
+                            SUBMIT_ANCESTOR_MAX_HOPS) ?: continue
                         if (target.performClick()) return true
                     } finally { owned.forEach { @Suppress("DEPRECATION") it.recycle() } }
                 }
             } finally { nodes.forEach { @Suppress("DEPRECATION") it.recycle() } }
         }
         return false
+    }
+
+    /**
+     * One fresh bounded query pass over the fixed native submit ids on the
+     * very root that was just validated, collecting touch-tap candidates
+     * gated on native SystemUI package, enabled state, user visibility and
+     * membership in the root's own window. Foreign, disabled, invisible or
+     * stale-window nodes never qualify; the selection itself is the pure
+     * [selectNativeSubmitTap] (unique winner, no click channel, positive
+     * live bounds), so no second authority exists here.
+     */
+    private fun resolveNativeSubmitTap(
+        root: AccessibilityNodeInfo,
+        visibleWindow: IntArray,
+    ): NativeSubmitTapPoint? {
+        val owned = ArrayList<AccessibilityNodeInfo>()
+        try {
+            val candidates = ArrayList<SubmitWalkNode>()
+            for (id in submitIds) {
+                val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
+                owned.addAll(nodes)
+                for (node in nodes) {
+                    if (node.packageName?.toString() != SYSTEM_UI_PACKAGE || !node.isEnabled ||
+                        !node.isVisibleToUser || node.windowId != root.windowId) continue
+                    candidates += AccessibilitySubmitWalkNode(node, root.windowId, owned)
+                }
+            }
+            return selectNativeSubmitTap(candidates, visibleWindow)
+        } finally { owned.forEach { @Suppress("DEPRECATION") it.recycle() } }
+    }
+
+    /**
+     * The single OEM fallback effect: one real tap gesture at the validated
+     * control's LIVE bounds centre. The return value is dispatch acceptance
+     * only; the actual result arrives exactly once through the callback,
+     * which emits closed trace labels and performs no input, state or
+     * timing action, so even a callback landing after the attempt ended
+     * cannot touch the transaction. A tap — accepted, completed, cancelled
+     * or refused — is never an unlock claim; that stays the caller's
+     * observed locked=false read, and nothing here retries or re-enters.
+     */
+    private fun dispatchSubmitTap(point: NativeSubmitTapPoint): Boolean {
+        val path = Path().apply { moveTo(point.x.toFloat(), point.y.toFloat()) }
+        var reported = false
+        return runCatching {
+            service.dispatchGesture(GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, SUBMIT_TAP_DURATION_MS)).build(),
+                object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription) {
+                        if (reported) return
+                        reported = true
+                        trace("SUBMIT_TAP_COMPLETED")
+                    }
+                    override fun onCancelled(gestureDescription: GestureDescription) {
+                        if (reported) return
+                        reported = true
+                        trace("SUBMIT_TAP_CANCELLED")
+                    }
+                }, handler)
+        }.getOrDefault(false)
     }
 
     /** A caller-owned credential surface root plus the window ids validated for it. */
@@ -445,6 +551,9 @@ internal class AndroidPhoneUnlockDriver(
 
     private companion object {
         const val SYSTEM_UI_PACKAGE = "com.android.systemui"
+        // A real short press: long enough for the OEM keyguard view to see a
+        // down/up pair, far shorter than any observation window it lands in.
+        const val SUBMIT_TAP_DURATION_MS = 50L
         val credentialFieldIds = listOf("passwordEntry", "pinEntry", "password_entry", "pin_entry")
         val submitIds = listOf("key_enter", "key_enter_text", "password_confirm", "ok")
         val keypadSampleIds = listOf("key1", "key_1", "key0", "key_0")
@@ -462,6 +571,10 @@ internal interface SubmitWalkNode {
     /** Screen bounds as [left, top, right, bottom]. */
     val bounds: IntArray
     val parent: SubmitWalkNode?
+    /** The node is currently visible to the user on the display. */
+    val visibleToUser: Boolean get() = true
+    /** The node still lives inside the very window whose root was freshly validated. */
+    val sameWindowAsRoot: Boolean get() = true
     fun performClick(): Boolean
 }
 
@@ -501,9 +614,56 @@ internal fun findBoundedClickableSubmitAncestor(
     return null
 }
 
+/** A validated live-bounds centre for the ONE OEM touch-tap submit path. */
+internal data class NativeSubmitTapPoint(val x: Int, val y: Int)
+
+/**
+ * The OEM submit fallback decision, proven against the recorded Samsung
+ * structure: [com.android.systemui:id/key_enter_text] is a native TextView
+ * with enabled=true, clickable=false and an
+ * entirely nonclickable ancestry (keyguard_host_view -> unnamed
+ * FrameLayout -> root), for which the existing click route did not submit. The live adapter also
+ * checks offered ACTION_CLICK before permitting this fallback.
+ * Such a control may act through a real touch tap only when it is native
+ * SystemUI, enabled, visible to the user, still inside the very window
+ * whose credential surface was freshly validated, positively bounded, and
+ * advertises NO click channel at all. A control that does advertise
+ * clickability or an ACTION_CLICK keeps its own accept/refuse semantics
+ * final — its refusal is never bypassed by a tap, and this uses only the
+ * node's live bounds centre, never saved coordinates, never an inferred
+ * point and never a general unlock gesture.
+ */
+internal fun nativeSubmitTapPoint(node: SubmitWalkNode, visibleWindow: IntArray): NativeSubmitTapPoint? {
+    if (!node.systemUiPackage || !node.enabled || !node.visibleToUser || !node.sameWindowAsRoot) return null
+    if (node.clickable) return null
+    val box = node.bounds
+    if (!boundsPositivelyContain(visibleWindow, box)) return null
+    return NativeSubmitTapPoint(box[0] + (box[2] - box[0]) / 2, box[1] + (box[3] - box[1]) / 2)
+}
+
+/**
+ * Exactly one eligible OEM control may act. Two eligible labels on the
+ * current surface are ambiguous and nothing is tapped, matching the surface
+ * resolver's unique-winner refusal discipline; unqualified candidates never
+ * create ambiguity because they cannot act at all.
+ */
+internal fun selectNativeSubmitTap(
+    candidates: List<SubmitWalkNode>,
+    visibleWindow: IntArray,
+): NativeSubmitTapPoint? {
+    // A refused click through an ancestor must not be bypassed by tapping
+    // its nonclickable child or a different labelled sibling.
+    if (candidates.any { node ->
+            node.systemUiPackage && node.enabled && node.visibleToUser && node.sameWindowAsRoot &&
+                (node.clickable || findBoundedClickableSubmitAncestor(node) != null)
+        }) return null
+    return candidates.mapNotNull { nativeSubmitTapPoint(it, visibleWindow) }.singleOrNull()
+}
+
 /** Adapter for the live tree; parents are tracked for recycling by the driver. */
 private class AccessibilitySubmitWalkNode(
     private val node: AccessibilityNodeInfo,
+    private val rootWindowId: Int,
     private val owned: MutableList<AccessibilityNodeInfo>,
 ) : SubmitWalkNode {
     override val systemUiPackage: Boolean
@@ -511,6 +671,8 @@ private class AccessibilitySubmitWalkNode(
     override val enabled: Boolean get() = node.isEnabled
     override val clickable: Boolean get() = node.isClickable ||
         node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+    override val visibleToUser: Boolean get() = node.isVisibleToUser
+    override val sameWindowAsRoot: Boolean get() = node.windowId == rootWindowId
     override val bounds: IntArray
         get() {
             val rect = Rect()
@@ -520,7 +682,7 @@ private class AccessibilitySubmitWalkNode(
     override val parent: SubmitWalkNode?
         get() = node.parent?.let {
             owned.add(it)
-            AccessibilitySubmitWalkNode(it, owned)
+            AccessibilitySubmitWalkNode(it, rootWindowId, owned)
         }
     override fun performClick(): Boolean = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
 }

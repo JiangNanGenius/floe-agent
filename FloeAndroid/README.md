@@ -4,7 +4,13 @@
 
 [Alpha76/code102](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.76) is public from immutable source `806ef4a1f3aa83363503eb2cb4afd6f87be29a8e`. It repairs installed Linux recheck/lane recovery and preserves current startup reasons, and requires actual display/native-window readiness before the single keyguard reveal.93 fresh focused cases plus59 unchanged recovery cases, Full/Play compilation, native34 input reuse,58 package bindings, API28/29 signatures,75→76 host reconstruction and all seven anonymous public asset bytes passed. Current and retained65 update discovery passed, including the post-device notes; iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA76_DELIVERY.md).
 
-三星已通过公开75→76真实增量更新，主程序／运行组件102的字节及原UID一致，原5条任务、2个项目可见。新建任务终端实际执行命令、读回ARM64输出并重开原会话通过；设置显示“环境已安装／终端任务已可用”。自有任务与标签已清，临时常亮已恢复。索尼具体启动原因、新版自动解锁／重锁及剩余N01–N08仍分别待实机确认，不将中间版作为整轮完成。
+三星已通过公开75→76真实增量更新，主程序／运行组件102的字节及原UID一致，原5条任务、2个项目可见。新建任务终端实际执行命令、读回ARM64输出并重开原会话通过；设置显示“环境已安装／终端任务已可用”。自有任务与标签已清，临时常亮已恢复。三星本版自动解锁已进入凭据界面，但系统确认未完成，原47条记录及清理前故障保留；索尼启动和其余N01–N08仍待后续确认，不将中间版作为整轮完成。
+
+## Subsequent source and device progress
+
+Native credential confirmation now has one bounded OEM tap path only when the current trusted native control has no click channel; it re-resolves the input window, clips live bounds and preserves ancestor/sibling refusal. No password contents are read and input is not replayed.18 focused submit/ancestor cases and actual Full compilation passed; this source is not in the immutable76 APK and has no new unlock device pass.
+
+三星的充电条件验证通过真实接收器／WorkManager／原生调度及Ark Plan运行，完成一次终端命令和实际输出；144次系统观察均为锁屏，重复充电状态变化未创建第二次运行。该测试使用系统电池状态注入，不代表真实充电器插拔、重启恢复或全部定时场景。22条原始回执保留，自建计划／任务／导出已清，电池状态及后台授权恢复。首条命令约45秒的准备延迟另行定位；运行历史的结果直达与其余N03／N05／UI仍待收口。
 
 ## Previous delivery — Android Alpha75 (2026-11-10)
 
