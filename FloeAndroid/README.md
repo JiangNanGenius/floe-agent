@@ -1,6 +1,12 @@
 # Floe for Android
 
-## Current delivery — Android Alpha75 (2026-11-10)
+## Current delivery — Android Alpha76 (2026-11-10)
+
+[Alpha76/code102](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.76) is public from immutable source `806ef4a1f3aa83363503eb2cb4afd6f87be29a8e`. It repairs installed Linux recheck/lane recovery and preserves current startup reasons, and requires actual display/native-window readiness before the single keyguard reveal.93 fresh focused cases plus59 unchanged recovery cases, Full/Play compilation, native34 input reuse,58 package bindings, API28/29 signatures,75→76 host reconstruction and all seven anonymous public asset bytes passed. Current and retained65 update discovery passed, including the post-device notes; iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA76_DELIVERY.md).
+
+三星已通过公开75→76真实增量更新，主程序／运行组件102的字节及原UID一致，原5条任务、2个项目可见。新建任务终端实际执行命令、读回ARM64输出并重开原会话通过；设置显示“环境已安装／终端任务已可用”。自有任务与标签已清，临时常亮已恢复。索尼具体启动原因、新版自动解锁／重锁及剩余N01–N08仍分别待实机确认，不将中间版作为整轮完成。
+
+## Previous delivery — Android Alpha75 (2026-11-10)
 
 [Alpha75/code101](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.75) is public from immutable source `54435f1744e8c61766e6c7d5d2b7062863556cc0`. It adds trusted native credential-window resolution and project graphical continuity. Sixty-seven fresh phone cases plus ten unchanged graphics/protocol cases, actual Full/Play compilation, native34 input reuse, 58 package bindings, API28/29 signatures,74→75 host reconstruction and all seven anonymous public asset bytes passed. Current and retained65 update discovery passed; iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA75_DELIVERY.md).
 
@@ -12,11 +18,9 @@
 
 三星已通过明确的完整包入口从公开73在线升到main/runtime100，字节、原UID、5条任务和2个项目保持。回答后等待提示自动清除及真实终端输出已观察；自动解锁的新用例完成唤醒／滑动，但未识别凭据界面，未输入密码或通过计算／重锁，原记录保留。索尼具体启动原因及其余N01–N08事项继续推进。
 
-## Next source checkpoint — Android Alpha76
+## Source follow-up — update completion visibility
 
-Alpha76/code102 combines installed Linux recovery and observed keyguard wake readiness. Recheck rebinds missing/stale lanes only for a live accepted native generation; closed startup causes distinguish component mismatch, connection timeout and handshake refusal. The single keyguard reveal requires actual interactive default-display power, STATE_ON and a trusted SystemUI window. A timeout never qualifies readiness; uncertain state ends with manual handling, without an extra gesture or credential attempt.
-
-83项相关手机检查及10项受影响图形／协议检查通过，59项未改环境恢复证据按精确输入复用，Full／Play实际编译通过。公开75的原锁屏失败与本版源码修复分开记录；新APK、三星实测和索尼反馈仍分别验收。见[Alpha76准备记录](../docs/releases/ANDROID_ALPHA76_DELIVERY.md)。
+After Samsung exposed completion/mode text below long expanded release notes, a small source follow-up moves the verified completion, version and delta status above the notes while keeping known issues expanded and installation reachable. Actual Full consumer compilation passed; this change is not part of the immutable Alpha76 APK and has no new device-pass claim.
 
 ## Previous delivery — Android Alpha73 (2026-11-10)
 

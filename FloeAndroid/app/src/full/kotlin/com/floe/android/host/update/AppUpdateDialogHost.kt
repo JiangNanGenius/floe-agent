@@ -255,17 +255,6 @@ private fun ProgressContent(ui: AppUpdateUiState) {
 @Composable
 private fun ReadyContent(ui: AppUpdateUiState) {
     val state = ui.download as AppDownloadState.Ready
-    ReadyKnownIssues(ui.knownIssues, ui.intermediate)
-    // A full base install replaces every split: an installed optional
-    // preview component is removed with the update and reinstalls on demand
-    // afterwards. The notice says exactly that; nothing claims availability
-    // that the committed package no longer contains.
-    if (ui.reinstallsOffice) FloeText(stringResource(R.string.app_update_office_reinstall),
-        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-    if (ui.reinstallsCad) FloeText(stringResource(R.string.app_update_cad_reinstall),
-        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
-    if (ui.officeInstallBusy || ui.cadInstallBusy) FloeText(stringResource(R.string.app_update_component_busy),
-        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
     FloeText(
         stringResource(R.string.app_update_ready),
         style = Floe.typography.bodyEmphasized,
@@ -283,6 +272,15 @@ private fun ReadyContent(ui: AppUpdateUiState) {
             color = Floe.colors.secondaryLabel,
         )
     }
+    // Keep the verified completion and transfer mode above long release notes.
+    // A full base install replaces optional preview splits; they reinstall on demand.
+    if (ui.reinstallsOffice) FloeText(stringResource(R.string.app_update_office_reinstall),
+        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    if (ui.reinstallsCad) FloeText(stringResource(R.string.app_update_cad_reinstall),
+        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    if (ui.officeInstallBusy || ui.cadInstallBusy) FloeText(stringResource(R.string.app_update_component_busy),
+        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    ReadyKnownIssues(ui.knownIssues, ui.intermediate)
     FloeText(
         stringResource(R.string.app_update_system_note),
         style = Floe.typography.metadata,

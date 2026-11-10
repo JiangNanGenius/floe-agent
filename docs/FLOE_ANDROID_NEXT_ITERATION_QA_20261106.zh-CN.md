@@ -1,7 +1,7 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
 
-日期：2026-11-06，实测更新至2026-11-10。当前：[Alpha73/code99已公开](releases/ANDROID_ALPHA73_DELIVERY.md)，固定App源`b0722808df5e006b5f035d4a2f43e2a8c1f3490e`。七附件匿名字节、72→73真实宿主重建及当前／保留65生产更新发现读回通过，iOS Latest保持。三星明确选择完整包从公开72在线联合安装至主程序／运行环境99，实际字节与原UID一致，原5条任务／2个项目可见。同进程新装应用刷新和全新本地密码框填写用例通过；原72失败独立保留。索尼具体启动根因、自动解锁／重锁、新下载计量及其余N01–N08事项继续，不以中间版代替整轮收口。
+日期：2026-11-06，实测更新至2026-11-10。当前：[Alpha76/code102已公开](releases/ANDROID_ALPHA76_DELIVERY.md)，固定App源`806ef4a1f3aa83363503eb2cb4afd6f87be29a8e`。93项新检查＋59项未改恢复证据、Full／Play、58项封装、API28／29签名、75→76重建和七附件匿名字节通过，新旧生产更新发现及实机补记读回完成，iOS Latest保持。三星真实75→76增量联合安装、主／runtime102字节和原UID、原5任务2项目及新终端命令／重开通过。索尼具体启动根因、新版自动解锁／重锁、新下载计量及其余N01–N08继续，不以中间版代替整轮收口。
 
 以下Alpha69–70记录保留各自原检查点状态，不替代上述当前交付与后续逐项证据。
 
@@ -936,3 +936,13 @@ English: Public75 passed exact bytes/discovery and real Samsung74→75 delta OTA
 原75锁屏用例34条最终记录和28条初始快照保留。Linux执行成功，可信SystemUI无凭据界面时返回手动处理；不将清理后的能力丢失当原根因，不重试旧任务。自己的任务、两份导出、临时凭据和授权已清，原5任务2项目保留并休眠。新包实测、索尼启动根因及其余功能继续，见[Alpha76准备记录](releases/ANDROID_ALPHA76_DELIVERY.md)。
 
 English: Alpha76 prepares the combined installed-runtime recovery and observed wake/window readiness fixes.93 fresh cases plus59 unchanged source-bound cases and Full/Play compilation passed. Prior75's native failure, original exports and restored device state are retained; APK, physical and public delivery remain distinct.
+
+## 2026-11-10 Alpha76实际交付与三星终端回归
+
+固定源码`806ef4a1f3aa83363503eb2cb4afd6f87be29a8e`的Alpha76/code102已公开。93项新检查＋59项未改恢复证据、Full／Play、58项封装、API28／29签名、75→76宿主重建及七附件完整匿名字节通过，发布后实机补记与当前／保留65生产更新解析器重新读回；iOS Latest保持。
+
+三星在公开75中实际显示“已由较小的增量补丁准备好”，按正常系统和PlayProtect流程完成主程序／运行组件102联合安装。实际字节、原UID及原5任务2项目核对通过。新的自建任务终端完成真实命令、ARM64输出及关闭重开，环境设置显示任务可用；自己的标签和任务随后清理，没有真实云模型调用或新凭据授权。原初观察未滚动到状态区的记录保留，不能将可见性问题当作下载失败。
+
+后续几行布局修复将下载完成、版本与增量状态置于长篇已知问题之前，保持问题展开及安装入口；Full消费者实际编译通过，但不在不可变76包中，也不宣称已做新包实测。24处完成构件／stage退役、8份生产回执保存，删除窗口内置可用空间实际增加3,169,894,400字节；当前76、回退75、原失败、源码、符号、SDK／AVD和下一步明确用途缓存保留。索尼启动原因、新版自动解锁、图形组合及其他既定功能继续，N01–N08总目标保持进行中。
+
+English: Alpha76 is public with immutable assets and current/retained-client discovery. Samsung passed real75→76 delta OTA, exact installed bytes/UIDs, visible baseline data and a fresh manual terminal command/reopen. Test residue and completed staging outputs were cleaned. The compiled completion-layout follow-up is source-only; Sony startup and remaining N01–N08 acceptance stay open.
