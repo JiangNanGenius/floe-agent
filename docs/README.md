@@ -10,6 +10,7 @@
 | 阅读主题 / Topic | 简体中文 | English |
 | --- | --- | --- |
 | 安装与模型 / Install & models | [阅读](USER_GUIDE.zh-CN.md#1-安装与首次使用) | [Read](USER_GUIDE.md#1-installation-and-first-use) |
+| Android：本机 ADB 与专用功能 / Android self-ADB & features | [Android 使用指南](ANDROID_GUIDE.zh-CN.md) | [Android guide](ANDROID_GUIDE.md) |
 | 任务与文件 / Tasks & files | [阅读](USER_GUIDE.zh-CN.md#3-新建任务与选择工作区) | [Read](USER_GUIDE.md#3-tasks-and-workspace-ownership) |
 | 手记与阅读 / Notes & reading | [阅读](USER_GUIDE.zh-CN.md#7-手记导入搜索与书写) | [Read](USER_GUIDE.md#7-notes-import-search-and-handwriting) |
 | Office | [阅读](USER_GUIDE.zh-CN.md#8-office编辑批注保存和重新打开) | [Read](USER_GUIDE.md#8-office-edit-annotate-save-and-reopen) |

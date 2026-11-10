@@ -3,6 +3,8 @@
 
 本页主要面向 iOS / iPadOS；Android 的差异会单独说明。功能以所选版本的发布说明为准。
 
+Android 的首次配置、低版本 USB 激活与本机 ADB、手机控制和图形环境，见[Android 专用教程](ANDROID_GUIDE.zh-CN.md)。
+
 ## 选择安装方式
 
 先打开[版本中心](https://www.floe-agent.com/releases)，按产品选择 Floe Agent、Mac Bridge 或 iOS Bridge。Floe Agent 正式版已上架 App Store（iOS/iPadOS 26+），可直接安装与更新。GitHub iOS IPA 需要自行签名，可能包含较新功能；选择安装包前核对[渠道版本及核实日期](CURRENT_STATUS.md)。想使用 TestFlight，可在[官网申请](https://www.floe-agent.com/#beta)，申请不等于立即获得测试资格。

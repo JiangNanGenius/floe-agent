@@ -93,6 +93,7 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 | 想了解什么 | 从这里开始 |
 | --- | --- |
 | 如何使用 | [中文图文手册](docs/USER_GUIDE.zh-CN.md) · [English manual](docs/USER_GUIDE.md) |
+| Android 激活与专用功能 | [Android 使用指南](docs/ANDROID_GUIDE.zh-CN.md) · [在线阅读](https://www.floe-agent.com/docs/android-zh.html?utm_source=github&utm_medium=referral&utm_campaign=android_guide_readme_zh) — 低版本 USB 激活、本机 ADB、手机控制与设备端 Linux |
 | 按主题找内容 | [文档中心](docs/README.md) |
 | 安装与版本 | [渠道状态](docs/CURRENT_STATUS.md) · [软件源](docs/FEATHER_SOURCE.md) · [发布记录](docs/releases/README.md) |
 | 问题与反馈 | [常见问题](docs/USER_GUIDE.zh-CN.md#20-常见问题与排查顺序) · [支持](SUPPORT.zh-CN.md) |

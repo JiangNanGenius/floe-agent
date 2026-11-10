@@ -3,6 +3,8 @@
 
 This guide focuses on iOS / iPadOS and calls out Android differences. Check the selected release for its actual capabilities.
 
+See the [Android guide](ANDROID_GUIDE.md) for first-time setup, legacy USB activation and self-ADB, phone control and project desktops.
+
 ## Choose an installation channel
 
 Open the [release centre](https://www.floe-agent.com/en/releases) and choose Floe Agent, Mac Bridge or iOS Bridge. Floe Agent is available on the App Store for iOS/iPadOS 26+; update through the store. GitHub iOS IPAs require your own signing and may carry newer features. Check [channel versions and verification dates](CURRENT_STATUS.md) before choosing an installer. [Apply on the website](https://www.floe-agent.com/en#beta) for TestFlight access; applying does not guarantee immediate eligibility.

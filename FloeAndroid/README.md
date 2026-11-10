@@ -1,5 +1,7 @@
 # Floe for Android
 
+使用说明 / User guide: [Android 使用与本机 ADB 激活](../docs/ANDROID_GUIDE.zh-CN.md) · [Android guide and self-ADB setup](../docs/ANDROID_GUIDE.md). Covers Android 9/10 USB activation, Android 11+ pairing, phone control, Linux desktops and Android-specific workflows.
+
 Distribution policy (2026-11-10): Android is independently distributed as the Full APK. The Google Play line is discontinued and is no longer a development, build, qualification or publication target. Keep GitHub/in-App full-package, delta and mirror updates; historical Play source and evidence remain archival, while retired installers and variant-only outputs are removed.
 
 ## Current delivery — Android Alpha79 (2026-11-10)

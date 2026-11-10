@@ -7,6 +7,8 @@
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
+For Android, start with the [Android guide and self-ADB setup](ANDROID_GUIDE.md): Android 9/10 USB activation, Android 11+ wireless pairing, phone control, system access, Linux and network tools.
+
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
 This guide describes workflows; use the workspace guide and selected release notes for build-specific limits. Check Settings for your installed version and [release and installation status](CURRENT_STATUS.md) for availability in each channel.
@@ -458,7 +460,7 @@ never squeezed into a strip.
 
 ### 3D models: one unified workbench
 
-The native 3D editor is available on iOS and iPadOS. Modeling, editing, rendering and saving run on-device; assistant actions use your selected local model or cloud provider. CAD/3D preview has not reached the public Android alpha.
+The native 3D editor is available on iOS and iPadOS. Modeling, editing, rendering and saving run on-device; assistant actions use your selected local model or cloud provider. Android offers CAD/3D file previews through an optional component; see the [Android files and preview guide](ANDROID_GUIDE.md#7-files-and-external-editors).
 
 Within a canvas, Floe has one 3D creation entry: open the bottom insertion menu (**+ ▸ 3D Model (unified workbench)**). It creates a native `.floecad` node owned by the canvas and opens the same full-screen workbench used by File Preview. **3D Panorama** stays a separate viewer node for panoramic images.
 

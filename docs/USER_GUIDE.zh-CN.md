@@ -7,6 +7,8 @@
 
 [English](USER_GUIDE.md) · [文档目录](README.md) · [官网文档](https://www.floe-agent.com/docs/zh.html)
 
+Android 用户请先看[Android 使用与本机 ADB 激活指南](ANDROID_GUIDE.zh-CN.md)：分别介绍 Android 9/10 的 USB 初始化、Android 11+ 无线配对，以及手机控制、系统访问、Linux 和网络工具。
+
 本手册介绍 Floe 的 AI 任务、手记、Office、图纸助手、画布与媒体，以及本地和远程开发功能。Floe 面向 iPad 设计，也支持 iPhone；需要 iOS/iPadOS 26 或更高版本。
 
 本手册随源码更新；已安装版本请在设置中查看，各安装渠道的可用状态见[版本与安装状态](CURRENT_STATUS.md)。
@@ -496,7 +498,7 @@ iPad 使用标签栏切换网页，iPhone 使用标签概览。任务浏览器�
 
 ### 3D 模型：统一工作台
 
-原生 3D 编辑器在 iOS 和 iPadOS 上提供。建模、编辑、渲染与保存均在设备端进行；助手使用你选择的本地模型或云端供应商。Android 公开测试版尚未提供 CAD/3D 预览。
+原生 3D 编辑器在 iOS 和 iPadOS 上提供。建模、编辑、渲染与保存均在设备端进行；助手使用你选择的本地模型或云端供应商。Android 通过按需安装的组件提供 CAD/三维文件预览，具体步骤见[Android 文件与预览教程](ANDROID_GUIDE.zh-CN.md#7-文件与外部编辑器)。
 
 在画布内，Floe 只有一个 3D 建模创建入口：打开底部插入菜单（**+ ▸ 3D 模型（统一工作台）**）。它会创建一个由画布持有的原生 `.floecad` 节点，并打开与文件预览相同的全屏工作台。**3D 全景** 仍是独立的全景图片查看节点。
 
