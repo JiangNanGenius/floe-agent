@@ -1,9 +1,21 @@
-<!-- docs-updated: 2026-11-10 -->
+<!-- docs-updated: 2026-11-11 -->
 # 当前版本与验证状态 / Current release and verification status
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：用户指定下一版为 **1.8.7**，构建 **329** 已冻结并完成本地归档，分发核验继续；本轮功能与大包资源消费端一并交付。1.9.0（327）和 1.9.1（328）仍属未交付尝试，不能据标签或归档称为可安装版本。 / Follow the release version authority: the next version is **1.8.7**, with build **329** frozen and locally archived; distribution verification is in progress. The current feature set and large-package resource consumer stay in this delivery; builds 327 and 328 are undelivered attempts.
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**1.8.7（329）内部 TestFlight 已可安装，GitHub／Feather 已交付；公开 TestFlight 已提交、等待 Apple 审核。** 冻结源包含本轮整合功能与大包资源消费端；后续 main 修改不自动属于该安装包。1.9.0（327）和 1.9.1（328）仍属未交付尝试。 / **1.8.7 (329) is available through internal TestFlight and verified GitHub/Feather delivery. Public TestFlight is submitted and awaiting Apple review.** The frozen source includes this round's integrated features and large-package consumer; later mainline changes are outside the artifact. Builds 327 and 328 remain undelivered attempts.
+
+## 2026-11-11 iOS 1.8.7（329）渠道核对 / iOS delivery snapshot
+
+以下为本轮实际产物与渠道读回，日期按悉尼时间；[329交付记录](releases/builds/FLOE_1.8.7_BUILD329_DELIVERY.md)保留源码、验证、原始等待超时和清理边界。 / This Sydney-dated snapshot uses the actual artifact and channel readbacks; the build-specific record preserves source, qualification, the original processing timeout and cleanup boundaries.
+
+| 渠道 / Channel | 已核实结果 / Observed result | 来源与边界 / Source and limits |
+| --- | --- | --- |
+| 内部 TestFlight / Internal TestFlight | 1.8.7（329）：`VALID`、未过期，Floe QA `IN_BETA_TESTING` | [独立 Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/42822579064)；内部组可安装。 / Available to the existing internal group. |
+| GitHub / Feather | [1.8.7（329）stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.7)及[Feather源](https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json)均已核验 | 实际 IPA、摘要、arm64 iPhoneOS、不可变源码及源内链接一致；未签名包需自行签名。 / Actual IPA, digest, platform, immutable source and feed link verified; your signing is required. |
+| 公开 TestFlight / Public TestFlight | publictest1：一次 `pending_review`，`WAITING_FOR_BETA_REVIEW` | [提交](https://github.com/JiangNanGenius/floe-agent/actions/runs/42823187105)后[独立复查](https://github.com/JiangNanGenius/floe-agent/actions/runs/42823462331)一致；329尚不宣称公开可安装。 / Submitted once and independently checked; public installability is not yet claimed. |
+
+正式 App Store 构建315及既有安排未修改。下表继续保留较早的跨产品核实日期，不以本次iOS交付刷新其他产品状态。 / Build315's formal App Store arrangements remain unchanged. The older cross-product snapshot below retains its own verification date.
 
 ## 2026-11-10 渠道核对 / Channel snapshot
 
