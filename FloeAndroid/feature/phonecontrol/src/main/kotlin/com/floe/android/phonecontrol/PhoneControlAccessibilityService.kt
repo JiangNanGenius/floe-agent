@@ -53,14 +53,32 @@ class PhoneControlAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> session.onContentChanged()
 
-            // Programmatic and user scrolls/clicks both arrive here. The
-            // session suppresses the short window around its own dispatch;
-            // anything else is treated as user interaction evidence and
-            // fences the run. This is a best-effort supplement to the
-            // platform's TYPE_TOUCH_INTERACTION_START events.
+            // Programmatic and user scrolls/clicks both arrive here. Events
+            // stamped with Floe's own package are ordinary App UI (the chat
+            // streams and autoscrolls while its protected page stays visible
+            // after an automatic unlock): a genuine user touch on Floe's own
+            // Activity is reported by the trusted own-App hook, so these must
+            // never fence the run. External events keep the conservative
+            // user-takeover path.
             AccessibilityEvent.TYPE_VIEW_SCROLLED,
-            AccessibilityEvent.TYPE_VIEW_CLICKED,
-            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START -> session.onPlatformUserInteraction(event.eventTime)
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                when (
+                    PhoneControlPolicy.semanticInteractionOrigin(
+                        event.packageName?.toString(),
+                        ownAppPackageName = this.packageName,
+                    )
+                ) {
+                    PhoneInteractionOrigin.OWN_APP_SEMANTIC ->
+                        session.onOwnAppSemanticEvent()
+                    PhoneInteractionOrigin.EXTERNAL_SEMANTIC ->
+                        session.onPlatformUserInteraction(event.eventTime)
+                }
+            }
+
+            // Raw touch interaction: stays the conservative takeover signal,
+            // with the session's existing own-dispatch echo attribution.
+            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START ->
+                session.onPlatformUserInteraction(event.eventTime)
         }
     }
 

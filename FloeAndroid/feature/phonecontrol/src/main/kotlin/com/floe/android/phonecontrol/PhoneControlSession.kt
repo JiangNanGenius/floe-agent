@@ -1167,6 +1167,50 @@ internal class PhoneControlSession(
         lastContentChangeAt = SystemClock.elapsedRealtime()
     }
 
+    /**
+     * A semantic click/scroll inside Floe's own window. Programmatic own-App
+     * UI (chat streaming/autoscroll while the protected page stays visible
+     * after an automatic unlock) and a real user click both emit these
+     * events; the genuine user touch is delivered separately by the trusted
+     * own-App Activity hook, so this path never marks human presence, never
+     * releases owned wake/relock and never fences the run.
+     */
+    fun onOwnAppSemanticEvent() {
+        if (closed) return
+        if (fence.state().owner != null) {
+            // Closed diagnostic token only: no event text, package,
+            // coordinates or payload — it identifies a later device trigger's
+            // kind without reading the event.
+            runCatching { android.util.Log.i("FloePhoneUnlock", "OWN_APP_SEMANTIC_EVENT_IGNORED") }
+        }
+    }
+
+    /**
+     * Trusted physical input on Floe's own Activity (touch or key), reported
+     * through the neutral core-contract bridge. This is real user presence
+     * and takes over exactly like a raw external touch: it marks the last
+     * user interaction, stops owned relock, blocks the fence with USER_TOUCH
+     * and aborts in-flight work. Unlike the platform accessibility stream,
+     * this signal is trusted by construction, so no echo/suppression check
+     * runs on it.
+     */
+    fun onOwnAppUserInteraction() {
+        if (closed) return
+        val now = SystemClock.elapsedRealtime()
+        lastUserInteractionAt = now
+        lastUserInteractionWallMillis = System.currentTimeMillis()
+        if (fence.state().owner != null) {
+            runCatching { android.util.Log.i("FloePhoneUnlock", "OWN_APP_USER_INTERACTION") }
+        }
+        unlocker.userInteraction()
+        if (fence.state().owner == null && inFlightId == null) return
+        traceObservationClear("own_app_user_interaction")
+        fence.block(PhoneControlBlocker.USER_TOUCH)
+        latest = null
+        abortInFlight(PhoneControlBlocker.USER_TOUCH, "a user touch on Floe's own window interrupted the run")
+        PhoneControlRuntime.publish()
+    }
+
     fun onPlatformUserInteraction(eventUptimeMillis: Long? = null) {
         if (closed) return
         val now = SystemClock.elapsedRealtime()

@@ -88,6 +88,18 @@ class MainActivity : ComponentActivity() {
         (application as FloeApplication).setActivityForeground(false)
         super.onPause()
     }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        // Trusted physical input (a real user touch or key) on Floe's own
+        // window. Programmatic own-App UI changes never reach this callback,
+        // so chat streaming/autoscroll cannot take over a phone task through
+        // it. The bridge is a no-op unless the Full AccessibilityService is
+        // live, which keeps this common-source Activity independent of the
+        // Full-only phone module.
+        com.floe.android.contracts.OwnAppUserPresence.reportOwnAppUserInteraction()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         taskExportRequestID = savedInstanceState?.getString("taskExportRequestID")
         super.onCreate(savedInstanceState)

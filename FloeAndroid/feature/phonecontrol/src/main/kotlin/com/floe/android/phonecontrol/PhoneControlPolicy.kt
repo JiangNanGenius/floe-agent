@@ -2,6 +2,19 @@
 package com.floe.android.phonecontrol
 
 /**
+ * Origin of a platform semantic interaction event (click/scroll). Closed
+ * enum for attribution/diagnostics only — it never carries event text, node
+ * data, packages beyond the classification itself, coordinates or payload.
+ */
+internal enum class PhoneInteractionOrigin {
+    /** Floe's own window: ordinary App UI, never human-takeover evidence. */
+    OWN_APP_SEMANTIC,
+
+    /** An external app's window: conservative existing takeover path. */
+    EXTERNAL_SEMANTIC,
+}
+
+/**
  * Pure authorization/target/privacy policy. Every function is deterministic
  * and Android-free so the exact gate can be unit-tested without a device.
  *
@@ -179,6 +192,32 @@ internal object PhoneControlPolicy {
     fun isProtectedPackage(packageName: String?): Boolean =
         packageName != null &&
             (packageName in PROTECTED_PACKAGES || isFloePackage(packageName))
+
+    /**
+     * Attribute a platform semantic interaction event (click/scroll) to its
+     * origin.
+     *
+     * Both programmatic dispatches and real user clicks/scrolls emit
+     * TYPE_VIEW_CLICKED / TYPE_VIEW_SCROLLED; only the event's package
+     * separates Floe's own window from an external app. Events stamped with
+     * Floe's own package are ordinary App UI — the chat streams and
+     * autoscrolls while its protected page stays visible after an automatic
+     * unlock — and must never fence a run. A genuine user touch on Floe's
+     * own Activity is delivered separately by the trusted
+     * [com.floe.android.contracts.OwnAppUserPresence] hook. External events
+     * keep the conservative existing takeover path.
+     */
+    fun semanticInteractionOrigin(
+        packageName: String?,
+        ownAppPackageName: String,
+    ): PhoneInteractionOrigin =
+        // Only this process's Activity reports through OwnAppUserPresence.
+        // Sibling/runtime packages retain the ordinary external event path.
+        if (ownAppPackageName.isNotBlank() && packageName == ownAppPackageName) {
+            PhoneInteractionOrigin.OWN_APP_SEMANTIC
+        } else {
+            PhoneInteractionOrigin.EXTERNAL_SEMANTIC
+        }
 
     /**
      * True for the stable Floe App/runtime family. Separator-aware so an

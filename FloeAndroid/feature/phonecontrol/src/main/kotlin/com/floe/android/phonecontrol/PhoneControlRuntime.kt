@@ -2,6 +2,7 @@
 package com.floe.android.phonecontrol
 
 import android.os.Build
+import com.floe.android.contracts.OwnAppUserPresence
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +22,16 @@ internal object PhoneControlRuntime {
     @Volatile private var lastFenceGeneration = 0L
     @Volatile private var lastPageGeneration = 0L
     @Volatile private var lastRelockReceipt: PhoneRelockReceipt? = null
+
+    /**
+     * Trusted own-App physical input routes to whichever session the runtime
+     * currently holds. It is bound only while the service is attached and
+     * cleared on detach, so a retired service can never receive new task
+     * input and no global listener outlives the service.
+     */
+    private val ownAppPresenceListener = OwnAppUserPresence.Listener {
+        current?.onOwnAppUserInteraction()
+    }
 
     private val mutableStatus = MutableStateFlow(
         PhoneControlStatus(
@@ -43,6 +54,7 @@ internal object PhoneControlRuntime {
             currentService = service
             enabledHint = true
             detachedBlocker = null
+            OwnAppUserPresence.setListener(ownAppPresenceListener)
             old
         }
         previous?.shutdown(PhoneControlBlocker.SERVICE_DISCONNECTED)
@@ -65,6 +77,7 @@ internal object PhoneControlRuntime {
             currentService = null
             enabledHint = false
             detachedBlocker = blocker
+            OwnAppUserPresence.setListener(null)
         }
         removed?.shutdown(blocker)
         removed?.relockReceipt?.let { lastRelockReceipt = it }
