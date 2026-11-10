@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -435,6 +436,81 @@ fun SectionScope.FloeFormChoiceField(
                 onSelect(key)
             },
         )
+    }
+}
+
+/**
+ * Compact single-choice capsule with an independent 48dp touch target.
+ * Existing blue roles keep small selected labels legible in both themes;
+ * unselected labels use the ordinary foreground. Typography still follows
+ * the page density and system font scale. [installed] is a factual checkmark.
+ */
+@Composable
+fun FloeChoiceChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    installed: Boolean = false,
+) {
+    val colors = Floe.colors
+    val shape = FloeLayout.SidebarSelectionShape
+    val selectedSurface = if (colors.isDark) colors.accent else colors.accentPressed
+    val selectedForeground = if (colors.isDark) Color.Black else Color.White
+    Box(
+        modifier = modifier
+            .heightIn(min = FloeLayout.MinimumTarget)
+            .widthIn(min = FloeLayout.MinimumTarget)
+            .selectable(
+                selected = selected,
+                enabled = enabled,
+                role = Role.RadioButton,
+                onClick = onClick,
+            )
+            .semantics {
+                contentDescription = label
+                if (!enabled) disabled()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(shape)
+                .background(
+                    when {
+                        selected -> selectedSurface
+                        enabled -> colors.chromeSurface
+                        else -> colors.chromeSurface.copy(alpha = 0.6f)
+                    }
+                )
+                .then(
+                    if (selected || !enabled) Modifier
+                    else Modifier.border(0.5.dp, colors.chromeHairline, shape)
+                )
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            FloeText(
+                label,
+                style = Floe.typography.bodyEmphasized,
+                color = when {
+                    !enabled -> colors.tertiaryLabel
+                    selected -> selectedForeground
+                    else -> colors.label
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (installed) {
+                IconGlyph(
+                    FloeIcons.Checkmark,
+                    if (selected) selectedForeground else colors.secondaryLabel,
+                    13.dp,
+                )
+            }
+        }
     }
 }
 

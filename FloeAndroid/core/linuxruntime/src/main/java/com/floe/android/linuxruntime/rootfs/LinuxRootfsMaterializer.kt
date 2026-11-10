@@ -15,6 +15,13 @@ import java.nio.file.StandardOpenOption.*
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.Properties
 import java.util.UUID
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.LockSupport
 
 /**
  * Materializes a full writable Linux filesystem at the ORIGINAL registry layer
@@ -25,6 +32,20 @@ import java.util.UUID
  * Inheritance is a snapshot at first materialization. An existing full parent
  * is the snapshot anchor (so deleted parent files are not resurrected from the
  * base). Later parent edits need an explicit rebuild; this is not overlayfs.
+ *
+ * The cold materialize copy runs through a bounded copy/force pipeline: the
+ * walk thread keeps ALL ownership work (containment, budgets' entry side,
+ * owned source access with its mode-loan journal, directory/symlink placement
+ * and existing-path replacement, and opening each input descriptor), while
+ * pipeline workers only copy bytes of an already-validated fresh leaf, apply
+ * its source mode and — on the pre-5.8 legacy barrier — run that file's own
+ * `force(true)` on its owned output descriptor. Only flush latency overlaps;
+ * every required per-file force and both publication barriers stay, and
+ * copyLayer joins every worker before returning on success, failure, budget
+ * refusal, cancellation and thread interrupt alike, so cleanup can never
+ * delete a tree a detached worker still writes and the marker can never
+ * precede unfinished copies. Transaction snapshots (hard-link preserving)
+ * keep the byte-for-byte serial copier.
  */
 class LinuxRootfsMaterializer(
     private val maxBytes: Long = 4L * 1024 * 1024 * 1024,
@@ -37,7 +58,10 @@ class LinuxRootfsMaterializer(
      * fsyncing every regular file plus ~1.2k directory fsyncs serializes the cold copy behind ~9k flush latencies (actual
      * cold runs: 27.4 s, 38.1 s, still copying after 148 s under load). One
      * filesystem barrier preserves the original crash rule — no marker before
-     * all bytes/metadata are durable — without that per-file cost.
+     * all bytes/metadata are durable — without that per-file cost. A null
+     * barrier keeps EVERY per-file `force(true)` and every directory fsync
+     * (the [copyWorkers] pipeline only overlaps their latency); it never
+     * substitutes syncfs on kernels that cannot report writeback errors.
      */
     private val durabilityBarrier: ((Path) -> Unit)? = null,
     /** Bounded counts/durations only (no paths/IDs); diagnostics for the cold run. */
@@ -45,7 +69,24 @@ class LinuxRootfsMaterializer(
     /** Set only by the trusted runtime owner, never by a model/request. */
     private val ownerUid: Int? = null,
     private val sourceMutationsAllowed: () -> Boolean = { true },
+    /**
+     * Bounded depth of the materialize-path copy/force pipeline. Workers hold
+     * no source-access state and no directory placement duty; pending work is
+     * capped at the pipeline's bounded queue, so the extra footprint is a few
+     * file handles plus one 64 KiB buffer per running worker. 0 or below
+     * restores the fully serial copy (the transaction-snapshot path always
+     * stays serial by construction).
+     */
+    private val copyWorkers: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4),
 ) {
+    /**
+     * Test seam only: observes each staged file path after a pipeline worker
+     * completed its copy, final mode and (legacy path) its own `force(true)`.
+     * Production never sets it; a throw is recorded as that file's failure
+     * through the closed copy vocabulary so tests can exercise the real
+     * mid-worker error/drain/join path without privileged fault injection.
+     */
+    @Volatile internal var fileCopiedTestHook: ((Path) -> Unit)? = null
     enum class Phase { COPY, BARRIER, PUBLISHED }
     data class Progress(val phase: Phase, val entries: Long, val bytes: Long, val elapsedMillis: Long)
 
@@ -148,7 +189,7 @@ class LinuxRootfsMaterializer(
             val startedNanos = System.nanoTime()
             fun report(phase: Phase) {
                 val callback = progress ?: return
-                val value = Progress(phase, budget.entries.toLong(), budget.bytes,
+                val value = Progress(phase, budget.entries.toLong(), budget.bytes.get(),
                     (System.nanoTime() - startedNanos) / 1_000_000)
                 try { callback(value) } catch (_: Exception) {
                     // Diagnostics never change preparation; fatal errors still propagate.
@@ -203,7 +244,7 @@ class LinuxRootfsMaterializer(
                 throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_PUBLISH_IO, failure)
             }
             report(Phase.PUBLISHED)
-            return Result(root.toFile(), budget.bytes, false, budget.skippedRuntimeEntries)
+            return Result(root.toFile(), budget.bytes.get(), false, budget.skippedRuntimeEntries)
         } finally {
             // A failed journalled transaction is recovered on the next call.
             // Never delete its only recovery copy or an arbitrary caller path.
@@ -246,7 +287,9 @@ class LinuxRootfsMaterializer(
 
     private inner class CopyBudget(val preserveMetadata: Boolean = false) {
         val hardLinks = mutableMapOf<Any, Path>()
-        var bytes = 0L
+        /** Written by pipeline workers as each chunk commits; atomic so the
+         *  byte budget stays a real bound across overlapped copies. */
+        val bytes = AtomicLong()
         var entries = 0
         var skippedRuntimeEntries = 0
         val directoryModes = mutableMapOf<Path, Int>()
@@ -266,10 +309,17 @@ class LinuxRootfsMaterializer(
         var operation = "walk"
         var inputForDiagnostic: Path? = null
         val access = sourceAccess(source)
+        // Bounded copy/force pipeline for the materialize path only. The
+        // transaction snapshot preserves hard links against files the walk
+        // has ALREADY fully written, so it keeps the serial copier unchanged.
+        val pipeline = if (!budget.preserveMetadata && copyWorkers > 0)
+            CopyPipeline(cancelled, durabilityBarrier == null) else null
+        val stagedDirectories = if (pipeline != null) ArrayList<Path>() else null
         try {
             val visitor = object : SimpleFileVisitor<Path>() {
             private fun destination(path: Path): Path {
                 if (cancelled()) throw RootfsPrepareCancelledException()
+                pipeline?.recordedFailure()?.let { throw it }
                 if (++budget.entries > maxEntries) {
                     throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_ENTRY_BUDGET)
                 }
@@ -297,6 +347,7 @@ class LinuxRootfsMaterializer(
                 operation = "stat"
                 budget.directoryModes[out] = access?.originalMode(dir) ?: mode(dir)
                 if (budget.preserveMetadata) budget.directoryModified[out] = attrs.lastModifiedTime()
+                stagedDirectories?.add(out)
                 operation = "walk"
                 return FileVisitResult.CONTINUE
             }
@@ -323,12 +374,26 @@ class LinuxRootfsMaterializer(
                             operation = "walk"
                             return FileVisitResult.CONTINUE
                         }
-                        if (attrs.size() > maxBytes - budget.bytes) {
+                        if (attrs.size() > maxBytes - budget.bytes.get()) {
                             throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET)
                         }
+                        val active = pipeline
+                        operation = "mode"
+                        val sourceMode = if (active != null) access?.originalMode(file) ?: mode(file) else 0
                         operation = "open_input"
                         inputForDiagnostic = file
-                        (access?.open(file) ?: FileChannel.open(file, READ, NOFOLLOW_LINKS)).use { input ->
+                        val input = access?.open(file) ?: FileChannel.open(file, READ, NOFOLLOW_LINKS)
+                        if (active != null) {
+                            // Capture the source mode while the walk's owned
+                            // access window is still open; workers never touch
+                            // source-access state.
+                            operation = "walk"
+                            val task = FileCopyTask(active, input, out, sourceMode, budget, cancelled)
+                            if (!active.submit(task)) {
+                                task.releaseUnstarted()
+                                throw active.abortReason()
+                            }
+                        } else input.use { channel ->
                             operation = "open_output"
                             FileChannel.open(out, CREATE_NEW, WRITE).use { output ->
                                 val buffer = ByteBuffer.allocate(64 * 1024)
@@ -336,12 +401,12 @@ class LinuxRootfsMaterializer(
                                     if (cancelled()) throw RootfsPrepareCancelledException()
                                     buffer.clear()
                                     operation = "read"
-                                    val size = input.read(buffer)
+                                    val size = channel.read(buffer)
                                     if (size < 0) break
-                                    if (size.toLong() > maxBytes - budget.bytes) {
+                                    if (size.toLong() > maxBytes - budget.bytes.get()) {
                                         throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET)
                                     }
-                                    budget.bytes += size
+                                    budget.bytes.addAndGet(size.toLong())
                                     buffer.flip()
                                     operation = "write"
                                     while (buffer.hasRemaining()) output.write(buffer)
@@ -374,7 +439,10 @@ class LinuxRootfsMaterializer(
                 }
                 // NOFOLLOW timestamp setters may need a readable descriptor.
                 // Apply restrictive final modes only after all metadata writes.
-                if (attrs.isRegularFile) {
+                // Pipeline workers apply each copied file's own mode right
+                // around its forced write; the serial path keeps applying it
+                // here against the walk-captured attributes.
+                if (attrs.isRegularFile && pipeline == null) {
                     operation = "mode"
                     Files.setAttribute(out, "unix:mode", mode(file), NOFOLLOW_LINKS)
                 }
@@ -388,9 +456,11 @@ class LinuxRootfsMaterializer(
                 if (exc != null) { operation = "walk"; inputForDiagnostic = dir; throw exc }
                 val out = stage.resolve(source.relativize(dir))
                 // syncfs flushes directory metadata too; only the legacy
-                // (no-barrier) path needs a per-directory fsync.
+                // (no-barrier) path needs a per-directory fsync. The pipeline
+                // defers those fsyncs to AFTER every file force completed
+                // (its link is then present), keeping the same force count.
                 operation = "force_dir"
-                if (durabilityBarrier == null) forceDirectory(out)
+                if (durabilityBarrier == null && pipeline == null) forceDirectory(out)
                 operation = "walk"
                 return FileVisitResult.CONTINUE
             }
@@ -402,11 +472,31 @@ class LinuxRootfsMaterializer(
             }
             }
             if (access != null) access.walk(visitor) else Files.walkFileTree(source, visitor)
+            if (pipeline != null) {
+                // Join phase one: every queued leaf's create+copy+(legacy)
+                // per-file force has ACTUALLY finished before any directory
+                // barrier runs, so each directory fsync persists links that
+                // already exist (the same coverage the serial post-visit had).
+                pipeline.awaitIdle()
+                // Phase two: the legacy path's per-directory fsyncs run on the
+                // same bounded workers; the syncfs path skips them exactly as
+                // the serial path does (the bulk barrier covers metadata).
+                if (pipeline.recordedFailure() == null && durabilityBarrier == null && stagedDirectories != null) {
+                    for (directory in stagedDirectories) {
+                        if (!pipeline.submit(DirForceTask(pipeline, directory))) break
+                    }
+                }
+                pipeline.awaitIdle()
+                pipeline.recordedFailure()?.let { throw it }
+            }
         } catch (cancel: InterruptedException) {
+            pipeline?.failAll()
             throw cancel
         } catch (typed: RootfsMaterializeException) {
+            pipeline?.failAll()
             throw typed
         } catch (io: java.io.IOException) {
+            pipeline?.failAll()
             // One closed code for every raw copy-phase filesystem failure
             // (open/read/write/fsync/readdir); the original IOException stays
             // on the cause chain for debugger inspection only.
@@ -419,6 +509,241 @@ class LinuxRootfsMaterializer(
                 (inputAttributes?.get("mode") as? Number)?.toInt()?.and(0xFFF),
                 (inputAttributes?.get("uid") as? Number)?.toInt()?.takeIf { it >= 0 },
                 (inputAttributes?.get("mode") as? Number)?.toInt()?.let { it and 0xF000 == 0x4000 })
+        } finally {
+            // copyLayer never returns while a worker is alive: sentinel + join
+            // here, so the caller's transaction cleanup can never delete a
+            // tree out from under a detached copy/force worker, and the
+            // publication barriers below always see finished copies.
+            pipeline?.close()
+        }
+    }
+
+    /**
+     * Bounded copy/force pipeline used by [copyLayer] on the materialize path.
+     *
+     * Ownership stays with the walk thread: it validates containment and
+     * parent chains, spends the entry budget, performs every owned source
+     * access open (mode-loan journal included), creates directories and
+     * symlinks, and replaces existing staged paths. A worker receives only a
+     * ALREADY-OPENED owned input descriptor plus a verified fresh leaf under
+     * the stage and performs the byte copy, the file's own source mode and —
+     * when [forceEachFile] (pre-5.8 legacy barrier) — that file's `force(true)`
+     * on its own output descriptor, then the deferred per-directory fsyncs.
+     * Nothing is skipped, replaced by syncfs, or reported as success on
+     * failure; only flush latency overlaps.
+     *
+     * Backpressure is a counting semaphore (open input descriptors bounded by
+     * the queue capacity), the first recorded failure wins, and [close] is a
+     * sentinel-plus-join guarantee: no worker thread survives the enclosing
+     * [copyLayer] return on success, budget refusal, IO failure, cancellation
+     * or thread interrupt alike.
+     */
+    private inner class CopyPipeline(
+        private val cancelled: () -> Boolean,
+        val forceEachFile: Boolean,
+    ) {
+        private val workerCount = copyWorkers.coerceIn(1, 4)
+        private val capacity = workerCount * 4
+        private val queue = LinkedBlockingQueue<Runnable>(capacity)
+        private val permits = Semaphore(capacity)
+        private val outstanding = AtomicInteger(0)
+        private val failure = AtomicReference<Throwable?>(null)
+        @Volatile private var stop = false
+        private val sentinel = Runnable { }
+        private val threads = List(workerCount) { index ->
+            Thread({ pump() }, "floe-rootfs-copy-$index").apply { isDaemon = true; start() }
+        }
+
+        fun shouldAbort(): Boolean = stop || failure.get() != null
+        fun recordedFailure(): Throwable? = failure.get()
+        fun failAll() { stop = true }
+
+        /** The first recorded failure wins so an injected mid-copy EIO can
+         *  never be replaced by a later success — or the reverse. */
+        fun record(caught: Throwable) {
+            stop = true
+            failure.compareAndSet(null, caught)
+        }
+
+        /** Only reachable while a real failure/cancel/interrupt is in play;
+         *  a bare stop without one is never treated as success. */
+        fun abortReason(): Throwable = recordedFailure()
+            ?: if (cancelled()) RootfsPrepareCancelledException()
+            else InterruptedException("Rootfs copy pipeline interrupted")
+
+        /** Returns false (without queueing) once the pipeline must abort. */
+        fun submit(task: Runnable): Boolean {
+            try {
+                while (!permits.tryAcquire(50, TimeUnit.MILLISECONDS)) {
+                    if (shouldAbort()) return false
+                }
+            } catch (interrupted: InterruptedException) {
+                stop = true
+                Thread.currentThread().interrupt()
+                return false
+            }
+            if (shouldAbort()) { permits.release(); return false }
+            outstanding.incrementAndGet()
+            try {
+                queue.put(task) // permit held => queue slot reserved
+            } catch (interrupted: InterruptedException) {
+                outstanding.decrementAndGet(); permits.release(); stop = true
+                Thread.currentThread().interrupt()
+                return false
+            }
+            return true
+        }
+
+        private fun pump() {
+            while (true) {
+                val task = try { queue.take() }
+                catch (interrupted: InterruptedException) { Thread.interrupted(); continue }
+                if (task === sentinel) { permits.release(); return }
+                try { task.run() }
+                catch (escaped: Throwable) { record(escaped) }
+                finally { permits.release(); outstanding.decrementAndGet() }
+            }
+        }
+
+        /** Blocks until every queued/running task has finished (or, after
+         *  [failAll], fast-exited). An interrupt of the caller marks the
+         *  pipeline stopping, still waits for the bounded workers, restores
+         *  the interrupt flag and reports it as a lifecycle interruption —
+         *  never as a completed copy. */
+        fun awaitIdle() {
+            var interrupted = false
+            while (outstanding.get() > 0) {
+                if (Thread.interrupted()) { interrupted = true; stop = true }
+                if (outstanding.get() > 0) LockSupport.parkNanos(2_000_000L)
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt()
+                throw InterruptedException("Rootfs copy pipeline interrupted")
+            }
+        }
+
+        /** Sentinel + join guarantee: safe to call from finally on any path. */
+        fun close() {
+            stop = true
+            var interrupted = false
+            repeat(threads.size) {
+                var acquired = false
+                while (!acquired) {
+                    try { acquired = permits.tryAcquire(50, TimeUnit.MILLISECONDS) }
+                    catch (again: InterruptedException) { interrupted = true }
+                }
+                // A held permit reserves a queue slot, so the put cannot block;
+                // only an interrupt can fail it — retry until every worker has
+                // received EXACTLY one sentinel (a lost sentinel would strand
+                // its worker in take() and defeat the join guarantee).
+                while (true) {
+                    try { queue.put(sentinel); break }
+                    catch (again: InterruptedException) { interrupted = true; stop = true }
+                }
+            }
+            // Workers may currently run bounded filesystem calls; queued work
+            // fast-exits under the stop flag. Keep joining until EVERY thread
+            // is dead — returning earlier could leave a worker writing into
+            // the tree the transaction cleanup is about to delete.
+            for (thread in threads) {
+                while (thread.isAlive) {
+                    try { thread.join(100) }
+                    catch (again: InterruptedException) { interrupted = true; stop = true }
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt()
+        }
+    }
+
+    /**
+     * One leaf's copy work. The walk thread hands over the input descriptor it
+     * opened under the owned access; this task owns both channels from here on
+     * and closes each exactly once even when the pipeline aborts. On the
+     * legacy barrier path the source mode is applied BEFORE `force(true)`
+     * (strictly stronger durability than the pre-pipeline order); on the
+     * syncfs path it is applied after close, and the bulk barrier covers it.
+     */
+    private inner class FileCopyTask(
+        private val pipeline: CopyPipeline,
+        private val input: FileChannel,
+        private val output: Path,
+        private val sourceMode: Int,
+        private val budget: CopyBudget,
+        private val cancelled: () -> Boolean,
+    ) : Runnable {
+        fun releaseUnstarted() { runCatching { input.close() } }
+
+        override fun run() {
+            if (pipeline.shouldAbort()) { closeInput(); return }
+            var operation = "open_output"
+            try {
+                if (cancelled()) throw RootfsPrepareCancelledException()
+                FileChannel.open(output, CREATE_NEW, WRITE).use { file ->
+                    val buffer = ByteBuffer.allocate(64 * 1024)
+                    while (true) {
+                        if (cancelled()) throw RootfsPrepareCancelledException()
+                        buffer.clear()
+                        operation = "read"
+                        val size = input.read(buffer)
+                        if (size < 0) break
+                        operation = "write"
+                        // Same closed bound as the serial path: a chunk is
+                        // written only while the atomic total stays within
+                        // maxBytes; the exceeding chunk is never written.
+                        if (budget.bytes.addAndGet(size.toLong()) > maxBytes) {
+                            throw RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_BYTE_BUDGET)
+                        }
+                        buffer.flip()
+                        while (buffer.hasRemaining()) file.write(buffer)
+                    }
+                    if (pipeline.forceEachFile) {
+                        operation = "mode"
+                        Files.setAttribute(output, "unix:mode", sourceMode, NOFOLLOW_LINKS)
+                        operation = "force_file"
+                        file.force(true)
+                    }
+                }
+                if (!pipeline.forceEachFile) {
+                    operation = "mode"
+                    Files.setAttribute(output, "unix:mode", sourceMode, NOFOLLOW_LINKS)
+                }
+                operation = if (pipeline.forceEachFile) "force_file" else "mode"
+                fileCopiedTestHook?.invoke(output)
+            } catch (cancel: RootfsPrepareCancelledException) {
+                pipeline.record(cancel)
+            } catch (typed: RootfsMaterializeException) {
+                pipeline.record(typed)
+            } catch (io: java.io.IOException) {
+                pipeline.record(RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io, operation))
+            } finally {
+                closeInput()
+            }
+        }
+
+        private fun closeInput() {
+            try { input.close() }
+            catch (io: java.io.IOException) {
+                // The serial copier surfaces a closing input as a copy-phase
+                // failure too; keep the same closed code, never a silent drop.
+                pipeline.record(RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io, "read"))
+            }
+        }
+    }
+
+    /** Legacy-path per-directory fsync, deferred until every file link and
+     *  force completed. One fsync per staged directory, same count as the
+     *  serial post-visit pass; a failure is the closed copy_io/force_dir
+     *  refusal, never a skipped barrier. */
+    private inner class DirForceTask(
+        private val pipeline: CopyPipeline,
+        private val directory: Path,
+    ) : Runnable {
+        override fun run() {
+            if (pipeline.shouldAbort()) return
+            try { forceDirectory(directory) }
+            catch (io: java.io.IOException) {
+                pipeline.record(RootfsMaterializeException(RootfsMaterializeException.CODE_ROOTFS_COPY_IO, io, "force_dir"))
+            }
         }
     }
 
@@ -464,7 +789,7 @@ class LinuxRootfsMaterializer(
         if (cancelled()) throw InterruptedException("Environment snapshot cancelled")
         durabilityBarrier?.invoke(destination)
         forceDirectory(destination)
-        return budget.bytes
+        return budget.bytes.get()
     }
 
     internal fun removeTransactionTree(path: Path) { removeTree(path) }

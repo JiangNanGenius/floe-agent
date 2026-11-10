@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
+// The N08 compact launcher uses the same pinned foundation FlowRow the app
+// already ships (ExternalEditorSheet / AppUpdateDialogHost); wrapping chip
+// targets is a presentation concern only — selection, install, start/stop
+// and service callbacks below are unchanged.
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.floe.android
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -122,67 +129,113 @@ internal fun LinuxDesktopSheet(host: RuntimeHost, taskID: String, workspaceID: S
                         FloeCapsuleAction(stringResource(R.string.external_edit_done), onClick = onDismiss,
                             modifier = Modifier.widthIn(min = 64.dp, max = 96.dp))
                     }
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FloeText(stringResource(R.string.linux_desktop_description), style = Floe.typography.metadata,
-                            color = Floe.colors.secondaryLabel)
-                        LinuxDesktopDiagnosticsAction(state)
-                        FloeText(stringResource(when (state.phase.takeIf { owned } ?: "idle") {
-                            "running" -> R.string.linux_desktop_running
-                            "installing" -> R.string.linux_desktop_installing
-                            "starting" -> R.string.linux_desktop_starting
-                            "failed" -> R.string.linux_desktop_failed
-                            else -> R.string.linux_desktop_stopped
-                        }))
-                        if (state.phase in setOf("save_pending", "close_pending")) {
-                            FloeText(stringResource(R.string.linux_desktop_save_pending),
+                    // N08 compact refinement: related content is grouped tightly
+                    // and distinct groups separated generously; every string,
+                    // state gate and service callback below matches the
+                    // previous row-per-control layout exactly.
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp).padding(top = 6.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FloeText(stringResource(R.string.linux_desktop_description), style = Floe.typography.metadata,
                                 color = Floe.colors.secondaryLabel)
-                            FloeCapsuleAction(stringResource(R.string.linux_desktop_retry_return),
-                                onClick = service::stop)
+                            LinuxDesktopDiagnosticsAction(state)
+                            FloeText(stringResource(when (state.phase.takeIf { owned } ?: "idle") {
+                                "running" -> R.string.linux_desktop_running
+                                "installing" -> R.string.linux_desktop_installing
+                                "starting" -> R.string.linux_desktop_starting
+                                "failed" -> R.string.linux_desktop_failed
+                                else -> R.string.linux_desktop_stopped
+                            }))
+                            if (state.phase in setOf("save_pending", "close_pending")) {
+                                FloeText(stringResource(R.string.linux_desktop_save_pending),
+                                    color = Floe.colors.secondaryLabel)
+                                FloeCapsuleAction(stringResource(R.string.linux_desktop_retry_return),
+                                    onClick = service::stop)
+                            }
                         }
-                        FloeSegmented(options = listOf(stringResource(R.string.linux_desktop_single),
-                            stringResource(R.string.linux_desktop_windows)), selectedIndex = if (desktop) 1 else 0,
-                            onSelect = { desktop = it == 1 })
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            FloeText(stringResource(R.string.linux_desktop_install_base))
-                            FloeInlineSwitch(install, { install = it }, stringResource(R.string.linux_desktop_install_base))
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FloeSegmented(options = listOf(stringResource(R.string.linux_desktop_single),
+                                stringResource(R.string.linux_desktop_windows)), selectedIndex = if (desktop) 1 else 0,
+                                onSelect = { desktop = it == 1 })
+                            // iOS row language: the label leads and the switch
+                            // trails to the row edge; the 48dp target and the
+                            // callback are the shared FloeInlineSwitch ones.
+                            Row(Modifier.fillMaxWidth(),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FloeText(stringResource(R.string.linux_desktop_install_base),
+                                    style = Floe.typography.body, modifier = Modifier.weight(1f))
+                                FloeInlineSwitch(install, { install = it }, stringResource(R.string.linux_desktop_install_base))
+                            }
                         }
                         val busy = owned && state.phase in setOf("starting", "installing", "running")
                         val environmentReady = environment.phase == LocalRuntimeSetupHost.Phase.INSTALLED
                         if (!environmentReady && viewer == null) {
-                            FloeText(stringResource(R.string.linux_desktop_setup_required), color = Floe.colors.secondaryLabel)
-                            LocalRuntimeSettingsCard()
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FloeText(stringResource(R.string.linux_desktop_setup_required), color = Floe.colors.secondaryLabel)
+                                LocalRuntimeSettingsCard()
+                            }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.fillMaxWidth(),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (viewer != null) FloeCapsuleAction(stringResource(R.string.linux_desktop_return),
                                 onClick = { softwareVisible = false })
-                            if (!busy) FloeCapsuleAction(stringResource(R.string.linux_desktop_start),
+                            // The start action is the screen's one primary
+                            // action (shared filled-accent FloePrimaryAction);
+                            // Stop keeps the destructive capsule language the
+                            // viewer bar already uses.
+                            if (!busy) FloePrimaryAction(stringResource(R.string.linux_desktop_start),
                                 onClick = { service.start(taskID, workspaceID, desktop, install, selectedApp) },
+                                modifier = Modifier.weight(1f),
                                 enabled = environmentReady)
                             if (busy) FloeCapsuleAction(stringResource(R.string.linux_desktop_stop),
-                                onClick = { stopRequested = true })
+                                onClick = { stopRequested = true }, tint = Floe.colors.destructive,
+                                modifier = Modifier.weight(1f))
                         }
                         if (!owned && state.workspaceID != null) FloeText(stringResource(R.string.linux_desktop_switch_notice))
-                        FloeText(stringResource(R.string.linux_desktop_software))
-                        if (owned && state.softwareOperation != null) {
-                            FloeText(stringResource(R.string.linux_software_busy), color = Floe.colors.secondaryLabel)
-                        }
-                        if (owned && state.failure != null) {
-                            FloeText(stringResource(R.string.linux_desktop_operation_failed), color = Floe.colors.secondaryLabel)
-                        }
-                        for (app in LinuxDesktopCommands.featuredApplications) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                                FloeCapsuleAction(app, onClick = {
-                                    selectedApp = app
-                                    if (viewer != null && state.software.firstOrNull { it.application == app }?.installed != false) {
-                                        service.application(app, false); softwareVisible = false
-                                    }
-                                }, enabled = state.softwareOperation == null)
-                                if (owned && state.phase == "running") FloeCapsuleAction(
-                                    stringResource(R.string.linux_desktop_install_software),
-                                    onClick = { service.application(app, true) }, enabled = state.softwareOperation == null,
-                                    modifier = Modifier)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FloeText(stringResource(R.string.linux_desktop_software),
+                                style = Floe.typography.groupHeader, color = Floe.colors.secondaryLabel)
+                            if (owned && state.softwareOperation != null) {
+                                FloeText(stringResource(R.string.linux_software_busy), color = Floe.colors.secondaryLabel)
+                            }
+                            if (owned && state.failure != null) {
+                                FloeText(stringResource(R.string.linux_desktop_operation_failed), color = Floe.colors.secondaryLabel)
+                            }
+                            // Compact choice presentation: one wrapping chip
+                            // flow replaces the five full-width pill rows. All
+                            // featured apps stay findable and selected apps
+                            // launch from the viewer exactly as before; a
+                            // definite installed entry shows the neutral
+                            // checkmark role (never green success).
+                            FlowRow(modifier = Modifier.selectableGroup(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                for (app in LinuxDesktopCommands.featuredApplications) {
+                                    val entry = state.software.firstOrNull { it.application == app }
+                                    FloeChoiceChip(
+                                        label = app,
+                                        selected = selectedApp == app,
+                                        enabled = state.softwareOperation == null,
+                                        installed = owned && entry?.installed == true,
+                                        onClick = {
+                                            selectedApp = app
+                                            if (viewer != null && entry?.installed != false) {
+                                                service.application(app, false); softwareVisible = false
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                            // Install targets the chip the user selected (all
+                            // five apps remain installable; same gate and
+                            // service.application(app, true) callback).
+                            if (owned && state.phase == "running") {
+                                FloeCapsuleAction(stringResource(R.string.linux_desktop_install_software),
+                                    onClick = { service.application(selectedApp, true) },
+                                    enabled = state.softwareOperation == null)
                             }
                         }
                     }

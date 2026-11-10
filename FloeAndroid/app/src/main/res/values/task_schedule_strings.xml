@@ -37,6 +37,7 @@
     <string name="schedule_action_pause">Pause</string>
     <string name="schedule_action_resume">Resume</string>
     <string name="schedule_action_history">Run history</string>
+    <string name="schedule_action_open_task">Open task</string>
     <string name="schedule_action_use_flexible">Use flexible schedule</string>
     <string name="schedule_action_use_exact">Use exact time</string>
     <string name="schedule_action_allow_exact">Allow exact alarms</string>

@@ -37,6 +37,7 @@
     <string name="schedule_action_pause">暂停</string>
     <string name="schedule_action_resume">恢复</string>
     <string name="schedule_action_history">运行历史</string>
+    <string name="schedule_action_open_task">打开任务</string>
     <string name="schedule_action_use_flexible">改用弹性时间</string>
     <string name="schedule_action_use_exact">改用精确时间</string>
     <string name="schedule_action_allow_exact">允许精确闹钟</string>

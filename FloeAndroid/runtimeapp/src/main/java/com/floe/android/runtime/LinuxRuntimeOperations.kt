@@ -611,6 +611,11 @@ internal class LinuxRuntimeOperations(
             // One filesystem syncfs(fd) on the controlled stage directory is
             // the SAME publication rule (marker only after all bytes/metadata
             // are durable), but reports real errno and avoids ~9k flushes.
+            // On kernels that cannot report syncfs writeback errors the
+            // materializer keeps EVERY per-file force and per-directory fsync
+            // on the owned descriptors, and only overlaps their latency
+            // through its bounded copy/force pipeline (joined before any
+            // cleanup or publication can proceed).
             val prepareStart = SystemClock.elapsedRealtime()
             // Use the bulk barrier ONLY where the running kernel actually
             // reports syncfs writeback errors (>= 5.8). Older/unknown kernels

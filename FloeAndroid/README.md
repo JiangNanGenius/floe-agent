@@ -10,6 +10,8 @@
 
 Native credential confirmation now has one bounded OEM tap path only when the current trusted native control has no click channel; it re-resolves the input window, clips live bounds and preserves ancestor/sibling refusal. No password contents are read and input is not replayed.18 focused submit/ancestor cases and actual Full compilation passed; this source is not in the immutable76 APK and has no new unlock device pass.
 
+The following source batch implements a compact wrapping Linux application selector, a bounded durable rootfs copy pipeline and Open task in schedule history.56 focused rootfs/runtime cases and actual Full consumer compilation passed. Every legacy per-file force and directory barrier remains; workers drain and join before cleanup or publication. UI and runtime changes were authored concurrently and validated together. This is the first launcher/control refinement, not a claim of whole-App visual completion or measured device acceleration; the changes are not in the immutable76 APK.
+
 三星的充电条件验证通过真实接收器／WorkManager／原生调度及Ark Plan运行，完成一次终端命令和实际输出；144次系统观察均为锁屏，重复充电状态变化未创建第二次运行。该测试使用系统电池状态注入，不代表真实充电器插拔、重启恢复或全部定时场景。22条原始回执保留，自建计划／任务／导出已清，电池状态及后台授权恢复。首条命令约45秒的准备延迟另行定位；运行历史的结果直达与其余N03／N05／UI仍待收口。
 
 ## Previous delivery — Android Alpha75 (2026-11-10)

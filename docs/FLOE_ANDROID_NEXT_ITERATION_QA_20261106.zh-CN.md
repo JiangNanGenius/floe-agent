@@ -156,6 +156,8 @@ Android 更接近电脑上的 Agent 工作台：Floe 负责任务、文件、授
 
 **高速迭代约束（用户再次明确）：** 只验证实际修改和已出现故障；一个连贯修复批次集中编译后直接使用，不给每个组件增加独立验收门。未改组件复用证据，付费调用仅用于明确场景；保留必要的签名、版本、摘要和公开下载核验，不重复全量检查。
 
+**并行执行调整（用户2026-11-10确认）：** 界面精修与功能组件升级并行，不再把整轮UI排在所有功能之后。两条就绪代码线使用不同文件域：UI线处理设计系统、通用控件和Linux启动页外观；组件线处理Linux运行环境复制与落盘效率。现有行为、任务归属和原编号保持，构建仍串行，合入同一批APK后集中做三星及平板参考验证；不为每个视觉小改反复发包或重复整套测试。
+
 **阶段一：完整代码接入。** 按依赖完成 N01–N08 的入口、服务、运行和结果/失败路径；仅遇到具体接口或编译阻塞时提前做定向检查。全部代码接齐后集中做相关编译/对象验证，形成一份实际可安装的 Full APK，直接进入三星实测。编码期间不逐包验收，不为尚未出现的问题扩大测试，不重复验证未改组件；普通闪退和功能故障在实测时定位修复，不要求每个模块先达到完善状态才接入下一模块。可以记录设备/服务尚未验证，不用虚假成功占位。
 
 **阶段二：三星逐功能实测修复。** 从跨 App/自动化和日志开始，再 Linux 图形与外部编辑/按需预览，最后其余增强与 UI；保留原故障，复用未改组件证据，避免每个小修都启动完整双渠道/全库测试。
@@ -956,3 +958,19 @@ N03在三星锁屏后注入一次Android充电状态变化，通过真实接收�
 已发现两次新任务的首条命令均多出约45秒准备时间，单个Normal／auto代码包只处理该实证延迟；不放宽真实环境归属、就绪、取消或超时边界，也不以更长等待和重试掩盖问题。N03历史显示完成但缺到对应成果的直接入口，任务中心可读回真实结果；该入口、固定／重复／网络与重启场景、N05图形组合和整体UI仍按原编号继续。
 
 English: The new76 unlock attempt failed at native confirmation; the following bounded submit source passes18 focused cases/Full compilation but has no new APK/device pass. A real locked Samsung framework-condition run passed through the canonical scheduler and ArkPlan with one actual CLI result, retained22 original records and no duplicate run. Synthetic battery edges are separate from physical charger or reboot acceptance. Residue and temporary exemptions were restored; first-command latency, result navigation and remaining N01–N08 stay open.
+
+## 2026-11-10 并行UI与运行组件实施
+
+已完成的首命令延迟调查没有发现45秒固定等待。现有路径会为新任务复制约221MB、约1万个根环境成员；旧内核路径使用逐文件落盘。源码证据支持这是主要准备成本，精确阶段耗时及加速幅度仍需新版设备测量。实现包在保留原有持久性、取消、归属和发布屏障的前提下优化复制，不靠删同步、延长超时或假就绪通过。
+
+UI包同时处理共享字号／间距／开关／工具栏／菜单和Linux应用启动页。现有紧凑设置正文已是13sp，本轮优先消除布局和控件空耗，避免盲目缩字；保留iOS视觉方向及Android返回、字体缩放和触摸要求。两条包均为Normal／auto、源码交接，验证由主线程统一进行；当前公开76与后续源码、代码通过与设备效果分别记录。
+
+三星公开76在既有项目、不安装组件的情况下实际显示PCManFM；隐藏并重开查看器后，VNC、窗口管理器、消息总线和文件管理器保持原进程。明确确认停止后，图形进程退出，App回到无运行会话状态。仅自己的空测试任务已删除，原5条任务和2个项目保留；临时常亮、无障碍和电源状态恢复。这是手动图形会话连续性证据，不代表专业编辑保存、进程死亡恢复或索尼启动通过。
+
+对已定位的N03历史入口，后续源码补“打开任务”，使用记录内的真实对话编号及现有导航授权，缺少编号时不显示，运行层未就绪时保留明确错误。按钮不重新触发计划；它打开所属任务，不承诺自动定位某一历史运行。随并行批次统一编译、在新APK中确认，通知及精确运行定位继续保留为缺口。
+
+English: UI refinement and Linux component work now run in separate source scopes and share one downstream build/device pass. Public76 showed a real project file-manager session, kept the same graphical processes across viewer hide/reopen, and stopped them after confirmation; the owned empty task and temporary device settings were retired. The following source adds Open task to schedule history through existing navigation, without relaunching a run; compilation/device confirmation and exact-run routing remain separate.
+
+本批源码已完成统一验证：56项根环境／运行层定向检查与Full实际消费端编译通过；659项Gradle任务中607项复用缓存。并行复制保留逐文件及目录落盘，发布和删除前等待工作线程结束；主线程补正了信号量中断清理、输入句柄移交及调用者中断回归。UI首包实际落在Linux启动页和共享选择控件，整体菜单、材质、图标和其他页面精修继续保留，不能据此宣称全App完成。新APK界面、设备加速和新原生确认行为仍需实测，公开76保持不可变。
+
+English: The combined source passes56 focused rootfs/runtime cases and Full consumer compilation, with607 of659 Gradle tasks reused. The first UI package covers the launcher and reusable choice control; broader visual refinement, device performance and the new native confirmation path remain pending. No new APK or device pass is inferred from compilation.
