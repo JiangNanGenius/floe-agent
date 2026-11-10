@@ -196,12 +196,12 @@ class RuntimeWorkspaceInputSyncTest {
     fun `bounded bridge codes map verbatim and unknown codes collapse`() {
         val workspace = workspace()
         val bounded = RuntimeWorkspaceInputSync.execute(
-            harness(workspace, Observed(), failure = WorkspaceBridgeException("budgetExceeded")),
+            harness(workspace, Observed(), receipt(), failure = WorkspaceBridgeException("budgetExceeded")),
             payload(), cancelled = { false })
         assertEquals("refused", bounded.getString("state"))
         assertEquals("budgetExceeded", bounded.getString("code"))
         val unknown = RuntimeWorkspaceInputSync.execute(
-            harness(workspace, Observed(), failure = WorkspaceBridgeException("stageOpenFailed:13")),
+            harness(workspace, Observed(), receipt(), failure = WorkspaceBridgeException("stageOpenFailed:13")),
             payload(), cancelled = { false })
         assertEquals("refused", unknown.getString("state"))
         assertEquals("workspaceTransferFailed", unknown.getString("code"))
