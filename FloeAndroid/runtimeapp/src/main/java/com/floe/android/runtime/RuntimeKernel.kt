@@ -179,7 +179,7 @@ class RuntimeKernel(context: Context) {
         // and the receiver performs its own busy/quiescence deferral first.
         val cleanupLane = request.operation == RuntimeWire.CLEANUP
         if (request.operation == "shell.start" || request.operation == "stdio.start" ||
-            request.operation == RuntimeWire.PREFLIGHT
+            request.operation == RuntimeWire.PREFLIGHT || request.operation == RuntimeWire.SYNC_INPUTS
         ) check(workspaceGrant != null) { "Owned workspace grant is required" }
         check(metadataOnly || cleanupLane || foregroundAllowed()) { "Foreground work ownership is required" }
         check(!fence.isStopping) { "Runtime is stopping" }

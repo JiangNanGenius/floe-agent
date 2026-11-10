@@ -3842,7 +3842,12 @@ extension SkillsDomain {
     /// runtime (the trusted host binds it once per accepted root generation,
     /// AFTER the execution-target domain exists); until then — or after its
     /// retirement — staging reports the honest `stagingTransportUnavailable`
-    /// refusal instead of fabricating support. The stager itself is pure
+    /// refusal instead of fabricating support. The hot-publish transport
+    /// rides the SAME integration: when the probe finds a live same-task
+    /// workspace missing the just-committed bundle, the pinned bytes are
+    /// published into the live runtime-UID workspace over the existing
+    /// out-of-band verified transport and the probe re-answers (the probe
+    /// stays the only visibility authority). The stager itself is pure
     /// FloeSkills (no FloeAndroidCore import): the Core-side target/workspace
     /// facts arrive through the resolver closures.
     static func resourceStager() -> SkillWorkspaceResourceStager {
@@ -3853,7 +3858,8 @@ extension SkillsDomain {
                 }
                 return await runtime.resolution(runID: runID, conversationID: conversationID)
             },
-            probeVisibility: C02SkillResourceStagingIntegration.current?.visibilityProber())
+            probeVisibility: C02SkillResourceStagingIntegration.current?.visibilityProber(),
+            publishVisibility: C02SkillResourceStagingIntegration.current?.resourcePublisher())
     }
 
     // MARK: Per-run pinned snapshot lifecycle (trusted owners only)

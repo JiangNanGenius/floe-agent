@@ -40,6 +40,21 @@
 //   the shared live tree on later exec.shell calls). `visibleInGuest` is
 //   reported only from the trusted live-files probe, and the model-facing
 //   footer states the import boundary explicitly.
+// - HOT PUBLISH (the R1 hot-session repair): when the probe reports a
+//   definitive false — a LIVE same-task guest session answered and the path
+//   is not there — the read does not stop at "next import boundary". The
+//   pinned bundle is committed into the LIVE runtime-UID workspace through
+//   the trusted host's `SkillGuestResourcePublishing` seam, which reuses the
+//   SAME out-of-band verified filesystem transport as the participant
+//   new-inputs import (journal staging, digest-verified fd streaming, atomic
+//   missing-only publication, owner-baseline adoption; no bytes in Binder
+//   control parcels, no second shell/GUI, no stdin injection, no path
+//   repointing, no flag-only availability). The probe then re-answers and
+//   stays the ONLY visibility authority: a live workspace that cannot be
+//   synchronized (or an unconfirmed publish the probe cannot verify) is an
+//   actionable failure, never a ready path; a workspace that settled between
+//   probe and publish is the honest staged-for-first-use answer. The cold
+//   path (no live session) is byte-for-byte unchanged.
 //
 // Foundation-only on purpose: FloeSkills must not import FloeAndroidCore
 // (the Core target already imports FloeSkills). The trusted host binds the
@@ -154,6 +169,34 @@ public enum SkillStageReason {
     /// fabricated stage.
     public static let stagingTransportUnavailable =
         "the task resource staging transport is not available in this runtime generation"
+    /// A live same-task guest workspace exists but the trusted host installed
+    /// no hot-publish transport for this root generation. The bundle is
+    /// committed Core-side; the live guest cannot receive it in this read.
+    public static let liveWorkspacePublishUnavailable =
+        "liveWorkspacePublishUnavailable: a live task workspace is running but the resource publish transport is not available in this runtime generation; the pinned bundle is committed in the task workspace and materializes at the next workspace import boundary (run a new exec.shell), but it is NOT visible in the current live session"
+    /// A live workspace REJECTED the hot publish. Actionable failure: the
+    /// staged guest path must not be used in the current session.
+    public static func liveWorkspaceSyncRefused(_ code: String) -> String {
+        "liveWorkspaceSyncRefused: the pinned bundle is committed in the task workspace but the LIVE task workspace refused to receive it (\(Self.boundedCode(code))); it is NOT visible in the running guest. Do not read or run files under the staged guest path in the current session. Run a new exec.shell (a fresh workspace import materializes it) or close the live shell session and read this skill again."
+    }
+    /// The hot publish could not be confirmed (transport loss, bounded-wait
+    /// expiry, or an applied transfer the probe still cannot see). Same
+    /// actionable boundary as a refusal; the probe remains the authority.
+    public static func liveWorkspaceSyncUnconfirmed(_ detail: String) -> String {
+        "liveWorkspaceSyncUnconfirmed: the pinned bundle is committed in the task workspace but publishing it into the LIVE task workspace could not be confirmed (\(Self.boundedCode(detail))); it is NOT visible in the running guest now. Do not read or run files under the staged guest path in the current session. Run a new exec.shell (a fresh workspace import materializes it) or close the live shell session and read this skill again."
+    }
+
+    /// Model-facing engine codes stay bounded printable tokens (never a
+    /// host path, payload or free text).
+    static func boundedCode(_ code: String) -> String {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.utf8.count <= 48,
+              trimmed.utf8.allSatisfy({ (0x21...0x7e).contains($0) }) else {
+            return "engineRefused"
+        }
+        return trimmed
+    }
 }
 
 // MARK: - Trusted host seams
@@ -174,8 +217,8 @@ public enum SkillWorkspaceStageResolution: Sendable, Equatable {
 }
 
 /// Optional post-commit probe over the EXISTING read-only live guest files
-/// transport (workspace.files.tree). Implemented by the trusted host over the
-/// SAME mailbox/runtime IPC as shell.start — no second channel.
+/// transport (workspace.files.tree). Implemented by the trusted host over
+/// the SAME mailbox/runtime IPC as shell.start — no second channel.
 public protocol SkillGuestVisibilityProbing: Sendable {
     /// - Returns: true/false when a live same-project guest session actually
     ///   answered for the workspace-relative path; nil when no live session
@@ -183,6 +226,46 @@ public protocol SkillGuestVisibilityProbing: Sendable {
     ///   caller reports visibility honestly as unconfirmed).
     func isPathVisible(workspaceRoot: URL, relativePath: String,
                        conversationID: UUID?, cancellation: CancellationToken) async -> Bool?
+}
+
+// MARK: - Hot publish into the LIVE runtime workspace
+
+/// The engine's answer to one hot-publish request, mapped by the trusted
+/// host from the bounded wire vocabulary. `applied`/`refused` are terminal
+/// engine facts; `unconfirmed` means the request may still have completed
+/// (transport loss or a bounded-wait expiry) — the caller re-probes and the
+/// probe stays the ONLY visibility authority.
+public enum SkillGuestPublishOutcome: Sendable, Equatable {
+    /// The runtime confirmed the new-input transfer applied (the pinned
+    /// bundle's entries were installed into the live runtime-UID workspace;
+    /// pre-existing guest bytes were never touched).
+    case applied
+    /// No live same-project workspace existed at publish time (it settled
+    /// between the visibility probe and the publish). The tree materializes
+    /// at the next workspace import boundary — the honest staged-for-first-
+    /// use answer, never a failure.
+    case noLiveWorkspace
+    /// A live workspace rejected the transfer (identity fence, budget,
+    /// conflict, ownership revocation). `reason` is the engine's bounded
+    /// code, never a host path.
+    case refused(reason: String)
+    /// The outcome is unknown (transport failure/timeout). The transfer may
+    /// still have landed; only the probe can confirm.
+    case unconfirmed
+}
+
+/// Hot-publish seam: commits the ALREADY Core-side-staged pinned bundle into
+/// the LIVE runtime-UID task workspace over the EXISTING out-of-band
+/// verified filesystem transport (the workspace bridge's participant
+/// new-inputs import: journal staging, digest-verified PFD streaming,
+/// atomic missing-only publication, owner-baseline adoption). Implemented by
+/// the trusted host; no bytes ride Binder control parcels, no second shell
+/// or GUI is started, no interactive program's stdin is injected, and no
+/// availability flag is flipped without the real transfer.
+public protocol SkillGuestResourcePublishing: Sendable {
+    func publishStagedBundle(workspaceRoot: URL, runID: UUID,
+                             conversationID: UUID?,
+                             cancellation: CancellationToken) async -> SkillGuestPublishOutcome
 }
 
 // MARK: - Stager
@@ -236,13 +319,16 @@ public actor SkillWorkspaceResourceStager {
 
     private let resolve: @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution
     private let probeVisibility: (any SkillGuestVisibilityProbing)?
+    private let publishVisibility: (any SkillGuestResourcePublishing)?
 
     public init(
         resolve: @escaping @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution,
-        probeVisibility: (any SkillGuestVisibilityProbing)? = nil
+        probeVisibility: (any SkillGuestVisibilityProbing)? = nil,
+        publishVisibility: (any SkillGuestResourcePublishing)? = nil
     ) {
         self.resolve = resolve
         self.probeVisibility = probeVisibility
+        self.publishVisibility = publishVisibility
     }
 
     /// Prepare the pinned snapshot bundle in the task workspace. Never throws:
@@ -342,17 +428,11 @@ public actor SkillWorkspaceResourceStager {
             guard !cancellation.isCancelled, !Task.isCancelled else {
                 return .unavailable(reason: SkillStageReason.cancelled)
             }
-            let visible: Bool?
-            if let prober = probeVisibility {
-                visible = await prober.isPathVisible(
-                    workspaceRoot: workspaceRoot, relativePath: stagedRelativePath,
-                    conversationID: conversationID, cancellation: cancellation)
-            } else {
-                visible = nil
-            }
-            return .staged(SkillStagedBundle(
-                guestRoot: guestRoot, pinnedSHA256: bundle.digest,
-                fileCount: bundle.files.count, visibleInGuest: visible ?? false))
+            return await resolvedVisibility(
+                workspaceRoot: workspaceRoot, guestWorkspaceRoot: guestWorkspaceRoot,
+                stagedRelativePath: stagedRelativePath, guestRoot: guestRoot,
+                bundle: bundle, runID: runID, conversationID: conversationID,
+                cancellation: cancellation)
         }
 
         let stagingRoot = reservedRoot.appendingPathComponent(
@@ -443,17 +523,105 @@ public actor SkillWorkspaceResourceStager {
         guard !cancellation.isCancelled, !Task.isCancelled else {
             return .unavailable(reason: SkillStageReason.cancelled)
         }
-        let visible: Bool?
-        if let prober = probeVisibility {
-            visible = await prober.isPathVisible(
-                workspaceRoot: workspaceRoot, relativePath: stagedRelativePath,
-                conversationID: conversationID, cancellation: cancellation)
-        } else {
-            visible = nil
+        return await resolvedVisibility(
+            workspaceRoot: workspaceRoot, guestWorkspaceRoot: guestWorkspaceRoot,
+            stagedRelativePath: stagedRelativePath, guestRoot: guestRoot,
+            bundle: bundle, runID: runID, conversationID: conversationID,
+            cancellation: cancellation)
+    }
+
+    /// Visibility resolution for an ALREADY Core-side-committed bundle. The
+    /// read-only probe is the ONLY visibility authority: a true answer
+    /// reports visible; nil (no live same-task workspace answered) is the
+    /// honest staged-for-first-use answer — the tree materializes at the
+    /// next workspace import boundary. A definitive false means a LIVE
+    /// same-task workspace does not have the bytes yet: the pinned bundle
+    /// is then hot-published into the live runtime-UID workspace over the
+    /// trusted host's out-of-band verified transport and the probe
+    /// re-answers. A live workspace that still cannot be synchronized (or
+    /// whose publish is unconfirmed and unprobed) yields an actionable
+    /// failure, never a ready path; a workspace that settled between probe
+    /// and publish is staged-for-first-use again, not a failure.
+    private func resolvedVisibility(
+        workspaceRoot: URL,
+        guestWorkspaceRoot: String,
+        stagedRelativePath: String,
+        guestRoot: String,
+        bundle: SkillStagingBundle,
+        runID: UUID,
+        conversationID: UUID?,
+        cancellation: CancellationToken
+    ) async -> SkillStageOutcome {
+        func staged(_ visible: Bool) -> SkillStageOutcome {
+            .staged(SkillStagedBundle(
+                guestRoot: guestRoot, pinnedSHA256: bundle.digest,
+                fileCount: bundle.files.count, visibleInGuest: visible))
         }
-        return .staged(SkillStagedBundle(
-            guestRoot: guestRoot, pinnedSHA256: bundle.digest,
-            fileCount: bundle.files.count, visibleInGuest: visible ?? false))
+        guard let prober = probeVisibility else { return staged(false) }
+        let first = await prober.isPathVisible(
+            workspaceRoot: workspaceRoot, relativePath: stagedRelativePath,
+            conversationID: conversationID, cancellation: cancellation)
+        if first == true { return staged(true) }
+        guard first == false else { return staged(false) }
+
+        // A live same-task workspace answered a definitive false: publish the
+        // pinned bytes into it NOW (the hot-session repair). The SAME fences
+        // as the Core-side write apply: cancellation, then the pre-publish
+        // revalidation of the run's ACTUAL workspace (a rebound/retired root
+        // never publishes), then the trusted transport — which re-proves
+        // run, root, session, target and runtime generation on its own side.
+        guard !cancellation.isCancelled, !Task.isCancelled else {
+            return .unavailable(reason: SkillStageReason.cancelled)
+        }
+        guard let publisher = publishVisibility else {
+            return .unavailable(reason: SkillStageReason.liveWorkspacePublishUnavailable)
+        }
+        let publishResolution = await resolve(runID, conversationID)
+        switch publishResolution {
+        case .unavailable(let reason):
+            return .unavailable(reason: reason)
+        case .local(let publishRoot, let publishGuestRoot):
+            guard Self.sameDirectory(publishRoot, workspaceRoot),
+                  publishGuestRoot == guestWorkspaceRoot else {
+                return .unavailable(reason: SkillStageReason.taskWorkspaceUnavailable)
+            }
+        }
+        guard !cancellation.isCancelled, !Task.isCancelled else {
+            return .unavailable(reason: SkillStageReason.cancelled)
+        }
+        let outcome = await publisher.publishStagedBundle(
+            workspaceRoot: workspaceRoot, runID: runID,
+            conversationID: conversationID, cancellation: cancellation)
+        if outcome == .noLiveWorkspace {
+            // The live session settled between the probe and the publish:
+            // the next workspace import boundary carries the tree.
+            return staged(false)
+        }
+        guard !cancellation.isCancelled, !Task.isCancelled else {
+            return .unavailable(reason: SkillStageReason.cancelled)
+        }
+        // The probe is the ONLY visibility authority: re-probe before any
+        // visible claim — including after a refused/unconfirmed publish (a
+        // concurrent import boundary may have materialized the bytes).
+        let confirmed = await prober.isPathVisible(
+            workspaceRoot: workspaceRoot, relativePath: stagedRelativePath,
+            conversationID: conversationID, cancellation: cancellation)
+        if confirmed == true { return staged(true) }
+        switch outcome {
+        case .applied:
+            // The engine confirmed the transfer but the live probe cannot
+            // see the tree: an inconsistent engine state, reported as an
+            // actionable failure rather than a ready path.
+            return .unavailable(reason: SkillStageReason.liveWorkspaceSyncUnconfirmed(
+                "appliedNotVisible"))
+        case .refused(let reason):
+            return .unavailable(reason: SkillStageReason.liveWorkspaceSyncRefused(reason))
+        case .unconfirmed:
+            return .unavailable(reason: SkillStageReason.liveWorkspaceSyncUnconfirmed(
+                "transport"))
+        case .noLiveWorkspace:
+            return staged(false) // handled above; never reached
+        }
     }
 
     /// Internal non-throwing carrier for the pre-publish resolution refusal.

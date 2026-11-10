@@ -365,6 +365,13 @@ internal class LinuxRuntimeOperations(
         "stdio.write" -> stdioWrite(request.payload)
         "stdio.stdinEof" -> stdioStdinEof(request.payload)
         "workspace.preflight" -> preflight(request, checkNotNull(workspaceGrant), cancelled)
+        // N07 R1 repair: hot-publish newly staged Core inputs into the LIVE
+        // runtime-UID task workspace through the EXISTING participant
+        // new-inputs import. Non-executing (no process, no lease, no
+        // command), grant-bearing, serialized against starts/exports by the
+        // SAME workspaceGate, and refused honestly when no live workspace
+        // serves the exact project.
+        "workspace.syncInputs" -> syncWorkspaceInputs(request, checkNotNull(workspaceGrant), cancelled)
         "shell.poll" -> poll(request.payload)
         "shell.input" -> input(request.payload)
         "shell.resize" -> resize(request.payload)
@@ -1601,6 +1608,64 @@ internal class LinuxRuntimeOperations(
 
     private fun liveFilesRefusal(code: String): JSONObject =
         JSONObject().put("state", "refused").put("code", code)
+
+    /**
+     * N07 R1 repair — the LIVE workspace half of the hot resource publish.
+     * The destination is re-proved on THIS call: the exact project's LIVE
+     * workspace owner (or its retained deferred export), the canonical
+     * `Workspaces/<projectID>` directory, and the grant's own identity echo
+     * inside the transfer session. The workspaceGate serializes the transfer
+     * against starts and the whole-UID export paths exactly like a
+     * participant start's own new-inputs import; an install/first-use
+     * preflight owning the UID refuses (`runtimeBusy`) instead of racing its
+     * full swap. Everything decision-shaped lives in
+     * [RuntimeWorkspaceInputSync] (JVM-testable); this function only binds
+     * the REAL runtime facts.
+     */
+    private fun syncWorkspaceInputs(request: RuntimeWire.Request, workspaceGrant: android.os.IBinder,
+                                    cancelled: () -> Boolean): JSONObject {
+        workspaceGate.lock()
+        try {
+            return RuntimeWorkspaceInputSync.execute(
+                harness = InputSyncHarness(
+                    workspacesRoot = File(root, "Workspaces"),
+                    liveWorkspace = { projectID -> liveInputSyncWorkspace(projectID) },
+                    openWorkspace = { projectID, runID, workspace ->
+                        val session = openWorkspaceSession(workspaceGrant, projectID, runID, workspace)
+                        InputSyncWorkspace(
+                            importNewInputs = { cancel, baseline ->
+                                session.importNewInputs(cancel, baseline::adopt)
+                            },
+                            close = { session.close() })
+                    },
+                    exclusiveWork = { hasExclusiveWork() }),
+                payload = request.payload,
+                cancelled = cancelled)
+        } finally {
+            workspaceGate.unlock()
+        }
+    }
+
+    /** The LIVE workspace facts for one exact project: the running owner,
+     *  else the retained deferred export whose guest tree participants still
+     *  mount. Anything else (settled, foreign, never-started) is null — the
+     *  honest `workspaceNotLive` boundary, never a fresh import into a dead
+     *  tree. */
+    private fun liveInputSyncWorkspace(projectID: String): LiveInputSyncWorkspace? {
+        val owner = workspaceOwners[projectID]?.let { running[it] }
+            ?.takeIf {
+                !it.finished.get() && it.terminal.get() == null &&
+                    it.workspaceOwner && it.projectID == projectID
+            }
+        if (owner != null) {
+            val workspace = owner.workspace ?: return null
+            return LiveInputSyncWorkspace(
+                owner.workspaceRoot, InputSyncBaseline(workspace::adoptNewInput))
+        }
+        val deferred = deferredExports[projectID] ?: return null
+        return LiveInputSyncWorkspace(
+            deferred.workspaceRoot, InputSyncBaseline(deferred.workspace::adoptNewInput))
+    }
 
     /** Recompute the authoritative export outcome for status reads. */
     private fun exportStatus(payload: JSONObject): JSONObject {

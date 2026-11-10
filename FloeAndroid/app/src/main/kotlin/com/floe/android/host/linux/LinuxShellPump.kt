@@ -471,6 +471,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 complete(claim, 0, holder.exchange(operation, payload))
                 return
             }
+            if (operation == "workspace.syncInputs") {
+                // N07 R1 repair: hot-publish newly staged Core inputs into the
+                // LIVE runtime-UID task workspace. A NON-EXECUTING, bounded,
+                // grant-bearing workspace transfer — never a shell, never a
+                // second GUI, never stdin injection. The grant mints against
+                // the ORIGINAL run row; the runtime re-proves the live
+                // workspace and the grant identity echo before any byte
+                // moves; the read-side probe stays the visibility authority.
+                syncWorkspaceInputs(claim, payload, acceptedEpoch); return
+            }
             require(operation in setOf("shell.poll", "shell.input", "shell.resize", "shell.cancel"))
             val sessionID = payload.getString("sessionID")
             val owner = work.values.firstOrNull { it.sessionID == sessionID }
@@ -675,6 +685,106 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val (inUse, detail) = C01ManagedServiceOwner.probeLoopback(port)
         return JSONObject().put("inUse", inUse).put("detail", detail)
     }
+
+    /**
+     * N07 R1 repair — the trusted-host half of the hot resource publish.
+     * One bounded, NON-EXECUTING workspace transfer per claim: foreground
+     * ownership is registered BEFORE any IPC, the per-run grant mints from
+     * the accepted Root + the ORIGINAL run/conversation/workspace rows (a
+     * terminal/unknown run mints NOTHING — an honest refusal, never a
+     * synthetic session), the runtime re-proves the live workspace and the
+     * grant identity echo, and the transfer rides the EXISTING participant
+     * new-inputs import. The answer is the runtime's own bounded receipt;
+     * an await expiry or transport loss is honestly `unconfirmed` (the
+     * read-side probe re-answers visibility), never a fabricated state.
+     */
+    private suspend fun syncWorkspaceInputs(claim: Long, payload: JSONObject, acceptedEpoch: Long) {
+        fun refused(code: String): JSONObject =
+            JSONObject().put("state", "refused").put("code", code.take(48))
+        val request = syncInputsRequest(payload, acceptedEpoch)
+        if (request == null) {
+            complete(claim, 0, refused("requestInvalid")); return
+        }
+        if (admissionClosed.get() || LinuxShellNative.shouldStop(claim) != 0) {
+            complete(claim, 0, refused("cancelled")); return
+        }
+        val syncID = UUID.randomUUID().toString()
+        val stopSync = AtomicBoolean()
+        val settled = AtomicBoolean()
+        var lease: ForegroundLease? = null
+        var grant: CoreWorkspaceGrant? = null
+        var client: RuntimeConnection? = null
+        try {
+            val acquired = foreground.acquireOperation(syncID, OperationKind.LOCAL_EXECUTION,
+                RunStopHandler { stopSync.set(true) })
+            lease = acquired
+            val minted = CoreWorkspaceGrant.create(context, acceptedEpoch, request.second,
+                trustedCallID = null, trustedOperationID = null,
+                isOwned = WorkspaceOwnershipProbe {
+                    // Cleanup/writeback remains owned during a stop request;
+                    // the probe dies with THIS transient operation's exact
+                    // settlement, the accepted epoch or the lease.
+                    epoch.get() == acceptedEpoch && !settled.get() && !acquired.isClosed
+                }, authority = CoreWorkspaceNativeAuthority())
+                ?: run {
+                    complete(claim, 0, refused("workspaceUnresolved")); return
+                }
+            grant = minted
+            if (minted.projectID != request.first) {
+                complete(claim, 0, refused("identityMismatch")); return
+            }
+            if (stopSync.get() || LinuxShellNative.shouldStop(claim) != 0) {
+                complete(claim, 0, refused("cancelled")); return
+            }
+            val connection = RuntimeConnection(context, acquired.runtimePermit, minted).also {
+                it.connect().get(15, TimeUnit.SECONDS)
+            }
+            client = connection
+            val first = result(connection.exchange("workspace.syncInputs", payload, syncID))
+            // The kernel queues this control on its single executor (it can
+            // wait behind an admitted start) and then runs the transfer. The
+            // bounded await NEVER re-dispatches: the same request id makes a
+            // retry a receipt read, and a timeout is the honest unconfirmed.
+            val outcome = withTimeoutOrNull(RESOURCE_SYNC_RECEIPT_BUDGET_MILLIS) {
+                awaitControlReceipt(first, poll = { id ->
+                    connection.exchange("request.status", JSONObject().put("requestID", id))
+                }, onWaiting = {
+                    if (stopSync.get() || LinuxShellNative.shouldStop(claim) != 0) throw SyncAwaitStopped()
+                })
+            }
+            when {
+                outcome == null ->
+                    complete(claim, 0, JSONObject().put("state", "unconfirmed")
+                        .put("code", "awaitBudgetExpired"))
+                stopSync.get() || LinuxShellNative.shouldStop(claim) != 0 ->
+                    complete(claim, 0, refused("cancelled"))
+                else -> complete(claim, 0, outcome)
+            }
+        } catch (_: SyncAwaitStopped) {
+            complete(claim, 0, refused("cancelled"))
+        } catch (_: AdmissionRefused) {
+            complete(claim, 0, refused("runtimeBusy"))
+        } catch (failure: Exception) {
+            // Transport loss / connect failure / a failed kernel receipt:
+            // the transfer may or may not have crossed the wire. Never a
+            // fabricated refusal reason — the read-side probe re-answers.
+            complete(claim, 0, JSONObject().put("state", "unconfirmed")
+                .put("code", "transportUnavailable"))
+            if (failure is kotlinx.coroutines.CancellationException) throw failure
+        } finally {
+            // Settlement order: stop owning first (the isOwned probe dies),
+            // then close the authenticated connection, then the DRAINED
+            // grant close — an in-flight transfer is aborted at its next
+            // frame boundary and already-created entries stay adopted.
+            settled.set(true)
+            runCatching { client?.close() }
+            runCatching { grant?.close() }
+            runCatching { lease?.close() }
+        }
+    }
+
+    /** The await loop's cooperative stop: never a settlement claim. */
+    private class SyncAwaitStopped : IllegalStateException("sync await stopped")
 
     private suspend fun startSession(claim: Long, payload: JSONObject, acceptedEpoch: Long,
                                      stdio: Boolean = false) {
@@ -1659,6 +1769,28 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         internal fun isCanonicalUUID(text: String): Boolean = try {
             java.util.UUID.fromString(text).toString().uppercase() == text
         } catch (_: IllegalArgumentException) { false }
+
+        /** N07 hot-publish receipt wait. Deliberately SHORTER than the Core
+         *  mailbox's `resourceSyncBudgetMillis` (45 s): the pump always
+         *  answers the claim (a typed unconfirmed on expiry) before the
+         *  Core-side bounded wait can expire, so the read never classifies
+         *  a still-owned pump as a transport failure. */
+        internal const val RESOURCE_SYNC_RECEIPT_BUDGET_MILLIS = 40_000L
+
+        /** The CLOSED `workspace.syncInputs` request shape: exactly
+         *  `{projectID, runID}`, both UPPER-CASE canonical Core UUIDs. Null
+         *  is the typed `requestInvalid` — a malformed request can never
+         *  reach a grant mint or the runtime wire. */
+        internal fun syncInputsRequest(
+            payload: JSONObject, acceptedEpoch: Long,
+        ): Pair<String, String>? {
+            if (acceptedEpoch <= 0) return null
+            if (payload.keys().asSequence().toSet() != setOf("projectID", "runID")) return null
+            val projectID = payload.optString("projectID")
+            val runID = payload.optString("runID")
+            if (!isCanonicalUUID(projectID) || !isCanonicalUUID(runID)) return null
+            return projectID to runID
+        }
 
         /** Only the SAME request's real kernel terminal settles a claimed
          *  preflight. `unknown`, `queued`, `running`, missing replies and

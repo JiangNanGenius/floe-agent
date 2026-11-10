@@ -104,6 +104,14 @@ public enum LinuxShellMailboxLimits {
     public static let inputBudgetMillis = 30_000
     public static let resizeBudgetMillis = 15_000
     public static let cancelBudgetMillis = 15_000
+    /// N07 hot resource publish: ONE `workspace.syncInputs` wait. The runtime
+    /// queues the transfer on its single control executor (it can wait behind
+    /// an admitted start) and then streams only the entries missing from the
+    /// live workspace over the existing grant transport. A bounded-wait
+    /// expiry is honestly UNCONFIRMED (the claimed ticket stays live for its
+    /// real settlement; the read-side probe re-answers visibility) — never a
+    /// fabricated success or failure.
+    public static let resourceSyncBudgetMillis = 45_000
 }
 
 // MARK: - Mailbox

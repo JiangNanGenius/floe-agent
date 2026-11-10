@@ -25,6 +25,17 @@
 //     confirms visibility through the EXISTING read-only live-files
 //     transport (workspace.files.tree, same mailbox as shell.start): no
 //     second channel, no bytes in Binder control Parcels.
+//   * HOT PUBLISH (N07 R1 repair) — a definitive false from the prober (a
+//     LIVE same-task workspace answered and the path is not there) no
+//     longer stops at "next import boundary": the publisher commits the
+//     pinned bundle into the LIVE runtime-UID workspace over the SAME
+//     mailbox via the `workspace.syncInputs` operation, which reuses the
+//     existing participant new-inputs import end to end (trusted pump
+//     grant mint, journal staging, digest-verified fd streaming, atomic
+//     missing-only publication, owner-baseline adoption, runtime re-proof
+//     of workspace/grant/generation). The prober then re-answers and stays
+//     the ONLY visibility authority; a live workspace that cannot be
+//     synchronized is an actionable failure, never a ready path.
 //
 // Main calls `install` once per accepted generation AFTER
 // C02ExecutionTargetProduction.make (the resolver needs the target domain)
@@ -118,6 +129,19 @@ public enum C02SkillResourceStagingComposition {
     public static func productionProber() -> any SkillGuestVisibilityProbing {
         C02LiveGuestVisibilityProber()
     }
+
+    /// The hot-publish transport over the SAME mailbox as shell.start. One
+    /// `workspace.syncInputs` request asks the runtime to commit the Core
+    /// workspace's missing entries into the LIVE runtime-UID task workspace
+    /// through the existing participant new-inputs import (journal staging,
+    /// digest-verified fd streaming, atomic missing-only publication,
+    /// owner-baseline adoption). The trusted pump mints the per-run grant;
+    /// the runtime re-proves the live workspace, the grant identity echo and
+    /// the runtime generation before any byte moves. No bytes ride Binder
+    /// control parcels; no second shell/GUI; no stdin injection.
+    public static func productionPublisher() -> any SkillGuestResourcePublishing {
+        C02LiveGuestResourcePublisher()
+    }
 }
 
 private struct C02LiveGuestVisibilityProber: SkillGuestVisibilityProbing {
@@ -174,23 +198,89 @@ private struct C02LiveGuestVisibilityProber: SkillGuestVisibilityProbing {
     }
 }
 
+/// The production hot-publish seam: ONE bounded `workspace.syncInputs`
+/// mailbox request per exact skill.read that found a live workspace missing
+/// the bundle. The wire payload is exactly `{projectID, runID}` — the
+/// project identity derived from the SAME trusted canonical Core workspace
+/// root the stager committed into; the run identity the read is pinned to.
+/// The trusted pump mints the per-run grant (re-deriving the workspace from
+/// the ORIGINAL run/conversation rows and re-verifying the native epoch),
+/// and the runtime re-proves the live workspace plus the grant identity
+/// echo before any byte moves. A refusal/transport mapping never invents
+/// visibility: the caller re-probes through the read-only live-files
+/// transport, which stays the only visibility authority.
+/// Internal (not private) so the focused suite can drive the REAL
+/// publisher over a REAL test mailbox (the LinuxShellMailboxTests pattern).
+struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
+    /// The epoch-bound mailbox the request rides. Production is `.shared`;
+    /// tests inject their own instance (same class, same C-ABI shape).
+    var mailbox: LinuxShellMailbox = .shared
+
+    func publishStagedBundle(workspaceRoot: URL, runID: UUID,
+                             conversationID: UUID?,
+                             cancellation: CancellationToken) async -> SkillGuestPublishOutcome {
+        guard !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed }
+        let projectID = LinuxShellProjectMapping
+            .projectID(forCanonicalCoreWorkspaceRoot: workspaceRoot)
+        let payload: [String: Any] = [
+            "projectID": projectID.uuidString,
+            "runID": runID.uuidString,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            return .refused(reason: "requestMalformed")
+        }
+        let reply: Data
+        do {
+            reply = try await mailbox.submit(
+                operation: "workspace.syncInputs", payload: data,
+                timeoutMillis: LinuxShellMailboxLimits.resourceSyncBudgetMillis)
+        } catch let error as LinuxShellTransportError {
+            // A claimed ticket may still complete remotely (the bounded wait
+            // expired or the generation fenced); the probe re-answer is the
+            // only truth, so every transport failure is honestly unconfirmed.
+            switch error {
+            case .remoteFailed, .remoteFailedWithRestore, .waitBudgetExpired,
+                 .hostFenced, .notBound, .saturated, .replyMalformed, .payloadTooLarge:
+                return .unconfirmed
+            }
+        } catch {
+            return .unconfirmed
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any] else {
+            return .unconfirmed
+        }
+        switch object["state"] as? String {
+        case "ok":
+            return .applied
+        case "refused":
+            let code = (object["code"] as? String) ?? "refused"
+            return code == "workspaceNotLive" ? .noLiveWorkspace : .refused(reason: code)
+        default:
+            return .unconfirmed
+        }
+    }
+}
+
 // MARK: - Generation-bound runtime (C02ToolResultIntegration box pattern)
 
 public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
     public let epoch: UInt64
     private let resolve: @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution
     private let prober: (any SkillGuestVisibilityProbing)?
+    private let publisher: (any SkillGuestResourcePublishing)?
     private let liveEpoch: @Sendable () -> UInt64
 
     init(
         epoch: UInt64,
         resolve: @escaping @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution,
         prober: (any SkillGuestVisibilityProbing)?,
+        publisher: (any SkillGuestResourcePublishing)?,
         liveEpoch: @escaping @Sendable () -> UInt64
     ) {
         self.epoch = epoch
         self.resolve = resolve
         self.prober = prober
+        self.publisher = publisher
         self.liveEpoch = liveEpoch
     }
 
@@ -210,6 +300,11 @@ public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
     /// The guest-visibility probe for THIS live generation only.
     func visibilityProber() -> (any SkillGuestVisibilityProbing)? {
         isLive() ? prober : nil
+    }
+
+    /// The hot-publish transport for THIS live generation only.
+    func resourcePublisher() -> (any SkillGuestResourcePublishing)? {
+        isLive() ? publisher : nil
     }
 }
 
@@ -249,21 +344,25 @@ public enum C02SkillResourceStagingIntegration {
             resolve: C02SkillResourceStagingComposition.productionResolver(
                 executionTargets: executionTargets),
             prober: C02SkillResourceStagingComposition.productionProber(),
+            publisher: C02SkillResourceStagingComposition.productionPublisher(),
             liveEpoch: liveEpoch)
         box.set(runtime)
         return runtime
     }
 
-    /// Test/qualification seam: installs explicit resolver/prober closures
-    /// over the same generation fencing. Production never calls this.
+    /// Test/qualification seam: installs explicit resolver/prober/publisher
+    /// closures over the same generation fencing. Production never calls
+    /// this.
     public static func install(
         epoch: UInt64,
         resolve: @escaping @Sendable (UUID, UUID?) async -> SkillWorkspaceStageResolution,
         prober: (any SkillGuestVisibilityProbing)?,
+        publisher: (any SkillGuestResourcePublishing)? = nil,
         liveEpoch: @escaping @Sendable () -> UInt64
     ) -> C02SkillResourceStagingRuntime {
         let runtime = C02SkillResourceStagingRuntime(
-            epoch: epoch, resolve: resolve, prober: prober, liveEpoch: liveEpoch)
+            epoch: epoch, resolve: resolve, prober: prober,
+            publisher: publisher, liveEpoch: liveEpoch)
         box.set(runtime)
         return runtime
     }
