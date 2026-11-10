@@ -179,7 +179,7 @@ internal object C07EntryFlowHost {
             when (route) {
                 C07EntryRoute.NewTask -> navigationState.value =
                     C07EntryNavigation.OpenNewTask(null)
-                is C07EntryRoute.Task -> resolveTaskRoute(route.conversationID)
+                is C07EntryRoute.Task -> resolveTaskRoute(route.conversationID, route.runID)
                 is C07EntryRoute.Schedule -> resolveScheduleRoute(route.scheduleID)
                 is C07EntryRoute.Share -> Unit
             }
@@ -448,7 +448,7 @@ internal object C07EntryFlowHost {
             is C07RouteParse.Parsed -> when (val route = parsed.route) {
                 C07EntryRoute.NewTask ->
                     navigationState.value = C07EntryNavigation.OpenNewTask(null)
-                is C07EntryRoute.Task -> resolveTaskRoute(route.conversationID)
+                is C07EntryRoute.Task -> resolveTaskRoute(route.conversationID, route.runID)
                 is C07EntryRoute.Schedule -> resolveScheduleRoute(route.scheduleID)
                 is C07EntryRoute.Share -> {
                     val intake = activeState.value
@@ -1169,9 +1169,9 @@ internal object C07EntryFlowHost {
 
     /* ------------------------------ navigation ------------------------------ */
 
-    private fun resolveTaskRoute(conversationID: String) {
+    private fun resolveTaskRoute(conversationID: String, runID: String? = null) {
         if (runtimeHost == null) {
-            queueRoute(C07EntryRoute.Task(conversationID))
+            queueRoute(C07EntryRoute.Task(conversationID, runID))
             return
         }
         if (linkJob?.isActive == true) {
@@ -1181,7 +1181,7 @@ internal object C07EntryFlowHost {
         linkJob = scope.launch {
             val durableID = withContext(io) { resolveDurableTaskID(conversationID) }
             if (durableID != null) {
-                navigationState.value = C07EntryNavigation.OpenTask(durableID)
+                navigationState.value = C07EntryNavigation.OpenTask(durableID, runID)
             } else {
                 showNotice(EntryNoticeKind.TASK_UNAVAILABLE)
             }
@@ -1265,7 +1265,20 @@ internal object C07EntryFlowHost {
         ) {
             return
         }
-        resolveTaskRoute(conversationID)
+        // Optional exact run target (N03): the notification carries an
+        // identifier, never authority. An ABSENT extra keeps the ordinary
+        // task-only route; a MALFORMED extra refuses the whole tap (no
+        // half-admitted route). Membership of the run against the durable
+        // task is re-proven by the host when the route actually presents.
+        when (val runTarget = C07EntryNotification.admitRunTarget(
+            intent.getStringExtra(C07EntryNotification.EXTRA_RUN_ID),
+        )) {
+            C07EntryNotification.RunTarget.Refused -> return
+            C07EntryNotification.RunTarget.Absent ->
+                resolveTaskRoute(conversationID, null)
+            is C07EntryNotification.RunTarget.Admitted ->
+                resolveTaskRoute(conversationID, runTarget.runID)
+        }
     }
 
     private fun admitScheduleTap(intent: Intent) {

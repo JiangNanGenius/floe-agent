@@ -42,6 +42,10 @@ The immutable tag annotation contains the preceding code103 label. The tag name,
 
 Samsung completed the actual77→78 in-App full-package/mirror upgrade. Both code104 packages match the published bytes and retain their UIDs, five tasks and two projects, without ADB installation or data clearing. Case K missed its lock-entry precondition and showed the in-use consent guard. It was stopped with41 original records retained; it is neither an automatic-unlock pass nor failure. Its temporary task, export, credential, scope and permissions were restored.
 
+后续实测（2026-11-10）：L未实际提交消息，不计为App失败。独立M确认消息已提交后进入真实锁屏，未使用人工输入，实际自动解锁成功；首个界面读取随后失败，未执行计算器，不计任务结束重锁通过。45条原记录保留；临时凭据、手机控制范围／权限、自建任务和设备导出均已恢复清理。修复源码的后续编译结果不回填为本不可变APK的设备通过证据。
+
+Later device evidence (2026-11-10): L never admitted a message and is not an App failure. Fresh case M entered actual keyguard after confirmed submission and automatically unlocked without host input. The first UI observation then failed; Calculator execution and task-owned relocking did not pass.45 original records are retained; temporary credentials, control scope/permissions, the owned task and device export were restored/removed. Later source compilation is not device acceptance of this immutable APK.
+
 用户已停止后续Google Play发行；本版的历史Full／Play证据保留，未来只编译和自行分发Full APK。另收到索尼Android9环境就绪的正向外测照片，未显示App版本及原始命令回执，不归因到特定安装包或代替完整设备验收。
 
 The user discontinued future Google Play work. This build's historical Full/Play evidence remains valid; future builds and self-distribution target Full only. A Sony Android9 external photo now reports a ready Linux environment, without an App version or raw command receipt, so it is not attributed to a particular build or treated as complete device acceptance.

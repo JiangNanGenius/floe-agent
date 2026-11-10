@@ -93,6 +93,45 @@ class C07EntryRoutePolicyTest {
     }
 
     @Test
+    fun notificationRunTargetAdmissionIsWholeOrNothing() {
+        val run = UUID.fromString("3b8c15a2-7d1e-4f3a-9c05-1e6a2d4f8091").toString()
+        // Absent extra: the ordinary task-only route stays available.
+        assertEquals(
+            C07EntryNotification.RunTarget.Absent,
+            C07EntryNotification.admitRunTarget(null),
+        )
+        // Valid canonical UUID (any spelling): admitted as the exact identity.
+        assertEquals(
+            C07EntryNotification.RunTarget.Admitted(run),
+            C07EntryNotification.admitRunTarget(run.uppercase()),
+        )
+        // Malformed payloads refuse the WHOLE tap — never a half-admitted
+        // route that would silently drop the run identity.
+        assertEquals(
+            C07EntryNotification.RunTarget.Refused,
+            C07EntryNotification.admitRunTarget(""),
+        )
+        assertEquals(
+            C07EntryNotification.RunTarget.Refused,
+            C07EntryNotification.admitRunTarget("not-a-uuid"),
+        )
+        assertEquals(
+            C07EntryNotification.RunTarget.Refused,
+            C07EntryNotification.admitRunTarget("3b8c15a2-7d1e-4f3a-9c05-1e6a2d4f809z"),
+        )
+        assertEquals(
+            C07EntryNotification.RunTarget.Refused,
+            C07EntryNotification.admitRunTarget(run + " "),
+        )
+        // The route carrier keeps the validated run identity (N03), and the
+        // default stays the honest task-only shape for every other producer.
+        assertEquals(run, (C07EntryRoute.Task(task, run)).runID)
+        assertEquals(null, C07EntryRoute.Task(task).runID)
+        assertEquals(run, C07EntryNavigation.OpenTask(task, run).runID)
+        assertEquals(null, C07EntryNavigation.OpenTask(task).runID)
+    }
+
+    @Test
     fun taskReturnUsesStoreIdentityRatherThanLinkSpelling() {
         val route = C07EntryRouteParser.parse("floe://task/${task.uppercase()}")
             as C07RouteParse.Parsed

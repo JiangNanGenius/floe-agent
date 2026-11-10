@@ -117,6 +117,7 @@
     <string name="schedule_error_runtime">The task runtime is not ready. The scheduled task stays pending and will retry.</string>
     <string name="schedule_error_store">The schedule could not be read or saved. Try again.</string>
     <string name="schedule_error_launch">The scheduled task could not start. Open it for details.</string>
+    <string name="scheduled_run_unavailable">This recorded run could not be found. The task is open at its latest state instead.</string>
 
     <string name="schedule_generic_task">A scheduled task</string>
     <string name="schedule_notification_channel">Scheduled tasks</string>

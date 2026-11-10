@@ -47,6 +47,7 @@ internal class PhoneControlSession(
     private var pendingAction: ((PhoneControlResult<PhoneControlActionResult>) -> Unit)? = null
     private var pendingActionState: PendingActionState? = null
     private var pendingScreenshot: ((PhoneControlResult<PhoneControlScreenshot>) -> Unit)? = null
+    private var pendingObserve: ((PhoneControlResult<PhoneControlObservation>) -> Unit)? = null
     private var pendingClientToken: String? = null
     private var pendingTimeout: Runnable? = null
 
@@ -108,26 +109,103 @@ internal class PhoneControlSession(
         principal: PhoneControlPrincipal,
         grant: PhoneControlGrant,
         request: PhoneControlObserveRequest,
-    ): PhoneControlResult<PhoneControlObservation> {
-        if (closed) return PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED)
-        PhoneControlPolicy.grantDenial(principal, grant)?.let {
-            return PhoneControlResult.Denied(it)
+        operationToken: String,
+        complete: (PhoneControlResult<PhoneControlObservation>) -> Unit,
+    ) {
+        if (closed) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
+            return
         }
-        if (inFlightId != null) return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
-        lockedDenial()?.let { return it }
-        claimDenial(principal.owner)?.let { return it }
+        PhoneControlPolicy.grantDenial(principal, grant)?.let {
+            complete(PhoneControlResult.Denied(it))
+            return
+        }
+        if (inFlightId != null) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT))
+            return
+        }
+        lockedDenial()?.let { complete(it); return }
+        claimDenial(principal.owner)?.let { complete(it); return }
         PhoneControlRuntime.publish()
         val ticket = fence.ticket(principal.owner)
-            ?: return PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN)
-        val capture = snapshotter.capture(
+            ?: run {
+                complete(PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN))
+                return
+            }
+        val normalized = request.normalized()
+        val first = snapshotter.capture(
             owner = principal.owner,
             ticket = ticket,
-            request = request.normalized(),
+            request = normalized,
             keyguardLocked = keyguardLocked(),
-        ) ?: return PhoneControlResult.Failed(
-            PhoneControlFailure.OBSERVATION_FAILED,
-            "active window content is unavailable",
         )
+        if (first != null) {
+            complete(acceptObservation(principal, grant, first, normalized))
+            return
+        }
+        // The active accessibility window can stay unpublished for a bounded
+        // interval right after an in-call automatic unlock (demonstrated
+        // Samsung first-observe failure: keyguard already reported unlocked at
+        // the failure second while no active window root existed yet). Wait
+        // inside the existing bounded settle lifecycle instead of failing the
+        // observation; every terminal path below is owned by the existing
+        // fence/cancel/abort machinery.
+        val opId = UUID.randomUUID().toString()
+        inFlightId = opId
+        pendingClientToken = operationToken
+        pendingObserve = complete
+        PhoneControlObservationReadiness(
+            driver = object : PhoneObservationReadinessDriver {
+                override val now: Long get() = SystemClock.elapsedRealtime()
+                override fun after(delayMs: Long, action: () -> Unit): () -> Unit {
+                    val runnable = Runnable { action() }
+                    mainHandler.postDelayed(runnable, delayMs)
+                    return { mainHandler.removeCallbacks(runnable) }
+                }
+                override fun stillCurrent(): Boolean = !closed && inFlightId == opId
+                override fun blocker(): PhoneControlBlocker? = fence.state().blocker
+                override fun keyguardLocked(): Boolean = this@PhoneControlSession.keyguardLocked()
+                override fun capture(): PhoneControlCapture? {
+                    val live = fence.ticket(principal.owner) ?: return null
+                    return snapshotter.capture(
+                        owner = principal.owner,
+                        ticket = live,
+                        request = normalized,
+                        keyguardLocked = keyguardLocked(),
+                    )
+                }
+            },
+        ).start { result ->
+            if (inFlightId != opId) return@start
+            when (result) {
+                is PhoneControlResult.Ok ->
+                    finishObserve(acceptObservation(principal, grant, result.value, normalized))
+                is PhoneControlResult.Denied ->
+                    if (result.reason == PhoneControlDenial.DEVICE_LOCKED) {
+                        // A relock during the wait fences the run exactly like
+                        // the synchronous lockedDenial/settle paths.
+                        fence.block(PhoneControlBlocker.LOCKED)
+                        latest = null
+                        finishObserve(result)
+                    } else {
+                        finishObserve(result)
+                    }
+                is PhoneControlResult.Unavailable,
+                is PhoneControlResult.Failed,
+                -> finishObserve(result)
+            }
+        }
+    }
+
+    /** Policy acceptance shared by the synchronous capture and the bounded
+     *  post-transition readiness gate; mints the session record only for a
+     *  foreground the live grant may observe. */
+    private fun acceptObservation(
+        principal: PhoneControlPrincipal,
+        grant: PhoneControlGrant,
+        capture: PhoneControlCapture,
+        request: PhoneControlObserveRequest,
+    ): PhoneControlResult<PhoneControlObservation> {
         val effective = PhoneControlPolicy.effectivePackages(principal, grant)
         // A Floe foreground is a zero-node navigation-only metadata capture.
         // It is accepted only when the live grant allows global navigation, so
@@ -143,7 +221,7 @@ internal class PhoneControlSession(
             PhoneControlRuntime.publish()
             return PhoneControlResult.Denied(denial)
         }
-        latest = record(capture, request.normalized())
+        latest = record(capture, request)
         PhoneControlRuntime.publish()
         return PhoneControlResult.Ok(capture.observation)
     }
@@ -1345,6 +1423,15 @@ internal class PhoneControlSession(
         PhoneControlRuntime.publish()
     }
 
+    private fun finishObserve(result: PhoneControlResult<PhoneControlObservation>) {
+        val callback = pendingObserve ?: return
+        pendingObserve = null
+        pendingClientToken = null
+        clearInFlight()
+        runCatching { callback(result) }
+        PhoneControlRuntime.publish()
+    }
+
     private fun clearInFlight() {
         inFlightId = null
         pendingTimeout?.let { mainHandler.removeCallbacks(it) }
@@ -1372,6 +1459,18 @@ internal class PhoneControlSession(
             }
         } else if (pendingScreenshot != null) {
             finishScreenshot(
+                if (blocker != null) {
+                    PhoneControlResult.Denied(PhoneControlPolicy.denialForBlocker(blocker), reason)
+                } else {
+                    PhoneControlResult.Failed(PhoneControlFailure.CANCELLED, reason)
+                },
+            )
+        } else if (pendingObserve != null) {
+            // Readiness-wait abort: stop/takeover/user-touch/screen-off,
+            // run release and caller cancellation all terminate the pending
+            // observation here, exactly once; the gate's stray poll sees
+            // stillCurrent()==false and stops without a second completion.
+            finishObserve(
                 if (blocker != null) {
                     PhoneControlResult.Denied(PhoneControlPolicy.denialForBlocker(blocker), reason)
                 } else {

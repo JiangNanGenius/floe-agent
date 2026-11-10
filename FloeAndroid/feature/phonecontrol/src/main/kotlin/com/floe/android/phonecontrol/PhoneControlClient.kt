@@ -56,8 +56,11 @@ class PhoneControlClient internal constructor(
             is PhoneControlResult.Unavailable -> return answer
             is PhoneControlResult.Failed -> return answer
         }
-        return dispatch { session, _, finish ->
-            finish(session.observe(principal, grant, request))
+        return dispatch { session, token, finish ->
+            // The session may complete synchronously or after the bounded
+            // post-transition readiness gate; the operation token fences the
+            // asynchronous leg exactly like a dispatched action.
+            session.observe(principal, grant, request, token, finish)
         }
     }
 

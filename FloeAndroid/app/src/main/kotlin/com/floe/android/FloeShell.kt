@@ -868,6 +868,18 @@ private fun FloeShellContent(
                 when (request) {
                     is C07EntryNavigation.OpenTask -> navigateEntry(
                         target = SidebarSelection.Conversation(request.conversationID),
+                        onCommitted = {
+                            // N03: a validated notification run target is
+                            // presented only AFTER the shell committed this
+                            // exact route — the host stages/applies the
+                            // one-shot focus without publishing a second
+                            // navigation, and membership is re-proven at
+                            // presentation (honest fallback when gone).
+                            request.runID?.let { runID ->
+                                runtimeHost?.conversations
+                                    ?.presentRecordedRun(request.conversationID, runID)
+                            }
+                        },
                     )
                     is C07EntryNavigation.OpenSchedule -> navigateEntry(
                         target = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),

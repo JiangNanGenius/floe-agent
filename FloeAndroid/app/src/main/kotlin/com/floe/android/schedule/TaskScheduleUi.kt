@@ -357,10 +357,13 @@ fun TaskScheduleDestination(
             summary = summary,
             compact = compact,
             onDismiss = { historyFor = null },
-            onOpenTask = { conversationID ->
+            onOpenTask = { conversationID, runID ->
                 // Reuse history navigation and the shell's admission fence.
-                // This opens the recorded task; it never launches another run.
-                if (!host.conversations.requestOpenConversation(null, conversationID)) {
+                // With a recorded run id the host presents THAT run's
+                // receipt/results; a null id keeps the honest task-only
+                // fallback. This opens the recorded task; it never launches
+                // another run.
+                if (!host.conversations.requestOpenConversationRun(null, conversationID, runID)) {
                     actionError = "runtime_unavailable"
                 }
                 historyFor = null
@@ -1083,7 +1086,7 @@ private fun TaskScheduleHistorySheet(
     summary: TaskScheduleSummary,
     compact: Boolean,
     onDismiss: () -> Unit,
-    onOpenTask: (String) -> Unit,
+    onOpenTask: (conversationID: String, runID: String?) -> Unit,
 ) {
     var items by remember { mutableStateOf<List<TaskScheduleOccurrence>>(emptyList()) }
     var truncated by remember { mutableStateOf(false) }
@@ -1173,7 +1176,7 @@ private fun TaskScheduleHistorySheet(
                                 )
                             }
                             occurrence.conversationID?.takeIf { it.isNotBlank() }?.let { conversationID ->
-                                TextButton(onClick = { onOpenTask(conversationID) }) {
+                                TextButton(onClick = { onOpenTask(conversationID, occurrence.runID) }) {
                                     FloeText(
                                         stringResource(R.string.schedule_action_open_task),
                                         style = Floe.typography.body,

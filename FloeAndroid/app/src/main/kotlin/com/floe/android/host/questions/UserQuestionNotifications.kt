@@ -69,7 +69,9 @@ internal object UserQuestionNotifications {
         // C07 identifier-only return: the content tap opens the EXACT durable
         // conversation so the existing question surface re-reads the live
         // pending state. No question text/answer is placed in the Intent and
-        // no answer is submitted by tapping.
+        // no answer is submitted by tapping. The question's own run id rides
+        // as a second validated identifier (N03): the entry host re-proves
+        // membership before the conversation presents that recorded run.
         val launch = Intent(context, MainActivity::class.java)
             .setAction(C07EntryNotification.ACTION_QUESTION)
             .setPackage(context.packageName)
@@ -77,6 +79,7 @@ internal object UserQuestionNotifications {
             .putExtra(C07EntryNotification.EXTRA_CONVERSATION_ID, session.conversationId)
             .putExtra(C07EntryNotification.EXTRA_REQUEST_ID, question.requestId)
             .putExtra(C07EntryNotification.EXTRA_QUESTION_ID, question.questionId)
+            .putExtra(C07EntryNotification.EXTRA_RUN_ID, question.runId)
         val contentIntent = PendingIntent.getActivity(
             context,
             notificationId(session.conversationId),

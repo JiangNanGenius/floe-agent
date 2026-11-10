@@ -10,6 +10,10 @@ Distribution policy (2026-11-10): Android is independently distributed as the Fu
 
 Samsung completed the in-App mirror/full-package upgrade from77. Both code104 packages match the published bytes, retaining their UIDs, five original tasks and two projects. The next voice/search/model-settings refinement passed actual Full consumer compilation; it is not yet in a new APK. Future builds exclude the retired Play line.
 
+后续三星独立用例已真实自动解除锁屏，首个界面读取随后失败，计算器操作和任务结束重锁尚未通过；45条原记录保留，临时凭据、权限和自建任务已清理。下一份Full的源码补齐解锁后页面就绪等待、取消／接管隔离，以及定时历史／通知准确打开对应运行记录（含超出最近160条及UUID大小写差异）。35项去重定向检查和实际Full消费端编译通过，尚未生成新APK或取得新设备通过结果。
+
+A fresh Samsung case actually released keyguard, then failed its first UI observation; Calculator actions and task-owned relocking remain unverified. Its45 original records remain preserved and temporary sensitive state was restored. The next Full source adds post-unlock observation readiness/cancellation fences and exact scheduled-run history/notification navigation, including records beyond the160-row window and UUID spelling differences.35 unique focused cases and actual Full consumer compilation passed; no new APK or device pass is claimed.
+
 ## Previous delivery — Android Alpha77 (2026-11-10)
 
 [Alpha77/code103](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.77) is public from immutable source `5fa8272714d955fdb895e8f70ff3a5ffdcd3a17d`. It includes the first compact Linux launcher/control refinement, bounded durable rootfs materialization, task links from schedule history and update-completion visibility.56 fresh focused cases, retained unchanged phone/native evidence, Full/Play compilation, package/signature and delta checks, all seven anonymous asset downloads and current/legacy update discovery passed. iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA77_DELIVERY.md).

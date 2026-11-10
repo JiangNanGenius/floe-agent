@@ -497,8 +497,17 @@ class ThreadProjectionBuilder internal constructor(
         // refresh keeps the current selection while that run still exists in
         // the page: no jump on reload, no clobber of an explicit selection,
         // and a run selected by applyPrepared survives while present.
-        if (selectedRunId == null || reply.runs.none { it.runID == selectedRunId }) {
-            selectedRunId = reply.runs.firstOrNull()?.runID ?: selectedRunId
+        // N03: the page is a BOUNDED window (native SQL LIMIT 160), so page
+        // absence is not deletion — a run this builder already carries
+        // authoritatively (an exact recorded-run presentation applied its
+        // `run.snapshot`) keeps its selection across refreshes instead of
+        // silently jumping back to the newest row.
+        val retainedSelection = selectedRunId
+        if (retainedSelection == null ||
+            (reply.runs.none { it.runID == retainedSelection } &&
+                !runRows.containsKey(retainedSelection))
+        ) {
+            selectedRunId = reply.runs.firstOrNull()?.runID ?: retainedSelection
         }
         for (run in reply.runs) {
             runRows[run.runID] = RunRowUi(
@@ -1502,6 +1511,12 @@ internal object ConversationWire {
         val durableState: String,
         val revision: Revision,
         val isTerminal: Boolean,
+        /** The owning task identity the native page always emits
+         * (RunSnapshotWireBuilder `conversationID`). The N03 exact-run read
+         * uses it as the ownership proof: a page whose task differs from the
+         * requesting one is a foreign carrier, never presented. Null = a
+         * legacy page without the member — honest unknown, never guessed. */
+        val conversationID: String? = null,
         val pendingApproval: PendingApprovalWire?,
         val approvalRevision: Revision?,
         val pendingInputs: List<PendingInputWire>,
@@ -1970,6 +1985,7 @@ internal object ConversationWire {
             durableState = durableState,
             revision = revision,
             isTerminal = root.bool("isTerminal") ?: (durableState in ThreadProjectionBuilder.TERMINAL_STATES),
+            conversationID = root.string("conversationID"),
             pendingApproval = approval,
             approvalRevision = approvalRevision,
             pendingInputs = inputs,

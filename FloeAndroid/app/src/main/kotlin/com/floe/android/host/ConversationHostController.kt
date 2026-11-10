@@ -240,6 +240,28 @@ class ConversationHostController internal constructor(
 
     /** Shell navigation requests (host → shell, observed by composition). */
     val navigationRequest = MutableStateFlow<SidebarSelection?>(null)
+
+    /**
+     * The ONE-SHOT exact-run presentation target (schedule history / validated
+     * notification deeplinks, N03). Set with a fresh [runFocusGeneration]
+     * BEFORE the companion [navigationRequest] is published, consumed exactly
+     * once — by the live-entry fast path when the session page is already
+     * loaded, otherwise by the next `conversation.get` settle in
+     * [loadThreadInternal]. A newer request (run or plain) supersedes an
+     * unconsumed focus by generation + reference CAS, so a late callback can
+     * never select another task's run or resurrect a stale target after the
+     * user navigated elsewhere. Membership is validated at presentation: a
+     * recorded run that no longer exists opens the task with the ordinary
+     * newest selection and an honest typed failure — never a silent jump.
+     */
+    private class ScheduledRunFocus(
+        val conversationId: String,
+        val runId: String,
+        val generation: Long,
+    )
+    private val pendingRunFocus =
+        java.util.concurrent.atomic.AtomicReference<ScheduledRunFocus?>()
+    private val runFocusGeneration = AtomicLong(0L)
     /**
      * The SCOPED same-id Keep promotion-adoption signal (Main's late-Keep
      * ownership decision). `trackOperation` runs on the root-wide command
@@ -1164,6 +1186,38 @@ class ConversationHostController internal constructor(
                 is HostOperationOutcome.Completed -> {
                     val reply = outcome.value?.let { ConversationWire.decodeSessionReply(it) }
                     if (reply != null) {
+                        // N03 exact-run focus (schedule history / validated
+                        // notification targets): consume the one-shot target
+                        // ONLY while it is still the latest staged focus and
+                        // this entry still owns the surface. Pre-seeding the
+                        // builder before applySession makes the recorded run
+                        // the presented selection when the page carries it;
+                        // a page without the run is decided by ONE
+                        // authoritative `run.snapshot` read — never by page
+                        // absence alone.
+                        val focus = pendingRunFocus.get()
+                        if (
+                            focus != null &&
+                            focus.conversationId == session.conversationId &&
+                            !entry.isTemporary &&
+                            ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
+                        ) {
+                            if (reply.runs.any { it.runID == focus.runId }) {
+                                if (pendingRunFocus.compareAndSet(focus, null)) {
+                                    entry.builder.selectedRunId = focus.runId
+                                    entry.holder.selectRun(focus.runId)
+                                }
+                            } else {
+                                // The bounded page (native SQL LIMIT 160) does
+                                // not carry the target: page absence is never
+                                // deletion proof. Consume the one-shot focus
+                                // and let ONE authoritative `run.snapshot`
+                                // read decide presentation vs honest failure.
+                                if (pendingRunFocus.compareAndSet(focus, null)) {
+                                    readRecordedRunBeyondPage(entry, focus)
+                                }
+                            }
+                        }
                         entry.builder.applySession(reply)
                         val projection = currentModels()
                         entry.builder.applyModels(projection.models, projection.needsProvider)
@@ -1193,10 +1247,25 @@ class ConversationHostController internal constructor(
                         }
                     }
                 }
-                is HostOperationOutcome.Rejected ->
+                is HostOperationOutcome.Rejected -> {
+                    // A deleted/unreadable task can never present its recorded
+                    // run: drop a matching one-shot focus so a later same-id
+                    // load can never apply a stale target.
+                    pendingRunFocus.get()?.let { focus ->
+                        if (focus.conversationId == session.conversationId) {
+                            pendingRunFocus.compareAndSet(focus, null)
+                        }
+                    }
                     entry.builder.markMissing(outcome.code)
-                is HostOperationOutcome.Failed ->
+                }
+                is HostOperationOutcome.Failed -> {
+                    pendingRunFocus.get()?.let { focus ->
+                        if (focus.conversationId == session.conversationId) {
+                            pendingRunFocus.compareAndSet(focus, null)
+                        }
+                    }
                     entry.builder.markMissing(outcome.code)
+                }
                 HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> Unit
             }
         }
@@ -1970,14 +2039,205 @@ class ConversationHostController internal constructor(
         conversationId: String,
     ): Boolean {
         if (!conversationAdmitted()) return false
-        // Host-side route revalidation before any navigation.
+        // Host-side route revalidation before any navigation. A plain open
+        // supersedes any unconsumed run focus: a later ordinary navigation
+        // must never inherit a stale exact-run target.
+        supersedePendingRunFocus()
         navigationRequest.value = SidebarSelection.Conversation(conversationId)
         return true
+    }
+
+    /** A newer navigation of any kind retires an unconsumed run focus:
+     * generation bump + reference clear, so an in-flight `conversation.get`
+     * settle that already read the old reference fails its CAS and drops it. */
+    private fun supersedePendingRunFocus() {
+        runFocusGeneration.incrementAndGet()
+        pendingRunFocus.set(null)
+    }
+
+    override fun requestOpenConversationRun(
+        sourceSession: ConversationSessionToken?,
+        conversationId: String,
+        runId: String?,
+    ): Boolean {
+        if (!conversationAdmitted()) return false
+        if (runId.isNullOrBlank()) {
+            // Honest task-only fallback: identical to a plain open.
+            supersedePendingRunFocus()
+            navigationRequest.value = SidebarSelection.Conversation(conversationId)
+            return true
+        }
+        val focus = ScheduledRunFocus(conversationId, runId, runFocusGeneration.incrementAndGet())
+        pendingRunFocus.set(focus)
+        // Fast path: the session page is already loaded for THIS surface —
+        // membership is known now, so present (or honestly report) without
+        // waiting for a reload that a same-task tap would never trigger.
+        // A not-yet-loaded entry keeps the focus for loadThreadInternal.
+        val entry = holders[conversationId]
+        if (entry != null &&
+            ownCurrentEntry(entry, conversationId, entry.holder.session.sessionEpoch) &&
+            entry.holder.snapshot.value?.hasLoaded == true &&
+            entry.holder.snapshot.value?.isTemporary != true
+        ) {
+            applyScheduledRunFocus(entry, focus)
+        }
+        navigationRequest.value = SidebarSelection.Conversation(conversationId)
+        return true
+    }
+
+    /**
+     * Post-commit companion for routes the SHELL already committed (entryflow
+     * notification/deeplink targets, C07 OpenTask with a validated run id):
+     * the visible route is settled, so this only stages/applies the focus —
+     * it NEVER publishes another navigationRequest (a second route move is
+     * the shell's authority alone).
+     */
+    internal fun presentRecordedRun(conversationId: String, runId: String) {
+        if (!conversationAdmitted()) return
+        if (runId.isBlank()) return
+        if (activeTemporarySession()?.conversationId == conversationId) return
+        val focus = ScheduledRunFocus(conversationId, runId, runFocusGeneration.incrementAndGet())
+        pendingRunFocus.set(focus)
+        val entry = holders[conversationId]
+        if (entry != null &&
+            ownCurrentEntry(entry, conversationId, entry.holder.session.sessionEpoch) &&
+            entry.holder.snapshot.value?.hasLoaded == true &&
+            entry.holder.snapshot.value?.isTemporary != true
+        ) {
+            applyScheduledRunFocus(entry, focus)
+        }
+    }
+
+    /**
+     * Consume ONE exact focus for a live, loaded, currently-owned entry.
+     * The reference CAS is the supersede authority: a focus replaced by any
+     * newer request (run or plain) between staging and application is dropped
+     * untouched. A run still owned by the session page becomes the presented
+     * selection through the ordinary builder/refresh path; a run the cached
+     * page does not carry is decided by ONE authoritative `run.snapshot`
+     * read (see [readRecordedRunBeyondPage]) — the bounded page is a window,
+     * never deletion proof. Only a typed authoritative refusal surfaces the
+     * honest scheduledRunUnavailable failure; never a silent latest-run
+     * selection.
+     */
+    private fun applyScheduledRunFocus(
+        entry: ConversationFlowHolderEntry,
+        focus: ScheduledRunFocus,
+    ) {
+        val conversationId = entry.holder.session.conversationId
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return
+        if (!pendingRunFocus.compareAndSet(focus, null)) return
+        if (entry.builder.runIds().contains(focus.runId)) {
+            entry.builder.selectedRunId = focus.runId
+            // ⇄ the router echo: the VM selection follows the host truth.
+            entry.holder.selectRun(focus.runId)
+            entry.holder.applyHostSnapshot(entry.builder.build())
+            refreshRunSnapshot(entry, focus.runId)
+        } else {
+            readRecordedRunBeyondPage(entry, focus)
+        }
+    }
+
+    /**
+     * N03 authoritative continuation when the bounded session page (native
+     * SQL LIMIT 160) or a stale cached page does not carry the focused run:
+     * page absence is a WINDOW boundary, never a deletion fact. ONE exact
+     * `run.snapshot` read under the task+run owner scope decides the target:
+     *
+     *  * Completed page owned by THIS task (`conversationID` proof, UUID
+     *    identity like the G04 bridge read) → the recorded run becomes the
+     *    presented selection: its snapshot row/revision is applied to the
+     *    builder (honest state; absent model/timestamps stay unknown), the
+     *    holder selection follows, and the run's own recorded history is
+     *    read through the SAME `run.events` service the ordinary path uses —
+     *    an old run's distinct receipt/result is readable, never the newest
+     *    run's replayed as the target's.
+     *  * Typed refusal (notFound/runMissing — deleted or foreign to this
+     *    task), failure, or a page failing the ownership proof → the honest
+     *    scheduledRunUnavailable failure; the task stays at its ordinary
+     *    selection. Never a fabricated row, never a silent newest selection.
+     *
+     * The focus was consumed exactly once by the caller; the settle is
+     * fenced on the focus generation + entry ownership, so a newer request
+     * (run or plain) or a released/rebound holder arriving while this read
+     * is in flight can never be stolen by the late reply. PURE READ: no run
+     * is created/started/retried/continued and no provider is touched.
+     */
+    private fun readRecordedRunBeyondPage(
+        entry: ConversationFlowHolderEntry,
+        focus: ScheduledRunFocus,
+    ) {
+        val conversationId = entry.holder.session.conversationId
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        host.trackOperation(
+            HostCommandRequest(
+                command = "run.snapshot",
+                scope = HostScope.TaskExecution(conversationId, focus.runId),
+                stateful = false,
+                correlationID = client().correlationID("rsnap-focus"),
+            ),
+        ) { outcome ->
+            if (runFocusGeneration.get() != focus.generation) return@trackOperation
+            if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val page = ConversationWire.decodeSnapshotPage(outcome.value)
+                    if (page != null && sameUUIDIdentity(page.runID, focus.runId) &&
+                        sameUUIDIdentity(page.conversationID, conversationId)
+                    ) {
+                        entry.builder.selectedRunId = page.runID
+                        entry.builder.applySnapshot(page)
+                        entry.builder.applySnapshotLiveText(page)
+                        // ⇄ the router echo: the VM selection follows the host truth.
+                        entry.holder.selectRun(page.runID)
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                        // The old run's own receipt/result: the SAME recorded
+                        // history read the ordinary terminal-run path issues.
+                        loadRecordedRunEvents(entry.holder.session, entry, page.runID)
+                    } else {
+                        surfaceRecordedRunUnavailable(entry)
+                    }
+                }
+                is HostOperationOutcome.Rejected,
+                is HostOperationOutcome.Failed,
+                -> surfaceRecordedRunUnavailable(entry)
+                HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> Unit
+            }
+        }
+    }
+
+    /** Compare run and task identities across native/notification UUID spelling.
+     *  Projection keys retain the spelling returned by the native snapshot. */
+    private fun sameUUIDIdentity(pageValue: String?, ownerValue: String): Boolean {
+        if (pageValue.isNullOrBlank()) return false
+        val pageId = runCatching { java.util.UUID.fromString(pageValue) }.getOrNull()
+        val ownerId = runCatching { java.util.UUID.fromString(ownerValue) }.getOrNull()
+        return if (pageId != null && ownerId != null) pageId == ownerId
+        else pageValue == ownerValue
+    }
+
+    /** Honest N03 fallback: the recorded run is gone; the task stays open. */
+    private fun surfaceRecordedRunUnavailable(entry: ConversationFlowHolderEntry) {
+        val message = host.appContextOrNull?.let { context ->
+            runCatching {
+                context.getString(com.floe.android.R.string.scheduled_run_unavailable)
+            }.getOrNull()
+        }
+        if (message != null) {
+            entry.holder.noteHostActionError(message)
+        } else {
+            // Test fixtures carry no application context: the typed code is
+            // the honest machine-readable surface (same convention as the
+            // other host action errors).
+            entry.holder.noteHostActionError("scheduledRunUnavailable")
+        }
     }
 
     override fun requestNewTask(sourceSession: ConversationSessionToken?): Boolean {
         // The shell owns the route; fencing of a temp origin (if any) happens
         // in the shell via [tempFence] before the transition completes.
+        supersedePendingRunFocus()
         navigationRequest.value = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
         return true
     }

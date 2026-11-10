@@ -26,7 +26,7 @@ internal const val ENTRY_MAX_DIAGNOSTIC_BYTES = 128 * 1024
 /** A parsed supported entry route. IDs are canonical lowercase UUIDs. */
 internal sealed interface C07EntryRoute {
     data object NewTask : C07EntryRoute
-    data class Task(val conversationID: String) : C07EntryRoute
+    data class Task(val conversationID: String, val runID: String? = null) : C07EntryRoute
     data class Schedule(val scheduleID: String) : C07EntryRoute
     data class Share(val intakeID: String?) : C07EntryRoute
 }
@@ -721,16 +721,38 @@ internal object C07EntryNotification {
     const val EXTRA_REQUEST_ID = "floe.entry.requestID"
     const val EXTRA_QUESTION_ID = "floe.entry.questionID"
     const val EXTRA_SCHEDULE_ID = "floe.entry.scheduleID"
+    /** Optional exact recorded run target (N03): identifier-only, admitted
+     * through the same canonical-UUID validation and host membership proof
+     * as every other entry payload. It grants nothing by itself. */
+    const val EXTRA_RUN_ID = "floe.entry.runID"
 
     fun validQuestionId(value: String?): String? =
         value?.takeIf { it.length in 1..128 && it.all { ch -> ch.code in 0x21..0x7E } }
 
     fun validQuestionTextId(value: String?): String? =
         value?.takeIf { it.length in 1..160 && it.all { ch -> ch.code in 0x21..0x7E } }
+
+    /** N03 optional exact-run target admission. ABSENT keeps the ordinary
+     * task-only route; a canonical UUID is carried as a validated identifier;
+     * MALFORMED refuses the whole tap (a notification payload is admitted
+     * whole or not at all — never a half-admitted route). Membership of the
+     * run against the durable task is re-proven host-side at presentation. */
+    sealed interface RunTarget {
+        data object Absent : RunTarget
+        data class Admitted(val runID: String) : RunTarget
+        data object Refused : RunTarget
+    }
+
+    fun admitRunTarget(value: String?): RunTarget =
+        if (value == null) {
+            RunTarget.Absent
+        } else {
+            C07EntryIds.canonicalUuid(value)?.let(RunTarget::Admitted) ?: RunTarget.Refused
+        }
 }
 
 internal sealed interface C07EntryNavigation {
-    data class OpenTask(val conversationID: String) : C07EntryNavigation
+    data class OpenTask(val conversationID: String, val runID: String? = null) : C07EntryNavigation
     data class OpenSchedule(val scheduleID: String) : C07EntryNavigation
     data class OpenNewTask(val intakeID: String?) : C07EntryNavigation
     data object OpenNotes : C07EntryNavigation

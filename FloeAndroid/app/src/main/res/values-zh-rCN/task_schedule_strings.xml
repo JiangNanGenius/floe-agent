@@ -117,6 +117,7 @@
     <string name="schedule_error_runtime">任务运行时尚未就绪。定时任务会保持等待并重试。</string>
     <string name="schedule_error_store">无法读取或保存定时任务。请重试。</string>
     <string name="schedule_error_launch">定时任务无法启动。打开它查看详情。</string>
+    <string name="scheduled_run_unavailable">找不到这条记录对应的运行。任务已打开，并显示其最新状态。</string>
 
     <string name="schedule_generic_task">一个定时任务</string>
     <string name="schedule_notification_channel">定时任务</string>

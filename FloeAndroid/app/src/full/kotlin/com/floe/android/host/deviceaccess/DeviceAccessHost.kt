@@ -54,7 +54,6 @@ import com.floe.android.phonecontrol.PhoneControlAuthority
 import com.floe.android.phonecontrol.PhoneControlBlocker
 import com.floe.android.phonecontrol.PhoneControlClient
 import com.floe.android.phonecontrol.PhoneControlDenial
-import com.floe.android.phonecontrol.PhoneControlFailure
 import com.floe.android.phonecontrol.PhoneControlGrant
 import com.floe.android.phonecontrol.PhoneControlModule
 import com.floe.android.phonecontrol.PhoneControlObservation
@@ -2702,7 +2701,7 @@ internal class DeviceAccessHost(
                 }
                 is PhoneControlResult.Denied -> deniedOutcome(result.reason)
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
-                is PhoneControlResult.Failed -> failedOutcome(result.reason)
+                is PhoneControlResult.Failed -> failedOutcome(result)
             }
         } finally { armingOwner = null; unbindPhoneCall(call) }
     }
@@ -2768,7 +2767,7 @@ internal class DeviceAccessHost(
                 }
                 is PhoneControlResult.Denied -> deniedOutcome(result.reason)
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
-                is PhoneControlResult.Failed -> failedOutcome(result.reason)
+                is PhoneControlResult.Failed -> failedOutcome(result)
             }
         } catch (_: Throwable) {
             return PlatformToolOutcome.Failure("phone_timeout")
@@ -2821,7 +2820,7 @@ internal class DeviceAccessHost(
                 }
                 is PhoneControlResult.Denied -> deniedOutcome(result.reason)
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
-                is PhoneControlResult.Failed -> failedOutcome(result.reason)
+                is PhoneControlResult.Failed -> failedOutcome(result)
             }
         } catch (_: Throwable) {
             return PlatformToolOutcome.Failure("phone_timeout")
@@ -2962,7 +2961,7 @@ internal class DeviceAccessHost(
                 }
                 is PhoneControlResult.Denied -> deniedOutcome(result.reason)
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
-                is PhoneControlResult.Failed -> failedOutcome(result.reason)
+                is PhoneControlResult.Failed -> failedOutcome(result)
             }
         } catch (_: Throwable) {
             return PlatformToolOutcome.Failure("phone_timeout")
@@ -3026,8 +3025,12 @@ internal class DeviceAccessHost(
     private fun unavailableOutcome(reason: PhoneControlUnavailable): PlatformToolOutcome =
         PlatformToolOutcome.Failure("phone_" + reason.name.lowercase(), unavailableMessage(reason))
 
-    private fun failedOutcome(reason: PhoneControlFailure): PlatformToolOutcome =
-        PlatformToolOutcome.Failure("phone_" + reason.name.lowercase())
+    private fun failedOutcome(failure: PhoneControlResult.Failed): PlatformToolOutcome =
+        // The session's closed detail (e.g. the bounded readiness-window
+        // explanation for OBSERVATION_FAILED) travels through the transport's
+        // bounded detail channel; it is sanitized at encode time and never
+        // carries secrets, node text or raw exception data.
+        PlatformToolOutcome.Failure("phone_" + failure.reason.name.lowercase(), failure.detail)
 
     private fun denialCode(reason: PhoneControlDenial): String =
         "phone_" + reason.name.lowercase()

@@ -326,6 +326,32 @@ interface ConversationUiCallbacks {
      */
     fun requestOpenConversation(sourceSession: ConversationSessionToken?, conversationId: String): Boolean
 
+    /**
+     * ⇄ requestOpenConversation, plus one exact recorded run to present once
+     * the owning task owns the surface (schedule history / validated
+     * notification targets). [runId] == null is the honest task-only
+     * fallback — exactly [requestOpenConversation]; the schedule surface
+     * keeps hiding the action when the record carries no conversation id.
+     * A non-blank [runId] asks the host to select and present THAT recorded
+     * run's receipt/results after the ordinary navigation/fence commit; the
+     * host validates membership at presentation time and, when the run no
+     * longer exists, still opens the task but surfaces an honest typed
+     * failure instead of silently selecting the latest run. It never
+     * creates, starts, retries or re-executes a run. True means the host
+     * accepted the navigation request (the shell fence may still refuse).
+     * The conservative default keeps fixtures that only implement the
+     * task-only contract honest: a real run target is refused, never faked.
+     */
+    fun requestOpenConversationRun(
+        sourceSession: ConversationSessionToken?,
+        conversationId: String,
+        runId: String?,
+    ): Boolean = if (runId.isNullOrBlank()) {
+        requestOpenConversation(sourceSession, conversationId)
+    } else {
+        false
+    }
+
     /** ⇄ router.startNewTask(): same source-token contract as above. */
     fun requestNewTask(sourceSession: ConversationSessionToken?): Boolean
 
