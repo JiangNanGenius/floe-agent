@@ -304,8 +304,9 @@ public final class LinuxShellMailbox: @unchecked Sendable {
     /// settlement through [beginRequest]'s handle instead of inferring it from
     /// this call's return or throw.
     func submit(operation: String, payload: Data,
-                            timeoutMillis: Int) async throws -> Data {
-        try await awaitReply(beginRequest(operation: operation, payload: payload),
+                            timeoutMillis: Int, expectedEpoch: UInt64? = nil) async throws -> Data {
+        try await awaitReply(beginRequest(operation: operation, payload: payload,
+                                          expectedEpoch: expectedEpoch),
                              timeoutMillis: timeoutMillis)
     }
 
@@ -314,8 +315,9 @@ public final class LinuxShellMailbox: @unchecked Sendable {
     /// the bounded wait later expires or is cancelled. Same bounds and same
     /// typed rejections as [submit]; on a breach nothing reaches the host and
     /// no handle exists.
-    func beginRequest(operation: String, payload: Data) throws -> LinuxShellMailboxRequest {
-        let token = try enqueue(operation: operation, payload: payload)
+    func beginRequest(operation: String, payload: Data,
+                      expectedEpoch: UInt64? = nil) throws -> LinuxShellMailboxRequest {
+        let token = try enqueue(operation: operation, payload: payload, expectedEpoch: expectedEpoch)
         condition.lock()
         let createdEpoch = tickets[token]?.createdEpoch ?? epoch
         let request = LinuxShellMailboxRequest(mailbox: self, token: token, submittedEpoch: createdEpoch)
@@ -433,7 +435,7 @@ public final class LinuxShellMailbox: @unchecked Sendable {
 
     /// Synchronous critical section; host claims require a registered
     /// continuation, so a fast peer cannot settle before the waiter exists.
-    private func enqueue(operation: String, payload: Data) throws -> Int64 {
+    private func enqueue(operation: String, payload: Data, expectedEpoch: UInt64?) throws -> Int64 {
         guard payload.count <= LinuxShellMailboxLimits.maximumFrameBytes else {
             condition.lock(); counters.rejectedTooLarge += 1; condition.unlock()
             throw LinuxShellTransportError.payloadTooLarge
@@ -448,6 +450,12 @@ public final class LinuxShellMailbox: @unchecked Sendable {
             counters.rejectedUnbound += 1
             condition.unlock()
             throw LinuxShellTransportError.notBound
+        }
+        // Test the caller's generation under the same lock that creates the
+        // ticket; a retired producer cannot enqueue into a newly bound host.
+        guard expectedEpoch == nil || expectedEpoch == epoch else {
+            condition.unlock()
+            throw LinuxShellTransportError.hostFenced
         }
         guard tickets.count < LinuxShellMailboxLimits.maximumLiveTickets,
               queuedBytes + payload.count <= LinuxShellMailboxLimits.maximumQueuedPayloadBytes else {

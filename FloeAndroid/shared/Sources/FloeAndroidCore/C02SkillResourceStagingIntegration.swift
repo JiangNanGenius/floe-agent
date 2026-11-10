@@ -139,8 +139,8 @@ public enum C02SkillResourceStagingComposition {
     /// the runtime re-proves the live workspace, the grant identity echo and
     /// the runtime generation before any byte moves. No bytes ride Binder
     /// control parcels; no second shell/GUI; no stdin injection.
-    public static func productionPublisher() -> any SkillGuestResourcePublishing {
-        C02LiveGuestResourcePublisher()
+    public static func productionPublisher(epoch: UInt64) -> any SkillGuestResourcePublishing {
+        C02LiveGuestResourcePublisher(acceptedEpoch: epoch)
     }
 }
 
@@ -215,6 +215,7 @@ struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
     /// The epoch-bound mailbox the request rides. Production is `.shared`;
     /// tests inject their own instance (same class, same C-ABI shape).
     var mailbox: LinuxShellMailbox = .shared
+    var acceptedEpoch: UInt64? = nil
 
     func publishStagedBundle(workspaceRoot: URL, runID: UUID,
                              conversationID: UUID?,
@@ -233,7 +234,8 @@ struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
         do {
             reply = try await mailbox.submit(
                 operation: "workspace.syncInputs", payload: data,
-                timeoutMillis: LinuxShellMailboxLimits.resourceSyncBudgetMillis)
+                timeoutMillis: LinuxShellMailboxLimits.resourceSyncBudgetMillis,
+                expectedEpoch: acceptedEpoch)
         } catch let error as LinuxShellTransportError {
             // A claimed ticket may still complete remotely (the bounded wait
             // expired or the generation fenced); the probe re-answer is the
@@ -261,6 +263,34 @@ struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
     }
 }
 
+private struct EpochBoundResourcePublisher: SkillGuestResourcePublishing {
+    let base: any SkillGuestResourcePublishing
+    let isLive: @Sendable () -> Bool
+
+    func publishStagedBundle(workspaceRoot: URL, runID: UUID, conversationID: UUID?,
+                             cancellation: CancellationToken) async -> SkillGuestPublishOutcome {
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed }
+        let result = await base.publishStagedBundle(workspaceRoot: workspaceRoot, runID: runID,
+            conversationID: conversationID, cancellation: cancellation)
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed }
+        return result
+    }
+}
+
+private struct EpochBoundResourceProber: SkillGuestVisibilityProbing {
+    let base: any SkillGuestVisibilityProbing
+    let isLive: @Sendable () -> Bool
+
+    func isPathVisible(workspaceRoot: URL, relativePath: String, conversationID: UUID?,
+                       cancellation: CancellationToken) async -> Bool? {
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return nil }
+        let result = await base.isPathVisible(workspaceRoot: workspaceRoot, relativePath: relativePath,
+            conversationID: conversationID, cancellation: cancellation)
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return nil }
+        return result
+    }
+}
+
 // MARK: - Generation-bound runtime (C02ToolResultIntegration box pattern)
 
 public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
@@ -285,7 +315,7 @@ public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
     }
 
     public func isLive() -> Bool {
-        epoch > 0 && liveEpoch() == epoch
+        epoch > 0 && liveEpoch() == epoch && C02SkillResourceStagingIntegration.current === self
     }
 
     /// Fresh target/workspace resolution; a retired generation refuses
@@ -294,17 +324,20 @@ public final class C02SkillResourceStagingRuntime: @unchecked Sendable {
         guard isLive() else {
             return .unavailable(reason: SkillStageReason.stagingTransportUnavailable)
         }
-        return await resolve(runID, conversationID)
+        let result = await resolve(runID, conversationID)
+        return isLive() ? result : .unavailable(reason: SkillStageReason.stagingTransportUnavailable)
     }
 
     /// The guest-visibility probe for THIS live generation only.
     func visibilityProber() -> (any SkillGuestVisibilityProbing)? {
-        isLive() ? prober : nil
+        guard isLive(), let prober else { return nil }
+        return EpochBoundResourceProber(base: prober, isLive: { [weak self] in self?.isLive() == true })
     }
 
     /// The hot-publish transport for THIS live generation only.
     func resourcePublisher() -> (any SkillGuestResourcePublishing)? {
-        isLive() ? publisher : nil
+        guard isLive(), let publisher else { return nil }
+        return EpochBoundResourcePublisher(base: publisher, isLive: { [weak self] in self?.isLive() == true })
     }
 }
 
@@ -344,7 +377,7 @@ public enum C02SkillResourceStagingIntegration {
             resolve: C02SkillResourceStagingComposition.productionResolver(
                 executionTargets: executionTargets),
             prober: C02SkillResourceStagingComposition.productionProber(),
-            publisher: C02SkillResourceStagingComposition.productionPublisher(),
+            publisher: C02SkillResourceStagingComposition.productionPublisher(epoch: epoch),
             liveEpoch: liveEpoch)
         box.set(runtime)
         return runtime

@@ -14,6 +14,7 @@ import XCTest
 import Foundation
 import FloeCore
 @testable import FloeAndroidCore
+import FloeAndroidShellTools
 import FloeSkills
 import FloeTools
 
@@ -35,12 +36,17 @@ private actor ScriptedProber: SkillGuestVisibilityProbing {
 /// Scripted publisher: one outcome, and records every exact request.
 private actor ScriptedPublisher: SkillGuestResourcePublishing {
     private let outcome: SkillGuestPublishOutcome
+    private let beforeReply: (@Sendable () async -> Void)?
     private(set) var requests: [(workspaceRoot: URL, runID: UUID, conversationID: UUID?)] = []
-    init(outcome: SkillGuestPublishOutcome) { self.outcome = outcome }
+    init(outcome: SkillGuestPublishOutcome, beforeReply: (@Sendable () async -> Void)? = nil) {
+        self.outcome = outcome
+        self.beforeReply = beforeReply
+    }
     func publishStagedBundle(workspaceRoot: URL, runID: UUID,
                              conversationID: UUID?,
                              cancellation: CancellationToken) async -> SkillGuestPublishOutcome {
         requests.append((workspaceRoot, runID, conversationID))
+        await beforeReply?()
         return outcome
     }
     func requestCount() -> Int { requests.count }
@@ -154,7 +160,7 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         XCTAssertEqual(asked, [".floe/skills/hot-guide@\(digest)", ".floe/skills/hot-guide@\(digest)"])
         // The Core-side tree is real and verified (no data loss on publish).
         XCTAssertTrue(SkillWorkspaceResourceStager.verify(
-            stagedRoot: stagedLeaf(digest), bundle: bundle(of: snapshot)!))
+            stagedRoot: stagedLeaf(digest), bundle: self.bundle(of: snapshot)!))
     }
 
     func testReusePathAlsoHotPublishesIntoTheLiveWorkspace() async throws {
@@ -427,15 +433,20 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
     func testIntegrationPublisherIsGenerationFenced() async {
         let epoch = UInt64(Date().timeIntervalSince1970)
         let publisher = ScriptedPublisher(outcome: .applied)
+        let prober = ScriptedProber(answers: [true])
         let runtime = C02SkillResourceStagingIntegration.install(
             epoch: epoch,
             resolve: { _, _ in .unavailable(reason: "unused") },
-            prober: nil,
+            prober: prober,
             publisher: publisher,
             liveEpoch: { epoch })
         defer { C02SkillResourceStagingIntegration.uninstall(epoch: epoch) }
         XCTAssertNotNil(runtime.resourcePublisher())
         XCTAssertTrue(runtime.isLive())
+        guard let capturedPublisher = runtime.resourcePublisher(),
+              let capturedProber = runtime.visibilityProber() else {
+            return XCTFail("Expected live publisher and prober")
+        }
 
         // The live epoch moves on: the SAME runtime object now withholds the
         // publisher (a retired generation can never publish).
@@ -450,6 +461,47 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         XCTAssertNil(runtime.resourcePublisher())
         XCTAssertNil(newer.resourcePublisher())
         XCTAssertTrue(C02SkillResourceStagingIntegration.current === newer)
+        let result = await capturedPublisher.publishStagedBundle(workspaceRoot: workspace,
+            runID: UUID(), conversationID: UUID(), cancellation: CancellationToken())
+        let visible = await capturedProber.isPathVisible(workspaceRoot: workspace,
+            relativePath: ".floe/skills/retired", conversationID: UUID(), cancellation: CancellationToken())
+        let published = await publisher.requestCount()
+        let probed = await prober.askedPaths()
+        XCTAssertEqual(result, .unconfirmed)
+        XCTAssertNil(visible)
+        XCTAssertEqual(published, 0)
+        XCTAssertTrue(probed.isEmpty)
+    }
+
+    func testCapturedPublisherDiscardsReplyAfterGenerationMoves() async {
+        let epoch: UInt64 = 621
+        let publisher = ScriptedPublisher(outcome: .applied, beforeReply: {
+            _ = C02SkillResourceStagingIntegration.install(epoch: epoch + 1,
+                resolve: { _, _ in .unavailable(reason: "unused") }, prober: nil,
+                liveEpoch: { epoch + 1 })
+        })
+        let runtime = C02SkillResourceStagingIntegration.install(epoch: epoch,
+            resolve: { _, _ in .unavailable(reason: "unused") }, prober: nil,
+            publisher: publisher, liveEpoch: { epoch })
+        defer { C02SkillResourceStagingIntegration.uninstall(epoch: epoch + 1) }
+        guard let captured = runtime.resourcePublisher() else {
+            return XCTFail("Expected a live publisher")
+        }
+        let result = await captured.publishStagedBundle(workspaceRoot: workspace, runID: UUID(),
+            conversationID: UUID(), cancellation: CancellationToken())
+        let dispatched = await publisher.requestCount()
+        XCTAssertEqual(dispatched, 1)
+        XCTAssertEqual(result, .unconfirmed)
+    }
+
+    func testProductionPublisherCannotEnqueueIntoANewerMailbox() async {
+        let mailbox = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 42))
+        let publisher = C02LiveGuestResourcePublisher(mailbox: mailbox, acceptedEpoch: 41)
+        let result = await publisher.publishStagedBundle(workspaceRoot: workspace, runID: UUID(),
+            conversationID: UUID(), cancellation: CancellationToken())
+        XCTAssertEqual(result, .unconfirmed)
+        XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
     }
 
     // MARK: - REAL publisher over a REAL mailbox (wire contract)
@@ -490,7 +542,7 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
     func testPublisherWireShapeAndAppliedMapping() async throws {
         let mailbox = makeMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 41))
-        let publisher = C02LiveGuestResourcePublisher(mailbox: mailbox)
+        let publisher = C02LiveGuestResourcePublisher(mailbox: mailbox, acceptedEpoch: 41)
         let runID = UUID()
         let replyTask = Task {
             await publisher.publishStagedBundle(
