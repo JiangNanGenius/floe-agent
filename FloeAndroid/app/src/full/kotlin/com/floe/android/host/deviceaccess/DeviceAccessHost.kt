@@ -2688,7 +2688,11 @@ internal class DeviceAccessHost(
                     ?: return@withLock PlatformToolOutcome.Failure("phone_unlock_required")
                 val secret = try { stored.toString(Charsets.UTF_8).toCharArray() } finally { stored.fill(0) }
                 runCatching { android.util.Log.i("FloePhoneUnlock", "HOST_UNLOCK_REQUESTED") }
-                val result = try { client.unlockForTask(principal, secret) } finally { secret.fill('\u0000') }
+                val result = try {
+                    client.unlockForTask(principal, secret) {
+                        !closed && !userStopped && automatedOwner.get() == owner && isOwnerRunLive(owner)
+                    }
+                } finally { secret.fill('\u0000') }
                 runCatching { android.util.Log.i("FloePhoneUnlock", "HOST_UNLOCK_RESULT_${result.name}") }
                 if (result != PhoneUnlockResult.UNLOCKED && result != PhoneUnlockResult.ALREADY_UNLOCKED)
                     return@withLock PlatformToolOutcome.Failure("phone_unlock_needs_user")

@@ -74,8 +74,9 @@ internal class PhoneControlSession(
     val relockReceipt: PhoneRelockReceipt? get() = unlocker.lastRelockReceipt
 
     fun unlockForTask(principal: PhoneControlPrincipal, operationToken: String, credential: CharArray,
-        isCurrent: () -> Boolean, complete: (PhoneUnlockResult) -> Unit) {
-        unlocker.unlock(principal.owner, operationToken, credential, isCurrent) { result ->
+        isCurrent: () -> Boolean, taskIsCurrent: () -> Boolean,
+        complete: (PhoneUnlockResult) -> Unit) {
+        unlocker.unlock(principal.owner, operationToken, credential, isCurrent, taskIsCurrent) { result ->
             if (result == PhoneUnlockResult.UNLOCKED || result == PhoneUnlockResult.ALREADY_UNLOCKED) {
                 onScreenInteractive()
             }

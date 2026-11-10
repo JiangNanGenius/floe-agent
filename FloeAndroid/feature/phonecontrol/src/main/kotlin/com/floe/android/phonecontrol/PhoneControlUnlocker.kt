@@ -86,7 +86,8 @@ internal class PhoneControlUnlocker(
         this(AndroidPhoneUnlockDriver(service, handler, suppressGeneratedEvents), stateChanged)
 
     private class Attempt(val owner: PhoneControlOwner, val token: String, val credential: CharArray,
-        val current: () -> Boolean, val complete: (PhoneUnlockResult) -> Unit) {
+        val current: () -> Boolean, val taskCurrent: () -> Boolean,
+        val complete: (PhoneUnlockResult) -> Unit) {
         var effectIssued = false
         var gestureReported = false
         var timer: (() -> Unit)? = null
@@ -151,6 +152,12 @@ internal class PhoneControlUnlocker(
 
     fun unlock(owner: PhoneControlOwner, token: String, credential: CharArray,
         isCurrent: () -> Boolean, complete: (PhoneUnlockResult) -> Unit) {
+        unlock(owner, token, credential, isCurrent, isCurrent, complete)
+    }
+
+    fun unlock(owner: PhoneControlOwner, token: String, credential: CharArray,
+        isCurrent: () -> Boolean, taskIsCurrent: () -> Boolean,
+        complete: (PhoneUnlockResult) -> Unit) {
         if (attempt != null || settlement != null || !runCatching(isCurrent).getOrDefault(false) ||
             (unlockedFor != null && unlockedFor != owner)) {
             credential.fill('\u0000'); complete(PhoneUnlockResult.CANCELLED); return
@@ -166,7 +173,7 @@ internal class PhoneControlUnlocker(
             credential.fill('\u0000'); complete(PhoneUnlockResult.USER_REQUIRED); return
         }
         while (attempted.size > 64) attempted.remove(attempted.first())
-        val current = Attempt(owner, token, credential, isCurrent, complete)
+        val current = Attempt(owner, token, credential, isCurrent, taskIsCurrent, complete)
         attempt = current
         try {
             driver.suppressInput(driver.now + 6_000)
@@ -442,7 +449,10 @@ internal class PhoneControlUnlocker(
         val generation = current.wakeGeneration
         current.wakeGeneration = NO_WAKE_LEASE
         if (generation == NO_WAKE_LEASE) return
-        val holder = TaskWake(current.owner, generation, current.current)
+        // Credential input remains fenced by the exact invocation. Only the
+        // already-observed unlock transfers its wake lease to the live task;
+        // a completed invocation is not the end of that task's UI work.
+        val holder = TaskWake(current.owner, generation, current.taskCurrent)
         taskWake = holder
         val live = runCatching { holder.live() }.getOrDefault(false)
         val screenOn = runCatching { driver.interactive }.getOrDefault(false)

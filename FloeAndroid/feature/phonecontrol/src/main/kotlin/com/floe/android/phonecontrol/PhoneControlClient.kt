@@ -168,17 +168,25 @@ class PhoneControlClient internal constructor(
     }
 
     /** Host-only: the model cannot supply, read or invoke stored unlock credentials. */
-    suspend fun unlockForTask(principal: PhoneControlPrincipal, credential: CharArray): PhoneUnlockResult {
+    suspend fun unlockForTask(principal: PhoneControlPrincipal, credential: CharArray,
+        taskIsCurrent: (() -> Boolean)? = null): PhoneUnlockResult {
         val answer = authorization(principal)
         if (answer !is PhoneControlResult.Ok) {
             credential.fill('\u0000')
             return PhoneUnlockResult.CANCELLED
         }
         val frozen = credential.copyOf()
+        val invocationIsCurrent = { !closed.get() && authorization(principal) is PhoneControlResult.Ok }
+        val taskPrincipal = principal.copy(callID = null)
+        val continuingTaskIsCurrent: () -> Boolean = if (taskIsCurrent == null) invocationIsCurrent else {
+            // This callback owns only the post-unlock wake lease. Every input
+            // operation still checks its own live platform-tool claim.
+            { !closed.get() && taskIsCurrent() && authorization(taskPrincipal) is PhoneControlResult.Ok }
+        }
         return try {
             when (val result = dispatch<PhoneUnlockResult> { session, token, finish ->
                 session.unlockForTask(principal, token, frozen,
-                    { !closed.get() && authorization(principal) is PhoneControlResult.Ok }) {
+                    invocationIsCurrent, continuingTaskIsCurrent) {
                     finish(PhoneControlResult.Ok(it))
                 }
             }) {

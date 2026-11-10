@@ -108,6 +108,50 @@ class PhoneControlUnlockerTest {
         }
     }
 
+    @Test fun completedInvocationKeepsTheLiveTasksWakeLeaseAndOwnedRelock() {
+        val d = Driver(); val x = PhoneControlUnlocker(d)
+        var invocationLive = true
+        val results = mutableListOf<PhoneUnlockResult>()
+        x.unlock(owner, "call", dummyCredential(), { invocationLive }, { true }, results::add)
+        d.advance(2_300)
+        assertEquals(listOf(PhoneUnlockResult.UNLOCKED), results)
+        invocationLive = false // The first tool returned; the task still owns the phone.
+        d.advance(35_000)
+        assertNotEquals(NO_WAKE_LEASE, d.heldWake)
+        assertEquals(0, d.lockCalls)
+        assertEquals(1, d.inputCalls)
+        x.finish(owner)
+        d.advance(35_200)
+        assertEquals(NO_WAKE_LEASE, d.heldWake)
+        assertEquals(PhoneRelockReceipt(owner, PhoneRelockResult.LOCKED), x.lastRelockReceipt)
+    }
+
+    @Test fun retiredTaskEndsRetainedWakeWithoutReplayingInput() {
+        val d = Driver(); val x = PhoneControlUnlocker(d)
+        var taskLive = true
+        x.unlock(owner, "call", dummyCredential(), { true }, { taskLive }) { }
+        d.advance(2_300)
+        assertNotEquals(NO_WAKE_LEASE, d.heldWake)
+        taskLive = false
+        d.advance(120_000)
+        assertEquals(NO_WAKE_LEASE, d.heldWake)
+        assertEquals(1, d.inputCalls)
+    }
+
+    @Test fun liveTaskNeverReplacesCancelledInvocationDuringCredentialInput() {
+        val d = Driver(); val x = PhoneControlUnlocker(d)
+        var invocationLive = true
+        val results = mutableListOf<PhoneUnlockResult>()
+        val secret = dummyCredential()
+        x.unlock(owner, "call", secret, { invocationLive }, { true }, results::add)
+        invocationLive = false
+        d.advance(4_000)
+        assertEquals(listOf(PhoneUnlockResult.CANCELLED), results)
+        assertEquals(0, d.inputCalls)
+        assertEquals(NO_WAKE_LEASE, d.heldWake)
+        assertTrue(secret.all { it == '\u0000' })
+    }
+
     @Test fun taskEndReleasesOnlyAfterActualLockWasObserved() {
         val d = Driver(); val x = PhoneControlUnlocker(d); val results = mutableListOf<PhoneUnlockResult>()
         val secret = dummyCredential()
