@@ -17,7 +17,7 @@ concurrency:
   group: floe-skill-hub-signing
   cancel-in-progress: false
 env:
-  TOOLING_COMMIT: 74235671702a903c79c28402f894a5c7a97874dc
+  TOOLING_COMMIT: d060cbc2899deba6ef5e60f50912bece58446861
   PYTHONDONTWRITEBYTECODE: '1'
 jobs:
   sign:
