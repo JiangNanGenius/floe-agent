@@ -2,7 +2,15 @@
 
 Distribution policy (2026-11-10): Android is independently distributed as the Full APK. The Google Play line is discontinued and is no longer a development, build, qualification or publication target. Keep GitHub/in-App full-package, delta and mirror updates; historical Play source and evidence remain archival, while retired installers and variant-only outputs are removed.
 
-## Current delivery — Android Alpha78 (2026-11-10)
+## Current delivery — Android Alpha79 (2026-11-10)
+
+[Alpha79/code105](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.79) is public from immutable source `3eb408bfb43a786b1df3bf79aeea9308e945fc6a`. It adds post-unlock observation readiness and exact scheduled-run navigation, plus compact voice/search/model settings.35 unique focused checks, actual Full-only production, native/signature/delta binding, all seven anonymous assets and current/legacy production update discovery passed. See the [delivery record](../docs/releases/ANDROID_ALPHA79_DELIVERY.md).
+
+三星已实际通过保存的镜像完成78→79增量重建与系统联合安装，两包105的字节、原UID、5任务2项目保持；当前79新的解锁／模型操作仍待实际验收。已清理26处完成产物并保留当前／回滚、原始故障和符号。技能资源与剩余设置代码分别推进，均不回填为本不可变APK的功能证据。
+
+Samsung completed the actual78→79 mirror/delta update and normal joint installation. Both code105 packages retain published bytes, UIDs, five tasks and two projects. New79 unlock/model behavior is still pending.26 completed outputs were retired while current/rollback packages, failures and symbols remain. Independent skill-resource/settings source work is not attributed to this immutable APK.
+
+## Previous delivery — Android Alpha78 (2026-11-10)
 
 [Alpha78/code104](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.78) is public from immutable source `cb562a704677e25d7f2c4a0c790582a8c06a43f5`. It refines existing grouped-setting explanations and selects a complete trusted native PIN keypad before typing.39 focused phone cases, unchanged runtime/native evidence, actual Full/Play compilation,58 native/package bindings, API28/29 signatures,77→78 host reconstruction, all seven anonymous public asset downloads and current/legacy update discovery passed. iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA78_DELIVERY.md).
 
