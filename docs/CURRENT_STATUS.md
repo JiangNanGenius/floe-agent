@@ -3,6 +3,8 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：用户指定下一版为 **1.8.7**，构建号待核实；本轮功能与大包资源消费端一并交付。1.9.0（327）和 1.9.1（328）仍属未交付尝试，不能据标签或归档称为可安装版本。 / Follow the release version authority: the next version is **1.8.7**, with its build number pending verification. The current feature set and large-package resource consumer stay in this delivery; builds 327 and 328 are undelivered attempts.
+
 ## 2026-11-10 渠道核对 / Channel snapshot
 
 核实日期按悉尼时间记录（GitHub／Feather 读取于 2026-11-09 18:37 UTC）。本次只读核对公开元数据与安装源，未重新下载大型安装包或执行设备验收。 / Dates use Sydney time. This read-only check covers public metadata and the feed, without fresh package-download or device acceptance.

@@ -1,0 +1,11 @@
+Floe 1.8.7 (329) — TestFlight update
+
+Floe is a personal AI and document workspace for iPad and iPhone. This beta expands native music notation, DJ, image/video and chart workflows, improves editor layout and file management, and connects native Git/GitHub collaboration and LAN discovery.
+
+No Floe account or demo sign-in is required. Open Space to create or import a local work, open its editor, preview, save and reopen it. Cloud AI, GitHub and other external services use credentials configured by the user. Local file browsing and editor entry points remain available without a cloud model or GitHub account. Local Git commits do not require GitHub sign-in.
+
+Native LaTeX typesetting downloads document-required packages and fonts on demand and creates PDF on the device; it supports XeLaTeX and BibTeX without starting Linux. Linux remains an optional user-controlled environment for other commands and packages. Vocal separation supports imported compatible local models or a user-configured service. Image Playground requires a supported system, device and region. Native USB serial drivers are not included. Engineering and PCB capabilities remain limited to supported study and editing types; this beta does not claim a complete professional multiphysics suite.
+
+Please focus on editor and preview layouts, notation first opening, timeline gestures, native tool results, saving/reopening, file changes and batch actions, source-link details and connection feedback. Physical-device network, voice and peripheral behavior continues through beta feedback.
+
+This submission is for internal and external TestFlight. It does not replace the existing App Store submission or change its release settings.
