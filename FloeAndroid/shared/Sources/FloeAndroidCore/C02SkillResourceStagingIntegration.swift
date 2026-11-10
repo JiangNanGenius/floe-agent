@@ -137,7 +137,7 @@ private struct C02LiveGuestVisibilityProber: SkillGuestVisibilityProbing {
         // the project workspace directory). Runtime-side re-proves session,
         // project, environment and generation before touching any path, so a
         // wrong-project candidate refuses with pathOutOfScope and we move on.
-        let candidates = components.backend.ownedSessions().filter {
+        let candidates = (await components.backend.ownedSessions()).filter {
             $0.state == .running && !$0.leaseReleased
                 && !($0.runtimeGeneration ?? "").isEmpty
         }
