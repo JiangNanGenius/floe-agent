@@ -225,10 +225,12 @@ internal class FloeBinderClient(private val binder: IBinder) {
         packageName: String?,
         includeSystem: Boolean,
         maxEntries: Int,
+        includeUninstalled: Boolean = false,
     ): RootResult<PackageQuery> {
         val request = request(claim, SystemOperation.PACKAGE_QUERY, null).apply {
             if (packageName != null) putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
             putBoolean(BinderProtocol.KEY_INCLUDE_SYSTEM, includeSystem)
+            putBoolean(BinderProtocol.KEY_INCLUDE_UNINSTALLED, includeUninstalled)
             putInt(BinderProtocol.KEY_MAX_ENTRIES, maxEntries)
         }
         return try {
@@ -369,6 +371,160 @@ internal class FloeBinderClient(private val binder: IBinder) {
         }
     }
 
+    fun installPackage(
+        claim: OperationClaim,
+        stagedApkPath: String,
+        userId: Int,
+        binding: com.floe.android.rootsystem.StagedApkBinding =
+            com.floe.android.rootsystem.StagedApkBinding(null, -1L, null),
+    ): RootResult<com.floe.android.rootsystem.PackageLifecycleReceipt> {
+        val request = request(claim, SystemOperation.PACKAGE_INSTALL, null).apply {
+            putString(BinderProtocol.KEY_APK_PATH, stagedApkPath)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+            if (binding.expectedSha256 != null) {
+                putString(BinderProtocol.KEY_EXPECTED_SHA256, binding.expectedSha256)
+            }
+            if (binding.expectedSizeBytes > 0) {
+                putLong(BinderProtocol.KEY_EXPECTED_SIZE, binding.expectedSizeBytes)
+            }
+            if (binding.expectedPackageName != null) {
+                putString(BinderProtocol.KEY_EXPECTED_PACKAGE, binding.expectedPackageName)
+            }
+        }
+        return try {
+            val reply = service?.installPackage(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.packageLifecycleResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun uninstallPackage(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.PackageLifecycleReceipt> {
+        val request = request(claim, SystemOperation.PACKAGE_UNINSTALL, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+        }
+        return try {
+            val reply = service?.uninstallPackage(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.packageLifecycleResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun stageApk(
+        claim: OperationClaim,
+        sourcePath: String,
+    ): RootResult<com.floe.android.rootsystem.StagedCopyReceipt> {
+        val request = request(claim, SystemOperation.PACKAGE_STAGE, null).apply {
+            putString(BinderProtocol.KEY_SOURCE_PATH, sourcePath)
+        }
+        return try {
+            val reply = service?.stageApk(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.stagedCopyResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun setPackageEnabled(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        state: String,
+    ): RootResult<com.floe.android.rootsystem.PackageStateReceipt> {
+        val request = request(claim, SystemOperation.PACKAGE_SET_ENABLED, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+            putString(BinderProtocol.KEY_PACKAGE_STATE, state)
+        }
+        return try {
+            val reply = service?.setPackageEnabled(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.packageStateResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun removePackageForUser(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.PackageLifecycleReceipt> {
+        val request = request(claim, SystemOperation.PACKAGE_REMOVE_FOR_USER, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+        }
+        return try {
+            val reply = service?.removePackageForUser(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.packageLifecycleResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun restorePackage(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.PackageLifecycleReceipt> {
+        val request = request(claim, SystemOperation.PACKAGE_RESTORE, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+        }
+        return try {
+            val reply = service?.restorePackage(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.packageLifecycleResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun releaseStagedApk(sha256: String): AccessActionResult = try {
+        val reply = service?.releaseStagedApk(Bundle().apply {
+            putString(BinderProtocol.KEY_SHA256, sha256)
+        })
+        if (BinderProtocol.isOk(reply)) AccessActionResult.Ok else AccessActionResult.Failed(
+            BinderProtocol.code(reply) ?: "staged_release",
+        )
+    } catch (_: Throwable) {
+        AccessActionResult.Unavailable("service_died")
+    }
+
     fun cancel(requestId: String) {
         try {
             service?.cancel(requestId)
@@ -400,7 +556,8 @@ internal class FloeBinderClient(private val binder: IBinder) {
             "operation", "management", "scope_unknown", "scope_read_only",
             "scope_not_writable", "scope_forbidden", "scope_floe_private",
             "protected_ancestor", "cancelled",
-            "protected", "protected_target" -> RootResult.Denied(code)
+            "protected", "protected_target", "system_package",
+            "not_system_package", "protected_role", "target_not_authorized" -> RootResult.Denied(code)
             "service_died", "unavailable" -> RootResult.Unavailable(code)
             else -> RootResult.Failed(code)
         }

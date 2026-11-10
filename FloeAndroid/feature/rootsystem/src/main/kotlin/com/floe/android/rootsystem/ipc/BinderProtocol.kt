@@ -23,7 +23,54 @@ import com.floe.android.rootsystem.SystemOperation
  */
 object BinderProtocol {
 
-    const val VERSION = 2
+    /**
+     * Wire evolution marker. 3 adds the typed package install/uninstall/stage
+     * transactions and the lifecycle-receipt parcel keys. A live service that
+     * answers describe() with an older version is a stale Floe-owned helper:
+     * the ownership policy stops and replaces it (never adopts it), even when
+     * the installed APK versionCode is unchanged, so an old parcel shape can
+     * never serve the new transactions.
+     *
+     * Transaction-position contract (verified source defect repair, A2):
+     * the AIDL compiler numbers methods by declaration order, so the wire-3
+     * methods are APPENDED after every wire-2 method. [wire2LegacyMethods]
+     * lists the exact legacy order and [wire3AppendedMethods] the additions;
+     * the contract tests assert both against the .aidl source so a future
+     * insertion can never silently shift a legacy transaction number again.
+     */
+    const val VERSION = 3
+
+    /**
+     * Exact wire-2 method order (do not reorder; this is the binary contract
+     * a same-versionCode old service still answers on).
+     */
+    val wire2LegacyMethods: List<String> = listOf(
+        "protocolVersion", "ping", "describe",
+        "registerGrant", "revokeGrant", "revokeAllGrants",
+        "fileList", "fileRead", "fileWrite", "fileMove", "fileDelete",
+        "processQuery", "serviceQuery", "packageQuery", "networkDiagnostics",
+        "managePackage", "packetCapture",
+        "cancel", "stopOwnedService",
+    )
+
+    /** Wire-3 methods appended after [wire2LegacyMethods]. */
+    val wire3AppendedMethods: List<String> = listOf(
+        "installPackage", "uninstallPackage", "stageApk",
+    )
+
+    /**
+     * App-state methods appended after [wire3AppendedMethods]. Wire 3 has
+     * never shipped publicly, so these ride the same protocol revision; the
+     * legacy wire-2 positions above stay untouched.
+     */
+    val wire4AppendedMethods: List<String> = listOf(
+        "setPackageEnabled", "removePackageForUser", "restorePackage",
+        "releaseStagedApk",
+    )
+
+    /** Every method appended after the legacy wire-2 block, in order. */
+    val appendedMethods: List<String> = wire3AppendedMethods + wire4AppendedMethods
+
     const val MAX_LIST = 500
     const val MAX_READ_BYTES = 1024 * 1024
     const val MAX_WRITE_BYTES = 8 * 1024 * 1024
@@ -54,8 +101,25 @@ object BinderProtocol {
     const val KEY_FILTER = "filter"
     const val KEY_PACKAGE_NAME = "packageName"
     const val KEY_INCLUDE_SYSTEM = "includeSystem"
+    const val KEY_INCLUDE_UNINSTALLED = "includeUninstalled"
     const val KEY_USER_ID = "userId"
+    const val KEY_PACKAGE_STATE = "packageState"
+    const val KEY_REQUESTED_STATE = "requestedState"
+    const val KEY_STATE_AFTER = "stateAfter"
+    const val KEY_PACKAGE_TARGETS = "packageTargets"
     const val KEY_EXPECTED_PID = "expectedPid"
+    const val KEY_APK_PATH = "apkPath"
+    const val KEY_SOURCE_PATH = "sourcePath"
+    const val KEY_STAGED_PATH = "stagedPath"
+    const val KEY_SIZE_BYTES = "sizeBytes"
+    const val KEY_SHA256 = "sha256"
+    const val KEY_EXPECTED_SHA256 = "expectedSha256"
+    const val KEY_EXPECTED_SIZE = "expectedSizeBytes"
+    const val KEY_EXPECTED_PACKAGE = "expectedPackageName"
+    const val KEY_SUCCEEDED = "succeeded"
+    const val KEY_PRESENT_AFTER = "presentAfter"
+    const val KEY_DETAIL_CODE = "detailCode"
+    const val KEY_FAILURE_DETAIL = "failureDetail"
 
     // Pinned packet-capture request/reply keys (no command or arbitrary path).
     const val KEY_CAPTURE_MODE = "captureMode"
@@ -136,6 +200,13 @@ object BinderProtocol {
         putBooleanArray(KEY_SCOPE_WRITABLE, request.scopes.map { it.writable }.toBooleanArray())
         putStringArray(KEY_OPERATIONS, request.operations.map { it.name }.toTypedArray())
         putBoolean(KEY_PACKAGE_MANAGEMENT, request.packageManagementAllowed)
+        if (request.packageTargets.isNotEmpty()) {
+            putStringArray(
+                KEY_PACKAGE_TARGETS,
+                request.packageTargets.take(com.floe.android.rootsystem.GrantRequest.MAX_PACKAGE_TARGETS)
+                    .toTypedArray(),
+            )
+        }
     }
 
     fun parseGrant(bundle: Bundle?): GrantRequest? {
@@ -159,6 +230,9 @@ object BinderProtocol {
             scopes = ids.indices.map { ScopeRoot(ids[it], paths[it], writable[it]) },
             operations = operations,
             packageManagementAllowed = bundle.getBoolean(KEY_PACKAGE_MANAGEMENT),
+            packageTargets = (bundle.getStringArray(KEY_PACKAGE_TARGETS) ?: emptyArray())
+                .take(com.floe.android.rootsystem.GrantRequest.MAX_PACKAGE_TARGETS)
+                .toSet(),
         )
     }
 
@@ -319,6 +393,49 @@ object BinderProtocol {
             userId = item.getInt("userId"),
             operation = item.getString("operation")?.take(32) ?: return null,
             stillRunning = item.getBoolean(KEY_STILL_RUNNING),
+        )
+    }
+
+    fun packageLifecycleResult(bundle: Bundle?): com.floe.android.rootsystem.PackageLifecycleReceipt? {
+        val item = bundle?.getBundle(KEY_PACKAGE_RESULT) ?: return null
+        return com.floe.android.rootsystem.PackageLifecycleReceipt(
+            packageName = item.getString(KEY_PACKAGE_NAME)?.take(MAX_NAME) ?: return null,
+            userId = item.getInt(KEY_USER_ID),
+            operation = item.getString("operation")?.take(32) ?: return null,
+            succeeded = item.getBoolean(KEY_SUCCEEDED),
+            presentAfter = item.getBoolean(KEY_PRESENT_AFTER),
+            versionCode = item.getLong("versionCode"),
+            detailCode = item.getString(KEY_DETAIL_CODE)?.take(48) ?: return null,
+            failureDetail = item.getString(KEY_FAILURE_DETAIL)?.take(96),
+        )
+    }
+
+    /** Reply codec for the typed shared-storage -> staging-area APK copy. */
+    fun stagedCopyResult(bundle: Bundle?): com.floe.android.rootsystem.StagedCopyReceipt? {
+        val item = bundle?.getBundle(KEY_PACKAGE_RESULT) ?: return null
+        val stagedPath = item.getString(KEY_STAGED_PATH) ?: return null
+        val sha = item.getString(KEY_SHA256) ?: return null
+        if (sha.length != 64) return null
+        return com.floe.android.rootsystem.StagedCopyReceipt(
+            stagedPath = stagedPath.take(MAX_RELATIVE_PATH + 384),
+            sizeBytes = item.getLong(KEY_SIZE_BYTES),
+            sha256 = sha,
+            packageName = item.getString(KEY_PACKAGE_NAME)?.take(MAX_NAME),
+        )
+    }
+
+    /** Reply codec for the typed enable/disable/disable-user state receipt. */
+    fun packageStateResult(bundle: Bundle?): com.floe.android.rootsystem.PackageStateReceipt? {
+        val item = bundle?.getBundle(KEY_PACKAGE_RESULT) ?: return null
+        return com.floe.android.rootsystem.PackageStateReceipt(
+            packageName = item.getString(KEY_PACKAGE_NAME)?.take(MAX_NAME) ?: return null,
+            userId = item.getInt(KEY_USER_ID),
+            operation = item.getString("operation")?.take(32) ?: return null,
+            requestedState = item.getString(KEY_REQUESTED_STATE)?.take(32) ?: return null,
+            stateAfter = item.getString(KEY_STATE_AFTER)?.take(32) ?: return null,
+            succeeded = item.getBoolean(KEY_SUCCEEDED),
+            detailCode = item.getString(KEY_DETAIL_CODE)?.take(48) ?: return null,
+            failureDetail = item.getString(KEY_FAILURE_DETAIL)?.take(96),
         )
     }
 }

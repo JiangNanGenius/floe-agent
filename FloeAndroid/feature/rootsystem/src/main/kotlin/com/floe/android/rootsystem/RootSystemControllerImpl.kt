@@ -16,6 +16,7 @@ import com.floe.android.rootsystem.policy.BackendOwnershipPolicy
 import com.floe.android.rootsystem.policy.FloePackageFamily
 import com.floe.android.rootsystem.policy.PathPolicy
 import com.floe.android.rootsystem.policy.ProtectedTargets
+import com.floe.android.rootsystem.policy.StagedApkPolicy
 import com.floe.android.rootsystem.root.RootLauncher
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
@@ -885,8 +886,13 @@ internal class RootSystemControllerImpl(
         packageName: String?,
         includeSystem: Boolean,
         maxEntries: Int,
+        includeUninstalled: Boolean = false,
     ): RootResult<PackageQuery> = dispatch(claim, SystemOperation.PACKAGE_QUERY, packageName) { client ->
-        client.packageQuery(claim, packageName, includeSystem, maxEntries.coerceIn(1, BinderProtocol.MAX_LIST))
+        client.packageQuery(
+            claim, packageName, includeSystem,
+            maxEntries.coerceIn(1, BinderProtocol.MAX_LIST),
+            includeUninstalled = includeUninstalled,
+        )
     }
 
     suspend fun networkDiagnostics(claim: OperationClaim): RootResult<NetworkDiagnostics> =
@@ -909,6 +915,117 @@ internal class RootSystemControllerImpl(
             packageName,
             destructive = true,
         ) { client -> client.managePackage(claim, packageName, userId) }
+    }
+
+    suspend fun installPackage(
+        claim: OperationClaim,
+        stagedApkPath: String,
+        userId: Int,
+        binding: com.floe.android.rootsystem.StagedApkBinding =
+            com.floe.android.rootsystem.StagedApkBinding(null, -1L, null),
+    ): RootResult<PackageLifecycleReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (StagedApkPolicy.normalizeStagedPath(stagedApkPath) == null) {
+            return RootResult.Denied("apk_path")
+        }
+        return dispatch(
+            claim,
+            SystemOperation.PACKAGE_INSTALL,
+            stagedApkPath,
+            destructive = true,
+        ) { client -> client.installPackage(claim, stagedApkPath, userId, binding) }
+    }
+
+    suspend fun stageApk(
+        claim: OperationClaim,
+        sourcePath: String,
+    ): RootResult<StagedCopyReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (StagedApkPolicy.normalizeStagedPath(sourcePath) == null) {
+            return RootResult.Denied("apk_path")
+        }
+        return dispatch(
+            claim,
+            SystemOperation.PACKAGE_STAGE,
+            sourcePath,
+            destructive = false,
+        ) { client -> client.stageApk(claim, sourcePath) }
+    }
+
+    suspend fun uninstallPackage(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<PackageLifecycleReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (ProtectedTargets.isProtectedPackage(packageName, protectedPackages)) {
+            return RootResult.Denied("protected_target")
+        }
+        return dispatch(
+            claim,
+            SystemOperation.PACKAGE_UNINSTALL,
+            packageName,
+            destructive = true,
+        ) { client -> client.uninstallPackage(claim, packageName, userId) }
+    }
+
+    suspend fun setPackageEnabled(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        state: String,
+    ): RootResult<com.floe.android.rootsystem.PackageStateReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (state !in ProtectedTargets.SET_ENABLED_STATES) return RootResult.Denied("package_state")
+        if (ProtectedTargets.isProtectedPackage(packageName, protectedPackages)) {
+            return RootResult.Denied("protected_target")
+        }
+        return dispatch(
+            claim,
+            SystemOperation.PACKAGE_SET_ENABLED,
+            packageName,
+            destructive = true,
+        ) { client -> client.setPackageEnabled(claim, packageName, userId, state) }
+    }
+
+    suspend fun removePackageForUser(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.PackageLifecycleReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (ProtectedTargets.isProtectedPackage(packageName, protectedPackages)) {
+            return RootResult.Denied("protected_target")
+        }
+        return dispatch(
+            claim,
+            SystemOperation.PACKAGE_REMOVE_FOR_USER,
+            packageName,
+            destructive = true,
+        ) { client -> client.removePackageForUser(claim, packageName, userId) }
+    }
+
+    suspend fun restorePackage(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.PackageLifecycleReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (ProtectedTargets.isProtectedPackage(packageName, protectedPackages)) {
+            return RootResult.Denied("protected_target")
+        }
+        return dispatch(
+            claim,
+            SystemOperation.PACKAGE_RESTORE,
+            packageName,
+            destructive = true,
+        ) { client -> client.restorePackage(claim, packageName, userId) }
+    }
+
+    suspend fun releaseStagedApk(sha256: String): AccessActionResult {
+        val client = binderClient ?: return AccessActionResult.Unavailable("service_not_alive")
+        if (!sha256.matches(Regex("^[0-9a-f]{64}$"))) return AccessActionResult.Denied("staged_shape")
+        return withContext(Dispatchers.IO) { client.releaseStagedApk(sha256) }
     }
 
     suspend fun cancelOperation(claim: OperationClaim): AccessActionResult {
@@ -959,7 +1076,7 @@ internal class RootSystemControllerImpl(
             return RootResult.Denied("expired")
         }
         if (operation !in grant.operations) return RootResult.Denied("operation")
-        if (operation == SystemOperation.PACKAGE_FORCE_STOP && !grant.packageManagementAllowed) {
+        if (SystemOperation.isPackageManagement(operation) && !grant.packageManagementAllowed) {
             return RootResult.Denied("management")
         }
         val client = activeClient() ?: return RootResult.Unavailable("service_not_alive")
@@ -1295,7 +1412,7 @@ internal class RootSystemControllerImpl(
         if (request.expiresAtMillis <= now) return "grant_expired"
         if (request.expiresAtMillis - now > MAX_GRANT_LIFETIME_MILLIS) return "grant_lifetime"
         if (request.operations.isEmpty()) return "grant_operations"
-        if (SystemOperation.PACKAGE_FORCE_STOP in request.operations) {
+        if (request.operations.any { SystemOperation.isPackageManagement(it) }) {
             if (!config.allowPackageManagement) return "management_disabled"
             if (!request.packageManagementAllowed) return "management"
         }

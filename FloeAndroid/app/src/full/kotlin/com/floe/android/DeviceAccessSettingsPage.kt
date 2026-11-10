@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -21,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -40,6 +42,7 @@ import com.floe.android.design.FloeSettingsSectionCard
 import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeValueRow
+import com.floe.android.host.deviceaccess.DeviceAccessToolCatalog
 import com.floe.android.host.deviceaccess.PairingNotificationAccess
 import com.floe.android.host.deviceaccess.PairingNotificationPolicy
 import io.github.robinpcrd.cupertino.section.SectionScope
@@ -97,6 +100,16 @@ data class DeviceAccessFileRootUi(
     val kind: DeviceAccessFileRootKindUi = DeviceAccessFileRootKindUi.SHARED,
 )
 
+/** One App-staged APK shown in the management surface; zero-privilege
+ *  bookkeeping the user can inspect, stage and remove at any time. */
+data class DeviceAccessStagedApkUi(
+    val stagedId: String,
+    val fileName: String,
+    val sizeBytes: Long,
+    val packageName: String?,
+    val sha256: String,
+)
+
 /**
  * Explicit capability ceilings selected by the user. Empty package/root sets
  * mean "no target authorized", never "all targets": there is no blanket grant.
@@ -110,6 +123,14 @@ data class DeviceAccessTargetsUi(
     /** Root is the live service; only then may an app-data folder be added. */
     val appDataRootsAvailable: Boolean = false,
     val packageManagementAllowed: Boolean = false,
+    /** The ONE shared advanced-system master switch. */
+    val advancedSystemManagementAllowed: Boolean = false,
+    /** Allowed advanced tool names (exact ABI names, shipped subset only). */
+    val advancedSystemAllowedTools: Set<String> = emptySet(),
+    val selectedAdvancedSystemTargets: Set<String> = emptySet(),
+    /** Eligible advanced targets incl. disabled/removed preinstalled apps. */
+    val advancedSystemTargets: List<DeviceAccessPackageUi> = emptyList(),
+    val stagedApks: List<DeviceAccessStagedApkUi> = emptyList(),
     val wholeScreenConsent: Boolean = false,
     val windowScreenshotCapable: Boolean = true,
 )
@@ -251,6 +272,12 @@ class DeviceAccessCallbacks(
     val onFileWritesChange: (Boolean) -> Unit = {},
     val onWholeScreenConsentChange: (Boolean) -> Unit = {},
     val onPackageManagementChange: (Boolean) -> Unit = {},
+    /** The shared advanced-system master; disabling revokes live grants. */
+    val onAdvancedSystemChange: (Boolean) -> Unit = {},
+    /** Allowed advanced tool names (shipped app-state subset only). */
+    val onAdvancedSystemToolsChange: (Set<String>) -> Unit = {},
+    /** Selected installed-app targets for the advanced group. */
+    val onAdvancedSystemTargetsChange: (Set<String>) -> Unit = {},
     val onScreenScopeChange: (DeviceAccessScreenScopeUi) -> Unit = {},
     val onEnableAdb: () -> Unit = {},
     /** Opens the system Wireless debugging pairing screen and posts the
@@ -271,6 +298,11 @@ class DeviceAccessCallbacks(
     val onOpenDeveloperOptions: () -> Unit = {},
     val onCheckRootGrant: () -> Unit = {},
     val onEnableRoot: (Boolean) -> Unit = {},
+    /** Stage SAF-picked APKs into the App-local install staging dir. */
+    val onStageApks: (List<android.net.Uri>) -> Unit = {},
+    val onRemoveStagedApk: (String) -> Unit = {},
+    /** Immediately revoke every live system-access grant (visible revoke). */
+    val onRevokeSystemGrants: () -> Unit = {},
 )
 
 /**
@@ -394,6 +426,17 @@ object DeviceAccessPresentation {
         busy: DeviceAccessBusyUi,
     ): Boolean = adbSubmitEnabled(code, state, busy) && pairingPortValid(port)
 
+    /** Row labels for the shipped advanced tool names; 0 for anything else. */
+    fun advancedToolLabelRes(tool: String): Int = when (tool) {
+        DeviceAccessToolCatalog.SYSTEM_PACKAGES_SET_ENABLED ->
+            R.string.device_access_advanced_tool_set_enabled
+        DeviceAccessToolCatalog.SYSTEM_PACKAGES_REMOVE_FOR_USER ->
+            R.string.device_access_advanced_tool_remove_for_user
+        DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE ->
+            R.string.device_access_advanced_tool_restore
+        else -> 0
+    }
+
     fun rootStatusRes(state: DeviceAccessRootUi): Int = when (state) {
         DeviceAccessRootUi.Off -> R.string.device_access_root_state_off
         DeviceAccessRootUi.GrantNotFound -> R.string.device_access_root_state_no_grant
@@ -428,6 +471,19 @@ object DeviceAccessPresentation {
         targets.fileRoots.any { root ->
             root.selected && root.writable && root.kind != DeviceAccessFileRootKindUi.SYSTEM
         }
+
+    /** Batch-grant selection: every preset root (shared + platform inspection
+     *  trees). Explicit other-app folders stay user-typed one at a time. */
+    fun allSelectableRootIds(targets: DeviceAccessTargetsUi): Set<String> =
+        targets.fileRoots
+            .filter { it.kind != DeviceAccessFileRootKindUi.APP_DATA }
+            .map { it.id }
+            .toSet()
+
+    /** Batch-grant selection: the full authorized app list. The host clamps
+     *  the persisted ceiling to its own maximum. */
+    fun allSelectablePackageIds(targets: DeviceAccessTargetsUi): Set<String> =
+        targets.packages.map { it.packageName }.toSet()
 
     fun appDataFolderAddEnabled(state: DeviceAccessPresentationState): Boolean =
         state.targets.appDataRootsAvailable &&
@@ -523,6 +579,8 @@ fun DeviceAccessSettingsPage(
     var confirmRootCheck by remember { mutableStateOf(false) }
     var confirmAutomatic by remember { mutableStateOf(false) }
     var appChooserOpen by remember { mutableStateOf(false) }
+    var advancedChooserOpen by remember { mutableStateOf(false) }
+    var advancedToolsChooserOpen by remember { mutableStateOf(false) }
     var confirmUnlock by remember { mutableStateOf(false) }
     var unlockDraft by remember { mutableStateOf("") }
     var revealUnlock by remember { mutableStateOf(false) }
@@ -536,6 +594,34 @@ fun DeviceAccessSettingsPage(
         enabled = state.busy == DeviceAccessBusyUi.NONE,
         onSelectionChange = callbacks.onAllowedPackagesChange,
         onDismiss = { appChooserOpen = false },
+    )
+    DeviceAccessAppChooserSheet(
+        visible = advancedChooserOpen,
+        packages = state.targets.advancedSystemTargets,
+        selected = state.targets.selectedAdvancedSystemTargets,
+        titleRes = R.string.device_access_targets_section_advanced,
+        enabled = state.busy == DeviceAccessBusyUi.NONE,
+        onSelectionChange = callbacks.onAdvancedSystemTargetsChange,
+        onDismiss = { advancedChooserOpen = false },
+    )
+    DeviceAccessAppChooserSheet(
+        visible = advancedToolsChooserOpen,
+        packages = DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS.map { tool ->
+            DeviceAccessPackageUi(
+                packageName = tool,
+                label = stringResource(DeviceAccessPresentation.advancedToolLabelRes(tool)),
+                selected = tool in state.targets.advancedSystemAllowedTools,
+            )
+        },
+        selected = state.targets.advancedSystemAllowedTools,
+        titleRes = R.string.device_access_advanced_categories,
+        enabled = state.busy == DeviceAccessBusyUi.NONE,
+        onSelectionChange = callbacks.onAdvancedSystemToolsChange,
+        onDismiss = { advancedToolsChooserOpen = false },
+        showIdentifiers = false,
+        searchable = false,
+        countLabelRes = R.string.device_access_advanced_categories_count,
+        heightFractionOverride = 0.72f,
     )
     val context = LocalContext.current
     var notificationAvailability by remember {
@@ -554,6 +640,14 @@ fun DeviceAccessSettingsPage(
             // the page shows the explicit inline-unavailable hint.
             callbacks.onPairAdb()
         }
+    }
+    // Multi-APK SAF staging. The launcher hands picked document uris to the
+    // host, which copies bytes into the App-local staging dir; staging alone
+    // never installs anything.
+    val stageApks = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) callbacks.onStageApks(uris)
     }
     val activity = context as? ComponentActivity
     DisposableEffect(activity) {
@@ -827,6 +921,38 @@ fun DeviceAccessSettingsPage(
             shared.forEach { root ->
                 FileRootRow(root, state, callbacks)
             }
+            if (shared.isNotEmpty()) {
+                // Batch grant: select every preset folder or clear the whole
+                // selection in one gesture. App-data folders are deliberately
+                // excluded; they stay explicit one-at-a-time Root grants.
+                FloeSectionRow(
+                    title = {
+                        FloeText(
+                            stringResource(R.string.device_access_roots_batch),
+                            style = Floe.typography.body,
+                            color = colors.label,
+                        )
+                    },
+                    trailing = {
+                        FloeCapsuleButton(
+                            stringResource(R.string.device_access_select_all),
+                            onClick = {
+                                callbacks.onFileRootsChange(
+                                    DeviceAccessPresentation.allSelectableRootIds(state.targets),
+                                )
+                            },
+                            enabled = state.busy == DeviceAccessBusyUi.NONE,
+                            modifier = Modifier.weight(1f),
+                        )
+                        FloeCapsuleButton(
+                            stringResource(R.string.device_access_clear),
+                            onClick = { callbacks.onFileRootsChange(emptySet()) },
+                            enabled = state.busy == DeviceAccessBusyUi.NONE,
+                            modifier = Modifier.weight(1f),
+                        )
+                    },
+                )
+            }
             FloeSectionRow(
                 title = {
                     FloeText(
@@ -923,7 +1049,11 @@ fun DeviceAccessSettingsPage(
         }
 
         // The package ceiling is separate from file scopes: enabling it never
-        // adds a file root, and enabling Root never enables it.
+        // adds a file root, and enabling Root never enables it. Inside the
+        // ceiling, admitted tasks auto-pass the repetitive per-call approval
+        // for force-stop/install/uninstall of ordinary third-party packages;
+        // Floe itself and system packages stay hard-refused, and the revoke
+        // row below is the visible stop for everything live right now.
         FloeSettingsSectionCard(title = stringResource(R.string.device_access_management_section)) {
             FloeSectionRow(
                 title = {
@@ -942,6 +1072,109 @@ fun DeviceAccessSettingsPage(
                     )
                 },
                 caption = stringResource(R.string.device_access_package_management_hint),
+            )
+            // The shared advanced-system master. It is intentionally one
+            // switch: the per-name allowed list and the target chooser below
+            // are the granular controls; the reserved permission/AppOps/
+            // settings names get no placeholder rows.
+            FloeSectionRow(
+                title = {
+                    FloeText(
+                        stringResource(R.string.device_access_advanced_master),
+                        style = Floe.typography.body,
+                        color = colors.label,
+                    )
+                },
+                trailing = {
+                    FloeInlineSwitch(
+                        checked = state.targets.advancedSystemManagementAllowed,
+                        onCheckedChange = callbacks.onAdvancedSystemChange,
+                        description = stringResource(R.string.device_access_advanced_master),
+                        enabled = state.busy == DeviceAccessBusyUi.NONE,
+                    )
+                },
+                caption = stringResource(R.string.device_access_advanced_master_hint),
+            )
+            if (state.targets.advancedSystemManagementAllowed) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_advanced_categories),
+                    onClick = { advancedToolsChooserOpen = true },
+                    enabled = state.busy == DeviceAccessBusyUi.NONE,
+                    trailing = {
+                        FloeText(
+                            stringResource(
+                                R.string.device_access_advanced_categories_count,
+                                state.targets.advancedSystemAllowedTools.intersect(
+                                    DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS).size,
+                            ),
+                            style = Floe.typography.metadata,
+                            color = colors.secondaryLabel,
+                        )
+                    },
+                )
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_advanced_choose_targets),
+                    onClick = { advancedChooserOpen = true },
+                    enabled = state.busy == DeviceAccessBusyUi.NONE,
+                    trailing = {
+                        FloeText(
+                            stringResource(
+                                R.string.device_access_advanced_targets_count,
+                                state.targets.selectedAdvancedSystemTargets.size,
+                            ),
+                            style = Floe.typography.metadata,
+                            color = colors.secondaryLabel,
+                        )
+                    },
+                )
+            }
+            FloeActionRow(
+                label = stringResource(R.string.device_access_stage_apks),
+                onClick = {
+                    stageApks.launch(arrayOf("application/vnd.android.package-archive"))
+                },
+                enabled = state.busy == DeviceAccessBusyUi.NONE,
+            )
+            if (state.targets.stagedApks.isEmpty()) {
+                FloeSectionRow(title = {
+                    CaptionText(stringResource(R.string.device_access_staged_empty))
+                })
+            } else {
+                state.targets.stagedApks.forEach { apk ->
+                    FloeSectionRow(
+                        title = {
+                            Column(Modifier.fillMaxWidth()) {
+                                FloeText(
+                                    apk.fileName,
+                                    style = Floe.typography.body,
+                                    color = colors.label,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                FloeText(
+                                    stagedApkSubtitle(context, apk),
+                                    style = Floe.typography.metadata,
+                                    color = colors.secondaryLabel,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        },
+                        trailing = {
+                            FloeCapsuleButton(
+                                stringResource(R.string.device_access_staged_remove),
+                                onClick = { callbacks.onRemoveStagedApk(apk.stagedId) },
+                                enabled = state.busy == DeviceAccessBusyUi.NONE,
+                                modifier = Modifier.widthIn(min = 64.dp, max = 96.dp),
+                            )
+                        },
+                    )
+                }
+            }
+            FloeActionRow(
+                label = stringResource(R.string.device_access_revoke_grants),
+                onClick = callbacks.onRevokeSystemGrants,
+                enabled = state.busy == DeviceAccessBusyUi.NONE,
             )
         }
 
@@ -1415,6 +1648,13 @@ private fun CaptionText(text: String, modifier: Modifier = Modifier) {
         color = Floe.colors.secondaryLabel,
         modifier = modifier,
     )
+}
+
+/** One-line staged APK subtitle: human size plus the archive package name. */
+private fun stagedApkSubtitle(context: android.content.Context, apk: DeviceAccessStagedApkUi): String {
+    val size = android.text.format.Formatter.formatShortFileSize(context, apk.sizeBytes)
+    val pkg = apk.packageName ?: context.getString(R.string.device_access_staged_pkg_unknown)
+    return "$size · $pkg"
 }
 
 /**

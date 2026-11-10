@@ -37,7 +37,7 @@ import com.floe.android.design.FloeSettingsContentDensity
 import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeText
 
-/** A separate scroll owner; filtering never replaces the full authorized selection. */
+/** Phone-control target chooser; see [DeviceAccessAppChooserSheet]. */
 @Composable
 internal fun DeviceAccessAppChooser(
     visible: Boolean,
@@ -45,18 +45,46 @@ internal fun DeviceAccessAppChooser(
     enabled: Boolean,
     onSelectionChange: (Set<String>) -> Unit,
     onDismiss: () -> Unit,
+) = DeviceAccessAppChooserSheet(
+    visible = visible,
+    packages = targets.packages,
+    selected = targets.selectedPackages,
+    titleRes = R.string.device_access_targets_section,
+    enabled = enabled,
+    onSelectionChange = onSelectionChange,
+    onDismiss = onDismiss,
+)
+
+/**
+ * A separate scroll owner; filtering never replaces the full authorized
+ * selection. The packages/selected inputs make the same compact multi-select
+ * reusable for the advanced-system target ceiling.
+ */
+@Composable
+internal fun DeviceAccessAppChooserSheet(
+    visible: Boolean,
+    packages: List<DeviceAccessPackageUi>,
+    selected: Set<String>,
+    titleRes: Int,
+    enabled: Boolean,
+    onSelectionChange: (Set<String>) -> Unit,
+    onDismiss: () -> Unit,
+    showIdentifiers: Boolean = true,
+    searchable: Boolean = true,
+    countLabelRes: Int = R.string.device_access_targets_count,
+    heightFractionOverride: Float? = null,
 ) {
     if (!visible) return
     var query by remember { mutableStateOf("") }
     val config = LocalConfiguration.current
     val compact = FloeLayout.usesCompactNavigation(
         config.screenWidthDp.toFloat(), config.smallestScreenWidthDp.toFloat())
-    val matches = remember(query, targets.packages, targets.selectedPackages) {
-        targets.packages.filter {
+    val matches = remember(query, packages, selected) {
+        packages.filter {
             query.isBlank() || it.label.contains(query.trim(), ignoreCase = true) ||
                 it.packageName.contains(query.trim(), ignoreCase = true)
         }.sortedWith(compareByDescending<DeviceAccessPackageUi> {
-            it.packageName in targets.selectedPackages
+            it.packageName in selected
         }.thenBy { it.label.lowercase() })
     }
     FloeSettingsContentDensity(compact) {
@@ -65,7 +93,7 @@ internal fun DeviceAccessAppChooser(
             onDismiss = onDismiss,
             topInset = if (compact) 16.dp else 0.dp,
             widthFraction = if (compact) 1f else 0.62f,
-            heightFraction = if (compact) 1f else 0.82f,
+            heightFraction = heightFractionOverride ?: if (compact) 1f else 0.82f,
             placement = if (compact) FloeSheetPlacement.BOTTOM else FloeSheetPlacement.CENTER,
         ) {
             Column(Modifier.fillMaxSize().background(Floe.colors.groupedSurface)) {
@@ -74,34 +102,66 @@ internal fun DeviceAccessAppChooser(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    FloeText(stringResource(R.string.device_access_targets_section),
+                    FloeText(stringResource(titleRes),
                         style = Floe.typography.section, modifier = Modifier.weight(1f),
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     FloeCapsuleButton(stringResource(R.string.done), onClick = onDismiss,
                         modifier = Modifier.widthIn(min = 64.dp, max = 96.dp))
                 }
                 FloeDivider()
-                FloeSearchField(query, { query = it },
-                    stringResource(R.string.device_access_targets_search),
-                    Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-                FloeText(stringResource(R.string.device_access_targets_count, targets.selectedPackages.size),
-                    style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                if (searchable) {
+                    FloeSearchField(query, { query = it },
+                        stringResource(R.string.device_access_targets_search),
+                        Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeText(
+                        stringResource(
+                            countLabelRes,
+                            selected.size,
+                        ),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // Batch selection over the FULL authorized list: filtering
+                    // never narrows a select-all to what is merely visible.
+                    FloeCapsuleButton(
+                        stringResource(R.string.device_access_select_all),
+                        onClick = {
+                            onSelectionChange(
+                                packages.map { it.packageName }.toSet(),
+                            )
+                        },
+                        enabled = enabled,
+                        modifier = Modifier.widthIn(min = 56.dp, max = 96.dp),
+                    )
+                    FloeCapsuleButton(
+                        stringResource(R.string.device_access_clear),
+                        onClick = { onSelectionChange(emptySet()) },
+                        enabled = enabled,
+                        modifier = Modifier.widthIn(min = 56.dp, max = 96.dp),
+                    )
+                }
                 LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
                     if (matches.isEmpty()) {
                         item {
-                            FloeText(stringResource(if (targets.packages.isEmpty())
+                            FloeText(stringResource(if (packages.isEmpty())
                                 R.string.device_access_targets_empty else R.string.device_access_targets_no_matches),
                                 style = Floe.typography.body, color = Floe.colors.secondaryLabel,
                                 modifier = Modifier.padding(vertical = 16.dp))
                         }
                     }
                     items(matches, key = { it.packageName }) { app ->
-                        val checked = app.packageName in targets.selectedPackages
-                        val toggle: (Boolean) -> Unit = { selected ->
+                        val checked = app.packageName in selected
+                        val toggle: (Boolean) -> Unit = { turnOn ->
                             // Start from ALL selected apps, including those hidden by the query.
-                            val next = targets.selectedPackages.toMutableSet()
-                            if (selected) next += app.packageName else next -= app.packageName
+                            val next = selected.toMutableSet()
+                            if (turnOn) next += app.packageName else next -= app.packageName
                             onSelectionChange(next)
                         }
                         Row(
@@ -115,9 +175,11 @@ internal fun DeviceAccessAppChooser(
                             Column(Modifier.weight(1f)) {
                                 FloeText(app.label, style = Floe.typography.body, maxLines = 1,
                                     overflow = TextOverflow.Ellipsis)
-                                FloeText(app.packageName, style = Floe.typography.metadata,
-                                    color = Floe.colors.secondaryLabel, maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis)
+                                if (showIdentifiers) {
+                                    FloeText(app.packageName, style = Floe.typography.metadata,
+                                        color = Floe.colors.secondaryLabel, maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                }
                             }
                             FloeInlineSwitch(checked, toggle, app.label, enabled = enabled,
                                 modifier = Modifier.clearAndSetSemantics { })

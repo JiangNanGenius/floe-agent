@@ -122,20 +122,99 @@ object ProtectedTargets {
     fun isReadOnlySystemPath(path: String): Boolean =
         PathPolicy.isReadOnlySystemPath(path)
 
+    /** Closed lifecycle operations the typed package-management path serves. */
+    val MANAGE_OPERATIONS: Set<String> = setOf("force_stop", "install", "uninstall")
+
+    /**
+     * Closed app-state operations the typed package-management path serves:
+     * enable/disable/disable-user, per-user removal of noncritical
+     * preinstalled apps and install-existing restore.
+     */
+    val APP_STATE_OPERATIONS: Set<String> = setOf("set_enabled", "remove_for_user", "restore")
+
+    /** Closed requested-state tokens for the set_enabled operation. */
+    val SET_ENABLED_STATES: Set<String> = setOf("enable", "disable", "disable-user")
+
+    /**
+     * Operations an admitted task may auto-pass inside the user's enabled
+     * package-management ceiling. Everything else keeps the explicit
+     * interactive hard gate; the app-state group additionally requires the
+     * per-action durable switches and a non-empty selected target ceiling.
+     */
+    val AUTO_ADMISSIBLE_MANAGE_OPERATIONS: Set<String> =
+        MANAGE_OPERATIONS + APP_STATE_OPERATIONS
+
     fun canManagePackage(
         packageName: String,
         userId: Int,
         ownPackages: Set<String>,
         allowed: Boolean,
         operation: String,
+    ): String? = baseManageDenial(packageName, userId, ownPackages, allowed)?.let { return it }
+        ?: if (operation !in MANAGE_OPERATIONS) "operation" else null
+
+    /** Shared admission shape for every typed package-management operation. */
+    private fun baseManageDenial(
+        packageName: String,
+        userId: Int,
+        ownPackages: Set<String>,
+        allowed: Boolean,
     ): String? = when {
         !allowed -> "management_disabled"
         userId !in 0..999 -> "user"
         packageName.length !in 3..255 -> "package"
-        !Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$").matches(packageName) ->
+        packageName != "android" && !Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$").matches(packageName) ->
             "package"
-        operation !in setOf("force_stop") -> "operation"
         isProtectedPackage(packageName, ownPackages) -> "protected_target"
         else -> null
+    }
+
+    /**
+     * Uninstall refuses platform/system packages outright: removing them is
+     * system-damaging even when ordinary third-party uninstall is enabled.
+     * Install instead refuses early when the staged archive already names a
+     * protected/system identity the reinstall could impersonate.
+     */
+    fun canAlterSystemPackage(operation: String, systemPackage: Boolean): String? = when {
+        operation == "uninstall" && systemPackage -> "system_package"
+        else -> null
+    }
+
+    /**
+     * App-state operations (enable/disable/disable-user, per-user removal of
+     * preinstalled apps, install-existing restore).
+     *
+     * Beyond the shared management/protected checks this enforces the real
+     * target classes:
+     *  - set_enabled: third-party or noncritical preinstalled packages; the
+     *    packages currently holding the launcher / input-method / dialer
+     *    roles are refused because disabling them breaks the device (the OS
+     *    would refuse anyway; an OS refusal is reported as a real failure).
+     *  - remove_for_user / restore: ONLY system-image packages, and only for
+     *    the current user; third-party packages use the ordinary uninstall
+     *    path instead. The system image is never modified.
+     *
+     * [currentRolePackages] are resolved device-side from the real role
+     * holders (default launcher activity, Settings.Secure default input
+     * method, TelecomManager default dialer), never from model text.
+     */
+    fun canChangeAppState(
+        packageName: String,
+        userId: Int,
+        ownPackages: Set<String>,
+        allowed: Boolean,
+        operation: String,
+        systemPackage: Boolean,
+        currentRolePackages: Set<String>,
+    ): String? {
+        baseManageDenial(packageName, userId, ownPackages, allowed)?.let { return it }
+        if (operation !in APP_STATE_OPERATIONS) return "operation"
+        if (packageName in currentRolePackages) return "protected_role"
+        return when (operation) {
+            "set_enabled" -> null
+            "remove_for_user", "restore" ->
+                if (systemPackage) null else "not_system_package"
+            else -> "operation"
+        }
     }
 }

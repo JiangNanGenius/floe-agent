@@ -96,6 +96,33 @@ class DeviceAccessPresentationTest {
 
     // ------------------------------------------------------------ pairing code
 
+    // ---------------------------------------------------------- advanced gate
+
+    @Test
+    fun advancedToolLabelsCoverOnlyTheShippedAppStateNames() {
+        val labels = listOf(
+            "system.packages.setEnabled",
+            "system.packages.removeForUser",
+            "system.packages.restore",
+        ).map { DeviceAccessPresentation.advancedToolLabelRes(it) }
+        assertEquals("each shipped name renders its own row label", 3, labels.toSet().size)
+        for (res in labels) assertTrue(res != 0)
+        // Reserved ABI names must never get placeholder labels.
+        for (reserved in listOf(
+            "system.permissions.manage", "system.appOps.manage", "system.settings.write")) {
+            assertEquals(0, DeviceAccessPresentation.advancedToolLabelRes(reserved))
+        }
+    }
+
+    @Test
+    fun advancedTargetsUiDefaultsAreFailClosed() {
+        val targets = DeviceAccessTargetsUi()
+        assertFalse(targets.advancedSystemManagementAllowed)
+        assertTrue(targets.advancedSystemAllowedTools.isEmpty())
+        assertTrue(targets.selectedAdvancedSystemTargets.isEmpty())
+        assertTrue(targets.advancedSystemTargets.isEmpty())
+    }
+
     @Test
     fun pairingCodeIsSixDigitsAndNeverSubmittableOtherwise() {
         assertEquals("123456", DeviceAccessPairingCode.sanitize("12 34-56 78"))
@@ -307,5 +334,41 @@ class DeviceAccessPresentationTest {
             DeviceAccessPresentation.errorCode(DeviceAccessUiError("failed", "service_died-2 $ `")))
         assertEquals(96,
             DeviceAccessPresentation.errorCode(DeviceAccessUiError("failed", "x".repeat(200)))!!.length)
+    }
+
+    // --------------------------------------------------------- batch selection
+
+    @Test
+    fun selectAllRootsCoversPresetsButNeverAppDataFolders() {
+        val targets = DeviceAccessTargetsUi(
+            fileRoots = listOf(
+                DeviceAccessFileRootUi("downloads", selected = false,
+                    kind = DeviceAccessFileRootKindUi.SHARED),
+                DeviceAccessFileRootUi("system", selected = false,
+                    kind = DeviceAccessFileRootKindUi.SYSTEM, writable = false),
+                DeviceAccessFileRootUi("appdata:abcd", selected = true,
+                    kind = DeviceAccessFileRootKindUi.APP_DATA),
+            ),
+        )
+        assertEquals(
+            setOf("downloads", "system"),
+            DeviceAccessPresentation.allSelectableRootIds(targets),
+        )
+    }
+
+    @Test
+    fun selectAllPackagesCoversTheFullAuthorizedList() {
+        val targets = DeviceAccessTargetsUi(
+            packages = listOf(
+                DeviceAccessPackageUi("com.example.one", "One", selected = false),
+                DeviceAccessPackageUi("com.example.two", "Two", selected = true),
+            ),
+        )
+        assertEquals(
+            setOf("com.example.one", "com.example.two"),
+            DeviceAccessPresentation.allSelectablePackageIds(targets),
+        )
+        assertTrue(DeviceAccessPresentation.allSelectablePackageIds(
+            targets.copy(packages = emptyList())).isEmpty())
     }
 }

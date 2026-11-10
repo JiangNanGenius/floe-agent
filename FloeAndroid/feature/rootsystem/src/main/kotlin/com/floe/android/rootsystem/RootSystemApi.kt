@@ -91,8 +91,72 @@ enum class SystemOperation {
     PACKAGE_QUERY,
     NETWORK_DIAGNOSTICS,
     PACKAGE_FORCE_STOP,
+    /** Install one user-supplied, App-staged APK through the real package manager. */
+    PACKAGE_INSTALL,
+    /** Uninstall one non-protected, non-system third-party package. */
+    PACKAGE_UNINSTALL,
+    /**
+     * Copy one APK from a user-granted shared-storage root into the
+     * service-owned staging area and return its digest-bound receipt. The
+     * copy runs under the same package-management ceiling as install; it
+     * never installs anything by itself.
+     */
+    PACKAGE_STAGE,
     /** Full-only genuine native phone packet capture through a pinned helper. */
     PACKET_CAPTURE,
+    /**
+     * Enable, disable or disable-user one installed app for the current
+     * profile through the real package manager. Third-party and noncritical
+     * preinstalled targets only; protected/platform/security/current-role
+     * essentials stay refused.
+     */
+    PACKAGE_SET_ENABLED,
+    /**
+     * Remove one noncritical preinstalled (system-image) app for the CURRENT
+     * user only. The system image stays intact; PACKAGE_RESTORE brings the
+     * app back for that user with install-existing.
+     */
+    PACKAGE_REMOVE_FOR_USER,
+    /**
+     * Restore one system-image app previously removed for the current user
+     * (pm install-existing). Absent cross-user requests refuse honestly.
+     */
+    PACKAGE_RESTORE,
+    ;
+
+    companion object {
+        /** Operations gated by the user's package-management ceiling. */
+        val PACKAGE_MANAGEMENT_OPERATIONS: Set<SystemOperation> = setOf(
+            PACKAGE_FORCE_STOP,
+            PACKAGE_INSTALL,
+            PACKAGE_UNINSTALL,
+            PACKAGE_STAGE,
+            PACKAGE_SET_ENABLED,
+            PACKAGE_REMOVE_FOR_USER,
+            PACKAGE_RESTORE,
+        )
+
+        /**
+         * Ordinary lifecycle operations that may auto-pass admission inside
+         * the enabled management ceiling; sensitive/system-damaging work is
+         * never in this set and keeps its explicit hard gate. The app-state
+         * group additionally requires the user's per-action durable switches
+         * and names only selected installed targets (see
+         * [GrantRequest.packageTargets]).
+         */
+        val AUTO_ADMISSIBLE_PACKAGE_OPERATIONS: Set<SystemOperation> = setOf(
+            PACKAGE_FORCE_STOP,
+            PACKAGE_INSTALL,
+            PACKAGE_UNINSTALL,
+            PACKAGE_STAGE,
+            PACKAGE_SET_ENABLED,
+            PACKAGE_REMOVE_FOR_USER,
+            PACKAGE_RESTORE,
+        )
+
+        fun isPackageManagement(operation: SystemOperation): Boolean =
+            operation in PACKAGE_MANAGEMENT_OPERATIONS
+    }
 }
 
 /**
@@ -138,6 +202,13 @@ data class GrantRequest(
     val scopes: List<ScopeRoot>,
     val operations: Set<SystemOperation>,
     val packageManagementAllowed: Boolean,
+    /**
+     * User-selected installed-app target ceiling for the app-state group
+     * (setEnabled/removeForUser/restore). Empty means the app-state group is
+     * not offered at all; the service refuses any target outside this set.
+     * File and package lifecycle operations ignore it.
+     */
+    val packageTargets: Set<String> = emptySet(),
 ) {
     fun isWellFormed(): Boolean =
         grantId.isNotBlank() && taskId.isNotBlank() && runId.isNotBlank() &&
@@ -145,7 +216,15 @@ data class GrantRequest(
             grantId.length <= 128 && taskId.length <= 128 && runId.length <= 128 &&
             scopes.size in 1..8 &&
             operations.isNotEmpty() &&
-            scopes.all { it.scopeId.isNotBlank() && it.scopeId.length <= 64 && it.path.startsWith("/") }
+            scopes.all { it.scopeId.isNotBlank() && it.scopeId.length <= 64 && it.path.startsWith("/") } &&
+            packageTargets.size <= MAX_PACKAGE_TARGETS &&
+            packageTargets.all { PACKAGE_TARGET.matches(it) }
+
+    companion object {
+        const val MAX_PACKAGE_TARGETS = 64
+        private val PACKAGE_TARGET =
+            Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$")
+    }
 }
 
 data class GrantReceipt(val grantId: String, val registeredAtMillis: Long, val expiresAtMillis: Long)
@@ -235,6 +314,82 @@ data class PackageManagementReceipt(
     val userId: Int,
     val operation: String,
     val stillRunning: Boolean,
+)
+
+/**
+ * Definitive outcome of one install/uninstall attempt. [succeeded] is decided
+ * by a post-operation PackageManager read-back, never by a shell success
+ * string; [presentAfter] reports the real installed state observed after the
+ * attempt and [detailCode] is a bounded machine token (e.g. install_failed,
+ * verify_failed, present, absent) suitable for per-item batch digests.
+ */
+data class PackageLifecycleReceipt(
+    val packageName: String,
+    val userId: Int,
+    val operation: String,
+    val succeeded: Boolean,
+    val presentAfter: Boolean,
+    val versionCode: Long,
+    val detailCode: String,
+    /**
+     * Concise sanitized `pm` failure reason (bounded, no host paths) kept for
+     * per-item diagnostics; null on success. Never parsed as authority.
+     */
+    val failureDetail: String? = null,
+)
+
+/**
+ * Definitive outcome of one set_enabled attempt (enable / disable /
+ * disable-user). [succeeded] is decided by a post-operation PackageManager
+ * read-back of the REAL enabled state for the exact requested user, never by
+ * a shell success string; [stateAfter] is the observed bounded token
+ * ("enabled" / "disabled" / "disabled-user" / "unknown").
+ */
+data class PackageStateReceipt(
+    val packageName: String,
+    val userId: Int,
+    val operation: String,
+    val requestedState: String,
+    val stateAfter: String,
+    val succeeded: Boolean,
+    val detailCode: String,
+    /** Concise sanitized `pm` failure reason; null on success. */
+    val failureDetail: String? = null,
+)
+
+/**
+ * Digest/size/package binding for one App-staged APK. The host derives it
+ * from the staged manifest at staging time; the privileged service re-verifies
+ * the very bytes it streams to the package manager against this binding, so a
+ * modified or swapped staged file can never be installed silently.
+ */
+data class StagedApkBinding(
+    val expectedSha256: String?,
+    val expectedSizeBytes: Long,
+    val expectedPackageName: String?,
+)
+
+/**
+ * Receipt for the service-side shared-storage -> staging-area APK copy. The
+ * staged path is service-owned (never app-private), digest-named and verified
+ * after the atomic commit, so the returned [sha256] always identifies the
+ * committed bytes.
+ */
+data class StagedCopyReceipt(
+    val stagedPath: String,
+    val sizeBytes: Long,
+    val sha256: String,
+    val packageName: String?,
+)
+
+/** One App-staged, service-readable APK candidate. `stagedId` is an opaque,
+ *  host-issued token; the model names it instead of inventing host paths. */
+data class StagedApk(
+    val stagedId: String,
+    val fileName: String,
+    val sizeBytes: Long,
+    val sha256: String,
+    val packageName: String?,
 )
 
 /** Android 9/10 PC USB bootstrap material. Display/copy only; never execute. */
@@ -462,7 +617,9 @@ class RootSystemController internal constructor(
         packageName: String? = null,
         includeSystem: Boolean = true,
         maxEntries: Int = 200,
-    ): RootResult<PackageQuery> = impl.packageQuery(claim, packageName, includeSystem, maxEntries)
+        includeUninstalled: Boolean = false,
+    ): RootResult<PackageQuery> =
+        impl.packageQuery(claim, packageName, includeSystem, maxEntries, includeUninstalled)
 
     suspend fun networkDiagnostics(claim: OperationClaim): RootResult<NetworkDiagnostics> =
         impl.networkDiagnostics(claim)
@@ -472,6 +629,66 @@ class RootSystemController internal constructor(
         packageName: String,
         userId: Int = 0,
     ): RootResult<PackageManagementReceipt> = impl.forceStopPackage(claim, packageName, userId)
+
+    suspend fun installPackage(
+        claim: OperationClaim,
+        stagedApkPath: String,
+        userId: Int = 0,
+        binding: StagedApkBinding = StagedApkBinding(null, -1L, null),
+    ): RootResult<PackageLifecycleReceipt> = impl.installPackage(claim, stagedApkPath, userId, binding)
+
+    suspend fun uninstallPackage(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int = 0,
+    ): RootResult<PackageLifecycleReceipt> = impl.uninstallPackage(claim, packageName, userId)
+
+    /**
+     * Copy one APK from a user-granted shared-storage path into the
+     * service-owned staging area under the same ceiling/gates as install.
+     */
+    suspend fun stageApk(
+        claim: OperationClaim,
+        sourcePath: String,
+    ): RootResult<StagedCopyReceipt> = impl.stageApk(claim, sourcePath)
+
+    /**
+     * Enable/disable/disable-user one installed app for the current profile.
+     * The state transition is a closed enum; the target must be inside the
+     * grant's packageTargets ceiling and pass the service-side protected and
+     * current-role refusal checks.
+     */
+    suspend fun setPackageEnabled(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        state: String,
+    ): RootResult<PackageStateReceipt> = impl.setPackageEnabled(claim, packageName, userId, state)
+
+    /**
+     * Remove one noncritical preinstalled app for the current user only
+     * (system image retained; restore uses install-existing).
+     */
+    suspend fun removePackageForUser(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<PackageLifecycleReceipt> = impl.removePackageForUser(claim, packageName, userId)
+
+    /** Restore one system-image app removed for the current user. */
+    suspend fun restorePackage(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<PackageLifecycleReceipt> = impl.restorePackage(claim, packageName, userId)
+
+    /**
+     * Typed authenticated maintenance: release one owned staged APK by its
+     * content digest (App staged-list removal for service-owned entries).
+     * Not a task operation; refusal is reported, never hidden.
+     */
+    suspend fun releaseStagedApk(sha256: String): AccessActionResult =
+        impl.releaseStagedApk(sha256)
 
     suspend fun cancelOperation(claim: OperationClaim): AccessActionResult =
         impl.cancelOperation(claim)

@@ -71,6 +71,16 @@ object PlatformToolsNative {
      * the Full host calls this. Returns 0 or a typed negative. */
     external fun setAvailability(epoch: Long, namesJson: ByteArray): Int
 
+    /** Trusted durable user ceilings for ordinary automatic approval in this
+     * exact epoch. Swift validates the closed JSON and issues canonical
+     * grants; this transport never creates an approval identity. */
+    external fun setAutoAdmission(epoch: Long, admissionJson: ByteArray): Int
+
+    /** Stream a claimed task's workspace APK through the owned runtime file
+     * lane. Returns bounded metadata for a verified App-owned inbox file;
+     * APK contents never cross this JNI byte-array result. */
+    external fun stageWorkspaceApk(claim: Long, relativePath: ByteArray): ByteArray?
+
     /** Ticket descriptor JSON for a CLAIMED ticket, or null when stale/refused. */
     external fun describe(claim: Long): ByteArray?
 

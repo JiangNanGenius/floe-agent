@@ -38,6 +38,13 @@ internal object DeviceAccessToolCatalog {
     const val SYSTEM_PACKAGES_QUERY = "system.packages.query"
     const val SYSTEM_NETWORK_DIAGNOSTICS = "system.network.diagnostics"
     const val SYSTEM_PACKAGES_FORCE_STOP = "system.packages.forceStop"
+    const val SYSTEM_PACKAGES_STAGED = "system.packages.staged"
+    const val SYSTEM_PACKAGES_STAGE = "system.packages.stage"
+    const val SYSTEM_PACKAGES_INSTALL = "system.packages.install"
+    const val SYSTEM_PACKAGES_UNINSTALL = "system.packages.uninstall"
+    const val SYSTEM_PACKAGES_SET_ENABLED = "system.packages.setEnabled"
+    const val SYSTEM_PACKAGES_REMOVE_FOR_USER = "system.packages.removeForUser"
+    const val SYSTEM_PACKAGES_RESTORE = "system.packages.restore"
 
     val allNames: Set<String> = linkedSetOf(
         PHONE_OBSERVE, PHONE_ACT, PHONE_SCREENSHOT,
@@ -47,7 +54,11 @@ internal object DeviceAccessToolCatalog {
         SYSTEM_PROCESSES_QUERY, SYSTEM_SERVICES_QUERY,
         SYSTEM_PACKAGES_QUERY, SYSTEM_NETWORK_DIAGNOSTICS,
         SYSTEM_PACKAGES_FORCE_STOP,
-    )
+        SYSTEM_PACKAGES_STAGED, SYSTEM_PACKAGES_STAGE,
+        SYSTEM_PACKAGES_INSTALL, SYSTEM_PACKAGES_UNINSTALL,
+        SYSTEM_PACKAGES_SET_ENABLED,
+        SYSTEM_PACKAGES_REMOVE_FOR_USER, SYSTEM_PACKAGES_RESTORE,
+        )
 
     /** Actual capability ceiling for the SAME live root epoch. */
     data class Availability(
@@ -69,6 +80,23 @@ internal object DeviceAccessToolCatalog {
         val fileRootsSelected: Boolean = false,
         val fileWritesAllowed: Boolean = false,
         val packageManagementAllowed: Boolean = false,
+        /**
+         * The ONE shared advanced-system master (durable). This packet's
+         * three app-state tools require it plus the base management ceiling
+         * and a non-empty selected target set; later permission/AppOps/
+         * settings packets reuse the same master and selection. Discovery
+         * never precedes the real ceilings.
+         */
+        val advancedSystemManagementAllowed: Boolean = false,
+        /**
+         * Allowed advanced tool names from the ABI's six-name closed list.
+         * Only the three shipped app-state names can appear today; the
+         * reserved permission/AppOps/settings names are never published or
+         * given placeholder UI.
+         */
+        val advancedSystemAllowedTools: Set<String> = emptySet(),
+        /** Selected installed-app target ceiling for the advanced group. */
+        val advancedSystemTargetsSelected: Boolean = false,
     )
 
     fun availableNames(availability: Availability): Set<String> {
@@ -107,7 +135,34 @@ internal object DeviceAccessToolCatalog {
             }
             if (availability.packageManagementAllowed) {
                 result += SYSTEM_PACKAGES_FORCE_STOP
+                result += SYSTEM_PACKAGES_INSTALL
+                result += SYSTEM_PACKAGES_UNINSTALL
+                if (availability.advancedSystemManagementAllowed &&
+                    availability.advancedSystemTargetsSelected
+                ) {
+                    // The durable allowed-tools set stores the ABI's exact
+                    // full tool names; only the three shipped app-state
+                    // names can pass here today.
+                    if (SYSTEM_PACKAGES_SET_ENABLED in availability.advancedSystemAllowedTools) {
+                        result += SYSTEM_PACKAGES_SET_ENABLED
+                    }
+                    if (SYSTEM_PACKAGES_REMOVE_FOR_USER in availability.advancedSystemAllowedTools) {
+                        result += SYSTEM_PACKAGES_REMOVE_FOR_USER
+                    }
+                    if (SYSTEM_PACKAGES_RESTORE in availability.advancedSystemAllowedTools) {
+                        result += SYSTEM_PACKAGES_RESTORE
+                    }
+                }
             }
+            // The staged-APK list is App-local bookkeeping (zero privilege):
+            // it is offered with any live system service so the model can plan
+            // an install before the management ceiling is even enabled.
+            result += SYSTEM_PACKAGES_STAGED
+            // Staging moves task-owned (workspace) or user-granted (file
+            // root) bytes into verified App/service staging; discovery only
+            // needs a live system layer, while the actual stage call carries
+            // the management-ceiling grant like install/uninstall.
+            result += SYSTEM_PACKAGES_STAGE
         }
         return result
     }
@@ -130,6 +185,13 @@ internal object DeviceAccessToolCatalog {
         tools.put(systemPackagesQuery())
         tools.put(systemNetworkDiagnostics())
         tools.put(systemPackagesForceStop())
+        tools.put(systemPackagesStaged())
+        tools.put(systemPackagesStage())
+        tools.put(systemPackagesInstall())
+        tools.put(systemPackagesUninstall())
+        tools.put(systemPackagesSetEnabled())
+        tools.put(systemPackagesRemoveForUser())
+        tools.put(systemPackagesRestore())
         val root = JSONObject()
             .put("version", 1)
             .put("tools", tools)
@@ -368,11 +430,15 @@ internal object DeviceAccessToolCatalog {
     private fun systemPackagesQuery(): JSONObject = tool(
         name = SYSTEM_PACKAGES_QUERY,
         description = "Query installed packages through the live Floe system " +
-            "service. Returns at most 24 compact rows (package|uid|version).",
+            "service. Returns at most 24 compact rows (package|uid|version). " +
+            "With includeUninstalled, system-image packages that are removed " +
+            "for the current user are included too (enabled=false).",
         schema = schema(
             properties = JSONObject()
                 .put("packageName", string("Optional exact package filter.", 0, 255))
                 .put("includeSystem", bool("Include system packages."))
+                .put("includeUninstalled", bool(
+                    "Include system-image packages not installed for the current user."))
                 .put("maxEntries", integer("Maximum entries (1-200).", 1, 200)),
             required = emptyList(),
         ),
@@ -394,13 +460,154 @@ internal object DeviceAccessToolCatalog {
     private fun systemPackagesForceStop(): JSONObject = tool(
         name = SYSTEM_PACKAGES_FORCE_STOP,
         description = "Force-stop one user package through the live Floe system " +
-            "service. Requires the user's explicit app-management ceiling and an " +
-            "approved task grant; Floe's own package is always refused.",
+            "service. Inside the user's enabled app-management ceiling an " +
+            "admitted task is auto-approved; Floe's own package is always " +
+            "refused.",
         schema = schema(
             properties = JSONObject()
                 .put("packageName", string("Package to stop.", 1, 255))
                 .put("userId", integer("Android user id (default 0).", 0, 999)),
             required = listOf("packageName"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    private fun systemPackagesStaged(): JSONObject = tool(
+        name = SYSTEM_PACKAGES_STAGED,
+        description = "List the APKs currently staged for installation: opaque " +
+            "staged id, file name, byte size, content digest prefix and the " +
+            "package name read from the archive. Entries come from manual user " +
+            "picks, system.packages.stage workspace transfers or granted file " +
+            "roots. Reading this list is App-local and changes nothing; the " +
+            "ids are the only legal system.packages.install targets.",
+        schema = schema(properties = JSONObject(), required = emptyList()),
+        risks = emptyList(),
+        effect = "readOnly",
+        sideEffecting = false,
+    )
+
+    private fun systemPackagesStage(): JSONObject = tool(
+        name = SYSTEM_PACKAGES_STAGE,
+        description = "Stage one or more APKs (at most 8) so system.packages.install can use them, without a manual file picker. Two trusted origins: origin=workspace with a path relative to the current task's resolved Linux workspace (only real task-owned files resolve; absolute paths, '..' and non-APK files are refused), or origin=fileRoot with a granted root id from system.access.status plus a relative path inside that root. Staging copies bytes into verified App/service staging and returns the opaque staged id (digest-bound), byte size and archive package name per item; it never installs anything. Requires the user's app-management ceiling for the stage call itself.",
+        schema = schema(
+            properties = JSONObject()
+                .put("sources", JSONObject()
+                    .put("type", "array")
+                    .put("description", "Ordered APK sources (1-8).")
+                    .put("minItems", 1)
+                    .put("maxItems", 8)
+                    .put("items", JSONObject()
+                        .put("type", "object")
+                        .put("required", JSONArray(listOf("origin", "path")))
+                        .put("additionalProperties", false)
+                        .put("properties", JSONObject()
+                            .put("origin", enum(
+                                "Where the APK bytes come from.",
+                                listOf("workspace", "fileRoot"),
+                            ))
+                            .put("path", string(
+                                "Relative file path ending in .apk (no absolute paths, no '..').",
+                                1, 512,
+                            ))
+                            .put("root", string(
+                                "Granted file root id (origin=fileRoot only).", 1, 64,
+                            ))))),
+            required = listOf("sources"),
+        ),
+        risks = listOf("writesFiles"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    private fun systemPackagesInstall(): JSONObject = tool(
+        name = SYSTEM_PACKAGES_INSTALL,
+        description = "Install one or more staged APKs (at most 8) by the staged ids returned from system.packages.stage or system.packages.staged. Each item is streamed by the privileged service to the real package manager and reports a definitive per-item installed/failed outcome from a post-install read-back of the same user. Requires the user's app-management ceiling; protected/system identities are refused per item. Cancelling the run skips the remaining items.",
+        schema = schema(
+            properties = JSONObject()
+                .put("stagedIds", stringArray(
+                    "Ordered staged ids (1-8).", 1, 8))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("stagedIds"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    private fun systemPackagesUninstall(): JSONObject = tool(
+        name = SYSTEM_PACKAGES_UNINSTALL,
+        description = "Uninstall one or more third-party packages (at most 8) " +
+            "for a user through the live Floe system service. Each item reports " +
+            "a definitive per-item uninstalled/failed outcome from a " +
+            "post-uninstall read-back. Requires the user's app-management " +
+            "ceiling; Floe's own package and system packages are refused per " +
+            "item. Cancelling the run skips the remaining items.",
+        schema = schema(
+            properties = JSONObject()
+                .put("packages", stringArray("Ordered package names (1-8).", 1, 8))
+                .put("userId", integer("Android user id (default 0).", 0, 999)),
+            required = listOf("packages"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    // ------------------------------------------------------- app-state tools
+
+    /**
+     * The three shipped advanced app-state tool names. The durable
+     * allowed-tools ceiling stores these exact ABI names; the reserved
+     * permission/AppOps/settings names stay unpublished with no UI.
+     */
+    val SHIPPED_ADVANCED_TOOLS: Set<String> = setOf(
+        SYSTEM_PACKAGES_SET_ENABLED,
+        SYSTEM_PACKAGES_REMOVE_FOR_USER,
+        SYSTEM_PACKAGES_RESTORE,
+    )
+
+    private fun systemPackagesSetEnabled(): JSONObject = tool(
+        name = SYSTEM_PACKAGES_SET_ENABLED,
+        description = "Enable, disable or disable-user one or more selected installed apps (at most 8) for the current Android profile through the live Floe system service. Only apps the user selected in Settings are eligible; Floe itself, platform/security essentials and the current launcher, input method or dialer are always refused. Each item reports a definitive per-item outcome from a post-operation PackageManager read-back: an OS refusal is a real failure, never reported as success. Requires the user's app-management ceiling and the advanced app-state switch.",
+        schema = schema(
+            properties = JSONObject()
+                .put("packages", stringArray("Ordered package names (1-8).", 1, 8))
+                .put("state", enum(
+                    "Requested enabled state.",
+                    listOf("enable", "disable", "disable-user"),
+                ))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("packages", "state"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    private fun systemPackagesRemoveForUser(): JSONObject = tool(
+        name = SYSTEM_PACKAGES_REMOVE_FOR_USER,
+        description = "Remove one or more selected noncritical preinstalled apps (at most 8) for the current Android user only. The system image stays intact and system.packages.restore can bring an app back. Third-party packages are refused per item (use system.packages.uninstall); Floe, platform/security essentials and current launcher/input/dialer apps are always refused. Each item reports a definitive per-item removed/failed outcome from a post-operation read-back for the same user. Requires the user's app-management ceiling and the advanced app-state switch.",
+        schema = schema(
+            properties = JSONObject()
+                .put("packages", stringArray("Ordered package names (1-8).", 1, 8))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("packages"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    private fun systemPackagesRestore(): JSONObject = tool(
+        name = SYSTEM_PACKAGES_RESTORE,
+        description = "Restore one or more selected preinstalled apps (at most 8) that were previously removed for the current Android user, using the intact system image (pm install-existing). Only system-image packages the user selected in Settings are eligible; each item reports a definitive per-item restored/failed outcome from a post-operation presence read-back for the same user. Requires the user's app-management ceiling and the advanced app-state switch.",
+        schema = schema(
+            properties = JSONObject()
+                .put("packages", stringArray("Ordered package names (1-8).", 1, 8))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("packages"),
         ),
         risks = listOf("modifiesRemoteSystem"),
         effect = "mutating",
@@ -457,6 +664,17 @@ internal object DeviceAccessToolCatalog {
             .put("description", description)
             .put("minimum", minimum)
             .put("maximum", maximum)
+
+    private fun stringArray(description: String, minItems: Int, maxItems: Int): JSONObject =
+        JSONObject()
+            .put("type", "array")
+            .put("description", description)
+            .put("minItems", minItems)
+            .put("maxItems", maxItems)
+            .put("items", JSONObject()
+                .put("type", "string")
+                .put("minLength", 1)
+                .put("maxLength", 255))
 
     private fun bool(description: String): JSONObject =
         JSONObject()

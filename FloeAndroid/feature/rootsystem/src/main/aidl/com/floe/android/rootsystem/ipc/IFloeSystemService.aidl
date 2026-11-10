@@ -36,4 +36,31 @@ interface IFloeSystemService {
 
     void cancel(String requestId);
     void stopOwnedService(in Bundle request);
+
+    // ------------------------------------------------------------------
+    // Wire 3 additions. NEVER insert before this point: every method above
+    // keeps its exact wire-2 position so a verified older-protocol service
+    // can still be typed-stopped across a same-versionCode upgrade. These
+    // methods have never shipped publicly; they are appended after the
+    // legacy stopOwnedService transaction.
+    // ------------------------------------------------------------------
+    Bundle installPackage(in Bundle request);
+    Bundle uninstallPackage(in Bundle request);
+    Bundle stageApk(in Bundle request);
+
+    // ------------------------------------------------------------------
+    // App-state additions, appended after the wire-3 block (same unshipped
+    // protocol revision). Selected app enabled-state and per-user preinstalled
+    // lifecycle with real post-pm read-back.
+    // ------------------------------------------------------------------
+    Bundle setPackageEnabled(in Bundle request);
+    Bundle removePackageForUser(in Bundle request);
+    Bundle restorePackage(in Bundle request);
+
+    /**
+     * Typed authenticated maintenance: release one owned staged APK by its
+     * content digest for the App's staged-list removal. Not a task operation;
+     * no package-manager effect.
+     */
+    Bundle releaseStagedApk(in Bundle request);
 }

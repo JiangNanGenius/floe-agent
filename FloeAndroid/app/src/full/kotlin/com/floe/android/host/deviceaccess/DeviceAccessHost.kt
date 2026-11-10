@@ -82,9 +82,12 @@ import com.floe.android.rootsystem.RootSystemConfig
 import com.floe.android.rootsystem.RootSystemController
 import com.floe.android.rootsystem.RootSystemModule
 import com.floe.android.rootsystem.ScopeRoot
+import com.floe.android.rootsystem.StagedApk
 import com.floe.android.rootsystem.SystemOperation
+import com.floe.android.rootsystem.ipc.BinderProtocol
 import com.floe.android.rootsystem.policy.FloePackageFamily
 import java.nio.charset.CodingErrorAction
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -99,6 +102,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -135,6 +139,16 @@ internal class DeviceAccessHost(
         val fileWritesAllowed: Boolean = false,
         val wholeScreenConsent: Boolean = false,
         val packageManagementAllowed: Boolean = false,
+        /**
+         * The ONE shared advanced-system master. This packet implements the
+         * three app-state tools under it; later permission/AppOps/settings
+         * packets reuse the same master, allowed-tools set and targets.
+         */
+        val advancedSystemManagementAllowed: Boolean = false,
+        /** Exact ABI tool names the user allowed (only shipped ones stored). */
+        val advancedSystemAllowedTools: Set<String> = emptySet(),
+        /** User-selected installed-app targets for the advanced group. */
+        val advancedSystemTargets: Set<String> = emptySet(),
         val adbEnabled: Boolean = false,
         val automaticPhoneControl: Boolean = false,
         val autoUnlock: Boolean = false,
@@ -238,6 +252,22 @@ internal class DeviceAccessHost(
     private var busy: DeviceAccessBusyUi = DeviceAccessBusyUi.NONE
     private var error: DeviceAccessUiError? = null
     private var installedPackages: List<DeviceAccessPackageUi> = emptyList()
+
+    /**
+     * Eligible targets for the advanced app-state chooser: the privileged
+     * current-user query (including disabled and uninstalled-for-user
+     * system-image packages) when the service is alive, otherwise the
+     * ordinary installed-app list. Persisted selections are always merged so
+     * disabling or removing an app never silently drops its identity.
+     */
+    @Volatile
+    private var advancedSystemPackages: List<DeviceAccessPackageUi> = emptyList()
+
+    /** App-local staged-APK store; listing it needs no privilege. */
+    private val apkStaging = ApkStagingStore(context)
+
+    @Volatile
+    private var stagedApks: List<StagedApk> = emptyList()
 
     @Volatile
     private var cachedRoots: List<FileRootCatalog.Root> = emptyList()
@@ -350,6 +380,9 @@ internal class DeviceAccessHost(
         onFileWritesChange = ::setFileWrites,
         onWholeScreenConsentChange = ::setWholeScreenConsent,
         onPackageManagementChange = ::setPackageManagement,
+        onAdvancedSystemChange = ::setAdvancedSystem,
+        onAdvancedSystemToolsChange = ::setAdvancedSystemTools,
+        onAdvancedSystemTargetsChange = ::setAdvancedSystemTargets,
         onScreenScopeChange = ::setScreenScope,
         onEnableAdb = ::enableAdb,
         onPairAdb = ::openPairing,
@@ -364,6 +397,9 @@ internal class DeviceAccessHost(
         onOpenDeveloperOptions = ::openDeveloperOptions,
         onCheckRootGrant = ::checkRootGrant,
         onEnableRoot = ::setRootEnabled,
+        onStageApks = ::stageApks,
+        onRemoveStagedApk = ::removeStagedApk,
+        onRevokeSystemGrants = ::revokeSystemGrants,
     )
 
     // ------------------------------------------------------------- lifecycle
@@ -388,6 +424,7 @@ internal class DeviceAccessHost(
         // other-app data folders are NOT silently active again; they require
         // an explicit re-add while the Root tier is actually live.
         if (!appDataUsable()) pruneAppDataRoots(rebuild = false)
+        refreshStagedApks()
         phoneStatus = runCatching { PhoneControlModule.statusSnapshot() }
             .getOrDefault(phoneStatus)
         phoneClient = runCatching {
@@ -445,6 +482,18 @@ internal class DeviceAccessHost(
             refreshControllerStatus()
             publish()
         }
+        statusJobs += scope.launch(io) {
+            // Eligible advanced targets track service liveness; refresh them
+            // whenever the service tier changes as well.
+            snapshotFlow { systemServiceAlive() }
+                .distinctUntilChanged()
+                .collect {
+                    if (!closed) {
+                        refreshAdvancedSystemPackages()
+                        publish()
+                    }
+                }
+        }
         attachSettingsPresentation()
         publish()
     }
@@ -467,6 +516,7 @@ internal class DeviceAccessHost(
             handler = ::executeTool,
             availability = ::availableToolNames,
             onCancelBackend = ::cancelBackend,
+            autoAdmission = ::autoAdmissionJson,
         ).also { pump = it }
         scope.launch(io) {
             if (!current.start(epoch)) {
@@ -609,6 +659,15 @@ internal class DeviceAccessHost(
             .distinct()
             .take(FileRootCatalog.MAX_APP_DATA_ROOTS)
             .toSet()
+        // Only the three shipped app-state tool names may be stored; the
+        // reserved ABI names get no placeholder persistence either.
+        val allowedTools = preferences.getStringSet(KEY_ADVANCED_TOOLS, emptySet()).orEmpty()
+            .toSet().intersect(DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS)
+        if (allowedTools != preferences.getStringSet(KEY_ADVANCED_TOOLS, emptySet()).orEmpty().toSet()) {
+            preferences.edit().putStringSet(KEY_ADVANCED_TOOLS, HashSet(allowedTools)).apply()
+        }
+        val advancedTargets = preferences.getStringSet(KEY_ADVANCED_TARGETS, emptySet()).orEmpty()
+            .toSet().filterNot { isFloeSelfPackage(it) }.take(MAX_TARGET_PACKAGES).toSet()
         return AccessSettings(
             allowedPackages = packages,
             fileRootIds = roots,
@@ -616,6 +675,9 @@ internal class DeviceAccessHost(
             fileWritesAllowed = preferences.getBoolean(KEY_FILE_WRITES, false),
             wholeScreenConsent = preferences.getBoolean(KEY_WHOLE_SCREEN, false),
             packageManagementAllowed = preferences.getBoolean(KEY_MANAGEMENT, false),
+            advancedSystemManagementAllowed = preferences.getBoolean(KEY_ADVANCED_SYSTEM, false),
+            advancedSystemAllowedTools = allowedTools,
+            advancedSystemTargets = advancedTargets,
             adbEnabled = preferences.getBoolean(KEY_ADB_ENABLED, false),
             automaticPhoneControl = preferences.getBoolean("automatic_phone_control", false),
             autoUnlock = preferences.getBoolean("automatic_unlock", false),
@@ -631,6 +693,9 @@ internal class DeviceAccessHost(
             .putBoolean(KEY_FILE_WRITES, settings.fileWritesAllowed)
             .putBoolean(KEY_WHOLE_SCREEN, settings.wholeScreenConsent)
             .putBoolean(KEY_MANAGEMENT, settings.packageManagementAllowed)
+            .putBoolean(KEY_ADVANCED_SYSTEM, settings.advancedSystemManagementAllowed)
+            .putStringSet(KEY_ADVANCED_TOOLS, HashSet(settings.advancedSystemAllowedTools))
+            .putStringSet(KEY_ADVANCED_TARGETS, HashSet(settings.advancedSystemTargets))
             .putBoolean(KEY_ADB_ENABLED, settings.adbEnabled)
             .putBoolean("automatic_phone_control", settings.automaticPhoneControl)
             .putBoolean("automatic_unlock", settings.autoUnlock)
@@ -801,6 +866,115 @@ internal class DeviceAccessHost(
         settings = settings.copy(packageManagementAllowed = enabled)
         persist()
         publish()
+    }
+
+    /**
+     * The shared advanced-system master. Disabling it is a real revocation:
+     * live per-call grants are fenced and cancelled, availability and the
+     * published admission JSON drop the advanced names for the same epoch.
+     */
+    private fun setAdvancedSystem(enabled: Boolean) {
+        if (busy != DeviceAccessBusyUi.NONE) return
+        if (!enabled) fenceActiveRootGrants()
+        settings = settings.copy(advancedSystemManagementAllowed = enabled)
+        persist()
+        publish()
+    }
+
+    private fun setAdvancedSystemTools(tools: Set<String>) {
+        if (busy != DeviceAccessBusyUi.NONE) return
+        val allowed = tools.intersect(DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS)
+        if (allowed != settings.advancedSystemAllowedTools) fenceActiveRootGrants()
+        settings = settings.copy(advancedSystemAllowedTools = allowed)
+        persist()
+        publish()
+    }
+
+    private fun setAdvancedSystemTargets(targets: Set<String>) {
+        if (busy != DeviceAccessBusyUi.NONE) return
+        val clean = targets
+            .filterNot { isFloeSelfPackage(it) }
+            .take(MAX_TARGET_PACKAGES)
+            .toSet()
+        if (clean != settings.advancedSystemTargets) fenceActiveRootGrants()
+        settings = settings.copy(advancedSystemTargets = clean)
+        persist()
+        publish()
+    }
+
+    /**
+     * Stage user-picked SAF documents into the App-local staging dir. Copying
+     * never installs anything; the picked bytes are only made readable to the
+     * privileged installer that the install tool later invokes by staged id.
+     */
+    private fun stageApks(uris: List<android.net.Uri>) {
+        if (busy != DeviceAccessBusyUi.NONE || uris.isEmpty()) return
+        scope.launch(io) {
+            val result = apkStaging.stage(uris)
+            when (result) {
+                is ApkStagingStore.StageResult.Ok -> {
+                    error = if (result.skipped.isNotEmpty()) {
+                        DeviceAccessUiError(
+                            context.getString(R.string.device_access_staged_partial),
+                            "staged_partial",
+                        )
+                    } else {
+                        null
+                    }
+                }
+                is ApkStagingStore.StageResult.Failed -> {
+                    error = DeviceAccessUiError(
+                        context.getString(R.string.device_access_staged_failed),
+                        result.code,
+                    )
+                }
+            }
+            stagedApks = apkStaging.list()
+            publish()
+        }
+    }
+
+    private fun removeStagedApk(stagedId: String) {
+        if (busy != DeviceAccessBusyUi.NONE) return
+        scope.launch(io) {
+            val removed = apkStaging.remove(stagedId)
+            // Service-owned (file-root origin) bytes are released through
+            // the typed authenticated maintenance path; a busy or failed
+            // release restores the manifest row and is surfaced honestly.
+            if (removed != null && removed.origin == ApkStagingManifest.Origin.FILE_ROOT) {
+                val released = runCatching {
+                    rootController?.releaseStagedApk(removed.sha256)
+                }.getOrNull() == com.floe.android.rootsystem.AccessActionResult.Ok
+                if (!released) {
+                    apkStaging.restore(removed)
+                    error = DeviceAccessUiError(
+                        context.getString(R.string.device_access_staged_release_failed),
+                        "staged_release",
+                    )
+                }
+            }
+            stagedApks = apkStaging.list()
+            publish()
+        }
+    }
+
+    /**
+     * Visible user revocation: fences every live per-call grant, cancels the
+     * in-flight backend operation and revokes the registered grants on the
+     * service. Durable ceilings stay as the user set them; this only stops
+     * what is active right now.
+     */
+    private fun revokeSystemGrants() {
+        if (busy != DeviceAccessBusyUi.NONE) return
+        fenceActiveRootGrants()
+        scope.launch(io) {
+            runCatching { rootController?.revokeAllGrants() }
+            publish()
+        }
+    }
+
+    private fun refreshStagedApks() {
+        stagedApks = apkStaging.list()
     }
 
     /**
@@ -1092,7 +1266,115 @@ internal class DeviceAccessHost(
             refreshRootCatalog()
             refreshControllerStatus()
             refreshPackages()
+            refreshAdvancedSystemPackages()
             publish()
+        }
+    }
+
+    /**
+     * Discover advanced-group targets through the typed privileged
+     * current-user query so disabled and removed-for-user preinstalled apps
+     * stay selectable for restore/disable; falls back to the ordinary
+     * installed list while no service is alive. Stored selections are merged
+     * in (labelled by package name when currently invisible) and never
+     * silently replaced by the visible subset.
+     */
+    private suspend fun refreshAdvancedSystemPackages() {
+        val discovered = queryAdvancedSystemTargets()
+        val merged = LinkedHashMap<String, DeviceAccessPackageUi>()
+        for (pkg in discovered) merged[pkg.packageName] = pkg
+        for (name in settings.advancedSystemTargets) {
+            if (merged.putIfAbsent(
+                    name,
+                    DeviceAccessPackageUi(
+                        packageName = name,
+                        label = name,
+                        selected = true,
+                    ),
+                ) != null) {
+                merged[name] = merged.getValue(name).copy(selected = true)
+            }
+        }
+        advancedSystemPackages = merged.values
+            .sortedWith(compareByDescending<DeviceAccessPackageUi> { it.selected }
+                .thenBy { it.label.lowercase() })
+            .take(MAX_LISTED_PACKAGES)
+    }
+
+    private suspend fun queryAdvancedSystemTargets(): List<DeviceAccessPackageUi> {
+        if (!systemServiceAlive()) return installedPackages
+        val epoch = host.nativeRootEpoch()?.takeIf { it > 0 } ?: return installedPackages
+        val claim = OperationClaim(
+            taskId = "appstate-refresh",
+            runId = "appstate-refresh",
+            epoch = epoch,
+            grantId = "readlease:appstate-refresh",
+            requestId = "appstate-refresh-${SystemClock.elapsedRealtimeNanos()}",
+        )
+        val request = GrantRequest(
+            grantId = claim.grantId,
+            taskId = claim.taskId,
+            runId = claim.runId,
+            epoch = epoch,
+            expiresAtMillis = System.currentTimeMillis() + ROOT_GRANT_LIFETIME_MILLIS,
+            scopes = listOf(ScopeRoot(scopeId = "system", path = "/system", writable = false)),
+            operations = setOf(SystemOperation.PACKAGE_QUERY),
+            packageManagementAllowed = false,
+        )
+        val controller = rootController ?: return installedPackages
+        // Same routing as withRootGrant: the deterministic read-only system
+        // anchor scope, so the read lease registers exactly like a tool call.
+        val roots = cachedRoots.ifEmpty { FileRootCatalog.standardRoots() }
+        val routing = when (val decision = FileScopePolicy.decide(
+            roots = roots,
+            selectedIds = settings.fileRootIds,
+            requestedId = null,
+            fileOperation = false,
+            writeOperation = false,
+            appDataUsable = appDataUsable(),
+            globalWrites = settings.fileWritesAllowed,
+        )) {
+            is FileScopePolicy.Decision.Denied -> return installedPackages
+            is FileScopePolicy.Decision.Ok -> decision.routing
+        }
+        val scopedRequest = request.copy(
+            scopes = listOf(
+                ScopeRoot(
+                    scopeId = routing.root.id,
+                    path = routing.root.path,
+                    writable = false,
+                ),
+            ),
+        )
+        when (val registered = controller.registerGrant(scopedRequest)) {
+            is RootResult.Ok -> Unit
+            else -> return installedPackages
+        }
+        try {
+            val result = controller.packageQuery(
+                claim = claim,
+                packageName = null,
+                includeSystem = true,
+                maxEntries = BinderProtocol.MAX_LIST,
+                includeUninstalled = true,
+            )
+            val query = (result as? RootResult.Ok)?.value ?: return installedPackages
+            return query.packages
+                .filterNot { isFloeSelfPackage(it.packageName) }
+                .map { record ->
+                    DeviceAccessPackageUi(
+                        packageName = record.packageName,
+                        label = runCatching {
+                            context.packageManager.getApplicationInfo(record.packageName, 0)
+                        }.getOrNull()?.let {
+                            runCatching { it.loadLabel(context.packageManager).toString() }
+                                .getOrNull()
+                        } ?: record.packageName,
+                        selected = record.packageName in settings.advancedSystemTargets,
+                    )
+                }
+        } finally {
+            runCatching { controller.revokeGrant(claim.grantId) }
         }
     }
 
@@ -1335,6 +1617,21 @@ internal class DeviceAccessHost(
             fileWritesAllowed = settings.fileWritesAllowed && writableSelected,
             appDataRootsAvailable = appDataUsable(),
             packageManagementAllowed = settings.packageManagementAllowed,
+            advancedSystemManagementAllowed = settings.advancedSystemManagementAllowed,
+            advancedSystemAllowedTools = settings.advancedSystemAllowedTools,
+            selectedAdvancedSystemTargets = settings.advancedSystemTargets,
+            advancedSystemTargets = advancedSystemPackages.map {
+                it.copy(selected = it.packageName in settings.advancedSystemTargets)
+            },
+            stagedApks = stagedApks.map {
+                com.floe.android.DeviceAccessStagedApkUi(
+                    stagedId = it.stagedId,
+                    fileName = it.fileName,
+                    sizeBytes = it.sizeBytes,
+                    packageName = it.packageName,
+                    sha256 = it.sha256,
+                )
+            },
             wholeScreenConsent = settings.wholeScreenConsent,
             windowScreenshotCapable = Build.VERSION.SDK_INT >= 34,
         )
@@ -2505,8 +2802,69 @@ internal class DeviceAccessHost(
                 fileRootsSelected = effectiveSelectedRoots().isNotEmpty(),
                 fileWritesAllowed = state.targets.fileWritesAllowed,
                 packageManagementAllowed = state.targets.packageManagementAllowed,
+                advancedSystemManagementAllowed = settings.advancedSystemManagementAllowed,
+                advancedSystemAllowedTools = settings.advancedSystemAllowedTools,
+                advancedSystemTargetsSelected = settings.advancedSystemTargets.isNotEmpty(),
             ),
         )
+    }
+
+    /**
+     * Durable ordinary-automatic ceiling snapshot for the CURRENT settings,
+     * published alongside availability for the same epoch. The Swift
+     * approval pipeline consumes it BEFORE dispatch: it is the trusted-host
+     * proof of which mutating platform tools may receive a real bound
+     * approval grant without the interactive hard gate. Closed key set and
+     * bounded values; root ids are catalog tokens, never user text.
+     */
+    private fun autoAdmissionJson(): String {
+        val state = mutablePresentation.value
+        // Catalog root ids are host-issued tokens: alnum/_/- plus the stable
+        // "appdata:<16lowhex>" form (see FileRootCatalog.appDataId). Dropping
+        // the colon silently removed real user-selected writable Root folders.
+        val rootIds = effectiveSelectedRoots()
+            .filter { it.writable }
+            .map { it.id }
+            .filter {
+                it.length in 1..64 && it.all { ch ->
+                    ch.isLetterOrDigit() || ch == '_' || ch == '-' || ch == ':'
+                }
+            }
+            .take(32)
+        val advancedTools = advancedToolsForAdmission()
+        return buildString {
+            append("{\"version\":1")
+            append(",\"packageManagement\":").append(state.targets.packageManagementAllowed)
+            append(",\"fileWrites\":").append(state.targets.fileWritesAllowed)
+            append(",\"fileRootIds\":[")
+            append(rootIds.joinToString(",") { "\"" + it + "\"" })
+            append("]")
+            // Emitted only when non-empty: the canonical side treats absent
+            // as the default empty list. Only names that are BOTH user-allowed
+            // and actually available in the bound catalog are published.
+            if (advancedTools.isNotEmpty()) {
+                append(",\"advancedTools\":[")
+                append(advancedTools.joinToString(",") { "\"" + it + "\"" })
+                append("]")
+            }
+            append("}")
+        }
+    }
+
+    /**
+     * Advanced tool names eligible for the trusted same-epoch admission
+     * snapshot: the shared master and the base management ceiling on, the
+     * name user-allowed, and the name actually published in the frozen
+     * availability set for this epoch. The three reserved ABI names can
+     * never appear here (they are never stored or advertised).
+     */
+    private fun advancedToolsForAdmission(): List<String> {
+        if (!settings.advancedSystemManagementAllowed) return emptyList()
+        if (!settings.packageManagementAllowed) return emptyList()
+        val available = availableToolNames()
+        return settings.advancedSystemAllowedTools
+            .filter { it in available }
+            .filter { it in DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS }
     }
 
     // ------------------------------------------------------------ phone authority
@@ -2570,6 +2928,13 @@ internal class DeviceAccessHost(
             DeviceAccessToolCatalog.SYSTEM_PACKAGES_QUERY -> systemPackageQuery(call)
             DeviceAccessToolCatalog.SYSTEM_NETWORK_DIAGNOSTICS -> systemNetworkDiagnostics(call)
             DeviceAccessToolCatalog.SYSTEM_PACKAGES_FORCE_STOP -> systemForceStop(call)
+            DeviceAccessToolCatalog.SYSTEM_PACKAGES_STAGED -> systemPackagesStaged()
+            DeviceAccessToolCatalog.SYSTEM_PACKAGES_STAGE -> systemPackagesStage(call)
+            DeviceAccessToolCatalog.SYSTEM_PACKAGES_INSTALL -> systemPackagesInstall(call)
+            DeviceAccessToolCatalog.SYSTEM_PACKAGES_UNINSTALL -> systemPackagesUninstall(call)
+            DeviceAccessToolCatalog.SYSTEM_PACKAGES_SET_ENABLED -> systemPackagesSetEnabled(call)
+            DeviceAccessToolCatalog.SYSTEM_PACKAGES_REMOVE_FOR_USER -> systemPackagesRemoveForUser(call)
+            DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE -> systemPackagesRestore(call)
             else -> PlatformToolOutcome.Failure("unknown_tool")
         }
         if (call.tool.startsWith("phone.")) pausedPhoneOutcome(call)?.let { return it }
@@ -3151,6 +3516,12 @@ internal class DeviceAccessHost(
             )
             append(" writes=").append(settings.fileWritesAllowed && hasWritableSelection())
             append("\npackageManagement=").append(settings.packageManagementAllowed)
+            append(" advancedSystem=").append(settings.advancedSystemManagementAllowed)
+            append(" advancedTools=").append(
+                settings.advancedSystemAllowedTools.intersect(
+                    DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS).size)
+            append(" advancedTargets=").append(settings.advancedSystemTargets.size)
+            append(" stagedApks=").append(stagedApks.size)
             append("\nadbEnabled=").append(settings.adbEnabled)
             append("\nservice=").append(
                 if (adbStatus is AdbStatus.ServiceAlive || rootStatus is RootStatus.Enabled) {
@@ -3178,6 +3549,7 @@ internal class DeviceAccessHost(
         scopeId: String?,
         destructive: Boolean,
         target: String? = null,
+        packageTargets: Set<String> = emptySet(),
         block: suspend (OperationClaim) -> RootResult<T>,
     ): RootResult<T> {
         if (rootRebuilding || rootConfigDirty) return RootResult.Unavailable("policy_updating")
@@ -3207,23 +3579,38 @@ internal class DeviceAccessHost(
                 writable = routing.writable && !readOnly,
             ),
         )
+        // Mutations: the CANONICAL approval grant issued by the Swift runtime
+        // (task/run/epoch/call-bound, minted before dispatch only inside the
+        // user-published durable ceilings) is the ONLY accepted authority.
+        // This host never fabricates grant ids; without one the upstream
+        // interactive hard gate already denied the call and it never arrives.
+        // Ceiling revocation still refuses at this layer: the management
+        // flag below is computed from the CURRENT durable settings and the
+        // service re-checks it on the registered grant.
         val grantId = if (readOnly) {
             readLeaseId(call)
         } else {
-            call.approvalGrantID?.toString() ?: return RootResult.Denied("approval_required")
+            call.approvalGrantID?.toString()
+                ?: return RootResult.Denied("approval_required")
         }
         val now = System.currentTimeMillis()
-        val management = operation == SystemOperation.PACKAGE_FORCE_STOP &&
+        val grantLifetime = maxOf(ROOT_GRANT_LIFETIME_MILLIS,
+            rootOperationTimeoutMillis(operation) + 5_000L)
+        val management = SystemOperation.isPackageManagement(operation) &&
             settings.packageManagementAllowed
         val request = GrantRequest(
             grantId = grantId,
             taskId = call.taskID.toString(),
             runId = call.runID.toString(),
             epoch = call.epoch,
-            expiresAtMillis = now + ROOT_GRANT_LIFETIME_MILLIS,
+            expiresAtMillis = now + grantLifetime,
             scopes = scopes,
             operations = setOf(operation),
             packageManagementAllowed = management,
+            packageTargets = packageTargets
+                .filterNot { isFloeSelfPackage(it) }
+                .take(GrantRequest.MAX_PACKAGE_TARGETS)
+                .toSet(),
         )
         when (val registered = controller.registerGrant(request)) {
             is RootResult.Ok -> Unit
@@ -3249,12 +3636,12 @@ internal class DeviceAccessHost(
             operations = setOf(operation),
             packageManagementAllowed = management,
             expectedTarget = target,
-            expiresAtMillis = now + ROOT_GRANT_LIFETIME_MILLIS,
+            expiresAtMillis = now + grantLifetime,
             operationClaim = claim,
         )
         rootGrants[grantId] = entry
         try {
-            return withTimeout(25_000) { block(claim) }
+            return withTimeout(rootOperationTimeoutMillis(operation)) { block(claim) }
         } catch (_: Throwable) {
             return RootResult.Failed("timeout")
         } finally {
@@ -3269,6 +3656,27 @@ internal class DeviceAccessHost(
             .ifEmpty { call.claim.toString() }
             .take(64)
         return ("readlease:" + call.runID + ":" + tail).take(128)
+    }
+
+    /**
+     * Per-operation host ceiling over the privileged dispatch. Package
+     * operations run a real bounded `pm` child per item; the ceiling must let
+     * the service-side timeout (plus read-back) report the true outcome
+     * instead of racing it.
+     */
+    private fun rootOperationTimeoutMillis(operation: SystemOperation): Long = when (operation) {
+        SystemOperation.PACKAGE_STAGE,
+        SystemOperation.PACKAGE_INSTALL -> 120_000
+        SystemOperation.PACKAGE_UNINSTALL -> 60_000
+        SystemOperation.PACKAGE_FORCE_STOP -> 30_000
+        // Advanced app-state batches: the settled Host outer ceiling for the
+        // nine bounded batch mutation tools is 17 minutes; per-item OS
+        // timeouts (30-60s inside the service) plus the read-back keep the
+        // real outcome far under it.
+        SystemOperation.PACKAGE_SET_ENABLED,
+        SystemOperation.PACKAGE_REMOVE_FOR_USER,
+        SystemOperation.PACKAGE_RESTORE -> HOST_BATCH_OUTER_TIMEOUT_MILLIS
+        else -> 25_000
     }
 
     private fun rootOutcome(
@@ -3490,12 +3898,16 @@ internal class DeviceAccessHost(
     private suspend fun systemPackageQuery(call: PlatformToolCall): PlatformToolOutcome {
         val packageName = call.arguments.optString("packageName").ifEmpty { null }
         val includeSystem = call.arguments.optBoolean("includeSystem", true)
+        val includeUninstalled = call.arguments.optBoolean("includeUninstalled", false)
         val maxEntries = call.arguments.optInt("maxEntries", 60).coerceIn(1, 200)
         val result = withRootGrant(
             call, SystemOperation.PACKAGE_QUERY, null, destructive = false, target = packageName,
         ) { claim ->
             val controller = rootController ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
-            controller.packageQuery(claim, packageName, includeSystem, maxEntries)
+            controller.packageQuery(
+                claim, packageName, includeSystem, maxEntries,
+                includeUninstalled = includeUninstalled,
+            )
         }
         return when (result) {
             is RootResult.Ok -> PlatformToolOutcome.Success(
@@ -3547,6 +3959,609 @@ internal class DeviceAccessHost(
         }
     }
 
+    private fun systemPackagesStaged(): PlatformToolOutcome {
+        refreshStagedApks()
+        val staged = stagedApks
+        val summary = buildString {
+            append("staged=").append(staged.size)
+            staged.take(MAX_LIST_ROWS).forEach { apk ->
+                append('\n')
+                    .append(apk.stagedId).append('|')
+                    .append(apk.fileName.take(60)).append('|')
+                    .append(apk.sizeBytes).append('|')
+                    .append(apk.packageName?.take(80) ?: "unknown").append('|')
+                    .append(apk.sha256.take(12))
+            }
+            if (staged.size > MAX_LIST_ROWS) {
+                append("\n… ").append(staged.size - MAX_LIST_ROWS).append(" more")
+            }
+            if (staged.isEmpty()) {
+                append("\nNo staged APKs. Use system.packages.stage for task workspace or granted-root files, or ask the user to stage APKs in Settings > Phone > App management.")
+            }
+        }
+        return PlatformToolOutcome.Success(summary)
+    }
+
+    /**
+     * Batch install over staged ids. Every item gets its own real privileged
+     * grant and dispatch; a fenced ticket between items skips the rest. Each
+     * item carries its staging-time digest binding into the service, which
+     * re-verifies the streamed bytes before reporting: ok means the receipt
+     * itself says succeeded, never a bare transport success.
+     */
+    private suspend fun systemPackagesInstall(call: PlatformToolCall): PlatformToolOutcome {
+        if (!settings.packageManagementAllowed) {
+            return PlatformToolOutcome.Failure(
+                "management_not_allowed",
+                "The user must allow app management in Settings > Phone",
+            )
+        }
+        val request = PackageBatchArguments.install(call.arguments)
+        if (request is PackageBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PackageBatchArguments.Request.Install
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(request.stagedIds.size)
+        for ((index, stagedId) in request.stagedIds.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += request.stagedIds.size - index
+                break
+            }
+            val staged = apkStaging.stagedEntry(stagedId)
+            if (staged == null) {
+                failed += 1
+                lines += "fail id=$stagedId code=staged_missing"
+                continue
+            }
+            val (path, entry) = staged
+            val result = withRootGrant(
+                call, SystemOperation.PACKAGE_INSTALL, null, destructive = true, target = path,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+                controller.installPackage(
+                    claim, path, request.userId,
+                    com.floe.android.rootsystem.StagedApkBinding(
+                        expectedSha256 = entry.sha256,
+                        expectedSizeBytes = entry.sizeBytes,
+                        expectedPackageName = entry.packageName,
+                    ),
+                )
+            }
+            when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        ok += 1
+                        lines += "ok id=$stagedId pkg=${receipt.packageName.take(80)} " +
+                            "version=${receipt.versionCode} present=${receipt.presentAfter}"
+                    } else {
+                        failed += 1
+                        lines += "fail id=$stagedId pkg=${receipt.packageName.take(80)} " +
+                            "code=${receipt.detailCode} present=${receipt.presentAfter}" +
+                            (receipt.failureDetail?.let { " reason=${it.take(60)}" } ?: "")
+                    }
+                }
+                is RootResult.Denied -> {
+                    if (result.code == "cancelled") {
+                        cancelled = true
+                        skipped += request.stagedIds.size - index
+                        break
+                    }
+                    failed += 1
+                    lines += "fail id=$stagedId code=root_${result.code}"
+                }
+                is RootResult.Unavailable -> {
+                    failed += 1
+                    lines += "fail id=$stagedId code=unavailable_${result.code}"
+                }
+                is RootResult.Failed -> {
+                    failed += 1
+                    lines += "fail id=$stagedId code=${result.code}"
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure("cancelled", "The install batch was cancelled.")
+        }
+        val summary = buildString {
+            append("install requested=").append(request.stagedIds.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        // Truthful transport status: a partially or fully failed install
+        // batch is not a zero-exit success.
+        val exitStatus = if (failed == 0 && !cancelled) 0 else 1
+        return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
+    }
+
+    /**
+     * Trusted automatic staging for task-owned or user-granted APKs.
+     *
+     * workspace sources: the Swift runtime resolves the CURRENT ticket's run
+     * workspace (never the model's view of the filesystem), guards the
+     * relative path, streams the bytes into a verified inbox file and returns
+     * a digest binding; the store re-verifies size + SHA-256 before the entry
+     * becomes installable.
+     *
+     * fileRoot sources: the host resolves the granted root, canonicalizes the
+     * relative path inside it and asks the privileged service to copy the
+     * bytes into its own digest-named staging area; the returned receipt is
+     * adopted into the manifest.
+     *
+     * A fenced ticket between items skips the rest; per-item failures are
+     * reported with the exact typed code and never abort the batch.
+     */
+    private suspend fun systemPackagesStage(call: PlatformToolCall): PlatformToolOutcome {
+        if (!settings.packageManagementAllowed) {
+            return PlatformToolOutcome.Failure("management_not_allowed",
+                "The user must allow app management in Settings > Phone")
+        }
+        val request = PackageStageArguments.parse(call.arguments)
+        if (request is PackageStageArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PackageStageArguments.Request.Stage
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(request.sources.size)
+        for ((index, source) in request.sources.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += request.sources.size - index
+                break
+            }
+            when (source) {
+                is PackageStageArguments.Source.Workspace -> {
+                    val staged = stageWorkspaceSource(call, source)
+                    if (staged != null) {
+                        ok += 1
+                        lines += "ok staged=${staged.stagedId} size=${staged.sizeBytes} " +
+                            "pkg=${staged.packageName?.take(80) ?: "unknown"} origin=workspace"
+                    } else {
+                        failed += 1
+                        lines += "fail path=${source.relativePath.take(100)} code=stage_failed"
+                    }
+                }
+                is PackageStageArguments.Source.FileRoot -> {
+                    val staged = stageFileRootSource(call, source)
+                    if (staged != null) {
+                        ok += 1
+                        lines += "ok staged=${staged.stagedId} size=${staged.sizeBytes} " +
+                            "pkg=${staged.packageName?.take(80) ?: "unknown"} origin=fileRoot"
+                    } else {
+                        failed += 1
+                        lines += "fail root=${source.rootId.take(40)} " +
+                            "path=${source.relativePath.take(80)} code=stage_failed"
+                    }
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure("cancelled", "The stage batch was cancelled.")
+        }
+        val summary = buildString {
+            append("stage requested=").append(request.sources.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        val exitStatus = if (failed == 0 && !cancelled) 0 else 1
+        return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
+    }
+
+    /**
+     * Transfer one workspace-relative APK through the trusted runtime seam.
+     * The native call blocks on owned IO; it is fenced by the live platform
+     * claim (the Swift side checks shouldStop per chunk) and re-checked here
+     * before and after.
+     */
+    private suspend fun stageWorkspaceSource(
+        call: PlatformToolCall,
+        source: PackageStageArguments.Source.Workspace,
+    ): com.floe.android.rootsystem.StagedApk? = withContext(io) {
+        if (platformCallFenced(call)) return@withContext null
+        val reply = try {
+            com.floe.android.swiftbridge.PlatformToolsNative.stageWorkspaceApk(
+                call.claim,
+                source.relativePath.toByteArray(Charsets.UTF_8),
+            )
+        } catch (_: Throwable) {
+            null
+        } ?: return@withContext null
+        if (platformCallFenced(call)) return@withContext null
+        val text = com.floe.android.swiftbridge.PlatformToolsNative.strictText(reply)
+            ?: return@withContext null
+        val root = runCatching { org.json.JSONObject(text) }.getOrNull() ?: return@withContext null
+        val absolute = root.optString("absolutePath")
+        val sha = root.optString("sha256")
+        val size = root.optLong("sizeBytes", -1)
+        if (!absolute.startsWith("/") || sha.length != 64 || size < 0) return@withContext null
+        apkStaging.adoptWorkspaceFile(File(absolute), sha, size)
+    }
+
+    /**
+     * Copy one granted-root APK through the privileged service. The path is
+     * canonicalized inside the granted root and re-checked against the
+     * shared-storage ceiling before dispatch; the service returns the
+     * digest-named owned copy it actually committed.
+     */
+    private suspend fun stageFileRootSource(
+        call: PlatformToolCall,
+        source: PackageStageArguments.Source.FileRoot,
+    ): com.floe.android.rootsystem.StagedApk? {
+        if (source.rootId !in settings.fileRootIds) return null
+        val roots = cachedRoots.ifEmpty { FileRootCatalog.standardRoots() }
+        val root = roots.firstOrNull { it.id == source.rootId } ?: return null
+        val absolute = try {
+            File(root.path, source.relativePath).canonicalFile
+        } catch (_: Throwable) {
+            return null
+        }
+        val rootCanonical = try {
+            File(root.path).canonicalFile
+        } catch (_: Throwable) {
+            return null
+        }
+        if (!absolute.path.startsWith(rootCanonical.path.trimEnd('/') + "/")) return null
+        if (com.floe.android.rootsystem.policy.StagedApkPolicy.normalizeStagedPath(absolute.path) == null) {
+            return null
+        }
+        val result = withRootGrant(
+            call, SystemOperation.PACKAGE_STAGE, null, destructive = false, target = absolute.path,
+        ) { claim ->
+            val controller = rootController
+                ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+            controller.stageApk(claim, absolute.path)
+        }
+        val receipt = (result as? RootResult.Ok)?.value ?: return null
+        return apkStaging.adoptServiceCopy(receipt.stagedPath, receipt)
+    }
+
+    /**
+     * Batch uninstall over package names with the same per-item grant,
+     * dispatch, cancellation and read-back semantics as batch install.
+     */
+    private suspend fun systemPackagesUninstall(call: PlatformToolCall): PlatformToolOutcome {
+        if (!settings.packageManagementAllowed) {
+            return PlatformToolOutcome.Failure(
+                "management_not_allowed",
+                "The user must allow app management in Settings > Phone",
+            )
+        }
+        val request = PackageBatchArguments.uninstall(call.arguments)
+        if (request is PackageBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PackageBatchArguments.Request.Uninstall
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(request.packageNames.size)
+        for ((index, packageName) in request.packageNames.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += request.packageNames.size - index
+                break
+            }
+            val result = withRootGrant(
+                call, SystemOperation.PACKAGE_UNINSTALL, null, destructive = true,
+                target = packageName,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+                controller.uninstallPackage(claim, packageName, request.userId)
+            }
+            when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        ok += 1
+                        lines += "ok pkg=${receipt.packageName.take(100)} " +
+                            "present=${receipt.presentAfter}"
+                    } else {
+                        failed += 1
+                        lines += "fail pkg=${packageName.take(100)} " +
+                            "code=${receipt.detailCode} present=${receipt.presentAfter}" +
+                            (receipt.failureDetail?.let { " reason=${it.take(60)}" } ?: "")
+                    }
+                }
+                is RootResult.Denied -> {
+                    if (result.code == "cancelled") {
+                        cancelled = true
+                        skipped += request.packageNames.size - index
+                        break
+                    }
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=root_${result.code}"
+                }
+                is RootResult.Unavailable -> {
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=unavailable_${result.code}"
+                }
+                is RootResult.Failed -> {
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=${result.code}"
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure("cancelled", "The uninstall batch was cancelled.")
+        }
+        val summary = buildString {
+            append("uninstall requested=").append(request.packageNames.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        val exitStatus = if (failed == 0 && !cancelled) 0 else 1
+        return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
+    }
+
+    // ------------------------------------------------------- app-state tools
+
+    /**
+     * Fail-closed gate for the advanced app-state group, checked from the
+     * CURRENT durable ceilings for every call: base management ceiling, the
+     * shared advanced master, the exact allowed tool name and a non-empty
+     * selected target set. A disabled master or name refuses AND has already
+     * fenced live grants through the setters.
+     */
+    private fun advancedSystemGate(requiredTool: String): PlatformToolOutcome.Failure? = when {
+        !settings.packageManagementAllowed -> PlatformToolOutcome.Failure(
+            "management_not_allowed",
+            "The user must allow app management in Settings > Phone",
+        )
+        !settings.advancedSystemManagementAllowed -> PlatformToolOutcome.Failure(
+            "advanced_system_not_allowed",
+            "The user must turn on advanced app state in Settings > Phone",
+        )
+        requiredTool !in settings.advancedSystemAllowedTools -> PlatformToolOutcome.Failure(
+            "advanced_tool_not_allowed",
+            "The user has not allowed this advanced action in Settings > Phone",
+        )
+        settings.advancedSystemTargets.isEmpty() -> PlatformToolOutcome.Failure(
+            "advanced_targets_required",
+            "The user must select target apps in Settings > Phone",
+        )
+        else -> null
+    }
+
+    private fun crossUserRefused(userId: Int): PlatformToolOutcome.Failure? =
+        if (userId != currentUserId()) {
+            PlatformToolOutcome.Failure(
+                "cross_user_unsupported",
+                "Only the current Android profile is supported for app-state changes.",
+            )
+        } else {
+            null
+        }
+
+    private suspend fun systemPackagesSetEnabled(call: PlatformToolCall): PlatformToolOutcome {
+        advancedSystemGate(DeviceAccessToolCatalog.SYSTEM_PACKAGES_SET_ENABLED)?.let { return it }
+        val request = PackageBatchArguments.setEnabled(call.arguments)
+        if (request is PackageBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PackageBatchArguments.Request.SetEnabled
+        crossUserRefused(request.userId)?.let { return it }
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(request.packageNames.size)
+        for ((index, packageName) in request.packageNames.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += request.packageNames.size - index
+                break
+            }
+            if (packageName !in settings.advancedSystemTargets) {
+                failed += 1
+                lines += "fail pkg=${packageName.take(100)} code=target_not_authorized"
+                continue
+            }
+            val result = withRootGrant(
+                call, SystemOperation.PACKAGE_SET_ENABLED, null, destructive = true,
+                target = packageName,
+                packageTargets = settings.advancedSystemTargets,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+                controller.setPackageEnabled(claim, packageName, request.userId, request.state)
+            }
+            when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        ok += 1
+                        lines += "ok pkg=${receipt.packageName.take(100)} " +
+                            "state=${receipt.stateAfter}"
+                    } else {
+                        failed += 1
+                        lines += "fail pkg=${receipt.packageName.take(100)} " +
+                            "code=${receipt.detailCode} state=${receipt.stateAfter}" +
+                            (receipt.failureDetail?.let { " reason=${it.take(60)}" } ?: "")
+                    }
+                }
+                is RootResult.Denied -> {
+                    if (result.code == "cancelled") {
+                        cancelled = true
+                        skipped += request.packageNames.size - index
+                        break
+                    }
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=root_${result.code}"
+                }
+                is RootResult.Unavailable -> {
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=unavailable_${result.code}"
+                }
+                is RootResult.Failed -> {
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=${result.code}"
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure("cancelled", "The set-enabled batch was cancelled.")
+        }
+        val summary = buildString {
+            append("setEnabled state=").append(request.state)
+            append(" requested=").append(request.packageNames.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        // Truthful transport status: a partially or fully failed batch is not
+        // a zero-exit success; the per-item lines carry the exact receipts.
+        val exitStatus = if (failed == 0 && !cancelled) 0 else 1
+        return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
+    }
+
+    private suspend fun systemPackagesRemoveForUser(call: PlatformToolCall): PlatformToolOutcome {
+        advancedSystemGate(DeviceAccessToolCatalog.SYSTEM_PACKAGES_REMOVE_FOR_USER)?.let { return it }
+        val request = PackageBatchArguments.removeForUser(call.arguments)
+        if (request is PackageBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PackageBatchArguments.Request.RemoveForUser
+        crossUserRefused(request.userId)?.let { return it }
+        return runAppStateLifecycleBatch(
+            call, request.packageNames,
+            SystemOperation.PACKAGE_REMOVE_FOR_USER,
+            "removeForUser",
+        ) { claim, packageName, controller ->
+            controller.removePackageForUser(claim, packageName, request.userId)
+        }
+    }
+
+    private suspend fun systemPackagesRestore(call: PlatformToolCall): PlatformToolOutcome {
+        advancedSystemGate(DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE)?.let { return it }
+        val request = PackageBatchArguments.restore(call.arguments)
+        if (request is PackageBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PackageBatchArguments.Request.Restore
+        crossUserRefused(request.userId)?.let { return it }
+        return runAppStateLifecycleBatch(
+            call, request.packageNames,
+            SystemOperation.PACKAGE_RESTORE,
+            "restore",
+        ) { claim, packageName, controller ->
+            controller.restorePackage(claim, packageName, request.userId)
+        }
+    }
+
+    /**
+     * Shared per-user lifecycle batch (remove/restore): one real privileged
+     * grant per item, cooperative fencing between items, per-item typed
+     * receipts with the concise pm failure reason, and a truthful nonzero
+     * exit status when anything failed or the batch was partially cancelled.
+     */
+    private suspend fun runAppStateLifecycleBatch(
+        call: PlatformToolCall,
+        packageNames: List<String>,
+        operation: SystemOperation,
+        label: String,
+        dispatch: suspend (OperationClaim, String, RootSystemController) -> RootResult<com.floe.android.rootsystem.PackageLifecycleReceipt>,
+    ): PlatformToolOutcome {
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(packageNames.size)
+        for ((index, packageName) in packageNames.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += packageNames.size - index
+                break
+            }
+            if (packageName !in settings.advancedSystemTargets) {
+                failed += 1
+                lines += "fail pkg=${packageName.take(100)} code=target_not_authorized"
+                continue
+            }
+            val result = withRootGrant(
+                call, operation, null, destructive = true,
+                target = packageName,
+                packageTargets = settings.advancedSystemTargets,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+                dispatch(claim, packageName, controller)
+            }
+            when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        ok += 1
+                        lines += "ok pkg=${receipt.packageName.take(100)} " +
+                            "present=${receipt.presentAfter}"
+                    } else {
+                        failed += 1
+                        lines += "fail pkg=${receipt.packageName.take(100)} " +
+                            "code=${receipt.detailCode} present=${receipt.presentAfter}" +
+                            (receipt.failureDetail?.let { " reason=${it.take(60)}" } ?: "")
+                    }
+                }
+                is RootResult.Denied -> {
+                    if (result.code == "cancelled") {
+                        cancelled = true
+                        skipped += packageNames.size - index
+                        break
+                    }
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=root_${result.code}"
+                }
+                is RootResult.Unavailable -> {
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=unavailable_${result.code}"
+                }
+                is RootResult.Failed -> {
+                    failed += 1
+                    lines += "fail pkg=${packageName.take(100)} code=${result.code}"
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure("cancelled", "The $label batch was cancelled.")
+        }
+        val summary = buildString {
+            append(label).append(" requested=").append(packageNames.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        val exitStatus = if (failed == 0 && !cancelled) 0 else 1
+        return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
+    }
+
+    /** True when the native ticket or user stop fences this call. */
+    private fun platformCallFenced(call: PlatformToolCall): Boolean =
+        userStopped ||
+            !PlatformToolsNativeLive.isLive(call.claim) ||
+            PlatformToolsNativeLive.shouldStop(call.claim)
+
     private fun buildRows(title: String, rows: List<String>, truncated: Boolean = false): String =
         buildString {
             append(title).append("=").append(rows.size)
@@ -3586,7 +4601,7 @@ internal class DeviceAccessHost(
             if (request.operation !in entry.operations) {
                 return AuthorityDecision.Denied("operation")
             }
-            if (request.operation == SystemOperation.PACKAGE_FORCE_STOP &&
+            if (SystemOperation.isPackageManagement(request.operation) &&
                 !entry.packageManagementAllowed
             ) {
                 return AuthorityDecision.Denied("management")
@@ -3639,8 +4654,14 @@ internal class DeviceAccessHost(
         const val KEY_FILE_WRITES = "file_writes"
         const val KEY_WHOLE_SCREEN = "whole_screen"
         const val KEY_MANAGEMENT = "management"
+        const val KEY_ADVANCED_SYSTEM = "advanced_system"
+        const val KEY_ADVANCED_TOOLS = "advanced_system_tools"
+        const val KEY_ADVANCED_TARGETS = "advanced_system_targets"
         const val KEY_ADB_ENABLED = "adb_enabled"
         const val MAX_TARGET_PACKAGES = 64
+
+        /** Settled Host outer ceiling for the nine bounded batch mutations. */
+        const val HOST_BATCH_OUTER_TIMEOUT_MILLIS = 1_020_000L
         const val MAX_LISTED_PACKAGES = 200
         const val MAX_LIVE_TASK_SCAN = 8
         const val MAX_DIGEST_NODES = 28

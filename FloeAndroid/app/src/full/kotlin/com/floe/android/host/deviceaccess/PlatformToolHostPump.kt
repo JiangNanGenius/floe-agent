@@ -39,6 +39,15 @@ internal sealed interface PlatformToolOutcome {
         val summary: String,
         val evidence: List<String> = emptyList(),
         val artifact: PlatformArtifactWriter.Artifact? = null,
+        /**
+         * Truthful process exit status forwarded into ToolResult metadata by
+         * the Swift mailbox (signed, optional on the wire). Ordinary
+         * successful and read-only calls keep 0; multi-item package batches
+         * report a nonzero status when any item failed or the batch was
+         * partially cancelled, so a model can never read ok=0/failed=N as
+         * success. The per-item body always carries the exact receipts.
+         */
+        val exitStatus: Int = 0,
     ) : PlatformToolOutcome
 
     data class Failure(
@@ -50,6 +59,16 @@ internal sealed interface PlatformToolOutcome {
 internal interface PlatformToolsTransport {
     fun bind(epoch: Long, catalog: ByteArray): Int
     fun setAvailability(epoch: Long, namesJson: ByteArray): Int
+
+    /**
+     * Publish the durable ordinary-automatic ceiling snapshot for the same
+     * epoch (canonical auto-approval input, consumed by the Swift approval
+     * pipeline BEFORE dispatch). The body is the bounded admission JSON
+     * documented on the Swift side; a transport without admission support
+     * ignores it (tests), production delegates to the native bridge.
+     */
+    fun setAutoAdmission(epoch: Long, admissionJson: ByteArray): Int = 0
+
     fun next(timeoutMillis: Int): Long
     fun describe(claim: Long): ByteArray?
     fun payload(claim: Long): ByteArray?
@@ -66,6 +85,9 @@ internal object NativePlatformToolsTransport : PlatformToolsTransport {
 
     override fun setAvailability(epoch: Long, namesJson: ByteArray): Int =
         PlatformToolsNative.setAvailability(epoch, namesJson)
+
+    override fun setAutoAdmission(epoch: Long, admissionJson: ByteArray): Int =
+        PlatformToolsNative.setAutoAdmission(epoch, admissionJson)
 
     override fun next(timeoutMillis: Int): Long = PlatformToolsNative.next(timeoutMillis)
     override fun describe(claim: Long): ByteArray? = PlatformToolsNative.describe(claim)
@@ -107,12 +129,14 @@ internal class PlatformToolHostPump(
     private val catalog: ByteArray = DeviceAccessToolCatalog.catalogJson(),
     private val transport: PlatformToolsTransport = NativePlatformToolsTransport,
     private val timing: Timing = Timing(),
+    private val autoAdmission: () -> String = { "{}" },
 ) {
     internal data class Timing(
         val nextPollMillis: Int = 250,
         val settleWaitMillis: Long = 8_000,
         val operationTimeoutMillis: Long = 25_000,
         val phoneInteractionTimeoutMillis: Long = operationTimeoutMillis,
+        val packageBatchTimeoutMillis: Long = 17 * 60_000,
     )
 
     private data class Session(val epoch: Long) {
@@ -129,6 +153,9 @@ internal class PlatformToolHostPump(
 
     @Volatile
     private var lastPublished: Set<String>? = null
+
+    @Volatile
+    private var lastPublishedAdmission: String? = null
 
     @Volatile
     private var lastBindStatus: Int = Int.MIN_VALUE
@@ -165,6 +192,7 @@ internal class PlatformToolHostPump(
         val created = Session(epoch)
         session = created
         lastPublished = null
+        lastPublishedAdmission = null
         publishAvailabilityNow(created)
         created.reader = scope.launch(ioDispatcher, start = CoroutineStart.ATOMIC) {
             claimLoop(created)
@@ -189,7 +217,10 @@ internal class PlatformToolHostPump(
             emptySet()
         }
         synchronized(availabilityLock) {
-            if (lastPublished == names) return true
+            if (lastPublished == names) {
+                publishAdmissionNow(target)
+                return true
+            }
             if (currentEpoch() != target.epoch) return false
             val json = names.joinToString(
                 prefix = "[", postfix = "]", separator = ",",
@@ -199,9 +230,34 @@ internal class PlatformToolHostPump(
             } catch (_: Throwable) {
                 -1
             }
-            if (status == 0) lastPublished = names
+            if (status == 0) {
+                lastPublished = names
+                // Availability and the ordinary-automatic ceiling snapshot
+                // travel together for the SAME epoch: a settings change that
+                // exposes a mutating tool also re-publishes the exact durable
+                // ceilings the canonical approval pipeline may issue grants
+                // against. Admission failure never blocks availability, but
+                // leaves auto-approval fail-closed (interactive gate).
+                publishAdmissionNow(target)
+            }
             return status == 0
         }
+    }
+
+    private fun publishAdmissionNow(target: Session) {
+        val admission = try {
+            autoAdmission()
+        } catch (_: Throwable) {
+            "{}"
+        }
+        if (admission == lastPublishedAdmission) return
+        if (currentEpoch() != target.epoch) return
+        val status = try {
+            transport.setAutoAdmission(target.epoch, admission.toByteArray(Charsets.UTF_8))
+        } catch (_: Throwable) {
+            -1
+        }
+        if (status == 0) lastPublishedAdmission = admission
     }
 
     private suspend fun claimLoop(target: Session) {
@@ -259,8 +315,18 @@ internal class PlatformToolHostPump(
         }
         target.inFlight.set(call)
         val outcome = try {
-            withTimeout(if (call.tool in setOf("phone.observe", "phone.act", "phone.screenshot"))
-                timing.phoneInteractionTimeoutMillis else timing.operationTimeoutMillis) { handler(call) }
+            val budget = when (call.tool) {
+                DeviceAccessToolCatalog.SYSTEM_PACKAGES_STAGE,
+                DeviceAccessToolCatalog.SYSTEM_PACKAGES_INSTALL,
+                DeviceAccessToolCatalog.SYSTEM_PACKAGES_UNINSTALL,
+                DeviceAccessToolCatalog.SYSTEM_PACKAGES_SET_ENABLED,
+                DeviceAccessToolCatalog.SYSTEM_PACKAGES_REMOVE_FOR_USER,
+                DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE,
+                -> timing.packageBatchTimeoutMillis
+                "phone.observe", "phone.act", "phone.screenshot" -> timing.phoneInteractionTimeoutMillis
+                else -> timing.operationTimeoutMillis
+            }
+            withTimeout(budget) { handler(call) }
         } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
             PlatformToolOutcome.Failure("timeout")
         } catch (_: Throwable) {
@@ -277,7 +343,8 @@ internal class PlatformToolHostPump(
         when (outcome) {
             is PlatformToolOutcome.Success -> {
                 val encoded = encodeSuccess(
-                    outcome.summary, outcome.evidence, outcome.artifact)
+                    outcome.summary, outcome.evidence, outcome.artifact,
+                    outcome.exitStatus)
                 try {
                     transport.complete(claim, 0, encoded)
                 } catch (_: Throwable) {
@@ -421,10 +488,15 @@ internal class PlatformToolHostPump(
         summary: String,
         evidence: List<String>,
         artifact: PlatformArtifactWriter.Artifact?,
+        exitStatus: Int = 0,
     ): ByteArray {
         val root = JSONObject()
             .put("version", 1)
             .put("summary", BoundedResultText.summary(summary))
+        // Signed exit status, emitted only when nonzero: the Swift result
+        // decoder treats it as optional and forwards it to ToolResult
+        // metadata; ordinary successes keep the historical zero/absent.
+        if (exitStatus != 0) root.put("exitStatus", exitStatus)
         val lines = evidence.map { BoundedResultText.evidence(it) }
             .filter { it.isNotEmpty() }
             .take(8)

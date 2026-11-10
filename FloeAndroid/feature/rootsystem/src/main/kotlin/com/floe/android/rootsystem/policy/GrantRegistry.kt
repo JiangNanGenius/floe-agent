@@ -58,7 +58,7 @@ class GrantRegistry(
         if (request.expiresAtMillis - now > maxLifetimeMillis) return Registration.Rejected("grant_lifetime")
         if (request.operations.isEmpty()) return Registration.Rejected("grant_operations")
         if (request.packageManagementAllowed &&
-            SystemOperation.PACKAGE_FORCE_STOP !in request.operations
+            request.operations.none { SystemOperation.isPackageManagement(it) }
         ) {
             return Registration.Rejected("grant_management_shape")
         }
@@ -88,7 +88,7 @@ class GrantRegistry(
         if (claim.taskId != grant.request.taskId) return Verdict.Rejected("task")
         if (claim.runId != grant.request.runId) return Verdict.Rejected("run")
         if (operation !in grant.request.operations) return Verdict.Rejected("operation")
-        if (operation == SystemOperation.PACKAGE_FORCE_STOP &&
+        if (SystemOperation.isPackageManagement(operation) &&
             !grant.request.packageManagementAllowed
         ) {
             return Verdict.Rejected("management")
@@ -103,6 +103,11 @@ class GrantRegistry(
 
     fun scope(claim: OperationClaim, scopeId: String): ScopeRoot? = synchronized(this) {
         grants[claim.grantId]?.request?.scopes?.firstOrNull { it.scopeId == scopeId }
+    }
+
+    /** Selected installed-app target ceiling for the app-state operations. */
+    fun packageTargets(claim: OperationClaim): Set<String>? = synchronized(this) {
+        grants[claim.grantId]?.request?.packageTargets
     }
 
     fun cancel(requestId: String): Boolean = synchronized(this) {

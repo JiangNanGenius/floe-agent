@@ -271,7 +271,9 @@ internal class FloeSystemServiceBinder(
                 request!!.getString(BinderProtocol.KEY_PACKAGE_NAME),
                 request.getBoolean(BinderProtocol.KEY_INCLUDE_SYSTEM, true),
                 request.getInt(BinderProtocol.KEY_MAX_ENTRIES, 200),
-            ) { registry.isCancelled(claim.requestId) }
+                { registry.isCancelled(claim.requestId) },
+                includeUninstalled = request.getBoolean(BinderProtocol.KEY_INCLUDE_UNINSTALLED, false),
+            )
             val bundles = query.packages.map {
                 Bundle().apply {
                     putString("packageName", it.packageName)
@@ -428,6 +430,241 @@ internal class FloeSystemServiceBinder(
         }
     }
 
+    override fun installPackage(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PACKAGE_INSTALL)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PACKAGE_INSTALL, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        return try {
+            val req = request!!
+            val expectedSha = req.getString(BinderProtocol.KEY_EXPECTED_SHA256)?.take(64)
+                ?.takeIf { it.length == 64 }
+            val expectedSize = req.getLong(BinderProtocol.KEY_EXPECTED_SIZE, -1L)
+            val expectedPackage = req.getString(BinderProtocol.KEY_EXPECTED_PACKAGE)?.take(255)
+            val receipt = operations.installPackage(
+                req.getString(BinderProtocol.KEY_APK_PATH) ?: "",
+                req.getInt(BinderProtocol.KEY_USER_ID, 0),
+                com.floe.android.rootsystem.StagedApkBinding(
+                    expectedSha256 = expectedSha,
+                    expectedSizeBytes = expectedSize,
+                    expectedPackageName = expectedPackage,
+                ),
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(BinderProtocol.KEY_PACKAGE_RESULT, lifecycleBundle(receipt))
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun uninstallPackage(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PACKAGE_UNINSTALL)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PACKAGE_UNINSTALL, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        return try {
+            val receipt = operations.uninstallPackage(
+                request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: "",
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(BinderProtocol.KEY_PACKAGE_RESULT, lifecycleBundle(receipt))
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun stageApk(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PACKAGE_STAGE)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PACKAGE_STAGE, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        return try {
+            val receipt = operations.stageApk(
+                request!!.getString(BinderProtocol.KEY_SOURCE_PATH) ?: "",
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(
+                        BinderProtocol.KEY_PACKAGE_RESULT,
+                        Bundle().apply {
+                            putString(BinderProtocol.KEY_STAGED_PATH, receipt.stagedPath)
+                            putLong(BinderProtocol.KEY_SIZE_BYTES, receipt.sizeBytes)
+                            putString(BinderProtocol.KEY_SHA256, receipt.sha256)
+                            receipt.packageName?.let {
+                                putString(BinderProtocol.KEY_PACKAGE_NAME, it)
+                            }
+                        },
+                    )
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun setPackageEnabled(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PACKAGE_SET_ENABLED)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PACKAGE_SET_ENABLED, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        val packageName = request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: ""
+        if (!appStateTargetAllowed(claim, packageName)) {
+            return BinderProtocol.failure("target_not_authorized")
+        }
+        return try {
+            val receipt = operations.setPackageEnabled(
+                packageName,
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+                request.getString(BinderProtocol.KEY_PACKAGE_STATE) ?: "",
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(BinderProtocol.KEY_PACKAGE_RESULT, stateBundle(receipt))
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun removePackageForUser(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PACKAGE_REMOVE_FOR_USER)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PACKAGE_REMOVE_FOR_USER, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        val packageName = request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: ""
+        if (!appStateTargetAllowed(claim, packageName)) {
+            return BinderProtocol.failure("target_not_authorized")
+        }
+        return try {
+            val receipt = operations.removePackageForUser(
+                packageName,
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(BinderProtocol.KEY_PACKAGE_RESULT, lifecycleBundle(receipt))
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun restorePackage(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PACKAGE_RESTORE)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PACKAGE_RESTORE, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        val packageName = request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: ""
+        if (!appStateTargetAllowed(claim, packageName)) {
+            return BinderProtocol.failure("target_not_authorized")
+        }
+        return try {
+            val receipt = operations.restorePackage(
+                packageName,
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(BinderProtocol.KEY_PACKAGE_RESULT, lifecycleBundle(receipt))
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun releaseStagedApk(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val sha = request?.getString(BinderProtocol.KEY_SHA256) ?: ""
+        return try {
+            val released = operations.releaseOwnedStagedApk(sha) { false }
+            if (released) BinderProtocol.ok() else BinderProtocol.failure("staged_release")
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    /** App-state targets must come from the user-selected ceiling in the grant. */
+    private fun appStateTargetAllowed(claim: OperationClaim, packageName: String): Boolean {
+        val targets = registry.packageTargets(claim) ?: return false
+        return packageName in targets
+    }
+
+    private fun stateBundle(receipt: com.floe.android.rootsystem.PackageStateReceipt): Bundle =
+        Bundle().apply {
+            putString("packageName", receipt.packageName)
+            putInt("userId", receipt.userId)
+            putString("operation", receipt.operation)
+            putString(BinderProtocol.KEY_REQUESTED_STATE, receipt.requestedState)
+            putString(BinderProtocol.KEY_STATE_AFTER, receipt.stateAfter)
+            putBoolean(BinderProtocol.KEY_SUCCEEDED, receipt.succeeded)
+            putString(BinderProtocol.KEY_DETAIL_CODE, receipt.detailCode)
+            receipt.failureDetail?.let {
+                putString(BinderProtocol.KEY_FAILURE_DETAIL, it.take(96))
+            }
+        }
+
+    private fun lifecycleBundle(receipt: com.floe.android.rootsystem.PackageLifecycleReceipt): Bundle =
+        Bundle().apply {
+            putString("packageName", receipt.packageName)
+            putInt("userId", receipt.userId)
+            putString("operation", receipt.operation)
+            putBoolean(BinderProtocol.KEY_SUCCEEDED, receipt.succeeded)
+            putBoolean(BinderProtocol.KEY_PRESENT_AFTER, receipt.presentAfter)
+            putLong("versionCode", receipt.versionCode)
+            putString(BinderProtocol.KEY_DETAIL_CODE, receipt.detailCode)
+            receipt.failureDetail?.let {
+                putString(BinderProtocol.KEY_FAILURE_DETAIL, it.take(96))
+            }
+        }
+
     override fun cancel(requestId: String?) {
         requireCaller()
         if (requestId.isNullOrBlank() || requestId.length > 128) return
@@ -451,6 +688,12 @@ internal class FloeSystemServiceBinder(
         add("package")
         add("network")
         add("package.forceStop")
+        add("package.install")
+        add("package.uninstall")
+        add("package.setEnabled")
+        add("package.removeForUser")
+        add("package.restore")
+        add("staged.release")
         add(if (mode == AccessPolicy.MODE_ROOT) "root.uid0" else "adb.shell")
         if (mode == AccessPolicy.MODE_ROOT) add("capture.root")
     }

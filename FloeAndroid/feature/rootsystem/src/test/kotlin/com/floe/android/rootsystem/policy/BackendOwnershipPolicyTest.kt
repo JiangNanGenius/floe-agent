@@ -273,16 +273,54 @@ class BackendOwnershipPolicyTest {
             classify(helper(describedUid = 0)),
         )
         assertEquals(
-            BackendOwnershipPolicy.PublishedVerdict.Refused("protocol"),
-            classify(helper(describedProtocol = 2)),
-        )
-        assertEquals(
             BackendOwnershipPolicy.PublishedVerdict.Refused("pid"),
             classify(helper(describedPid = 4243)),
         )
         assertEquals(
             BackendOwnershipPolicy.PublishedVerdict.Refused("pid"),
             classify(helper(recordPid = 1, describedPid = 1)),
+        )
+    }
+
+    @Test
+    fun anOlderWireProtocolOnAVerifiedHelperIsStoppedAndReplaced() {
+        // The identity checks pass and only the wire version lags — exactly
+        // the stale-service case after a same-versionCode reinstall that
+        // shipped new AIDL transactions. The old service must be replaced,
+        // never adopted: its parcel shape cannot serve the new transactions.
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Replace(4242),
+            classify(helper(describedProtocol = 0)),
+        )
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Replace(4242),
+            classify(helper(describedProtocol = 2)),
+        )
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Replace(4242),
+            classify(helper(recordVersion = 20, describedVersion = 20, describedProtocol = 2)),
+        )
+    }
+
+    @Test
+    fun protocolMismatchWithANewerVersionClaimIsRefusedNotKilled() {
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Refused("protocol"),
+            classify(helper(recordVersion = 25, describedVersion = 25, describedProtocol = 2)),
+        )
+    }
+
+    @Test
+    fun identityFailureDominatesAProtocolMismatch() {
+        // A foreign or re-signed process that also fakes an old protocol is
+        // refused on identity and is never stopped.
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Refused("signing"),
+            classify(helper(describedSigning = oldSigning, describedProtocol = 2)),
+        )
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Refused("package"),
+            classify(helper(describedPackage = "moe.shizuku.privileged.api", describedProtocol = 2)),
         )
     }
 

@@ -134,6 +134,15 @@ object BackendOwnershipPolicy {
      * protocol, mode, exact installed host package, signing digest, UID, the
      * exact PID and a record/describe version agreement. Only an older
      * same-package version is replaceable; a newer/spoofed version is refused.
+     *
+     * Wire evolution is gated after identity: a helper that proves the exact
+     * Floe package/signing/UID/PID but answers with an older wire protocol is
+     * a stale Floe-owned service from before the transaction/parcel change.
+     * It is stopped and replaced even when the installed versionCode is
+     * unchanged (a same-version reinstall ships the new wire; the old process
+     * does not). A helper that pairs a protocol mismatch with a version newer
+     * than the installed package cannot be a legitimate old Floe process and
+     * is refused rather than killed.
      */
     fun classifyPublishedHelper(
         helper: PublishedHelper,
@@ -146,9 +155,6 @@ object BackendOwnershipPolicy {
         val expectedUid = AccessPolicy.uidForMode(expectedMode)
             ?: return PublishedVerdict.Refused("mode")
         if (!helper.describedOk) return PublishedVerdict.Refused("describe")
-        if (helper.describedProtocol != expectedProtocol) {
-            return PublishedVerdict.Refused("protocol")
-        }
         if (helper.recordMode != expectedMode || helper.describedMode != expectedMode) {
             return PublishedVerdict.Refused("mode")
         }
@@ -180,6 +186,17 @@ object BackendOwnershipPolicy {
             return PublishedVerdict.Refused("version")
         }
         if (currentVersion <= 0) return PublishedVerdict.Refused("version")
+        if (helper.describedProtocol != expectedProtocol) {
+            // Identity fully verified above: mode/UID/PID/package/signing all
+            // agree with the owned helper. An older wire version is exactly
+            // the stale-service case the coordinator requirement targets:
+            // stop it through the typed call and let a fresh service publish.
+            return when {
+                helper.describedVersion <= currentVersion ->
+                    PublishedVerdict.Replace(helper.describedPid)
+                else -> PublishedVerdict.Refused("protocol")
+            }
+        }
         return when {
             helper.describedVersion == currentVersion -> PublishedVerdict.Current
             helper.describedVersion < currentVersion -> PublishedVerdict.Replace(helper.describedPid)
