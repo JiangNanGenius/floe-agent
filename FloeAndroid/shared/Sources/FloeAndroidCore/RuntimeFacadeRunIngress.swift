@@ -565,6 +565,13 @@ public actor RunModelAssembly {
     /// falls back EXACTLY like the native route (`automatic` without a
     /// backend keeps deterministic carve-outs and human escalation for
     /// sensitive actions).
+    ///
+    /// The automatic mode additionally consults the trusted
+    /// host-published durable ceiling (`PlatformToolAutomaticAdmission.admits`,
+    /// same live epoch, tool bound+available): an eligible ordinary
+    /// side-effecting platform call receives its real canonical grant here
+    /// without a model review or repeated human confirmation; outside the
+    /// published ceiling every original gate stays authoritative.
     public func approvalPolicy(for taskPolicy: TaskPolicy,
                                primaryModel: ModelProfile) async -> any ApprovalPolicy {
         switch taskPolicy.resolvedApprovalMode {
@@ -572,9 +579,13 @@ public actor RunModelAssembly {
             return HumanApprovalPolicy()
         case .automatic:
             if let backend = try? await actionReviewBackend() {
-                return AutomaticApprovalPolicy(backend: backend, packageReviewBackend: nil)
+                return AutomaticApprovalPolicy(
+                    backend: backend, packageReviewBackend: nil,
+                    trustedAutomaticGrant: { PlatformToolAutomaticAdmission.admits($0) })
             }
-            return AutomaticApprovalPolicy(packageReviewBackend: nil)
+            return AutomaticApprovalPolicy(
+                packageReviewBackend: nil,
+                trustedAutomaticGrant: { PlatformToolAutomaticAdmission.admits($0) })
         case .fullAccess:
             // A weak/unconfigured review model must not turn Full Access into
             // an unreviewed package path; the original type escalates when

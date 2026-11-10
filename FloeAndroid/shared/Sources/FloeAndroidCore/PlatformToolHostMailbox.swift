@@ -138,6 +138,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         var bindRejections = 0
         var binds = 0
         var availabilitySets = 0
+        var admissionSets = 0
     }
 
     private let registry: ToolRunnerRegistry
@@ -150,6 +151,11 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
     /// Monotonic retirement fence: a retired epoch can never be rebound,
     /// even when the old root path is supplied again.
     private var artifactRootHighWater: UInt64 = 0
+    /// Trusted durable-ceiling snapshot published by the Full host for the
+    /// bound generation through `setAutoAdmission`. nil means ordinary
+    /// automatic task calls keep the actual interactive/model gate.
+    private var autoAdmission: PlatformToolAutoAdmission?
+    private var autoAdmissionEpoch: UInt64 = 0
 
     private let condition = NSCondition()
     private var entries: [String: PlatformToolCatalogEntry] = [:]
@@ -236,6 +242,8 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         if self.epoch == epoch {
             availableNames.removeAll()
             availabilityPublished = false
+            autoAdmission = nil
+            autoAdmissionEpoch = 0
         }
     }
 
@@ -490,6 +498,82 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             }
         }
         return names
+    }
+
+    // MARK: Trusted ordinary-automatic admission (same-epoch, host-published)
+
+    /// Publishes the trusted durable user ceilings for ordinary automatic
+    /// approval for the SAME live epoch that already bound this mailbox.
+    /// This is a STATEMENT FROM THE TRUSTED FULL HOST about settings it
+    /// already enforces (`DeviceAccessHost.autoAdmissionJson`); it is never
+    /// model input and it mints no approval identity. The canonical
+    /// `ApprovalPolicy` pipeline consults the snapshot through
+    /// `autoAdmissionForCurrentEpoch()` and issues the real grant.
+    ///
+    /// A malformed publication is refused atomically (`descriptorInvalid`)
+    /// and leaves the previous snapshot untouched; a fenced/stale epoch is
+    /// refused (`generationFenced`). Rebind/close clear the snapshot with
+    /// the rest of the generation state, so a retired ceiling can never
+    /// authorize a new generation.
+    @discardableResult
+    public func setAutoAdmission(epoch requested: UInt64,
+                                 admissionJSON: Data) -> Int32 {
+        guard requested != 0 else { return PlatformToolHostStatus.shape }
+        guard !admissionJSON.isEmpty else { return PlatformToolHostStatus.shape }
+        guard admissionJSON.count <= PlatformToolHostLimits.maximumAutoAdmissionBytes
+        else { return PlatformToolHostStatus.oversized }
+        guard currentEpoch() == requested else {
+            return PlatformToolHostStatus.generationFenced
+        }
+        let admission: PlatformToolAutoAdmission
+        do {
+            admission = try PlatformToolAutoAdmissionParser.parse(admissionJSON)
+        } catch {
+            return PlatformToolHostStatus.descriptorInvalid
+        }
+        condition.lock()
+        defer { condition.unlock() }
+        guard !closed, epoch != 0, epoch == requested else {
+            return PlatformToolHostStatus.generationFenced
+        }
+        autoAdmission = admission
+        autoAdmissionEpoch = requested
+        counters.admissionSets += 1
+        return PlatformToolHostStatus.ok
+    }
+
+    /// Snapshot of the trusted admission for the CURRENT live epoch only.
+    /// Returns nil for a stale/closed/rebound generation or before any
+    /// successful publication, keeping ordinary automatic calls on the
+    /// actual interactive/model gate (fail closed).
+    public func autoAdmissionForCurrentEpoch() -> PlatformToolAutoAdmission? {
+        let live = currentEpoch()
+        condition.lock()
+        defer { condition.unlock() }
+        guard !closed, epoch != 0, epoch == live,
+              autoAdmissionEpoch == epoch,
+              let admission = autoAdmission else { return nil }
+        return admission
+    }
+
+    /// A single mailbox snapshot of the selected ceiling and discoverable
+    /// tool. Recheck the native epoch after releasing the condition so the
+    /// query never nests the native-root and mailbox locks.
+    public func autoAdmissionEligibilitySnapshot(named name: String)
+        -> PlatformToolAutoAdmission? {
+        guard let live = currentEpoch(), live != 0 else { return nil }
+        condition.lock()
+        let snapshot: PlatformToolAutoAdmission?
+        if !closed, epoch == live, autoAdmissionEpoch == live,
+           availabilityPublished, installedNames.contains(name),
+           entries[name] != nil, availableNames.contains(name) {
+            snapshot = autoAdmission
+        } else {
+            snapshot = nil
+        }
+        condition.unlock()
+        guard currentEpoch() == live else { return nil }
+        return snapshot
     }
 
     // MARK: Execution (registered runner body)
@@ -943,6 +1027,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             "artifactRootBound": artifactRoot != nil,
             "artifactRootEpoch": String(artifactRootEpoch),
             "availabilityPublished": availabilityPublished,
+            "autoAdmissionPublished": autoAdmission != nil && autoAdmissionEpoch == epoch,
             "available": availabilityPublished ? availableNames.count : 0,
             "counters": [
                 "binds": counters.binds,
@@ -959,6 +1044,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 "expired": counters.expired,
                 "bindRejections": counters.bindRejections,
                 "availabilitySets": counters.availabilitySets,
+                "admissionSets": counters.admissionSets,
             ],
         ]
         condition.unlock()
@@ -976,6 +1062,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         let artifactRootBound = artifactRoot != nil && artifactRootEpoch != 0
             && artifactRootEpoch == live
         let published = availabilityPublished
+        let admissionPublished = autoAdmission != nil && autoAdmissionEpoch == epoch
         let availableList = published ? availableNames.sorted() : []
         let reason: String
         if !bound {
@@ -1000,6 +1087,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             "registered": names,
             "availableNames": availableList,
             "availabilityPublished": published,
+            "autoAdmissionPublished": admissionPublished,
             "maxTools": PlatformToolHostLimits.maximumTools,
             "lastBind": lastBindFailure,
             "artifactRootBound": artifactRootBound,
@@ -1028,6 +1116,8 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         entries.removeAll()
         availableNames.removeAll()
         availabilityPublished = false
+        autoAdmission = nil
+        autoAdmissionEpoch = 0
     }
 
     private func makeRunner(_ entry: PlatformToolCatalogEntry) -> AnyAgentTool {
@@ -1366,6 +1456,32 @@ public func floePlatformToolSetAvailability(
     let data = Data(bytes: namesJSON, count: Int(namesLength))
     return PlatformToolHostMailbox.shared.setAvailability(
         epoch: epoch, namesJSON: data)
+}
+
+/// Trusted durable-ceiling publish for ordinary automatic approval from the
+/// Full host: the SAME bounded admission JSON
+/// (`{"version":1,"packageManagement":bool,"fileWrites":bool,
+///   "fileRootIds":[...], "advancedTools":[...]?}`, <= 16 KiB) for the SAME
+/// live native root epoch. This is not a V3 command, not model-visible and
+/// never appears in ordinary errors; it mints no approval identity — the
+/// canonical approval pipeline issues the real grant only when the snapshot
+/// covers the exact call. Malformed bodies are refused (`descriptorInvalid`)
+/// atomically; stale epochs are fenced; rebind/close/revoke clears.
+@_cdecl("floe_platform_tool_set_auto_admission")
+public func floePlatformToolSetAutoAdmission(
+    _ epoch: UInt64, _ json: UnsafePointer<UInt8>?, _ length: Int32
+) -> Int32 {
+    guard epoch != 0 else { return PlatformToolHostStatus.shape }
+    guard length > 0, let json else { return PlatformToolHostStatus.shape }
+    guard length <= Int32(PlatformToolHostLimits.maximumAutoAdmissionBytes) else {
+        return PlatformToolHostStatus.oversized
+    }
+    guard G02NativeRootEpoch.readback() == epoch else {
+        return PlatformToolHostStatus.generationFenced
+    }
+    let data = Data(bytes: json, count: Int(length))
+    return PlatformToolHostMailbox.shared.setAutoAdmission(
+        epoch: epoch, admissionJSON: data)
 }
 
 @_cdecl("floe_platform_tool_close")

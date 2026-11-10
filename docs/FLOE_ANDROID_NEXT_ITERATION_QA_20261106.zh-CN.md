@@ -11,7 +11,11 @@
 
 **发行决策（用户2026-11-10）：** 放弃Google Play版本，后续只推进和发布自行分发的Full完整版。停止Play线维护、构建、渠道裁剪验收及商店准备，不再将这些项目作为发版前置条件；保留GitHub自动发现、跨版本完整包、增量／完整包回退和镜像切换。清理旧Play安装包及专属生成目录，共用依赖、源码、签名凭据和历史证据保留。旧文中Full／Play检查仅代表当时记录。
 
-**ADB追加范围（用户2026-11-11）：** 纳入既有N02／N07和本轮1.0.0前收口。扩大真实ADB UID2000可用功能，普通已授权操作自动审批；保留可关闭的总开关与独立高风险硬门槛，授权和目标支持多选／批量操作。必须接通应用安装和卸载，包含多应用／多APK处理及逐项实际结果；便利授权也覆盖系统允许访问的文件范围。沿现有任务、工具、授权和特权服务实现，不能只修改开关或提示，不能把ADB说成Root，不能把系统拒绝伪报为成功。首包已接批量入口、手动APK暂存及类型化安装／卸载后端，尚未编译或实测；后续继续接通统一审批之前的真实范围授权、任务APK自动暂存和可靠结果判定。应用启停用、权限／AppOps、系统设置等其余能力分别登记，未实现不能记作平台不支持，也不据首包宣布全部ADB完成。
+**ADB追加范围（用户2026-11-11）：** 纳入既有N02／N07和本轮1.0.0前收口。扩大真实ADB UID2000可用功能，普通已授权操作自动审批；保留可关闭的总开关与独立高级操作开关，授权类别和应用目标支持多选。应用安装、卸载和更新必须实际可用，支持任务Linux中的APK、已授权目录中的APK及手动选取，提供多应用／多APK处理和逐项实际结果。继续补应用启停用、非关键预装应用的按用户移除与恢复、权限／AppOps管理、常用系统设置及文件范围授权；沿现有任务、工具、授权和特权服务实现。不能只改开关或提示，不能把ADB说成Root，不能把系统拒绝伪报为成功，未实现也不能记作平台不支持。
+
+**ADB当前代码与验证：** 批量安装／卸载、APK暂存和类型化后端已有实现；前一代码检查点的设备服务Debug／Release编译及38项唯一相关检查通过，安装判定已改为检查真实退出状态、同用户下的版本、签名和存在性。普通自动模式已接入现有审批策略：仅当前已发布能力与用户选中范围可以获得标准允许决策，绑定、撤销和任务代际检查保持；Root已授权目录的真实标识也已兼容。实际Mac宿主对象编译与50项唯一相关检查通过，保留两处新用例编译错误和一处代际夹具错误的原始记录。该证据不代替Android ARM64／APK及模型真实获权验收。App集成编译曾因两处缺失导入失败，已修但尚未重新验证。当前任务Linux APK传输、应用启停用／移除恢复仍在收齐代码，追加改动尚未集中编译；权限／AppOps和系统设置分别按就绪输入继续。未构建或安装包含全部ADB改动的新APK，不据服务检查宣布手机链路可用。
+
+English: Broaden practical ADB capabilities within user-selected categories and app targets, including real batch install, update and uninstall, app state and per-user restore, permissions/AppOps, useful settings and permitted file access. Retain a master switch and independently selected advanced operations. The preceding device-service checkpoint compiled and passed38 distinct related checks. The ordinary automatic-policy seam now compiles on the Mac host and passes50 distinct related checks, preserving current capability, selected-root and generation fences. Actual Android compilation, runtime grant issuance, current-task APK transfer, the App consumer and Samsung acceptance remain separate pending work. These results do not prove the full device flow.
 
 **2026-11-11集成验证：** 后续源`321af3a4e`已生成一份内部Full测试包，实际ARM64对象／链接、Full消费者、58项原生封装和三星精确安装字节／原UID核对通过。沿用公开79版本字段仅供专用机工程验证，安装方式为ADB，既不改写公开79，也不作为在线升级证据；最终版本仍待验证后升为1.0.0。32项手机控制检查和2项Alpha发现1.0.0完整包的真实JUnit回归通过。四组新技能／资源测试的夹具编译和构造失败保留，修复与实际任务Linux可见性仍待验证，不将产品编译记为这些测试通过。新独立三星用例已真实解锁并成功读取页面，但新的交互事件又触发错误使用中确认，未启动计算器或证明任务结束重锁；58条原始记录保留，临时凭据／授权、自建任务和设备导出均已退役。旧失败任务不恢复。随后四组技能资源真实宿主32项全部通过（无跳过、无失败）；初始构造、并发与运行时夹具失败保留，未修改生产校验或原断言。实际三星ResourceR1已验证首次命令可读floe-pdf的SKILL.md（2503字节及真实SHA），但在同任务已打开PTY后，随后暂存的floe-office目录返回ENOENT；不能按staged=true当作运行中可见。67条原始回执保留，真实shell.close成功后仅自己的任务／导出被退役，原5条记录保持。后续代码包接运行中带归属和摘要校验的资源发布；旧R1不恢复。
 
@@ -127,7 +131,7 @@ Android 更接近电脑上的 Agent 工作台：Floe 负责任务、文件、授
 - 支持范围按实际锁屏方式、系统版本及已获权限验证。记录尝试、实际解锁、需要本人操作、失败和取消，不能把亮屏或发出请求算成解锁成功；失败后不循环尝试凭据。
 - 启用后可供所有界面任务使用；只对由本任务解锁且仍由其占用的会话重新锁屏，用户接管后不强行锁屏。
 - 用户正在使用手机时先暂停界面操作并弹窗，未答复不抢占；后台部分继续，空闲后按已有授权接续。
-- 维持既有渠道边界：GitHub Full 提供手机深度控制、Shizuku/ADB/Root 通路；Play 排除既定 Full-only 模块。无 Root 也尽量完成普通授权可达的功能。
+- 自行分发的 Full 版本提供手机深度控制、Shizuku/ADB/Root 通路；Play 线已停止维护。无 Root 也尽量完成普通授权与 ADB 可达的功能。
 
 平台边界：[KeyguardManager](https://developer.android.com/reference/android/app/KeyguardManager) 的普通解锁请求不能直接取消未受信任状态下的安全锁屏；用户同意本身不等于新增系统权限。自动解锁的具体路径须实测后确定，不能承诺所有设备/锁屏方式都可无人介入。后台拉起应用也需按 [Android 后台 Activity 规则](https://developer.android.com/guide/components/activities/secure-bal) 处理；持久通知不等于无条件获得前台启动能力。
 

@@ -285,21 +285,46 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     private let backend: (any ModelApprovalPolicy.DecisionBackend)?
     private let packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)?
 
+    /// Runtime-injected trusted gate for ordinary automatic platform tools
+    /// (Android Full-only seam). When present and it admits the exact call,
+    /// the policy returns a REAL bounded `allow` decision WITHOUT a model
+    /// review or human escalation; the runtime still mints the canonical
+    /// `ApprovalGrant` and binds task/run/call identity through the existing
+    /// pipeline. The gate is a statement about a trusted host-published
+    /// durable ceiling (verified same live epoch, tool bound+available); it
+    /// never widens scopes, never fabricates grants and stays nil on every
+    /// policy that must not auto-approve (ask mode, full access, iOS).
+    private let trustedAutomaticGrant: (@Sendable (ProposedAction) -> Bool)?
+
+    /// Grant lifetime for trusted automatic platform allows. Must cover the
+    /// longest mailbox ticket budget (`packageTicketBudgetMillis`, 18 min)
+    /// plus settlement margin so a canonical grant can never expire
+    /// mid-authorized-call. Single-use scope burns the grant on its one
+    /// dispatch, so the long TTL widens nothing.
+    public static let trustedAutomaticGrantTTL: TimeInterval = 20 * 60
+
     /// The runtime uses this identity to route every tool call (including
     /// read-only calls) through the configured classifier exactly once.
     public var policyName: String { backend == nil ? "automatic" : "approval-model" }
 
     public init(
         backend: (any ModelApprovalPolicy.DecisionBackend)? = nil,
-        packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)? = nil
+        packageReviewBackend: (any ModelApprovalPolicy.DecisionBackend)? = nil,
+        trustedAutomaticGrant: (@Sendable (ProposedAction) -> Bool)? = nil
     ) {
         self.backend = backend
         self.packageReviewBackend = packageReviewBackend
+        self.trustedAutomaticGrant = trustedAutomaticGrant
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
         if Self.isDeterministicallyExempt(action) {
             return .allow(scope: Self.scope(for: action.toolCall), expiresAt: nil)
+        }
+        if let trustedAutomaticGrant, trustedAutomaticGrant(action) {
+            return .allow(
+                scope: Self.scope(for: action.toolCall),
+                expiresAt: Date().addingTimeInterval(Self.trustedAutomaticGrantTTL))
         }
         if action.isSoftwareInstallRequest {
             guard let packageReviewBackend else {
@@ -333,6 +358,7 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
 
     public func requiresModelReview(_ action: ProposedAction) -> Bool {
         if Self.isDeterministicallyExempt(action) { return false }
+        if let trustedAutomaticGrant, trustedAutomaticGrant(action) { return false }
         if action.isSoftwareInstallRequest { return packageReviewBackend != nil }
         return backend != nil
     }

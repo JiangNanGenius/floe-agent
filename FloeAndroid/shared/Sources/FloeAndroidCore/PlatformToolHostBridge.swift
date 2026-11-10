@@ -29,13 +29,19 @@ import FloeTools
 // MARK: - Shared bounds
 
 public enum PlatformToolHostLimits {
-    /// Whole catalog JSON from the trusted host. 24 tools x 4 KiB schema plus
+    /// Whole catalog JSON from the trusted host. 32 tools x 4 KiB schema plus
     /// bounded metadata stays comfortably below this.
     public static let maximumCatalogBytes = 128 * 1024
-    public static let maximumTools = 24
+    /// The bound is retained and only raised to the settled ABI capacity:
+    /// the 18 current catalog tools plus the planned advanced set (9) fit
+    /// under 32. No other bound is relaxed.
+    public static let maximumTools = 32
     /// Same-epoch discoverability publish from the Full host: a bounded JSON
     /// array of catalog names actually usable right now.
     public static let maximumAvailabilityBytes = 16 * 1024
+    /// Same-epoch trusted durable-ceiling publish from the Full host
+    /// (`floe_platform_tool_set_auto_admission`). The settled ABI cap.
+    public static let maximumAutoAdmissionBytes = 16 * 1024
     public static let maximumNameCharacters = 80
     public static let maximumNameSegmentCharacters = 32
     public static let maximumDescriptionBytes = 4 * 1024
@@ -59,9 +65,33 @@ public enum PlatformToolHostLimits {
     /// Phone actions may include one real foreground operation; the mailbox
     /// adds scheduling/settlement margin and never detaches claimed IO.
     public static let ticketBudgetMillis = 30_000
+    /// Bounded serial package/batch mutations (<= 8 schema-bounded items) may
+    /// run long on the real device; the host handler itself applies the
+    /// narrower 17 min internal policy with per-item timeouts. ONLY these
+    /// exact nine names get the long budget — every other tool, read-only
+    /// call and phone action keeps the ordinary 30s ticket budget.
+    public static let packageTicketBudgetMillis = 1_080_000 // 18 min
+    /// The settled ABI packageBudgets.tools set: the three original package
+    /// batch mutations plus the six advanced opted-in mutations. This is a
+    /// closed list, never a prefix or family match.
+    public static let packageLongBudgetTools: Set<String> = [
+        "system.packages.stage",
+        "system.packages.install",
+        "system.packages.uninstall",
+        "system.packages.setEnabled",
+        "system.packages.removeForUser",
+        "system.packages.restore",
+        "system.permissions.manage",
+        "system.appOps.manage",
+        "system.settings.write",
+    ]
     /// Human decisions park in UserQuestionCoordinator after the host ticket
     /// retires; the actual device operation keeps its ordinary finite budget.
-    public static func budgetMillis(toolName: String) -> Int { ticketBudgetMillis }
+    public static func budgetMillis(toolName: String) -> Int {
+        packageLongBudgetTools.contains(toolName)
+            ? packageTicketBudgetMillis
+            : ticketBudgetMillis
+    }
     public static let maximumSummaryCharacters = 2_048
     public static let maximumEvidenceEntries = 8
     public static let maximumEvidenceCharacters = 192
