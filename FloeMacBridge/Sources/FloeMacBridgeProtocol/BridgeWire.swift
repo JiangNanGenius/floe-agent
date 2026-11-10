@@ -79,10 +79,10 @@ public struct BridgeRequest: Codable, Sendable {
         self.body = body; self.signature = try key.signature(for: BridgeWire.encode(body))
     }
     public func verify(now: Date = Date()) throws {
-        guard body.version == BridgeWire.version,
-              abs(now.timeIntervalSince1970 - Double(body.issuedAt) / 1_000) <= 90,
+        guard abs(now.timeIntervalSince1970 - Double(body.issuedAt) / 1_000) <= 90,
               try Curve25519.Signing.PublicKey(rawRepresentation: body.clientKey)
                 .isValidSignature(signature, for: BridgeWire.encode(body)) else { throw BridgeFailure.authentication }
+        guard body.version == BridgeWire.version else { throw BridgeFailure.incompatible }
     }
 }
 public struct BridgeResponseBody: Codable, Sendable {
@@ -102,16 +102,17 @@ public struct BridgeResponse: Codable, Sendable {
         self.body = body; self.signature = try key.signature(for: BridgeWire.encode(body))
     }
     public func verified(for request: BridgeRequestBody, pinnedKey: Data?) throws -> [String: BridgeValue] {
-        guard body.version == BridgeWire.version, body.id == request.id,
+        guard body.id == request.id,
               pinnedKey == nil || pinnedKey == body.serverKey,
               try Curve25519.Signing.PublicKey(rawRepresentation: body.serverKey)
                 .isValidSignature(signature, for: BridgeWire.encode(body)) else { throw BridgeFailure.authentication }
+        guard body.version == BridgeWire.version else { throw BridgeFailure.incompatible }
         if let error = body.error { throw BridgeFailure.remote(error) }
         return body.result
     }
 }
 public enum BridgeFailure: Error, LocalizedError, Sendable {
-    case authentication, disconnected, pending, remote(String), unsafePath, incompatible, ambiguous
+    case authentication, disconnected, pending, remote(String), unsafePath, incompatible, invalidResponse, ambiguous
     public var errorDescription: String? {
         switch self {
         case .authentication: "The Mac connection could not be verified. Reconnect in Settings."
@@ -119,8 +120,12 @@ public enum BridgeFailure: Error, LocalizedError, Sendable {
         case .pending: "Confirm this connection in Floe Bridge on this Mac."
         case .remote(let text): text
         case .unsafePath: "This file is outside the selected workspace."
-        case .incompatible: "Update Floe and Floe Bridge to compatible versions."
+        case .incompatible: Self.message("Update Floe and Floe Bridge to compatible versions.", "请将 Floe 和 Floe Bridge 更新到兼容的版本。")
+        case .invalidResponse: Self.message("The Mac response was incomplete or invalid. Reconnect and inspect the existing task.", "Mac 返回的数据不完整或无效。请重新连接并检查原任务。")
         case .ambiguous: "The connection ended before the result arrived. Reconnect and inspect the existing job; it was not run again."
         }
+    }
+    private static func message(_ english: String, _ chinese: String) -> String {
+        Locale.current.language.languageCode?.identifier == "zh" ? chinese : english
     }
 }

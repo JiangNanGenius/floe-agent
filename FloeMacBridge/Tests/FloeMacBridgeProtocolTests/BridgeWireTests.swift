@@ -5,6 +5,29 @@ import CryptoKit
 
 @Suite("Mac bridge request and response authentication")
 struct BridgeWireTests {
+    @Test("Only an authenticated unsupported wire version is incompatible")
+    func versionRequiresAuthenticIdentity() throws {
+        let client = Curve25519.Signing.PrivateKey(), server = Curve25519.Signing.PrivateKey()
+        var request = BridgeRequestBody(clientKey: client.publicKey.rawRepresentation, method: "ping", payload: [:])
+        request.version = BridgeWire.version + 1
+        let signedRequest = try BridgeRequest(body: request, key: client)
+        do { try signedRequest.verify(); Issue.record("Unsupported wire accepted") }
+        catch BridgeFailure.incompatible { }
+        request.version = BridgeWire.version
+        var body = BridgeResponseBody(id: request.id, serverKey: server.publicKey.rawRepresentation, result: ["appVersion": .string("1.1.3")])
+        // Marketing version is ordinary payload data, never compared to wire1.
+        let healthy = try BridgeResponse(body: body, key: server)
+        #expect(try healthy.verified(for: request, pinnedKey: server.publicKey.rawRepresentation)["appVersion"]?.string == "1.1.3")
+        body.version += 1
+        let unsupported = try BridgeResponse(body: body, key: server)
+        do { _ = try unsupported.verified(for: request, pinnedKey: server.publicKey.rawRepresentation); Issue.record("Unsupported wire accepted") }
+        catch BridgeFailure.incompatible { }
+        do { _ = try unsupported.verified(for: request, pinnedKey: client.publicKey.rawRepresentation); Issue.record("Wrong pin accepted") }
+        catch BridgeFailure.authentication { }
+        var tampered = unsupported; tampered.body.version += 1
+        do { _ = try tampered.verified(for: request, pinnedKey: server.publicKey.rawRepresentation); Issue.record("Tampered version accepted") }
+        catch BridgeFailure.authentication { }
+    }
     @Test("Changing command bytes invalidates a signed request")
     func tamperingIsRejected() throws {
         let key = Curve25519.Signing.PrivateKey()
