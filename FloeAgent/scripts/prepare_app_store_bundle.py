@@ -109,7 +109,7 @@ REVIEWED_EMBEDDED_FRAMEWORKS = {
     # Build326 exact framework review; unknown names still fail closed.
     "Crypto.framework": None,
     "FloeFieldsNative.framework": None,
-    "FloeLaTeXKit.framework": None,
+    "FloeLaTeXKit.framework": "FloeLaTeXKit",
     "FloeMeshingNative.framework": None,
     "FloeRapierNative.framework": None,
     "FloeWasmRuntime.framework": "FloeWasmRuntime",

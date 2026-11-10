@@ -211,6 +211,30 @@ class PrivacyManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rebuild_shell_frameworks.py"):
             self.run_policy()
 
+    def test_native_latex_declares_owned_files_and_elapsed_time(self):
+        code = thin_with_symbols(undefined=["_stat", "_fstat", "_fstatat", "_lstat"]) + b"systemUptime"
+        root = self.add_framework("FloeLaTeXKit", code)
+        report = self.run_policy()
+        manifest = plistlib.loads((root / "PrivacyInfo.xcprivacy").read_bytes())
+        categories = {row["NSPrivacyAccessedAPIType"]: row["NSPrivacyAccessedAPITypeReasons"]
+                      for row in manifest["NSPrivacyAccessedAPITypes"]}
+        self.assertEqual(categories, {
+            "NSPrivacyAccessedAPICategoryFileTimestamp": ["C617.1"],
+            "NSPrivacyAccessedAPICategorySystemBootTime": ["35F9.1"],
+        })
+        self.assertEqual((root / "FloeLaTeXKit").read_bytes(), code)
+        self.assertEqual(report["privacy_manifests"]["frameworks"][0]["categories"], sorted(categories))
+
+    def test_native_latex_retained_disk_space_apis_still_fail(self):
+        for api in ("_fstatfs", "_fstatvfs"):
+            with self.subTest(api=api):
+                root = self.add_framework("FloeLaTeXKit", thin_with_symbols(undefined=[api]))
+                with self.assertRaisesRegex(ValueError, "NSPrivacyAccessedAPICategoryDiskSpace"):
+                    self.run_policy()
+                for child in root.iterdir():
+                    child.unlink()
+                root.rmdir()
+
     def test_app_manifest_must_cover_detected_categories(self):
         (self.app / "Fixture").write_bytes(thin_with_symbols(undefined=["_stat"]))
         (self.app / "PrivacyInfo.xcprivacy").write_bytes(plistlib.dumps({
