@@ -166,7 +166,10 @@ struct FloeAgentApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // SwiftUI may reevaluate its escaping scene builder on AsyncRenderer.
+        // Construct this main-actor service tree synchronously; keep the
+        // nonescaping content initializer until the SDK preserves its executor.
+        WindowGroup(content: {
             Group {
                 #if DEBUG
                 if VoiceComposerUITestMode.isEnabled {
@@ -254,9 +257,13 @@ struct FloeAgentApp: App {
                         environment: environment,
                         router: router
                     )
+                    #if DEBUG && targetEnvironment(simulator)
+                    await SVGChatUITestFixture.prepareIfRequested(environment: environment, router: router)
+                    await NativeAnswerUITestFixture.prepareIfRequested(environment: environment, router: router)
+                    #endif
                     #endif
                 }
-        }
+        })
         .commands {
             FloeAgentCommands(router: router)
         }
@@ -773,7 +780,15 @@ struct RootView: View {
             if let session = environment.conversationCenter.temporarySession {
                 available.insert(session.conversation.id)
             }
-            router.reconcileConversations(available)
+            router.reconcileConversations(available, verifyExists: { id in
+                // Ordinary history omits archived document assistants. Prove
+                // existence through the same store, retaining the live RAM
+                // temporary-session exception without inserting it in history.
+                if environment.conversationCenter.temporarySession?.conversation.id == id { return true }
+                let record = try await environment.conversationStore.conversation(id: id)
+                return record != nil
+                    || environment.conversationCenter.temporarySession?.conversation.id == id
+            })
         }
         .onChange(of: router.inspectorRoute) { _, _ in
             reconcileTemporaryInspectorRoute()

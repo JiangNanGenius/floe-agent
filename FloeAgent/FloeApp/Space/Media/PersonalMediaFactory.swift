@@ -48,8 +48,10 @@ enum PersonalMediaFactory {
     @MainActor static func apply(id: UUID, directory: URL, operations: [MediaPreparedOperation], expectedRevision: Int64) async throws -> MediaPreparedCommit {
         try await session(id: id, directory: directory).apply(operations, expectedRevision: expectedRevision, actor: .model)
     }
-    @MainActor static func tool(id: UUID, directory: URL, toolID: String, input: MediaV2ToolInput) async throws -> MediaV2ToolReceipt {
-        try await session(id: id, directory: directory).performTool(toolID, input: input, actor: .model)
+    @MainActor static func tool(id: UUID, directory: URL, toolID: String, input: MediaV2ToolInput,
+                               providerAuthority: MediaV2ProviderAuthority? = nil) async throws -> MediaV2ToolReceipt {
+        try await session(id: id, directory: directory).performTool(toolID, input: input, actor: .model,
+            providerAuthority: providerAuthority)
     }
 }
 

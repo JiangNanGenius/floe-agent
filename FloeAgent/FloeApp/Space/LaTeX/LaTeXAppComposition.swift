@@ -40,12 +40,28 @@ import FloeLaTeXHostAdapter
         if let ready {return ready}
         if let pending {return try await pending.value}
         let app=try app()
-        guard let jobs=app.backgroundJobService else {throw PersonalContentError.storageUnavailable}
         let task=Task { @MainActor in
             let root=try Self.permanentRoot()
             self.originals=try LaTeXOriginalRegistry(root:root)
+            let native=LaTeXAppleNativeEngine(render:{request in
+                try PDFKitGate.run {
+                    try withPDFExceptionGuard {
+                        try LaTeXApplePDFRenderer.render(displayListData:request.displayListData,
+                            allowedRoots:request.allowedRoots,outputURL:request.outputURL,
+                            legacyOutlineProvider:LaTeXAppleNativeEngine.legacyGlyphOutline,
+                            cancellation:{request.cancellation.shouldStop})
+                    }
+                }
+            })
+            if !(await native.capabilities()).isEmpty {
+                try LaTeXAppleNativeEngine.installPDFMetadataGate {body,context in
+                    guard let body else {return -8}
+                    do {return try PDFKitGate.run {try withPDFExceptionGuard {body(context)}}}
+                    catch {return -8}
+                }
+            }
             let host=try LaTeXHostServices(cacheRoot:root.appendingPathComponent("BuildCache"),
-                jobs:jobs,environments:app.environmentRegistry,hooks:.init(
+                jobs:app.backgroundJobService,environments:app.environmentRegistry,hooks:.init(
                     verify:{[weak self] context in guard let self else {throw PersonalContentError.storageUnavailable};_ = try await self.verify(context)},
                     acquire:{[weak self] id,context,editing in guard let self else {throw PersonalContentError.storageUnavailable};return try await self.acquire(id,context:context,editing:editing)},
                     create:{[weak self] title,template,context in guard let self else {throw PersonalContentError.storageUnavailable};return try await self.create(title:title,templateID:template,context:context)},
@@ -55,8 +71,14 @@ import FloeLaTeXHostAdapter
                         guard let self else {throw PersonalContentError.storageUnavailable}
                         let id=try await self.verify(context),app=try self.app()
                         let policy=try await SQLiteWorkspaceStore(database:app.database).taskPolicy(conversationID:id)
-                        guard policy.networkAllowed != false else {throw FloeError.validationFailed(IDELanguageRunText.t("此任务已关闭联网，无法下载工具链。","Network access is disabled for this task; the toolchain cannot be downloaded."))}
-                    }))
+                        guard policy.networkAllowed != false else {throw FloeError.validationFailed(IDELanguageRunText.t("此任务已关闭联网，无法下载缺少的排版内容。","Network access is disabled for this task; missing typesetting resources cannot be downloaded."))}
+                    },preparationProgress:{[weak self] projectID,context,progress in
+                        self?.nativeRuntime.updatePreparationProgress(projectID:projectID,context:context,progress:progress)
+                    },resourceNetworkAllowed:{[weak self] context in
+                        guard let self else {throw PersonalContentError.storageUnavailable}
+                        let id=try await self.verify(context),app=try self.app()
+                        return try await SQLiteWorkspaceStore(database:app.database).taskPolicy(conversationID:id).networkAllowed != false
+                    }),nativeEngine:native)
             host.registerTools()
             #if DEBUG
             self.startMaintenanceQualificationIfOptedIn()
@@ -135,21 +157,39 @@ import FloeLaTeXHostAdapter
     }
     @discardableResult func verify(_ context:ToolContext) async throws -> UUID {
         let app=try app()
+        // Same-task parity for canonical children: the durable execution
+        // binding, generation equality, target identity and scope checks
+        // below run against the parent-runtime-issued context.
         try Task.checkCancellation();try context.cancellation.throwIfCancelled()
-        guard !context.temporaryReadOnly,!context.publicWebOnly,context.childExecution==nil,
+        guard !context.temporaryReadOnly,!context.publicWebOnly,
               let taskID=context.conversationID,
               let task=try await app.conversationStore.conversation(id:taskID),[.ordinary,.notes].contains(task.purpose),
-              let run=try await app.runStore.run(id:context.runID),run.conversationID==taskID,run.endedAt==nil,
-              let saved=run.executionBinding,
-              let current=try await TaskExecutionBindingStore(database:app.database).binding(conversationID:taskID),
-              saved.generation==current.generation,saved.target==current.target,
-              context.executionBindingGeneration==saved.generation,context.environmentID==saved.target.environmentID,
-              context.scope==(saved.target.remoteHostID.map(ToolScope.host) ?? .local) else {
-            throw FloeError.validationFailed("This LaTeX operation no longer belongs to the task's saved execution binding")
+              let run=try await app.runStore.run(id:context.runID),run.conversationID==taskID,run.endedAt==nil else {
+            throw FloeError.validationFailed("This LaTeX operation no longer belongs to its saved task and run")
         }
-        if let actual=context.environment {guard actual.id==context.environmentID else {throw PersonalContentError.changedDocument}}
+        if let saved=run.executionBinding {
+            // Model calls retain their actual saved task binding, even though
+            // the native document engine does not boot or lease that backend.
+            guard let current=try await TaskExecutionBindingStore(database:app.database).binding(conversationID:taskID),
+                  saved.generation==current.generation,saved.target==current.target,
+                  context.executionBindingGeneration==saved.generation,context.environmentID==saved.target.environmentID,
+                  context.scope==(saved.target.remoteHostID.map(ToolScope.host) ?? .local) else {throw PersonalContentError.changedDocument}
+            if let actual=context.environment {guard actual.id==context.environmentID else {throw PersonalContentError.changedDocument}}
+        } else {
+            let events=try await app.runStore.events(runID:context.runID)
+            guard run.state=="preparing",context.executionToolName=="latex.typeset",context.scope == .local,
+                  context.environmentID==nil,context.environment==nil,context.executionBindingGeneration==nil,
+                  context.clientSessionID=="latex.native."+context.runID.uuidString.lowercased(),
+                  LaTeXAppleNativeRunProof.read(events,runID:context.runID,taskID:taskID) != nil else {
+                throw PersonalContentError.changedDocument
+            }
+        }
         if task.purpose == .notes {
-            guard saved.target.backend == .linuxVM,context.scope == .local else {throw PersonalContentError.changedDocument}
+            if let saved=run.executionBinding {
+                // Retain the existing Notes model-call boundary. Only the
+                // exact compiled native UI branch above may have no pin.
+                guard saved.target.backend == .linuxVM,context.scope == .local else {throw PersonalContentError.changedDocument}
+            }
             let notes=try await NotesRepository.shared.store()
             guard !(try await notes.scopedDocuments(conversationID:taskID)).isEmpty else {throw PersonalContentError.changedDocument}
         }
@@ -175,6 +215,14 @@ import FloeLaTeXHostAdapter
     }
     func authorizeOriginal(_ id:UUID,context:ToolContext,editing:Bool) async throws -> LaTeXOriginal {
         let taskID=try await verify(context),value=try await original(id),app=try app()
+        if try await app.runStore.run(id:context.runID)?.executionBinding==nil {
+            let events=try await app.runStore.events(runID:context.runID)
+            guard let proof=LaTeXAppleNativeRunProof.read(events,runID:context.runID,taskID:taskID),
+                  proof.projectID==id,proof.owner==value.owner,
+                  try await LaTeXProjectStore(root:value.root).manifest().revision==proof.revision else {
+                throw PersonalContentError.changedDocument
+            }
+        }
         switch value.owner.kind {
         case .space:
             guard try await app.studioCoordinator.access.get().canAccess(conversationID:taskID,projectID:id,editing:editing) else {throw PersonalContentError.changedDocument}

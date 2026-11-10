@@ -26,7 +26,7 @@ public enum MediaPreparedUpgrade {
                                     upgradedAt: now)
 
         var upgraded = project
-        upgraded.schemaVersion = MediaProject.currentSchemaVersion
+        upgraded.schemaVersion = max(project.schemaVersion, MediaPreparedSchema.documentVersion)
         upgraded.revision = originalRevision + 1
         upgraded.updatedAt = now
         upgraded.prepared = document

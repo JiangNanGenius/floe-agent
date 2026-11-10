@@ -68,6 +68,8 @@ public enum MarkdownBlockParser {
 
     /// One physical line, split into semantic parts.
     private struct Line {
+        /// Preserve literal whitespace inside fenced source blocks.
+        let raw: Substring
         /// Leading indentation in columns (tab = rounded up to a
         /// multiple of 4 — CommonMark tab stops).
         let indent: Int
@@ -101,6 +103,7 @@ public enum MarkdownBlockParser {
         let trailingTrimmed = leadingTrimmed.reversed()
             .drop(while: { $0 == " " || $0 == "\t" })
         return Line(
+            raw: raw,
             indent: indent,
             trimmedLeading: leadingTrimmed,
             trimmed: Substring(trailingTrimmed.reversed()),
@@ -272,7 +275,7 @@ public enum MarkdownBlockParser {
             let language = info.split(separator: " ").first.map(String.init)
                 .flatMap { $0.isEmpty ? nil : $0 }
 
-            var codeLines: [Substring] = []
+            var codeLines: [String] = []
             while index < lines.count {
                 let line = lines[index]
                 // Closing fence: same char, >= opener length, nothing
@@ -282,14 +285,29 @@ public enum MarkdownBlockParser {
                     index += 1
                     break
                 }
-                codeLines.append(line.trimmedLeading)
+                // Only the opening fence's indentation belongs to Markdown.
+                // The remaining spaces/tabs are part of the source (Python,
+                // SVG, JSON and copied code must keep their indentation).
+                var content = line.raw
+                var removed = 0
+                var remainder = ""
+                while removed < opener.indent, let first = content.first {
+                    guard first == " " || first == "\t" else { break }
+                    let width = first == "\t" ? 4 - removed % 4 : 1
+                    content = content.dropFirst()
+                    removed += width
+                    if removed > opener.indent {
+                        remainder = String(repeating: " ", count: removed - opener.indent)
+                    }
+                }
+                codeLines.append(remainder + content)
                 index += 1
             }
             // An unclosed fence (streaming tail / malformed input) still
             // yields a code block — never crash, never drop content.
             return .codeBlock(
                 language: language,
-                code: codeLines.map(String.init).joined(separator: "\n")
+                code: codeLines.joined(separator: "\n")
             )
         }
 

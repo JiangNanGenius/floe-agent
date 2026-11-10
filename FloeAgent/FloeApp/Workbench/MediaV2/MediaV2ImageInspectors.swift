@@ -188,6 +188,7 @@ struct MediaV2TextInspector: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Group {
             Text(WorkbenchText.t("文字", "Text")).font(.headline)
             TextField(WorkbenchText.t("文字内容", "Text content"), text: $content.text, axis: .vertical).textFieldStyle(.roundedBorder)
             MediaV2NumberField(title: WorkbenchText.t("字号", "Size"), value: $content.fontSize, suffix: "px")
@@ -203,8 +204,16 @@ struct MediaV2TextInspector: View {
             Toggle(WorkbenchText.t("阴影", "Shadow"), isOn: Binding(get: { content.shadow != nil }, set: { content.shadow = $0 ? .init() : nil })).frame(minHeight: 44)
             Button(WorkbenchText.t("应用文字", "Apply text")) {
                 guard content.fontSize.isFinite, content.fontSize > 0, !content.text.isEmpty else { session.diagnostic = MediaV2CommandError.invalidInput.localizedDescription; return }
-                session.submit([.replaceLayerContent(id: layer.id, expectedRevision: layer.revision, content: .text(content))])
+                if content.pathLayout != nil {
+                    let value=content,revision=session.document.revision
+                    Task { do { _ = try await session.applyEditablePathText(value,to:layer,revision:revision,actor:.user) } catch { session.diagnostic=error.localizedDescription } }
+                } else { session.submit([.replaceLayerContent(id: layer.id, expectedRevision: layer.revision, content: .text(content))]) }
             }.frame(minHeight: 44)
+            }.disabled(session.processingTool)
+            if content.pathLayout != nil,session.processingTool {
+                ProgressView(WorkbenchText.t("正在排版文字…", "Laying out text…"))
+                Button(WorkbenchText.t("取消处理", "Cancel processing"),systemImage:"xmark.circle") { session.cancelToolProcessing() }.frame(minHeight:44)
+            }
         }.disabled(layer.isLocked || session.saving)
             .onChange(of: layer.revision) { _, _ in if case .text(let text) = layer.content { content = text } }
     }

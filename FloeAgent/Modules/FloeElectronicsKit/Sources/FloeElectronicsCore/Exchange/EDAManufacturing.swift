@@ -199,7 +199,9 @@ enum EDAManufacturing {
                     case .polygon:
                         guard let vertices = EDAPolygonPadGeometry.vertices(pad, in: fp) else { throw failure("polygon_pad_geometry_missing", "pad.polygon", pad.id) }
                         artwork = .region(vertices)
-                    case .roundRectangle: throw failure("round_rectangle_radius_missing", "pad.shape", pad.id)
+                    case .roundRectangle:
+                        guard let vertices = try? EDARoundedPadGeometry.vertices(pad, in: fp) else { throw failure("round_rectangle_radius_missing", "pad.shape", pad.id) }
+                        artwork = .region(vertices)
                     }
                     if let drill = pad.drill, drill + EDAGeometry.tolerance >= min(pad.size.x, pad.size.y) {
                         throw failure("pad_drill_exceeds_copper", "pad.drill", pad.id)
@@ -380,7 +382,9 @@ enum EDAManufacturing {
                     case .polygon:
                         guard let vertices=EDAPolygonPadGeometry.vertices(pad,in:fp) else{throw failure("polygon_pad_geometry_missing",path+".polygon",pad.id)}
                         artwork = .region(vertices)
-                    case .roundRectangle:throw failure("round_rectangle_radius_missing",path+".shape",pad.id)
+                    case .roundRectangle:
+                        guard let vertices=try? EDARoundedPadGeometry.vertices(pad,in:fp) else{throw failure("round_rectangle_radius_missing",path+".shape",pad.id)}
+                        artwork = .region(vertices)
                     }
                     for layer in generated{try add(artwork,to:layer)}
                 }

@@ -156,11 +156,11 @@ public struct MusicDocument: Sendable, Codable, Hashable, Identifiable {
                     }
                     for point in payload.controllerPoints {
                         _ = try MusicMIDIControllerPoint(controller: point.controller,
-                                                         tick: point.tick, value: point.value)
+                                                         tick: point.tick, value: point.value, channel: point.channel)
                     }
                     _ = try MusicMIDIClipPayload(durationTicks: payload.durationTicks,
                                                  notes: revalidatedNotes,
-                                                 controllerPoints: payload.controllerPoints)
+                                                 controllerPoints: payload.controllerPoints, programChanges: payload.programChanges)
                 }
                 _ = try MusicClip(id: clip.id, name: clip.name, trackID: clip.trackID,
                                   offset: clip.offset, body: clip.body)

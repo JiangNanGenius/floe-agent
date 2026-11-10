@@ -125,12 +125,49 @@ public enum LaTeXParser {
             }
             return .init(name:name,range:.init(start:start,length:cursor-start),arguments:args,starred:starred)
         }
+        /// TeX also permits unbraced control-sequence definition names.
+        /// Skip their balanced bodies just as the braced newcommand path does;
+        /// commands written as examples/definitions must not become active
+        /// dependency, citation or outline entries.
+        mutating func unbracedDefinitionEnd(_ value: LaTeXCommand) -> Int? {
+            let primitives: Set<String> = ["def", "edef", "gdef", "xdef"]
+            let constructors: Set<String> = ["newcommand", "renewcommand", "providecommand", "DeclareRobustCommand"]
+            guard value.arguments.isEmpty, primitives.contains(value.name) || constructors.contains(value.name) else { return nil }
+            var cursor = skip(value.range.end)
+            guard cursor < bytes.count, bytes[cursor] == 92 else { return nil }
+            cursor += 1
+            guard cursor < bytes.count else { return nil }
+            if letter(bytes[cursor]) {
+                while cursor < bytes.count && (letter(bytes[cursor]) || bytes[cursor] == 58 || bytes[cursor] == 95) { cursor += 1 }
+            } else { cursor += 1 }
+            if constructors.contains(value.name) {
+                for _ in 0..<2 {
+                    guard let option = argument(cursor, optional: true) else { break }
+                    cursor = option.range.end
+                }
+                return argument(cursor, optional: false)?.range.end
+            }
+            // A primitive definition can have literal parameter delimiters
+            // before its first body brace. Comments and escaped braces do
+            // not delimit the body.
+            while cursor < bytes.count {
+                if bytes[cursor] == 37 { while cursor < bytes.count && bytes[cursor] != 10 { cursor += 1 } }
+                else if bytes[cursor] == 92 { cursor = min(cursor + 2, bytes.count) }
+                else if bytes[cursor] == 123 { return argument(cursor, optional: false)?.range.end }
+                else { cursor += 1 }
+            }
+            return nil
+        }
         mutating func parse(_ source: String) -> LaTeXStructure {
             var i = 0
             let definitionNames: Set<String> = ["newcommand","renewcommand","providecommand","DeclareRobustCommand","newenvironment","renewenvironment","def","edef","gdef","xdef"]
             while i < bytes.count {
                 if bytes[i] == 37 { while i < bytes.count && bytes[i] != 10 { i += 1 }; continue }
-                guard bytes[i] == 92, let value = command(i) else { i += 1; continue }
+                guard bytes[i] == 92, var value = command(i) else { i += 1; continue }
+                if let end = unbracedDefinitionEnd(value) {
+                    value.range.length = end - i
+                    commands.append(value); i = end; continue
+                }
                 commands.append(value)
                 if value.name == "verb" {
                     let delimiter = i + (value.starred ? 6 : 5)

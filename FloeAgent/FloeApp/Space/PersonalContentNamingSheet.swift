@@ -3,7 +3,7 @@
 import SwiftUI
 import FloeLaTeXCore
 
-/// One naming presentation freezes its target and destination. It is a UI
+/// One naming presentation freezes its target and initial destination. It is a UI
 /// request, not a new document identity or storage/permission authority.
 struct PersonalContentCreationRequest: Identifiable {
     enum Target {
@@ -35,13 +35,17 @@ struct PersonalContentNamingSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var environment: AppEnvironment
     @State private var title: String
+    @State private var destinationFolders: [String]
+    @State private var choosingLocation = false
     @State private var creating = false
+    @FocusState private var titleFocused: Bool
     @State private var diagnostic: String?
     @State private var latexTemplate=IDELanguageRunText.isChinese ? "chinese":"article"
 
     init(request: PersonalContentCreationRequest, onCreated: @escaping (PersonalContentRecord) -> Void) {
         self.request = request; self.onCreated = onCreated
         _title = State(initialValue: request.suggestedTitle)
+        _destinationFolders = State(initialValue: request.folders)
     }
 
     var body: some View {
@@ -49,11 +53,22 @@ struct PersonalContentNamingSheet: View {
             Form {
                 Section {
                     TextField(IDELanguageRunText.t("名称", "Name"), text: $title)
+                        .focused($titleFocused)
+                        .submitLabel(.done)
+                        .onSubmit { create() }
                         .disabled(creating)
                         .accessibilityIdentifier("space.creation.title")
-                    LabeledContent(IDELanguageRunText.t("位置", "Location"),
-                        value: ([IDELanguageRunText.t("我的文件", "My files")] + request.folders).joined(separator: " / "))
-                        .foregroundStyle(.secondary)
+                    Button { choosingLocation = true } label: {
+                        LabeledContent(IDELanguageRunText.t("位置", "Location")) {
+                            HStack {
+                                Text(([IDELanguageRunText.t("我的文件", "My files")] + destinationFolders).joined(separator: " / "))
+                                    .foregroundStyle(.secondary).lineLimit(3).multilineTextAlignment(.trailing)
+                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .disabled(creating)
+                    .accessibilityIdentifier("space.creation.location")
                 }
                 if creating {
                     ProgressView(IDELanguageRunText.t("正在创建…", "Creating…"))
@@ -79,6 +94,7 @@ struct PersonalContentNamingSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) {
                         guard !creating else { return }
+                        titleFocused = false
                         dismiss()
                     }
                         .disabled(creating)
@@ -92,13 +108,18 @@ struct PersonalContentNamingSheet: View {
             }
         }
         .interactiveDismissDisabled(creating)
+        .sheet(isPresented: $choosingLocation) {
+            PersonalLibraryFolderPicker(initialFolders: destinationFolders) { destinationFolders = $0 }
+        }
         .presentationDetents([.medium, .large])
     }
 
     private func create() {
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !creating, !name.isEmpty else { return }
+        titleFocused = false
         creating = true; diagnostic = nil
+        let destination = destinationFolders
         // An explicit owner task is retained through the save; transient
         // SwiftUI body reconstruction must not cancel the native factory.
         Task { @MainActor in
@@ -109,10 +130,10 @@ struct PersonalContentNamingSheet: View {
                     if kind == .biology { _ = try await environment.biologyComposition.host() }
                     if kind == .latex {
                         _ = try await environment.latexComposition.host()
-                        record=try await PersonalContentService.shared.createLaTeX(title:name,templateID:latexTemplate,folders:request.folders)
-                    } else {record = try await PersonalContentService.shared.create(kind: kind, title: name, folders: request.folders)}
+                        record=try await PersonalContentService.shared.createLaTeX(title:name,templateID:latexTemplate,folders:destination)
+                    } else {record = try await PersonalContentService.shared.create(kind: kind, title: name, folders:destination)}
                 case .document(let format):
-                    record = try await PersonalContentService.shared.createDocument(format: format, title: name, folders: request.folders)
+                    record = try await PersonalContentService.shared.createDocument(format: format, title: name, folders: destination)
                 }
                 // Keep busy until dismissal to block a second Create. Failure
                 // keeps this input and destination mounted for an explicit retry.

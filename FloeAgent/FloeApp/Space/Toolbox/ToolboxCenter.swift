@@ -257,7 +257,10 @@ import FloeToolboxWorkbenches
         if frozen[context.runID] == nil { return try await taskSessions.resolve(context) }
         guard let environment, let binding = frozen[context.runID],
               let conversationID = context.conversationID, binding.conversation == conversationID,
-              !context.temporaryReadOnly, !context.publicWebOnly, context.childExecution == nil,
+              // Same-task parity for canonical children: the frozen lease is
+              // keyed by the parent's runtime-issued runID and re-proves the
+              // conversation↔run pairing, active run and purpose below.
+              !context.temporaryReadOnly, !context.publicWebOnly,
               let run = try await environment.runStore.run(id: context.runID),
               run.conversationID == conversationID, run.endedAt == nil,
               let conversation = try await environment.conversationStore.conversation(id: conversationID),

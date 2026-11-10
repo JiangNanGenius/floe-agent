@@ -1,6 +1,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeGit
+import FloeCore
 
 /// One node of the source-control change tree. Folders group changes by
 /// directory; files carry the underlying `GitFileChange`. Ids are the full
@@ -84,6 +85,7 @@ private extension View {
 /// collapsible directory tree (not a flat list) so a busy repository stays
 /// scannable.
 struct SourceControlView: View {
+    @EnvironmentObject private var router: AppRouter
     @ObservedObject var center: SourceControlCenter
     /// Directly observed so a workspace switch that does not publish through
     /// the source-control center still redraws the pane and flips the lock.
@@ -93,10 +95,23 @@ struct SourceControlView: View {
     /// workspace points elsewhere, so a pinned IDE/inspector pane can never
     /// initialize, stage, commit or switch a different repository.
     var pinnedRootURL: URL? = nil
+    @State private var panelOriginRoot: URL?
+    @State private var showGitHubAfterCollaboration = false
+    @State private var showClone = false
+    @State private var showRemotes = false
+    @State private var showRecovery = false
+    @State private var showGitHubSettings = false
+    @State private var commitDetails: GitCommitDetails?
+    @State private var conflictSnapshot: GitConflictSnapshot?
+    @State private var collaboration: SourceControlCollaborationRoute?
+    @State private var collaborationLease: SourceControlOperationLease?
     @State private var commitMessage = ""
     @State private var diffRequest: DiffRequest?
     @State private var diffText = ""
     @State private var branchName = ""
+    @State private var remoteBranchChoices: [String] = []
+    @State private var remoteBranchToCheckOut = ""
+    @State private var localTrackingName = ""
     @State private var showBranches = false
     @State private var conflictFile: GitConflictFile?
     @State private var conflictText = ""
@@ -122,12 +137,21 @@ struct SourceControlView: View {
     private struct DiffRequest: Identifiable {
         let path: String
         let staged: Bool
-        var id: String { (staged ? "staged:" : "worktree:") + path }
+        let id = UUID()
     }
 
     private struct GitConflictFile: Identifiable {
         let path: String
         var id: String { path }
+    }
+    private struct SourceControlCollaborationRoute: Identifiable {
+        let id = UUID()
+        let repository: GitHubLinkRepositoryID
+        let scope: GitCredentialScope
+        let sourceTaskID: UUID?
+        let lease: SourceControlOperationLease
+        let service: GitHubCollaborationService
+        let client: GitHubCollaborationClient
     }
 
     var body: some View {
@@ -155,7 +179,9 @@ struct SourceControlView: View {
         }
         .disabled(pinnedRootURL != nil && !identityMatches)
         .overlay {
-            if center.isBusy { ProgressView().controlSize(.large) }
+            if center.isBusy {
+                VStack { Spacer(); SourceControlTransferStatus(center: center).padding().background(.regularMaterial); }
+            }
         }
         .task {
             // A mismatched pane must not refresh its bound center: that
@@ -168,6 +194,51 @@ struct SourceControlView: View {
         .refreshable {
             if pinnedRootURL == nil || identityMatches { await center.refreshRepository() }
         }
+        .onChange(of: workspaceCenter.currentRootURL) { _, _ in
+            collaborationLease?.cancel(); collaboration = nil
+            diffRequest = nil; conflictFile = nil; showRecovery = false
+            showBranches = false; showClone = false; showRemotes = false
+            remoteBranchToCheckOut = ""
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button { panelOriginRoot = workspaceCenter.currentRootURL; showClone = true } label: { Label(IDELanguageRunText.t("克隆仓库", "Clone Repository"), systemImage: "square.and.arrow.down") }
+                    if center.snapshot.isRepository {
+                        Button { panelOriginRoot = workspaceCenter.currentRootURL; showRemotes = true } label: { Label(IDELanguageRunText.t("远端与连接", "Remotes and Connections"), systemImage: "network") }
+                        Button { panelOriginRoot = workspaceCenter.currentRootURL; showRecovery = true } label: { Label(IDELanguageRunText.t("恢复修改", "Recover Changes"), systemImage: "clock.arrow.circlepath") }
+                    }
+                    Button { showGitHubSettings = true } label: { Label(IDELanguageRunText.t("GitHub 账户", "GitHub Account"), systemImage: "person.crop.circle") }
+                } label: { Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44) }
+                    .accessibilityLabel(IDELanguageRunText.t("更多仓库操作", "More Repository Actions"))
+                    .accessibilityIdentifier("sourceControl.more")
+                    .disabled(center.isBusy || workspaceCenter.currentRootURL == nil)
+            }
+        }
+        .sheet(isPresented: $showClone) { NavigationStack { SourceControlCloneView(center: center, pinnedRoot: panelOriginRoot) } }
+        .sheet(isPresented: $showRemotes) { NavigationStack { SourceControlRemotesView(center: center, pinnedRoot: panelOriginRoot) } }
+        .sheet(isPresented: $showRecovery) { if let root = panelOriginRoot { NavigationStack { SourceControlRecoveryView(center: center, pinnedRoot: root) } } }
+        .sheet(isPresented: $showGitHubSettings) { NavigationStack { GitHubSettingsView(center: center).toolbar { ToolbarItem(placement: .cancellationAction) { Button(IDELanguageRunText.t("完成", "Done")) { showGitHubSettings = false } } } } }
+        .sheet(isPresented: Binding(get: { commitDetails != nil }, set: { if !$0 { commitDetails = nil } })) {
+            if let commitDetails { NavigationStack { SourceControlCommitView(details: commitDetails) } }
+        }
+        .sheet(item: $collaboration, onDismiss: {
+            collaborationLease?.cancel(); collaborationLease = nil
+            if showGitHubAfterCollaboration { showGitHubAfterCollaboration = false; showGitHubSettings = true }
+        }) { route in
+            GitHubCollaborationView(repository: route.repository, workspaceID: route.scope.workspaceID,
+                sourceTaskID: route.sourceTaskID, service: route.service, client: route.client,
+                tokenProvider: { try GitHubCredentialStore().token() ?? "" }, initialLink: nil,
+                onWorkOnIssue: { url in
+                    try route.lease.check()
+                    let taskID = try await center.workOnIssue(url, workspaceID: route.scope.workspaceID, originRoot: route.scope.workspaceRoot)
+                    collaboration = nil; router.openConversation(taskID)
+                }, onReturnTask: {
+                    if let id = route.sourceTaskID { collaboration = nil; router.openConversation(id) }
+                }, onSignIn: { showGitHubAfterCollaboration = true; collaboration = nil },
+                authorize: { try route.lease.check() })
+        }
+        .sourceControlHostTrust(center: center, active: !showClone && !showRemotes && !showRecovery && !showGitHubSettings && collaboration == nil && diffRequest == nil && conflictFile == nil && commitDetails == nil)
         .alert(IDELanguageRunText.t("源码管理错误", "Source Control Error"), isPresented: Binding(
             get: { center.errorMessage != nil },
             set: { if !$0 { center.errorMessage = nil } }
@@ -193,7 +264,7 @@ struct SourceControlView: View {
             Text(discardRecovery ?? "")
         }
         .confirmationDialog(
-            IDELanguageRunText.t("放弃该文件的修改？未提交内容会先复制到 .git/floe-recovery。", "Discard changes to this file? Uncommitted content is copied to .git/floe-recovery first."),
+            IDELanguageRunText.t("放弃该文件的修改？原内容会先保留在恢复记录中。", "Discard this file's changes? The original content is kept in recovery first."),
             isPresented: Binding(
                 get: { discardRequest != nil },
                 set: { if !$0 { discardRequest = nil } }
@@ -209,7 +280,7 @@ struct SourceControlView: View {
                     discardRequest = nil
                     run {
                         let outcome = try await center.discard(paths: [path], includeStaged: includeStaged)
-                        if let recovery = outcome.recoveryPath { discardRecovery = recovery }
+                        if outcome.recoveryID != nil { discardRecovery = IDELanguageRunText.t("已保留原内容，可从“更多操作 → 恢复修改”恢复。", "The original content was kept. Use More Actions → Recover Changes to restore it.") }
                     }
                 }
             }
@@ -230,43 +301,11 @@ struct SourceControlView: View {
                 }
             }
         }
-        .sheet(item: $conflictFile) { file in
-            NavigationStack {
-                VStack(spacing: 0) {
-                    if let conflictNotice {
-                        Label(conflictNotice, systemImage: "exclamationmark.triangle")
-                            .font(.footnote).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .background(.bar)
-                    }
-                    TextEditor(text: $conflictText)
-                        .font(.system(.body, design: .monospaced))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("sourceControl.conflict.editor")
-                }
-                .navigationTitle(file.path)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(IDELanguageRunText.t("取消", "Cancel")) { conflictFile = nil; conflictNotice = nil }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button(IDELanguageRunText.t("标记已解决", "Mark Resolved")) {
-                            let path = file.path
-                            let content = conflictText
-                            run {
-                                let outcome = try await center.resolveConflict(path: path, content: content)
-                                if outcome.isConflict {
-                                    conflictNotice = String(format: IDELanguageRunText.t("仍有冲突：%@", "Still conflicting: %@"), outcome.conflictedPaths.joined(separator: ", "))
-                                } else {
-                                    conflictFile = nil
-                                    conflictNotice = nil
-                                    mergeNotice = outcome.message
-                                }
-                            }
-                        }
+        .sheet(item: $conflictFile) { _ in
+            if let conflictSnapshot, let root = workspaceCenter.currentRootURL {
+                NavigationStack {
+                    SourceControlConflictEditor(center: center, expected: conflictSnapshot, pinnedRoot: root) { outcome in
+                        conflictFile = nil; self.conflictSnapshot = nil; mergeNotice = outcome.message
                     }
                 }
             }
@@ -287,7 +326,7 @@ struct SourceControlView: View {
                         value: root.path
                     )
                 }
-                Button { showBranches = true } label: {
+                Button { panelOriginRoot = workspaceCenter.currentRootURL; showBranches = true } label: {
                     infoRow(
                         icon: "arrow.triangle.branch",
                         iconTint: FloeTheme.primary,
@@ -304,9 +343,16 @@ struct SourceControlView: View {
                     icon: "network",
                     iconTint: .secondary,
                     title: IDELanguageRunText.t("远程", "Remote"),
-                    value: center.snapshot.remoteURL ?? IDELanguageRunText.t("未绑定", "Not configured"),
+                    value: center.remoteDescriptors.first(where: { $0.name == center.selectedRemoteName })?.fetch.transportURL
+                        ?? center.snapshot.remoteURL ?? IDELanguageRunText.t("未绑定", "Not configured"),
                     valueSecondary: center.snapshot.remoteURL == nil
                 )
+                if gitHubRepository != nil {
+                    Button { openCollaboration() } label: {
+                        actionRow(icon: "arrow.triangle.pull", title: IDELanguageRunText.t("问题与拉取请求", "Issues and Pull Requests"))
+                    }.buttonStyle(.plain).disabled(center.isBusy).sourceControlRowInsets()
+                    .accessibilityIdentifier("sourceControl.collaboration.open")
+                }
             }
 
             Section(IDELanguageRunText.t("同步", "Sync")) {
@@ -316,6 +362,11 @@ struct SourceControlView: View {
                 // into unreadable circles. A glyph over a short single-line
                 // label keeps the action readable, never wraps, keeps a
                 // >=44pt target, and stays VS Code-like in density.
+                if !center.remoteDescriptors.isEmpty {
+                    Picker(IDELanguageRunText.t("远端", "Remote"), selection: $center.selectedRemoteName) {
+                        ForEach(center.remoteDescriptors) { Text($0.name).tag($0.name) }
+                    }.disabled(center.isBusy).sourceControlRowInsets()
+                }
                 HStack(spacing: 6) {
                     syncButton(
                         IDELanguageRunText.t("抓取", "Fetch"),
@@ -408,7 +459,7 @@ struct SourceControlView: View {
                             .frame(minHeight: FloeTheme.minimumTarget)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.isBusy)
+                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.isBusy || stagedChanges.isEmpty)
                     .accessibilityIdentifier("sourceControl.commit.submit")
                 }
                 .sourceControlRowInsets()
@@ -435,10 +486,19 @@ struct SourceControlView: View {
                 }
             }
 
-            if !center.snapshot.recentCommits.isEmpty {
+            if !center.historyEntries.isEmpty {
                 Section(IDELanguageRunText.t("最近提交", "Recent Commits")) {
-                    ForEach(center.snapshot.recentCommits.prefix(20)) { commit in
-                        VStack(alignment: .leading, spacing: 2) {
+                    ForEach(center.historyEntries) { commit in
+                        Button {
+                            let oid = commit.oid, root = workspaceCenter.currentRootURL
+                            Task { @MainActor in
+                                do {
+                                    let details = try await center.commitDetails(oid: oid)
+                                    guard workspaceCenter.currentRootURL == root else { return }
+                                    commitDetails = details
+                                } catch { center.errorMessage = SecretRedactor.redact(error.localizedDescription) }
+                            }
+                        } label: { VStack(alignment: .leading, spacing: 2) {
                             Text(commit.message).lineLimit(2)
                             HStack {
                                 Text(commit.shortOID).font(.caption.monospaced())
@@ -449,8 +509,14 @@ struct SourceControlView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         }
-                        .frame(minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
-                        .sourceControlRowInsets()
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }.buttonStyle(.plain).sourceControlRowInsets()
+                    }
+                    if center.historyBusy { ProgressView().sourceControlRowInsets() }
+                    else if center.historyNextOffset != nil {
+                        Button(IDELanguageRunText.t("载入更早的提交", "Load Earlier Commits")) { Task { await center.loadHistory() } }
+                            .frame(minHeight: 44).sourceControlRowInsets()
+                            .accessibilityIdentifier("sourceControl.history.more")
                     }
                 }
             }
@@ -530,7 +596,7 @@ struct SourceControlView: View {
                     ForEach(center.snapshot.branches, id: \.self) { branch in
                         Button {
                             showBranches = false
-                            run { try await center.switchBranch(name: branch) }
+                            runBranch { try await center.switchBranch(name: branch) }
                         } label: {
                             HStack {
                                 Text(branch)
@@ -545,7 +611,7 @@ struct SourceControlView: View {
                     ForEach(center.snapshot.branches.filter { $0 != center.snapshot.branch }, id: \.self) { branch in
                         Button {
                             showBranches = false
-                            run {
+                            runBranch {
                                 let outcome = try await center.merge(branch: branch)
                                 mergeNotice = outcome.isConflict
                                     ? String(format: IDELanguageRunText.t("合并产生冲突：%@", "Merge produced conflicts: %@"), outcome.conflictedPaths.joined(separator: ", "))
@@ -556,6 +622,17 @@ struct SourceControlView: View {
                         }
                     }
                 }
+                Section(IDELanguageRunText.t("远端分支", "Remote Branches")) {
+                    Picker(IDELanguageRunText.t("远端", "Remote"), selection: $center.selectedRemoteName) {
+                        ForEach(center.remoteDescriptors) { Text($0.name).tag($0.name) }
+                    }
+                    ForEach(remoteBranchChoices, id: \.self) { branch in
+                        Button {
+                            remoteBranchToCheckOut = branch; localTrackingName = branch
+                        } label: { Label(center.selectedRemoteName + "/" + branch, systemImage: "arrow.down.to.line").frame(minHeight: 44) }
+                    }
+                    if remoteBranchChoices.isEmpty { Text(IDELanguageRunText.t("请先获取远端以载入分支。", "Fetch the remote to load its branches.")).foregroundStyle(.secondary) }
+                }
                 Section(IDELanguageRunText.t("新分支", "New Branch")) {
                     TextField(IDELanguageRunText.t("分支名称", "Branch Name"), text: $branchName)
                         .textInputAutocapitalization(.never)
@@ -563,11 +640,30 @@ struct SourceControlView: View {
                     Button(IDELanguageRunText.t("创建并切换", "Create and Switch")) {
                         let name = branchName
                         showBranches = false
-                        run { try await center.createBranch(name: name); branchName = "" }
+                        runBranch { try await center.createBranch(name: name); branchName = "" }
                     }
                     .disabled(branchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .task(id: center.selectedRemoteName) {
+                let remote = center.selectedRemoteName, root = panelOriginRoot
+                do {
+                    let branches = try await center.remoteBranches()
+                    try Task.checkCancellation()
+                    guard remote == center.selectedRemoteName, SourceControlRootIdentity.matches(current: center.currentWorkspaceRoot, pinned: root) else { return }
+                    remoteBranchChoices = branches
+                } catch { center.errorMessage = SecretRedactor.redact(error.localizedDescription) }
+            }
+            .alert(IDELanguageRunText.t("检出远端分支", "Check Out Remote Branch"), isPresented: Binding(get: { !remoteBranchToCheckOut.isEmpty }, set: { if !$0 { remoteBranchToCheckOut = "" } })) {
+                TextField(IDELanguageRunText.t("新本地分支名称", "New Local Branch Name"), text: $localTrackingName)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { remoteBranchToCheckOut = "" }
+                Button(IDELanguageRunText.t("检出", "Check Out")) {
+                    let remote = center.selectedRemoteName, branch = remoteBranchToCheckOut, localName = localTrackingName
+                    remoteBranchToCheckOut = ""; showBranches = false
+                    runBranch { try await center.checkoutRemote(remote: remote, branch: branch, localName: localName) }
+                }.disabled(localTrackingName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } message: { Text(IDELanguageRunText.t("创建跟踪远端的新本地分支，不覆盖已有分支或未提交的修改。", "Create a new local branch tracking this remote. Existing branches and uncommitted changes are never replaced.")) }
             .navigationTitle(IDELanguageRunText.t("分支", "Branches"))
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button(IDELanguageRunText.t("取消", "Cancel")) { showBranches = false } }
@@ -663,6 +759,10 @@ struct SourceControlView: View {
         .accessibilityIdentifier(identifier)
     }
 
+    private func runBranch(_ operation: @escaping @MainActor () async throws -> Void) {
+        let root = panelOriginRoot
+        Task { await center.perform(pinnedRoot: root, operation) }
+    }
     private func run(_ operation: @escaping @MainActor () async throws -> Void) {
         Task { await center.perform(pinnedRoot: pinnedRootURL, operation) }
     }
@@ -670,14 +770,15 @@ struct SourceControlView: View {
     private func loadDiff(_ path: String, staged: Bool) {
         diffRequest = DiffRequest(path: path, staged: staged)
         diffText = ""
-        Task {
+        let request = diffRequest, root = workspaceCenter.currentRootURL
+        Task { @MainActor in
             do {
-                diffText = staged
-                    ? try await center.diffStaged(path: path)
-                    : try await center.diff(path: path)
+                let value = staged ? try await center.diffStaged(path: path) : try await center.diff(path: path)
+                guard diffRequest?.id == request?.id, workspaceCenter.currentRootURL == root else { return }
+                diffText = value
             } catch {
-                center.errorMessage = error.localizedDescription
-                diffRequest = nil
+                guard diffRequest?.id == request?.id, workspaceCenter.currentRootURL == root else { return }
+                center.errorMessage = SecretRedactor.redact(error.localizedDescription); diffRequest = nil
             }
         }
     }
@@ -686,10 +787,37 @@ struct SourceControlView: View {
         conflictNotice = nil
         Task {
             do {
-                conflictText = try await center.conflictFileContents(path: path)
-                conflictFile = GitConflictFile(path: path)
+                let root = workspaceCenter.currentRootURL
+                let value = try await center.conflictSnapshot(path: path)
+                guard workspaceCenter.currentRootURL == root else { return }
+                conflictSnapshot = value; conflictFile = GitConflictFile(path: path)
             } catch { center.errorMessage = error.localizedDescription }
         }
+    }
+
+    private var gitHubRepository: GitHubLinkRepositoryID? {
+        guard let endpoint = center.remoteDescriptors.first(where: { $0.name == center.selectedRemoteName })?.fetch,
+              endpoint.host == "github.com", endpoint.port == (endpoint.transport == .https ? 443 : 22) else { return nil }
+        let path = endpoint.repositoryPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let name = path.hasSuffix(".git") ? String(path.dropLast(4)) : path
+        return try? GitHubLinkParser.parse("https://github.com/" + name).repository
+    }
+    private func openCollaboration() {
+        do {
+            guard let repository = gitHubRepository else { return }
+            let scope = try center.credentialScope(conversationID: router.selectedConversationID)
+            let lease = SourceControlOperationLease(workspaceRoot: scope.workspaceRoot, repositoryRoot: center.repositoryRoot, workspaceID: scope.workspaceID)
+            collaborationLease?.cancel(); collaborationLease = lease
+            Task { @MainActor in
+                do {
+                    let sourceTaskID = try await center.collaborationTaskID(candidate: scope.conversationID, workspaceID: scope.workspaceID)
+                    try lease.check()
+                    guard lease.matches(root: center.currentWorkspaceRoot, workspaceID: workspaceCenter.currentWorkspace?.id) else { throw CancellationError() }
+                    collaboration = .init(repository: repository, scope: scope, sourceTaskID: sourceTaskID, lease: lease,
+                        service: try center.environment.gitHubCollaborationService(), client: center.github.collaborationClient())
+                } catch { if collaborationLease?.id == lease.id { center.errorMessage = SecretRedactor.redact(error.localizedDescription) } }
+            }
+        } catch { center.errorMessage = SecretRedactor.redact(error.localizedDescription) }
     }
 
     /// Read-only lock shown when the pane's pinned workspace is no longer

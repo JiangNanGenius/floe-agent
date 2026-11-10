@@ -19,6 +19,9 @@ struct SpaceRootView: View {
     @State private var folders: [String] = []
     @State private var childFolders: [PersonalLibraryFolder] = []
     @State private var deletion: PersonalLibraryDeleteSelection?
+    @AppStorage(PersonalLibraryDeletionPreferences.trashEnabledKey) private var trashEnabled = true
+    @State private var deletingToTrash = true
+    @State private var deletionBatch: [PersonalLibrarySelectionItem] = []
     @State private var showingRecentlyDeleted = false
     @State private var query = ""
     @State private var librarySearchPresented = false
@@ -189,27 +192,33 @@ struct SpaceRootView: View {
         .sheet(isPresented: $showingRecentlyDeleted, onDismiss: { Task { await refresh() } }) {
             PersonalRecentlyDeletedView()
         }
-        .confirmationDialog(IDELanguageRunText.t("移到最近删除？", "Move to Recently Deleted?"),
+        .confirmationDialog(deletingToTrash ? IDELanguageRunText.t("移到回收站？", "Move to Trash?")
+                            : IDELanguageRunText.t("永久删除？", "Delete permanently?"),
             isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } }),
             titleVisibility: .visible, presenting: deletion) { selection in
                 Button(IDELanguageRunText.t("删除", "Delete"), role: .destructive) {
-                    deletion = nil; Task { await delete(selection) }
+                    let useTrash = deletingToTrash
+                    deletion = nil; Task { await delete(selection, usingTrash: useTrash) }
                 }.accessibilityIdentifier("space.files.delete.confirm")
                 Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { deletion = nil }
             } message: { selection in
-                Text(selection.message)
+                Text(selection.message(usingTrash: deletingToTrash))
             }
-        .confirmationDialog(IDELanguageRunText.t("将所选项目移到最近删除？", "Move the selected items to Recently Deleted?"),
+        .confirmationDialog(deletingToTrash ? IDELanguageRunText.t("将所选项目移到回收站？", "Move the selected items to Trash?")
+                            : IDELanguageRunText.t("永久删除所选项目？", "Permanently delete the selected items?"),
             isPresented: $confirmingBatchDelete,
             titleVisibility: .visible) {
             Button(IDELanguageRunText.t("删除", "Delete"), role: .destructive) {
+                let frozen = deletionBatch, useTrash = deletingToTrash
+                deletionBatch = []
                 confirmingBatchDelete = false
-                Task { await deleteSelection() }
+                Task { await deleteSelection(frozen, usingTrash: useTrash) }
             }.accessibilityIdentifier("space.files.batchDelete.confirm")
             Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) { confirmingBatchDelete = false }
         } message: {
-            Text(IDELanguageRunText.t("所选项目可以在“最近删除”中恢复；未能删除的项目会保留在列表中。",
-                "Selected items can be restored from Recently Deleted; items that cannot be deleted stay in the list."))
+            Text(deletingToTrash
+                ? IDELanguageRunText.t("所选 \(deletionBatch.count) 项可以在回收站中恢复。", "The selected \(deletionBatch.count) items can be restored from Trash.")
+                : IDELanguageRunText.t("所选 \(deletionBatch.count) 项及其中所有内容都将被永久删除。此操作无法撤销。", "The selected \(deletionBatch.count) items and all their contents will be permanently deleted. This cannot be undone."))
         }
         .sheet(item: $fileActionRequest, onDismiss: {
             if let record = fileActionEditor { fileActionEditor = nil; presentWork(record) }
@@ -626,7 +635,7 @@ struct SpaceRootView: View {
                 selection.begin(with: .folder(folder))
             }.disabled(busy).accessibilityIdentifier("space.folder.select")
         }
-        Button(role: .destructive) { deletion = .folder(folder) } label: {
+        Button(role: .destructive) { deletingToTrash = trashEnabled; deletion = .folder(folder) } label: {
             Label(IDELanguageRunText.t("删除", "Delete"), systemImage: "trash")
         }.disabled(busy).accessibilityIdentifier("space.folder.delete")
     }
@@ -680,6 +689,7 @@ struct SpaceRootView: View {
         Button(IDELanguageRunText.t("取消", "Cancel")) { selection.cancel() }
             .disabled(busy).accessibilityIdentifier("space.files.cancelSelection")
         Button(IDELanguageRunText.t("删除", "Delete"), role: .destructive) {
+            deletionBatch = selection.effectiveSelection(); deletingToTrash = trashEnabled
             confirmingBatchDelete = true
         }.disabled(busy || selection.effectiveSelection().isEmpty)
             .accessibilityIdentifier("space.files.batchDelete")
@@ -762,7 +772,7 @@ struct SpaceRootView: View {
                     .accessibilityIdentifier("space.import.latex")
                 Button(IDELanguageRunText.t("导入地理数据…", "Import geographic data…"), systemImage: "map") { importingGeography=true;importingLaTeX=false;importing=true }
                     .accessibilityIdentifier("space.import.geography")
-                Button(IDELanguageRunText.t("最近删除", "Recently Deleted"), systemImage: "trash") { showingRecentlyDeleted = true }
+                Button(IDELanguageRunText.t("回收站", "Trash"), systemImage: "trash") { showingRecentlyDeleted = true }
                     .accessibilityIdentifier("space.files.recentlyDeleted")
                 Divider()
                 NavigationLink {
@@ -899,7 +909,7 @@ struct SpaceRootView: View {
                 }
             }
             Divider()
-            Button(role: .destructive) { deletion = .work(record) } label: {
+            Button(role: .destructive) { deletingToTrash = trashEnabled; deletion = .work(record) } label: {
                 Label(IDELanguageRunText.t("删除", "Delete"), systemImage: "trash")
             }.disabled(busy).accessibilityIdentifier("space.files.delete")
     }
@@ -984,26 +994,22 @@ struct SpaceRootView: View {
             } else { notice = error.localizedDescription }
         }
     }
-    @MainActor private func delete(_ selection: PersonalLibraryDeleteSelection) async {
+    @MainActor private func delete(_ selection: PersonalLibraryDeleteSelection, usingTrash: Bool) async {
         guard !busy else { return }; busy = true; defer { busy = false }
         do {
-            switch selection {
-            case .work(let record): try await PersonalLibraryFileActions.delete(record, environment: environment)
-            case .folder(let folder): try await PersonalLibraryFileActions.deleteFolder(folder, environment: environment)
-            }
+            try await PersonalLibraryFileActions.deleteFromFiles(selection.item, usingTrash: usingTrash, environment: environment)
             await refresh()
-        } catch { notice = error.localizedDescription }
+        } catch { await refresh(); notice = error.localizedDescription }
     }
     /// Batch delete keeps every guard of the single-item operations. Partial
     /// failure is reported with the survivors still listed; cancel never
     /// drops an original before its own deletion ran.
-    @MainActor private func deleteSelection() async {
+    @MainActor private func deleteSelection(_ items: [PersonalLibrarySelectionItem], usingTrash: Bool) async {
         guard !busy else { return }
-        let items = selection.effectiveSelection()
         guard !items.isEmpty else { selection.cancel(); return }
         let sourceFolders = folders, sourceQuery = query, sourceKind = fileKind
         busy = true; defer { busy = false }
-        let result = await PersonalLibraryFileActions.deleteBatch(items, environment: environment)
+        let result = await PersonalLibraryFileActions.deleteBatch(items, environment: environment, usingTrash: usingTrash)
         selection.cancel()
         await refresh()
         if !result.failed.isEmpty {

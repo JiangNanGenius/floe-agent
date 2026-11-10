@@ -16,6 +16,8 @@ public struct HeavyEditorView: View {
   private let bottomBar: AnyView?
   @State private var panel: Panel?
   @State private var visibleModal: HeavyEditorNativeModal?
+  @State private var outlineVisible = true
+  @State private var inspectorVisible = true
   private enum Panel: String, Identifiable {
     case outline, inspector
     var id: String { rawValue }
@@ -44,7 +46,7 @@ public struct HeavyEditorView: View {
         header(wide: wide, full: full)
         Divider()
         HStack(spacing: 0) {
-          if wide, let outline {
+          if wide, outlineVisible, let outline {
             outline.frame(width: 230)
             Divider()
           }
@@ -63,12 +65,22 @@ public struct HeavyEditorView: View {
                 ProgressView(EditorText.t("正在打开…", "Opening…"))
               }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if controller.isWorking || controller.queuedOperationCount > 0 {
+              HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(controller.operationPhase.title).lineLimit(1)
+                Spacer(minLength: 4)
+                if controller.queuedOperationCount > 0 {
+                  Text(EditorText.t("等待 \(controller.queuedOperationCount) 项", "\(controller.queuedOperationCount) queued"))
+                }
+              }.font(.caption).padding(.horizontal, 12).padding(.vertical, 6).background(.bar)
+            }
             if let bottomBar {
               Divider()
               bottomBar.padding(10)
             }
           }.frame(maxWidth: .infinity, maxHeight: .infinity)
-          if full, let inspector {
+          if full, inspectorVisible, let inspector {
             Divider()
             inspector.frame(width: 280)
           }
@@ -127,38 +139,36 @@ public struct HeavyEditorView: View {
     }
   }
   private func header(wide: Bool, full: Bool) -> some View {
-    HStack(spacing: 12) {
-      if !wide, outline != nil {
+    HStack(spacing: wide ? 8 : 2) {
+      if outline != nil {
         Button {
-          panel = .outline
+          if wide { outlineVisible.toggle() } else { panel = .outline }
         } label: {
-          Image(systemName: "sidebar.left")
-        }.accessibilityLabel(EditorText.t("列表", "Outline"))
+          Image(systemName: "sidebar.left").frame(width: 44, height: 44)
+        }.accessibilityLabel(wide && outlineVisible
+          ? EditorText.t("收起列表", "Hide outline") : EditorText.t("显示列表", "Show outline"))
+          .accessibilityIdentifier("heavyEditor.outline.toggle")
       }
       Label(controller.document.title, systemImage: controller.descriptor.symbol).font(.headline)
-        .lineLimit(1)
+        .lineLimit(1).layoutPriority(-1)
       Spacer(minLength: 4)
       actionMenu
-      if !full, inspector != nil {
+      if inspector != nil {
         Button {
-          panel = .inspector
+          if full { inspectorVisible.toggle() } else { panel = .inspector }
         } label: {
-          Image(systemName: "sidebar.right")
-        }.accessibilityLabel(EditorText.t("属性", "Inspector"))
+          Image(systemName: "sidebar.right").frame(width: 44, height: 44)
+        }.accessibilityLabel(full && inspectorVisible
+          ? EditorText.t("收起属性", "Hide inspector") : EditorText.t("显示属性", "Show inspector"))
+          .accessibilityIdentifier("heavyEditor.inspector.toggle")
       }
       if controller.isWorking {
-        ProgressView().controlSize(.small)
         Button {
           controller.cancel()
         } label: {
-          Image(systemName: "stop.circle")
+          Image(systemName: "stop.circle").frame(width: 44, height: 44)
         }.accessibilityLabel(EditorText.t("取消当前操作", "Cancel current action"))
       }
-      Button {
-        controller.requestImport()
-      } label: {
-        Image(systemName: "square.and.arrow.down")
-      }.accessibilityLabel(EditorText.t("导入", "Import"))
       if wide {
         Button {
           controller.runCommand("history.undo")
@@ -172,16 +182,18 @@ public struct HeavyEditorView: View {
         }.accessibilityLabel(EditorText.t("重做", "Redo")).keyboardShortcut(
           "z", modifiers: [.command, .shift])
       }
-      Button {
-        controller.runCommand("document.save")
-      } label: {
-        Image(systemName: "checkmark.circle")
-      }.accessibilityLabel(EditorText.t("保存", "Save")).keyboardShortcut("s", modifiers: .command)
+      if wide {
+        Button {
+          controller.runCommand("document.save")
+        } label: {
+          Image(systemName: "checkmark.circle").frame(width: 44, height: 44)
+        }.accessibilityLabel(EditorText.t("保存", "Save")).keyboardShortcut("s", modifiers: .command)
+      }
       if controller.onAssistant != nil {
         Button {
           controller.onAssistant?()
         } label: {
-          Image(systemName: "sparkles")
+          Image(systemName: "sparkles").frame(width: 44, height: 44)
         }.accessibilityLabel(EditorText.t("助手", "Assistant"))
       }
       Button(closeLabel ?? EditorText.t("完成", "Done")) {
@@ -189,11 +201,18 @@ public struct HeavyEditorView: View {
           await controller.endPresentation()
           onClose()
         }
-      }
+      }.frame(minWidth: 44, minHeight: 44)
     }.buttonStyle(.borderless).controlSize(.regular).padding(.horizontal, 14).frame(minHeight: 52)
   }
   private var actionMenu: some View {
     Menu {
+      Button(EditorText.t("导入…", "Import…"), systemImage: "square.and.arrow.down.on.square") {
+        controller.requestImport()
+      }
+      Button(EditorText.t("保存", "Save"), systemImage: "checkmark.circle") {
+        controller.runCommand("document.save")
+      }
+      Divider()
       ForEach(commandGroups, id: \.self) { group in
         Menu(group) {
           ForEach(
@@ -209,7 +228,7 @@ public struct HeavyEditorView: View {
         }
       }
     } label: {
-      Image(systemName: "slider.horizontal.3")
+      Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
     }
     .accessibilityLabel(EditorText.t("全部工具", "All tools")).disabled(!controller.isReady)
   }

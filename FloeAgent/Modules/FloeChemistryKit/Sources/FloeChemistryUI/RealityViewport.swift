@@ -63,30 +63,32 @@ private enum MolecularNavigation: CaseIterable { case orbit, pan, zoom
         .task(id: "\(object.id)-\(object.revision)") {
             do {
                 let source = object.facts?["cjson"]?.string ?? (object.format == "cjson" ? object.source : "{}")
-                let value = try await Task.detached { try ChemistryScene.parse(source) }.value
-                guard !Task.isCancelled else { return }; scene = value; cell = Self.cellVertices(source); reset = UUID(); error = nil
-            } catch { self.error = error.localizedDescription; scene = ChemistryScene() }
+                let value = try await ChemistryScene.load(source)
+                guard !Task.isCancelled else { return }; scene = value; cell = value.cellVertices; reset = UUID(); error = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.error=error.localizedDescription;scene=ChemistryScene();cell=[]
+            }
         }
         .onChange(of: showCell) { _, _ in reset = UUID() }
     }
-    private static func cellVertices(_ source: String) -> [SIMD3<Float>] {
-        guard let json = try? JSONDecoder().decode(JSONValue.self, from: Data(source.utf8)), let cell = json["unitCell"],
-              let a = cell["a"]?.number, let b = cell["b"]?.number, let c = cell["c"]?.number,
-              let alpha = cell["alpha"]?.number, let beta = cell["beta"]?.number, let gamma = cell["gamma"]?.number else { return [] }
-        let ar = alpha * .pi/180, br = beta * .pi/180, gr = gamma * .pi/180
-        guard [a,b,c,ar,br,gr].allSatisfy(\.isFinite), min(a,b,c) > 0, abs(sin(gr)) > 1e-8 else { return [] }
-        let cx = c*cos(br), cy = c*(cos(ar)-cos(br)*cos(gr))/sin(gr), cz = sqrt(max(0,c*c-cx*cx-cy*cy))
-        let va = SIMD3<Float>(Float(a),0,0), vb = SIMD3<Float>(Float(b*cos(gr)),Float(b*sin(gr)),0), vc = SIMD3<Float>(Float(cx),Float(cy),Float(cz))
-        return [.zero,va,vb,va+vb,vc,va+vc,vb+vc,va+vb+vc]
-    }
+
 }
 
+/// View-owned entity identities survive ordinary SwiftUI/selection updates.
+/// Mutating this reference does not schedule thousands of @State writes.
+@MainActor private final class MolecularRenderedAtoms {
+    let root=Entity()
+    var entities:[Int:ModelEntity]=[:]
+    var highlighted:Set<Int>=[]
+}
 @MainActor private struct MolecularRealityView: View {
     let scene: ChemistryScene
     let cell: [SIMD3<Float>]
     let style: MolecularStyle
     @Binding var selectedAtoms: [Int]
-    @State private var root = Entity()
+    @State private var rendered=MolecularRenderedAtoms()
+    private var root:Entity { rendered.root }
     private func position(_ index: Int) -> SIMD3<Float> { let a = scene.atoms[index]; return SIMD3(Float(a.x),Float(a.y),Float(a.zc)) }
     var body: some View {
         RealityView { content in
@@ -96,11 +98,13 @@ private enum MolecularNavigation: CaseIterable { case orbit, pan, zoom
             let fill = DirectionalLight(); fill.light.intensity = 700
             fill.look(at: .zero, from: [-4,-2,3], relativeTo: nil); content.add(fill)
         } update: { _ in
-            for entity in root.children {
-                guard entity.name.hasPrefix("atom-"), let index = Int(entity.name.dropFirst(5)), scene.atoms.indices.contains(index), var model = entity.components[ModelComponent.self] else { continue }
-                model.materials = [material(selectedAtoms.contains(index) ? .systemYellow : atomColor(scene.atoms[index].z))]
+            let selected=Set(selectedAtoms.filter{scene.atoms.indices.contains($0)})
+            for index in rendered.highlighted.symmetricDifference(selected) {
+                guard let entity=rendered.entities[index],var model=entity.components[ModelComponent.self] else { continue }
+                model.materials=[material(selected.contains(index) ? .systemYellow:atomColor(scene.atoms[index].z))]
                 entity.components.set(model)
             }
+            rendered.highlighted=selected
         }
         .gesture(SpatialTapGesture().targetedToAnyEntity().onEnded { value in
             guard value.entity.name.hasPrefix("atom-"), let index = Int(value.entity.name.dropFirst(5)) else { return }
@@ -134,13 +138,16 @@ private enum MolecularNavigation: CaseIterable { case orbit, pan, zoom
         let center = (low+high)/2, span = high-low
         let scale: Float = 2.0 / max(span.x,span.y,span.z,2.5)
         var spheres: [Int: MeshResource] = [:]
+        let selected=Set(selectedAtoms.filter{scene.atoms.indices.contains($0)})
+        rendered.entities.removeAll(keepingCapacity:true);rendered.highlighted=selected
         for (i, atom) in scene.atoms.enumerated() {
             let mesh = spheres[atom.z] ?? MeshResource.generateSphere(radius: radius(atom.z)*scale)
             spheres[atom.z] = mesh
-            let entity = ModelEntity(mesh: mesh, materials: [material(atomColor(atom.z))])
+            let entity = ModelEntity(mesh: mesh, materials: [material(selected.contains(i) ? .systemYellow:atomColor(atom.z))])
             entity.name = "atom-\(i)"; entity.position = (position(i)-center)*scale
             entity.components.set(InputTargetComponent())
             entity.components.set(CollisionComponent(shapes: [.generateSphere(radius: max(radius(atom.z),0.22)*scale)]))
+            rendered.entities[i]=entity
             root.addChild(entity)
         }
         if style != .spaceFill {

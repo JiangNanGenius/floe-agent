@@ -4,6 +4,7 @@ import Foundation
 import SwiftUI
 import CoreLocation
 import FloePersistence
+import FloeExecution
 import FloeToolboxCore
 import FloeToolboxDiagnostics
 import FloeToolboxWorkbenches
@@ -62,7 +63,7 @@ import FloeToolboxWorkbenches
         let lease = SessionLease(ownerID: UUID()); leases[tool] = lease
         let service = DiagnosticService(lease: lease, authorize: { [weak self] expected, _, _ in
             await self?.isCurrent(tool, lease: expected) == true
-        })
+        }, lanProbe: tool == .lan ? LANDiscoveryService.liveProbe : nil)
         let model = try DiagnosticWorkbenchModel(tool: tool, service: service, mayReadWiFiIdentity: canReadWiFiIdentity,
             onRequestState: { [weak self] request, state in
                 guard let self else { return }

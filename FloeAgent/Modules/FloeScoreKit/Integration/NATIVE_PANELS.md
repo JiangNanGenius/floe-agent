@@ -74,3 +74,15 @@ node FloeAgent/Qualification/HeavyEditors/WebBuild/build.mjs score
 ```
 
 The focused test runs the actual dispatcher, MusicXML and timing compiler. Its 17 checks cover empty presentation, piano/staff/measure IDs, staff-row selection, real SVG click/Enter/Space activation and gesture deduplication, correct MusicXML identity/reference diagnostics, transient state/history isolation, real dotted-note entry, full chord selection, partial properties and D4/F#4/A4 compiled events, view state, real mix/mark data, invalid IDs/staff, audio-free transport status, all original commands, and new-score context synchronization. The representative DTO is about 3.4 KB. Node checks and bundle generation do not establish native Swift compilation or visible native UI acceptance; the integration owner performs those separately. Previous notation/format/native-audio evidence is retained and was not rerun for this UI batch.
+
+### Professional entry extension
+
+`current.staffDetails` carries the selected staff clef, line count, highest-string-first tuning pitches, capo and transpose. These values come from the current original, with MusicXML tuning lines interpreted bottom to top. A TAB staff uses the native string/fret strip; a percussion staff uses native drum pads. Existing piano, voice/staff, duration, transport and inspector state stays in the same controller.
+
+| Command | Actual action |
+| --- | --- |
+| `score.parts.tuning` | Configure the selected staff's open strings (highest string first) and capo; writes standard MusicXML staff details. |
+| `score.edit.tabInsert` | Insert an actual pitched note with string/fret metadata, honoring tuning, capo, staff, voice and entry mode; keyboard pitch may choose a playable string. |
+| `score.edit.percussionInsert` | Insert a real unpitched drum note with its MIDI instrument mapping, staff, voice and entry mode. |
+
+`score.layout.settings` accepts explicit `scope=score|part` and `part`; omitted layout values preserve the selected scope's settings. `score.parts.export` adds PDF/SVG/PNG/MIDI while preserving its original MusicXML default. Native all-parts export opens with PDF selected. Graphical export always engraves the requested source in a disposable surface, including when a different linked part is visible.

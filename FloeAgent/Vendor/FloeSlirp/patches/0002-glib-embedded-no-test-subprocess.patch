@@ -1,0 +1,66 @@
+From: Floe iOS vendor candidate <local>
+Subject: [PATCH 2/2] glib: compile out g_test subprocess/fork traps for embedded production builds
+
+Adds a FLOE_GLIB_NO_TEST_SUBPROCESS build define that replaces the three
+test-trap entry points with loud g_error() failures and drops the fork/
+g_spawn/waitpid code paths from gtestutils.c entirely. Production g_log,
+g_assertion_message and g_return_* semantics are unchanged.
+
+Applies to glib-2.90.1. See patches/README.md.
+---
+--- a/glib/gtestutils.c
++++ b/glib/gtestutils.c
+@@ -3802,8 +3802,45 @@
+     }
+ 
+   return TRUE;
++}
++
++#ifdef FLOE_GLIB_NO_TEST_SUBPROCESS
++/*
++ * Floe embedded production build (see patches/README.md): the g_test
++ * subprocess/fork trap entry points are compiled out and fail loudly via
++ * g_error() instead of forking or spawning; they are part of GLib's unit
++ * test framework, which the libslirp consumer never executes. Everything
++ * this archive provides for production (g_log routing, g_assertion_message
++ * helpers, g_return_* diagnostics, allocation/queues/hashes, and the
++ * in-process test-state predicates below this region) is untouched.
++ */
++G_GNUC_BEGIN_IGNORE_DEPRECATIONS
++gboolean
++g_test_trap_fork (guint64        usec_timeout,
++                  GTestTrapFlags test_trap_flags)
++{
++  g_error ("g_test_trap_fork is not available in this embedded GLib build (test subprocess support compiled out)");
++  return FALSE;
++}
++G_GNUC_END_IGNORE_DEPRECATIONS
++
++void
++g_test_trap_subprocess (const char           *test_path,
++                        guint64               usec_timeout,
++                        GTestSubprocessFlags  test_flags)
++{
++  g_error ("g_test_trap_subprocess is not available in this embedded GLib build (test subprocess support compiled out)");
+ }
+ 
++void
++g_test_trap_subprocess_with_envp (const char           *test_path,
++                                  const char * const   *envp,
++                                  guint64               usec_timeout,
++                                  GTestSubprocessFlags  test_flags)
++{
++  g_error ("g_test_trap_subprocess_with_envp is not available in this embedded GLib build (test subprocess support compiled out)");
++}
++#else  /* !FLOE_GLIB_NO_TEST_SUBPROCESS */
+ static void
+ wait_for_child (GPid pid,
+                 int stdout_fd, gboolean echo_stdout,
+@@ -4203,6 +4240,7 @@
+                   stderr_fd, !!(test_flags & G_TEST_SUBPROCESS_INHERIT_STDERR),
+                   usec_timeout);
+ }
++#endif /* !FLOE_GLIB_NO_TEST_SUBPROCESS */
+ 
+ /**
+  * g_test_subprocess:

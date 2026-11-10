@@ -21,7 +21,24 @@ struct CodeBlockView: View {
 
     @State private var didCopy = false
 
+    /// Fenced SVG goes through the shared bounded preview surface; the
+    /// source stays fully viewable and copyable there too.
+    private var isSVGFence: Bool {
+        switch language?.lowercased() {
+        case "svg", "image/svg+xml": return true
+        default: return false
+        }
+    }
+
     var body: some View {
+        if isSVGFence {
+            SVGCodeBlockView(language: language, code: code)
+        } else {
+            plainCodeBlock
+        }
+    }
+
+    private var plainCodeBlock: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ScrollView(.horizontal, showsIndicators: true) {
@@ -33,8 +50,8 @@ struct CodeBlockView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
-        .accessibilityElement(children: .contain)
+            .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityElement(children: .contain)
     }
 
     private var header: some View {

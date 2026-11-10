@@ -1,5 +1,29 @@
-<!-- docs-updated: 2026-11-08 -->
+<!-- docs-updated: 2026-11-10 -->
 # 当前版本与验证状态 / Current release and verification status
+
+这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
+
+## 2026-11-10 渠道核对 / Channel snapshot
+
+核实日期按悉尼时间记录（GitHub／Feather 读取于 2026-11-09 18:37 UTC）。本次只读核对公开元数据与安装源，未重新下载大型安装包或执行设备验收。 / Dates use Sydney time. This read-only check covers public metadata and the feed, without fresh package-download or device acceptance.
+
+| 产品与渠道 / Product and channel | 核实结果 / Observed result | 来源与边界 / Source and limits |
+| --- | --- | --- |
+| Floe Agent · App Store · iOS / iPadOS | 1.7.74，最低 iOS/iPadOS 26 | [澳大利亚商店](https://apps.apple.com/au/app/id6801209053)与 [Apple 公开查询](https://itunes.apple.com/lookup?id=6801209053&country=au)。本次只核实澳大利亚信息，其他地区以商店为准。 / Australian listing checked; other storefronts may differ. |
+| Floe Agent · GitHub / Feather | [1.8.6（326）](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.6) | GitHub latest 指向该版，未签名 IPA、校验文件及公开 provenance 可见；[Feather 源](https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json)的版本、构建号和 IPA 地址一致。需自行签名。 / Latest release and feed metadata agree; IPA requires your signing. |
+| Floe Agent · Android | [0.1.0-alpha.73](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.73) | 已公开预发布，完整 ARM64 APK、组件及校验清单可见；Android 9+。能力和升级限制按该版说明核对。 / Public alpha with APK, component and checksum assets; follow release-specific limits. |
+| Floe Bridge · Mac | [1.1.3](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.3) | DMG 与校验文件可见；同一台 Mac 的伴随程序。 / DMG and checksum listed; same-Mac companion. |
+| Floe iOS Bridge | [1.0.0](https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-ios-bridge-v1.0.0) | 未签名 IPA 与校验文件可见；签名与能力要求按该版说明核对。 / Unsigned IPA and checksum listed; follow its signing requirements. |
+| Floe Agent · TestFlight | 本次未重新核实 / Not refreshed in this pass | GitHub 或安装源公开不证明 Apple 已处理、内部组可用或公开审核通过；以实际 TestFlight 和[逐版交付记录](releases/README.md)为准。 / Check Apple and build-specific delivery evidence independently. |
+
+[使用手册](USER_GUIDE.zh-CN.md) / [English manual](USER_GUIDE.md) · [空间教程](WORKSPACES_GUIDE.zh-CN.md) / [Workspace guide](WORKSPACES_GUIDE.md)。教程内的适用版本仍需逐项核对，主线未交付修改不能据此算入安装包。 / Follow each tutorial's build-specific availability notes; later source changes are not automatically in published packages.
+
+## 历史快照 / Historical snapshots
+
+下方保留此前各次核实、候选与失败记录，其中“当前”只指其原记录日期。 / Earlier checks, candidates and failures retain their original scope; “current” below refers to the recorded date.
+
+<details>
+<summary>展开此前渠道与候选记录 / Earlier channel and candidate records</summary>
 
 文档更新时间 / Document updated: 2026-11-08. 当前摘要见下表，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
@@ -263,3 +287,5 @@ Build 260 passed full CI, release building and signed upload. Apple verification
 4. [发布档案](releases/README.md)只作为逐版本证据。Release archives preserve original results.
 
 发布完成需分别确认：构建、留存产物、签名上传、Apple VALID、目标测试组可用、外部审核。Build, retained artifact, signed upload, Apple processing, group availability and external approval are distinct gates. 官网文档上线不代表 App 候选发布。Website publication is separate from App release.
+
+</details>

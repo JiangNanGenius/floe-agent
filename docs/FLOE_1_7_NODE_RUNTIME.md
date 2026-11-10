@@ -1,5 +1,9 @@
 # Floe 1.7 Node runtime
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本文保留 NodeMobile 进程内路线及后续 TinyEMU 迁移记录，两者均不能作为现行执行入口。Node 通过任务所属共享 ARM64 Linux 的 `exec.shell` 运行，见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)。
+> Retains the retired in-process NodeMobile route and later TinyEMU transition. Current Node execution uses the task-owned shell path in shared ARM64 Linux.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 历史实施记录 / Historical implementation record. 以下候选、运行时路线和交付状态仅适用于记录当时；当前操作见[中文手册](USER_GUIDE.zh-CN.md) / [English manual](USER_GUIDE.md)，安装与验证见[当前状态](CURRENT_STATUS.md)。Do not treat these historical plans or checks as current availability.
 
 当前 Node 在 TinyEMU Linux 客体中执行；下文 NodeMobile 进程内路线已经退役。Current Node runs inside the Linux guest; the in-process NodeMobile route below is retired.

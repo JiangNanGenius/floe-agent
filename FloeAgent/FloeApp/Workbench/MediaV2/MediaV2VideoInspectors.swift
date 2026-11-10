@@ -31,9 +31,10 @@ struct MediaV2ClipTimingInspector: View {
                     sourceDuration: sourceDuration, timelineStart: start, ripple: session.rippleCurrentTrack)) }
                 catch { session.diagnostic = error.localizedDescription }
             }.frame(minHeight: 44)
-            if track.kind == .visual {
+            if track.kind == .visual || track.kind == .audio {
                 MediaV2NumberField(title: WorkbenchText.t("速度", "Speed"), value: $speed, suffix: "×")
                 Button(WorkbenchText.t("应用速度", "Apply speed")) { run("video.speed", value: speed) }.frame(minHeight: 44)
+                Text(WorkbenchText.t("原声音调随速度改变。独立音轨可单独调整速度。", "Source-audio pitch follows speed. Independent audio clips can be retimed separately.")).font(.caption2).foregroundStyle(.secondary)
             }
             if session.tool == "video.roll" {
                 MediaV2NumberField(title: WorkbenchText.t("相邻剪切点", "Adjacent cut"), value: $boundary, suffix: "s")
@@ -73,6 +74,7 @@ struct MediaV2KeyframeInspector: View {
     @State private var localTime = 0.0
     @State private var value = 1.0
     @State private var interpolation = MediaKeyframeInterpolation.linear
+    @State private var bezier = MediaCubicBezier()
     private var track: MediaKeyframeTrack? { clip.keyframeTracks.first { $0.property == property || $0.property == "transform." + property } }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -93,6 +95,11 @@ struct MediaV2KeyframeInspector: View {
                 Text(WorkbenchText.t("缓出", "Ease out")).tag(MediaKeyframeInterpolation.easeOut)
                 Text(WorkbenchText.t("平滑", "Smooth")).tag(MediaKeyframeInterpolation.cubicBezier)
             }
+            if interpolation == .cubicBezier {
+                MediaV2BezierCurveEditor(curve:$bezier)
+                Text(WorkbenchText.t("控制点调整当前关键帧到下一帧的时间变化。", "Handles shape the timing from this keyframe to the next."))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             Button(WorkbenchText.t("使用播放头时间", "Use playhead time")) {
                 localTime = max(0, min(clip.timelineRange.durationSeconds, session.playhead - clip.timelineRange.startSeconds))
                 value = session.keyframeValue(for: property, in: clip)
@@ -102,7 +109,7 @@ struct MediaV2KeyframeInspector: View {
                 HStack {
                     Button {
                         localTime = key.time.seconds; if case .number(let number) = key.value { value = number }
-                        interpolation = key.interpolation; session.scrub(clip.timelineRange.startSeconds + key.time.seconds)
+                        interpolation = key.interpolation; bezier = key.curve ?? .init(); session.scrub(clip.timelineRange.startSeconds + key.time.seconds)
                     } label: {
                         HStack { Image(systemName: "diamond.fill"); Text(String(format: "%.3f s", key.time.seconds)).monospacedDigit(); Spacer(); if case .number(let number) = key.value { Text(String(format: "%.3f", number)).monospacedDigit() } }.font(.caption).frame(minHeight: 44)
                     }
@@ -110,7 +117,11 @@ struct MediaV2KeyframeInspector: View {
                 }
             }
         }.disabled(session.saving || session.selectedClip?.track.isLocked == true)
-            .onAppear { value = session.keyframeValue(for: property, in: clip); localTime = max(0, min(clip.timelineRange.durationSeconds, session.playhead - clip.timelineRange.startSeconds)) }
+            .onAppear {
+                value = session.keyframeValue(for: property, in: clip)
+                localTime = max(0, min(clip.timelineRange.durationSeconds, session.playhead - clip.timelineRange.startSeconds))
+                if session.tool == "video.graph" { interpolation = .cubicBezier }
+            }
             .onChange(of: property) { _, _ in value = session.keyframeValue(for: property, in: clip) }
     }
     private var curve: some View {
@@ -137,7 +148,9 @@ struct MediaV2KeyframeInspector: View {
               value.isFinite, property != "opacity" || (0...1).contains(value), property != "scale" || value > 0 else { session.diagnostic = MediaV2CommandError.invalidInput.localizedDescription; return }
         var input = MediaV2ToolInput(); input.objectID = clip.id; input.expectedRevision = session.document.revision
         input.start = localTime; input.number = value; input.property = property; input.text = interpolation.rawValue
-        Task { do { _ = try await session.performTool("video.keyframes", input: input) } catch { session.diagnostic = error.localizedDescription } }
+        if interpolation == .cubicBezier { input.points = [bezier.control1,bezier.control2] }
+        let toolID = session.tool == "video.graph" ? "video.graph" : "video.keyframes"
+        Task { do { _ = try await session.performTool(toolID, input: input) } catch { session.diagnostic = error.localizedDescription } }
     }
 }
 

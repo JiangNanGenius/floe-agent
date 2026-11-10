@@ -68,6 +68,21 @@ extension WorkspaceToolError: LocalizedError {
 }
 
 public extension WorkspaceToolError {
+    /// A next action, never a claim that retrying or writing is authorized.
+    /// Paths and file contents are intentionally not copied into the hint.
+    var recoveryHint: String? {
+        switch self {
+        case .notFound:
+            "Use workspace.listDirectory on the nearest existing parent inside the authorized workspace, or workspace.searchFiles, to locate the current path before retrying."
+        case .conflict:
+            "Read the current file with workspace.readFile and recompute the edit using its current revision. Do not retry with the stale revision or overwrite concurrent changes."
+        case .alreadyExists:
+            "Read the existing file and verify its contents before choosing an edit or a different destination."
+        default:
+            nil
+        }
+    }
+
     /// Machine-readable stable code for the error case.
     var code: String {
         switch self {
@@ -88,6 +103,7 @@ public extension WorkspaceToolError {
     /// Structured envelope encoded into failed `ToolResult.outputSummary`.
     var structuredSummary: String {
         var payload: [String: String] = ["code": code]
+        if let recoveryHint { payload["hint"] = recoveryHint }
         switch self {
         case .escapesRoot(let path), .secretFile(let path),
              .notFound(let path), .alreadyExists(let path),

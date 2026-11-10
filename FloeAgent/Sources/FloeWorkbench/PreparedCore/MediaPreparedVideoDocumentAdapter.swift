@@ -20,7 +20,9 @@ public enum MediaPreparedVideoDocumentAdapter {
             throw PreparedVideoError.invalidTime("frame rate cannot be represented")
         }
         let rate = try PreparedVideoFrameRate(numerator: n, denominator: d)
-        let scale = rate.numerator
+        // Drawing-path vertices and Bezier timing must not collapse to one
+        // key per frame. The renderer samples this rational time at frame PTS.
+        let scale: Int32 = 90_000
         func time(_ input: MediaRationalTime) throws -> PreparedVideoTime {
             try PreparedVideoTime(seconds: input.seconds, timescale: scale)
         }
@@ -45,41 +47,52 @@ public enum MediaPreparedVideoDocumentAdapter {
                         timelineRange: range(clip.timelineRange), text: text))
                     continue
                 }
-                guard let id = clip.assetID, let asset = document.assets.first(where: { $0.id == id }) else {
-                    throw PreparedVideoError.invalidPlan("clip requires an asset")
-                }
-                used.insert(id)
                 switch track.kind {
                 case .visual:
-                    guard asset.kind == .video || asset.kind == .image else {
-                        throw PreparedVideoError.invalidPlan("visual clip requires video or image")
+                    let content: PreparedVideoVisualContent
+                    let source: PreparedVideoTimeRange?
+                    var sourceCadence: Double?
+                    if let title = clip.motionTitle {
+                        try title.validate()
+                        content = .text(.init(text: title.text, fontSize: title.fontSize,
+                            color: try PreparedVideoColor(hex: title.colorHex),
+                            backgroundColor: try title.backgroundHex.map { try PreparedVideoColor(hex: $0) }))
+                        source = nil
+                    } else {
+                        guard let id = clip.assetID, let asset = document.assets.first(where: { $0.id == id }),
+                              asset.kind == .video || asset.kind == .image else {
+                            throw PreparedVideoError.invalidPlan("visual clip requires video, image or typed title")
+                        }
+                        used.insert(id)
+                        if includeAudio, asset.kind == .video, !clip.isMuted, !track.isMuted,
+                           !document.trackGraph.masterMuted, clip.volume > 0, track.volume > 0 {
+                            guard asset.metadata?.audioTracks == 0 else {
+                                throw PreparedVideoError.unsupportedCapability("extract video source audio before resolving")
+                            }
+                        }
+                        content = asset.kind == .image ? .image(assetID: id) : .video(assetID: id)
+                        source = try range(clip.sourceRange)
+                        sourceCadence = clip.stabilization?.source.frameDuration ?? clip.videoTracking?.source.frameDuration
+                            ?? (1 / max(1,asset.metadata?.frameRate ?? rate.fps))
                     }
-                    // Refuse a lossy projection. These properties stay editable
-                    // in the shared document until their render adapter lands.
+                    for binding in [clip.videoTracking?.source, clip.stabilization?.source].compactMap({ $0 }) {
+                        guard let asset = document.assets.first(where: { $0.id == binding.assetID }),
+                              asset.kind == .video, (document.assetRevisions?[asset.id] ?? 0) == binding.assetRevision,
+                              asset.contentHash == nil || asset.contentHash == binding.contentHash else {
+                            throw MediaPreparedCoreError.invalidOperation("motion source changed; re-analyze this clip")
+                        }
+                    }
+                    if let match = clip.videoGrade?.colorMatch {
+                        guard let asset = document.assets.first(where: { $0.id == match.target.assetID }),
+                              asset.id == clip.assetID, (document.assetRevisions?[asset.id] ?? 0) == match.target.assetRevision,
+                              asset.contentHash == nil || asset.contentHash == match.target.contentHash else {
+                            throw MediaPreparedCoreError.invalidOperation("color-match target source changed; sample it again")
+                        }
+                    }
                     guard clip.crop == nil else {
                         throw PreparedVideoError.unsupportedCapability("source crop adapter")
                     }
-                    if includeAudio, asset.kind == .video, !clip.isMuted, !track.isMuted,
-                       !document.trackGraph.masterMuted, clip.volume > 0, track.volume > 0 {
-                        guard asset.metadata?.audioTracks == 0 else {
-                            throw PreparedVideoError.unsupportedCapability("extract video source audio before resolving")
-                        }
-                    }
-                    let keyframes = try clip.keyframeTracks.map { keyTrack -> PreparedVideoKeyframeTrack in
-                        let propertyName = keyTrack.property.replacingOccurrences(of: "transform.", with: "")
-                        guard let property = PreparedVideoAnimatableProperty(rawValue: propertyName) else {
-                            throw PreparedVideoError.unsupportedCapability("keyframe property")
-                        }
-                        let keys = try keyTrack.keyframes.map { key -> PreparedVideoKeyframe in
-                            guard case .number(let value) = key.value,
-                                  let interpolation = PreparedVideoInterpolation(rawValue: key.interpolation.rawValue) else {
-                                throw PreparedVideoError.unsupportedCapability("keyframe value")
-                            }
-                            return try PreparedVideoKeyframe(time: time(key.time), value: value,
-                                                             interpolation: interpolation)
-                        }
-                        return .init(property: property, keyframes: keys)
-                    }
+                    let keyframes = try MediaAnimation.preparedTracks(clip.keyframeTracks,timescale:scale)
                     let transition: PreparedVideoTransition?
                     if clip.leadingTransition == .crossDissolve, let duration = clip.transitionDuration {
                         transition = try .init(kind: .crossDissolve, duration: time(duration))
@@ -96,18 +109,23 @@ public enum MediaPreparedVideoDocumentAdapter {
                             feather: selection.feather, isInverted: selection.inverted)
                     }
                     visualClips.append(try PreparedVideoClip(
-                        id: clip.id, content: asset.kind == .image ? .image(assetID: id) : .video(assetID: id),
-                        timelineRange: range(clip.timelineRange), sourceRange: range(clip.sourceRange),
-                        speed: clip.speed, transform: .init(rotationDegrees: clip.rotationDegrees),
-                        keyframes: keyframes, mask: mask, leadingTransition: transition))
+                        id: clip.id, content: content,
+                        timelineRange: range(clip.timelineRange), sourceRange: source,
+                        speed: clip.speed, opacity: clip.visualOpacity ?? 1, transform: .init(rotationDegrees: clip.rotationDegrees),
+                        keyframes: keyframes, mask: mask, leadingTransition: transition,
+                        sourcePlayback: clip.sourcePlayback,
+                        sourceFrameDuration: sourceCadence,chromaKey:clip.chromaKey,blendMode:clip.blendMode,videoGrade:clip.videoGrade,videoTracking:clip.videoTracking,stabilization:clip.stabilization))
                 case .audio:
-                    guard asset.kind == .audio, clip.speed == 1, clip.keyframeTracks.isEmpty else {
-                        throw PreparedVideoError.unsupportedCapability("audio asset, retime or animation")
+                    if clip.sourcePlayback?.holdSeconds != nil { continue }
+                    guard let id = clip.assetID, let asset = document.assets.first(where: { $0.id == id }),
+                          asset.kind == .audio, clip.keyframeTracks.isEmpty else {
+                        throw PreparedVideoError.unsupportedCapability("audio asset or animation")
                     }
+                    used.insert(id)
                     audioClips.append(try .init(id: clip.id, assetID: id,
                         timelineRange: range(clip.timelineRange), sourceRange: range(clip.sourceRange),
-                        volume: clip.isMuted ? 0 : clip.volume,
-                        fadeInSeconds: clip.fadeIn?.seconds ?? 0, fadeOutSeconds: clip.fadeOut?.seconds ?? 0))
+                        volume: clip.isMuted || clip.sourcePlayback?.holdSeconds != nil ? 0 : clip.volume,
+                        fadeInSeconds: clip.fadeIn?.seconds ?? 0, fadeOutSeconds: clip.fadeOut?.seconds ?? 0, speed: clip.speed, isReversed: clip.sourcePlayback?.isReversed))
                 case .caption: break
                 case .adjustment:
                     throw PreparedVideoError.unsupportedCapability("adjustment track")
@@ -115,8 +133,15 @@ public enum MediaPreparedVideoDocumentAdapter {
             }
             switch track.kind {
             case .visual: visuals.append(.init(id: track.id, name: track.name, isHidden: track.isMuted, clips: visualClips))
-            case .audio: audio.append(.init(id: track.id, name: track.name, isMuted: track.isMuted,
-                                            volume: track.volume, clips: audioClips))
+            case .audio:
+                let plain = audioClips.filter { clip in track.clips.first(where:{$0.id == clip.id})?.audioProcessing?.isEmpty != false }
+                if !plain.isEmpty { audio.append(.init(id:track.id,name:track.name,isMuted:track.isMuted,volume:track.volume,clips:plain)) }
+                for clip in audioClips {
+                    guard let effects = track.clips.first(where:{$0.id == clip.id})?.audioProcessing,!effects.isEmpty else { continue }
+                    try effects.validate()
+                    audio.append(.init(id:clip.id,name:track.name,isMuted:track.isMuted,volume:track.volume,
+                        eqBands:effects.eqBands,dynamics:effects.dynamics,limiter:effects.limiter,clips:[clip]))
+                }
             case .caption: break
             case .adjustment: throw PreparedVideoError.unsupportedCapability("adjustment track")
             }
@@ -148,6 +173,6 @@ public enum MediaPreparedVideoDocumentAdapter {
             duration: PreparedVideoTime(seconds: document.trackGraph.totalDurationSeconds, timescale: scale),
             canvas: .init(width: canvas.width, height: canvas.height), assets: assets,
             visualTracks: visuals, captions: captions, captionStyle: captionStyle,
-            audio: .init(tracks: audio, masterVolume: document.trackGraph.masterMuted ? 0 : document.trackGraph.masterVolume))
+            audio: .init(tracks: audio, masterVolume: document.trackGraph.masterMuted ? 0 : document.trackGraph.masterVolume),colorProfile: canvas.videoColorProfile)
     }
 }

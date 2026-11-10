@@ -1,5 +1,9 @@
 # Floe 1.7 软件包与模型资格矩阵
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本表保留早期 1.7 的软件包与模型候选盘点，旧 pool 状态和原生载荷路线不代表当前可用目录。当前能力按[工具目录源码](../FloeAgent/Sources/FloeExecution/Resources/ToolCapabilityCatalog.json)、[使用手册](USER_GUIDE.zh-CN.md)及所选版本核对；原始未验收项不自动变为通过。
+> Earlier 1.7 package/model inventory, not the current capability catalog. Preserve its unverified items; consult current source and release-specific evidence.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 本表逐项登记源码与上游核对的当前状态，完整兼容/许可评估尚未完成。候选未制作不等于已证明不兼容；声明的许可证也不等于权重分发资格已确认。执行证据、真机耗时和内存缺失时明确记为未验收。

@@ -19,7 +19,21 @@ import DragRotate from 'ol/interaction/DragRotate.js';
 import { EditorEngine } from '../../FloeHeavyEditorSupport/Web/runtime.js';
 import { createGIS,normalizeGIS,vectorLayer,registerModelCommands } from '../Web/model.js';
 import { gisUI,gisNativeSnapshot,registerGISUI } from '../Web/native.js';
-import { gis2DViewOptions,gisInputPolicy,gisNavigationInteractions,gisDrawConditions,gisModifyConditions,gisTranslateConditions,guardGISEditInteraction,gisVertexClick,gisGraticule } from '../Web/input.js';
+import { gis2DViewOptions,gisInputPolicy,gisNavigationInteractions,gisDrawConditions,gisModifyConditions,gisTranslateConditions,guardGISEditInteraction,gisVertexClick,gisGraticule,gisEditNotice } from '../Web/input.js';
+
+test('edit readiness explains missing, raster and locked layers without changing the original',async()=>{
+  const e=new EditorEngine({kind:'gis',create:createGIS,normalize:normalizeGIS,nativeSnapshot:gisNativeSnapshot});
+  registerModelCommands(e);registerGISUI(e);
+  const layer=vectorLayer('Input',[],'EPSG:3857');e.state.layers.push(layer);e.selection={layer:layer.id,features:[]};
+  await e.execute({command:'gis.ui.tool',arguments:{tool:'Point'},revision:0});
+  assert.equal(gisNativeSnapshot(e).ui.notice,null);
+  for(const selected of [null,{kind:'raster',locked:false},{kind:'vector',locked:true}])assert.ok(gisEditNotice('Point',selected));
+  layer.locked=true;const original=structuredClone(e.state);
+  assert.ok(gisNativeSnapshot(e).ui.notice);assert.deepEqual(e.state,original);assert.equal(e.payload.history.past.length,0);
+  gisUI(e).editError='Previous rejected edit';
+  await e.execute({command:'gis.ui.tool',arguments:{tool:'select'},revision:0});
+  assert.equal(gisNativeSnapshot(e).ui.notice,null);assert.deepEqual(e.state,original);
+});
 
 globalThis.requestAnimationFrame??=callback=>setTimeout(()=>callback(performance.now()),0);
 globalThis.cancelAnimationFrame??=clearTimeout;

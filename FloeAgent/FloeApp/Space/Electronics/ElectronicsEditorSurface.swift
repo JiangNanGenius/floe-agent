@@ -36,6 +36,8 @@ private struct ElectronicsExportPreviewRoute: Identifiable {
 /// The outer personal editor continues to own its assistant and close flow.
 @MainActor struct ElectronicsEditorSurface: View {
     let session: ElectronicsProjectSession
+    @EnvironmentObject private var environment: AppEnvironment
+    @State private var showingLibraryUpdates = false
     @State private var active = false
     @State private var generation: UUID?
     @State private var preview: ElectronicsExportPreviewRoute?
@@ -44,7 +46,13 @@ private struct ElectronicsExportPreviewRoute: Identifiable {
     var body: some View {
         EDWorkbenchView(session: session.workbench, onExportPreview: { file, revision in
             requestPreview(file, revision: revision)
-        })
+        }, onLibraryUpdates: { showingLibraryUpdates = true })
+        .sheet(isPresented: $showingLibraryUpdates) {
+            NavigationStack {
+                ContentUpdatesSettingsView(center: environment.contentUpdateCenter)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button(IDELanguageRunText.t("完成", "Done")) { showingLibraryUpdates = false } } }
+            }
+        }
         .onAppear { active = true }
         .onDisappear { active = false; cancelPreview() }
         .onChange(of: ObjectIdentifier(session)) { _, _ in cancelPreview() }

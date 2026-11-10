@@ -172,6 +172,12 @@ struct ThreadComposerView: View {
     /// separate action and never sends a transcript automatically.
     var onContinuousVoice: (() -> Void)? = nil
     var onManualCompact: (() -> Void)? = nil
+    /// Fires after a user model choice has been applied to this composer's
+    /// conversation, with the previous selection. The thread owner uses it to
+    /// run the recoverable pre-switch history cleanup for smaller-context
+    /// models. Home (no conversation yet) and document surfaces that omit the
+    /// callback are unaffected.
+    var onModelApplied: ((UUID?, ModelProfile) -> Void)? = nil
     var onPermissions: () -> Void = {}
     var approvalMode: TaskApprovalMode = .ask
     /// Changes when the composer is reused for another conversation. Local
@@ -1515,7 +1521,12 @@ struct ThreadComposerView: View {
     }
 
     private func applyModelSelection(_ model: ModelProfile) {
+        let previousModelID = selectedModelID
         selectedModelID = model.id
+        // Notify the conversation owner before the durable persist Task so a
+        // pre-switch history cleanup can start while the user is still
+        // composing, not after the next send. Idempotent per applied choice.
+        onModelApplied?(previousModelID, model)
         // Persist through the existing model-preferences service
         // (ConversationCenter.setDefaultAgentModel → FloeSync →
         // ModelConfigurationStore's default_agent_model_id). That wrapper

@@ -111,13 +111,15 @@ public actor LaTeXShellTransport:LaTeXEnvironmentTransport {
             }
             guard let current=try await jobs.job(id:submitted.id) else {throw LaTeXEngineFailure("The typesetting job record disappeared.",workerStopped:false)}
             if current.state.isTerminal {
-                let text=current.resultSummary ?? current.lastError ?? ""
+                let summary=current.resultSummary ?? current.lastError ?? ""
                 // Processor exit precedes untrusted stdout in LocalShellTool's
                 // canonical receipt. A terminal DB state alone is insufficient.
-                let code=Self.confirmedExit(text)
+                let code=Self.confirmedExit(summary)
                 let stopped=code != nil || (current.state == .cancelled && current.lastError=="Cancelled before execution started; no effects were produced.")
                 if stopped {unconfirmed.remove(submitted.id)}
                 if current.state == .cancelled {throw LaTeXEngineFailure("Typesetting cancelled",cancelled:true,workerStopped:stopped)}
+                let text=try Self.canonicalOutput(for:current)
+                guard Self.confirmedExit(text)==code else {throw LaTeXEngineFailure("The job output no longer matches its processor exit receipt.",workerStopped:stopped)}
                 return .init(stdout:text,exitStatus:code ?? -1,workerStopped:code != nil)
             }
             await Task.detached {try? await Task.sleep(for:.milliseconds(150))}.value
@@ -142,6 +144,31 @@ public actor LaTeXShellTransport:LaTeXEnvironmentTransport {
     static func confirmedExit(_ text:String)->Int? {
         guard let line=text.split(separator:"\n").first,line.hasPrefix("exit="),let field=line.split(separator:" ").first else {return nil}
         return Int(field.dropFirst(5))
+    }
+    /// The display summary is capped at 4096 characters. Protocol receipts
+    /// must read the existing canonical spool, with its producer completeness,
+    /// exact recorded size and original digest rather than a clipped preview.
+    static func canonicalOutput(for job:BackgroundJob,root:URL?=BackgroundJobOutputSpool.defaultRoot())throws->String {
+        let summary=job.resultSummary ?? job.lastError ?? "",stopped=confirmedExit(summary) != nil
+        func invalid()->LaTeXEngineFailure {LaTeXEngineFailure("The complete preparation output could not be verified. Open the saved task log before retrying.",messages:[summary],workerStopped:stopped)}
+        guard let path=job.outputPath else {
+            guard !summary.hasSuffix(" […truncated at \(NativeJobTextLimits.maximumFailureCharacters) characters]") else {throw invalid()}
+            if let digest=job.resultDigest,LaTeXDigest.hash(Data(summary.utf8)) != digest {throw invalid()}
+            return summary
+        }
+        guard let recorded=job.outputBytes,recorded>0,recorded<=BackgroundJobOutputSpool.maximumArtifactBytes+4096,let digest=job.resultDigest else {throw invalid()}
+        var offset=0,text=""
+        while true {
+            guard let page=BackgroundJobOutputSpool.readPage(jobID:job.id,path:path,offset:offset,maxBytes:32768,root:root,recordedBytes:recorded),
+                  page.available,page.complete==true,!page.captureTruncated,!page.changedSinceRecorded,
+                  page.offset==offset,page.totalBytes==recorded,let value=page.text,value.utf8.count==page.pageBytes else {throw invalid()}
+            text+=value
+            guard text.utf8.count<=BackgroundJobOutputSpool.maximumArtifactBytes else {throw invalid()}
+            guard let next=page.nextOffset else {break}
+            guard next>offset,next==offset+page.pageBytes else {throw invalid()};offset=next
+        }
+        guard LaTeXDigest.hash(Data(text.utf8))==digest else {throw invalid()}
+        return text
     }
 }
 

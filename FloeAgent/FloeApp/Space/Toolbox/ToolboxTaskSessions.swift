@@ -117,8 +117,12 @@ struct ToolboxSessionTool: AgentTool {
     init(environment: AppEnvironment) { self.environment = environment }
     private func current(_ context: ToolContext) async throws {
         try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+        // Same-task parity for canonical children: sessions/leases are owned
+        // by the PARENT run identity carried in this runtime-issued context;
+        // the conversation↔run pairing, active-run/state fence and ceilings
+        // below stay authoritative.
         guard let environment, let id = context.conversationID, !unavailableOwners.contains(id), context.scope == .local, !context.temporaryReadOnly, !context.publicWebOnly,
-              context.childExecution == nil, let conversation = try await environment.conversationStore.conversation(id: id),
+              let conversation = try await environment.conversationStore.conversation(id: id),
               conversation.purpose == .ordinary, let run = try await environment.runStore.run(id: context.runID),
               run.conversationID == id, run.endedAt == nil,
               !["completed", "failed", "cancelled", "canceled", "stopped"].contains(run.state) else { throw ToolboxError.staleSession }

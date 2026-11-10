@@ -1,5 +1,7 @@
 # 本轮预研接入
 
+> 阶段记录 / Stage record · 2026-11-10 说明：本文保留该轮接入范围、原测试渠道安排与实际证据。后续交付授权以 [AGENTS.md](../AGENTS.md) 的最新用户指令为准，渠道状态见 [CURRENT_STATUS](CURRENT_STATUS.md)；下文“仅内部 TestFlight”不适用于所有后续候选。 / This record retains its original integration and channel scope. Later delivery follows current authorization and independent channel evidence.
+
 下一轮的物理／有限元、生物学、全新增界面修整、历史快捷复用、会议转写、文件多选、绘图输入、手机预览及模型工具链核查，统一收录于 [下一轮引擎接入与可用性大修计划](FLOE_NEXT_ROUND_ENGINES_AND_USABILITY_PLAN.zh-CN.md)。公开 TestFlight 待大修完成后评估；下文保持本轮原有范围与交付记录。
 
 本轮目标是把预研直接融入空间、手记和创作，补齐界面、执行、可见结果、持久保存和 AI 工具。纯方案也纳入实现。以完整接入为优先，仅交付内部 TestFlight。315 的正式审核与自动发布选择保持。

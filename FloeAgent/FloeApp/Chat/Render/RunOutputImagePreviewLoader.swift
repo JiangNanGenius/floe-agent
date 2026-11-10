@@ -3,10 +3,12 @@
 
 #if canImport(ImageIO) && canImport(UIKit)
 import Foundation
+import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import Darwin
 import FloeCore
+import FloeImages
 import FloeModels
 import FloeTools
 
@@ -40,6 +42,22 @@ enum RunOutputImagePreviewLoader {
     static func load(_ request: RunOutputImagePreviewRequest,
                      limits: Limits = Limits()) async -> RunOutputImagePreview? {
         guard !Task.isCancelled else { return nil }
+        // Direct SVG run-output receipts cannot be ImageIO-decoded; they
+        // take the bounded renderer branch below. The branch runs the
+        // SAME identity → snapshot → byte-cap → digest → exact-bytes
+        // checks first and only then asks the shared SVG renderer for a
+        // PNG preview, so workspace/receipt ownership rules never loosen.
+        if request.receipt.mimeType.lowercased() == "image/svg+xml" {
+            let svgWorker = Task.detached(priority: .utility) {
+                await loadSVG(request, limits: limits)
+            }
+            return await withTaskCancellationHandler {
+                let result = await svgWorker.value
+                return Task.isCancelled ? nil : result
+            } onCancel: {
+                svgWorker.cancel()
+            }
+        }
         let worker = Task.detached(priority: .utility) {
             autoreleasepool { decode(request, limits: limits) }
         }
@@ -109,6 +127,50 @@ enum RunOutputImagePreviewLoader {
             request: request, pngData: encoded as Data,
             pixelWidth: thumbnail.width, pixelHeight: thumbnail.height,
             sourceByteCount: data.count, metadataByteCount: metadataData.count)
+    }
+
+
+    /// SVG receipt branch: gate → byte cap → snapshot verify → exact
+    /// no-follow re-read + digest → conservative validator → shared
+    /// bounded renderer. Every failure returns nil (the file row stays
+    /// usable); nothing is rendered outside the shared ceilings.
+    private static func loadSVG(_ request: RunOutputImagePreviewRequest,
+                                limits: Limits) async -> RunOutputImagePreview? {
+        let receipt = request.receipt
+        let svgCap = SVGSafetyLimits.maxSourceBytes
+        guard !Task.isCancelled,
+              RunOutputReceiptGate.accepts(receipt, in: request.context),
+              receipt.byteCount > 0, receipt.byteCount <= svgCap,
+              limits.thumbnailDimension > 0,
+              case .verified(let url) = RunOutputSnapshotStore.verify(
+                receipt, artifactRoot: request.artifactRoot),
+              !Task.isCancelled,
+              let data = readVerifiedBytes(url, receipt: receipt, limit: svgCap),
+              !Task.isCancelled,
+              let text = String(data: data, encoding: .utf8),
+              let document = try? SVGDocumentValidator.validate(text) else { return nil }
+        let maxEdge = min(limits.thumbnailDimension, SVGSafetyLimits.maxOutputEdge)
+        guard let png = try? await SVGRendering.previewPNG(
+                for: document, maxEdge: maxEdge),
+              !Task.isCancelled,
+              png.count <= limits.thumbnailBytes,
+              let source = CGImageSourceCreateWithData(png as CFData, nil),
+              CGImageSourceGetStatus(source) == .statusComplete,
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [String: Any],
+              let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight as String] as? Int,
+              width > 0, height > 0,
+              width <= limits.sourceDimension, height <= limits.sourceDimension,
+              width <= limits.sourcePixels / height,
+              let typeID = CGImageSourceGetType(source),
+              let type = UTType(typeID as String), type.conforms(to: .png),
+              !Task.isCancelled else { return nil }
+        return RunOutputImagePreview(
+            request: request, pngData: png,
+            pixelWidth: width, pixelHeight: height,
+            sourceByteCount: data.count, metadataByteCount: 0)
     }
 
     /// Recheck the exact bytes handed to ImageIO, closing the interval between

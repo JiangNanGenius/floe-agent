@@ -2,6 +2,7 @@
 #if canImport(UIKit) && DEBUG
 import XCTest
 import UIKit
+import PDFKit
 import FloeCore
 import FloeModels
 import FloePersistence
@@ -41,6 +42,454 @@ import FloeLaTeXHostAdapter
                 XCTAssertFalse(matches(.init(runID:runID,sequence:0,kind:.status,payloadJSON:payload)))
             }
             XCTAssertFalse(matches(.init(runID:runID,sequence:0,kind:.status,payloadJSON:"{}")))
+        }
+    }
+
+    func testAppleNativeRunProofRejectsWrongIdentityAndDuplicateStatus() throws {
+        let runID=UUID(),taskID=UUID(),projectID=UUID(),owner=LaTeXOwner(kind:.task,id:taskID)
+        let proof=LaTeXAppleNativeRunProof(runID:runID,conversationID:taskID,projectID:projectID,
+            owner:owner,revision:7,operation:"prepare")
+        let payload=String(decoding:try JSONEncoder().encode(proof),as:UTF8.self)
+        let event=RunEventRecord(runID:runID,sequence:0,kind:.status,payloadJSON:payload)
+        XCTAssertEqual(LaTeXAppleNativeRunProof.read([event],runID:runID,taskID:taskID)?.revision,7)
+        XCTAssertNil(LaTeXAppleNativeRunProof.read([event],runID:UUID(),taskID:taskID))
+        XCTAssertNil(LaTeXAppleNativeRunProof.read([event],runID:runID,taskID:UUID()))
+        XCTAssertNil(LaTeXAppleNativeRunProof.read([event,event],runID:runID,taskID:taskID))
+        XCTAssertNil(LaTeXAppleNativeRunProof.read([.init(runID:runID,sequence:0,kind:.toolResult,payloadJSON:payload)],runID:runID,taskID:taskID))
+        let valid=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(payload.utf8)) as? [String:Any])
+        for (key,value) in [("activity","runtime" as Any),("version",1),("backend","linuxVM"),
+                            ("targetTool","exec.shell"),("operation","stop")] {
+            var invalid=valid;invalid[key]=value
+            let changed=String(decoding:try JSONSerialization.data(withJSONObject:invalid),as:UTF8.self)
+            XCTAssertNil(LaTeXAppleNativeRunProof.read([.init(runID:runID,sequence:0,kind:.status,payloadJSON:changed)],runID:runID,taskID:taskID))
+        }
+    }
+
+    /// Real App approval/original services; no compiler, guest, or package
+    /// operation is invoked. This is a permission contract, not a PDF test.
+    func testNativeTypesetApprovalNeedsCompiledIntentAndLiveOriginalWithoutShell() async throws {
+        let app=try await appQualificationEnvironment(),host=try await app.latexComposition.host()
+        let notes=try await NotesRepository.shared.store()
+        let note=try await notes.create(NoteDocument(title:"QA-LaTeX-native-authority-"+UUID().uuidString.prefix(8)))
+        let original=try await app.latexComposition.createNative(owner:.init(kind:.note,id:note.id),title:"Native authority contract",templateID:"article")
+        let taskID=try await app.latexComposition.assistantForNativeOriginal(original),runID=UUID()
+        let manifest=try await LaTeXProjectStore(root:original.root).manifest()
+        let workspace=try NotesRepository.assistantWorkspace(conversationID:taskID)
+        let policies=SQLiteWorkspaceStore(database:app.database)
+        let defaultPolicy=try await policies.taskPolicy(conversationID:taskID)
+        XCTAssertNil(defaultPolicy.allowedToolNames);XCTAssertNil(defaultPolicy.networkAllowed)
+        try await app.runStore.saveRun(.init(id:runID,conversationID:taskID,state:"preparing",goal:"Native LaTeX approval contract",startedAt:Date(),executionBinding:nil))
+        let proof=LaTeXAppleNativeRunProof(runID:runID,conversationID:taskID,projectID:original.id,
+            owner:original.owner,revision:manifest.revision,operation:"prepare")
+        _ = try await app.runStore.appendEvent(runID:runID,kind:.status,payloadJSON:String(decoding:try JSONEncoder().encode(proof),as:UTF8.self))
+        print("FLOE_LATEX_NATIVE_AUTHORITY_OWNED note=\(note.id) task=\(taskID) project=\(original.id) run=\(runID)")
+        do {
+            let runner=try XCTUnwrap(host.registry.runner(named:"latex.typeset"))
+            let arguments=try JSONSerialization.data(withJSONObject:["projectID":original.id.uuidString,"action":"prepare","expectedRevision":manifest.revision,"offline":true],options:[.sortedKeys])
+            let call=try ToolCall(id:"latex.native.permission."+UUID().uuidString.lowercased(),toolName:"latex.typeset",argumentsJSON:arguments,scope:.local)
+            var context=ToolContext(runID:runID,scope:.local,allowedToolNames:["latex.typeset"],workspaceRootURL:workspace,
+                serviceStorePaths:app.latexComposition.typedServiceStorePaths,cancellation:CancellationToken(),conversationID:taskID,
+                clientSessionID:"latex.native."+runID.uuidString.lowercased(),frozenEffectiveCatalogNames:["latex.typeset"])
+            context.executionToolName="latex.typeset";context.toolCallID=call.id;context.toolIdempotencyKey=call.idempotencyKey
+            let intent=LaTeXNativeUIIntent(runID:runID,conversationID:taskID,projectID:original.id,owner:original.owner,
+                revision:manifest.revision,requestID:call.id,operation:"prepare")
+            func approve(_ value:ToolContext,_ intent:LaTeXNativeUIIntent?,callOverride:ToolCall?=nil,
+                         changePolicyAfterReceipt:Bool=false) async throws -> ApprovalGrant {
+                let selected=callOverride ?? call
+                let selectedAction=ProposedAction(toolCall:selected,riskLabels:Set(runner.descriptor.riskLabels.map(\.rawValue)),
+                    userGoal:"Prepare selected original",hostAndPathScope:.local)
+                return try await app.conversationCenter.recordNativeWorkbenchApproval(selectedAction,context:value,descriptor:runner.descriptor,
+                    projectID:original.id,requestID:selected.id,payloadDigest:RuntimeAuthorityDigest.payloadDigest(arguments),
+                    allowedToolNames:["latex.typeset"],requiredPurpose:.notes,nativeLaTeXIntent:intent,validateOriginal:{
+                        _ = try await app.latexComposition.authorizeOriginal(original.id,context:value,editing:true)
+                        if changePolicyAfterReceipt {
+                            let events=try await app.runStore.events(runID:runID)
+                            let recorded=events.contains {event in
+                                guard event.kind == .approval,
+                                      let object=try? JSONSerialization.jsonObject(with:Data(event.payloadJSON.utf8)) as? [String:Any] else {return false}
+                                return object["nativeRequestID"] as? String == selected.id
+                            }
+                            if recorded {
+                                var revoked=try await policies.taskPolicy(conversationID:taskID)
+                                revoked.allowedToolNames=["latex.inspect"];revoked.updatedAt=Date()
+                                try await policies.saveTaskPolicy(revoked)
+                            }
+                        }
+                    })
+            }
+            func rejects(_ value:ToolContext,_ intent:LaTeXNativeUIIntent?,_ message:String) async {
+                do {_ = try await approve(value,intent);XCTFail(message)} catch {}
+            }
+            await rejects(context,nil,"An unbound model-style context must not receive native UI authority")
+            var temporary=context;temporary.temporaryReadOnly=true
+            await rejects(temporary,intent,"Temporary chat must not receive native document authority")
+            var publicWeb=context;publicWeb.publicWebOnly=true
+            await rejects(publicWeb,intent,"A public-web-only context must not receive native document authority")
+            var unknownEnvironment=context;unknownEnvironment.environmentID="model-supplied-unbound-environment"
+            await rejects(unknownEnvironment,intent,"An arbitrary environment label must not receive the no-environment exception")
+            var wrongTool=context;wrongTool.executionToolName="exec.shell"
+            await rejects(wrongTool,intent,"The native intent must never authorize a shell execution context")
+            let wrongRevision=LaTeXNativeUIIntent(runID:runID,conversationID:taskID,projectID:original.id,owner:original.owner,
+                revision:manifest.revision+1,requestID:call.id,operation:"prepare")
+            await rejects(context,wrongRevision,"The selected source revision must match the exact prepared action")
+            // The first grant reads the genuine unset/default policy twice;
+            // fresh read timestamps must not reject an unchanged policy.
+            let grant=try await approve(context,intent)
+            XCTAssertTrue(grant.scope.singleUse);XCTAssertNil(grant.scope.hostID)
+            XCTAssertEqual(grant.scope.toolName,"latex.typeset")
+            await rejects(context,intent,"The same native request must not receive a second approval")
+            try await policies.saveTaskPolicy(.init(conversationID:taskID,allowedToolNames:["latex.typeset"],networkAllowed:false))
+            let restrictedCall=try ToolCall(id:"latex.native.restricted."+UUID().uuidString.lowercased(),toolName:"latex.typeset",argumentsJSON:arguments,scope:.local)
+            var restricted=context;restricted.toolCallID=restrictedCall.id;restricted.toolIdempotencyKey=restrictedCall.idempotencyKey
+            let restrictedIntent=LaTeXNativeUIIntent(runID:runID,conversationID:taskID,projectID:original.id,owner:original.owner,
+                revision:manifest.revision,requestID:restrictedCall.id,operation:"prepare")
+            let restrictedGrant=try await approve(restricted,restrictedIntent,callOverride:restrictedCall)
+            XCTAssertEqual(restrictedGrant.scope.toolName,"latex.typeset","A saved policy without exec.shell must still allow native preparation")
+            let changedCall=try ToolCall(id:"latex.native.policy-change."+UUID().uuidString.lowercased(),toolName:"latex.typeset",argumentsJSON:arguments,scope:.local)
+            var policyChanged=context;policyChanged.toolCallID=changedCall.id;policyChanged.toolIdempotencyKey=changedCall.idempotencyKey
+            let changedIntent=LaTeXNativeUIIntent(runID:runID,conversationID:taskID,projectID:original.id,owner:original.owner,
+                revision:manifest.revision,requestID:changedCall.id,operation:"prepare")
+            do {_ = try await approve(policyChanged,changedIntent,callOverride:changedCall,changePolicyAfterReceipt:true)
+                XCTFail("A real policy change after the persisted approval receipt must prevent grant return")
+            } catch let error as NativeWorkbenchApprovalError {
+                guard case .changed=error else {throw error}
+            }
+            let taskBinding=try await TaskExecutionBindingStore(database:app.database).binding(conversationID:taskID)
+            XCTAssertNil(taskBinding,"Native UI preparation must not create a command environment binding")
+            let saved=try await app.runStore.run(id:runID)
+            XCTAssertNil(saved?.executionBinding)
+            try await app.runStore.updateRunState(id:runID,state:"completed",endedAt:Date())
+            do {_ = try await app.latexComposition.authorizeOriginal(original.id,context:context,editing:true)
+                XCTFail("A terminal run must not reuse native original authority") } catch {}
+        } catch {
+            try? await app.runStore.updateRunState(id:runID,state:"failed",endedAt:Date())
+            let current=try await notes.document(note.id)
+            _ = try? await notes.setTrashed(note.id,expectedRevision:current.revision,trashed:true)
+            throw error
+        }
+        let current=try await notes.document(note.id)
+        _ = try await notes.setTrashed(note.id,expectedRevision:current.revision,trashed:true)
+    }
+
+    /// Explicit actual App-host entry: the same editor prepares real resources,
+    /// typesets its unmodified article/math original, and reopens the saved PDF.
+    /// Online cache misses and cache hits are recorded separately, never inferred.
+    func testNativeArticlePreparesResourcesAndReopensSameOriginalPDF() async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_LATEX_NATIVE_REAL_PDF_QA"]=="1" else {
+            throw XCTSkip("Opt in to the real native resource/PDF qualification")
+        }
+        let app=try await appQualificationEnvironment(),host=try await app.latexComposition.host()
+        let capabilities=await host.builds.capabilities()
+        XCTAssertTrue(capabilities.contains{$0.engine == .xeLaTeX && $0.isLocal && $0.environmentID==nil
+            && $0.version==LaTeXAppleNativeEngine.engineVersion},"The actual new native binary and protected renderer must be linked")
+        let id=UUID()
+        let evidence=try FileManager.default.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true)
+            .appendingPathComponent("FloeAgent/Qualification/LaTeXNativePDF/"+id.uuidString,isDirectory:true)
+        try FileManager.default.createDirectory(at:evidence,withIntermediateDirectories:true)
+        var receipt:[String:Any]=["kind":"actual-App-host-native-article-resources-and-same-original-PDF", "id":id.uuidString,
+            "nativeVersion":LaTeXAppleNativeEngine.engineVersion,"cleanup":"Retain exact task/original/source/outputs for Root export and normal owned cleanup"]
+        func saveReceipt() throws {
+            try JSONSerialization.data(withJSONObject:receipt,options:[.prettyPrinted,.sortedKeys])
+                .write(to:evidence.appendingPathComponent("owned-manifest.json"),options:.atomic)
+        }
+        print("FLOE_LATEX_NATIVE_PDF_EVIDENCE="+evidence.path)
+        try saveReceipt()
+        let task=try await app.conversationCenter.createConversation(title:"QA-Native-LaTeX-"+id.uuidString.prefix(8),purpose:.ordinary)
+        receipt["taskID"]=task.id.uuidString;try saveReceipt()
+        try await SQLiteWorkspaceStore(database:app.database).saveTaskPolicy(.init(conversationID:task.id,
+            allowedToolNames:LaTeXHostTools.names,networkAllowed:true))
+        let original=try await app.latexComposition.createNative(owner:.init(kind:.task,id:task.id),title:"Native article and math",templateID:"article")
+        receipt["projectID"]=original.id.uuidString;receipt["originalRoot"]=original.root.path;try saveReceipt()
+        let store=try LaTeXProjectStore(root:original.root),before=try await store.manifest()
+        let source=try await store.read(before.mainFile),sourceHash=LaTeXDigest.hash(source)
+        receipt["revision"]=before.revision;receipt["sourceSHA256"]=sourceHash;try saveReceipt()
+        try LaTeXDigest.encode(before).write(to:evidence.appendingPathComponent("SourceManifest.json"),options:.atomic)
+        do {
+            let session=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
+            await session.prepareToolchain()
+            XCTAssertNil(session.editor.error,session.editor.error ?? "")
+            XCTAssertNil(session.workbenchOperation)
+            guard session.editor.error==nil else {throw LaTeXError.unavailable(session.editor.error!)}
+            let afterPreparation=try await store.manifest()
+            XCTAssertEqual(afterPreparation,before)
+            await session.editor.compile()
+            XCTAssertNil(session.editor.error,session.editor.error ?? "")
+            let build=try XCTUnwrap(session.editor.build)
+            XCTAssertTrue(build.succeeded,build.diagnostics.map(\.message).joined(separator:"\n"))
+            XCTAssertEqual(build.projectID,original.id);XCTAssertEqual(build.revision,before.revision)
+            XCTAssertEqual(build.engineVersion,LaTeXAppleNativeEngine.engineVersion)
+            XCTAssertEqual(build.workerStopped,true);XCTAssertNil(build.executionOwner?.environmentID)
+            let pdf=try XCTUnwrap(session.editor.pdfURL),pdfBytes=try Data(contentsOf:pdf)
+            XCTAssertEqual(pdfBytes.prefix(5),Data("%PDF-".utf8))
+            let pageCount=try PDFKitGate.run {try withPDFExceptionGuard {CGPDFDocument(pdf as CFURL)?.numberOfPages ?? 0}}
+            XCTAssertGreaterThan(pageCount,0)
+            let renderedText=try PDFKitGate.run {try withPDFExceptionGuard {PDFDocument(url:pdf)?.string ?? ""}}
+            XCTAssertFalse(renderedText.contains("1970"),"The article's default date must not be fixed to the Unix epoch")
+            var calendar=Calendar(identifier:.gregorian);calendar.timeZone=TimeZone(secondsFromGMT:0)!
+            XCTAssertTrue(renderedText.contains(String(calendar.component(.year,from:Date()))),"The article must use the current typesetting year")
+            try Data(renderedText.utf8).write(to:evidence.appendingPathComponent("RenderedText.txt"),options:.atomic)
+            let reopened=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
+            XCTAssertEqual(reopened.original.id,original.id);XCTAssertTrue(reopened.editor.pdfIsCurrent)
+            let reopenedPDF=try XCTUnwrap(reopened.editor.pdfURL)
+            XCTAssertEqual(LaTeXDigest.hash(try Data(contentsOf:reopenedPDF)),LaTeXDigest.hash(pdfBytes))
+            let after=try await store.manifest(),savedSource=try await store.read(before.mainFile)
+            XCTAssertEqual(after,before);XCTAssertEqual(LaTeXDigest.hash(savedSource),sourceHash)
+            let taskBinding=try await TaskExecutionBindingStore(database:app.database).binding(conversationID:task.id)
+            XCTAssertNil(taskBinding,"Native UI work must not create a command environment")
+            let runs=try await app.runStore.runs(conversationID:task.id)
+            XCTAssertEqual(runs.count,2)
+            for run in runs {
+                XCTAssertNil(run.executionBinding);XCTAssertEqual(run.state,"completed");XCTAssertNotNil(run.endedAt)
+                let events=try await app.runStore.events(runID:run.id)
+                XCTAssertNotNil(LaTeXAppleNativeRunProof.read(events,runID:run.id,taskID:task.id))
+                let jobs=try await BackgroundJobStore(database:app.database).jobs(conversationID:task.id)
+                XCTAssertFalse(jobs.contains{$0.runID==run.id && $0.targetTool=="exec.shell"})
+            }
+            let preparations=try FileManager.default.contentsOfDirectory(at:original.root.appendingPathComponent("Preparation"),includingPropertiesForKeys:[.isDirectoryKey])
+            XCTAssertEqual(preparations.count,2)
+            var downloads=[[String:Any]]()
+            for (index,directory) in preparations.sorted(by:{$0.lastPathComponent<$1.lastPathComponent}).enumerated() {
+                let nativeData=try Data(contentsOf:directory.appendingPathComponent("Output/NativeResponse.json"))
+                let value=try XCTUnwrap(JSONSerialization.jsonObject(with:nativeData) as? [String:Any])
+                XCTAssertEqual(value["prepared"] as? Bool,true);XCTAssertEqual(value["success"] as? Bool,true)
+                XCTAssertEqual(value["resourceTimeoutSeconds"] as? Int,60);XCTAssertEqual(value["resourceTotalTimeoutSeconds"] as? Int,600)
+                let count=try XCTUnwrap(value["resourceRequestCount"] as? Int)
+                XCTAssertGreaterThanOrEqual(count,0)
+                downloads.append(["preparationID":directory.lastPathComponent,"resourceRequestCount":count,
+                    "resourceReceivedBytes":value["resourceReceivedBytes"] ?? 0,"resourceElapsedMilliseconds":value["resourceElapsedMilliseconds"] ?? 0])
+                try nativeData.write(to:evidence.appendingPathComponent("NativePreparationResponse-\(index).json"),options:.atomic)
+            }
+            let buildDirectory=original.root.appendingPathComponent("Builds/"+build.id.uuidString)
+            let rendererData=try Data(contentsOf:buildDirectory.appendingPathComponent("Output/NativePDFReceipt.json"))
+            let rendered=try JSONDecoder().decode(LaTeXApplePDFReceipt.self,from:rendererData)
+            XCTAssertEqual(rendered.sha256,LaTeXDigest.hash(pdfBytes));XCTAssertEqual(rendered.pageCount,pageCount)
+            XCTAssertGreaterThan(rendered.glyphCount+rendered.legacyGlyphCount,0)
+            for (name,data) in [("Build.json",try Data(contentsOf:buildDirectory.appendingPathComponent("Build.json"))),
+                                ("NativeResponse.json",try Data(contentsOf:buildDirectory.appendingPathComponent("Output/NativeResponse.json"))),
+                                ("NativePDFReceipt.json",rendererData),("output.pdf",pdfBytes)] {
+                try data.write(to:evidence.appendingPathComponent(name),options:.atomic)
+            }
+            receipt["status"]="completed";receipt["buildID"]=build.id.uuidString
+            receipt["pdfPath"]=pdf.path;receipt["pdfSHA256"]=LaTeXDigest.hash(pdfBytes);receipt["pageCount"]=pageCount
+            receipt["resourcePreparations"]=downloads
+            receipt["observedOnlineDownloads"]=downloads.contains{($0["resourceRequestCount"] as? Int ?? 0)>0}
+            receipt["runIDs"]=runs.map{$0.id.uuidString};try saveReceipt()
+        } catch {
+            receipt["status"]="failed";receipt["failure"]=error.localizedDescription
+            receipt["ownerRetained"]=app.latexComposition.nativeRuntime.operations[original.id] != nil
+            try? saveReceipt()
+            throw error
+        }
+    }
+
+    func testNativeSupportRejectsBiberAndOtherEnginesWithoutFallback() throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString,isDirectory:true)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer {try? FileManager.default.removeItem(at:root)}
+        func validate(_ source:String,engine:LaTeXEngine = .xeLaTeX) throws {
+            let data=Data(source.utf8)
+            try data.write(to:root.appendingPathComponent("main.tex"),options:.atomic)
+            var manifest=LaTeXProjectManifest(owner:.init(kind:.task,id:UUID()),title:"Native support contract",engine:engine)
+            manifest.files=[.init(path:"main.tex",data:data)]
+            try LaTeXNativeDocumentSupport.validate(.init(id:UUID(),manifest:manifest,sourceRoot:root,fingerprint:LaTeXDigest.hash(data)))
+        }
+        XCTAssertNoThrow(try validate(#"\documentclass{article}\begin{document}Math: $E=mc^2$\end{document}"#))
+        XCTAssertNoThrow(try validate(#"\RequirePackage[backend=bibtex]{biblatex}"#))
+        for source in [#"\usepackage{biblatex}"#,#"\usepackage[backend=biber]{biblatex}"#,
+                       #"\usepackage[backend=bibtex8]{biblatex}"#,
+                       #"\usepackage[backend=bibtex]{unrelated}\usepackage{biblatex}"#,
+                       #"\usepackage[backend=bibtex,backend=biber]{biblatex}"#] {
+            XCTAssertThrowsError(try validate(source)) {error in
+                guard let latex=error as? LaTeXError,case .unavailable=latex else {return XCTFail("Expected an explicit unsupported native backend")}
+            }
+        }
+        XCTAssertThrowsError(try validate("",engine:.luaLaTeX))
+        XCTAssertThrowsError(try validate("",engine:.pdfLaTeX))
+    }
+
+    /// Saved model pins use real SQLite/Notes checks. The synthetic targets
+    /// below are identities only: no environment/runtime is created or started.
+    func testNotesSavedModelPinRetainsLinuxAndLocalBoundary() async throws {
+        let app=try await appQualificationEnvironment(),notes=try await NotesRepository.shared.store()
+        let remoteID=UUID()
+        let cases:[(TaskExecutionTarget.Backend,UUID?,Bool)]=[(.linuxVM,nil,true),(.macBridge,nil,false),(.linuxVM,remoteID,false)]
+        for (backend,remoteHostID,accepted) in cases {
+            let note=try await notes.create(NoteDocument(title:"QA-LaTeX-notes-pin-"+UUID().uuidString.prefix(8)))
+            let original=try await app.latexComposition.createNative(owner:.init(kind:.note,id:note.id),title:"Notes saved-pin contract",templateID:"article")
+            let taskID=try await app.latexComposition.assistantForNativeOriginal(original),runID=UUID()
+            let target=TaskExecutionTarget(environmentID:"synthetic-notes-pin-"+UUID().uuidString.lowercased(),backend:backend,
+                remoteHostID:remoteHostID,operatingSystem:backend == .macBridge ? "macos":"linux",architecture:"arm64")
+            let binding=try await TaskExecutionBindingStore(database:app.database).bindInitial(.init(conversationID:taskID,target:target))
+            XCTAssertEqual(binding.target,target)
+            try await app.runStore.saveRun(.init(id:runID,conversationID:taskID,state:"executing",goal:"Notes saved-pin boundary",startedAt:Date(),executionBinding:binding))
+            print("FLOE_LATEX_NOTES_PIN_OWNED note=\(note.id) task=\(taskID) project=\(original.id) run=\(runID)")
+            var context=ToolContext(runID:runID,scope:remoteHostID.map(ToolScope.host) ?? .local,
+                allowedToolNames:["latex.typeset"],workspaceRootURL:try NotesRepository.assistantWorkspace(conversationID:taskID),
+                serviceStorePaths:app.latexComposition.typedServiceStorePaths,cancellation:CancellationToken(),environmentID:target.environmentID,
+                executionBindingGeneration:binding.generation,conversationID:taskID,frozenEffectiveCatalogNames:["latex.typeset"])
+            context.executionToolName="latex.typeset"
+            do {
+                if accepted {
+                    let verifiedTask=try await app.latexComposition.verify(context)
+                    XCTAssertEqual(verifiedTask,taskID)
+                } else {
+                    do {_ = try await app.latexComposition.verify(context)
+                        XCTFail("An actual saved/current pin must still fail the original Notes linuxVM/local boundary")
+                    } catch let error as PersonalContentError {
+                        guard case .changedDocument=error else {throw error}
+                    }
+                }
+                try await app.runStore.updateRunState(id:runID,state:"completed",endedAt:Date())
+            } catch {
+                try? await app.runStore.updateRunState(id:runID,state:"failed",endedAt:Date())
+                let current=try await notes.document(note.id)
+                _ = try? await notes.setTrashed(note.id,expectedRevision:current.revision,trashed:true)
+                throw error
+            }
+            let current=try await notes.document(note.id)
+            _ = try await notes.setTrashed(note.id,expectedRevision:current.revision,trashed:true)
+        }
+    }
+
+    /// Real native C cancellation, explicitly selected. No controlled tool,
+    /// guest, C callback or PDF output substitutes for the production service.
+    func testNativeCancellationAfterActualCEntryKeepsPriorPDFAndSettlesOwner() async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_LATEX_NATIVE_REAL_CANCEL_QA"]=="1" else {
+            throw XCTSkip("Opt in to actual native C cancellation qualification")
+        }
+        func require(_ condition:Bool,_ message:String) throws {
+            guard condition else {throw FloeError.validationFailed(message)}
+        }
+        let app=try await appQualificationEnvironment(),host=try await app.latexComposition.host()
+        let capabilities=await host.builds.capabilities()
+        try require(capabilities.contains{$0.engine == .xeLaTeX && $0.isLocal && $0.environmentID==nil
+            && $0.version==LaTeXAppleNativeEngine.engineVersion},"The actual native binary and protected renderer must be linked")
+        let id=UUID(),fm=FileManager.default
+        let evidence=try fm.url(for:.applicationSupportDirectory,in:.userDomainMask,appropriateFor:nil,create:true)
+            .appendingPathComponent("FloeAgent/Qualification/LaTeXNativeCancel/"+id.uuidString,isDirectory:true)
+        try fm.createDirectory(at:evidence,withIntermediateDirectories:true)
+        var receipt:[String:Any]=["kind":"actual-App-host-native-C-cancel-after-entry", "id":id.uuidString,
+            "nativeVersion":LaTeXAppleNativeEngine.engineVersion,"status":"creating-owned-original",
+            "cleanup":"Retain task/original/snapshots/PDF/failed outputs for Root export and normal owned cleanup",
+            "terminalBeforeInternalOwnerRelease":"source-reviewed: finish awaits updateRunState before removing owner; runtime checks terminal plus public operation drain, not the private instant"]
+        func saveReceipt() throws {
+            try JSONSerialization.data(withJSONObject:receipt,options:[.prettyPrinted,.sortedKeys])
+                .write(to:evidence.appendingPathComponent("owned-manifest.json"),options:.atomic)
+        }
+        func export(_ source:URL,_ name:String) throws {
+            try Data(contentsOf:source).write(to:evidence.appendingPathComponent(name),options:.atomic)
+        }
+        print("FLOE_LATEX_NATIVE_CANCEL_EVIDENCE="+evidence.path);try saveReceipt()
+        let task=try await app.conversationCenter.createConversation(title:"QA-Native-LaTeX-Cancel-"+id.uuidString.prefix(8),purpose:.ordinary)
+        receipt["taskID"]=task.id.uuidString;try saveReceipt()
+        try await SQLiteWorkspaceStore(database:app.database).saveTaskPolicy(.init(conversationID:task.id,
+            allowedToolNames:["latex.typeset"],networkAllowed:true))
+        let original=try await app.latexComposition.createNative(owner:.init(kind:.task,id:task.id),title:"Native cancellation boundary",templateID:"article")
+        receipt["projectID"]=original.id.uuidString;receipt["originalRoot"]=original.root.path;try saveReceipt()
+        let store=try LaTeXProjectStore(root:original.root),initial=try await store.manifest()
+        var cancelling:LaTeXProjectSession?,compiling:Task<Void,Never>?
+        do {
+            let warm=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
+            receipt["status"]="warming-real-article-PDF";try saveReceipt()
+            await warm.editor.compile()
+            try require(warm.editor.error==nil,warm.editor.error ?? "The warm article failed")
+            let success=try XCTUnwrap(warm.editor.build),pdf=try XCTUnwrap(warm.editor.pdfURL)
+            try require(success.succeeded && success.workerStopped==true,"A real successful native PDF is a prerequisite")
+            try require(success.engineVersion==LaTeXAppleNativeEngine.engineVersion && success.projectID==original.id,"Warm output must belong to this actual native original")
+            let pdfBytes=try Data(contentsOf:pdf),pdfHash=LaTeXDigest.hash(pdfBytes)
+            try require(pdfBytes.prefix(5)==Data("%PDF-".utf8),"The warm output must be actual PDF bytes")
+            let buildJSON=original.root.appendingPathComponent("Builds/"+success.id.uuidString+"/Build.json")
+            let buildBytes=try Data(contentsOf:buildJSON),warmRuns=try await app.runStore.runs(conversationID:task.id)
+            let warmRunIDs=Set(warmRuns.map(\.id)),warmHistory=try await host.builds.history(store:store)
+            try require(warmRuns.count==1 && warmRuns.allSatisfy{$0.state=="completed" && $0.endedAt != nil && $0.executionBinding==nil},"The warm native run must settle before the cancellation case")
+            let preparations=original.root.appendingPathComponent("Preparation",isDirectory:true)
+            let priorPreparations=Set(try fm.contentsOfDirectory(atPath:preparations.path))
+            try export(pdf,"WarmOutput.pdf");try export(buildJSON,"WarmBuild.json")
+            try LaTeXDigest.encode(initial).write(to:evidence.appendingPathComponent("WarmSourceManifest.json"),options:.atomic)
+            receipt["warmBuildID"]=success.id.uuidString;receipt["warmPDFPath"]=pdf.path;receipt["warmPDFSHA256"]=pdfHash
+            receipt["warmRunIDs"]=warmRuns.map{$0.id.uuidString}
+            receipt["workspaceID"]=try await SQLiteWorkspaceStore(database:app.database).workspaceID(conversationID:task.id)?.uuidString
+            try saveReceipt()
+            // The ordinary CAS edit changes only this QA original. This loop
+            // keeps the genuine TeX scanner busy without growing a page tree.
+            let loop=#"\documentclass{article}\begin{document}\loop\relax\iftrue\repeat\end{document}"#+"\n"
+            let input=Data(loop.utf8),inputHash=LaTeXDigest.hash(input),mutationID=UUID()
+            let mutation=try await store.apply([.put(path:initial.mainFile,data:input)],expectedRevision:initial.revision,
+                requestID:mutationID,label:"QA native cancellation",origin:"user")
+            let changed=try await store.manifest()
+            try require(changed.revision==mutation.revision && changed.revision==initial.revision+1,"The owned source edit must use the original CAS revision")
+            try LaTeXDigest.encode(changed).write(to:evidence.appendingPathComponent("CancelSourceManifest.json"),options:.atomic)
+            try input.write(to:evidence.appendingPathComponent("CancelInput.tex"),options:.atomic)
+            receipt["cancelRevision"]=changed.revision;receipt["mutationID"]=mutationID.uuidString;receipt["cancelInputSHA256"]=inputHash
+            let session=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
+            cancelling=session;session.editor.offline=true // warm cached article inputs; no HTTP wait in the cancellation phase
+            let work=Task { @MainActor in await session.editor.compile() };compiling=work
+            receipt["status"]="waiting-for-actual-C-entry";try saveReceipt()
+            let entryDeadline=Date().addingTimeInterval(30)
+            var enteredSequence:UInt64?
+            while Date()<entryDeadline {
+                if let phase=app.latexComposition.nativeRuntime.operations[original.id]?.preparationProgress,phase.sequence>=2 {
+                    enteredSequence=phase.sequence;break
+                }
+                if let error=session.editor.error {throw LaTeXError.unavailable(error)}
+                try await Task.sleep(for:.milliseconds(10))
+            }
+            let sequence=try XCTUnwrap(enteredSequence,"Checking sequence 1 is only service setup; require the real C callback at sequence >=2")
+            let runs=try await app.runStore.runs(conversationID:task.id)
+            let cancelRuns=runs.filter{!warmRunIDs.contains($0.id)}
+            try require(cancelRuns.count==1,"Exactly one new native run must own this cancellation")
+            let run=try XCTUnwrap(cancelRuns.first),events=try await app.runStore.events(runID:run.id)
+            let proof=try XCTUnwrap(LaTeXAppleNativeRunProof.read(events,runID:run.id,taskID:task.id))
+            try require(proof.projectID==original.id && proof.owner==original.owner && proof.revision==changed.revision && proof.operation=="start","The C-entry observation must belong to this exact source/run")
+            try require(run.state=="preparing" && run.endedAt==nil && run.executionBinding==nil,"Cancel only a live unbound native run after actual C entry")
+            receipt["cancelRunID"]=run.id.uuidString;receipt["actualCEntrySequence"]=sequence
+            receipt["status"]="actual-C-entered-cancel-requested";try saveReceipt()
+            let cancellationStarted=ProcessInfo.processInfo.systemUptime
+            session.cancelPreparation() // the real editor Stop, not a pre-cancelled or fake processor
+            await work.value;compiling=nil // real native call and service settlement must return
+            receipt["cancelWaitSeconds"]=ProcessInfo.processInfo.systemUptime-cancellationStarted
+            let ended=try await app.runStore.run(id:run.id)
+            try require(ended?.state=="cancelled" && ended?.endedAt != nil,"The saved native run must be terminal after the actual join")
+            try require(app.latexComposition.nativeRuntime.operations[original.id]==nil && session.workbenchOperation==nil && !session.editor.isBuilding,"The public native operation must drain after terminal settlement")
+            let newPreparations=Set(try fm.contentsOfDirectory(atPath:preparations.path)).subtracting(priorPreparations)
+            try require(newPreparations.count==1,"The cancelled native preparation must have one exact evidence directory")
+            let preparation=preparations.appendingPathComponent(try XCTUnwrap(newPreparations.first),isDirectory:true)
+            let actualSource=try JSONDecoder().decode(LaTeXProjectManifest.self,from:Data(contentsOf:preparation.appendingPathComponent("SourceManifest.json")))
+            try require(actualSource==changed,"C cancellation evidence must retain the same immutable source revision")
+            let responseURL=preparation.appendingPathComponent("Output/NativeResponse.json"),failureURL=preparation.appendingPathComponent("NativePreparationFailure.json")
+            let response=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(contentsOf:responseURL)) as? [String:Any])
+            let failure=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(contentsOf:failureURL)) as? [String:Any])
+            try export(responseURL,"CancelNativeResponse.json");try export(failureURL,"CancelNativePreparationFailure.json")
+            receipt["preparationRoot"]=preparation.path;try saveReceipt()
+            try require(response["success"] as? Bool == false && response["cancelled"] as? Bool == true,"The real C receipt must report cancellation; a Swift waiter or compiler timeout is not enough")
+            try require(failure["cancelled"] as? Bool == true && failure["workerStopped"] as? Bool == true,"Require the actual native failure's worker-join receipt, never infer it from nil environment")
+            let snapshotID=try XCTUnwrap(failure["snapshotID"] as? String)
+            let retained=original.root.appendingPathComponent("Snapshots/"+snapshotID).appendingPathComponent(changed.mainFile)
+            try require(LaTeXDigest.hash(try Data(contentsOf:retained))==inputHash,"The cancelled source snapshot must remain recoverable")
+            let current=try await store.manifest(),source=try await store.read(changed.mainFile)
+            try require(current==changed && LaTeXDigest.hash(source)==inputHash,"Cancellation must not reset or overwrite the owned CAS source")
+            let history=try await host.builds.history(store:store)
+            try require(history.map(\.id)==warmHistory.map(\.id),"Cancelled preparation must not fabricate or replace a saved PDF build")
+            try require(LaTeXDigest.hash(try Data(contentsOf:pdf))==pdfHash && (try Data(contentsOf:buildJSON))==buildBytes,"The previously successful PDF/build bytes must be unchanged")
+            let reopened=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
+            try require(reopened.editor.pdfBuild?.id==success.id && !reopened.editor.pdfIsCurrent,"The old success remains available and visibly stale for the cancelled revision")
+            let binding=try await TaskExecutionBindingStore(database:app.database).binding(conversationID:task.id)
+            let jobs=try await BackgroundJobStore(database:app.database).jobs(conversationID:task.id)
+            try require(binding==nil && ended?.executionBinding==nil && !jobs.contains{$0.targetTool=="exec.shell"},"Native cancellation must not create a Linux binding or shell job")
+            receipt["status"]="completed";receipt["savedRunState"]=ended?.state
+            receipt["actualCCancelled"]=true;receipt["actualWorkerStoppedReceipt"]=true
+            receipt["priorPDFSHA256After"]=LaTeXDigest.hash(try Data(contentsOf:pdf));receipt["sourceSHA256After"]=LaTeXDigest.hash(source)
+            receipt["publicOperationDrained"]=true;try saveReceipt()
+        } catch {
+            receipt["status"]="failed-evidence-retained";receipt["failure"]=error.localizedDescription
+            receipt["publicOperationOwnedAtFailure"]=app.latexComposition.nativeRuntime.operations[original.id] != nil
+            try? saveReceipt()
+            cancelling?.cancelPreparation()
+            if let compiling {await compiling.value} // keep waiting for the real service even on failure
+            receipt["cleanupWaiterReturned"]=true
+            receipt["publicOperationOwnedAfterCleanup"]=app.latexComposition.nativeRuntime.operations[original.id] != nil
+            try? saveReceipt()
+            throw error
         }
     }
 
@@ -93,7 +542,7 @@ import FloeLaTeXHostAdapter
         host.registry.register(controlled)
         defer {host.registry.register(shell)}
         let first=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
-        let preparation=Task {await first.prepareToolchain(profile:nil)}
+        let preparation=Task {await first.prepareToolchain()}
         do {
             let deadline=Date().addingTimeInterval(10)
             while await probe.runID==nil,Date()<deadline {try await Task.sleep(for:.milliseconds(10))}
@@ -129,13 +578,16 @@ import FloeLaTeXHostAdapter
         let taskID=try await app.latexComposition.assistantForNativeOriginal(original)
         let shell=try XCTUnwrap(host.registry.runner(named:"exec.shell")),probe=LaTeXPreparationProbeGate()
         var controlled=shell
-        controlled.run={_,context in await probe.waitForStop(context)}
+        controlled.run={arguments,context in
+            if let output=try laTeXMissingEngineProbe(arguments) {return output}
+            return await probe.waitForStop(context)
+        }
         host.registry.register(controlled)
         defer {host.registry.register(shell)}
         let first=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
-        // The install branch uses real BackgroundJobService rather than the
-        // direct short-command path exercised by the older reopen test.
-        let preparation=Task {await first.prepareToolchain(profile:"standard")}
+        // Project-specific preparation owns a real durable job; editor Stop
+        // must reach that job without a separate external cancel action.
+        let preparation=Task {await first.prepareToolchain()}
         var submittedID:UUID?
         do {
             let startedDeadline=Date().addingTimeInterval(10)
@@ -194,7 +646,7 @@ import FloeLaTeXHostAdapter
         host.registry.register(controlled)
         defer {host.registry.register(shell)}
         let first=try await LaTeXProjectSession.open(id:original.id,composition:app.latexComposition)
-        let preparation=Task {await first.prepareToolchain(profile:nil)}
+        let preparation=Task {await first.prepareToolchain()}
         do {
             let deadline=Date().addingTimeInterval(10)
             while await probe.runID==nil,Date()<deadline {try await Task.sleep(for:.milliseconds(10))}
@@ -414,6 +866,29 @@ import FloeLaTeXHostAdapter
         try await app.runStore.updateRunState(id:runID,state:"completed",endedAt:Date());await lease.finish()
         let current=try await notes.document(note.id);_ = try await notes.setTrashed(note.id,expectedRevision:current.revision,trashed:true)
     }
+}
+
+/// Only the short discovery response is controlled here. The actual
+/// dependency preparer must then submit its installation to the production
+/// BackgroundJobService, where the existing Stop/exit assertions apply.
+private func laTeXMissingEngineProbe(_ arguments:Data) throws -> ToolExecutionOutput? {
+    let command=try JSONDecoder().decode(LocalShellTool.Arguments.self,from:arguments)
+    guard let script=command.script else {return nil}
+    let regex=try NSRegularExpression(pattern:#"INPUT=json.loads\(base64.b64decode\('([A-Za-z0-9+/=]+)'\)\)"#)
+    let source=script as NSString
+    guard let match=regex.firstMatch(in:script,range:NSRange(location:0,length:source.length)),
+          let data=Data(base64Encoded:source.substring(with:match.range(at:1))),
+          let input=try JSONSerialization.jsonObject(with:data) as? [String:Any],input["action"] as? String == "probe" else {return nil}
+    guard let programs=input["programs"] as? [String],programs.contains("xelatex"),
+          let projectID=input["projectID"],let revision=input["revision"],let digest=input["inputDigest"] else {
+        throw FloeError.validationFailed("The controlled preparation probe must match this project's actual engine and revision")
+    }
+    let envelope:[String:Any]=["protocolName":"floe.latex.dependencies","version":1,
+        "projectID":projectID,"revision":revision,"inputDigest":digest,
+        "result":["missingPrograms":["xelatex"],"missingFiles":[],"missingFonts":[],"resolved":[:]]]
+    let result=try JSONSerialization.data(withJSONObject:envelope,options:[.sortedKeys])
+    return ToolExecutionOutput(summary:"exit=0 cwd=controlled-probe\nFLOE_LATEX_DEPENDENCIES "+result.base64EncodedString()+"\n",
+        fullOutputSHA256:"controlled-missing-engine-probe",exitStatus:0)
 }
 
 private actor LaTeXPreparationProbeGate {

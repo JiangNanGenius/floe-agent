@@ -4,10 +4,17 @@ import SwiftUI
 
 enum PersonalLibraryDeleteSelection {
     case work(PersonalContentRecord), folder(PersonalLibraryFolder)
-    var message: String {
+    var item: PersonalLibrarySelectionItem {
+        switch self { case .work(let value): .work(value); case .folder(let value): .folder(value) }
+    }
+    func message(usingTrash: Bool) -> String {
+        guard usingTrash else {
+            return IDELanguageRunText.t("“\(item.title)”及其中所有内容都将被永久删除。此操作无法撤销。",
+                "“\(item.title)” and all its contents will be permanently deleted. This cannot be undone.")
+        }
         switch self {
-        case .work(let value): IDELanguageRunText.t("“\(value.title)”可以在“最近删除”中恢复。", "You can restore “\(value.title)” from Recently Deleted.")
-        case .folder(let value): IDELanguageRunText.t("“\(value.name)”及其中的文件可以在“最近删除”中恢复。", "You can restore “\(value.name)” and its contents from Recently Deleted.")
+        case .work(let value): return IDELanguageRunText.t("“\(value.title)”可以在回收站中恢复。", "You can restore “\(value.title)” from Trash.")
+        case .folder(let value): return IDELanguageRunText.t("“\(value.name)”及其中的文件可以在回收站中恢复。", "You can restore “\(value.name)” and its contents from Trash.")
         }
     }
 }
@@ -62,10 +69,10 @@ struct PersonalRecentlyDeletedView: View {
             }
             .accessibilityIdentifier("space.files.trash.list")
             .overlay {
-                if entries.isEmpty { ContentUnavailableView(IDELanguageRunText.t("没有最近删除的文件", "No recently deleted files"), systemImage: "trash") }
+                if entries.isEmpty { ContentUnavailableView(IDELanguageRunText.t("回收站为空", "Trash is empty"), systemImage: "trash") }
                 else if busy { ProgressView() }
             }
-            .navigationTitle(IDELanguageRunText.t("最近删除", "Recently Deleted"))
+            .navigationTitle(IDELanguageRunText.t("回收站", "Trash"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -79,8 +86,24 @@ struct PersonalRecentlyDeletedView: View {
                         .accessibilityIdentifier("space.files.recentlyDeleted.done")
                 }
                 if selecting {
-                    ToolbarItem(placement: .bottomBar) {
-                        Button(IDELanguageRunText.t("永久删除所选 \(selected.count) 项", "Permanently Delete Selected (\(selected.count))"), role: .destructive) {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(allSelected ? IDELanguageRunText.t("取消全选", "Deselect All") : IDELanguageRunText.t("全选", "Select All")) {
+                            selected = allSelected ? [] : Set(entries.map(\.id))
+                        }.disabled(busy || entries.isEmpty)
+                            .accessibilityIdentifier("space.files.trash.selectAll")
+                    }
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        Button(IDELanguageRunText.t("恢复", "Restore")) {
+                            let frozen = entries.filter { selected.contains($0.id) }
+                            task = Task { await restoreSelected(frozen) }
+                        }.disabled(busy || selected.isEmpty)
+                            .accessibilityIdentifier("space.files.trash.restoreSelected")
+                        Spacer()
+                        Text(IDELanguageRunText.t("已选 \(selected.count) 项", "\(selected.count) selected"))
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("space.files.trash.selectionCount")
+                        Spacer()
+                        Button(IDELanguageRunText.t("永久删除", "Delete Permanently"), role: .destructive) {
                             prepare(entries.filter { selected.contains($0.id) })
                         }.disabled(busy || selected.isEmpty).accessibilityIdentifier("space.files.trash.deleteSelected")
                     }
@@ -107,6 +130,7 @@ struct PersonalRecentlyDeletedView: View {
             .onDisappear { generation = UUID(); task?.cancel(); confirmation = []; confirming = false }
         }
     }
+    private var allSelected: Bool { !entries.isEmpty && selected == Set(entries.map(\.id)) }
     @MainActor private func refresh() async {
         do {
             let library = try await PersonalContentService.shared.library()
@@ -127,12 +151,30 @@ struct PersonalRecentlyDeletedView: View {
     }
     @MainActor private func permanentlyDelete(_ frozen: [PersonalPermanentDeletePlan]) async {
         guard !busy, !frozen.isEmpty else { return }; busy = true; defer { busy = false }
+        let expected = generation
         let result = await PersonalLibraryFileActions.permanentlyDeleteBatch(frozen, environment: environment)
+        guard generation == expected else { return }
         if !result.failed.isEmpty {
             notice = IDELanguageRunText.t("已清理 \(result.deleted.count) 项，\(result.failed.count) 项未能完成。", "Removed \(result.deleted.count); \(result.failed.count) could not be completed.")
                 + "\n" + result.failed.prefix(3).map(\.message).joined(separator: "\n")
         }
-        selecting = false; selected.removeAll(); await refresh()
+        let failedIDs = Set(result.failed.map(\.entryID))
+        selected = Set(frozen.filter { failedIDs.contains($0.id) }.flatMap { $0.coveredEntries.map(\.id) + [$0.id] })
+        selecting = !selected.isEmpty
+        await refresh()
+    }
+    @MainActor private func restoreSelected(_ frozen: [PersonalLibraryTrashEntry]) async {
+        guard !busy, !frozen.isEmpty else { return }; busy = true; defer { busy = false }
+        let expected = generation
+        let result = await PersonalLibraryFileActions.restoreBatch(frozen, environment: environment)
+        guard generation == expected else { return }
+        selected = Set(result.failed.map { $0.entry.id }); selecting = !selected.isEmpty
+        if !result.failed.isEmpty {
+            notice = IDELanguageRunText.t("已恢复 \(result.restored.count) 项，\(result.failed.count) 项未能完成。",
+                "Restored \(result.restored.count); \(result.failed.count) could not be completed.")
+                + "\n" + result.failed.prefix(3).map { $0.message }.joined(separator: "\n")
+        }
+        await refresh()
     }
     @MainActor private func restore(_ entry: PersonalLibraryTrashEntry) async {
         guard !busy else { return }; busy = true; defer { busy = false }

@@ -3,6 +3,7 @@ import SwiftUI
 import FloeCore
 import FloeLocalModels
 import FloePersistence
+import FloeProviders
 
 @MainActor
 final class LocalModelsCenter: ObservableObject {
@@ -51,6 +52,47 @@ final class LocalModelsCenter: ObservableObject {
 
     func isEnabled(remoteModelID: String) -> Bool {
         enabledRemoteModelIDs.contains(remoteModelID)
+    }
+
+    func setImagePlaygroundAutomaticRouting(_ enabled: Bool) {
+        let previous = AppleImagePlaygroundModelIdentity.automaticRoutingEnabled()
+        UserDefaults.standard.set(enabled, forKey: AppleImagePlaygroundModelIdentity.automaticDefaultsKey)
+        Task {
+            do {
+                await onConfigurationChanged?()
+                let model = try await configurationStore.models(providerID: ProviderProfile.onDeviceProviderID)
+                    .first { $0.id == AppleImagePlaygroundModelIdentity.profileID }
+                guard var model else { throw FloeError.notFound(String(localized: "localmodels.config_not_ready")) }
+                model.isEnabled = enabled && AppleImagePlaygroundService.systemIsAvailable
+                if !enabled {
+                    // Remove only this image default; explicit image.playground
+                    // remains independent of automatic-model participation.
+                    var preferences = try await configurationStore.preferences()
+                    let providers = try await configurationStore.providers().filter { $0.isEnabled && $0.id != ProviderProfile.onDeviceProviderID }
+                    let candidates = try await configurationStore.models().filter { $0.isEnabled && $0.supportsImageGenerationSurface }
+                    let factory = ImageProviderAdapterFactory()
+                    func supports(_ candidate: ModelProfile, _ operation: RemoteImageOperation) -> Bool {
+                        guard let provider = providers.first(where: { $0.id == candidate.providerID }),
+                              candidate.capabilities.contains(operation == .generate ? .imageGeneration : .imageEditing),
+                              let adapter = factory.adapter(for: provider) else { return false }
+                        return adapter.supports(operation, for: provider)
+                            && ImageGenerationPresetResolver.isEligible(provider: provider, model: candidate, operation: operation)
+                    }
+                    if preferences.imageGenerationModelID == model.id { preferences.imageGenerationModelID = candidates.first(where: { supports($0, .generate) })?.id }
+                    if preferences.imageEditingModelID == model.id { preferences.imageEditingModelID = candidates.first(where: { supports($0, .edit) })?.id }
+                    if preferences.sharedImageModelID == model.id {
+                        preferences.sharedImageModelID = candidates.first(where: { supports($0, .generate) && supports($0, .edit) })?.id
+                    }
+                    preferences.updatedAt = Date(); preferences.syncRevision += 1
+                    try await configurationStore.savePreferences(preferences)
+                }
+                try await configurationStore.saveModel(model)
+                await refresh(); await onConfigurationChanged?()
+            } catch {
+                UserDefaults.standard.set(previous, forKey: AppleImagePlaygroundModelIdentity.automaticDefaultsKey)
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func setEnabled(remoteModelID: String, isEnabled: Bool) {
@@ -385,6 +427,7 @@ final class LocalModelsCenter: ObservableObject {
 
 struct LocalModelsSettingsView: View {
     @ObservedObject var center: LocalModelsCenter
+    @AppStorage(AppleImagePlaygroundModelIdentity.automaticDefaultsKey) private var automaticImagePlayground = true
     @State private var pendingRemoval: LocalModelCatalogEntry?
 
     var body: some View {
@@ -599,6 +642,20 @@ struct LocalModelsSettingsView: View {
                     }
                 }
                 .padding(.vertical, 4)
+                Toggle(isOn: Binding(
+                    get: { automaticImagePlayground },
+                    set: { center.setImagePlaygroundAutomaticRouting($0) }
+                )) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(IDELanguageRunText.t("图乐园参与自动生图", "Use Image Playground for automatic images"))
+                            Text(IDELanguageRunText.t("优先使用云端模型。关闭后仍可明确指定图乐园。", "Cloud models take priority. You can still explicitly request Image Playground when off."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: { Image(systemName: "wand.and.stars") }
+                }
+                .disabled(!AppleImagePlaygroundService.systemIsAvailable)
+                .accessibilityIdentifier("localModel.imagePlayground.automaticRouting")
             } header: {
                 Text("localmodels.system_section")
             } footer: {

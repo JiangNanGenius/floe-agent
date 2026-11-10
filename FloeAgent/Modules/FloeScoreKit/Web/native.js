@@ -1,3 +1,6 @@
+import {staffDetails} from './fretboard.js';
+import {effectiveScoreLayout} from './score-layout.js';
+import {notationMode,numberedInput} from './jianpu.js';
 // SPDX-License-Identifier: MPL-2.0
 // Small presentation DTO and transient UI commands for the native Score panels.
 // Document edits remain the existing, revision-authorized score commands.
@@ -5,7 +8,7 @@ import {t,clone} from '../../FloeHeavyEditorSupport/Web/runtime.js';
 import {scoreDocument,partList,currentPart,attributesAt,noteTimeline,child,children,string,durationTypes} from './model.js';
 import {chooseSpelling} from './edit.js';
 
-export const scoreInputDefaults=()=>({type:'quarter',dots:0,voice:1,staff:1,octave:4,mode:'replace',rest:false});
+export const scoreInputDefaults=()=>({type:'quarter',dots:0,voice:1,staff:1,octave:4,mode:'replace',rest:false,numberAlter:0});
 const fractionText=f=>f.d===1?String(f.n):f.n+'/'+f.d;
 function context(e,doc=scoreDocument(e.state)){
   const part=currentPart(e,doc),index=Math.max(0,part.measures.findIndex(m=>m.getAttribute('id')===e.selection?.measure));
@@ -36,7 +39,7 @@ function markLabel(mark){
 }
 export function scoreNativeSnapshot(e){
   synchronizeScoreNativeContext(e);
-  const empty=()=>({schemaVersion:1,kind:'score',title:e.state?.title??'',revision:e.revision??0,selection:{part:'',measure:'',note:null,notes:[],count:0},parts:[],measures:[],current:{notes:[],marks:[],staves:1},input:clone(e.input),layout:clone(e.state?.layout??{}),view:{part:'',concert:false,keyboardVisible:e.nativeUI?.keyboardVisible!==false},playback:{tempoScale:1,loop:false,loopFrom:0,loopTo:0,metronome:false,...clone(e.state?.playback??{})},transport:scoreTransportSnapshot(e),diagnostics:[]});
+  const empty=()=>({schemaVersion:1,kind:'score',title:e.state?.title??'',revision:e.revision??0,selection:{part:'',measure:'',note:null,notes:[],count:0},parts:[],measures:[],current:{notes:[],marks:[],staves:1},input:clone(e.input),layout:clone(e.state?.layout??{}),view:{notation:notationMode(e.state?.layout??{}),part:'',concert:false,keyboardVisible:e.nativeUI?.keyboardVisible!==false},playback:{tempoScale:1,loop:false,loopFrom:0,loopTo:0,metronome:false,...clone(e.state?.playback??{})},transport:scoreTransportSnapshot(e),diagnostics:[]});
   if(!e.state?.xml)return empty();
   const parsed=scoreDocument(e.state);if(!partList(parsed).length)return empty();
   const {doc,part,index,measure}=context(e,parsed),parts=partList(doc),timeline=noteTimeline(part,index),selected=new Set(e.selection?.notes??(e.selection?.note?[e.selection.note]:[]));
@@ -48,8 +51,8 @@ export function scoreNativeSnapshot(e){
     selection:{part:part.id,measure:measure.getAttribute('id'),note:current?.id??null,notes:selectedIDs.slice(0,512),count:selectedIDs.length},
     parts:parts.map(p=>({id:p.id,name:p.name,staves:attributesAt(p,0).staves,measureCount:p.measures.length,mix:{solo:false,mute:false,volume:1,...e.state.playback?.parts?.[p.id]}})),
     measures:part.measures.map((m,i)=>{const attrs=attributesAt(part,i);return {id:m.getAttribute('id'),number:m.getAttribute('number')??String(i+1),index:i+1,beats:attrs.beats,beatType:attrs.beatType,notesCount:children(m,'note').length};}),
-    current:{part:part.id,partName:part.name,measure:measure.getAttribute('id'),index:index+1,beats:timeline.attrs.beats,beatType:timeline.attrs.beatType,fifths:timeline.attrs.fifths,staves:timeline.attrs.staves,clefs:Object.entries(timeline.attrs.clefs).map(([staff,clef])=>({staff:Number(staff),...clef})),notes,note:current,marks:[...measure.children].filter(n=>['direction','harmony'].includes(n.tagName)).map(n=>({id:n.getAttribute('id'),kind:n.tagName,label:markLabel(n)}))},
-    input:clone(e.input),layout:clone(e.state.layout??{}),view:{part:e.viewPart??'',concert:Boolean(e.concertPitch),keyboardVisible:e.nativeUI?.keyboardVisible!==false},
+    current:{part:part.id,partName:part.name,measure:measure.getAttribute('id'),index:index+1,beats:timeline.attrs.beats,beatType:timeline.attrs.beatType,fifths:timeline.attrs.fifths,staves:timeline.attrs.staves,staffDetails:staffDetails(part,index,e.input?.staff??1),clefs:Object.entries(timeline.attrs.clefs).map(([staff,clef])=>({staff:Number(staff),...clef})),notes,note:current,marks:[...measure.children].filter(n=>['direction','harmony'].includes(n.tagName)).map(n=>({id:n.getAttribute('id'),kind:n.tagName,label:markLabel(n)}))},
+    input:clone(e.input),numberedInput:numberedInput(part,index,e.input),notationWarnings:e.jianpuWarnings??[],layout:clone(effectiveScoreLayout(e)),view:{notation:notationMode(effectiveScoreLayout(e),parsed),part:e.viewPart??'',concert:Boolean(e.concertPitch),keyboardVisible:e.nativeUI?.keyboardVisible!==false},
     playback:{tempoScale:1,loop:false,loopFrom:0,loopTo:0,metronome:false,...clone(e.state.playback??{})},transport:scoreTransportSnapshot(e),
     diagnostics:(e.diagnostics??[]).slice(0,100).map((issue,index)=>({index:index+1,...issue}))
   };
@@ -79,7 +82,7 @@ export function registerScoreNative(e){
     const next={...e.input},integer=(key,min,max)=>{if(args[key]===undefined)return;const v=Number(args[key]);if(!Number.isInteger(v)||v<min||v>max)throw new Error('Invalid score input '+key);next[key]=v;};
     if(args.type!==undefined){if(!Object.hasOwn(durationTypes,args.type))throw new Error('Unknown score duration');next.type=args.type;}
     if(args.mode!==undefined){if(!['replace','append','insert'].includes(args.mode))throw new Error('Invalid score entry mode');next.mode=args.mode;}
-    integer('dots',0,3);integer('voice',1,64);if(args.staff!==undefined){const current=context(e);integer('staff',1,attributesAt(current.part,current.index).staves);}integer('octave',0,8);
+    integer('dots',0,3);integer('voice',1,64);if(args.staff!==undefined){const current=context(e);integer('staff',1,attributesAt(current.part,current.index).staves);}integer('octave',0,8);integer('numberAlter',-1,1);
     if(args.rest!==undefined){if(typeof args.rest!=='boolean')throw new Error('Invalid rest input');next.rest=args.rest;}
     e.input=next;return clone(next);
   });

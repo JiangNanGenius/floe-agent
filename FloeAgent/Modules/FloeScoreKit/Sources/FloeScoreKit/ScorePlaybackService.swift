@@ -11,23 +11,29 @@ public struct ScorePlaybackAdapter: Sendable {
     private let stop: (@Sendable () async -> Void)?
     private let scopedTransport: (@Sendable (UUID, EditorJSON) async throws -> EditorJSON)?
     private let cancelInvocation: (@Sendable (UUID, String) async -> Void)?
+    private let arrange: (@Sendable (UUID, EditorJSON) async throws -> EditorJSON)?
     public init(transport: @escaping @Sendable (EditorJSON) async throws -> EditorJSON,
                 stop: (@Sendable () async -> Void)? = nil,
                 scopedTransport: (@Sendable (UUID, EditorJSON) async throws -> EditorJSON)? = nil,
-                cancelInvocation: (@Sendable (UUID, String) async -> Void)? = nil) {
+                cancelInvocation: (@Sendable (UUID, String) async -> Void)? = nil,
+                arrange: (@Sendable (UUID, EditorJSON) async throws -> EditorJSON)? = nil) {
         self.transport = transport; self.stop = stop
-        self.scopedTransport = scopedTransport; self.cancelInvocation = cancelInvocation
+        self.scopedTransport = scopedTransport; self.cancelInvocation = cancelInvocation; self.arrange = arrange
     }
     public var nativeExtension: HeavyEditorNativeExtension {
         let scoped: (@Sendable (UUID, String, EditorJSON) async throws -> EditorJSON)?
-        if let scopedTransport {
+        if scopedTransport != nil || arrange != nil {
             scoped = { id, operation, arguments in
+                if operation == "score.arrange", let arrange { return try await arrange(id, arguments) }
                 guard operation == "score.transport" else { throw HeavyEditorError.invalidCommand }
-                return try await scopedTransport(id, arguments)
+                if let scopedTransport { return try await scopedTransport(id, arguments) }
+                return try await transport(arguments)
             }
         } else { scoped = nil }
-        return HeavyEditorNativeExtension(operations: ["score.transport"], cancel: { _ in await stop?() },
+        let operations: Set<String> = arrange == nil ? ["score.transport"] : ["score.transport", "score.arrange"]
+        return HeavyEditorNativeExtension(operations: operations, cancel: { _ in await stop?() },
             presentationClosed: { await stop?() }, runInvocation: scoped, cancelInvocation: cancelInvocation) { operation, arguments in
+            if operation == "score.arrange", let arrange { return try await arrange(UUID(), arguments) }
             guard operation == "score.transport" else { throw HeavyEditorError.invalidCommand }
             return try await transport(arguments)
         }

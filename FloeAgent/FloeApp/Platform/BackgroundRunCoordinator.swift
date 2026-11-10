@@ -124,6 +124,7 @@ enum ContinuedProcessingStartOrigin: String, Sendable, CaseIterable, Equatable {
 /// cannot upgrade automatic work into user-eligible work.
 struct ContinuedProcessingEligibilityState<RunID: Hashable> {
     private(set) var runOrigins: [RunID: ContinuedProcessingStartOrigin] = [:]
+    private(set) var suspendedRunIDs: Set<RunID> = []
 
     @discardableResult
     mutating func registerRun(
@@ -135,14 +136,16 @@ struct ContinuedProcessingEligibilityState<RunID: Hashable> {
         return true
     }
 
-    mutating func finishRun(_ id: RunID) { runOrigins[id] = nil }
+    mutating func finishRun(_ id: RunID) { runOrigins[id] = nil; suspendedRunIDs.remove(id) }
+    mutating func suspendRun(_ id: RunID) { if runOrigins[id] != nil { suspendedRunIDs.insert(id) } }
+    mutating func resumeRun(_ id: RunID) { suspendedRunIDs.remove(id) }
 
     func origin(forRun id: RunID) -> ContinuedProcessingStartOrigin? {
         runOrigins[id]
     }
 
     var hasEligibleWork: Bool {
-        runOrigins.values.contains(where: \.allowsContinuedSubmission)
+        runOrigins.contains { !suspendedRunIDs.contains($0.key) && $0.value.allowsContinuedSubmission }
     }
 }
 
@@ -337,6 +340,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// only; the system's pending set remains the authority).
     private var scheduleReminderScheduleIDs: Set<UUID> = []
     private var notificationOutbox = TaskNotificationOutbox()
+    private var notificationDeliveryFence = TaskNotificationDeliveryFence()
     private var notificationAuthorization: NotificationAuthorizationState = .notDetermined
     private var linuxPortCenter: LinuxPortForwardCenter { .shared }
     private var linuxMetricsSamplers: [String: LinuxGuestMetricsSampler] = [:]
@@ -1255,6 +1259,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if let tokensPerSecond { active.reportedTokensPerSecond = tokensPerSecond }
         if active.isAwaitingUserAttention { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
+        resumeContinuedEligibility(runID: runID, active: active)
         reconcileLocationAssist()
         // Only a suspended run actually resuming is visible; ordinary
         // per-token activity never reaches the Live Activity owner.
@@ -1264,10 +1269,30 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    private func resumeContinuedEligibility(runID: UUID, active: ActiveRun) {
+        guard continuedEligibility.suspendedRunIDs.contains(runID) else { return }
+        continuedEligibility.resumeRun(runID)
+        discardObsoleteRunTerminalNotification(runID: runID)
+        guard active.publishesContent else { return }
+        requestContinuedProcessingIfEligible(origin: active.continuedProcessingOrigin,
+            workload: "conversationRun", title: active.title)
+        applyBackgroundExecutionPreference(runID: runID, conversationID: active.conversationID, runTitle: active.title)
+    }
+
+    private func discardObsoleteRunTerminalNotification(runID: UUID) {
+        let identifier = "run.\(runID.uuidString).terminal"
+        notificationDeliveryFence.invalidate(identifier: identifier)
+        notificationOutbox.discard(identifier: identifier)
+        persistNotificationOutbox()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
     /// Live tool activity for the floating surface. `finished` clears the
     /// "currently running" tool; failures bump the visible failure counter.
     func didUpdateTool(runID: UUID, name: String, outcome: ToolSurfaceOutcome) {
         guard var active = activeRuns[runID] else { return }
+        let wasAwaitingUserAttention = active.isAwaitingUserAttention
         switch outcome {
         case .started:
             active.currentToolName = name
@@ -1278,7 +1303,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             if failed { active.toolFailureCount += 1 }
             active.lastActivityAt = Date()
         }
-        if active.isAwaitingUserAttention { active.isAwaitingUserAttention = false }
+        if case .started = outcome {
+            active.isAwaitingUserAttention = false
+            resumeContinuedEligibility(runID: runID, active: active)
+        }
         activeRuns[runID] = active
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
@@ -1336,7 +1364,6 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard var active = activeRuns[runID],
               checklist.canReplace(active.checklist, conversationID: active.conversationID) else { return }
         active.checklist = checklist
-        if active.isAwaitingUserAttention { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
@@ -1345,26 +1372,30 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         reconcileTaskLiveActivity(reason: "checklist")
     }
 
-    func didUpdateProgress(runID: UUID, stage: String, progress: Int64, isGenerating: Bool = false) {
+    func didUpdateProgress(runID: UUID, stage: String, progress: Int64, isGenerating: Bool = false,
+                           isRuntimeActivity: Bool = true) {
         guard var active = activeRuns[runID] else { return }
-        let stageChanged = active.stage != stage
         let wasAwaitingUserAttention = active.isAwaitingUserAttention
+        let presentedStage = !isRuntimeActivity && wasAwaitingUserAttention ? active.stage : stage
+        let stageChanged = active.stage != presentedStage
         if stageChanged {
             active.stageStartedAt = Date()
             active.outputWindowStartedAt = Date()
             active.outputCharacters = 0
             active.reportedTokensPerSecond = nil
         }
-        active.stage = stage
-        active.isGenerating = isGenerating
+        active.stage = presentedStage
+        active.isGenerating = isGenerating && (isRuntimeActivity || !wasAwaitingUserAttention)
         active.progress = progress
         // Real progress proves the run resumed after a suspension.
-        active.isAwaitingUserAttention = false
+        if isRuntimeActivity { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
+        if isRuntimeActivity { resumeContinuedEligibility(runID: runID, active: active) }
         if #available(iOS 26.0, *),
+           !active.isAwaitingUserAttention,
            active.allowsContinuedProcessing,
            active.continuedProcessingOrigin.allowsContinuedSubmission {
-            updateContinuedTask(title: "Floe Agent", stage: stage, progress: progress)
+            updateContinuedTask(title: "Floe Agent", stage: presentedStage, progress: progress)
         }
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
@@ -1378,9 +1409,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 title: active.title,
                 conversationID: active.conversationID,
                 startedAt: active.startedAt,
-                state: .running,
+                state: active.isAwaitingUserAttention ? .suspended : .running,
+                interruption: active.isAwaitingUserAttention ? .checkpointed : .none,
                 progress: Double(active.progress) / 100,
-                progressText: stage
+                progressText: presentedStage
             )
         }
         // Only a visible change (stage text, or resuming from a suspension)
@@ -1392,7 +1424,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // exactly that transition, let a live work session re-derive its
         // counts/waitReason immediately (no Home manual pull; per-token
         // percentages never reach this).
-        if wasAwaitingUserAttention {
+        if wasAwaitingUserAttention && isRuntimeActivity {
             Task { [weak self] in await self?.workSession.refreshIfLive() }
             reconcileAPNsWorkEligibility()
         }
@@ -1412,6 +1444,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // `activeRuns` but is no longer executing work of its own.
         active.isAwaitingUserAttention = true
         activeRuns[runID] = active
+        continuedEligibility.suspendRun(runID)
+        discardObsoleteRunTerminalNotification(runID: runID)
+        if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
+            finishContinuedTasks(success: true, finalStage: message)
+        }
         retainedPausedRun = (runID, active)
         // A suspension is a real user-action boundary (browser takeover and
         // friends): the sound surface treats it as "needs input", throttled.
@@ -1546,7 +1583,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         }
         if #available(iOS 26.0, *), !continuedEligibility.hasEligibleWork {
-            finishContinuedTasks(success: succeeded)
+            finishContinuedTasks(success: outcome != .failed)
         }
         // The content flag decides the work record's fate: content-publishing
         // runs (ordinary conversations, media generation) keep an honest
@@ -1924,7 +1961,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 }
                 continue
             }
-            post(event)
+            let validationOwner = notificationDeliveryFence.begin(identifier: event.identifier)
+            let current = await reconciledQueuedRunNotification(event)
+            guard notificationDeliveryFence.isCurrent(identifier: event.identifier, owner: validationOwner) else { continue }
+            if let current { post(current) }
+            else {
+                notificationDeliveryFence.invalidate(identifier: event.identifier)
+                notificationOutbox.discard(identifier: event.identifier)
+            }
         }
         if !state.canPresentAlert, let first = notificationOutbox.pending.first {
             notificationOutbox.recordSchedulingFailure(
@@ -1951,6 +1995,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     ) -> Bool {
         let gate = Self.eventGate(for: policy)
         guard gate.allows(event.kind) else { return false }
+        notificationDeliveryFence.invalidate(identifier: event.identifier)
         let disposition = notificationOutbox.enqueue(
             event,
             canPresent: notificationAuthorization.canPresentAlert
@@ -1977,6 +2022,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     private func post(_ event: TaskTerminalEvent) {
+        let deliveryOwner = notificationDeliveryFence.begin(identifier: event.identifier)
         let content = UNMutableNotificationContent()
         content.title = event.title
         content.body = event.body
@@ -1987,6 +2033,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )) { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard self.notificationDeliveryFence.finish(identifier: event.identifier, owner: deliveryOwner) else { return }
                 if let error {
                     self.notificationOutbox.recordSchedulingFailure(
                         identifier: event.identifier,
@@ -2017,6 +2064,34 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     private func persistNotificationOutbox() {
         TaskNotificationOutboxStore.save(notificationOutbox)
+    }
+
+    private func reconciledQueuedRunNotification(_ event: TaskTerminalEvent) async -> TaskTerminalEvent? {
+        guard event.deepLink.kind == .modelRun, let runID = event.deepLink.runID,
+              let conversationID = event.deepLink.conversationID else { return event }
+        let reported: TerminalOutcome
+        switch event.kind {
+        case .completed: reported = .succeeded
+        case .failed: reported = .failed
+        case .cancelled: reported = .cancelled
+        case .actionRequired, .durationAdvisory: return event
+        }
+        guard let actual = await resolvedTerminalOutcome(reported, runID: runID) else { return nil }
+        let kind: TaskTerminalEventKind = switch actual {
+        case .succeeded: .completed
+        case .failed: .failed
+        case .cancelled: .cancelled
+        }
+        let policy = try? await SQLiteWorkspaceStore(database: environment.database).taskPolicy(conversationID: conversationID)
+        guard Self.eventGate(for: policy?.notificationPolicy).allows(kind) else { return nil }
+        guard actual != reported else { return event }
+        let body: String = switch actual {
+        case .succeeded: String(localized: "background.run.success_body")
+        case .failed: String(localized: "background.run.failure_body")
+        case .cancelled: String(localized: "background.run.cancelled_body")
+        }
+        return .modelRunTerminal(runID: runID, conversationID: conversationID, taskName: event.title,
+            kind: kind, body: Self.terminalEventBody(kind: kind, resultMessage: nil, fallbackBody: body), createdAt: event.createdAt)
     }
 
     /// Recheck queued reminders against their own operation, never merely
@@ -2146,16 +2221,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private func resolvedTerminalOutcome(
         _ outcome: TerminalOutcome,
         runID: UUID
-    ) async -> TerminalOutcome {
-        guard outcome == .failed else { return outcome }
+    ) async -> TerminalOutcome? {
         guard let record = try? await environment.runStore.run(id: runID) else {
-            return outcome
+            // A missing/unavailable durable record cannot verify a failure.
+            // In particular, storage suspension is not task failure.
+            return nil
         }
-        switch record.state.lowercased() {
-        case "cancelled", "canceled", "aborted":
-            return .cancelled
-        default:
-            return outcome
+        switch TaskRunConclusion.from(state: record.state) {
+        case .completed: return .succeeded
+        case .failed: return .failed
+        case .cancelled: return .cancelled
+        case .checkpointed, nil: return nil
         }
     }
 
@@ -2192,23 +2268,32 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         conversationID: UUID,
         runID: UUID,
         title: String,
-        outcome: TerminalOutcome,
+        outcome reportedOutcome: TerminalOutcome,
         message: String?
     ) {
+        let identifier = "run.\(runID.uuidString).terminal"
+        let validationOwner = notificationDeliveryFence.begin(identifier: identifier)
         Task { [weak self] in
             guard let self else { return }
             let policy = try? await SQLiteWorkspaceStore(database: self.environment.database)
                 .taskPolicy(conversationID: conversationID)
-            let outcome = await self.resolvedTerminalOutcome(outcome, runID: runID)
+            let resolved = await self.resolvedTerminalOutcome(reportedOutcome, runID: runID)
+            guard self.notificationDeliveryFence.isCurrent(identifier: identifier, owner: validationOwner) else { return }
+            guard let outcome = resolved else {
+                self.discardObsoleteRunTerminalNotification(runID: runID)
+                return
+            }
+            let validatedMessage = outcome == reportedOutcome ? message : nil
             if outcome == .cancelled {
                 // Keep the durable work record truthful for a cancellation the
                 // caller reported as a failure.
                 let existing = await BackgroundWorkRegistry.shared.snapshot(id: runID)
+                guard self.notificationDeliveryFence.isCurrent(identifier: identifier, owner: validationOwner) else { return }
                 if let existing, existing.state != .cancelled {
                     var snapshot = existing
                     snapshot.state = .cancelled
                     snapshot.interruption = .none
-                    snapshot.progressText = message ?? FloeL10n.l("platform.background_run_coordinator.canceled_checkpoint_kept")
+                    snapshot.progressText = validatedMessage ?? FloeL10n.l("platform.background_run_coordinator.canceled_checkpoint_kept")
                     snapshot.activeCommandCount = 0
                     await BackgroundWorkRegistry.shared.register(snapshot)
                 }
@@ -2223,6 +2308,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             case .failed: String(localized: "background.run.failure_body")
             case .cancelled: String(localized: "background.run.cancelled_body")
             }
+            guard self.notificationDeliveryFence.isCurrent(identifier: identifier, owner: validationOwner) else { return }
             self.enqueueTerminalNotification(
                 event: .modelRunTerminal(
                     runID: runID,
@@ -2231,7 +2317,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     kind: kind,
                     body: Self.terminalEventBody(
                         kind: kind,
-                        resultMessage: message,
+                        resultMessage: validatedMessage,
                         fallbackBody: fallbackBody
                     )
                 ),
@@ -3665,7 +3751,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                         // racing identifier. Complete every sibling before the
                         // first suspension point so no Live Activity can be
                         // orphaned by slow/hung recovery-point persistence.
-                        self.finishContinuedTasks(success: false)
+                        // Expiration ends the system execution window, then
+                        // checkpoints the task. It is not a provider failure.
+                        self.finishContinuedTasks(success: true,
+                            finalStage: IDELanguageRunText.t("已暂停，返回 App 继续", "Paused. Return to the app to continue."))
                         return true
                     },
                     persistRecoveryPoints: { [weak self] in
@@ -3724,7 +3813,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     @available(iOS 26.0, *)
-    private func finishContinuedTasks(success: Bool) {
+    private func finishContinuedTasks(success: Bool, finalStage: String? = nil) {
         // The shared continued task is the session's real qualification: any
         // finish (explicit release, expiration, preference-off) returns the
         // session's displayed state to truth. Idempotent and seam-free, so
@@ -3734,6 +3823,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         continuedTasksByIdentifier.removeAll()
         _ = BackgroundPolicyRegistry.shared.completeAllContinuedTaskHandles()
         for task in tasks {
+            if let finalStage { task.updateTitle(task.title, subtitle: finalStage) }
             task.progress.totalUnitCount = 100
             task.progress.completedUnitCount = 100
             task.setTaskCompleted(success: success)

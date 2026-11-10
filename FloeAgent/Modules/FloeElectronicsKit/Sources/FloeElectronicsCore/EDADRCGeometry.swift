@@ -164,7 +164,9 @@ enum EDADRCGeometry {
         case .polygon:
             guard let vertices = EDAPolygonPadGeometry.vertices(pad, in: footprint) else { return nil }
             outer = .polygon(vertices)
-        case .roundRectangle: return nil // No corner radius in the source model.
+        case .roundRectangle:
+            guard let vertices = try? EDARoundedPadGeometry.vertices(pad, in: footprint, containing: true) else { return nil }
+            outer = .polygon(vertices)
         }
         return .init(outer: outer, hole: pad.drill.map { (center, $0 / 2) })
     }

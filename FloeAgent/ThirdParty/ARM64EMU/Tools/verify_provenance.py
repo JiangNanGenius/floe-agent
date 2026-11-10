@@ -2,6 +2,7 @@
 """Read-only verification of the pinned engine source and App wiring."""
 import hashlib
 import json
+import plistlib
 from pathlib import Path
 import subprocess
 
@@ -28,6 +29,19 @@ def main():
         assert (root / name).is_file(), name
     package = (root.parents[1] / "Package.swift").read_text()
     assert 'name: "FloeARM64Engine"' in package
+    engine_target = package.split('name: "FloeARM64Engine"', 1)[1].split('cSettings:', 1)[0]
+    assert 'resources: [.copy("PrivacyInfo.xcprivacy")]' in engine_target
+    privacy = plistlib.loads((root / "PrivacyInfo.xcprivacy").read_bytes())
+    assert "PrivacyInfo.xcprivacy" in pinned
+    assert privacy["NSPrivacyTracking"] is False
+    assert privacy["NSPrivacyCollectedDataTypes"] == []
+    reasons = {entry["NSPrivacyAccessedAPIType"]: set(entry["NSPrivacyAccessedAPITypeReasons"])
+               for entry in privacy["NSPrivacyAccessedAPITypes"]}
+    assert reasons == {
+        "NSPrivacyAccessedAPICategoryFileTimestamp": {"C617.1", "3B52.1"},
+        "NSPrivacyAccessedAPICategoryDiskSpace": {"E174.1", "85F4.1"},
+        "NSPrivacyAccessedAPICategorySystemBootTime": {"35F9.1"},
+    }
     assert '"FloeTinyEMU"' not in package
     assert not (root.parent / "TinyEMU").exists()
     subprocess.run(["python3", str(root / "Tools/generate_crc32_tables.py"), "--check"], check=True)

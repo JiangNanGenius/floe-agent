@@ -256,7 +256,7 @@ extension PersonalContentKind {
     var title: String {
         switch self {
         case .canvas: IDELanguageRunText.t("混合画布", "Canvas")
-        case .diagram: IDELanguageRunText.t("图示", "Diagram")
+        case .diagram: IDELanguageRunText.t("流程图", "Flowchart")
         case .image: IDELanguageRunText.t("图像", "Image")
         case .drawing: IDELanguageRunText.t("绘画", "Drawing")
         case .video: IDELanguageRunText.t("视频", "Video")
@@ -266,7 +266,7 @@ extension PersonalContentKind {
         case .biology: IDELanguageRunText.t("生物工程", "Biology project")
         case .latex: IDELanguageRunText.t("LaTeX 论文", "LaTeX document")
         case .electronics: IDELanguageRunText.t("电路设计", "Electronics")
-        case .geography: IDELanguageRunText.t("地理信息", "Geography")
+        case .geography: IDELanguageRunText.t("地图编辑器", "Map Editor")
         case .cad2D: IDELanguageRunText.t("二维设计", "2D design")
         case .cad3D: IDELanguageRunText.t("三维设计", "3D design")
         case .printing: IDELanguageRunText.t("3D 打印", "3D printing")

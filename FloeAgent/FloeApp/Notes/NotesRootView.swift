@@ -10,6 +10,7 @@ struct NotesRootView: View {
     @FocusState private var searchFocused: Bool
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
     @State private var session = NotesSession(tabDefaults: .standard)
+    @StateObject private var assistantLeave = DocumentAssistantLeaveCoordinator()
     @State private var query = ""
     @AppStorage("notes.library.grid") private var grid = true
     @State private var section: SectionFilter = .recent
@@ -89,6 +90,7 @@ struct NotesRootView: View {
                     }
                 }
                 .modifier(NotesConflictAccess(session: session))
+                .documentAssistantLeavePresentation(assistantLeave)
                 .interactiveDismissDisabled()
             }
             .navigationTitle("notes.notes_root_view.notes")
@@ -212,6 +214,7 @@ struct NotesRootView: View {
                 PersonalContentEditor(record: value)
             }
             .task {
+                DocumentAssistantLeaveBindings.installNotes(on: session, environment: environment, coordinator: assistantLeave)
                 await session.open()
                 adoptPendingDocument()
                 await refreshMeetings()
@@ -225,6 +228,7 @@ struct NotesRootView: View {
                 #endif
             }
         }
+        .documentAssistantLeavePresentation(assistantLeave, enabled: session.document == nil)
     }
 
     private func adoptPendingDocument() {

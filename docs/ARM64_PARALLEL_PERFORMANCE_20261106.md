@@ -1,5 +1,12 @@
 # ARM64 interpreter follow-up — 2026-11-06
 
+> Historical Builds 315–317 report / 315–317 历史记录. The **1.46×** M4 result
+> below predates the accepted CPU-state separation. Later evidence records
+> **3.79×** in a host component workload and **2.31×** in physical M4 Build 319
+> sysbench; these are different measurement scopes. Start at
+> [ARM64 runtime performance](ARM64_RUNTIME_PERFORMANCE.md) for the current
+> evidence index. Do not use 1.46× as the current runtime's multicore result.
+
 This increment retains the existing ARM64 engine, resident Linux environment,
 native-JIT prohibition and synchronization model. It does not change the frozen
 Build 315 App Store submission. Subsequent App delivery is TestFlight only.

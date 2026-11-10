@@ -1,5 +1,9 @@
 # Phase 2 — TinyEMU migration: execution routing and grant contract
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本文是 2026-09-21 的 TinyEMU 迁移分工契约，不是当前工作树、授权或发布要求。保留移除原生解释器的历史依据；现行 ARM64 路径见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)。
+> Migration contract from 2026-09-21, not current workspace, authorization or release instructions. Retain the native-runtime retirement history; use the current ARM64 architecture.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Status: **migration worker contract, published before implementation completes.**

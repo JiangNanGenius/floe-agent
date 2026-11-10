@@ -107,6 +107,7 @@ public enum CuratedSkillTrustMode: Sendable {
 public enum CuratedSkillCatalogLayout: String, Codable, Sendable, CaseIterable, Hashable {
     case legacy
     case full
+    case largeSourceV1 = "large-source-v1"
 
     public func catalogPath(for channel: CuratedSkillChannel) -> String {
         switch (channel, self) {
@@ -114,6 +115,8 @@ public enum CuratedSkillCatalogLayout: String, Codable, Sendable, CaseIterable, 
         case (.android, .legacy): "android/catalog.json"
         case (.ios, .full): "catalog-full.json"
         case (.android, .full): "android/catalog-full.json"
+        case (.ios, .largeSourceV1): "catalog-large-source-v1.json"
+        case (.android, .largeSourceV1): "android/catalog-large-source-v1.json"
         }
     }
 
@@ -419,6 +422,7 @@ public enum CuratedSkillHub {
         mode: CuratedSkillTrustMode,
         ref: String = "main",
         layout: CuratedSkillCatalogLayout = .legacy,
+        requiredProjectionIDs: Set<String> = [],
         resolve: GitHubSkillDownload.ResolveCommit,
         fetch: GitHubSkillDownload.FetchFile
     ) async throws -> Publication {
@@ -454,6 +458,12 @@ public enum CuratedSkillHub {
         }
         let verified = try verifiedFeed(
             bytes: catalogBytes, signature: signatureBytes, channel: channel, mode: mode)
+        guard layout == .largeSourceV1 || verified.feed.entries.allSatisfy({ $0.package?.profile != .largeSourceV1 }) else {
+            throw CuratedSkillHubFailure.feed("large source entries require the capability catalog layout")
+        }
+        guard requiredProjectionIDs.isSubset(of: Set(verified.feed.entries.map(\.id))) else {
+            throw CuratedSkillHubFailure.feed("capability projection omitted standard catalog entries")
+        }
         return Publication(source: source, layout: layout, publicationCommit: commit,
                            verifiedFeed: verified, mode: mode)
     }
@@ -511,6 +521,8 @@ public enum CuratedSkillHub {
         /// Optional so receipts written before the expanded feed existed
         /// still decode; `nil` means the original legacy layout.
         public let catalogLayout: CuratedSkillCatalogLayout?
+        /// Absent in old receipts; only a verified package entry supplies it.
+        public var packageProfile: SkillPackageResourceProfile? = nil
 
         /// Retrieval evidence for the caller's own persistence. This is
         /// deliberately NOT a generic GitHub folder-update binding: curated
@@ -560,7 +572,8 @@ public enum CuratedSkillHub {
         effectiveCapabilities: Set<String> = [],
         effectiveTools: Set<String> = [],
         effectivePythonPackageSpecs: Set<String> = [],
-        fetch: GitHubSkillDownload.FetchFile
+        fetch: GitHubSkillDownload.FetchFile,
+        fetchPackage: FetchAuthorizedPackage? = nil
     ) async throws -> StagedSkill {
         let verified = publication.verifiedFeed
         let feed = verified.feed
@@ -582,9 +595,22 @@ public enum CuratedSkillHub {
             throw CuratedSkillHubFailure.offer("entry has no signed review binding; unqualified content cannot install")
         }
         let commit = publication.publicationCommit
+        let authorization = SkillPackageResourceAuthorization(profile: binding.profile,
+            skillID: entry.id, version: entry.version, contentDigest: binding.contentDigest)
+        if binding.profile != .standard, publication.layout != .largeSourceV1 {
+            throw CuratedSkillHubFailure.feed("large source packages require the signed capability projection")
+        }
+        if binding.profile != .standard, fetchPackage == nil {
+            throw CuratedSkillHubFailure.compatibility("verified large-package transport is unavailable")
+        }
         let archive: Data
         do {
-            archive = try await fetch(publication.source, commit, binding.path)
+            if let fetchPackage {
+                archive = try await fetchPackage(publication.source, commit, binding.path,
+                    PackageDownloadAuthorization(binding: binding, publicationCommit: commit))
+            } else {
+                archive = try await fetch(publication.source, commit, binding.path)
+            }
         } catch {
             throw CuratedSkillHubFailure.unavailable(
                 "package archive is not present at the pinned publication: \(error.localizedDescription)")
@@ -601,7 +627,7 @@ public enum CuratedSkillHub {
         // (SignedContentArchive extraction bounds + SkillPackageValidator).
         let snapshot: SkillContentSnapshot
         do {
-            snapshot = try OfficialSkillHub.unpack(archive, at: root)
+            snapshot = try OfficialSkillHub.unpack(archive, at: root, resourceAuthorization: binding.profile == .standard ? nil : authorization)
         } catch {
             throw mapExtractionFailure(error)
         }
@@ -682,7 +708,8 @@ public enum CuratedSkillHub {
                 reviewedAt: record.reviewedAt,
                 reviewer: record.reviewer,
                 permissionDelta: delta,
-                catalogLayout: publication.layout
+                catalogLayout: publication.layout,
+                packageProfile: binding.profile == .standard ? nil : binding.profile
             )
             return StagedSkill(
                 content: snapshot, archiveSHA256: archiveSHA256,

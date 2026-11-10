@@ -47,20 +47,24 @@ import FloeLaTeXHostAdapter
     var workbenchOperation:LaTeXWorkbenchOperation? {
         let operation=composition.nativeRuntime.operations[original.id]
         guard preparingToolchain || operation != nil else {return nil}
-        let preparing=operation?.kind != .typesetting
+        let phase=operation?.preparationProgress
+        let preparing=operation?.kind != .typesetting || (phase != nil && phase?.stage != .compiling)
         let status:String
         if operation?.waitingRecovery==true {status=IDELanguageRunText.t("正在确认任务已停止…","Confirming the task has stopped…")}
         else if operation?.cancelling==true {status=IDELanguageRunText.t("正在停止…","Stopping…")}
-        else {status=preparing ? IDELanguageRunText.t("正在准备排版工具…","Preparing typesetting tools…"):IDELanguageRunText.t("正在排版…","Typesetting…")}
+        else if phase?.stage == .downloading,let bytes=phase?.downloadBytes,bytes>0 {
+            let amount=ByteCountFormatter.string(fromByteCount:bytes,countStyle:.file)
+            status=IDELanguageRunText.t("正在下载排版所需内容（约 \(amount)）…","Downloading typesetting resources (about \(amount))…")
+        } else {status=preparing ? IDELanguageRunText.t("正在准备排版所需内容…","Preparing typesetting resources…"):IDELanguageRunText.t("正在排版…","Typesetting…")}
         return .init(status:status,stopLabel:preparing ? IDELanguageRunText.t("停止准备","Stop preparation"):IDELanguageRunText.t("停止排版","Stop typesetting"),stop:{self.cancelPreparation()})
     }
-    func prepareToolchain(profile:String?) async {
+    func prepareToolchain() async {
         guard workbenchOperation==nil,!editor.isBuilding else {return}
         preparingToolchain=true;defer {preparingToolchain=false;preparationTask=nil}
         do {
             editor.commitInput();try await editor.save()
             guard let revision=editor.manifest?.revision else {throw LaTeXError.invalidProject}
-            let task=Task { @MainActor in try await self.composition.nativeRuntime.prepare(self.editor.store,revision:revision,installProfile:profile) }
+            let task=Task { @MainActor in try await self.composition.nativeRuntime.prepare(self.editor.store,revision:revision) }
             preparationTask=task
             let values=try await withTaskCancellationHandler(operation:{try await task.value},onCancel:{task.cancel()})
             editor.updateCapabilities(values)
@@ -90,7 +94,6 @@ struct LaTeXEditorSurface:View {
     var onAssistant:(@MainActor ()->Void)?=nil
     var body:some View {
         LaTeXWorkbench(session:session.editor,pdfRenderer:renderPreview,onAssistant:onAssistant,operation:session.workbenchOperation)
-            .toolbar {ToolbarItem(placement:.topBarTrailing) {toolchainControl}}
             .onChange(of:session.nativeFailureID,initial:true) {_,_ in session.presentNativeFailure()}
     }
     private func renderPreview(_ preview:LaTeXPreviewContext)->AnyView {
@@ -99,18 +102,6 @@ struct LaTeXEditorSurface:View {
         let sourceAction:(@MainActor (Int,Double,Double)->Void)?
         if session.editor.pdfIsCurrent {sourceAction=preview.onSource}else {sourceAction=nil}
         return AnyView(InlinePDFReader(url:preview.url,destination:destination,onSource:sourceAction))
-    }
-    @ViewBuilder private var toolchainControl:some View {
-            if let operation=session.workbenchOperation {
-                ProgressView().accessibilityLabel(operation.status)
-            } else {
-                Menu {
-                    Button(IDELanguageRunText.t("检查工具链","Check toolchain")) {Task {await session.prepareToolchain(profile:nil)}}
-                    Button(IDELanguageRunText.t("安装常用工具链","Install standard toolchain")) {Task {await session.prepareToolchain(profile:"standard")}}
-                    Button(IDELanguageRunText.t("安装完整工具链（下载较大）","Install full toolchain (large download)")) {Task {await session.prepareToolchain(profile:"full")}}
-                } label:{Label(IDELanguageRunText.t("排版工具","Typesetting tools"),systemImage:"shippingbox")}
-                    .disabled(session.editor.isBuilding).accessibilityIdentifier("latex.toolchain")
-            }
     }
 }
 #endif

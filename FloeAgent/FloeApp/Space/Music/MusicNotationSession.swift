@@ -11,25 +11,30 @@ import FloeScoreKit
     let root: URL
     private weak var parent: MusicProjectSession?
     private let playback: MusicNotationPlayback
+    let arrangement: MusicNotationArrangement
     private(set) var controller: HeavyEditorController?
-    private(set) var identity = UUID()
+    private(set) var identity: UUID
     private var opening: Task<HeavyEditorController, any Error>?
     private var exported: [String: URL] = [:]
     private var audioInvocation: UUID?
     @ObservationIgnored private var clockRefresh: Task<Void, Never>?
-    var isBusy: Bool { opening != nil || controller?.isWorking == true || playback.isBusy }
+    var isBusy: Bool { opening != nil || controller?.isWorking == true || playback.isBusy || arrangement.isBusy }
     init(parent: MusicProjectSession) {
         self.parent = parent; parentID = parent.id; root = parent.root.standardizedFileURL.resolvingSymlinksInPath()
+        // The first presentation already owns this stable native generation.
+        // Creating the service must not cancel the view task that created it.
+        identity = parent.observationIdentity
+        arrangement = MusicNotationArrangement(parent: parent)
         playback = MusicNotationPlayback(parent: parent, authority: parent.notationAudioAuthority,
             renderer: parent.notationRenderer, ownerToken: parent.notationOwnerToken)
     }
     func openController(allowCreation: Bool = true, initialTitle: String? = nil, refreshTransport: Bool = true,
                         authorizeCreation: (@MainActor @Sendable () async throws -> Void)? = nil) async throws -> HeavyEditorController {
+        if let opening { return try await opening.value }
         if let controller {
             if refreshTransport { _ = try await controller.execute("score.playback.control", arguments: .object(["action": .string("status")])) }
             return controller
         }
-        if let opening { return try await opening.value }
         let generation = identity
         let task = Task { @MainActor [self] in
             try await requireParent()
@@ -81,15 +86,31 @@ import FloeScoreKit
                scopedTransport: { [weak self] id, request in
                 guard let self else { throw PersonalContentError.changedDocument }
                 return try await self.transport(request, generation: generation, invocation: id)
-            }, cancelInvocation: { [weak self] id, _ in
-                await self?.cancelTransport(id, generation: generation)
+            }, cancelInvocation: { [weak self] id, command in
+                if command == "score.playback.arrange" { await self?.arrangement.cancel(invocation: id) }
+                else { await self?.cancelTransport(id, generation: generation) }
+            }, arrange: { [weak self] id, request in
+                guard let self else { throw PersonalContentError.changedDocument }
+                return try await self.performIntoArrangement(request, generation: generation, invocation: id)
             })
             let value = try await ScoreWorkbench.open(directory: directory, documentID: parentID,
                 owner: .music(parentID), hooks: hooks, playback: adapter)
-            try await value.waitUntilReady()
+            try await requireParent(); try Task.checkCancellation()
             guard identity == generation else { throw CancellationError() }
+            // Publish the real controller so ScoreEditorView can mount its WK
+            // surface before readiness; isReady remains owned by the engine.
             controller = value
-            return value
+            do {
+                try await value.waitUntilReady()
+                try await requireParent(); try Task.checkCancellation()
+                guard identity == generation, controller === value else { throw CancellationError() }
+                return value
+            } catch {
+                // A stale open must never clear a restored/new generation.
+                if identity == generation, controller === value { controller = nil }
+                value.cancel()
+                throw error
+            }
         }
         opening = task
         defer { if identity == generation { opening = nil } }
@@ -150,6 +171,37 @@ import FloeScoreKit
         if ["start", "pause", "stop", "seek"].contains(request["action"].string ?? "status") { audioInvocation = invocation }
         return try await playback.run(request)
     }
+    private func performIntoArrangement(_ request: EditorJSON, generation: UUID, invocation: UUID) async throws -> EditorJSON {
+        guard identity == generation, let parent, let controller,
+              let scoreValue = request["scoreRevision"].number, scoreValue.isFinite, scoreValue >= 0,
+              scoreValue.rounded() == scoreValue, scoreValue <= 9_007_199_254_740_991,
+              let musicValue = request["musicRevision"].number, musicValue.isFinite, musicValue >= 0,
+              musicValue.rounded() == musicValue, musicValue <= 9_007_199_254_740_991 else { throw HeavyEditorError.invalidDocument }
+        let frozenScore = controller.document
+        let scoreRevision = UInt64(scoreValue), musicRevision = Int64(musicValue)
+        let position = parent.playheadSeconds // Freeze the actual head before the first await.
+        guard frozenScore.revision == scoreRevision else { throw HeavyEditorError.revisionConflict }
+        guard parent.document.revision == musicRevision else { throw HeavyEditorError.revisionConflict }
+        let validate: @MainActor @Sendable () async throws -> Void = { [weak self, weak parent, weak controller] in
+            guard let self, let parent, let controller, self.identity == generation,
+                  self.parent === parent, self.controller === controller, controller.document == frozenScore else {
+                throw PersonalContentError.changedDocument
+            }
+            try await controller.validateNativeContinuation(invocation, command: "score.playback.arrange")
+            try await self.requireParent()
+            guard self.identity == generation, self.controller === controller, controller.document == frozenScore,
+                  let original = try MusicNotationPackage.readOriginal(root: self.root, parentID: self.parentID),
+                  original.document == frozenScore else { throw PersonalContentError.changedDocument }
+        }
+        try await validate()
+        stopAudio() // Only this score's player; presentation/layout commands never cancel its renderer.
+        let receipt = try await arrangement.run(performance: request["performance"], scoreRevision: scoreRevision,
+            musicRevision: musicRevision, positionSeconds: position, invocation: invocation, validate: validate)
+        return try receipt.json()
+    }
+    func performanceReceipt(fileID: String) -> MusicNotationArrangementReceipt? { arrangement.receipt(fileID) }
+    func performanceFileURL(fileID: String) throws -> URL { try arrangement.fileURL(fileID) }
+    var parentMusicRevision: Int64? { parent?.document.revision }
     private func cancelTransport(_ invocation: UUID, generation: UUID) {
         guard identity == generation, audioInvocation == invocation else { return }
         stopAudio()
@@ -168,7 +220,7 @@ import FloeScoreKit
     }
     private func stopAudio(generation: UUID) { if identity == generation { stopAudio() } }
     func invalidateForRestore() {
-        identity = UUID(); opening?.cancel(); opening = nil; clockRefresh?.cancel(); clockRefresh = nil
+        identity = UUID(); arrangement.cancel(); opening?.cancel(); opening = nil; clockRefresh?.cancel(); clockRefresh = nil
         controller?.cancel(); controller = nil; audioInvocation = nil; playback.stop()
     }
 }
@@ -205,9 +257,12 @@ extension MusicProjectSession {
     @State private var openRequest: UUID?
     var body: some View {
         Group {
-            if let controller = session.notation?.controller {
+            if let notation = session.notation, let controller = notation.controller {
                 ScoreEditorView(controller: controller, onClose: onClose,
                     closeLabel: WorkbenchText.t("返回编曲", "Back to arrangement"))
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        MusicNotationPerformanceControls(parent: session, notation: notation, controller: controller, onAdded: onClose)
+                    }
             } else if let failure {
                 ContentUnavailableView {
                     Label(WorkbenchText.t("无法打开乐谱", "Unable to open score"), systemImage: "music.note.list")
@@ -217,7 +272,7 @@ extension MusicProjectSession {
                 } actions: { Button(WorkbenchText.t("重试", "Retry")) { Task { await open() } } }
             } else { ProgressView(WorkbenchText.t("正在打开乐谱…", "Opening score…")) }
         }
-        .task(id: session.notation?.identity) { await open() }
+        .task(id: session.notation?.identity ?? session.observationIdentity) { await open() }
         .accessibilityIdentifier("music.notation.workbench")
     }
     private func open() async {

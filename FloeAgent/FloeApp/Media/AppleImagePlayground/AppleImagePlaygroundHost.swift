@@ -89,6 +89,39 @@ private struct AppleImagePlaygroundHost: ViewModifier {
     }
 }
 
+@MainActor enum AppleImagePlaygroundControllerFactory {
+    static func make(input: AppleImagePlaygroundInput, delegate: any ImagePlaygroundViewController.Delegate) -> ImagePlaygroundViewController {
+        let controller = ImagePlaygroundViewController()
+        controller.delegate = delegate
+        controller.concepts = [.text(input.prompt)]
+        if let image = input.source {
+            controller.sourceImage = UIImage(data: image.data)
+        }
+        // External providers are an explicit separate route. Emoji returns a
+        // glyph instead of this tool's image-file contract, so omit it too.
+        var styles: [ImagePlaygroundStyle] = [.animation, .illustration, .sketch]
+        if #available(iOS 27.0, *) { styles.insert(.any, at: 0) }
+        controller.allowedGenerationStyles = styles
+        switch input.style {
+        case .automatic:
+            if #available(iOS 27.0, *) { controller.selectedGenerationStyle = .any }
+            else { controller.selectedGenerationStyle = .illustration }
+        case .animation: controller.selectedGenerationStyle = .animation
+        case .illustration: controller.selectedGenerationStyle = .illustration
+        case .sketch: controller.selectedGenerationStyle = .sketch
+        }
+        if #available(iOS 27.0, *) {
+            var options = ImagePlaygroundOptions()
+            options.creationStrategy = input.intent == .edit ? .editExisting : .generateNew
+            if let width = input.width, let height = input.height {
+                options.sizeSpecification = .closest(to: CGSize(width: width, height: height))
+            }
+            controller.options = options
+        }
+        return controller
+    }
+}
+
 private struct AppleImagePlaygroundNativeSheet: UIViewControllerRepresentable {
     let request: AppleImagePlaygroundService.Presentation
     let service: AppleImagePlaygroundService
@@ -99,34 +132,7 @@ private struct AppleImagePlaygroundNativeSheet: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         guard service.beginPresentation(id: request.id) else { return UIViewController() }
         presented.id = request.id
-        let controller = ImagePlaygroundViewController()
-        controller.delegate = context.coordinator
-        controller.concepts = [.text(request.input.prompt)]
-        if let image = request.input.source {
-            controller.sourceImage = UIImage(data: image.data)
-        }
-        // External providers are an explicit separate route. Emoji returns a
-        // glyph instead of this tool's image-file contract, so omit it too.
-        var styles: [ImagePlaygroundStyle] = [.animation, .illustration, .sketch]
-        if #available(iOS 27.0, *) { styles.insert(.any, at: 0) }
-        controller.allowedGenerationStyles = styles
-        switch request.input.style {
-        case .automatic:
-            if #available(iOS 27.0, *) { controller.selectedGenerationStyle = .any }
-            else { controller.selectedGenerationStyle = .illustration }
-        case .animation: controller.selectedGenerationStyle = .animation
-        case .illustration: controller.selectedGenerationStyle = .illustration
-        case .sketch: controller.selectedGenerationStyle = .sketch
-        }
-        if #available(iOS 27.0, *) {
-            var options = ImagePlaygroundOptions()
-            options.creationStrategy = request.input.intent == .edit ? .editExisting : .generateNew
-            if let width = request.input.width, let height = request.input.height {
-                options.sizeSpecification = .closest(to: CGSize(width: width, height: height))
-            }
-            controller.options = options
-        }
-        return controller
+        return AppleImagePlaygroundControllerFactory.make(input: request.input, delegate: context.coordinator)
     }
 
     func updateUIViewController(_ controller: UIViewController, context: Context) {

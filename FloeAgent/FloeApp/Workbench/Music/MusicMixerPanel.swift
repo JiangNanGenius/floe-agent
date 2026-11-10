@@ -7,7 +7,7 @@ import FloeMusicNative
 struct MusicMixerPanel: View {
     @Bindable var session: MusicProjectSession
     var body: some View {
-        ScrollView(.horizontal) {
+        ScrollView([.horizontal, .vertical]) {
             HStack(alignment: .top, spacing: 0) {
                 ForEach(Array(session.document.tracks.enumerated()), id: \.element.id) { index, track in
                     MusicChannelStrip(name: track.name, subtitle: track.kind == .midi ? "MIDI" : WorkbenchText.t("音频", "Audio"),
@@ -16,6 +16,7 @@ struct MusicMixerPanel: View {
                 }
                 ForEach(session.document.buses) { bus in
                     MusicChannelStrip(name: bus.name, subtitle: WorkbenchText.t("辅助通道", "Aux bus"), color: .teal, strip: bus.strip,
+                        supportsSolo: false,
                         onChange: { session.edit([.setBusStrip(bus.id, $0)]) })
                 }
                 VStack {
@@ -24,7 +25,8 @@ struct MusicMixerPanel: View {
                 }.frame(width: 80).padding(.top, 8)
                 Spacer(minLength: 20)
                 MusicChannelStrip(name: WorkbenchText.t("主输出", "Master"), subtitle: "Stereo Out", color: .primary,
-                    strip: session.document.masterStrip, onChange: { session.edit([.setMasterStrip($0)]) })
+                    strip: session.document.masterStrip, supportsSolo: false,
+                    onChange: { session.edit([.setMasterStrip($0)]) })
             }.frame(minHeight: 240, alignment: .top)
         }.background(Color(uiColor: .systemBackground)).accessibilityIdentifier("music.mixer")
     }
@@ -36,14 +38,16 @@ private struct MusicChannelStrip: View {
     var color: Color
     var strip: MusicStripSettings
     var selected = false
+    var supportsSolo = true
     var onSelect: (() -> Void)? = nil
     var onChange: (MusicStripSettings) -> Void
     var body: some View {
         VStack(spacing: 3) {
-            Button { onSelect?() } label: {
-                HStack(spacing: 4) { Circle().fill(color).frame(width: 6, height: 6); Text(name).lineLimit(1) }
-                    .font(.caption.weight(.medium)).frame(maxWidth: .infinity, minHeight: 30)
-            }.buttonStyle(.plain)
+            if let onSelect {
+                Button(action: onSelect) { channelName }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected ? [.isSelected] : [])
+            } else { channelName }
             Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             MusicValueSlider(title: WorkbenchText.t("声像", "Pan"), value: strip.pan, range: -1...1, suffix: "", showField: false) {
                 var next = strip; next.pan = $0; onChange(next)
@@ -52,16 +56,36 @@ private struct MusicChannelStrip: View {
                 var next = strip; next.gain = MusicWorkbenchFormat.gain($0); onChange(next)
             }.frame(height: 104)
             HStack(spacing: 1) {
-                Button { var next = strip; next.muted.toggle(); onChange(next) } label: {
-                    Text("M").frame(width: 44, height: 44).background(strip.muted ? Color.orange.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 5))
-                }.accessibilityLabel(WorkbenchText.t("静音", "Mute") + " " + name)
-                Button { var next = strip; next.soloed.toggle(); onChange(next) } label: {
-                    Text("S").frame(width: 44, height: 44).background(strip.soloed ? Color.yellow.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 5))
-                }.accessibilityLabel(WorkbenchText.t("独奏", "Solo") + " " + name)
+                Toggle(isOn: Binding(get: { strip.muted }, set: { value in
+                    var next = strip; next.muted = value; onChange(next)
+                })) {
+                    Text("M").frame(width: 44, height: 44)
+                        .background(strip.muted ? Color.orange.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                }
+                    .toggleStyle(.button).tint(.orange)
+                    .accessibilityLabel(WorkbenchText.t("静音", "Mute") + " " + name)
+                if supportsSolo || strip.soloed {
+                    // Existing unsupported settings remain visible so they
+                    // can be cleared; the control cannot enable bus solo.
+                    Toggle(isOn: Binding(get: { strip.soloed }, set: { value in
+                        guard supportsSolo || !value else { return }
+                        var next = strip; next.soloed = value; onChange(next)
+                    })) {
+                        Text("S").frame(width: 44, height: 44)
+                            .background(strip.soloed ? Color.yellow.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                        .toggleStyle(.button).tint(.yellow)
+                        .accessibilityLabel(WorkbenchText.t("独奏", "Solo") + " " + name)
+                }
             }.buttonStyle(.plain).font(.caption.weight(.semibold))
         }.padding(.horizontal, 7).padding(.vertical, 5).frame(width: 112)
             .background(selected ? Color.accentColor.opacity(0.07) : .clear)
             .overlay(alignment: .trailing) { Divider() }
+    }
+    private var channelName: some View {
+        HStack(spacing: 4) { Circle().fill(color).frame(width: 6, height: 6); Text(name).lineLimit(1) }
+            .font(.caption.weight(.medium)).frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
     }
 }
 
@@ -154,6 +178,9 @@ struct MusicEffectsInspector: View {
                     }
                     Divider()
                     HStack { Text(WorkbenchText.t("效果链", "Effect chain")).font(.caption.weight(.medium)); Spacer(); Text(WorkbenchText.t("输入 → 输出", "Input → Output")).font(.caption2).foregroundStyle(.secondary) }
+                    if track.effects.isEmpty {
+                        Text(WorkbenchText.t("尚未添加效果", "No effects added")).font(.caption).foregroundStyle(.secondary)
+                    }
                     ForEach(Array(track.effects.enumerated()), id: \.offset) { index, effect in
                         effectView(effect, index: index, track: track)
                         Divider()
@@ -171,7 +198,25 @@ struct MusicEffectsInspector: View {
                     Divider()
                     Button(WorkbenchText.t("在播放头添加音量自动化", "Add volume automation at playhead")) { addAutomation(track) }.font(.caption).frame(minHeight: 44)
                 } else {
-                    ContentUnavailableView(WorkbenchText.t("选择一个通道", "Select a channel"), systemImage: "slider.horizontal.3")
+                    VStack(alignment: .leading, spacing: 12) {
+                        Image(systemName: "slider.horizontal.3").font(.title2).foregroundStyle(.secondary)
+                        Text(WorkbenchText.t("选择一个通道", "Select a channel")).font(.callout.weight(.semibold))
+                        Text(session.document.tracks.isEmpty
+                            ? WorkbenchText.t("添加乐器或导入音频后，可在这里调整音色与效果。", "Add an instrument or import audio to adjust its sound and effects here.")
+                            : WorkbenchText.t("选择需要调整的轨道。", "Choose the track you want to adjust."))
+                            .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        if session.document.tracks.isEmpty {
+                            Button(WorkbenchText.t("添加乐器轨", "Add instrument track"), systemImage: "pianokeys") {
+                                Task { await session.addTrack() }
+                            }.buttonStyle(.bordered).frame(minHeight: 44)
+                        } else {
+                            Menu(WorkbenchText.t("选择通道", "Choose channel"), systemImage: "slider.horizontal.3") {
+                                ForEach(session.document.tracks) { track in
+                                    Button(track.name) { session.selectTrack(track.id) }
+                                }
+                            }.frame(minHeight: 44)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
                 }
             }.padding(14)
         }.accessibilityIdentifier("music.effects")
@@ -203,16 +248,22 @@ struct MusicEffectsInspector: View {
     @ViewBuilder private func effectView(_ effect: MusicPluginState, index: Int, track: MusicTrack) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 2) {
-                Button { replace(index, track: track) { $0.enabled.toggle() } } label: { Image(systemName: "power").foregroundStyle(effect.enabled ? Color.accentColor : .secondary).frame(width: 44, height: 44) }
-                    .accessibilityLabel(WorkbenchText.t("旁路效果", "Bypass effect"))
-                Text(effect.pluginID == MusicNativeBuiltins.eq ? WorkbenchText.t("均衡器", "Equalizer") : effect.pluginID == MusicNativeBuiltins.reverb ? WorkbenchText.t("混响", "Reverb") : effect.pluginID).font(.callout.weight(.medium)).lineLimit(1)
-                Spacer()
+                Toggle(isOn: Binding(get: { effect.enabled }, set: { value in
+                    replace(index, track: track) { $0.enabled = value }
+                })) {
+                    Text(effect.pluginID == MusicNativeBuiltins.eq ? WorkbenchText.t("均衡器", "Equalizer") : effect.pluginID == MusicNativeBuiltins.reverb ? WorkbenchText.t("混响", "Reverb") : WorkbenchText.t("效果", "Effect"))
+                        .font(.callout.weight(.medium)).lineLimit(1)
+                }.toggleStyle(.switch).controlSize(.small).frame(minHeight: 44)
                 Menu {
                     Button(WorkbenchText.t("上移", "Move up")) { var effects = track.effects; if index > 0 { effects.swapAt(index, index - 1); session.edit([.setEffects(track.id, effects)]) } }.disabled(index == 0)
                     Button(WorkbenchText.t("下移", "Move down")) { var effects = track.effects; if index + 1 < effects.count { effects.swapAt(index, index + 1); session.edit([.setEffects(track.id, effects)]) } }.disabled(index + 1 == track.effects.count)
                     Button(WorkbenchText.t("移除", "Remove"), role: .destructive) { var effects = track.effects; effects.remove(at: index); session.edit([.setEffects(track.id, effects)]) }
-                } label: { Image(systemName: "ellipsis").frame(width: 36, height: 44) }
+                } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                    .accessibilityLabel(WorkbenchText.t("效果选项", "Effect options"))
             }.buttonStyle(.plain)
+            if !effect.enabled {
+                Text(WorkbenchText.t("已旁路", "Bypassed")).font(.caption).foregroundStyle(.secondary)
+            }
             if effect.pluginID == MusicNativeBuiltins.eq {
                 MusicEQCurve(effect: effect).frame(height: 72)
                 parameter(WorkbenchText.t("频率", "Frequency"), key: "frequency", fallback: 1000, range: 20...20_000, suffix: "Hz", index: index, effect: effect, track: track)
@@ -227,6 +278,7 @@ struct MusicEffectsInspector: View {
     }
     private func parameter(_ title: String, key: String, fallback: Double, range: ClosedRange<Double>, suffix: String, index: Int, effect: MusicPluginState, track: MusicTrack) -> some View {
         MusicValueSlider(title: title, value: effect.parameters[key] ?? fallback, range: range, suffix: suffix) { value in replace(index, track: track) { $0.parameters[key] = value } }
+
     }
     private func replace(_ index: Int, track: MusicTrack, change: (inout MusicPluginState) -> Void) {
         var effects = track.effects; change(&effects[index]); session.edit([.setEffects(track.id, effects)])

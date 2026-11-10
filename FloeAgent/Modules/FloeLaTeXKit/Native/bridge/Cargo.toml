@@ -1,5 +1,5 @@
 [package]
-name = "floe_tex_native"
+name = "floe_tex_native_xdv"
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
@@ -12,9 +12,12 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 tectonic = { path = "../tectonic", default-features = false, features = ["geturl-reqwest", "external-harfbuzz"] }
 tectonic_bridge_core = { path = "../tectonic/crates/bridge_core" }
+tectonic_bridge_freetype2 = { path = "../tectonic/crates/bridge_freetype2" }
 tectonic_bundles = { path = "../tectonic/crates/bundles", features = ["geturl-reqwest"] }
 tectonic_engine_xetex = { path = "../tectonic/crates/engine_xetex" }
 tectonic_status_base = { path = "../tectonic/crates/status_base" }
+tectonic_xdv = { path = "../tectonic/crates/xdv" }
+tectonic_geturl = { path = "../tectonic/crates/geturl", default-features = false, features = ["reqwest"] }
 tectonic_errors = { path = "../tectonic/crates/errors" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -23,3 +26,6 @@ serde_json = "1.0"
 opt-level = 2
 debug = 1
 panic = "unwind"
+
+[build-dependencies]
+cc = "1"

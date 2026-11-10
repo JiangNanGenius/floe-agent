@@ -46,6 +46,7 @@ let package = Package(
     dependencies: [
         .package(path: "../FloeMacBridge"),
         .package(path: "ThirdParty/WasmKit"),
+        .package(path: "Modules/FloeNativeCharts"),
         .package(url: "https://github.com/apple/swift-system", exact: "1.8.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.88.0"),
@@ -104,19 +105,9 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-jinja.git", exact: "2.4.2"),
         .package(url: "https://github.com/apple/swift-log.git", exact: "1.15.0"),
-        // Native, App Store-compatible Git implementation for iOS. SwiftGitX
-        // wraps the bundled libgit2 source package; Floe owns authentication
-        // callbacks so GitHub credentials remain in Keychain and memory.
-        .package(
-            url: "https://github.com/ibrahimcetin/SwiftGitX.git",
-            exact: "0.4.0"
-        ),
-        // Root declaration exposes libgit2's C product to FloeGit for
-        // credential callbacks; the exact version matches SwiftGitX 0.4.0.
-        .package(
-            url: "https://github.com/ibrahimcetin/libgit2.git",
-            exact: "1.9.2"
-        ),
+        // Exact SwiftGitX 0.4.0 + libgit2 1.9.2 sources, with the reviewed
+        // native libssh2 backend on Apple. See its upstream.lock.json.
+        .package(path: "ThirdParty/FloeNativeGit"),
         // Pure Swift SMB2 client. Keep this exact pin: network workspace
         // mounts are audited at install/update time and never enable SMB1.
         .package(
@@ -133,6 +124,16 @@ let package = Package(
             // The release notes record provenance and both MIT licenses.
             url: "https://github.com/JiangNanGenius/floe-agent/releases/download/llama-runtime-b10581-floe1/llama-b10581-floe1-xcframework.zip",
             checksum: "95e359c6a93b3bc791c5671970ca37f7bdbc9bfae62b55551750186380cea284"
+        ),
+        .binaryTarget(
+            name: "FloeSlirpBinary",
+            // libslirp 4.9.7 + trimmed GLib 2.90.1 core + PCRE2 10.46 (JIT
+            // disabled) + proxy-libintl 0.5 stubs, merged per-platform static
+            // archives with headers. Pinned source, patches, rebuild recipe
+            // and every delivered digest: Vendor/FloeSlirp/PROVENANCE.json.
+            // Bundled notices and the corresponding-source/relink record ship
+            // through the license inventory (Licenses/FloeSlirp-*.txt).
+            path: "Vendor/FloeSlirp/FloeSlirp.xcframework"
         ),
         // MARK: - Cross-platform targets (buildable on macOS host without iOS SDK)
 
@@ -200,15 +201,26 @@ let package = Package(
         // new guest's network/files/project services pass integration.
         .target(
             name: "FloeARM64Engine",
+            dependencies: ["FloeSlirpBinary"],
             path: "ThirdParty/ARM64EMU",
             exclude: ["Source", "Bridge", "Tools", "PROVENANCE.json"],
             sources: ["Sources"],
+            resources: [.copy("PrivacyInfo.xcprivacy")],
             publicHeadersPath: "include",
             cSettings: [
                 .headerSearchPath("Source/src"),
                 .headerSearchPath("Bridge"),
                 .define("_POSIX_C_SOURCE", to: "200809L"),
                 .define("_DARWIN_C_SOURCE"),
+                // Vendored static stack (FloeSlirpBinary): the merged archive
+                // embeds the GLib core and PCRE2; consumers include
+                // <slirp/libslirp.h> only, and these defines match the
+                // static-archive build settings recorded in
+                // Vendor/FloeSlirp/PROVENANCE.json.
+                .define("G_INTL_STATIC_COMPILATION"),
+                .define("PCRE2_STATIC"),
+                .define("SLIRP_FLOE_HOST_HOOKS"),
+                .define("VN_ADVERTISE_RX_GSO", to: "0"),
                 .unsafeFlags(["-std=c11", "-UNDEBUG", "-fno-math-errno", "-fvisibility=hidden"]),
                 // Interpreter throughput is part of the runtime in Debug
                 // too; keep assertions and line info while optimizing the C core.
@@ -217,7 +229,17 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Security", .when(platforms: [.iOS, .macOS])),
                 .linkedLibrary("m"),
-                .linkedLibrary("resolv", .when(platforms: [.iOS, .macOS]))
+                .linkedLibrary("resolv", .when(platforms: [.iOS, .macOS])),
+                // Required by the FloeSlirp static archives (glib charset glue
+                // uses iconv; its macOS-special-dir objects use the public
+                // ObjC/Foundation/CoreFoundation surfaces). AppKit/Carbon are
+                // referenced only by the host macOS archive.
+                .linkedLibrary("iconv"),
+                .linkedLibrary("objc"),
+                .linkedFramework("Foundation", .when(platforms: [.iOS, .macOS])),
+                .linkedFramework("CoreFoundation", .when(platforms: [.iOS, .macOS])),
+                .linkedFramework("AppKit", .when(platforms: [.macOS])),
+                .linkedFramework("Carbon", .when(platforms: [.macOS]))
             ]
         ),
         .target(
@@ -309,17 +331,19 @@ let package = Package(
         .target(
             name: "FloeExecution",
             dependencies: [
+                .product(name: "FloeNativeChartsCore", package: "FloeNativeCharts"),
                 .product(name: "FloeMacBridgeProtocol", package: "FloeMacBridge"),
                 .product(name: "FloeWasmRuntime", package: "WasmKit"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 "FloeCore", "FloeTools", "FloeSSH", "FloeWorkspace", "FloeSecurity",
+                .product(name: "FloeToolboxDiagnostics", package: "FloeToolbox"),
                 // Interpreted shared ARM64 Linux, without a host fallback.
                 "FloeARM64Engine",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeExecution",
-            resources: [.copy("Resources/RemoteAgent"), .process("Resources/CapabilityCatalog.json"), .process("Resources/ToolCapabilityCatalog.json"), .process("Resources/deb_extract.py"), .process("Resources/LinuxPackageSources.json"), .process("Resources/linux_package_sources.py")],
+            resources: [.copy("Resources/RemoteAgent"), .process("Resources/CapabilityCatalog.json"), .process("Resources/ToolCapabilityCatalog.json"), .process("Resources/PresentationChartExamples.json"), .process("Resources/deb_extract.py"), .process("Resources/LinuxPackageSources.json"), .process("Resources/linux_package_sources.py")],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),
@@ -595,8 +619,8 @@ let package = Package(
             name: "FloeGit",
             dependencies: [
                 "FloeCore", "FloeModels", "FloeTools", "FloeSecurity",
-                .product(name: "SwiftGitX", package: "SwiftGitX"),
-                .product(name: "libgit2", package: "libgit2"),
+                .product(name: "SwiftGitX", package: "FloeNativeGit"),
+                .product(name: "libgit2", package: "FloeNativeGit"),
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeGit",
@@ -822,6 +846,7 @@ let package = Package(
             dependencies: [
                 "FloeExecution", "FloeCore", "FloeTools", "FloeModels",
                 "FloeAgentRuntime", "FloeSSH", "FloePersistence", "FloeTestSupport",
+                .product(name: "FloeToolboxDiagnostics", package: "FloeToolbox"),
                 .product(name: "WAT", package: "WasmKit"), .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Tests/FloeExecutionTests",

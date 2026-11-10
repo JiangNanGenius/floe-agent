@@ -23,12 +23,13 @@ nonisolated enum StudioElectronicsContract {
         let commandFormats: [String: String]
         let examplesJSON: String
         let limitations: [String]
+        var library: StudioElectronicsLibraryContract.Capabilities? = nil
     }
     static let commands = ["rename", "sheet.create", "component.place", "component.set", "component.remove",
         "symbol.move", "wire.put", "bus.unfold", "label.put", "junction.put", "noConnect.put", "schematic.remove", "board.remove", "native.put", "undo", "redo"]
     static let nativeKinds = ["symbolDefinition", "footprintDefinition", "component", "sheet", "symbolPlacement",
         "wire", "junction", "noConnect", "label", "bus", "sheetLink", "board", "footprint", "track", "via", "zone", "keepout", "hole", "simulation"]
-    static let runActions = ["eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.backAnnotation", "eda.refillCopper", "eda.export"]
+    static let runActions = ["eda.erc", "eda.drc", "eda.netlist", "eda.forwardAnnotation", "eda.backAnnotation", "eda.refillCopper", "eda.export"] + StudioElectronicsLibraryContract.actions
     static let commandFormats: [String: String] = [
         "rename": "{op:rename,title:string}",
         "sheet.create": "{op:sheet.create,name:string,id?:new UUID}",
@@ -47,14 +48,13 @@ nonisolated enum StudioElectronicsContract {
         "undo": "[{op:undo}]. One command only, with the exact outer expectedRevision.",
         "redo": "[{op:redo}]. One command only, with the exact outer expectedRevision."
     ]
-    static let guide = "Use a plain JSON array of explicit commands listed in electronicsCapabilities. Each command has op and documented flat fields; copy its complete examples with actual sheet/symbol/board IDs from this original. Coordinates and widths are millimetres, angles degrees. native.put accepts one complete record as value, not EDAEdit's synthesized enum payload; missing/unknown fields return a path. An entire batch validates before one revision/CAS save. undo/redo must be a single command. Read the actual saved state after editing. studio.run supports eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.refillCopper, eda.export with inputJSON.expectedRevision; drc/forwardAnnotation/refillCopper optionally take boardID, export additionally takes format and optional variant/boardID; gerberTechnical alone accepts gerberLayers. See manufacturingFields for a complete current-original export example. Set copperFillFields through native.put before refill; never author derived fill polygons/revision/state. inspectFrame accepts expectedRevision plus optional sheetID or boardID and maximumPixelSize. eda.backAnnotation previews PCB-to-schematic reference/value/footprint changes; read backAnnotationFields for its exact preview/apply source binding and pagination."
+    static let guide = "For specific parts, first use studio.run eda.library.search/read and the exact returned version-pinned reference; place/replace through electronicsCapabilities.library, not a guessed footprint or generic geometry renamed as a device. Use a plain JSON array of explicit commands listed in electronicsCapabilities. Each command has op and documented flat fields; copy its complete examples with actual sheet/symbol/board IDs from this original. Coordinates and widths are millimetres, angles degrees. native.put accepts one complete record as value, not EDAEdit's synthesized enum payload; missing/unknown fields return a path. An entire batch validates before one revision/CAS save. undo/redo must be a single command. Read the actual saved state after editing. studio.run supports eda.erc, eda.drc, eda.netlist, eda.forwardAnnotation, eda.refillCopper, eda.export with inputJSON.expectedRevision; drc/forwardAnnotation/refillCopper optionally take boardID, export additionally takes format and optional variant/boardID; gerberTechnical alone accepts gerberLayers. See manufacturingFields for a complete current-original export example. Set copperFillFields through native.put before refill; never author derived fill polygons/revision/state. inspectFrame accepts expectedRevision plus optional sheetID or boardID and maximumPixelSize. eda.backAnnotation previews PCB-to-schematic reference/value/footprint changes; read backAnnotationFields for its exact preview/apply source binding and pagination."
     static func capabilities(_ project: EDAProject) throws -> Capabilities {
         var examples: [[String: Any]] = [["op": "rename", "title": project.title]]
         if let sheet = project.sheets.first, let symbol = project.symbols.first {
-            var placement: [String: Any] = ["op": "component.place", "sheetID": sheet.id.uuidString,
+            let placement: [String: Any] = ["op": "component.place", "sheetID": sheet.id.uuidString,
                 "symbolID": symbol.id.uuidString, "reference": nextReference(symbol.referencePrefix, project: project),
                 "value": symbol.name, "x": 25.4, "y": 25.4, "angle": 0, "mirrored": false]
-            if let footprint = project.footprints.first { placement["footprintID"] = footprint.id.uuidString }
             examples.append(placement)
             examples.append(["op": "wire.put", "sheetID": sheet.id.uuidString,
                 "points": [["x": 10.0, "y": 10.0], ["x": 20.0, "y": 10.0]]])
@@ -83,7 +83,7 @@ nonisolated enum StudioElectronicsContract {
             exportExample=String(decoding:call,as:UTF8.self)
         }
         let bytes = try JSONSerialization.data(withJSONObject: examples, options: [.sortedKeys])
-        return .init(revision: String(project.revision), editCommands: commands, nativePutKinds: nativeKinds,
+        var result = Capabilities(revision: String(project.revision), editCommands: commands, nativePutKinds: nativeKinds,
             runActions: runActions, exportFormats: EDAExportFormat.allCases.map(\.rawValue),
             manufacturingFields: ["board.edgePlated":"optional boolean; nil is unspecified; true/false explicitly selects plated/non-plated edge",
                 "footprintDefinition.pads[].drillPlated":"optional boolean, required for Excellon when drill is present; no implicit plating",
@@ -116,10 +116,12 @@ nonisolated enum StudioElectronicsContract {
                 "Examples are alternatives, not a request to insert test components. Use actual IDs from this original.",
                 "bus.members are explicit literal net names, not vector ranges, groups or aliases. bus.entries is optional [{id:UUID,busPosition:{x,y},wirePosition:{x,y}}]; entries are graphical only. Use bus.unfold after explicitly choosing a member, or preserve existing real wires and member labels through native.put. Entry deletion removes only the drawing. Do not merge scalar nets merely because they touch a bus; run ERC and explicit forward annotation after edits. Hierarchical buses and alias expansion are not implemented.",
                 "native.put replaces one complete native record. Copy all encoded fields, omit nil optional fields, and preserve unknown source content. Extra keys are rejected with a field path.",
-                "Manual 45-degree routing, supported DRC and bounded vector zone refill are available. Refill shares the editor session/CAS/undo operation, retains isolated islands, reports precision, refuses unsupported geometry or incomplete four-spoke thermals, and does not implement neck minima, island removal or hatch fill. Shove routing, differential tuning and external EDA import remain unimplemented.",
+                "Manual 45-degree routing, supported DRC and bounded vector zone refill are available. Refill shares the editor session/CAS/undo operation, retains isolated islands, reports precision, refuses unsupported geometry or incomplete four-spoke thermals, and does not implement neck minima, island removal or hatch fill. Shove routing, differential tuning and full external EDA project import remain unimplemented. Independent KiCad symbol/footprint and Floe library import use the library browser, with raw originals and explicit compatibility findings retained.",
                 "Gerber exports supported copper/profile artwork; Excellon exports represented holes and straight slots, separated by plating/span. Missing radius/current fill/plating fails explicitly. Selected explicit zero-expansion mask/paste apertures and silk/assembly-outline strokes are available as gerberTechnical. Complete factory data, glyph text, clipping/expansion rules, DFM and custom padstacks are not generated. Set manufacturingFields through the existing native.put board/footprintDefinition/hole records before export; preserve full records and expectedRevision. Never delete unsupported graphics, zones or holes merely to get export success, and never invent fill geometry or plating.",
                 "3D currently extrudes the measured board, cutouts and holes; component model loading and SPICE simulation are not implemented."
             ])
+        result.library = StudioElectronicsLibraryContract.capabilities(revision: project.revision)
+        return result
     }
     static func nextReference(_ prefix: String, project: EDAProject) -> String {
         let used = Set(project.components.map(\.reference))

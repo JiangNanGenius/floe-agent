@@ -2,7 +2,7 @@
 
 Reusable Apple-native editor and project services for personal writing with AI assistance. No human multiplayer collaboration is included. The module's UI and storage do not depend on Space, Notes, chat view state or AppEnvironment.
 
-The **production package has no embedded native TeX binary**. The fixed full-toolchain worker uses the App's explicitly resolved Linux `exec.shell`/background jobs. The separate native Tectonic experiment passed engineering checks but contains copyleft dependencies; it is excluded from the production graph. Read [THIRD_PARTY.md](THIRD_PARTY.md) before changing that boundary.
+The production App uses the reviewed native XeTeX/BibTeX → XDV → Apple PDF path. It resolves the current document's packages, fonts and transitive dependencies on demand and reuses verified cached files; it has no minimal/full installation choice and does not prefetch another document's missing resources. The old experimental GPL PDF archive remains excluded. Source, selected licenses and actual archive audits are recorded in [Native/README.md](Native/README.md) and [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Implemented components
 
@@ -11,8 +11,8 @@ The **production package has no embedded native TeX binary**. The fixed full-too
 - Lossless LaTeX structure and inline projections; native source editor, visual prose, formatted text, math renderer injection, headings, abstracts, lists, ordinary tables, figures, citations and paper metadata. Custom macros/complex constructs remain editable as exact source.
 - BibTeX parsing/editing, real citation keys, missing/duplicate checks, project-wide search/replace, diagnostics, build history and forward/reverse SyncTeX.
 - Service-owned compilation/cancellation independent of editor lifetime. Unknown environment-worker termination retains the snapshot and blocks duplicate launches, including after process restart.
-- Fixed worker orchestrates installed XeLaTeX, LuaLaTeX, pdfLaTeX and LaTeX/DVI, BibTeX/Biber, indexes, glossaries and reruns. Shell escape and project `.latexmkrc` execution are disabled. Offline compilation requires verified network isolation in the selected environment.
-- Every TeX/helper process uses a verified Linux namespace: read-only toolchain/source, private writable output/cache, isolated network/PIDs and a fixed environment variable set. The selected Linux environment must provide working `bubblewrap`; missing isolation fails before compilation.
+- The App's native route supports XeLaTeX and BibTeX, real embedded font glyphs and legacy math outlines, images/PDF pages, document metadata, named destinations, bookmarks and internal links. Unsupported engines, helpers or PDF specials fail explicitly; this route never silently switches to Linux.
+- The separate legacy Linux worker retains its installed-engine orchestration and namespace checks for explicitly composed hosts. Its broader engine/helper matrix is independent of native App capability and is not an automatic fallback.
 - Complete receipts and outputs are read back in bounded chunks, checked against exact lengths/digests, and saved in the project before remote staging cleanup. Failure logs remain available for repair.
 
 ## App composition
@@ -32,7 +32,7 @@ The separate `Integration/FloeLaTeXHostAdapter` package provides `LaTeXHostServi
 
 The App supplies compiled hooks for current-run/binding checks, exact-original access/usage lease, owner-derived creation, file publication and metadata synchronization. Model JSON cannot select a host root or grant access. A newly created task artifact remains task-owned; a note attachment remains note-owned; placing or opening it in Space does not create a second original.
 
-`LaTeXEditorSession.typesetAction` lets a genuine native Typeset callback enter the existing durable task/environment/approval route. Capability facts may be cached; prior call contexts, grants and transports are not reused for later execution. Main App route registration, Space/Notes ownership hooks and actual Linux engine qualification must be verified in that App; the independent qualification host does not prove them.
+`LaTeXEditorSession.typesetAction` enters the existing durable task/original authorization route. Native typesetting owns no Linux environment, shell job or package-installation profile. Capability facts may be cached; prior call contexts and grants are not reused for later execution. Space, task and Notes originals keep their existing ownership and revision checks.
 
 ## Focused checks
 
@@ -54,18 +54,18 @@ Worker protocol fixtures are explicitly synthetic. They verify transfer/orchestr
 
 该模块提供整个 App 可复用的原生 LaTeX 工作台：源码与可视化写作、工程文件、文献、公式、表格、图片、历史恢复、搜索替换、ZIP 与 PDF 导出，以及模型可调用的工程和排版工具。未知宏与复杂排版保持原始源码，最终论文版面以实际 TeX 生成的 PDF 为准。
 
-正式包不嵌入原生 TeX 实验库。完整排版工具链复用 App 现有、明确绑定任务的 Linux 环境与 `exec.shell`／jobs；按真实探测结果提供四种引擎和辅助程序，不回退到宿主解释器。原生 Tectonic 实验虽然已生成真实 PDF，但依赖闭包含 GPL／LGPL，不能仅依据根 MIT 标签直接接入主 App；来源、版本、补丁及字体／宏包清单见许可文件。
+主 App 使用已替换 PDF 底层的原生 XeTeX／BibTeX → XDV → Apple PDF 链路。按照当前文章实际引用的宏包、字体及传递依赖按需下载，已有缓存直接复用；没有“精简／完整”档位，也不顺带预取其他文章缺失的资源。旧原生实验中的 GPL PDF 静态库继续隔离，正式构件有独立的来源、所选许可证和实际对象审计记录。
 
-TeX 与辅助进程使用经过实测的 Linux 文件、网络与进程命名空间，只挂载只读工具链／源码和本次输出／缓存，并移除无关环境变量。缺少可工作的 `bubblewrap` 时先明确提示准备环境，不以放宽文件访问或使用宿主解释器代替隔离。
+原生路径支持 XeLaTeX、BibTeX、字体与传统数学字形、图片／PDF 页面、文档信息、命名目标、目录与内部链接。不支持的引擎、辅助程序或 PDF 指令明确报错，不自动转到 Linux。另保留给独立宿主明确组合的旧 Linux worker，其能力与隔离验证不代表主 App 原生能力。
 
 宿主负责通过既有服务提供实际原件授权、任务／环境绑定、文件回传和受保护的 PDF 预览。工程归属沿用空间、任务或手记，不因调用编辑器而迁移或复制。共享服务不依赖视图生命周期；取消必须确认工作进程停止，状态不明则保留快照与占用。
 
-当前独立宿主与协议测试的通过不能替代主 App 接入、真实 Linux 引擎验证或 Apple 审核。后续界面优化以同一工程和服务为基础进行。
+主 App 的实际普通文章与公式排版、资源补齐、保存重开和进入 C 引擎后的取消已在固定 iPad 模拟器通过；PDF 绘制、目录和链接另有实际读回测试。模拟器结果不等于实物设备、全部宏包或 Apple 审核通过。
 
 ## Main App integration status
 
-The App now composes the shared services in `FloeApp/Space/LaTeX`: Space templates/import/file actions, task-owned originals, Notes-owned document lists, native source/visual editing, guarded PDF/SyncTeX, real saved run/environment ownership, six model tools and verified output publication. `latex.typeset prepare` can check or explicitly install the fixed standard/full Debian TeX Live profile through the existing `exec.shell`/jobs service. Offline typesetting does not request a network grant; package downloads retain the task network policy. Notes assistants keep their real `notes` purpose and NotesStore scope.
+The App composes the shared services in `FloeApp/Space/LaTeX`: Space templates/import/file actions, task-owned originals, Notes-owned document lists, native source/visual editing, protected PDF/SyncTeX, durable run ownership, six model tools and verified output publication. `latex.typeset prepare` resolves an immutable revision through the native engine and document-resource cache. Resource downloads respect the task networking policy and offline setting. Notes assistants retain their actual `notes` purpose and NotesStore scope.
 
-The frozen integration passed the actual local App and focused unit/UI runner build with Xcode 27.2. Eight new App/adapter contracts compiled but have not run. Mainline owns final Simulator, model and actual App Linux qualification. The independent real Linux matrix (11 cases) and isolation/timeout/cancellation checks (3 cases) remain separate evidence. No native Tectonic experimental dependency, version change or distribution is included.
+The native replacement passed both actual arm64 platform builds and Cargo/object closure audits. The actual App/runner object build, four PDF renderer cases, ordinary article/math PDF preparation and same-original reopen, and cancellation after C entry passed with Xcode 27.2. The earlier Linux matrix and old experimental host remain separate historical evidence; they are not used as native App qualification or publication proof.
 
-中文：空间、任务、手记的共享原件和编辑器已接入主 App；常用／完整工具链只通过既有 Linux 执行服务准备。手记保留自己的归属和授权。冻结接线的主 App 及定向测试程序构建通过，8 项新增契约尚未运行；真实模型、App Linux 排版和最终模拟器验收由主线继续完成，不能把独立 Linux 或原生实验的结果当作整个 App 已可用。
+中文：空间、任务和手记使用各自授权的同一原件；排版使用新原生链路，缺少的资源按文章补齐。新构件的两个 arm64 平台、主 App 对象构建、实际 PDF 与取消均有独立通过记录；实物设备、其他引擎及分发状态另行核验。

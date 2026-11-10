@@ -5,6 +5,7 @@ import Foundation
 import Testing
 @testable import FloePersistence
 import GRDB
+import FloeCore
 
 @Suite("FloePersistence.DatabaseManager")
 struct DatabaseManagerTests {
@@ -204,5 +205,170 @@ struct DatabaseManagerTests {
                         '2222222222222222222222222222222222222222222222222222222222222222')
                 """)
         }
+    }
+}
+
+private final class SuspensionCallCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.lock(); value += 1; lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+private struct SuspensionDatabaseFixture: Sendable {
+    let manager: DatabaseManager
+    let directory: URL
+
+    init() throws {
+        let base = ProcessInfo.processInfo.environment["FLOE_RQ26_FIXTURE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory
+        directory = base.appendingPathComponent("rq26-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Use the production file-backed WAL pool. GRDB's named in-memory
+        // queue initializer intentionally skips suspension observers.
+        manager = try DatabaseManager(path: directory.appendingPathComponent("store.sqlite"))
+    }
+
+    func close() async throws {
+        try await manager.close()
+        try FileManager.default.removeItem(at: directory)
+    }
+}
+
+/// These exercise process-wide GRDB notifications. Run this suite as a
+/// focused group, rather than concurrently with unrelated database suites.
+@Suite("Database suspension generation and fan-out", .serialized)
+struct DatabaseSuspensionRaceTests {
+    @Test("A late fence cannot override a newer resume or its successful write")
+    func lateFenceAfterResumeIsRejected() async throws {
+        DatabaseManager.resumeConnections()
+        defer { DatabaseManager.resumeConnections() }
+        let fixture = try SuspensionDatabaseFixture()
+        let manager = fixture.manager
+        let stale = DatabaseManager.suspensionGeneration()
+        DatabaseManager.suspendConnections()
+        DatabaseManager.resumeConnections()
+        #expect(!DatabaseManager.suspendConnections(ifCurrent: stale))
+        #expect(!DatabaseManager.connectionsAreSuspended)
+        try await manager.writer { db in try db.execute(sql: "CREATE TABLE ready(value INTEGER)") }
+        try await fixture.close()
+    }
+
+    @Test("A genuine current background fence still aborts before the write closure, without replay")
+    func actualSuspensionKeepsAbortAndSingleWrite() async throws {
+        DatabaseManager.resumeConnections()
+        defer { DatabaseManager.resumeConnections() }
+        let fixture = try SuspensionDatabaseFixture()
+        let manager = fixture.manager
+        try await manager.writer { db in try db.execute(sql: "CREATE TABLE once_only(value INTEGER)") }
+        let calls = SuspensionCallCount()
+        #expect(DatabaseManager.suspendConnections(ifCurrent: DatabaseManager.suspensionGeneration()))
+        do {
+            try await manager.writer { db in
+                calls.increment()
+                try db.execute(sql: "INSERT INTO once_only VALUES (1)")
+            }
+            Issue.record("A genuine suspension admitted a transaction")
+        } catch let error as DatabaseError {
+            #expect(error.resultCode == .SQLITE_ABORT || error.resultCode == .SQLITE_INTERRUPT)
+        }
+        #expect(calls.count == 0)
+        DatabaseManager.resumeConnections()
+        try await manager.writer { db in
+            calls.increment()
+            try db.execute(sql: "INSERT INTO once_only VALUES (1)")
+        }
+        #expect(calls.count == 1)
+        let count = try await manager.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM once_only") }
+        #expect(count == 1)
+        try await fixture.close()
+    }
+
+    @Test("A manager opened during a fence inherits it, then becomes usable after resume")
+    func newlyOpenedConnectionInheritsSuspension() async throws {
+        DatabaseManager.resumeConnections()
+        defer { DatabaseManager.resumeConnections() }
+        DatabaseManager.suspendConnections()
+        let fixture = try SuspensionDatabaseFixture()
+        let manager = fixture.manager
+        await #expect(throws: DatabaseError.self) {
+            try await manager.writer { db in try db.execute(sql: "CREATE TABLE should_wait(value INTEGER)") }
+        }
+        DatabaseManager.resumeConnections()
+        try await manager.writer { db in try db.execute(sql: "CREATE TABLE should_wait(value INTEGER)") }
+        try await fixture.close()
+    }
+
+    @Test("A resume racing the middle of suspend fan-out leaves both actual queues usable")
+    func concurrentFanoutDoesNotLeaveTailSuspended() async throws {
+        DatabaseManager.resumeConnections()
+        defer { DatabaseManager.resumeConnections() }
+        let firstFixture = try SuspensionDatabaseFixture()
+        let first = firstFixture.manager
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let resumed = DispatchSemaphore(value: 0)
+        let once = SuspensionCallCount()
+        let token = NotificationCenter.default.addObserver(forName: Database.suspendNotification, object: nil, queue: nil) { _ in
+            once.increment()
+            if once.count == 1 {
+                entered.signal()
+                _ = release.wait(timeout: .now() + 3)
+            }
+        }
+        defer { release.signal(); NotificationCenter.default.removeObserver(token) }
+        // Registered after the pausing observer: an uncoordinated old suspend
+        // post can reach this queue after a concurrent resume already ended.
+        let secondFixture = try SuspensionDatabaseFixture()
+        let second = secondFixture.manager
+        let finished = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            DispatchQueue.global().async {
+                let work = DispatchGroup()
+                work.enter()
+                DispatchQueue.global().async { DatabaseManager.suspendConnections(); work.leave() }
+                guard entered.wait(timeout: .now() + 3) == .success else {
+                    release.signal(); continuation.resume(returning: false); return
+                }
+                work.enter()
+                DispatchQueue.global().async { DatabaseManager.resumeConnections(); resumed.signal(); work.leave() }
+                // Old code can complete resume before the tail of suspend.
+                // Ordered code waits until this one bounded pause is released.
+                _ = resumed.wait(timeout: .now() + 0.1)
+                release.signal()
+                continuation.resume(returning: work.wait(timeout: .now() + 3) == .success)
+            }
+        }
+        #expect(finished)
+        #expect(!DatabaseManager.connectionsAreSuspended)
+        try await first.writer { db in try db.execute(sql: "CREATE TABLE first_ready(value INTEGER)") }
+        try await second.writer { db in try db.execute(sql: "CREATE TABLE second_ready(value INTEGER)") }
+        try await firstFixture.close()
+        try await secondFixture.close()
+    }
+
+    @Test("Storage-full and other SQL failures retain their original error and execute once")
+    func realStorageErrorsAreNotRetriedOrRelabelled() async throws {
+        DatabaseManager.resumeConnections()
+        defer { DatabaseManager.resumeConnections() }
+        let fixture = try SuspensionDatabaseFixture()
+        let manager = fixture.manager
+        let full = SuspensionCallCount()
+        let calls = SuspensionCallCount()
+        let token = NotificationCenter.default.addObserver(forName: StorageSpaceFailure.notification, object: nil, queue: nil) { _ in full.increment() }
+        defer { NotificationCenter.default.removeObserver(token) }
+        for code in [ResultCode.SQLITE_FULL, .SQLITE_CORRUPT] {
+            do {
+                try await manager.writer { _ in
+                    calls.increment()
+                    throw DatabaseError(resultCode: code, message: "owned fixture")
+                }
+                Issue.record("Expected the original storage error")
+            } catch let error as DatabaseError {
+                #expect(error.resultCode == code)
+            }
+        }
+        #expect(calls.count == 2)
+        #expect(full.count == 1)
+        try await fixture.close()
     }
 }

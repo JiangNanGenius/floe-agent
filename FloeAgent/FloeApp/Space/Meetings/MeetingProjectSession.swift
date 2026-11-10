@@ -32,6 +32,9 @@ import FloeTools
     private(set) var meeting: MeetingSnapshot
     private(set) var recordings: [CaptureSessionSnapshot] = []
     private(set) var transcript: [TranscriptSegment] = []
+    private(set) var transcriptPartials: [PartialTranscript] = []
+    var translationWork: [UUID: MeetingTranslationBinding] = [:]
+    var translationFailures: [UUID: MeetingTranslationBinding] = [:]
     private(set) var notes: [NoteEntry] = []
     private(set) var todos: [TodoItem] = []
     private(set) var decisions: [MeetingDecision] = []
@@ -101,6 +104,7 @@ import FloeTools
             meeting = try await service.meeting(MeetingID(id))
             recordings = try await service.sessions(meeting: MeetingID(id))
             transcript = try await service.transcript(meeting: MeetingID(id))
+            transcriptPartials = await service.currentPartials(meeting: MeetingID(id))
             notes = try await service.notes(meeting: MeetingID(id))
             todos = try await service.todos(meeting: MeetingID(id))
             decisions = try await service.decisions(meeting: MeetingID(id))
@@ -196,13 +200,28 @@ import FloeTools
               FileManager.default.fileExists(atPath: resolved.path) else { throw PersonalContentError.missingDocument }
         return resolved
     }
-    func play(_ session: CaptureSessionSnapshot, at time: Double = 0) {
+    /// Polls RAM-only engine partials while the transcript UI is mounted.
+    /// Cancelling this observer never stops capture, transcription or analysis.
+    func observeTranscriptPartials() async {
+        while !Task.isCancelled {
+            let current = await service.currentPartials(meeting: MeetingID(id))
+            guard !Task.isCancelled else { return }
+            if transcriptPartials != current { transcriptPartials = current }
+            do { try await Task.sleep(for: .milliseconds(300)) }
+            catch { return }
+        }
+    }
+
+    func play(_ session: CaptureSessionSnapshot, at time: Double = 0, until end: Double? = nil) {
         guard !isRecording, session.state == .stopped else { return }
         do {
             let file = try mediaFile(for: session)
             if !playbackHeld { try audio.acquirePlayback(); playbackHeld = true }
             player?.pause()
             let player = AVPlayer(url: file)
+            if let end, end.isFinite, end > max(0, time) {
+                player.currentItem?.forwardPlaybackEndTime = CMTime(seconds: end, preferredTimescale: 600)
+            }
             player.seek(to: CMTime(seconds: max(0, time), preferredTimescale: 600))
             self.player = player; playingSession = session.id
             player.play()

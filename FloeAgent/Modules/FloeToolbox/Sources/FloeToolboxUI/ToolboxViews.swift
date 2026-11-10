@@ -1,6 +1,11 @@
 import Foundation
 import SwiftUI
 import FloeToolboxCore
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 extension ToolboxSpacePage {
     func title(in locale: Locale) -> String {
@@ -32,9 +37,26 @@ extension ToolboxTool {
         case .traceroute: "point.3.connected.trianglepath.dotted"; case .dns: "list.bullet.rectangle"; case .port: "network"
         case .lan: "dot.radiowaves.left.and.right"; case .wifi: "wifi"; case .roaming: "wifi.circle"
         case .serialAssistant: "cable.connector"; case .http: "curlybraces"; case .webSocket: "arrow.left.arrow.right"; case .mqtt: "point.3.filled.connected.trianglepath.dotted"
-        case .hash: "checkmark.document"; case .json: "curlybraces.square"; case .encoding: "textformat.abc"
+        case .hash: "doc.text.magnifyingglass"; case .json: "curlybraces.square"; case .encoding: "textformat.abc"
         case .qr: "qrcode"
         }
+    }
+}
+
+/// System-symbol availability varies independently of a tool's capability.
+/// A missing glyph must not leave a blank interactive directory entry.
+private struct ToolboxToolIcon:View {
+    let tool:ToolboxTool
+    var body:some View {
+        #if os(iOS)
+        if let image=UIImage(systemName:tool.symbol) ?? UIImage(systemName:"doc.text") {Image(uiImage:image)}
+        else {Image(systemName:"wrench.and.screwdriver")}
+        #elseif os(macOS)
+        if let image=NSImage(systemSymbolName:tool.symbol,accessibilityDescription:nil) ?? NSImage(systemSymbolName:"doc.text",accessibilityDescription:nil) {Image(nsImage:image)}
+        else {Image(systemName:"wrench.and.screwdriver")}
+        #else
+        Image(systemName:tool.symbol)
+        #endif
     }
 }
 
@@ -136,7 +158,7 @@ public struct ToolboxHomeView: View {
                     ForEach(featured) { tool in
                         Button { onOpen(tool) } label: {
                             VStack(alignment: .leading, spacing: 12) {
-                                Image(systemName: tool.symbol)
+                                ToolboxToolIcon(tool:tool)
                                     .font(.title).foregroundStyle(.tint)
                                     .accessibilityHidden(true)
                                 Text(tool.title(in: toolboxLocale))
@@ -168,7 +190,7 @@ public struct ToolboxHomeView: View {
         VStack(spacing: 0) {
             Button { onOpen(tool) } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: tool.symbol).foregroundStyle(.tint).frame(width: 28)
+                    ToolboxToolIcon(tool:tool).foregroundStyle(.tint).frame(width: 28)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(tool.title(in: toolboxLocale)).font(.body).foregroundStyle(.primary)

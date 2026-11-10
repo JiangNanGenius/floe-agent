@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "exactDirectories": [
+    "bridge",
+    "apple",
+    "include",
+    "licenses"
+  ],
+  "files": [
+    {
+      "path": "Scripts/build_apple_xdv.py",
+      "sha256": "261c69d910b04061eef3f7194a62a215525c5e873683cbfb289ae079627241fa",
+      "bytes": 17643
+    },
+    {
+      "path": "Scripts/collect_xdv_notices.py",
+      "sha256": "ac316b3cbd8bf7021d8a6f696499832a94f51d3ccfe5349373df58c0efecc47c",
+      "bytes": 7261
+    },
+    {
+      "path": "Scripts/prepare_xdv_source.py",
+      "sha256": "95d114fe466cf08b82263421b7ad7118eb74731f778e052b88ce0276493f6102",
+      "bytes": 11838
+    },
+    {
+      "path": "Scripts/verify_production_boundary.py",
+      "sha256": "bf14c7db97b80078e1bf97badb72f8b8d23665a2448fe8b36e508141662285b7",
+      "bytes": 7093
+    },
+    {
+      "path": "apple/FloeTeXAppleMetadata.h",
+      "sha256": "b27f11bf3dd07df255945627cc2259dce10d38533b34c518c21d0fc6d64ee7cb",
+      "bytes": 1466
+    },
+    {
+      "path": "apple/FloeTeXAppleMetadata.m",
+      "sha256": "0268af82ac9c6b3746bf764894c7f9653b5fadf060513c845f606b73157e8922",
+      "bytes": 6129
+    },
+    {
+      "path": "apple/FloeTeXLegacyOutline.c",
+      "sha256": "6a0ffacc287e901702419d81f89b8e9ad6ab2f87cd4f1cd78e1f2b9a3296afb1",
+      "bytes": 3614
+    },
+    {
+      "path": "apple/FloeTeXLegacyOutline.h",
+      "sha256": "4ff9000b1b671a407aca1ba3faa12b274e959b7f611d3ddba576b05e0d7ebe44",
+      "bytes": 1297
+    },
+    {
+      "path": "bridge/Cargo.lock",
+      "sha256": "79ca7d05caf5bb71aa0eedb885489ed26de92578a9110ac07edc3b630ab905fe",
+      "bytes": 103141
+    },
+    {
+      "path": "bridge/Cargo.toml",
+      "sha256": "15839f2fb1d3755bd3a3121d9f6f96c7d256712d4ceaa2d0579bed6ac311cb8c",
+      "bytes": 1025
+    },
+    {
+      "path": "bridge/build.rs",
+      "sha256": "e060d915c2911629643dd446d58b2e746ee339c315bec0c1201d6486f01b1043",
+      "bytes": 1128
+    },
+    {
+      "path": "bridge/src/bin/floe-tex.rs",
+      "sha256": "6f39675cef16ce51654a2085f1bef7299f85b2aac7b2a206ce7ed050e7791794",
+      "bytes": 1624
+    },
+    {
+      "path": "bridge/src/display_list.rs",
+      "sha256": "55a6bc97c8f0bca430124c76c5f401bd6841a83c3a24bbf584ae4142ed6cb801",
+      "bytes": 20524
+    },
+    {
+      "path": "bridge/src/legacy.rs",
+      "sha256": "72b2ba0dbd45619396477446697e284e613da8a46810555af7e547e362e270b4",
+      "bytes": 14674
+    },
+    {
+      "path": "bridge/src/lib.rs",
+      "sha256": "8763ab99dd0d38323af9dc615725925a2ae667f2ba0d9f5a497601453e80fc82",
+      "bytes": 17427
+    },
+    {
+      "path": "dependencies.json",
+      "sha256": "eee771ab8c5d88925cce042227586ee8401e0df8b45f56b5cd9924a32c81230a",
+      "bytes": 1586
+    },
+    {
+      "path": "include/FloeTeXNative.h",
+      "sha256": "63241efbf3648607e52240c5ca4f51961370eb47b0b1a42766c79d2d7808565c",
+      "bytes": 741
+    },
+    {
+      "path": "include/module.modulemap",
+      "sha256": "f83f27cb03e460a934e50e551ec63c6e51005b509d350bfc37ba5ac3dbf96ded",
+      "bytes": 67
+    },
+    {
+      "path": "licenses/CPL-1.0.txt",
+      "sha256": "9698f2ba346a875a47a9cc6bb602e3d126758774dde1f575b4f3369dc3f2574f",
+      "bytes": 11653
+    },
+    {
+      "path": "licenses/MPL-2.0.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "bytes": 16726
+    },
+    {
+      "path": "licenses/freetype-FTL.TXT",
+      "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f",
+      "bytes": 6743
+    },
+    {
+      "path": "licenses/freetype-GPLv2.TXT",
+      "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18",
+      "bytes": 17994
+    },
+    {
+      "path": "licenses/freetype-LICENSE.TXT",
+      "sha256": "bd36c8b474855fa294c2ec5c184544478ef3720aad37d65a6296a4f264fd2d3b",
+      "bytes": 2149
+    },
+    {
+      "path": "licenses/graphite2-COPYING",
+      "sha256": "2c272829ff23f182c8bf7ea12fedea69b0ae148663123ed5240c117cb129c9c1",
+      "bytes": 1235
+    },
+    {
+      "path": "licenses/graphite2-LICENSE",
+      "sha256": "cab46cd45adbfea4b1d0f14b033c70062c73074fa0b56532c2f351576ddf455e",
+      "bytes": 29228
+    },
+    {
+      "path": "licenses/harfbuzz-COPYING",
+      "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+      "bytes": 1971
+    },
+    {
+      "path": "licenses/icu-LICENSE",
+      "sha256": "e09827667e0bb3c808b2a463548ba814a5e6249b67353234d70c8dfc2bcc417d",
+      "bytes": 27718
+    },
+    {
+      "path": "licenses/index.json",
+      "sha256": "2f709777a7dfc26cfa1354a622f39fc462a66c594f3cd3c0c0363e46daefbd1e",
+      "bytes": 1335
+    },
+    {
+      "path": "licenses/libpng-LICENSE",
+      "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526",
+      "bytes": 5345
+    },
+    {
+      "path": "licenses/native-xdv-selected-licenses.json",
+      "sha256": "5516add0ef161d6e273bc11ee0adf0b8a6a33893cc2026e5740d5bb937abd837",
+      "bytes": 5332
+    },
+    {
+      "path": "licenses/teckit-LICENSING-2.5.4.txt",
+      "sha256": "e6cd37f625b98a1453ec8e0cc527bf6768c0eb0d357fb9073a8790a163b489e2",
+      "bytes": 2070
+    },
+    {
+      "path": "licenses/xetex-native-source-notices.txt",
+      "sha256": "dd22f763e10cf7ab9bb31b5d5a7f8add7fd488d6db23e69f3c0d334f7dba1223",
+      "bytes": 16784
+    }
+  ],
+  "scope": "All local bridge/Apple/public-header/license inputs and pinned production build/prepare scripts; generated binary/framework outputs excluded."
+}

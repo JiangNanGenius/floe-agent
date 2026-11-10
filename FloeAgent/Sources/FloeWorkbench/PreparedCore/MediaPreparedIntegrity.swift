@@ -15,8 +15,12 @@ public enum MediaPreparedIntegrity {
     // MARK: Document
 
     public static func validate(_ document: MediaPreparedDocument) throws {
-        guard document.schemaVersion == MediaPreparedSchema.documentVersion else {
+        guard document.schemaVersion == MediaPreparedSchema.documentVersion || document.schemaVersion == 3 else {
             throw MediaPreparedCoreError.unsupportedSchemaVersion(document.schemaVersion)
+        }
+        guard (document.canvasRevision ?? 0)<UInt64.max else { throw MediaPreparedCoreError.invalidDocument("canvas generation") }
+        guard document.kind == .video || document.canvas?.videoColorProfile == nil else {
+            throw MediaPreparedCoreError.invalidDocument("video color settings require a video original")
         }
         guard document.revision >= 0 else {
             throw MediaPreparedCoreError.invalidDocument("revision is negative")
@@ -38,13 +42,22 @@ public enum MediaPreparedIntegrity {
             try validate(layer, assetIDs: assetIDs, layerIDs: layerIDs)
         }
         try validateHierarchy(document.layers)
+        for layer in document.layers {
+            guard case .text(let text)=layer.content,let path=text.pathLayout else { continue }
+            var reference=layer.canvasSpace?.referenceCanvas,parentID=layer.parentID
+            while reference==nil,let id=parentID,let parent=document.layer(id) { reference=parent.canvasSpace?.referenceCanvas;parentID=parent.parentID }
+            reference=reference ?? document.canvas
+            guard reference?.width==path.referenceCanvas.width,reference?.height==path.referenceCanvas.height else { throw MediaPreparedCoreError.invalidDocument("path text logical canvas does not match its layer") }
+        }
         try validateTrackGraph(document.trackGraph, assetIDs: assetIDs)
+        try MediaPreparedCompounds.validate(document)
     }
 
     private static func validate(_ layer: MediaPreparedLayer,
                                  assetIDs: Set<UUID>, layerIDs: Set<UUID>) throws {
         // Empty layer names are preserved on upgrade; new name edits still
         // refuse an empty value in the engine.
+        try layer.canvasSpace?.validate()
         try validate(transform: layer.transform)
         try validate(adjustment: layer.adjustment)
         guard layer.opacity.isFinite, (0...1).contains(layer.opacity) else {
@@ -161,6 +174,9 @@ public enum MediaPreparedIntegrity {
         if let strokeColor = text.strokeColorHex, !isColorHex(strokeColor) {
             throw MediaPreparedCoreError.invalidDocument("text stroke color must be #RRGGBB")
         }
+        if let path=text.pathLayout {
+            try path.validate();try validate(path:path.path)
+        }
     }
 
     private static func validate(freehand: ImageFreehandContent) throws {
@@ -256,6 +272,7 @@ public enum MediaPreparedIntegrity {
     }
 
     private static func validate(selection: ImageSelection) throws {
+        if let bitmap = selection.bitmap { try bitmap.validate() }
         guard selection.shapes.count <= 64 else {
             throw MediaPreparedCoreError.invalidDocument("selection supports at most 64 shapes")
         }
@@ -283,6 +300,8 @@ public enum MediaPreparedIntegrity {
     }
 
     private static func validate(adjustment: ImageLayerAdjustment) throws {
+        try MediaNativeColor.validateExtended(adjustment)
+        if let region=adjustment.effectRegion{try validate(selection:region)}
         if let saturation = adjustment.saturation {
             guard saturation.isFinite, (0...4).contains(saturation) else {
                 throw MediaPreparedCoreError.invalidDocument("saturation must be 0...4")
@@ -392,6 +411,51 @@ public enum MediaPreparedIntegrity {
                 throw MediaPreparedCoreError.invalidDocument("clip crop must fit the unit square")
             }
         }
+        if clip.sourceCaptionID != nil || clip.captionLanguage != nil {
+            guard kind == .caption,clip.captionLanguage.map({ !$0.isEmpty && $0.utf8.count<=128 }) ?? true else {
+                throw MediaPreparedCoreError.invalidDocument("caption lineage and language require a caption clip")
+            }
+        }
+        if clip.chromaKey != nil || clip.blendMode != nil || clip.visualOpacity != nil || clip.videoGrade != nil {
+            guard kind == .visual else { throw MediaPreparedCoreError.invalidDocument("visual compositing requires a visual clip") }
+            try clip.chromaKey?.validate();try clip.videoGrade?.validate()
+            if let opacity = clip.visualOpacity,!opacity.isFinite || !(0...1).contains(opacity) { throw MediaPreparedCoreError.invalidDocument("visual opacity must be in 0...1") }
+        }
+        if clip.videoTracking != nil || clip.stabilization != nil {
+            guard kind == .visual, clip.motionTitle == nil, clip.crop == nil else {
+                throw MediaPreparedCoreError.invalidDocument("motion analysis requires an uncropped video clip")
+            }
+            try clip.videoTracking?.validate(); try clip.stabilization?.validate()
+            for source in [clip.videoTracking?.source, clip.stabilization?.source].compactMap({ $0 }) {
+                guard source.matches(clip: clip) else {
+                    throw MediaPreparedCoreError.invalidDocument("motion source changed; clear or re-analyze the clip")
+                }
+            }
+        }
+        if let match = clip.videoGrade?.colorMatch {
+            guard kind == .visual, clip.assetID == match.target.assetID else {
+                throw MediaPreparedCoreError.invalidDocument("color matching requires its analyzed source clip")
+            }
+        }
+        if let audio = clip.audioProcessing {
+            guard kind == .audio else { throw MediaPreparedCoreError.invalidDocument("audio effects require an extracted or independent audio clip") }
+            try audio.validate()
+        }
+        if let title = clip.motionTitle {
+            guard kind == .visual, clip.assetID == nil, clip.sourcePlayback == nil else {
+                throw MediaPreparedCoreError.invalidDocument("motion titles cannot carry an asset or source playback")
+            }
+            try title.validate()
+        }
+        if let playback = clip.sourcePlayback {
+            guard kind == .visual || kind == .audio else {
+                throw MediaPreparedCoreError.invalidDocument("source playback requires a media clip")
+            }
+            _ = try MediaSourcePlaybackMath.sourceSeconds(sourceStart: clip.sourceRange.startSeconds,
+                sourceDuration: clip.sourceRange.durationSeconds, speed: clip.speed,
+                localTime: playback.holdSeconds == nil ? max(0, clip.timelineRange.durationSeconds - 0.000_01) : 0,
+                playback: playback, frameDuration: 1 / 600)
+        }
         if let selection = clip.videoMask { try validate(selection: selection) }
         for fade in [clip.fadeIn, clip.fadeOut].compactMap({ $0 }) {
             guard fade.timescale > 0, fade.value >= 0 else {
@@ -434,6 +498,7 @@ public enum MediaPreparedIntegrity {
                     throw MediaPreparedCoreError.invalidDocument("keyframes must be strictly ordered")
                 }
                 previous = keyframe.time
+                if let curve = keyframe.curve { try curve.validate() }
                 if case .number(let value) = keyframe.value, !value.isFinite {
                     throw MediaPreparedCoreError.invalidDocument("keyframe number is not finite")
                 }
@@ -484,6 +549,9 @@ public enum MediaPreparedIntegrity {
             throw MediaPreparedCoreError.invalidDocument(
                 "prepared document requires envelope schema v2")
         }
+        guard project.schemaVersion >= prepared.schemaVersion else {
+            throw MediaPreparedCoreError.invalidDocument("envelope schema is older than prepared source")
+        }
         try validate(prepared)
         guard prepared.id == project.id else {
             throw MediaPreparedCoreError.invalidDocument(
@@ -519,6 +587,20 @@ public enum MediaPreparedIntegrity {
                   entry.committedRevision <= prepared.revision else {
                 throw MediaPreparedCoreError.invalidDocument("journal revision range is inconsistent")
             }
+            if let redo = entry.redoChanges {
+                guard entry.status == .undone, let undoRevision = entry.undoneRevision,
+                      undoRevision > entry.committedRevision, undoRevision <= prepared.revision,
+                      redo.count == entry.changes.count, Set(redo.map(\.ref)) == Set(entry.changes.map(\.ref)),
+                      redo.allSatisfy({ $0.before != nil || $0.after != nil }) else {
+                    throw MediaPreparedCoreError.invalidDocument("redo journal boundary is inconsistent")
+                }
+            }
+            if let scope=entry.compoundScopeID {
+                guard entry.changes.contains(where:{change in
+                    guard change.ref.kind == .clip,change.ref.id == scope,case .clip(_,let before)?=change.before,case .clip(_,let after)?=change.after else { return false }
+                    return before.compound?.anchorClipID == scope && after.compound?.anchorClipID == scope
+                }) else { throw MediaPreparedCoreError.invalidDocument("compound journal scope is not bound to its original anchor") }
+            }
             var seen = Set<MediaPreparedObjectRef>()
             for change in entry.changes {
                 guard seen.insert(change.ref).inserted else {
@@ -528,6 +610,12 @@ public enum MediaPreparedIntegrity {
                     throw MediaPreparedCoreError.invalidDocument("journal change is empty")
                 }
                 switch change.ref.kind {
+                case .canvas:
+                    guard change.ref.id == project.id,
+                          case .canvas(let before)?=change.before,case .canvas(let after)?=change.after,
+                          before.revision<after.revision,after.revision<UInt64.max else { throw MediaPreparedCoreError.invalidDocument("canvas journal state") }
+                    if let canvas=before.canvas { try MediaCanvasLayout.validate(canvas) }
+                    if let canvas=after.canvas { try MediaCanvasLayout.validate(canvas) }
                 case .captionStyle:
                     guard change.ref.id == project.id,
                           case .captionStyle(let before)? = change.before,
@@ -552,6 +640,42 @@ public enum MediaPreparedIntegrity {
     /// prepared document exists: v2 writers own the prepared content. This is
     /// the store-level check that turns an old v1 autosave into a refusal
     /// instead of silent divergence/data loss.
+    /// Only the mirrored canvas metadata may move, and only with a matching
+    /// typed canvas generation/journal transition. Frozen v1 content remains
+    /// protected from old autosaves and unjournaled prepared-envelope writes.
+    public static func allowsPreparedCanvasTransition(_ next:MediaProject,from old:MediaProject) -> Bool {
+        guard let before=old.prepared,let after=next.prepared,before.kind == after.kind,
+              next.revision>old.revision,next.canvas != old.canvas,
+              next.canvas == after.canvas,old.canvas == before.canvas,
+              (after.canvasRevision ?? 0)>(before.canvasRevision ?? 0) else { return false }
+        if before.kind == .video {
+            guard let lhs = before.canvas, let rhs = after.canvas,
+                  lhs.width == rhs.width, lhs.height == rhs.height, lhs.frameRate == rhs.frameRate,
+                  lhs.videoColorProfile != rhs.videoColorProfile else { return false }
+        }
+        var normalized=next;normalized.canvas=old.canvas
+        guard v1ProjectionEqual(normalized,old) else { return false }
+        let ref=MediaPreparedObjectRef(kind:.canvas,id:next.id)
+        func matches(_ changes:[MediaPreparedObjectChange],entry:MediaPreparedJournalEntry) -> Bool {
+            guard let change=changes.first(where:{$0.ref == ref}),
+                  case .canvas(let lhs)?=change.before,case .canvas(let rhs)?=change.after,
+                  rhs.canvas == after.canvas,rhs.revision == (after.canvasRevision ?? 0),lhs.revision<rhs.revision else { return false }
+            if lhs.canvas == before.canvas,lhs.revision<=(before.canvasRevision ?? 0) { return true }
+            // One existing instruction may commit multiple canvas steps. Its
+            // first-before snapshot stays fixed; the prior durable after must
+            // still match exactly before admitting the next step.
+            guard let prior=old.preparedJournal?.entry(entry.id),
+                  let previous=prior.changes.first(where:{$0.ref == ref}),previous.before == change.before,
+                  case .canvas(let boundary)?=previous.after else { return false }
+            return boundary.canvas == before.canvas && boundary.revision == (before.canvasRevision ?? 0)
+        }
+        return (next.preparedJournal?.entries ?? []).contains { entry in
+            if entry.status == .committed,entry.committedRevision == next.revision { return matches(entry.changes,entry:entry) }
+            if entry.status == .undone,entry.undoneRevision == next.revision,let redo=entry.redoChanges { return matches(redo,entry:entry) }
+            return false
+        }
+    }
+
     public static func v1ProjectionEqual(_ lhs: MediaProject, _ rhs: MediaProject) -> Bool {
         lhs.canvas == rhs.canvas
             && lhs.assets == rhs.assets

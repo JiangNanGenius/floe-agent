@@ -11,6 +11,8 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import CoreGraphics
+import CoreImage
+import VideoToolbox
 import AudioToolbox
 #if canImport(Darwin)
 import Darwin
@@ -61,6 +63,7 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
     private let renderer: PreparedVideoFrameRenderer
     private let audioMixer: PreparedVideoAudioMixer
     private let limits: Limits
+    private let managedPixelContext = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)!, .cacheIntermediates: false])
 
     public init(renderer: PreparedVideoFrameRenderer = PreparedVideoFrameRenderer(),
                 audioMixer: PreparedVideoAudioMixer = PreparedVideoAudioMixer(),
@@ -78,6 +81,13 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
                              cancellation: PreparedVideoCancellation,
                              progress: @Sendable (PreparedVideoProgress) -> Void) async throws -> PreparedVideoWindowReceipt {
         try cancellation.check()
+        let settings = settings.resolvingColorProfile(plan.colorProfile)
+        guard settings.preservesAlpha != true || settings.colorProfile?.isHDR != true else {
+            throw PreparedVideoError.invalidOutputSettings("transparent HDR output is not supported; choose SDR for a transparent proxy")
+        }
+        guard settings.colorProfile?.isHDR != true || settings.codec == .hevc else {
+            throw PreparedVideoError.invalidOutputSettings("HDR output requires HEVC Main10; choose HEVC or SDR")
+        }
         try plan.validateForRender()
         guard settings.frameRate == plan.frameRate else {
             throw PreparedVideoError.invalidOutputSettings(
@@ -97,6 +107,7 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
               windowRange.endSeconds <= plan.duration.seconds + 0.000_001 else {
             throw PreparedVideoError.invalidTime("window lies outside the plan duration")
         }
+        guard settings.preservesAlpha != true || (settings.codec == .hevc && destination.pathExtension.lowercased() == "mov") else { throw PreparedVideoError.invalidOutputSettings("transparent proxies require a MOV destination") }
         guard destination.isFileURL else {
             throw PreparedVideoError.invalidOutputSettings("destination must be a file URL")
         }
@@ -111,7 +122,7 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
         }
 
         let temporary = destination.deletingLastPathComponent()
-            .appendingPathComponent(".prepared-video-\(UUID().uuidString).mp4")
+            .appendingPathComponent(".prepared-video-\(UUID().uuidString)." + (settings.preservesAlpha == true ? "mov":"mp4"))
         let audioTemporary = destination.deletingLastPathComponent()
             .appendingPathComponent(".prepared-video-audio-\(UUID().uuidString).wav")
         defer {
@@ -140,12 +151,16 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
 
         let writer: AVAssetWriter
         do {
-            writer = try AVAssetWriter(outputURL: temporary, fileType: .mp4)
+            writer = try AVAssetWriter(outputURL: temporary, fileType: settings.preservesAlpha == true ? .mov:.mp4)
         } catch {
             throw PreparedVideoError.renderFailed("could not create the MP4 writer")
         }
 
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings(settings))
+        let outputSettings = videoSettings(settings)
+        guard writer.canApply(outputSettings: outputSettings,forMediaType: .video) else {
+            throw PreparedVideoError.invalidOutputSettings("the encoder cannot produce the requested video format")
+        }
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
         videoInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoInput) else {
             throw PreparedVideoError.renderFailed("the writer rejected the video input")
@@ -153,13 +168,7 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
         writer.add(videoInput)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: videoInput,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: settings.width,
-                kCVPixelBufferHeightKey as String: settings.height,
-                kCVPixelBufferCGImageCompatibilityKey as String: true,
-                kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
-            ])
+            sourcePixelBufferAttributes: pixelBufferAttributes(settings: settings))
 
         var audioInput: AVAssetWriterInput?
         if audioURL != nil {
@@ -254,7 +263,7 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
             let rendered = try await renderer.renderFrame(plan: plan, frameIndex: absoluteFrame,
                                                           settings: settings,
                                                           cancellation: cancellation)
-            let buffer = try pixelBuffer(from: rendered.image, pool: adaptor.pixelBufferPool)
+            let buffer = try pixelBuffer(from: rendered.image, pool: adaptor.pixelBufferPool,profile: settings.colorProfile)
             let presentation = CMTime(value: Int64(localFrame) * Int64(settings.frameRate.denominator),
                                       timescale: settings.frameRate.numerator)
             guard adaptor.append(buffer, withPresentationTime: presentation) else {
@@ -267,21 +276,40 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
         }
     }
 
-    private func pixelBuffer(from image: CGImage, pool: CVPixelBufferPool?) throws -> CVPixelBuffer {
+    private func pixelBufferAttributes(settings: PreparedVideoOutputSettings) -> [String:Any] {
+        var result: [String:Any] = [kCVPixelBufferPixelFormatTypeKey as String: settings.colorProfile?.pixelBufferFormat ?? kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: settings.width,kCVPixelBufferHeightKey as String: settings.height]
+        if settings.colorProfile?.isHDR == true {
+            result[kCVPixelBufferMetalCompatibilityKey as String] = true
+            result[kCVPixelBufferIOSurfacePropertiesKey as String] = [:] as [String:Any]
+        } else {
+            result[kCVPixelBufferCGImageCompatibilityKey as String] = true
+            result[kCVPixelBufferCGBitmapContextCompatibilityKey as String] = true
+        }
+        return result
+    }
+    private func pixelBuffer(from image: CGImage, pool: CVPixelBufferPool?,profile: MediaVideoColorProfile?) throws -> CVPixelBuffer {
         var buffer: CVPixelBuffer?
         if let pool {
             CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer)
         }
         if buffer == nil {
-            let attributes: [CFString: Any] = [
-                kCVPixelBufferCGImageCompatibilityKey: true,
-                kCVPixelBufferCGBitmapContextCompatibilityKey: true
-            ]
+            let attributes: [CFString:Any] = profile?.isHDR == true ? [kCVPixelBufferMetalCompatibilityKey: true,kCVPixelBufferIOSurfacePropertiesKey: [:] as [String:Any]]
+                : [kCVPixelBufferCGImageCompatibilityKey: true,kCVPixelBufferCGBitmapContextCompatibilityKey: true]
             CVPixelBufferCreate(kCFAllocatorDefault, image.width, image.height,
-                                kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer)
+                                profile?.pixelBufferFormat ?? kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer)
         }
         guard let buffer else {
             throw PreparedVideoError.renderFailed("could not allocate a video pixel buffer")
+        }
+        guard CVPixelBufferGetPixelFormatType(buffer) == (profile?.pixelBufferFormat ?? kCVPixelFormatType_32BGRA) else {
+            throw PreparedVideoError.renderFailed("the buffer pool cannot preserve the selected video bit depth")
+        }
+        try MediaVideoColorProfile.attach(profile,to: buffer)
+        if let profile,profile.isHDR {
+            managedPixelContext.render(CIImage(cgImage: image),to: buffer,
+                bounds: CGRect(x: 0,y: 0,width: image.width,height: image.height),colorSpace: try profile.colorSpace())
+            return buffer
         }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
@@ -291,7 +319,7 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
         guard let context = CGContext(data: base, width: image.width, height: image.height,
                                       bitsPerComponent: 8,
                                       bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-                                      space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                      space: try profile?.colorSpace() ?? (CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                           | CGBitmapInfo.byteOrder32Little.rawValue) else {
             throw PreparedVideoError.renderFailed("could not create a pixel buffer context")
@@ -300,6 +328,10 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
         // Bitmap memory is consumed directly by VideoToolbox. An additional
         // UIKit-style CTM flip would vertically invert every exported frame.
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        // The frame renderer and bitmap context produce sRGB. Tag both the
+        // source buffers and encoded output so VideoToolbox cannot infer SD
+        // colorimetry from small preview/export dimensions.
+        try MediaVideoColorProfile.attach(profile,to: buffer)
         return buffer
     }
 
@@ -419,7 +451,7 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
     // MARK: Writer / validation
 
     private func videoSettings(_ settings: PreparedVideoOutputSettings) -> [String: Any] {
-        let codec: AVVideoCodecType = settings.codec == .h264 ? .h264 : .hevc
+        let codec: AVVideoCodecType = settings.preservesAlpha == true ? .hevcWithAlpha:(settings.codec == .h264 ? .h264 : .hevc)
         let bitsPerSecond = max(400_000, Int(Double(settings.pixelCount) * settings.frameRate.fps * (0.05 + 0.20 * settings.quality)))
         var compression: [String: Any] = [
             AVVideoAverageBitRateKey: min(bitsPerSecond, 120_000_000),
@@ -428,11 +460,14 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
         ]
         if settings.codec == .h264 {
             compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+        } else if settings.colorProfile?.isHDR == true {
+            compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel
         }
         return [
             AVVideoCodecKey: codec,
             AVVideoWidthKey: settings.width,
             AVVideoHeightKey: settings.height,
+            AVVideoColorPropertiesKey: MediaVideoColorProfile.videoProperties(settings.colorProfile),
             AVVideoCompressionPropertiesKey: compression
         ]
     }
@@ -456,7 +491,15 @@ public actor PreparedVideoExporter: PreparedVideoWindowRendering {
             guard let video = videoTracks.first else {
                 throw PreparedVideoError.renderFailed("staged output has no video track")
             }
+            if settings.preservesAlpha == true {
+                let descriptions=try await video.load(.formatDescriptions)
+                guard descriptions.contains(where:{(CMFormatDescriptionGetExtension($0,extensionKey:kCMFormatDescriptionExtension_ContainsAlphaChannel) as? Bool) == true}) else { throw PreparedVideoError.renderFailed("the encoded proxy did not preserve alpha") }
+            }
             let size = try await video.load(.naturalSize)
+            if let profile = settings.colorProfile {
+                guard let description = try await video.load(.formatDescriptions).first else { throw PreparedVideoError.renderFailed("video color description missing") }
+                try MediaVideoColorProfile.validateEncoded(profile,description: description)
+            }
             guard Int(abs(size.width).rounded()) == settings.width,
                   Int(abs(size.height).rounded()) == settings.height else {
                 throw PreparedVideoError.renderFailed("staged output dimensions do not match the requested settings")

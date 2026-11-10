@@ -6,15 +6,40 @@ import SwiftUI
 public struct FloeCAD2DWorkbenchView: View {
     let document: FloeCADDocument
     @State private var activated = false
+    @Environment(\.cadCanvasKeyboardAvoidanceEnabled) private var keyboardAvoidanceEnabled
     public init(document: FloeCADDocument) { self.document = document }
     public var body: some View {
-        FloeCADEditorView(document: document, draftingOnly: true)
-            .safeAreaInset(edge: .top, spacing: 0) { CAD2DDraftingBar(document: document) }
+        GeometryReader { viewport in
+            VStack(spacing: 0) {
+                CAD2DDraftingBar(document: document)
+                FloeCADEditorView(document: document, draftingOnly: true)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(width: viewport.size.width, height: viewport.size.height)
+        }
+            .ignoresSafeArea(.keyboard, edges: keyboardAvoidanceEnabled ? [] : .bottom)
+            .cadCanvasLayoutObservation("drafting")
             .task {
                 guard !activated else { return }
                 activated = true
                 document.activate2DWorkspace()
             }
+    }
+}
+
+extension View {
+    @ViewBuilder func cadCanvasLayoutObservation(_ stage: String) -> some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--floe-editor-input-ownership-observation") {
+            onGeometryChange(for: String.self) { geometry in
+                "size=\(geometry.size) frame=\(geometry.frame(in: .global)) insets=\(geometry.safeAreaInsets)"
+            } action: { value in
+                print("CADCanvasGeometry \(stage) \(value)")
+            }
+        } else { self }
+        #else
+        self
+        #endif
     }
 }
 public extension FloeCADDocument {

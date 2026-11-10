@@ -1,5 +1,9 @@
 # Floe Linux guest 控制台协议扩展（分块 / PTY / 后台服务 / 可选宿主桥）
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本文保留 TinyEMU 时期的控制台扩展接线和当时资格范围；部分协议可能继续复用，实际行为以当前源码为准。现行机器与会话路径见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)。
+> Retains TinyEMU-era console wiring and qualification. Some protocol concepts may be reused; current behavior follows the source and shared ARM64 architecture.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Dated: 2026-09-24 · Status: 分块信封、PTY 会话、后台服务与可选 `floe-host`

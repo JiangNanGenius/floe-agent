@@ -1,6 +1,6 @@
-<!-- docs-updated: 2026-11-08 -->
+<!-- docs-updated: 2026-11-10 -->
 
-> 本指南主要介绍 iOS/iPadOS。[从安装到第一个成果](QUICKSTART.zh-CN.md)提供任务式教程。App Store 正式版为 1.7.74；涉及空间与专用工作台的章节需要较新功能安装包（[GitHub Releases](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5)，未签名，需自行签名）或 TestFlight 构建。各构建包含的功能见[版本与安装状态](CURRENT_STATUS.md)与[空间与专用工作台教程](WORKSPACES_GUIDE.zh-CN.md)。Android 是独立的公开测试版：使用自备云端模型、不提供本地模型推理，能力以[所选发布说明](https://www.floe-agent.com/releases?platform=android)为准。
+> 本指南主要介绍 iOS/iPadOS。[从安装到第一个成果](QUICKSTART.zh-CN.md)提供任务式教程。App Store、GitHub／Feather 与 TestFlight 的版本及核实日期统一见[渠道状态](CURRENT_STATUS.md)。GitHub IPA 需要自行签名，TestFlight 可用性以实际测试组为准。各工作台的适用版本见[空间与专用工作台教程](WORKSPACES_GUIDE.zh-CN.md)。Android 是独立公开测试版：使用自备云端模型、不提供本地模型推理，能力按[所选发布说明](https://www.floe-agent.com/releases?platform=android)核对。
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent 使用手册

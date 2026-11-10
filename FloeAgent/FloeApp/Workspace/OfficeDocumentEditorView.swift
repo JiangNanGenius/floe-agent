@@ -8,6 +8,9 @@ import WebKit
 import FloeDocuments
 import FloeCore
 import FloeTools
+#if DEBUG
+import OSLog
+#endif
 #if canImport(FloeOfficeNative)
 import FloeOfficeNative
 #endif
@@ -4225,6 +4228,101 @@ final class OfficeKeyboardLayoutHostController: UIViewController {
     private var lastHostedSize = CGSize.zero
     private(set) var viewportRefreshCount = 0
 
+    #if DEBUG
+    private static let geometryEnabled = ProcessInfo.processInfo.arguments.contains("--floe-editor-input-ownership-observation")
+    private static let geometryLogger = Logger(subsystem: "org.floeagent.ios", category: "office.viewport.geometry")
+    private var lastGeometry: Data?
+    private var lastDOMGeometry: Data?
+    private var geometryReports = 0
+    private var domGeometryPending = false
+    private var observedKeyboardEndFrame: String?
+
+    /// Opt-in, content-free observation. It never changes a frame, inset,
+    /// responder, document, zoom or CSS, and visits only this mounted owner.
+    fileprivate func observeViewportGeometry(_ stage: String, keyboard: Notification? = nil) {
+        guard Self.geometryEnabled, geometryReports < 64, isViewLoaded,
+              officeController.parent === self, let window = view.window else { return }
+        if let value = keyboard?.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue {
+            observedKeyboardEndFrame = NSCoder.string(for: value.cgRectValue)
+        }
+        func facts(_ value: UIView) -> [String: String] {
+            ["class": String(NSStringFromClass(type(of: value)).prefix(256)),
+             "bounds": NSCoder.string(for: value.bounds), "frameInWindow": NSCoder.string(for: value.convert(value.bounds, to: window)),
+             "safeArea": NSCoder.string(for: value.safeAreaInsets), "ambiguousLayout": String(value.hasAmbiguousLayout),
+             "hidden": String(value.isHidden)]
+        }
+        var controllers = [[String: Any]](), pending = [officeController], remaining = 12
+        while let controller = pending.popLast(), remaining > 0 {
+            remaining -= 1
+            var row: [String: Any] = ["controller": String(NSStringFromClass(type(of: controller)).prefix(256)),
+                "additionalSafeArea": NSCoder.string(for: controller.additionalSafeAreaInsets),
+                "preferredContentSize": NSCoder.string(for: controller.preferredContentSize)]
+            if let loaded = controller.viewIfLoaded { row["view"] = facts(loaded) }
+            controllers.append(row); pending.append(contentsOf: controller.children)
+        }
+        let web = OfficeExplicitSaveBridge.findWebView(in: officeController.view)
+        var snapshot: [String: Any] = ["window": facts(window), "host": facts(view),
+            "hostAdditionalSafeArea": NSCoder.string(for: additionalSafeAreaInsets), "controllers": controllers,
+            "keyboardGuide": NSCoder.string(for: window.keyboardLayoutGuide.layoutFrame),
+            "refreshCount": viewportRefreshCount, "claimsKeyboardOnEntry": claimsKeyboardOnEntry,
+            "completedEntryHandoff": completedEntryHandoff]
+        if let observedKeyboardEndFrame { snapshot["lastKeyboardEndFrameScreenCoordinates"] = observedKeyboardEndFrame }
+        if let parent = parent?.viewIfLoaded ?? view.superview { snapshot["parent"] = facts(parent) }
+        if let web {
+            snapshot["web"] = facts(web)
+            snapshot["webScroll"] = ["bounds": NSCoder.string(for: web.scrollView.bounds),
+                "contentSize": NSCoder.string(for: web.scrollView.contentSize), "contentOffset": NSCoder.string(for: web.scrollView.contentOffset),
+                "insets": NSCoder.string(for: web.scrollView.contentInset), "adjustedInsets": NSCoder.string(for: web.scrollView.adjustedContentInset),
+                "zoomScale": String(describing: web.scrollView.zoomScale)]
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]), data != lastGeometry,
+           let text = String(data: data, encoding: .utf8) {
+            lastGeometry = data; geometryReports += 1
+            Self.geometryLogger.info("OfficeViewportGeometry \(stage, privacy: .public) \(text, privacy: .public)")
+        }
+        guard let web, !domGeometryPending, geometryReports < 64 else { return }
+        domGeometryPending = true
+        web.evaluateJavaScript(Self.domGeometryScript) { [weak self, weak web] value, error in
+            guard let self else { return }
+            self.domGeometryPending = false
+            guard self.geometryReports < 64, self.officeController.parent === self,
+                  let web, web.window === window,
+                  OfficeExplicitSaveBridge.findWebView(in: self.officeController.view) === web else { return }
+            let row: [String: Any]
+            if let value = value as? [String: Any] { row = value }
+            else { row = ["probeError": error == nil ? "non-dictionary" : "javascript-unavailable"] }
+            guard let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
+                  data != self.lastDOMGeometry, let text = String(data: data, encoding: .utf8) else { return }
+            self.lastDOMGeometry = data; self.geometryReports += 1
+            Self.geometryLogger.info("OfficeDOMGeometry \(stage, privacy: .public) \(text, privacy: .public)")
+        }
+    }
+
+    private static let domGeometryScript = #"""
+    (() => {
+      const rect = (element) => {
+        if (!element) return null;
+        const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+        return {x:box.x,y:box.y,width:box.width,height:box.height,
+          clientWidth:element.clientWidth,clientHeight:element.clientHeight,
+          scrollWidth:element.scrollWidth,scrollHeight:element.scrollHeight,
+          css:{height:style.height,minHeight:style.minHeight,maxHeight:style.maxHeight,
+            top:style.top,bottom:style.bottom,position:style.position,overflow:style.overflow}};
+      };
+      const fixedIDs = ['document-container','map','map-container','document-canvas',
+        'canvas-container','toolbar-down','statusbar','toolbar-up','notebookbar'];
+      const elements = {};
+      for (const id of fixedIDs) elements[id] = rect(document.getElementById(id));
+      const viewport = window.visualViewport;
+      return {readyState:document.readyState,innerWidth:window.innerWidth,innerHeight:window.innerHeight,
+        outerWidth:window.outerWidth,outerHeight:window.outerHeight,devicePixelRatio:window.devicePixelRatio,
+        visualViewport:viewport ? {width:viewport.width,height:viewport.height,offsetTop:viewport.offsetTop,
+          offsetLeft:viewport.offsetLeft,scale:viewport.scale} : null,
+        html:rect(document.documentElement),body:rect(document.body),elements};
+    })()
+    """#
+    #endif
+
     init(controller: UIViewController, claimsKeyboardOnEntry: Bool) {
         self.officeController = controller
         self.claimsKeyboardOnEntry = claimsKeyboardOnEntry
@@ -4281,11 +4379,21 @@ final class OfficeKeyboardLayoutHostController: UIViewController {
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        #if DEBUG
+        observeViewportGeometry("layout")
+        #endif
         let size = view.bounds.size
         if size.width > 0, size.height > 0, size != lastHostedSize {
             lastHostedSize = size
             scheduleViewportRefresh()
         }
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        #if DEBUG
+        observeViewportGeometry("safe-area")
+        #endif
     }
 
     /// Never use UIApplication-wide resign: another window or the Office
@@ -4310,6 +4418,9 @@ final class OfficeKeyboardLayoutHostController: UIViewController {
     @objc private func keyboardSettled(_ notification: Notification) {
         guard let window = viewIfLoaded?.window, window.isKeyWindow,
               (notification.userInfo?[UIResponder.keyboardIsLocalUserInfoKey] as? Bool) != false else { return }
+        #if DEBUG
+        observeViewportGeometry("keyboard", keyboard: notification)
+        #endif
         // SwiftUI still owns keyboard safe-area avoidance and bottom toolbars.
         // After its transition, ask UIKit/WebKit to consume the real new bounds.
         scheduleViewportRefresh()
@@ -4337,6 +4448,9 @@ final class OfficeKeyboardLayoutHostController: UIViewController {
             self.officeController.view.layoutIfNeeded()
             guard self.view.bounds.width > 0, self.view.bounds.height > 0 else { return }
             self.viewportRefreshCount += 1
+            #if DEBUG
+            self.observeViewportGeometry("viewport-refresh")
+            #endif
             if let webView = OfficeExplicitSaveBridge.findWebView(in: self.officeController.view) {
                 webView.setNeedsLayout(); webView.layoutIfNeeded()
                 // Standard DOM resize only: no engine command, zoom, content
@@ -4363,6 +4477,9 @@ private struct OfficeControllerSurface: UIViewControllerRepresentable {
     }
     func updateUIViewController(_ host: OfficeKeyboardLayoutHostController, context: Context) {
         host.claimsKeyboardOnEntry = claimsKeyboardOnEntry
+        #if DEBUG
+        host.observeViewportGeometry("swiftui-update")
+        #endif
     }
     static func dismantleUIViewController(_ host: OfficeKeyboardLayoutHostController, coordinator: ()) {
         host.detachOfficeController()
@@ -4387,6 +4504,8 @@ struct OfficeDocumentSurface: View {
             if let controller = session.controller {
                 OfficeControllerSurface(controller: controller, claimsKeyboardOnEntry: ownsInputFocusOnEntry)
                     .id(ObjectIdentifier(controller))
+                    .editorLayoutObservation("office.controller.proposal")
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier(session.readOnly ? "office.preview.native" : "office.editor.native")
                     .accessibilityValue(session.documentActionsReady
                         ? OfficeInkText.t("文档已就绪", "Document ready")
@@ -4424,6 +4543,7 @@ struct OfficeDocumentSurface: View {
             #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .editorLayoutObservation("office.surface")
         .background(FloeTheme.readingSurface)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
@@ -4606,6 +4726,9 @@ struct OfficeDocumentEditorView: View {
     var stableInkIdentity: OfficeInkDocumentIdentity? = nil
     var onSaved: (() async -> Bool)?
     var onClose: (() -> Void)? = nil
+    /// Installed only by a document owner, before any save/discard/teardown.
+    /// Embedded previews and unrelated standalone hosts retain the nil path.
+    var beforeDocumentLeave: (@MainActor () async -> Bool)? = nil
     /// A feature-owned tab strip replaces the standalone navigation title.
     var inlineHeader: AnyView? = nil
     /// When false the owning surface owns the first intent: Notes opens a
@@ -4615,6 +4738,8 @@ struct OfficeDocumentEditorView: View {
     /// everywhere else, where mounting this surface is already an explicit
     /// edit action.
     var requestsEditingOnAppear: Bool = true
+    /// A pre-mount recovery re-arms the owning document's original-file loader.
+    var retryOpen: (() -> Void)? = nil
     /// Host-owned prepare-for-close allowance for the read-only surface.
     /// Notes installs it so a Back intent arriving while passive cover work
     /// runs is accepted, coalesced and parked on the host's FULL preview
@@ -4648,13 +4773,17 @@ struct OfficeDocumentEditorView: View {
     /// released at function exit, including refusals, so a retry tap on
     /// the still-mounted surface always reaches the fresh state.
     @State private var passiveCloseIntentInFlight = false
+    @State private var documentLeaveIntentInFlight = false
     /// In-flight share snapshot; reclaimed by `finishSaveCopy()` on dismiss.
     @State private var shareSnapshot: DocumentExportSnapshot?
 
     var body: some View {
-        OfficeDocumentSurface(session: session, ownsInputFocusOnEntry: true)
+        OfficeDocumentSurface(session: session, ownsInputFocusOnEntry: true, retryOpen: retryOpen)
             .navigationTitle((relativePath as NSString).lastPathComponent)
             .navigationBarTitleDisplayMode(.inline)
+            // Personal documents supply their own Back/title/actions row.
+            // Keep one header instead of repeating the generic original name.
+            .toolbar(inlineHeader == nil ? .automatic : .hidden, for: .navigationBar)
             .background {
                 // Command-S saves in place against the original workspace
                 // file (same verified commit as the engine's own toolbar
@@ -4853,13 +4982,13 @@ struct OfficeDocumentEditorView: View {
                     if onSaved == nil {
                         Button("workspace.office_document_editor_view.keep_changes_and_return") {
                             session.error = nil
-                            Task { if await session.keepChangesAndReturn() { dismissEditor() } }
+                            Task { await closeWithRetainedChanges() }
                         }
                     }
                 } message: { Text(session.error ?? "") }
             .confirmationDialog("workspace.office_document_editor_view.discard_unsaved_changes", isPresented: $confirmingDiscard, titleVisibility: .visible) {
                 Button("engineering.cad.discard", role: .destructive) {
-                    Task { if await session.discardAndReturn() { dismissEditor() } }
+                    Task { await closeDiscardingChanges() }
                 }
                 Button("workspace.office_document_editor_view.keep_editing", role: .cancel) {}
             }
@@ -4868,7 +4997,7 @@ struct OfficeDocumentEditorView: View {
                     Task { await saveAndDismiss() }
                 }
                 Button("engineering.cad.discard", role: .destructive) {
-                    Task { if await session.discardAndReturn() { dismissEditor() } }
+                    Task { await closeDiscardingChanges() }
                 }
                 Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
             } message: { Text("workspace.office_document_editor_view.save_writes_changes_to_the_original") }
@@ -4876,7 +5005,7 @@ struct OfficeDocumentEditorView: View {
 
     private var backButton: some View {
         Button {
-            if session.phase == .failed { dismissEditor() }
+            if session.phase == .failed { Task { await withDocumentLeaveIntent { dismissEditor() } } }
             else if ownsStandaloneExit {
                 // Save/discard/cancel instead of an implicit save: every
                 // format (DOCX/XLSX/PPTX) reaches the same shared save
@@ -5029,7 +5158,7 @@ struct OfficeDocumentEditorView: View {
             .accessibilityIdentifier("office.editor.share")
             if onSaved == nil, !session.isRemoteSnapshot {
                 Button("workspace.office_document_editor_view.keep_changes_and_return") {
-                    Task { if await session.keepChangesAndReturn() { dismissEditor() } }
+                    Task { await closeWithRetainedChanges() }
                 }
             }
             if !session.isRemoteSnapshot {
@@ -5059,7 +5188,30 @@ struct OfficeDocumentEditorView: View {
         if let onClose { onClose() } else { dismiss() }
     }
 
+    private func withDocumentLeaveIntent(_ action: () async -> Void) async {
+        // A host without the gate keeps its existing save/close behavior.
+        guard let beforeDocumentLeave else { await action(); return }
+        guard !documentLeaveIntentInFlight else { return }
+        documentLeaveIntentInFlight = true
+        defer { documentLeaveIntentInFlight = false }
+        guard await beforeDocumentLeave(), !Task.isCancelled else { return }
+        await action()
+    }
+
+    private func closeWithRetainedChanges() async {
+        await withDocumentLeaveIntent {
+            if await session.keepChangesAndReturn() { dismissEditor() }
+        }
+    }
+    private func closeDiscardingChanges() async {
+        await withDocumentLeaveIntent {
+            if await session.discardAndReturn() { dismissEditor() }
+        }
+    }
     private func saveAndDismiss() async {
+        await withDocumentLeaveIntent { await saveAndDismissAfterLeaveDecision() }
+    }
+    private func saveAndDismissAfterLeaveDecision() async {
         // Host-allowed passive close (read-only surfaces that installed
         // `prepareForPassiveClose`): the whole retained intent — host
         // preparation plus the existing truthful close/dismiss below — is

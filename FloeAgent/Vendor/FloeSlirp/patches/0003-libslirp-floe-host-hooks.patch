@@ -1,0 +1,644 @@
+# 0002-floe-host-hooks.patch
+#
+# Narrow, compile-guarded hooks against pinned libslirp 4.9.7
+# (tag commit ce12dcddf710a71dc0de6450ec95edbadf8e9f66), on top of the vendor
+# lane's 0001-floe-ios-hardening.patch. EVERY hunk is inside
+# #ifdef SLIRP_FLOE_HOST_HOOKS, so a build without that macro is byte-for-byte
+# upstream behaviour. The two new files are inert without the macro too.
+#
+# Why each hook exists is documented in src/floe_host_net.h.
+#
+# Apply inside the libslirp source root with:
+#   git apply -p1 0002-floe-host-hooks.patch
+#   (or: patch -p1 -i 0002-floe-host-hooks.patch)
+#
+--- a/meson.build
++++ b/meson.build
+@@ -138,6 +138,7 @@
+   'src/cksum.c',
+   'src/dhcpv6.c',
+   'src/dnssearch.c',
++  'src/floe_host_net.c',
+   'src/if.c',
+   'src/ip6_icmp.c',
+   'src/ip6_input.c',
+@@ -249,7 +250,7 @@
+ test('guestfwd', guestfwdtest)
+ 
+ if install_devel
+-  install_headers(['src/libslirp.h'], subdir : 'slirp')
++  install_headers(['src/libslirp.h', 'src/floe_host_net.h'], subdir : 'slirp')
+ 
+   pkg = import('pkgconfig')
+ 
+--- /dev/null
++++ b/src/floe_host_net.c
+@@ -0,0 +1,160 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/* Implementation of the Floe embedder hooks. See floe_host_net.h for the
++ * rationale. Inert unless -DSLIRP_FLOE_HOST_HOOKS is set. */
++#include "slirp.h"
++
++#ifdef SLIRP_FLOE_HOST_HOOKS
++
++#include "floe_host_net.h"
++#include "socket.h"
++
++#include <string.h>
++
++void slirp_floe_set_hooks(Slirp *slirp, const FloeSlirpHooks *hooks)
++{
++    if (!slirp) {
++        return;
++    }
++    if (hooks && hooks->struct_size < sizeof(*hooks)) {
++        g_warning("slirp_floe_set_hooks: struct_size %u < %zu, ignoring",
++                  hooks->struct_size, sizeof(*hooks));
++        return;
++    }
++    if (hooks && hooks->abi != FLOE_SLIRP_HOOKS_ABI) {
++        g_warning("slirp_floe_set_hooks: unsupported abi %u, ignoring",
++                  hooks->abi);
++        return;
++    }
++    slirp->floe_hooks = hooks;
++}
++
++int floe_admit_socket(Slirp *slirp, FloeSlirpSockReason reason)
++{
++    const FloeSlirpHooks *h = slirp ? slirp->floe_hooks : NULL;
++
++    if (!h || !h->admit_socket) {
++        return 0;                       /* no hook: upstream behaviour */
++    }
++    int rc = h->admit_socket(reason, h->ctx);
++
++    return rc < 0 ? rc : 0;
++}
++
++/* Decide the family for an outbound host socket and record the host-side
++ * destination. The guest-visible so_fhost / so_ffamily are deliberately left
++ * untouched: they drive libslirp's packet demultiplexing, its receive-path
++ * header sizing and the source address the guest sees, so rewriting them would
++ * change protocol behaviour. Only the address actually passed to connect() or
++ * sendto() differs. */
++unsigned short floe_prepare_outbound(struct socket *so, unsigned short af)
++{
++    const FloeSlirpHooks *h = so->slirp ? so->slirp->floe_hooks : NULL;
++    struct sockaddr_storage host;
++
++    so->floe_hfamily = 0;
++    so->floe_translated = 0;
++
++    /* An IPv4 guest's virtual DNS endpoint can be served by an IPv6 resolver
++     * even when upstream's IPv4 resolver discovery still finds a stale or
++     * unrelated IPv4 address. Ask the per-instance embedder first; its callback
++     * returns 1 only when its honest resolver snapshot has no usable IPv4 and
++     * does have IPv6. Restrict this to the virtual nameserver/gateway DNS
++     * compatibility endpoints, never to an arbitrary public port-53 flow. */
++    if (h && h->dns4_via_nat64 && af == AF_INET &&
++        !so->slirp->disable_dns && so->so_fport == htons(53) &&
++        (so->so_faddr.s_addr == so->slirp->vnameserver_addr.s_addr ||
++         so->so_faddr.s_addr == so->slirp->vhost_addr.s_addr)) {
++        struct in6_addr a6;
++        uint16_t port = htons(53);
++        uint32_t scope = 0;
++        memset(&a6, 0, sizeof(a6));
++        if (h->dns4_via_nat64(&a6, &port, &scope, h->ctx) == 1) {
++            struct sockaddr_in6 *s6 = &so->floe_fhost_host.sin6;
++            memset(s6, 0, sizeof(*s6));
++            s6->sin6_family = AF_INET6;
++            s6->sin6_port = port;
++            s6->sin6_addr = a6;
++            s6->sin6_scope_id = scope;
++            so->floe_hfamily = AF_INET6;
++            so->floe_translated = 1;
++            return AF_INET6;
++        }
++    }
++
++    /* Start from upstream's own translation, which handles the virtual
++     * nameserver redirect, the gateway-as-DNS compatibility case and the
++     * host-loopback mapping. */
++    host = so->fhost.ss;
++    if (sotranslate_out(so, &host) < 0) {
++        return af;                      /* let upstream report the EPERM path */
++    }
++    so->floe_fhost_host.ss = host;
++    so->floe_translated = 1;
++
++    if (af != AF_INET || !h || !h->map_nat64 || host.ss_family != AF_INET) {
++        so->floe_hfamily = (unsigned short)host.ss_family;
++        return af;
++    }
++
++    struct in6_addr mapped;
++    memset(&mapped, 0, sizeof(mapped));
++    int rc = h->map_nat64(&((struct sockaddr_in *)&host)->sin_addr, &mapped,
++                          h->ctx);
++    if (rc != 1) {
++        so->floe_hfamily = AF_INET;
++        return AF_INET;
++    }
++
++    /* Keep the port; replace the address and switch the family. */
++    struct sockaddr_in6 *s6 = &so->floe_fhost_host.sin6;
++    memset(s6, 0, sizeof(*s6));
++    s6->sin6_family = AF_INET6;
++    s6->sin6_port = ((struct sockaddr_in *)&host)->sin_port;
++    s6->sin6_addr = mapped;
++    so->floe_hfamily = AF_INET6;
++    return AF_INET6;
++}
++
++const struct sockaddr *floe_host_dest(struct socket *so, socklen_t *len)
++{
++    /* When the hook path already resolved the host destination, use it
++     * verbatim; otherwise fall back to upstream's own translate-then-use. */
++    if (so->floe_translated) {
++        *len = sockaddr_size(&so->floe_fhost_host.ss);
++        return &so->floe_fhost_host.sa;
++    }
++    return NULL;
++}
++
++int floe_dns4_override(Slirp *slirp, struct in_addr *addr, uint16_t *port)
++{
++    const FloeSlirpHooks *h = slirp ? slirp->floe_hooks : NULL;
++
++    if (!h || !h->dns4_override) {
++        return 0;                       /* fall through to get_dns_addr() */
++    }
++    int rc = h->dns4_override(addr, port, h->ctx);
++
++    if (rc < 0) {
++        return -1;                      /* refuse DNS honestly */
++    }
++    return rc > 0 ? 1 : 0;
++}
++
++int floe_dns6_override(Slirp *slirp, struct in6_addr *addr, uint16_t *port,
++                       uint32_t *scope)
++{
++    const FloeSlirpHooks *h = slirp ? slirp->floe_hooks : NULL;
++
++    if (!h || !h->dns6_override) {
++        return 0;
++    }
++    int rc = h->dns6_override(addr, port, scope, h->ctx);
++
++    if (rc < 0) {
++        return -1;
++    }
++    return rc > 0 ? 1 : 0;
++}
++
++#endif /* SLIRP_FLOE_HOST_HOOKS */
+--- /dev/null
++++ b/src/floe_host_net.h
+@@ -0,0 +1,114 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/*
++ * Floe embedder hooks for libslirp.
++ *
++ * Everything in this header is inert unless libslirp is compiled with
++ * -DSLIRP_FLOE_HOST_HOOKS. Without that macro the library behaves exactly as
++ * upstream and this header declares nothing.
++ *
++ * Why these three hooks exist
++ * ---------------------------
++ * 1. admit_socket: upstream libslirp has NO per-instance limit on the number
++ *    of host descriptors it will create. An embedded host that runs one VM
++ *    inside an app sandbox needs a real, finite ceiling enforced where the
++ *    resource is actually created — including the inbound accept() path, which
++ *    is driven by libslirp's own poll dispatch and never passes through the
++ *    embedder's packet-input entry point. Refusing an inbound connection uses
++ *    upstream's own idiom (accept, then immediately close), because that is the
++ *    only way to reject a forwarded connection.
++ *
++ * 2. map_nat64: on an IPv6-only DNS64/NAT64 network an AF_INET connect() to a
++ *    public IPv4 literal fails. Apple documents a family-neutral getaddrinfo()
++ *    as the way to obtain the synthesized IPv6 address; the embedder performs
++ *    that lookup and hands the result back here, so libslirp can create the
++ *    host socket in the right family. The prefix is NEVER hardcoded: it is
++ *    whatever the platform resolver produced. Guest-visible state (so_fhost,
++ *    so_ffamily) is left untouched, so packet demultiplexing and the source
++ *    address the guest sees are unchanged.
++ *
++ * 3. dns4_override / dns6_override: upstream discovers the relay target with
++ *    get_dns_addr()/get_dns6_addr() and offers no way to name one. An embedder
++ *    that was explicitly configured with a resolver must be able to honour
++ *    that configuration instead of silently using something else.
++ */
++#ifndef FLOE_HOST_NET_H
++#define FLOE_HOST_NET_H
++
++#ifdef SLIRP_FLOE_HOST_HOOKS
++
++#include <stdint.h>
++#include <netinet/in.h>
++
++/* libslirp.h defines `typedef struct Slirp Slirp;` and includes this header
++ * from there, so do not include it back: the guard would make it a no-op and
++ * the forward declaration below is all this header needs. */
++#ifndef LIBSLIRP_H
++#include "libslirp.h"
++#endif
++typedef struct Slirp Slirp;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Why libslirp is about to create a host descriptor. */
++typedef enum FloeSlirpSockReason {
++    FLOE_SLIRP_SOCK_INBOUND_ACCEPT = 1, /* hostfwd listener accepted a client */
++    FLOE_SLIRP_SOCK_OUTBOUND_TCP   = 2, /* guest opened a TCP connection    */
++    FLOE_SLIRP_SOCK_OUTBOUND_UDP   = 3, /* guest sent a UDP datagram        */
++    FLOE_SLIRP_SOCK_OUTBOUND_ICMP  = 4, /* guest sent an ICMPv4 echo        */
++    FLOE_SLIRP_SOCK_OUTBOUND_ICMP6 = 5, /* guest sent an ICMPv6 echo        */
++} FloeSlirpSockReason;
++
++typedef struct FloeSlirpHooks {
++    uint32_t struct_size;   /* == sizeof(FloeSlirpHooks) */
++    uint32_t abi;           /* == FLOE_SLIRP_HOOKS_ABI   */
++
++    /* Return 0 to permit, or a negative errno to refuse. A NULL pointer means
++     * "always permit". */
++    int (*admit_socket)(FloeSlirpSockReason reason, void *ctx);
++
++    /* Return 1 and fill the output address to reach this IPv4 destination
++     * through a DNS64/NAT64-synthesized IPv6 address; 0 to keep plain IPv4; negative on
++     * error (treated as 0). A NULL pointer means "never map". */
++    int (*map_nat64)(const struct in_addr *v4, struct in6_addr *out, void *ctx);
++
++    /* Return 1 and fill the address and port to override the discovered IPv4
++     * resolver;
++     * 0 to fall through to get_dns_addr(); negative to refuse DNS outright. */
++    int (*dns4_override)(struct in_addr *addr, uint16_t *port, void *ctx);
++
++    /* Same for IPv6, with an optional scope id. */
++    int (*dns6_override)(struct in6_addr *addr, uint16_t *port,
++                         uint32_t *scope, void *ctx);
++
++    /* Return 1 and fill the address, port and scope id to relay an IPv4
++     * guest's DNS query to this IPv6 resolver. This is what an IPv6-only host needs when the guest
++     * itself is IPv4-only: upstream get_dns_addr() finds no IPv4 resolver, so
++     * without this the guest's DNS is refused even though the host can resolve
++     * perfectly well over IPv6. Takes precedence over the plain IPv4 path. */
++    int (*dns4_via_nat64)(struct in6_addr *v6, uint16_t *port,
++                          uint32_t *scope, void *ctx);
++
++    void *ctx;
++    uint64_t reserved[4];   /* must be zero */
++} FloeSlirpHooks;
++
++#define FLOE_SLIRP_HOOKS_ABI 1u
++
++/* Bounded production listen backlog. Upstream's listen(fd, 1) collapses under
++ * a small burst of parallel web clients. This value is used by tcpx_listen(),
++ * so both initial hostfwd creation and reset replay receive the same capacity. */
++#define FLOE_SLIRP_LISTEN_BACKLOG 128
++
++/* Install (or, with hooks == NULL, clear) the embedder hooks for one instance.
++ * Safe to call once after slirp_new() and before any traffic. */
++SLIRP_EXPORT
++void slirp_floe_set_hooks(Slirp *slirp, const FloeSlirpHooks *hooks);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* SLIRP_FLOE_HOST_HOOKS */
++#endif /* FLOE_HOST_NET_H */
+--- a/src/ip6_icmp.c
++++ b/src/ip6_icmp.c
+@@ -61,6 +61,13 @@
+     so->so_type = IPPROTO_ICMPV6;
+ #endif
+ 
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    if (floe_admit_socket(so->slirp, FLOE_SLIRP_SOCK_OUTBOUND_ICMP6) != 0) {
++        DEBUG_MISC(" embedder refused the ICMPv6 ping socket (ceiling)");
++        return -1;
++    }
++#endif
++
+     so->s = slirp_socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+     if (not_valid_socket(so->s)) {
+         if (errno == EAFNOSUPPORT
+--- a/src/ip_icmp.c
++++ b/src/ip_icmp.c
+@@ -250,6 +250,13 @@
+     so->so_type = IPPROTO_ICMP;
+ #endif
+ 
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    if (floe_admit_socket(so->slirp, FLOE_SLIRP_SOCK_OUTBOUND_ICMP) != 0) {
++        DEBUG_MISC(" embedder refused the ping socket (ceiling)");
++        return -1;
++    }
++#endif
++
+ #ifndef __linux__
+     /* Prefer raw replies for low-TTL probes where ping sockets cannot
+      * expose router errors. Failure still falls back to SOCK_DGRAM. */
+--- a/src/libslirp.h
++++ b/src/libslirp.h
+@@ -66,6 +66,16 @@
+ 
+ /* Opaque structure containing the slirp state */
+ typedef struct Slirp Slirp;
++
++#ifdef SLIRP_FLOE_HOST_HOOKS
++/* Floe embedder hooks. The full contract lives in floe_host_net.h, which is
++ * installed next to this header; it is repeated here so an embedder that only
++ * includes <slirp/libslirp.h> still sees the entry point. Inert without
++ * -DSLIRP_FLOE_HOST_HOOKS. */
++typedef struct FloeSlirpHooks FloeSlirpHooks;
++SLIRP_EXPORT
++void slirp_floe_set_hooks(Slirp *slirp, const FloeSlirpHooks *hooks);
++#endif
+ 
+ /* Flags passed to SlirpAddPollCb and to be returned by SlirpGetREventsCb. */
+ enum {
+--- a/src/slirp.h
++++ b/src/slirp.h
+@@ -42,6 +42,9 @@
+ #include "util.h"
+ 
+ #include "libslirp.h"
++#ifdef SLIRP_FLOE_HOST_HOOKS
++#include "floe_host_net.h"
++#endif
+ #include "ip.h"
+ #include "ip6.h"
+ #include "tcp.h"
+@@ -218,6 +221,13 @@
+     struct sockaddr_in *outbound_addr;
+     struct sockaddr_in6 *outbound_addr6;
+     bool disable_dns; /* slirp will not redirect/serve any DNS packet */
++
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    /* Embedder hooks (see floe_host_net.h). NULL means upstream behaviour.
++     * Appended at the end of the struct so nothing that already exists
++     * changes offset. */
++    const struct FloeSlirpHooks *floe_hooks;
++#endif
+ };
+ 
+ /*
+@@ -234,6 +244,16 @@
+ /* Get the IPv4 address and port of the DNS server on the host side */
+ int get_dns_addr(struct in_addr *pdns_addr, uint16_t *pdns_port);
+ 
++#ifdef SLIRP_FLOE_HOST_HOOKS
++/* Floe embedder hook internals (implemented in floe_host_net.c). */
++int floe_admit_socket(Slirp *slirp, FloeSlirpSockReason reason);
++unsigned short floe_prepare_outbound(struct socket *so, unsigned short af);
++const struct sockaddr *floe_host_dest(struct socket *so, socklen_t *len);
++int floe_dns4_override(Slirp *slirp, struct in_addr *addr, uint16_t *port);
++int floe_dns6_override(Slirp *slirp, struct in6_addr *addr, uint16_t *port,
++                       uint32_t *scope);
++#endif
++
+ /* Get the IPv6 address and port of the DNS server on the host side */
+ int get_dns6_addr(struct in6_addr *pdns6_addr, uint16_t *pdns_port,
+                   uint32_t *scope_id);
+--- a/src/socket.c
++++ b/src/socket.c
+@@ -723,6 +723,19 @@
+              * make it look like that's where it came from
+              */
+             saddr = addr;
++#ifdef SLIRP_FLOE_HOST_HOOKS
++            if (so->floe_hfamily == AF_INET6 && so->so_ffamily == AF_INET) {
++                /* The host side is a NAT64 IPv6 socket while the guest side
++                 * is IPv4, so the peer address from recvfrom() is not
++                 * meaningful to the guest. For a datagram socket the only
++                 * possible peer is the guest-visible destination, so use
++                 * that and let sotranslate_in() restore the DNS port. */
++                memset(&saddr, 0, sizeof(saddr));
++                saddr.ss_family = AF_INET;
++                ((struct sockaddr_in *)&saddr)->sin_addr = so->so_faddr;
++                ((struct sockaddr_in *)&saddr)->sin_port = so->so_fport;
++            }
++#endif
+             sotranslate_in(so, &saddr);
+ 
+             /* Perform lazy guest IP address resolution if needed. */
+@@ -777,10 +790,25 @@
+     DEBUG_ARG("m = %p", m);
+ 
+     addr = so->fhost.ss;
+-    DEBUG_CALL(" sendto()ing)");
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    {
++        /* A DNS64/NAT64 mapping resolved earlier: send to the host-side
++         * address, not the guest-visible one. sotranslate_out() has already
++         * been applied exactly once by floe_prepare_outbound(). */
++        socklen_t hlen = 0;
++        const struct sockaddr *hdst = floe_host_dest(so, &hlen);
++        if (hdst) {
++            memcpy(&addr, hdst, hlen);
++        } else if (sotranslate_out(so, &addr) < 0) {
++            return -1;
++        }
++    }
++#else
+     if (sotranslate_out(so, &addr) < 0) {
+         return -1;
+     }
++#endif
++    DEBUG_CALL(" sendto()ing)");
+ 
+     /* Don't care what port we get */
+     ret = sendto(so->s, m->m_data, m->m_len, 0, (struct sockaddr *)&addr,
+@@ -876,7 +904,11 @@
+         (haddr->sa_family == AF_INET6 && slirp_socket_set_v6only(s, (flags & SS_HOSTFWD_V6ONLY) != 0) < 0) ||
+         (slirp_socket_set_fast_reuse(s) < 0) ||
+         (bind(s, haddr, haddrlen) < 0) ||
++#ifdef SLIRP_FLOE_HOST_HOOKS
++        (listen(s, FLOE_SLIRP_LISTEN_BACKLOG) < 0)) {
++#else
+         (listen(s, 1) < 0)) {
++#endif
+         int tmperrno = errno; /* Don't clobber the real reason we failed */
+         if (have_valid_socket(s)) {
+             closesocket(s);
+@@ -975,6 +1007,27 @@
+ 
+ static bool sotranslate_out4(Slirp *s, struct socket *so, struct sockaddr_in *sin)
+ {
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    /* An embedder that was explicitly configured with a resolver must be
++     * able to honour it; upstream only ever auto-discovers. A hook that
++     * returns < 0 refuses DNS rather than falling back to a fabricated
++     * public resolver. */
++    if (!s->disable_dns && so->so_fport == htons(53) &&
++        (so->so_faddr.s_addr == s->vnameserver_addr.s_addr ||
++         so->so_faddr.s_addr == s->vhost_addr.s_addr)) {
++        struct in_addr oaddr = sin->sin_addr;
++        uint16_t oport = sin->sin_port;
++        int orc = floe_dns4_override(s, &oaddr, &oport);
++        if (orc < 0) {
++            return false;
++        }
++        if (orc > 0) {
++            sin->sin_addr = oaddr;
++            sin->sin_port = oport;
++            return true;
++        }
++    }
++#endif
+     if (!s->disable_dns && so->so_faddr.s_addr == s->vnameserver_addr.s_addr) {
+         return (so->so_fport == htons(53) &&
+                 get_dns_addr(&sin->sin_addr, &sin->sin_port) >= 0);
+@@ -1001,6 +1054,25 @@
+ 
+ static bool sotranslate_out6(Slirp *s, struct socket *so, struct sockaddr_in6 *sin)
+ {
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    if (!s->disable_dns && so->so_fport6 == htons(53) &&
++        (in6_equal(&so->so_faddr6, &s->vnameserver_addr6) ||
++         in6_equal(&so->so_faddr6, &s->vhost_addr6))) {
++        struct in6_addr oaddr = sin->sin6_addr;
++        uint16_t oport = sin->sin6_port;
++        uint32_t oscope = sin->sin6_scope_id;
++        int orc = floe_dns6_override(s, &oaddr, &oport, &oscope);
++        if (orc < 0) {
++            return false;
++        }
++        if (orc > 0) {
++            sin->sin6_addr = oaddr;
++            sin->sin6_port = oport;
++            sin->sin6_scope_id = oscope;
++            return true;
++        }
++    }
++#endif
+     if (!s->disable_dns && in6_equal(&so->so_faddr6, &s->vnameserver_addr6)) {
+         uint32_t scope_id;
+         if (so->so_fport == htons(53) &&
+--- a/src/socket.h
++++ b/src/socket.h
+@@ -86,6 +86,19 @@
+ 
+     struct sbuf so_rcv; /* Receive buffer */
+     struct sbuf so_snd; /* Send buffer */
++
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    /* Floe: the host-side destination when it differs from the
++     * guest-visible fhost, i.e. when a DNS64/NAT64 mapping applies.
++     * so_fhost / so_ffamily stay authoritative for everything the guest can
++     * observe (demultiplexing, reply source address, receive header sizing);
++     * only connect()/sendto() use this. Appended at the end of the struct,
++     * which socreate() allocates with sizeof(struct socket), so no existing
++     * offset changes. */
++    union slirp_sockaddr floe_fhost_host;
++    unsigned short floe_hfamily;   /* 0 = not resolved yet */
++    bool floe_translated;          /* floe_fhost_host is valid */
++#endif
+ };
+ 
+ 
+--- a/src/tcp_subr.c
++++ b/src/tcp_subr.c
+@@ -394,6 +394,17 @@
+ 
+     DEBUG_CALL("tcp_fconnect");
+     DEBUG_ARG("so = %p", so);
++
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    if (floe_admit_socket(so->slirp, FLOE_SLIRP_SOCK_OUTBOUND_TCP) != 0) {
++        DEBUG_MISC(" embedder refused the outbound connection (ceiling)");
++        errno = ENFILE;
++        return -1;
++    }
++    /* Resolve the host-side destination first: a DNS64/NAT64 mapping can
++     * change the address family the host socket must be created in. */
++    af = floe_prepare_outbound(so, af);
++#endif
+ 
+     so->s = slirp_socket(af, SOCK_STREAM, 0);
+     ret = have_valid_socket(so->s) ? 0 : -1;
+@@ -422,9 +433,21 @@
+ 
+         addr = so->fhost.ss;
+         DEBUG_CALL(" connect()ing");
++#ifdef SLIRP_FLOE_HOST_HOOKS
++        {
++            socklen_t hlen = 0;
++            const struct sockaddr *hdst = floe_host_dest(so, &hlen);
++            if (hdst) {
++                memcpy(&addr, hdst, hlen);
++            } else if (sotranslate_out(so, &addr) < 0) {
++                return -1;
++            }
++        }
++#else
+         if (sotranslate_out(so, &addr) < 0) {
+             return -1;
+         }
++#endif
+ 
+         /* We don't care what port we get */
+         ret = connect(s, (struct sockaddr *)&addr, sockaddr_size(&addr));
+@@ -479,6 +502,23 @@
+     DEBUG_ARG("ip = [%s]:%s", addrstr, portstr);
+     DEBUG_ARG("so_state = 0x%x", inso->so_state);
+ 
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    /* Per-instance ceiling at the real resource-creation boundary. An
++     * inbound forwarded connection is accepted here, inside libslirp's own
++     * poll dispatch, and never passes through the embedder's packet input,
++     * so this is the only place the embedder can bound it. Refusal reuses
++     * upstream's own idiom: accept and immediately close. */
++    if (floe_admit_socket(slirp, FLOE_SLIRP_SOCK_INBOUND_ACCEPT) != 0) {
++        DEBUG_MISC(" embedder refused the inbound connection (ceiling)");
++        addrlen = sizeof(addr);
++        s = accept(inso->s, (struct sockaddr *)&addr, &addrlen);
++        if (have_valid_socket(s)) {
++            closesocket(s);
++        }
++        return;
++    }
++#endif
++
+     /* Perform lazy guest IP address resolution if needed. */
+     if (inso->so_state & SS_HOSTFWD) {
+         /*
+--- a/src/udp.c
++++ b/src/udp.c
+@@ -178,6 +178,16 @@
+          * create one
+          */
+         so = socreate(slirp, IPPROTO_UDP);
++#ifdef SLIRP_FLOE_HOST_HOOKS
++        /* The Floe outbound hook resolves the host-side destination (and
++         * possibly its address family) from the foreign address, so it must
++         * be published before the host socket is created. Upstream sets the
++         * same three fields unconditionally a few lines below, so this is a
++         * pure re-ordering and idempotent. */
++        so->so_ffamily = AF_INET;
++        so->so_faddr = ip->ip_dst;
++        so->so_fport = uh->uh_dport;
++#endif
+         if (not_valid_socket(udp_attach(so, AF_INET))) {
+             DEBUG_MISC(" udp_attach errno = %d-%s", errno, g_strerror(errno));
+             sofree(so);
+@@ -307,6 +317,14 @@
+ 
+ slirp_os_socket udp_attach(struct socket *so, unsigned short af)
+ {
++#ifdef SLIRP_FLOE_HOST_HOOKS
++    if (floe_admit_socket(so->slirp, FLOE_SLIRP_SOCK_OUTBOUND_UDP) != 0) {
++        DEBUG_MISC(" embedder refused the UDP flow (ceiling)");
++        errno = ENFILE;
++        return SLIRP_INVALID_SOCKET;
++    }
++    af = floe_prepare_outbound(so, af);
++#endif
+     so->s = slirp_socket(af, SOCK_DGRAM, 0);
+     if (have_valid_socket(so->s)) {
+         if (slirp_bind_outbound(so, af) != 0) {

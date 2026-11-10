@@ -1980,8 +1980,12 @@
     "bytes": 3965
   },
   {
+    "source": "FloeGISKit/Web/readiness.js",
+    "bytes": 748
+  },
+  {
     "source": "FloeGISKit/Web/native.js",
-    "bytes": 10319
+    "bytes": 10509
   },
   {
     "source": "npm/ol/extent/Relationship.js",
@@ -3157,11 +3161,11 @@
   },
   {
     "source": "FloeGISKit/Web/input.js",
-    "bytes": 8702
+    "bytes": 8683
   },
   {
     "source": "FloeGISKit/Web/view.js",
-    "bytes": 42432
+    "bytes": 43380
   },
   {
     "source": "FloeGISKit/Web/main.js",

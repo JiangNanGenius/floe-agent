@@ -377,27 +377,28 @@ private struct DiagramIssueRow: View {
     var body: some View {
         VStack(alignment: .leading,spacing: 10) {
             Text(summary)
-            if Locale.preferredLanguages.first?.hasPrefix("zh") == true { DisclosureGroup("详细说明") { Text(issue.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }
+            if !issue.detail.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                DisclosureGroup(DL("详细说明","Details")) {Text(issue.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)}
+            }
         }
     }
     private var summary: String {
-        guard Locale.preferredLanguages.first?.hasPrefix("zh") == true else { return issue.detail }
         switch issue.code {
-        case "relationships": return "这个大纲格式不保留关联与流程连线。"
-        case "shapes": return "图形与容器将转换为大纲条目。"
-        case "richContent": return "图文内容会转换为目标格式支持的文字，完整内容请保留原生文件。"
-        case "projectFields": return "负责人、日期、依赖等项目字段不能完整保留。"
-        case "syntheticRoot": return "多个根主题将归到一个新的中心主题下。"
-        case "handwriting": return "这个格式不保留手写笔迹，请同时保留原生文件。"
-        case "inkRasterized": return "手写笔迹将作为图像嵌入，可编辑笔迹保留在原生文件中。"
-        case "formulaRasterized": return "公式将以图像嵌入 SVG，PDF 保留原生公式绘制。"
-        case "rasterScaleReduced": return "大图的 PNG 分辨率已缩小；建议使用 PDF 或 SVG。"
-        case "dependencyLag": return "非零的依赖间隔会转换为日期，请核对排期。"
-        case "dependencyScheduling": return "Mermaid 依赖可能重新计算手工日期，请保留原生排期。"
-        case "linkedLegacyDocuments": return "本次转换根导图，关联文件需要单独保留。"
-        case "imageConverted": return "SVG 中的部分图片会转换为 PNG 预览，原图保留在原生文件中。"
-        case "platformSymbols": return "SVG 不包含系统符号图标；PDF、PNG 和可编辑原生文件会保留。"
-        default: return "部分内容、结构或样式需要按目标格式转换。完整内容请保留原生文件，并查看详细说明。"
+        case "relationships": return DL("这个大纲格式不保留关联与流程连线。","This outline format does not preserve relationship or flow connections.")
+        case "shapes": return DL("图形与容器将转换为大纲条目。","Shapes and containers become outline items.")
+        case "richContent": return DL("图文内容会转换为目标格式支持的文字，完整内容请保留原生文件。","Rich content is converted to text supported by this format. Keep the editable original for the complete content.")
+        case "projectFields": return DL("负责人、日期、依赖等项目字段不能完整保留。","Assignees, dates and dependencies cannot be fully preserved.")
+        case "syntheticRoot": return DL("多个根主题将归到一个新的中心主题下。","Multiple root topics are grouped under a new central topic.")
+        case "handwriting": return DL("这个格式不保留手写笔迹，请同时保留原生文件。","This format does not preserve handwriting. Keep the editable original as well.")
+        case "inkRasterized": return DL("手写笔迹将作为图像嵌入，可编辑笔迹保留在原生文件中。","Handwriting is embedded as an image. Editable strokes remain in the original.")
+        case "formulaRasterized": return DL("公式将以图像嵌入 SVG，PDF 保留原生公式绘制。","Formulas are embedded as images in SVG; PDF retains native formula drawing.")
+        case "rasterScaleReduced": return DL("大图的 PNG 分辨率已缩小；建议使用 PDF 或 SVG。","PNG resolution was reduced for this large diagram. Use PDF or SVG for more detail.")
+        case "dependencyLag": return DL("非零的依赖间隔会转换为日期，请核对排期。","Dependency delays are converted to dates. Check the schedule.")
+        case "dependencyScheduling": return DL("Mermaid 依赖可能重新计算手工日期，请保留原生排期。","Mermaid dependencies may recalculate manual dates. Keep the original schedule.")
+        case "linkedLegacyDocuments": return DL("本次转换根导图，关联文件需要单独保留。","This conversion includes the root map. Keep linked files separately.")
+        case "imageConverted": return DL("SVG 中的部分图片会转换为 PNG 预览，原图保留在原生文件中。","Some images become PNG previews in SVG. Original images remain in the editable file.")
+        case "platformSymbols": return DL("SVG 不包含系统符号图标；PDF、PNG 和可编辑原生文件会保留。","SVG does not include system-symbol icons. PDF, PNG and the editable original preserve them.")
+        default: return DL("部分内容、结构或样式需要按目标格式转换。完整内容请保留原生文件，并查看详细说明。","Some content or formatting needs conversion. Keep the editable original and view details.")
         }
     }
 }

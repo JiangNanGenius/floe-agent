@@ -16,7 +16,7 @@ enum StudioMediaToolContract {
             throw FloeError.validationFailed("inputJSON must be one JSON object, not an array.")
         }
         let allowed: Set<String> = ["objectID", "objectIDs", "expectedRevision", "selectionFence", "number", "secondary",
-                                    "start", "duration", "text", "color", "property", "flag", "points", "captionStyle"]
+                                    "start", "duration", "text", "color", "property", "flag", "points", "captionStyle", "adjustment", "noiseReduction", "dialogueDucking", "voiceSeparation", "audioProcessing", "chromaKey", "videoGrade"]
         let unknown = Set(object.keys).subtracting(allowed).sorted()
         guard unknown.isEmpty else {
             throw FloeError.validationFailed("Unknown inputJSON fields: \(unknown.joined(separator: ", ")). Read studio.read for supported fields.")

@@ -34,6 +34,7 @@ struct StudioToolResultView: View {
     }
     static func title(for name: String) -> String {
         switch name {
+        case "workspace.importOutput": IDELanguageRunText.t("复制到工作区", "Copy to workspace")
         case "studio.create": IDELanguageRunText.t("新建作品", "Create work")
         case "studio.list": IDELanguageRunText.t("查看作品", "List works")
         case "studio.read": IDELanguageRunText.t("读取作品", "Inspect work")

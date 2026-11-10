@@ -166,11 +166,28 @@ nonisolated final class MediaV2StagedAsset: @unchecked Sendable {
 nonisolated final class MediaV2ImportTemporaryFile {
     let url: URL
     private let parent: Int32, name: String
-    init(root: URL) throws {
+    init(root: URL, fileExtension: String = "m4a") throws {
+        guard ["m4a","png","wav","mp4"].contains(fileExtension) else { throw MediaV2CommandError.invalidInput }
         let folder = root.resolvingSymlinksInPath().appendingPathComponent("Assets")
         parent = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard parent >= 0 else { throw MediaV2CommandError.invalidInput }
-        name = UUID().uuidString + ".m4a"; url = folder.appendingPathComponent(name)
+        name = UUID().uuidString + "." + fileExtension; url = folder.appendingPathComponent(name)
+    }
+    func write(_ data: Data) throws {
+        guard !data.isEmpty, data.count <= 134_217_728 else { throw MediaV2CommandError.invalidInput }
+        let fd = openat(parent, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw MediaV2CommandError.invalidInput }
+        defer { close(fd) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                try Task.checkCancellation()
+                let count = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), min(1_048_576, bytes.count-offset))
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw MediaV2CommandError.invalidInput }; offset += count
+            }
+        }
+        guard fsync(fd) == 0 else { throw MediaV2CommandError.invalidInput }
     }
     deinit {
         var value = stat()

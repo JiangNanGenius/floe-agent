@@ -14,6 +14,7 @@ nonisolated enum PersonalFileAction: String, Sendable { case move, duplicate, sh
 nonisolated enum PersonalFileActionError: Error, LocalizedError {
     case busy, closeFirst, unsupported, tooLarge, changed
     case moveRecovery(String)
+    case deletionRecovery(String)
     var errorDescription: String? {
         switch self {
         case .busy: IDELanguageRunText.t("正在处理这个文件，请稍后重试。", "This file is being processed. Try again shortly.")
@@ -22,8 +23,15 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         case .tooLarge: IDELanguageRunText.t("这个工程超过文件菜单的大小限制，请在编辑器中导出。", "This project exceeds the file-menu size limit. Export it from the editor.")
         case .changed: IDELanguageRunText.t("文件已改变，请刷新后重试。", "The file changed. Refresh and try again.")
         case .moveRecovery(let location): IDELanguageRunText.t("移动记录未完成，文件保留在：", "The move record could not be completed. The file is kept at: ") + location
+        case .deletionRecovery(let reason): IDELanguageRunText.t("永久删除未完成，可在回收站中重试。", "Permanent deletion did not finish. Retry in Trash.") + "\n" + reason
         }
     }
+}
+
+nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
+    struct Failure: Sendable { let entry: PersonalLibraryTrashEntry; let message: String }
+    var restored: [UUID] = []
+    var failed: [Failure] = []
 }
 
 @MainActor final class PersonalShareArtifact: Identifiable {
@@ -103,9 +111,9 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         return try await operation(record, directory, library)
     }
 
-    static func delete(_ selection: PersonalContentRecord, environment: AppEnvironment?,
+    @discardableResult static func delete(_ selection: PersonalContentRecord, environment: AppEnvironment?,
                        library suppliedLibrary: PersonalContentLibrary? = nil,
-                       validateSource: @MainActor @Sendable () async throws -> Void = {}) async throws {
+                       validateSource: @MainActor @Sendable () async throws -> Void = {}) async throws -> PersonalLibraryTrashEntry {
         try begin(selection.id); defer { active.remove(selection.id) }
         guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
         let library: PersonalContentLibrary
@@ -117,16 +125,18 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         try await prepareForDeletion(value.record, directory: value.url, environment: environment)
         try await validateSource()
         try Task.checkCancellation()
+        let entry: PersonalLibraryTrashEntry
         if selection.kind == .biology {
             guard let environment else { throw PersonalContentError.storageUnavailable }
             let lifecycle = try await environment.biologyComposition.libraryLifecycle()
-            _ = try await lifecycle.deleteUnderHeldBarrier(record: value.record, directory: value.url, library: library)
-        } else { try await library.softDelete(selection) }
+            entry = try await lifecycle.deleteUnderHeldBarrier(record: value.record, directory: value.url, library: library)
+        } else { entry = try await library.softDelete(selection) }
         changed(selection.id)
+        return entry
     }
 
-    static func deleteFolder(_ selection: PersonalLibraryFolder, environment: AppEnvironment?,
-                             library suppliedLibrary: PersonalContentLibrary? = nil) async throws {
+    @discardableResult static func deleteFolder(_ selection: PersonalLibraryFolder, environment: AppEnvironment?,
+                             library suppliedLibrary: PersonalContentLibrary? = nil) async throws -> PersonalLibraryTrashEntry {
         let library: PersonalContentLibrary
         if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
         let root = await library.root
@@ -146,16 +156,57 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         }
         try Task.checkCancellation()
         let biology = members.filter { $0.kind == .biology && $0.deletedAt == nil }
+        let entry: PersonalLibraryTrashEntry
         if !biology.isEmpty {
             guard let environment else { throw PersonalContentError.storageUnavailable }
             let lifecycle = try await environment.biologyComposition.libraryLifecycle()
-            _ = try await lifecycle.withNativeLifecycleUnderHeldBarrier(selections: biology.map {
+            entry = try await lifecycle.withNativeLifecycleUnderHeldBarrier(selections: biology.map {
                 .init(record: $0, directory: root.appendingPathComponent($0.relativePath))
             }, restoring: false, library: library) {
                 try await library.softDeleteFolder(selection, expectedProjectIDs: ids)
             }
-        } else { try await library.softDeleteFolder(selection, expectedProjectIDs: ids) }
+        } else { entry = try await library.softDeleteFolder(selection, expectedProjectIDs: ids) }
         changed(UUID())
+        return entry
+    }
+
+    /// The native confirmation freezes this choice. Model tools retain their
+    /// separate recoverable-delete / approved-permanent-delete contracts.
+    static func deleteFromFiles(_ item: PersonalLibrarySelectionItem, usingTrash: Bool,
+        environment: AppEnvironment?, library suppliedLibrary: PersonalContentLibrary? = nil) async throws {
+        let library: PersonalContentLibrary
+        if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
+        let entry: PersonalLibraryTrashEntry
+        switch item {
+        case .work(let record): entry = try await delete(record, environment: environment, library: library)
+        case .folder(let folder): entry = try await deleteFolder(folder, environment: environment, library: library)
+        }
+        guard !usingTrash else { return }
+        do {
+            // Bind physical removal to the exact tombstone just committed;
+            // never re-query by pathname and accidentally remove a successor.
+            let plans = try await permanentDeletionPlans([entry], environment: environment, library: library)
+            for plan in plans { _ = try await permanentlyDelete(plan, environment: environment, library: library) }
+        } catch { throw PersonalFileActionError.deletionRecovery(error.localizedDescription) }
+    }
+
+    static func restoreBatch(_ entries: [PersonalLibraryTrashEntry], environment: AppEnvironment?,
+        library: PersonalContentLibrary? = nil) async -> PersonalLibraryTrashRestoreResult {
+        var result = PersonalLibraryTrashRestoreResult()
+        // Restore selected parents first, then independently deleted children.
+        let ordered = entries.sorted {
+            let left = $0.relativePath.split(separator: "/").count
+            let right = $1.relativePath.split(separator: "/").count
+            return left == right ? $0.relativePath < $1.relativePath : left < right
+        }
+        for entry in ordered {
+            do {
+                try Task.checkCancellation()
+                try await restore(entry, environment: environment, library: library)
+                result.restored.append(entry.id)
+            } catch { result.failed.append(.init(entry: entry, message: error.localizedDescription)) }
+        }
+        return result
     }
 
     static func restore(_ entry: PersonalLibraryTrashEntry, environment: AppEnvironment?,
@@ -202,7 +253,17 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
         library suppliedLibrary: PersonalContentLibrary? = nil) async throws -> [PersonalPermanentDeletePlan] {
         let library: PersonalContentLibrary
         if let suppliedLibrary { library = suppliedLibrary } else { library = try await PersonalContentService.shared.library() }
-        let proposals = try await library.permanentDeletionProposals(entries)
+        guard !entries.isEmpty, Set(entries.map(\.id)).count == entries.count else { throw PersonalPermanentDeleteError.changed }
+        let roots = entries.filter { entry in !entries.contains { parent in
+            parent.kind == .folder && parent.id != entry.id && entry.relativePath.hasPrefix(parent.relativePath + "/")
+        } }
+        var proposals: [PersonalPermanentDeletePlan] = []
+        // The storage transaction bounds one proposal to 128 entries. Large
+        // Select All operations retain that bound without capping selection.
+        for start in stride(from: 0, to: roots.count, by: 128) {
+            try Task.checkCancellation()
+            proposals += try await library.permanentDeletionProposals(Array(roots[start..<min(start + 128, roots.count)]))
+        }
         guard proposals.contains(where: { $0.members.contains(where: { $0.kind == .biology }) }) else { return proposals }
         guard let environment else { throw PersonalContentError.storageUnavailable }
         let lifecycle = try await environment.biologyComposition.libraryLifecycle()
@@ -278,17 +339,14 @@ nonisolated enum PersonalFileActionError: Error, LocalizedError {
     /// to single deletion. Failures never abort the remaining items and never
     /// hide them; undeleted originals stay visible for the user to handle.
     static func deleteBatch(_ items: [PersonalLibrarySelectionItem], environment: AppEnvironment?,
-                            library: PersonalContentLibrary? = nil) async -> PersonalLibraryBatchDeleteResult {
+                            library: PersonalContentLibrary? = nil, usingTrash: Bool = true) async -> PersonalLibraryBatchDeleteResult {
         var result = PersonalLibraryBatchDeleteResult()
         // Defense in depth: the selection model already deduplicated; redo it
         // here so no caller can double-visit an absorbed descendant.
         for item in PersonalLibrarySelectionModel.deduplicated(items) {
             do {
                 try Task.checkCancellation()
-                switch item {
-                case .work(let record): try await delete(record, environment: environment, library: library)
-                case .folder(let folder): try await deleteFolder(folder, environment: environment, library: library)
-                }
+                try await deleteFromFiles(item, usingTrash: usingTrash, environment: environment, library: library)
                 result.deleted.append(item)
             } catch {
                 result.failed.append(.init(item: item, message: error.localizedDescription))

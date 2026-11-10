@@ -1,5 +1,9 @@
 # Accepted-SDK release recovery and the per-device Notes fix
 
+> 历史参考 / Historical reference · 2026-11-10 标记。旧 accepted-SDK 云端恢复方案与当时执行状态，不作为现行默认构建流程。后续 Build 243 的实际运行与交付另见[逐版记录](releases/testflight/TESTFLIGHT_1.7.2_BETA.md)；当前操作见[工程指南](../FloeAgent/README.md)。
+> Earlier accepted-SDK recovery design and status. Later build 243 execution is recorded separately; use the current engineering guide for current work.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Status: implemented in source, verified by unit fixtures and `actionlint`; **not

@@ -2,11 +2,12 @@
 
 Repository instructions for coding agents: [AGENTS.md](AGENTS.md).
 
-Thank you for helping build Floe Agent. The project ships prerelease builds, its interfaces are still moving, and changes involving credentials, browser control, files, or remote computers require especially careful review. [简体中文贡献指南](CONTRIBUTING.zh-CN.md)
+Thank you for helping build Floe Agent. The project has an App Store release and separate test channels; its interfaces continue to evolve. Changes involving credentials, browser control, files, or remote computers require especially careful review. [简体中文贡献指南](CONTRIBUTING.zh-CN.md)
 
-## Floe 1.7 integration workflow
+<a id="floe-17-integration-workflow"></a>
+## Current development workflow
 
-Start from the actual current `main` checkout and inspect status and active worktrees; create a scoped `codex/` branch when needed. Read the [implementation status](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md) and [build/acceptance guide](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md). Preserve unqualified changes, reproductions and recovery evidence; reconcile overlapping changes individually.
+Start from the actual current `main` checkout and inspect status, relevant diffs and active worktrees; create a scoped `codex/` branch only when isolation is needed. Read the [engineering guide](FloeAgent/README.md), [architecture](docs/ARCHITECTURE_OVERVIEW.md) and [local qualification guide](docs/FLOE_LOCAL_QUALIFICATION.md). Active plans and historical snapshots are separated in the [documentation hub](docs/README.md). Preserve unqualified changes, reproductions and recovery evidence; reconcile overlapping changes individually.
 
 Use focused local tests and relevant local App builds; cloud CI supplies independent checks and release workflows. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output. Runtime lock checks must remain read-only. Generated Xcode changes must match `project.yml`. Uploading an artifact is not release acceptance.
 
@@ -26,19 +27,20 @@ Use the current `main` baseline:
 ```bash
 git clone https://github.com/JiangNanGenius/floe-agent.git
 cd floe-agent
-cd FloeAgent
-scripts/local_build.sh
+brew install xcodegen
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+bash FloeAgent/scripts/gen_project.sh
+open FloeAgent/FloeAgent.xcodeproj
 ```
 
-Requirements are a full Xcode installation with Swift 6.2 and the iOS 26 SDK or newer. Regenerate the committed Xcode project after changing `project.yml`:
+Use the installed full Xcode and toolchain required by [AGENTS.md](AGENTS.md); the app supports iOS/iPadOS 26 and newer. After changing targets, resources, settings, versions or schemes in `project.yml`, regenerate and inspect the matching project:
 
 ```bash
-swift build
-swift test
-bash scripts/gen_project.sh
+bash FloeAgent/scripts/gen_project.sh
+git diff -- FloeAgent/project.yml FloeAgent/FloeAgent.xcodeproj/project.pbxproj
 ```
 
-Some iOS-only targets require Xcode rather than a command-line Swift toolchain.
+The generation script regenerates first and reports remaining tracked changes; inspect its output without discarding unrelated work. Choose checks for the affected behavior. `FloeAgent/scripts/local_build.sh` covers a cross-platform SwiftPM subset; it does not build the iOS App. Simulator runs follow the pinned iPad and locking rules in AGENTS.md.
 
 ## Pull request checklist
 

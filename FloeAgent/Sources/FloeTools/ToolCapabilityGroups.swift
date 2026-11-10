@@ -207,10 +207,12 @@ public enum ToolRoutingPolicy {
     static let mediaTerms: [String] = [
         "image", "photo", "picture", "screenshot", "video", "movie", "audio",
         "voice", "speech", "transcribe", "transcription", "subtitle", "caption",
+        "music", "song", "soundtrack", "bgm", "melody",
         "pdf", "ocr", "barcode", "qr", "watermark", "thumbnail", "frames",
         "frame rate", "remux", "codec", "mp4", "mov", "mp3", "wav", "heic",
         "png", "jpeg", "resolution",
         "图片", "图像", "照片", "截图", "视频", "影片", "动画", "音频", "语音",
+        "音乐", "歌曲", "配乐", "背景音乐", "伴奏",
         "录音", "字幕", "转写", "听写", "文字识别", "识别文字", "二维码", "条码",
         "水印", "抽帧", "转码", "修图", "抠图", "封面图", "海报"
     ]

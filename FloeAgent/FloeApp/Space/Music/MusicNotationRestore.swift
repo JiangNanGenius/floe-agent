@@ -77,8 +77,8 @@ private nonisolated struct MusicNotationRestoreInput: Sendable {
             try MusicNotationPackage.prepareRestoredScore(source: packageRoot, destination: stage, expected: expected)
             if manifest.djSHA256 != nil {
                 let bytes = try MusicNotationPackage.regularData(packageRoot.appendingPathComponent("dj-session.json"))
-                let dj = try JSONDecoder().decode(MusicDJSession.self, from: bytes); try dj.validate()
-                guard dj.assets.allSatisfy({ restored.assets.contains($0) }) else { throw PersonalContentError.invalidProject }
+                let dj = try MusicDJWorkspace.decodeSaved(bytes, projectID: restored.id)
+                guard dj.session.assets.allSatisfy({ restored.assets.contains($0) }) else { throw PersonalContentError.invalidProject }
                 try bytes.write(to: stage.appendingPathComponent("dj-session.json"), options: .withoutOverwriting)
             }
             let targetSnapshot = try MusicNotationPackage.capture(root: stage, parentID: session.id)

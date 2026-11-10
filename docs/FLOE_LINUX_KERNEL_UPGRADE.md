@@ -1,5 +1,9 @@
 # Floe Linux guest kernel upgrade (4.15 → modern LTS)
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本文的内核、OpenSBI 与资格结论属于已退役 TinyEMU／RISC-V 路线，不是当前 ARM64 运行环境的内核或发布状态。原始成功、失败与待验收范围保留；现行入口见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)。
+> Kernel, OpenSBI and qualification results belong to the retired TinyEMU/RISC-V route. Preserve those outcomes; they do not identify the current ARM64 kernel or release.
+> [历史文档索引 / Historical index](history/README.md)
+
 Status 2026-10-15 (lane job-22a7dfde5f83467f, post-reboot continuation):
 **complete and native-qualified.** Patches 0012–0019 are canonical
 (`vendor_swift_sources.sh --check` clean); the 6.18.56 + OpenSBI 1.9 pair
@@ -72,7 +76,7 @@ canonical vendoring script; `vendor_swift_sources.sh --check` passes.
   firmware console input ever reached the guest.
 
 The kernel config
-([`config_linux_riscv64_6.18.56`](../FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_6.18.56),
+([`config_linux_riscv64_6.18.56`（迁出前源码 / pre-removal source）](https://github.com/JiangNanGenius/floe-agent/blob/40aa1198047a10db8c684fe9b0f2431c9006c452/FloeAgent/ThirdParty/TinyEMU/guest-image/config_linux_riscv64_6.18.56),
 §4) additionally disables
 every ISA extension beyond rv64gc that the interpreter cannot execute
 (SVPBMT/SUPM/SVNAPOT, Zba/b/c/bk, Zicbom/boz/bop, Zawrs/abha/acas, V,

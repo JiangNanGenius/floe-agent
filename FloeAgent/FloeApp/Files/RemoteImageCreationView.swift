@@ -15,6 +15,11 @@ struct RemoteImageCreationView: View {
     @State private var isGenerating = false
     @State private var errorMessage: String?
     @State private var statusMessage: String?
+    @State private var nativeRequest: NativeImageRequest?
+    private struct NativeImageRequest: Identifiable {
+        let id = UUID()
+        let input: AppleImagePlaygroundInput
+    }
 
     private var selectedOption: FilesCenter.RemoteImageModelOption? {
         options.first { $0.id == selectedModelID }
@@ -42,6 +47,7 @@ struct RemoteImageCreationView: View {
                         Text(selectedOption.title)
                     } else {
                         Picker("auxiliary.image_model", selection: $selectedModelID) {
+                            Text(IDELanguageRunText.t("选择模型", "Choose a model")).tag(Optional<UUID>.none)
                             ForEach(options) { option in
                                 Text(option.title).tag(Optional(option.id))
                             }
@@ -96,6 +102,23 @@ struct RemoteImageCreationView: View {
             .overlay { if isGenerating { ProgressView("files.remote_image_creation_view.generating").padding().background(.regularMaterial, in: Capsule()) } }
             .task { loadOptions() }
             .onChange(of: selectedModelID) { _, _ in normalizeControls() }
+            .sheet(item: $nativeRequest) { request in
+                AppleImagePlaygroundManualSheet(input: request.input) { result in
+                    guard nativeRequest?.id == request.id else { return }
+                    nativeRequest = nil
+                    switch result {
+                    case .success(let image):
+                        let format = ImageGenerationImageFormat(mimeType: image.mimeType,
+                            fileExtension: image.fileExtension, uti: image.uti)
+                        let saved = center.persistGeneratedImagesOutcome([image.data], operation: .generate, nativeFormats: [format])
+                        if saved.failure == nil, saved.attachments.count == 1 { dismiss() }
+                        else { errorMessage = IDELanguageRunText.t("未能保存图像，请重试。", "The image could not be saved. Try again.") }
+                    case .failure(.cancelled): break
+                    case .failure(let failure): errorMessage = AppleImagePlaygroundCopy.message(for: failure)
+                    }
+                }
+            }
+            .onDisappear { nativeRequest = nil }
         }
     }
 
@@ -104,7 +127,10 @@ struct RemoteImageCreationView: View {
         guard options.isEmpty else { return }
         options = center.remoteImageModelOptions(operation: .generate)
         if selectedModelID == nil || !options.contains(where: { $0.id == selectedModelID }) {
-            selectedModelID = options.first?.id
+            let preferred = center.environment.conversationCenter.auxiliaryProviderAndModel(for: .generate)?.1.id
+            let automatic = options.filter { $0.id != AppleImagePlaygroundModelIdentity.profileID
+                || AppleImagePlaygroundModelIdentity.automaticRoutingEnabled() }
+            selectedModelID = automatic.first(where: { $0.id == preferred })?.id ?? automatic.first?.id
         }
         normalizeControls()
     }
@@ -130,6 +156,13 @@ struct RemoteImageCreationView: View {
         errorMessage = nil
         statusMessage = nil
         do {
+            if selectedOption.id == AppleImagePlaygroundModelIdentity.profileID {
+                guard center.environment.appleImagePlaygroundService.isAvailable else { throw AppleImagePlaygroundFailure.unavailable }
+                let input = AppleImagePlaygroundInput(prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+                try input.validate()
+                nativeRequest = NativeImageRequest(input: input)
+                return
+            }
             let selection = ImageGenerationSelection(
                 resolution: resolution.isEmpty ? nil : resolution)
             let (attachments, report) = try await center.performRemoteImageResult(

@@ -4,13 +4,14 @@
 
 [English](CONTRIBUTING.md) · [中文 README](README.zh-CN.md) · [安全策略](SECURITY.zh-CN.md)
 
-感谢参与 Floe Agent。项目已经发布预览版本，但接口仍在调整；涉及凭据、文件、浏览器控制或远程电脑的改动需要更严格的安全审阅。
+感谢参与 Floe Agent。项目已有 App Store 正式版及独立测试渠道，接口仍在调整；涉及凭据、文件、浏览器控制或远程电脑的改动需要更严格的安全审阅。
 
-## Floe 1.7 integration workflow
+<a id="floe-17-integration-workflow"></a>
+## 当前开发流程
 
-先检查实际 main、工作区状态与活动 worktree；需要新分支时使用聚焦任务的 `codex/` 分支。先阅读[实施状态](docs/FLOE_1_7_IMPLEMENTATION_STATUS.md)与[构建验收说明](docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md)，保留未验收修改、复现输入和恢复证据。不要用整分支覆盖重叠修改。
+先检查实际 `main`、工作区状态、相关 diff 与活动 worktree；仅在需要隔离时创建聚焦任务的 `codex/` 分支。先阅读[工程指南](FloeAgent/README.md)、[架构](docs/ARCHITECTURE_OVERVIEW.md)与[本地验证说明](docs/FLOE_LOCAL_QUALIFICATION.zh-CN.md)，在研计划和旧快照分别从[文档入口](docs/README.md)访问。保留未验收修改、复现输入和恢复证据，不用整分支覆盖重叠修改。
 
-Use focused local tests and relevant local App builds; cloud CI supplies independent checks and release workflows. Update both language guides when user behavior changes. Report the tested commit, SDK, device/simulator and actual output; do not turn an artifact upload into a release claim. Runtime lock check mode must remain read-only. Generated Xcode changes must match `project.yml`.
+按影响运行本地定向测试和相关 App 构建，云端 CI 补充独立检查与分发流程。用户行为变化时同步双语指南，记录源码、SDK、设备／模拟器和实际结果；产物上传不等于发布完成。运行时锁定检查保持只读，生成工程与 `project.yml` 一致。
 
 ## 开始之前
 
@@ -28,21 +29,20 @@ Use focused local tests and relevant local App builds; cloud CI supplies indepen
 ```bash
 git clone https://github.com/JiangNanGenius/floe-agent.git
 cd floe-agent
-cd FloeAgent
 brew install xcodegen
-bash scripts/gen_project.sh
-scripts/local_build.sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+bash FloeAgent/scripts/gen_project.sh
+open FloeAgent/FloeAgent.xcodeproj
 ```
 
-需要包含 iOS 26 SDK 或更新版本的完整 Xcode 与 Swift 6.2+。修改 `project.yml` 后必须重新生成并提交一致的 `.xcodeproj`：
+使用 [AGENTS.md](AGENTS.md) 要求的已安装完整 Xcode 与工具链；App 兼容 iOS/iPadOS 26 及更新版本。修改 `project.yml` 的目标、资源、设置、版本或 scheme 后，重新生成并检查匹配的工程：
 
 ```bash
-swift build
-swift test
-bash scripts/gen_project.sh
+bash FloeAgent/scripts/gen_project.sh
+git diff -- FloeAgent/project.yml FloeAgent/FloeAgent.xcodeproj/project.pbxproj
 ```
 
-部分 iOS-only 目标需要完整 Xcode 而非命令行 Swift 工具链。
+生成脚本先重新生成，再报告仍存在的已跟踪修改；检查输出，不丢弃无关工作。按影响选择验证，不要求每次运行整个 SwiftPM 套件。`FloeAgent/scripts/local_build.sh` 只覆盖跨平台 SwiftPM 子集，不构建 iOS App。模拟器运行遵守 AGENTS.md 的固定 iPad 与串行锁规则。
 
 ## PR 检查表
 

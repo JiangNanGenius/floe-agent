@@ -1,6 +1,108 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "settings.licenses.document.floe_tex_native_xdv.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native typesetting engines and fonts"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原生排版引擎与字体"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.slirp_stack.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libslirp + PCRE2 — licenses and notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "libslirp 与 PCRE2 — 许可证与声明"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.slirp_glib.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GLib 2.90.1 — GNU Lesser General Public License 2.1 or later"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GLib 2.90.1 — GNU 宽通用公共许可证 2.1 或更高版本"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.slirp_proxy_libintl.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "proxy-libintl 0.5 — GNU Library General Public License 2.0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "proxy-libintl 0.5 — GNU 库通用公共许可证 2.0"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.slirp_source_offer.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FloeSlirp — source availability and relink instructions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "FloeSlirp — 源码可获得性与重新链接说明"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.slirp": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe Agent statically links the FloeSlirp userspace network stack for its Linux guest: libslirp 4.9.7 (BSD-3-Clause with 9 per-file MIT sources), the trimmed GLib 2.90.1 core (LGPL-2.1-or-later), PCRE2 10.46 built with JIT disabled (BSD-3-Clause WITH PCRE2-exception) and proxy-libintl 0.5 stubs (LGPL-2.0). The pinned upstream archives, the recorded local patches, the build scripts and every delivered digest are recorded in FloeAgent/Vendor/FloeSlirp/PROVENANCE.json; the full license texts ship under Licenses/ (FloeSlirp-LICENSES.txt, FloeSlirp-GLib-LGPL.txt, FloeSlirp-ProxyLibintl-LGPL.txt) and Licenses/FloeSlirp-SOURCE-OFFER.txt gives the corresponding-source and relink route with the immutable app tag."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe Agent 为其 Linux 客户机静态链接 FloeSlirp 用户态网络栈：libslirp 4.9.7（BSD-3-Clause，另有 9 个逐文件 MIT 源文件）、精简的 GLib 2.90.1 核心（LGPL-2.1-or-later）、以禁用 JIT 方式构建的 PCRE2 10.46（BSD-3-Clause 附带 PCRE2 例外条款）以及 proxy-libintl 0.5 桩实现（LGPL-2.0）。已固定的上游归档、本地补丁、构建脚本及所有交付构件的摘要记录在 FloeAgent/Vendor/FloeSlirp/PROVENANCE.json；完整许可证文本随应用捆绑在 Licenses/ 下（FloeSlirp-LICENSES.txt、FloeSlirp-GLib-LGPL.txt、FloeSlirp-ProxyLibintl-LGPL.txt），Licenses/FloeSlirp-SOURCE-OFFER.txt 给出随不可变应用 Tag 提供的对应源码与重新链接途径。"
+          }
+        }
+      }
+    },
     "settings.questions.title": {
       "extractionState": "manual",
       "localizations": {
@@ -20687,6 +20789,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "拖动箭头或轻点输入精确数值"
+          }
+        }
+      }
+    },
+    "cad.status.dragToPan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pan the drawing — pick a tool to draw"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平移图纸 — 选择工具开始绘制"
           }
         }
       }
@@ -94895,13 +95014,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ready"
+            "value": "Configured"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已就绪"
+            "value": "已配置"
           }
         }
       }
@@ -144907,6 +145026,40 @@
         }
       }
     },
+    "cad.ui.constraint.showPanel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show constraints"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开约束面板"
+          }
+        }
+      }
+    },
+    "cad.ui.constraint.hidePanel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide constraints"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "收起约束面板"
+          }
+        }
+      }
+    },
     "cad.ui.constraint.settings": {
       "extractionState": "manual",
       "localizations": {
@@ -145411,6 +145564,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "启动此环境后可管理软件包。"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.swiftgitx.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SwiftGitX"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SwiftGitX"
+          }
+        }
+      }
+    },
+    "settings.licenses.note.swiftgitx_native": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SwiftGitX 0.4.0 retains its pinned upstream source and original MIT notice in FloeNativeGit; its native Git transport is provided by the separately declared libgit2 component."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SwiftGitX 0.4.0 在 FloeNativeGit 中保留固定版本的上游源码与原始 MIT 声明；原生 Git 传输由单独列出的 libgit2 组件提供。"
           }
         }
       }

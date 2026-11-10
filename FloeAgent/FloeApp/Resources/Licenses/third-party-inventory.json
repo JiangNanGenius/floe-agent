@@ -68,6 +68,19 @@
   ],
   "documents": [
     {
+      "id": "floe-tex-native-xdv",
+      "repositoryPath": "FloeApp/Resources/Licenses/FloeTeXNativeXDV-NOTICES.txt",
+      "bundlePath": "Licenses/FloeTeXNativeXDV-NOTICES.txt",
+      "titleKey": "settings.licenses.document.floe_tex_native_xdv.title",
+      "titleFallback": "Native typesetting engines and fonts",
+      "titleArgument": null,
+      "license": "MPL-2.0; MIT; CPL-1.0; FTL; Unicode-3.0; libpng-2.0; Apache-2.0 and retained notices",
+      "kindKey": "settings.licenses.kind.notices",
+      "required": true,
+      "section": "engineering",
+      "noteKey": null
+    },
+    {
       "id": "chemistry",
       "repositoryPath": "FloeApp/Resources/Licenses/Chemistry-NOTICES.txt",
       "bundlePath": "Licenses/Chemistry-NOTICES.txt",
@@ -206,6 +219,58 @@
       "titleArgument": null,
       "license": "Apache-2.0 / MPL-2.0",
       "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "slirp-stack-licenses",
+      "repositoryPath": "FloeApp/Resources/Licenses/FloeSlirp-LICENSES.txt",
+      "bundlePath": "Licenses/FloeSlirp-LICENSES.txt",
+      "titleKey": "settings.licenses.document.slirp_stack.title",
+      "titleFallback": "libslirp + PCRE2 — licenses and notices",
+      "titleArgument": null,
+      "license": "BSD-3-Clause; MIT; BSD-3-Clause WITH PCRE2-exception",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "slirp-glib-lgpl",
+      "repositoryPath": "FloeApp/Resources/Licenses/FloeSlirp-GLib-LGPL.txt",
+      "bundlePath": "Licenses/FloeSlirp-GLib-LGPL.txt",
+      "titleKey": "settings.licenses.document.slirp_glib.title",
+      "titleFallback": "GLib 2.90.1 — GNU Lesser General Public License 2.1 or later",
+      "titleArgument": null,
+      "license": "LGPL-2.1-or-later",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "slirp-proxy-libintl-lgpl",
+      "repositoryPath": "FloeApp/Resources/Licenses/FloeSlirp-ProxyLibintl-LGPL.txt",
+      "bundlePath": "Licenses/FloeSlirp-ProxyLibintl-LGPL.txt",
+      "titleKey": "settings.licenses.document.slirp_proxy_libintl.title",
+      "titleFallback": "proxy-libintl 0.5 — GNU Library General Public License 2.0",
+      "titleArgument": null,
+      "license": "LGPL-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "slirp-source-offer",
+      "repositoryPath": "FloeApp/Resources/Licenses/FloeSlirp-SOURCE-OFFER.txt",
+      "bundlePath": "Licenses/FloeSlirp-SOURCE-OFFER.txt",
+      "titleKey": "settings.licenses.document.slirp_source_offer.title",
+      "titleFallback": "FloeSlirp — source availability and relink instructions",
+      "titleArgument": null,
+      "license": "BSD-3-Clause + per-file MIT (libslirp); LGPL-2.1-or-later (GLib core); LGPL-2.0 (proxy-libintl stubs); BSD-3-Clause WITH PCRE2-exception (PCRE2) — static libraries linked via the FloeSlirp binaryTarget; pinned source, patches, rebuild and relink instructions recorded",
+      "kindKey": "settings.licenses.kind.notices",
       "required": true,
       "section": "engines",
       "noteKey": null
@@ -1158,6 +1223,15 @@
       "evidence": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt"
     },
     {
+      "name": "FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)",
+      "version": "0.17.0-cg2",
+      "license": "MPL-2.0; MIT; CPL-1.0; FTL; Unicode-3.0; libpng-2.0; Apache-2.0 and retained notices",
+      "source": "https://github.com/tectonic-typesetting/tectonic/tree/8c0126a9653239a2e6e0a5274af9b8510f643030",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "Modules/FloeLaTeXKit/Native/tectonic.source.json; patches/production-xdv-{source-manifest,local-sources}.json; licenses/native-xdv-selected-licenses.json; Production/Vendor/FloeTeXNativeXDV.manifest.json and NOTICES.json bind the original source, complete patch, selected license branches and actual Cargo/object closure."
+    },
+    {
       "name": "Floe chemistry native libraries (Avogadro / Eigen)",
       "version": "Avogadro a5947518efb84132a44110dbdecab94fc87ce3b8; Eigen 5.0.1 build input",
       "license": "BSD-3-Clause; MPL-2.0; MIT; retained dependency notices",
@@ -1201,6 +1275,15 @@
       "section": "engines",
       "noteKey": "settings.licenses.note.arm64",
       "evidence": null
+    },
+    {
+      "name": "FloeSlirp userspace network stack (libslirp + GLib core)",
+      "version": "libslirp 4.9.7 (tag ce12dcddf710a71dc0de6450ec95edbadf8e9f66); GLib 2.90.1; PCRE2 10.46 (JIT disabled); proxy-libintl 0.5",
+      "license": "BSD-3-Clause + per-file MIT (libslirp); LGPL-2.1-or-later (GLib core); LGPL-2.0 (proxy-libintl stubs); BSD-3-Clause WITH PCRE2-exception (PCRE2) — static libraries linked via the FloeSlirp binaryTarget; pinned source, patches, rebuild and relink instructions recorded",
+      "source": "https://gitlab.com/qemu-project/libslirp",
+      "section": "engines",
+      "noteKey": "settings.licenses.note.slirp",
+      "evidence": "FloeAgent/Vendor/FloeSlirp/PROVENANCE.json (pinned tarballs, patches, build scripts, delivered slice digests; license members proven byte-equal to the pinned archives); bundled notices FloeApp/Resources/Licenses/FloeSlirp-LICENSES.txt, FloeSlirp-GLib-LGPL.txt, FloeSlirp-ProxyLibintl-LGPL.txt and the relink record FloeSlirp-SOURCE-OFFER.txt"
     },
     {
       "name": "Floe shared Linux component (Debian 13 ARM64)",
@@ -3022,6 +3105,11 @@
       "fallback": "The interpreted ARM64 engine is arm64emu-system at commit 55c8128cb02d8ba3809f6579f7c6d316537e0546 (Apache-2.0), with Floe MPL-2.0 bridge and resident I/O changes. It generates no native code. Complete notices and both licenses are bundled as Licenses/ARM64EMU-LICENSES.txt; source hashes are recorded in ThirdParty/ARM64EMU/PROVENANCE.json."
     },
     {
+      "id": "slirp",
+      "textKey": "settings.licenses.note.slirp",
+      "fallback": "Floe Agent statically links the FloeSlirp userspace network stack for its Linux guest: libslirp 4.9.7 (BSD-3-Clause with 9 per-file MIT sources), the trimmed GLib 2.90.1 core (LGPL-2.1-or-later), PCRE2 10.46 built with JIT disabled (BSD-3-Clause WITH PCRE2-exception) and proxy-libintl 0.5 stubs (LGPL-2.0). The pinned upstream archives, the recorded local patches, the build scripts and every delivered digest are recorded in FloeAgent/Vendor/FloeSlirp/PROVENANCE.json; the full license texts ship under Licenses/ (FloeSlirp-LICENSES.txt, FloeSlirp-GLib-LGPL.txt, FloeSlirp-ProxyLibintl-LGPL.txt) and Licenses/FloeSlirp-SOURCE-OFFER.txt gives the corresponding-source and relink route with the immutable app tag."
+    },
+    {
       "id": "office",
       "textKey": "settings.licenses.note.office",
       "fallback": "The native Office engine is Collabora Online (LibreOffice-based) at commit 27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc, MPL-2.0. Its complete upstream legal files ship in this app under Licenses/OfficeEngine/: the licensing and legal information statement with the MPL 2.0 text and third-party library notices, the MPL 2.0, LGPL 3.0 and GPL 3.0 license texts, the MPL source notice, the third-party license file and the Apache NOTICE. Licenses/OfficeEngine-SOURCE-OFFER.txt records where the exact source and Floe patches are available. The texts are copied byte-for-byte from the verified engine build; Floe makes no relicensing claim."
@@ -3053,8 +3141,8 @@
     }
   ],
   "counts": {
-    "components": 244,
-    "documents": 56,
+    "components": 246,
+    "documents": 61,
     "pins": 41
   }
 }

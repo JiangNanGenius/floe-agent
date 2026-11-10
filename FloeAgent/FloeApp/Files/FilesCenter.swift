@@ -19,6 +19,7 @@ import FloeDocuments
 import FloeImages
 import FloeModels
 import FloeProviders
+import FloeLocalModels
 
 /// Coordinates document and image workflows for the UI layer.
 @MainActor
@@ -343,10 +344,12 @@ final class FilesCenter: ObservableObject {
 
         var id: UUID { model.id }
         var title: String {
+            if id == AppleImagePlaygroundModelIdentity.profileID { return AppleImagePlaygroundCopy.title }
             let name = model.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
             return name.isEmpty ? model.remoteModelID : name
         }
         var providerTitle: String {
+            if id == AppleImagePlaygroundModelIdentity.profileID { return "Apple" }
             let name = (provider.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return name.isEmpty ? provider.kind.rawValue : name
         }
@@ -356,13 +359,28 @@ final class FilesCenter: ObservableObject {
     /// `image.models`. Plan-ineligible saved ids (for example lite on Agent
     /// Plan) never become a manual choice.
     func remoteImageModelOptions(operation: RemoteImageOperation) -> [RemoteImageModelOption] {
-        environment.conversationCenter.agentImageRoutes(operation: operation).map { route in
+        var options = environment.conversationCenter.agentImageRoutes(operation: operation).map { route in
             RemoteImageModelOption(
                 provider: route.0,
                 model: route.1,
                 contract: ImageGenerationPresetResolver.parameterContract(
                     provider: route.0, model: route.1, operation: operation))
         }
+        if operation == .generate, environment.appleImagePlaygroundService.isAvailable {
+            // A manual picker is an explicit choice. Turning off automatic
+            // participation must not remove the person's native option.
+            let provider = LocalProviderAdapter.providerProfile
+            let model = AppleImagePlaygroundModelIdentity.profile(providerID: provider.id,
+                available: true, supportsEditing: false)
+            var contract = ImageGenerationPresetResolver.parameterContract(provider: provider, model: model, operation: .generate)
+            contract.minimumCount = 1; contract.maximumCount = 1; contract.maximumCountPerRequest = 1
+            contract.countStrategy = .nativeBatch; contract.maximumReferenceImages = 0
+            contract.aspectRatio = []; contract.resolution = []; contract.quality = []
+            contract.defaultAspectRatio = nil; contract.defaultResolution = nil; contract.defaultQuality = nil
+            contract.nativeSizeOverride = true
+            options.append(.init(provider: provider, model: model, contract: contract))
+        }
+        return options
     }
 
     @discardableResult
@@ -499,7 +517,8 @@ final class FilesCenter: ObservableObject {
 
     func persistGeneratedImagesOutcome(
         _ images: [Data],
-        operation: RemoteImageOperation
+        operation: RemoteImageOperation,
+        nativeFormats: [ImageGenerationImageFormat]? = nil
     ) -> GeneratedImagePersistenceOutcome {
         guard !images.isEmpty else {
             return GeneratedImagePersistenceOutcome(
@@ -525,13 +544,16 @@ final class FilesCenter: ObservableObject {
                 failures.append("\(label) is empty.")
                 continue
             }
-            guard data.count <= 12 * 1_024 * 1_024 else {
-                failures.append("\(label) exceeds 12 MiB.")
+            let limit = nativeFormats?.count == images.count ? AppleImagePlaygroundImage.maximumBytes : 12 * 1_024 * 1_024
+            guard data.count <= limit else {
+                failures.append("\(label) exceeds the image size limit.")
                 continue
             }
             let format: ImageGenerationImageFormat
             do {
-                format = try ImageGenerationImageFormatResolver.resolve(data)
+                if let nativeFormats, nativeFormats.count == images.count {
+                    format = nativeFormats[index]
+                } else { format = try ImageGenerationImageFormatResolver.resolve(data) }
             } catch {
                 failures.append("\(label) has unsupported or unrecognized image bytes.")
                 continue

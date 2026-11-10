@@ -351,11 +351,18 @@ final class AuxiliaryModelsViewModel: ObservableObject {
     }
 
     func label(for model: ModelProfile) -> String {
+        if model.id == AppleImagePlaygroundModelIdentity.profileID {
+            return IDELanguageRunText.t("图乐园 · Apple", "Image Playground · Apple")
+        }
         let provider = center.providers.first(where: { $0.id == model.providerID })
         return "\(model.displayName) · \(provider.map(providerName) ?? String(localized: "auxiliary.provider"))"
     }
 
     private func supports(_ operation: RemoteImageOperation, model: ModelProfile) -> Bool {
+        if model.id == AppleImagePlaygroundModelIdentity.profileID {
+            return operation == .generate && AppleImagePlaygroundService.systemIsAvailable
+                && AppleImagePlaygroundModelIdentity.automaticRoutingEnabled()
+        }
         guard let provider = center.providers.first(where: { $0.id == model.providerID }),
               let adapter = adapterFactory.adapter(for: provider) else { return false }
         return adapter.supports(operation, for: provider)

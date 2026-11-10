@@ -1,5 +1,11 @@
 # ARM64 CPU state isolation — 2026-11-06
 
+> Current evidence entry / 当前证据入口:
+> [ARM64 runtime performance](ARM64_RUNTIME_PERFORMANCE.md), reviewed 2026-11-10.
+> This report contains the later accepted separation change: **3.79×** host
+> component scaling and **2.31×** physical M4 Build 319 sysbench scaling.
+> Current main retains the change; no new M1 measurement is implied.
+
 Build 315's formal App Store review remains fixed. Follow-up App delivery is
 internal and external TestFlight only. Native component measurements on the
 M5 Pro host and the separately verified physical M4 iPad results are identified

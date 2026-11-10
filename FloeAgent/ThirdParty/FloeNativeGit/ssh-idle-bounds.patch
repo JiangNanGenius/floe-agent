@@ -1,0 +1,216 @@
+--- upstream/src/libgit2/transports/ssh_libssh2.c
++++ floe/src/libgit2/transports/ssh_libssh2.c
+@@ -10,6 +10,7 @@
+ #ifdef GIT_SSH_LIBSSH2
+ 
+ #include <libssh2.h>
++#include <time.h>
+ 
+ #include "runtime.h"
+ #include "net.h"
+@@ -49,6 +50,34 @@
+ 
+ static int list_auth_methods(int *out, LIBSSH2_SESSION *session, const char *username);
+ 
++/* Floe: timeout is per no-progress phase, never a whole-clone deadline.
++ * Keep configured stream values; only SSH gets a bounded missing default. */
++static uint64_t ssh_idle_deadline(LIBSSH2_SESSION *session)
++{
++	long timeout = libssh2_session_get_timeout(session);
++	return git_time_monotonic() + (uint64_t)(timeout > 0 ? timeout : 30000);
++}
++
++static int ssh_check_budget(ssh_subtransport *transport, uint64_t deadline)
++{
++	if (git_atomic32_get(&transport->owner->cancelled)) {
++		git_error_set(GIT_ERROR_SSH, "SSH transfer cancelled");
++		return GIT_EUSER;
++	}
++	if (git_time_monotonic() >= deadline) {
++		git_error_set(GIT_ERROR_SSH, "SSH operation timed out without progress");
++		return GIT_TIMEOUT;
++	}
++	return 0;
++}
++
++static void ssh_retry_pause(void)
++{
++	struct timespec delay = { 0, 10000000 };
++	nanosleep(&delay, NULL);
++}
++
++
+ static void ssh_error(LIBSSH2_SESSION *session, const char *errmsg)
+ {
+ 	char *ssherr;
+@@ -119,6 +148,9 @@
+ 	ssize_t rc;
+ 
+ 	*bytes_read = 0;
++
++	if (git_atomic32_get(&OWNING_SUBTRANSPORT(s)->owner->cancelled))
++		return GIT_EUSER;
+ 
+ 	if (!s->sent_command && send_command(s) < 0)
+ 		return -1;
+@@ -156,17 +188,26 @@
+ 	ssh_stream *s = GIT_CONTAINER_OF(stream, ssh_stream, parent);
+ 	size_t off = 0;
+ 	ssize_t ret = 0;
++	int budget;
++	uint64_t deadline;
+ 
+ 	if (!s->sent_command && send_command(s) < 0)
+ 		return -1;
+ 
++	deadline = ssh_idle_deadline(s->session);
+ 	do {
++		if ((budget = ssh_check_budget(OWNING_SUBTRANSPORT(s), deadline)) < 0)
++			return budget;
+ 		ret = libssh2_channel_write(s->channel, buffer + off, len - off);
++		if (ret == LIBSSH2_ERROR_EAGAIN || ret == 0) {
++			ssh_retry_pause();
++			continue;
++		}
+ 		if (ret < 0)
+ 			break;
+ 
+ 		off += ret;
+-
++		deadline = ssh_idle_deadline(s->session);
+ 	} while (off < len);
+ 
+ 	if (ret < 0) {
+@@ -291,11 +332,15 @@
+ 
+ static int _git_ssh_authenticate_session(
+ 	LIBSSH2_SESSION *session,
+-	git_credential *cred)
+-{
+-	int rc;
++	git_credential *cred,
++	ssh_subtransport *transport)
++{
++	int rc, budget;
++	uint64_t deadline = ssh_idle_deadline(session);
+ 
+ 	do {
++		if ((budget = ssh_check_budget(transport, deadline)) < 0)
++			return budget;
+ 		git_error_clear();
+ 		switch (cred->credtype) {
+ 		case GIT_CREDENTIAL_USERPASS_PLAINTEXT: {
+@@ -366,7 +411,9 @@
+ 		default:
+ 			rc = LIBSSH2_ERROR_AUTHENTICATION_FAILED;
+ 		}
+-	} while (LIBSSH2_ERROR_EAGAIN == rc || LIBSSH2_ERROR_TIMEOUT == rc);
++		if (rc == LIBSSH2_ERROR_EAGAIN)
++			ssh_retry_pause();
++	} while (LIBSSH2_ERROR_EAGAIN == rc);
+ 
+ 	if (rc == LIBSSH2_ERROR_PASSWORD_EXPIRED ||
+ 		rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED ||
+@@ -525,13 +572,15 @@
+ 	LIBSSH2_KNOWNHOSTS **hosts,
+ 	const char *hostname,
+ 	int port,
+-	git_stream *io)
++	git_stream *io,
++	ssh_subtransport *transport)
+ {
+ 	git_socket_stream *socket = GIT_CONTAINER_OF(io, git_socket_stream, parent);
+ 	LIBSSH2_SESSION *s;
+ 	LIBSSH2_KNOWNHOSTS *known_hosts;
+ 	git_str prefs = GIT_STR_INIT;
+ 	int rc = 0;
++	uint64_t deadline;
+ 
+ 	GIT_ASSERT_ARG(session);
+ 	GIT_ASSERT_ARG(hosts);
+@@ -542,8 +591,8 @@
+ 		return -1;
+ 	}
+ 
+-	if (git_socket_stream__timeout > 0) {
+-		libssh2_session_set_timeout(s, git_socket_stream__timeout);
++	if (io->timeout > 0) {
++		libssh2_session_set_timeout(s, io->timeout);
+ 	}
+ 
+ 	if ((rc = load_known_hosts(&known_hosts, s)) < 0) {
+@@ -554,9 +603,14 @@
+ 
+ 	find_hostkey_preference(known_hosts, hostname, port, &prefs);
+ 	if (git_str_len(&prefs) > 0) {
++		deadline = ssh_idle_deadline(s);
+ 		do {
++			if ((rc = ssh_check_budget(transport, deadline)) < 0)
++				goto on_error;
+ 			rc = libssh2_session_method_pref(s, LIBSSH2_METHOD_HOSTKEY, git_str_cstr(&prefs));
+-		} while (LIBSSH2_ERROR_EAGAIN == rc || LIBSSH2_ERROR_TIMEOUT == rc);
++			if (rc == LIBSSH2_ERROR_EAGAIN)
++				ssh_retry_pause();
++		} while (LIBSSH2_ERROR_EAGAIN == rc);
+ 		if (rc != LIBSSH2_ERROR_NONE) {
+ 			ssh_error(s, "failed to set hostkey preference");
+ 			goto on_error;
+@@ -564,9 +618,14 @@
+ 	}
+ 	git_str_dispose(&prefs);
+ 
++	deadline = ssh_idle_deadline(s);
+ 	do {
++		if ((rc = ssh_check_budget(transport, deadline)) < 0)
++			goto on_error;
+ 		rc = libssh2_session_handshake(s, socket->s);
+-	} while (LIBSSH2_ERROR_EAGAIN == rc || LIBSSH2_ERROR_TIMEOUT == rc);
++		if (rc == LIBSSH2_ERROR_EAGAIN)
++			ssh_retry_pause();
++	} while (LIBSSH2_ERROR_EAGAIN == rc);
+ 
+ 	if (rc != LIBSSH2_ERROR_NONE) {
+ 		ssh_error(s, "failed to start SSH session");
+@@ -805,8 +864,13 @@
+ 	}
+ 
+ 
+-	if ((error = git_socket_stream_new(&s->io, s->url.host, s->url.port)) < 0 ||
+-	    (error = git_stream_connect(s->io)) < 0)
++	if ((error = git_socket_stream_new(&s->io, s->url.host, s->url.port)) < 0)
++		goto done;
++	if (s->io->connect_timeout == 0)
++		s->io->connect_timeout = 10000;
++	if (s->io->timeout == 0)
++		s->io->timeout = 30000;
++	if ((error = git_stream_connect(s->io)) < 0)
+ 		goto done;
+ 
+ 	/*
+@@ -818,7 +882,7 @@
+ 	if (git__strntol32(&port, s->url.port, strlen(s->url.port), NULL, 10) < 0)
+ 		port = -1;
+ 
+-	if ((error = _git_ssh_session_create(&session, &known_hosts, s->url.host, port, s->io)) < 0)
++	if ((error = _git_ssh_session_create(&session, &known_hosts, s->url.host, port, s->io, t)) < 0)
+ 		goto done;
+ 
+ 	if ((error = check_certificate(session, known_hosts, t->owner->connect_opts.callbacks.certificate_check, t->owner->connect_opts.callbacks.payload, s->url.host, port)) < 0)
+@@ -845,7 +909,7 @@
+ 	error = GIT_EAUTH;
+ 	/* if we already have something to try */
+ 	if (cred && auth_methods & cred->credtype)
+-		error = _git_ssh_authenticate_session(session, cred);
++		error = _git_ssh_authenticate_session(session, cred, t);
+ 
+ 	while (error == GIT_EAUTH) {
+ 		if (cred) {
+@@ -862,7 +926,7 @@
+ 			goto done;
+ 		}
+ 
+-		error = _git_ssh_authenticate_session(session, cred);
++		error = _git_ssh_authenticate_session(session, cred, t);
+ 
+ 		if (error == GIT_EAUTH) {
+ 			/* refresh auth methods */

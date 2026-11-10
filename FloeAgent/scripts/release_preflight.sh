@@ -20,6 +20,14 @@ if [[ "$SOURCE_SHA" != "$TAG_SHA" ]]; then
     exit 1
 fi
 
+# A statically linked LGPL stack ships its corresponding-source/relink offer.
+# Bind the offer to this exact immutable App tag before any release build.
+# Historical tags without this dependency keep their original contract.
+if [[ -f Vendor/FloeSlirp/PROVENANCE.json ]]; then
+    python3 -B Vendor/FloeSlirp/tools/generate_floeslirp_provenance.py --vendor-dir Vendor/FloeSlirp --verify-staged
+    python3 -B Vendor/FloeSlirp/tools/make_bundle_notices.py --app-source-tag "$TAG" --check
+fi
+
 # Same completeness requirement as FloeCoreTests' LocalizationCompletenessTests,
 # but cheap enough to run before any build: JSON validity, dotted key
 # namespaces, and non-empty en/zh-Hans values.

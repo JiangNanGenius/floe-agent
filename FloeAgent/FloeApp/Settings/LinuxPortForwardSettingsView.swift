@@ -341,7 +341,7 @@ struct LinuxPortManagementView: View {
 
 private struct PortForwardPreview: View {
     let url: URL
-    @StateObject private var center = BrowserSessionCenter(durableHandoffs: false)
+    @StateObject private var center = BrowserSessionCenter(durableHandoffs: false, taskHandoffsEnabled: false)
     @State private var owner = UUID()
     @Environment(\.dismiss) private var dismiss
     var body: some View {

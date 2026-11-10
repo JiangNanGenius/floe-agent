@@ -35,6 +35,7 @@ struct ChemistryTextDocument: FileDocument {
     @State private var exportDocument: ChemistryTextDocument?
     @State private var exporting = false
     @State private var scene = ChemistryScene()
+    @State private var sceneGeneration:UInt64=0
     @State private var advancedOptions = "{}"
     var body: some View {
         Form {
@@ -153,17 +154,29 @@ struct ChemistryTextDocument: FileDocument {
         .onChange(of: state.project?.defaultEnvironmentID) { _, _ in
             selectAvailableMethod()
         }
-        .task(id: "\(state.selectedID?.uuidString ?? "")-\(state.selected?.revision ?? 0)-\(selectedAtoms.first ?? -1)") {
-            guard let object = state.selected else { return }
-            if object.requiresPreparation { exportFormat = object.format; scene = ChemistryScene(); return }
-            if let parsed = try? ChemistryScene.parse(object.facts?["cjson"]?.string ?? (object.format == "cjson" ? object.source : "{}")) {
-                scene = parsed
-                if let index = selectedAtoms.first, parsed.atoms.indices.contains(index) {
-                    let atom = parsed.atoms[index]; atomicNumber = atom.z
-                    if parsed.isThreeDimensional { x = atom.x; y = atom.y; z = atom.zc }
-                }
+        .task(id: "\(state.selectedID?.uuidString ?? "")-\(state.selected?.revision ?? 0)") {
+            guard !Task.isCancelled else { return }
+            scene=ChemistryScene()
+            guard let object=state.selected else { return }
+            if object.requiresPreparation { exportFormat=object.format;return }
+            do {
+                let parsed=try await ChemistryScene.load(object.facts?["cjson"]?.string ?? (object.format == "cjson" ? object.source : "{}"))
+                guard !Task.isCancelled,state.selectedID == object.id,state.selected?.revision == object.revision else { return }
+                scene=parsed;sceneGeneration &+= 1
+            } catch is CancellationError { } catch {
+                guard !Task.isCancelled,state.selectedID == object.id,state.selected?.revision == object.revision else { return }
+                scene=ChemistryScene()
             }
         }
+        .onChange(of:selectedAtoms.first) { _,_ in updateSelectedAtom() }
+        // This callback receives the current selection, not the immutable
+        // View value captured before the background parse suspended.
+        .onChange(of:sceneGeneration) { _,_ in updateSelectedAtom() }
+    }
+    private func updateSelectedAtom() {
+        guard let index=selectedAtoms.first,scene.atoms.indices.contains(index) else { return }
+        let atom=scene.atoms[index];atomicNumber=atom.z
+        if scene.isThreeDimensional { x=atom.x;y=atom.y;z=atom.zc }
     }
     private func selectAvailableMethod() {
         let methods = (environments[state.project?.defaultEnvironmentID ?? "native.local"] ?? [])

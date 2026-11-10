@@ -172,6 +172,34 @@ struct MarkdownBlockParserTests {
 
     // MARK: - Code blocks
 
+    @Test("fenced source preserves meaningful indentation, tabs and blank lines")
+    func fencedSourceWhitespace() {
+        let source = "def draw():\n\tif ready:\n\t\tpaint()\n  \n  # keep two spaces  "
+        let blocks = MarkdownBlockParser.parse("```python\n" + source + "\n```")
+        guard case .codeBlock(language: "python", code: let code) = blocks.first else {
+            Issue.record("must be a Python source block"); return
+        }
+        #expect(code == source)
+    }
+
+    @Test("an indented fence removes only its own Markdown indentation")
+    func indentedFenceKeepsSourceIndentation() {
+        let blocks = MarkdownBlockParser.parse("  ```svg\n  <svg>\n    <rect/>\n  </svg>\n  ```")
+        guard case .codeBlock(language: "svg", code: let code) = blocks.first else {
+            Issue.record("must be an SVG source block"); return
+        }
+        #expect(code == "<svg>\n  <rect/>\n</svg>")
+    }
+
+    @Test("streaming fenced source keeps unfinished nested indentation")
+    func unfinishedFenceKeepsIndentation() {
+        let blocks = MarkdownBlockParser.parse("```json\n{\n  \"nested\": {\n    \"value\": 1")
+        guard case .codeBlock(language: "json", code: let code) = blocks.first else {
+            Issue.record("must retain the unfinished source block"); return
+        }
+        #expect(code == "{\n  \"nested\": {\n    \"value\": 1")
+    }
+
     @Test("fenced code block keeps verbatim code and language tag")
     func fencedCodeBlock() {
         let source = "```swift\nlet x = 1\n**not bold**\n```"

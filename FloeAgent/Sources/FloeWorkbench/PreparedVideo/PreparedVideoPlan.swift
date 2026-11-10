@@ -345,6 +345,14 @@ public struct PreparedVideoClip: Sendable, Hashable, Codable, Identifiable {
     /// same track. The plan stores resolved overlapping ranges; a nil
     /// transition forbids overlap.
     public let leadingTransition: PreparedVideoTransition?
+    public let sourcePlayback: MediaSourcePlayback?
+    /// Decoder sampling cadence; old plans use their rational source quantum.
+    public let sourceFrameDuration: Double?
+    public let chromaKey: MediaVideoChromaKey?
+    public let blendMode: MediaVideoBlendMode?
+    public let videoGrade: MediaVideoGrade?
+    public let videoTracking: MediaVideoTracking?
+    public let stabilization: MediaVideoStabilization?
 
     public init(id: UUID, content: PreparedVideoVisualContent,
                 timelineRange: PreparedVideoTimeRange,
@@ -353,7 +361,10 @@ public struct PreparedVideoClip: Sendable, Hashable, Codable, Identifiable {
                 transform: PreparedVideoTransform = .init(),
                 keyframes: [PreparedVideoKeyframeTrack] = [],
                 mask: PreparedVideoMask? = nil,
-                leadingTransition: PreparedVideoTransition? = nil) {
+                leadingTransition: PreparedVideoTransition? = nil,
+                sourcePlayback: MediaSourcePlayback? = nil, sourceFrameDuration: Double? = nil,
+                chromaKey: MediaVideoChromaKey? = nil,blendMode: MediaVideoBlendMode? = nil,videoGrade: MediaVideoGrade? = nil,
+                videoTracking: MediaVideoTracking? = nil,stabilization: MediaVideoStabilization? = nil) {
         self.id = id
         self.content = content
         self.timelineRange = timelineRange
@@ -365,6 +376,10 @@ public struct PreparedVideoClip: Sendable, Hashable, Codable, Identifiable {
         self.keyframes = keyframes
         self.mask = mask
         self.leadingTransition = leadingTransition
+        self.sourcePlayback = sourcePlayback
+        self.sourceFrameDuration = sourceFrameDuration
+        self.chromaKey = chromaKey;self.blendMode = blendMode;self.videoGrade = videoGrade
+        self.videoTracking = videoTracking; self.stabilization = stabilization
     }
 
     /// Source time for a timeline time inside this clip.
@@ -374,8 +389,9 @@ public struct PreparedVideoClip: Sendable, Hashable, Codable, Identifiable {
             throw PreparedVideoError.invalidTime("clip and query timescales differ")
         }
         let local = try timelineTime.subtracting(timelineRange.start)
-        let sourceOffset = local.seconds * speed
-        let absolute = sourceRange.start.seconds + sourceOffset
+        let absolute = try MediaSourcePlaybackMath.sourceSeconds(sourceStart: sourceRange.start.seconds,
+            sourceDuration: sourceRange.duration.seconds, speed: speed, localTime: local.seconds,
+            playback: sourcePlayback, frameDuration: sourceFrameDuration ?? (1 / Double(sourceRange.timescale)))
         let converted = try PreparedVideoTime(seconds: absolute, timescale: sourceRange.timescale)
         guard converted >= sourceRange.start else {
             throw PreparedVideoError.invalidPlan("clip retime produced a source time before the trim")
@@ -467,6 +483,17 @@ public struct PreparedVideoEQBand: Sendable, Hashable, Codable {
         self.filter = filter
         self.isEnabled = isEnabled
     }
+    private enum CodingKeys: String,CodingKey { case frequency,gain,bandwidth,filter,isEnabled }
+    public init(from decoder:any Decoder) throws {
+        try MediaAudioProcessingCoding.requireFields(decoder,["frequency","gain","bandwidth","filter","isEnabled"])
+        let values = try decoder.container(keyedBy:CodingKeys.self)
+        frequency = try values.decode(Double.self,forKey:.frequency)
+        gain = try values.decodeIfPresent(Double.self,forKey:.gain) ?? 0
+        bandwidth = try values.decodeIfPresent(Double.self,forKey:.bandwidth) ?? 1
+        filter = try values.decodeIfPresent(PreparedVideoEQFilter.self,forKey:.filter) ?? .parametric
+        isEnabled = try values.decodeIfPresent(Bool.self,forKey:.isEnabled) ?? true
+    }
+
 }
 
 public struct PreparedVideoDynamics: Sendable, Hashable, Codable {
@@ -487,6 +514,18 @@ public struct PreparedVideoDynamics: Sendable, Hashable, Codable {
         self.releaseTime = releaseTime
         self.masterGain = masterGain
     }
+    private enum CodingKeys: String,CodingKey { case threshold,headRoom,expansionRatio,attackTime,releaseTime,masterGain }
+    public init(from decoder:any Decoder) throws {
+        try MediaAudioProcessingCoding.requireFields(decoder,["threshold","headRoom","expansionRatio","attackTime","releaseTime","masterGain"])
+        let values = try decoder.container(keyedBy:CodingKeys.self)
+        threshold = try values.decodeIfPresent(Double.self,forKey:.threshold) ?? -20
+        headRoom = try values.decodeIfPresent(Double.self,forKey:.headRoom) ?? 5
+        expansionRatio = try values.decodeIfPresent(Double.self,forKey:.expansionRatio) ?? 2
+        attackTime = try values.decodeIfPresent(Double.self,forKey:.attackTime) ?? 0.005
+        releaseTime = try values.decodeIfPresent(Double.self,forKey:.releaseTime) ?? 0.05
+        masterGain = try values.decodeIfPresent(Double.self,forKey:.masterGain) ?? 0
+    }
+
 }
 
 public struct PreparedVideoAudioClip: Sendable, Hashable, Codable, Identifiable {
@@ -497,13 +536,17 @@ public struct PreparedVideoAudioClip: Sendable, Hashable, Codable, Identifiable 
     public let volume: Double
     public let fadeInSeconds: Double
     public let fadeOutSeconds: Double
+    /// nil retains historical 1x decoding; positive rates follow the source timeline.
+    public let speed: Double?
+    public let isReversed: Bool?
 
     public init(id: UUID, assetID: UUID,
                 timelineRange: PreparedVideoTimeRange,
                 sourceRange: PreparedVideoTimeRange,
                 volume: Double = 1,
                 fadeInSeconds: Double = 0,
-                fadeOutSeconds: Double = 0) {
+                fadeOutSeconds: Double = 0,
+                speed: Double? = nil, isReversed: Bool? = nil) {
         self.id = id
         self.assetID = assetID
         self.timelineRange = timelineRange
@@ -511,6 +554,8 @@ public struct PreparedVideoAudioClip: Sendable, Hashable, Codable, Identifiable 
         self.volume = volume
         self.fadeInSeconds = fadeInSeconds
         self.fadeOutSeconds = fadeOutSeconds
+        self.speed = speed
+        self.isReversed = isReversed
     }
 }
 
@@ -521,11 +566,12 @@ public struct PreparedVideoAudioTrack: Sendable, Hashable, Codable, Identifiable
     public let volume: Double
     public let eqBands: [PreparedVideoEQBand]
     public let dynamics: PreparedVideoDynamics?
+    public let limiter: PreparedVideoLimiter?
     public let clips: [PreparedVideoAudioClip]
 
     public init(id: UUID, name: String, isMuted: Bool = false,
                 volume: Double = 1, eqBands: [PreparedVideoEQBand] = [],
-                dynamics: PreparedVideoDynamics? = nil,
+                dynamics: PreparedVideoDynamics? = nil, limiter: PreparedVideoLimiter? = nil,
                 clips: [PreparedVideoAudioClip] = []) {
         self.id = id
         self.name = name
@@ -533,6 +579,7 @@ public struct PreparedVideoAudioTrack: Sendable, Hashable, Codable, Identifiable
         self.volume = volume
         self.eqBands = eqBands
         self.dynamics = dynamics
+        self.limiter = limiter
         self.clips = clips
     }
 }
@@ -558,7 +605,7 @@ public struct PreparedVideoAudioPlan: Sendable, Hashable, Codable {
 public struct PreparedVideoCanvas: Sendable, Hashable, Codable {
     public let width: Int
     public let height: Int
-    public let backgroundColor: PreparedVideoColor
+    public var backgroundColor: PreparedVideoColor
 
     public init(width: Int, height: Int, backgroundColor: PreparedVideoColor = .black) {
         self.width = width
@@ -574,14 +621,15 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
     public let id: PreparedVideoPlanID
     public let timeScale: Int32
     public let frameRate: PreparedVideoFrameRate
-    public let duration: PreparedVideoTime
-    public let canvas: PreparedVideoCanvas
+    public var duration: PreparedVideoTime
+    public var canvas: PreparedVideoCanvas
     public let assets: [PreparedVideoAsset]
     /// Bottom-to-top compositing order.
     public let visualTracks: [PreparedVideoTrack]
     public let captions: [PreparedVideoCaption]
     public let captionStyle: PreparedVideoCaptionStyle
-    public let audio: PreparedVideoAudioPlan
+    public var audio: PreparedVideoAudioPlan
+    public var colorProfile: MediaVideoColorProfile?
 
     public init(id: PreparedVideoPlanID, timeScale: Int32,
                 frameRate: PreparedVideoFrameRate,
@@ -591,13 +639,13 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
                 visualTracks: [PreparedVideoTrack],
                 captions: [PreparedVideoCaption] = [],
                 captionStyle: PreparedVideoCaptionStyle = .init(),
-                audio: PreparedVideoAudioPlan = .init()) throws {
+                audio: PreparedVideoAudioPlan = .init(),colorProfile: MediaVideoColorProfile? = nil) throws {
         let plan = PreparedVideoPlan(
             uncheckedSchemaVersion: Self.schemaVersion,
             id: id, timeScale: timeScale, frameRate: frameRate,
             duration: duration, canvas: canvas, assets: assets,
             visualTracks: visualTracks, captions: captions,
-            captionStyle: captionStyle, audio: audio)
+            captionStyle: captionStyle, audio: audio,colorProfile: colorProfile)
         try plan.validateStructure()
         self = plan
     }
@@ -607,7 +655,7 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
                  duration: PreparedVideoTime, canvas: PreparedVideoCanvas,
                  assets: [PreparedVideoAsset], visualTracks: [PreparedVideoTrack],
                  captions: [PreparedVideoCaption], captionStyle: PreparedVideoCaptionStyle,
-                 audio: PreparedVideoAudioPlan) {
+                 audio: PreparedVideoAudioPlan,colorProfile: MediaVideoColorProfile?) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.timeScale = timeScale
@@ -619,6 +667,7 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
         self.captions = captions
         self.captionStyle = captionStyle
         self.audio = audio
+        self.colorProfile = colorProfile
     }
 
     public func asset(_ id: UUID) -> PreparedVideoAsset? {
@@ -760,6 +809,7 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
                     throw PreparedVideoError.invalidPlan("audio dynamics are outside the supported range")
                 }
             }
+            try track.limiter?.validate()
             for clip in track.clips {
                 guard audioClipIDs.insert(clip.id).inserted else {
                     throw PreparedVideoError.invalidPlan("audio clip identifiers must be unique")
@@ -772,6 +822,15 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
                       clip.timelineRange.duration.seconds > 0,
                       clip.timelineRange.endSeconds <= duration.seconds + 0.000_001 else {
                     throw PreparedVideoError.invalidPlan("audio clip range must lie inside the plan duration")
+                }
+                let rate = clip.speed ?? 1
+                guard rate.isFinite, (0.01...16).contains(rate) else {
+                    throw PreparedVideoError.invalidPlan("audio speed must be finite in 0.01...16")
+                }
+                if clip.speed != nil {
+                    guard clip.timelineRange.duration.seconds * rate <= clip.sourceRange.duration.seconds + 0.000_01 else {
+                        throw PreparedVideoError.invalidPlan("retimed audio extends beyond its source range")
+                    }
                 }
                 guard clip.sourceRange.duration.seconds > 0 else {
                     throw PreparedVideoError.invalidPlan("audio source range must be positive")
@@ -802,8 +861,10 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
     /// Validation required immediately before producing a frame or file.
     public func validateForRender() throws {
         try validateStructure()
+        // A configured zero-opacity clip intentionally produces the canvas
+        // background; it is still a real composition, unlike an empty plan.
         let hasVisibleClip = visualTracks.contains { track in
-            !track.isHidden && track.clips.contains { $0.isVisible && $0.opacity > 0 }
+            !track.isHidden && track.clips.contains { $0.isVisible }
         }
         guard hasVisibleClip else {
             throw PreparedVideoError.emptyTimeline
@@ -822,6 +883,21 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
         }
         guard clip.speed.isFinite, (0.01...16).contains(clip.speed) else {
             throw PreparedVideoError.invalidPlan("clip speed must be finite in 0.01...16")
+        }
+        try clip.chromaKey?.validate();try clip.videoGrade?.validate()
+        try clip.videoTracking?.validate();try clip.stabilization?.validate()
+        for source in [clip.videoTracking?.source,clip.stabilization?.source].compactMap({ $0 }) {
+            guard case .video(let id) = clip.content, id == source.assetID, let range = clip.sourceRange,
+                  range.start.seconds >= source.startSeconds-0.00002, range.endSeconds <= source.endSeconds+0.00002,
+                  asset(id)?.contentHash == nil || asset(id)?.contentHash == source.contentHash else {
+                throw PreparedVideoError.invalidPlan("motion binding does not match the video source range")
+            }
+        }
+        if let match = clip.videoGrade?.colorMatch {
+            guard clip.content.assetID == match.target.assetID,
+                  asset(match.target.assetID)?.contentHash == nil || asset(match.target.assetID)?.contentHash == match.target.contentHash else {
+                throw PreparedVideoError.invalidPlan("color matching does not match its target original")
+            }
         }
         guard (0...1).contains(clip.opacity) else {
             throw PreparedVideoError.invalidPlan("clip opacity must be in 0...1")
@@ -852,6 +928,15 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
             }
             guard sourceRange.timescale == timeScale, sourceRange.duration.seconds > 0 else {
                 throw PreparedVideoError.invalidPlan("clip source range must be positive and use the plan timescale")
+            }
+            if let cadence = clip.sourceFrameDuration, !cadence.isFinite || cadence <= 0 {
+                throw PreparedVideoError.invalidPlan("source frame cadence must be positive")
+            }
+            if let playback = clip.sourcePlayback {
+                _ = try MediaSourcePlaybackMath.sourceSeconds(sourceStart: sourceRange.start.seconds,
+                    sourceDuration: sourceRange.duration.seconds, speed: clip.speed,
+                    localTime: playback.holdSeconds == nil ? max(0, clip.timelineRange.duration.seconds - 1 / Double(timeScale)) : 0,
+                    playback: playback, frameDuration: clip.sourceFrameDuration ?? (1 / Double(timeScale)))
             }
             if let assetDuration = asset.duration {
                 guard sourceRange.endSeconds <= assetDuration.seconds + 0.000_001 else {
@@ -974,7 +1059,7 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, id, timeScale, frameRate, duration, canvas, assets
-        case visualTracks, captions, captionStyle, audio
+        case visualTracks, captions, captionStyle, audio, colorProfile
     }
 
     public init(from decoder: Decoder) throws {
@@ -990,11 +1075,12 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
         let captions = try container.decode([PreparedVideoCaption].self, forKey: .captions)
         let captionStyle = try container.decode(PreparedVideoCaptionStyle.self, forKey: .captionStyle)
         let audio = try container.decode(PreparedVideoAudioPlan.self, forKey: .audio)
+        let colorProfile = try container.decodeIfPresent(MediaVideoColorProfile.self, forKey: .colorProfile)
         let decoded = PreparedVideoPlan(uncheckedSchemaVersion: schemaVersion, id: id,
                                         timeScale: timeScale, frameRate: frameRate,
                                         duration: duration, canvas: canvas, assets: assets,
                                         visualTracks: visualTracks, captions: captions,
-                                        captionStyle: captionStyle, audio: audio)
+                                        captionStyle: captionStyle, audio: audio,colorProfile: colorProfile)
         try decoded.validateStructure()
         self = decoded
     }
@@ -1012,6 +1098,7 @@ public struct PreparedVideoPlan: Sendable, Hashable, Codable {
         try container.encode(captions, forKey: .captions)
         try container.encode(captionStyle, forKey: .captionStyle)
         try container.encode(audio, forKey: .audio)
+        try container.encodeIfPresent(colorProfile,forKey: .colorProfile)
     }
 }
 
@@ -1028,9 +1115,13 @@ public struct PreparedVideoOutputSettings: Sendable, Hashable, Codable {
     public let frameRate: PreparedVideoFrameRate
     public let codec: PreparedVideoCodec
     public let quality: Double
+    public var colorProfile: MediaVideoColorProfile?
+    /// nil preserves all existing encoded settings/cache identities.
+    public let preservesAlpha:Bool?
 
     public init(width: Int, height: Int, frameRate: PreparedVideoFrameRate,
-                codec: PreparedVideoCodec = .h264, quality: Double = 0.9) throws {
+                codec: PreparedVideoCodec = .h264, quality: Double = 0.9,
+                colorProfile: MediaVideoColorProfile? = nil, preservesAlpha:Bool? = nil) throws {
         guard width > 0, height > 0, width <= 8_192, height <= 8_192,
               width * height <= 33_177_600 else {
             throw PreparedVideoError.invalidOutputSettings("dimensions are outside the supported bound")
@@ -1048,12 +1139,21 @@ public struct PreparedVideoOutputSettings: Sendable, Hashable, Codable {
         self.height = height
         self.frameRate = frameRate
         self.codec = codec
+        guard preservesAlpha != true || codec == .hevc else { throw PreparedVideoError.invalidOutputSettings("transparent video requires HEVC alpha") }
         self.quality = quality
+        self.colorProfile = colorProfile
+        self.preservesAlpha = preservesAlpha
     }
 
     public var identity: String {
-        "\(width)x\(height)@\(frameRate.numerator)/\(frameRate.denominator):\(codec.rawValue):\(String(format: "%.4f", quality))"
+        let base = "\(width)x\(height)@\(frameRate.numerator)/\(frameRate.denominator):\(codec.rawValue):\(String(format: "%.4f", quality))"
+        return base + (colorProfile.map { ":color=\($0.rawValue)" } ?? "") + (preservesAlpha == true ? ":alpha" : "")
     }
 
+    public func resolvingColorProfile(_ fallback: MediaVideoColorProfile?) -> Self {
+        var result = self
+        if result.colorProfile == nil { result.colorProfile = fallback }
+        return result
+    }
     public var pixelCount: Int { width * height }
 }

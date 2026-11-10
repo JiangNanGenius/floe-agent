@@ -148,7 +148,12 @@ public struct ProviderSaveDraft: Sendable, Equatable {
     /// mutation can interleave between validation and freezing.
     public func makeRequest() -> Result<ProviderSaveRequest, ProviderConfigurationValidationReport> {
         let trimmedBaseURL = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmedBaseURL) else {
+        // Foundation accepts host-less values such as "http://" as URLs.
+        // Network endpoints still need a host before transport-policy checks;
+        // unsupported schemes retain their existing validation path below.
+        guard let url = URL(string: trimmedBaseURL),
+              !["http", "https"].contains(url.scheme?.lowercased() ?? "")
+                || url.host?.isEmpty == false else {
             return .failure(ProviderConfigurationValidationReport(issues: [
                 ProviderConfigurationIssue(
                     field: .baseURL,

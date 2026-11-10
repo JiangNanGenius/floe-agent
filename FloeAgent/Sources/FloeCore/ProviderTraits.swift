@@ -47,6 +47,14 @@ public struct ProviderTraits: Sendable, Hashable {
             || id.hasPrefix("o4") || id.contains("codex")
     }
 
+    /// Match the model identity rather than an OpenAI-compatible gateway's
+    /// branding. Namespace prefixes such as `google/` and `models/` are allowed.
+    public var isGeminiThinkingFamily: Bool {
+        guard let id = modelRemoteID?.split(separator: "/").last else { return false }
+        return id.hasPrefix("gemini-2.5-") || id.hasPrefix("gemini-3")
+            || id.hasPrefix("gemini-4-")
+    }
+
     /// DeepSeek-shaped endpoints reject dots in function names.
     public var usesWireSafeToolNames: Bool {
         toolNameCompatibility || isDeepSeek

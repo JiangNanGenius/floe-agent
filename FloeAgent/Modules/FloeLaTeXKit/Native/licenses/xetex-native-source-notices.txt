@@ -1,0 +1,425 @@
+FloeTeXNativeXDV native source component notices
+Per-component license choices are in native-xdv-selected-licenses.json.
+
+
+Files: tectonic/crates/engine_xetex/xetex/teckit-Common.h
+/*------------------------------------------------------------------------
+Copyright (C) 2002-2016 SIL International. All rights reserved.
+
+Distributable under the terms of either the Common Public License or the
+GNU Lesser General Public License, as specified in the LICENSING.txt file.
+
+File: TECkit_Common.h
+Responsibility: Jonathan Kew
+Last reviewed: Not yet.
+
+Description:
+    Public definitions used by TECkit engine and compiler
+-------------------------------------------------------------------------*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/teckit-Engine.cpp
+/*------------------------------------------------------------------------
+Copyright (C) 2002-2016 SIL International. All rights reserved.
+
+Distributable under the terms of either the Common Public License or the
+GNU Lesser General Public License, as specified in the LICENSING.txt file.
+
+File: Engine.cp
+Responsibility: Jonathan Kew
+Last reviewed: Not yet.
+
+Description:
+    Implements the TECkit conversion engine.
+-------------------------------------------------------------------------*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/teckit-Format.h
+/*------------------------------------------------------------------------
+Copyright (C) 2002-2016 SIL International. All rights reserved.
+
+Distributable under the terms of either the Common Public License or the
+GNU Lesser General Public License, as specified in the LICENSING.txt file.
+
+File: TECkit_Format.h
+Responsibility: Jonathan Kew
+Last reviewed: Not yet.
+
+Description:
+    Definitions used in the TECkit binary table format
+
+	2006-06-02	jk	added support for extended string rules (>255 per initial char)
+-------------------------------------------------------------------------*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/teckit-c-Engine.h
+/*------------------------------------------------------------------------
+Copyright (C) 2002-2014 SIL International. All rights reserved.
+
+Distributable under the terms of either the Common Public License or the
+GNU Lesser General Public License, as specified in the LICENSING.txt file.
+
+File: TECkit_Engine.h
+Responsibility: Jonathan Kew
+Last reviewed: Not yet.
+
+Description:
+    Public API to the TECkit conversion engine.
+-------------------------------------------------------------------------*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/teckit-cxx-Engine.h
+/*------------------------------------------------------------------------
+Copyright (C) 2002-2016 SIL International. All rights reserved.
+
+Distributable under the terms of either the Common Public License or the
+GNU Lesser General Public License, as specified in the LICENSING.txt file.
+
+File: Engine.h
+Responsibility: Jonathan Kew
+Last reviewed: Not yet.
+
+Description:
+	internal header for the TECkit mapping engine
+-------------------------------------------------------------------------*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-XeTeXOTMath.cpp
+/****************************************************************************\
+ Part of the XeTeX typesetting system
+ Copyright (c) 1994-2008 by SIL International
+ Copyright (c) 2009 by Jonathan Kew
+ Copyright (c) 2012-2015 by Khaled Hosny
+
+ SIL Author(s): Jonathan Kew
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of the copyright holders
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in this Software without prior written
+authorization from the copyright holders.
+\****************************************************************************/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-XeTeXOTMath.h, tectonic/crates/engine_xetex/xetex/xetex-pic.c, tectonic/crates/engine_xetex/xetex/xetex-swap.h
+/****************************************************************************\
+ Part of the XeTeX typesetting system
+ Copyright (c) 1994-2008 by SIL International
+ Copyright (c) 2009 by Jonathan Kew
+
+ SIL Author(s): Jonathan Kew
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of the copyright holders
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in this Software without prior written
+authorization from the copyright holders.
+\****************************************************************************/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-constants.h
+/* tectonic/xetex-constants.h: symbolic constants from the WEB code
+   Copyright 2017-2022 the Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-core.h
+/* tectonic/xetex-core.h: core XeTeX types and #includes.
+   Copyright 2016-2020 the Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-engine-interface.c
+/* engine-interface.c: programmatic interface to control the engine behavior
+   Copyright 2016-2018 The Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-errors.c
+/* tectonic/errors.c -- error handling
+ * Copyright 2016 the Tectonic Project
+ * Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-ext.c
+/****************************************************************************\
+ Part of the XeTeX typesetting system
+ Copyright (c) 1994-2008 by SIL International
+ Copyright (c) 2009, 2011 by Jonathan Kew
+ Copyright (c) 2012-2015 by Khaled Hosny
+ Copyright (c) 2012, 2013 by Jiang Jiang
+
+ SIL Author(s): Jonathan Kew
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of the copyright holders
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in this Software without prior written
+authorization from the copyright holders.
+\****************************************************************************/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-ext.h
+/****************************************************************************\
+ Part of the XeTeX typesetting system
+ Copyright (c) 1994-2008 by SIL International
+ Copyright (c) 2009, 2011 by Jonathan Kew
+ Copyright (c) 2012, 2013 by Jiang Jiang
+ Copyright (c) 2012-2015 by Khaled Hosny
+
+ SIL Author(s): Jonathan Kew
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of the copyright holders
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in this Software without prior written
+authorization from the copyright holders.
+\****************************************************************************/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-ini.c
+/* xetex-ini.c: WEB initialization code translated to C
+   Copyright 2016-2022 The Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-io.c
+/* tectonic/xetex-io.c: low-level input/output functions tied to the XeTeX engine
+   Copyright 2016-2019 The Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-io.h
+/* tectonic/xetex-io.h: XeTeX-specific low-level I/O routines
+   Copyright 2016-2018 the Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-linebreak.c, tectonic/crates/engine_xetex/xetex/xetex-math.c, tectonic/crates/engine_xetex/xetex/xetex-shipout.c
+/* Copyright 2016-2018 The Tectonic Project
+ * Licensed under the MIT License.
+ */
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-macos.c
+/****************************************************************************\
+ Part of the XeTeX typesetting system
+ Copyright (c) 1994-2008 by SIL International
+ Copyright (c) 2009 by Jonathan Kew
+ Copyright (c) 2012, 2013 by Jiang Jiang
+ Copyright (c) 2012-2015 by Khaled Hosny
+
+ SIL Author(s): Jonathan Kew
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE
+FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of the copyright holders
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in this Software without prior written
+authorization from the copyright holders.
+\****************************************************************************/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-output.c
+/* tectonic/output.c -- functions related to outputting messages
+ * Copyright 2016 the Tectonic Project
+ * Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-pagebuilder.c
+/* tectonic/xetex-pagebuilder.c: the page builder
+   Copyright 2017-2018 The Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-scaledmath.c
+/* tectonic/xetex-scaledmath.c: low-level math functions
+   Copyright 2017 The Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-stringpool.c
+/* tectonic/xetex-stringpool.c: preloaded "string pool" constants
+   Copyright 2017-2018 the Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-stringpool.h
+/* tectonic/xetex-stringpool.h: preloaded "string pool" constants
+   Copyright 2017 the Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-synctex.c
+/* Summary of original C code; see end of file for full comments:
+ * Copyright (c) 2008-2017 jerome DOT laurens AT u-bourgogne DOT fr
+ * MIT License.
+ */
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-synctex.h
+/* synctex.h
+
+Copyright (c) 2008, 2009 jerome DOT laurens AT u-bourgogne DOT fr
+
+This file is part of the SyncTeX package.
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE
+
+Acknowledgments:
+----------------
+The author received useful remarks from the pdfTeX developers, especially Hahn The Thanh,
+and significant help from XeTeX developer Jonathan Kew
+
+Nota Bene:
+----------
+If you include or use a significant part of the synctex package into a software,
+I would appreciate to be listed as contributor and see "SyncTeX" highlighted.
+
+Version 1
+Latest Revision: Wed Jul  1 08:17:50 UTC 2009
+
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-texmfmp.c
+/* texmfmp.c: Hand-coded routines for TeX or Metafont in C.  Originally
+   written by Tim Morgan, drawing from other Unix ports of TeX.  This is
+   a collection of miscellany, everything that's easier (or only
+   possible) to do in C.
+
+   This file is public domain.  */
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-xetex0.c
+/* xetex-xetex0.c: bulk of the WEB code translated to C
+   Copyright 2016-2022 The Tectonic Project
+   Licensed under the MIT License.
+*/
+
+
+Files: tectonic/crates/engine_xetex/xetex/xetex-xetexd.h
+/* tectonic/xetex-xetexd.h -- many, many XeTeX symbol definitions
+   Copyright 2016-2018 The Tectonic Project
+   Licensed under the MIT License.
+*/

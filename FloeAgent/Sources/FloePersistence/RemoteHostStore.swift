@@ -109,6 +109,29 @@ public actor RemoteHostStore {
         }
     }
 
+    /// Completes an actual first-use decision without replacing a different
+    /// key saved while that decision was pending. The compare and insert share
+    /// the real database writer transaction; an identical key is idempotent.
+    public func trustIfAbsentOrMatching(_ record: KnownHostRecord) async throws -> Bool {
+        try await database.writer { db in
+            if let row = try Row.fetchOne(db,
+                sql: "SELECT fingerprint_sha256 FROM known_hosts WHERE address = ? AND port = ? AND key_type = ?",
+                arguments: [record.address, record.port, record.keyType]) {
+                let existing: String = row["fingerprint_sha256"]
+                return existing.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "=", with: "")
+                    == record.fingerprintSHA256.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "=", with: "")
+            }
+            try db.execute(sql: """
+                INSERT INTO known_hosts (id, host_id, address, port, key_type,
+                    fingerprint_sha256, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [record.id.uuidString, record.hostID.uuidString,
+                    record.address, record.port, record.keyType, record.fingerprintSHA256,
+                    Self.encode(record.firstSeenAt), Self.encode(record.lastSeenAt)])
+            return true
+        }
+    }
+
     public func trust(_ record: KnownHostRecord) async throws {
         try await database.writer { db in
             try db.execute(

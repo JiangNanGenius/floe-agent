@@ -93,6 +93,9 @@ import FloeElectronicsUI
     }
     static func run(record: PersonalContentRecord, directory: URL, action: String, inputJSON: String?, context: ToolContext,
                     validateOwner: @escaping @MainActor @Sendable () async throws -> Void) async throws -> ToolExecutionOutput {
+        if StudioElectronicsLibraryContract.actions.contains(action) {
+            return try await StudioElectronicsLibraryRuntime.run(record: record, directory: directory, action: action, inputJSON: inputJSON, context: context, validateOwner: validateOwner)
+        }
         guard StudioElectronicsContract.runActions.contains(action) else { throw FloeError.validationFailed("Read electronicsCapabilities.runActions for implemented operations") }
         let allowed: Set<String>
         switch action {

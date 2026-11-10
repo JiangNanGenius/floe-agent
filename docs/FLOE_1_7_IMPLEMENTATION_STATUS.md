@@ -1,5 +1,9 @@
 # Floe 1.7 implementation status
 
+> 历史参考 / Historical reference · 2026-11-10 标记。1.7 阶段实施与交付快照；下文 Build 265／274 等“当前”描述仅适用于记录当时。现行研发见 [App 接入](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md)与[在研计划](README.md)，渠道版本见 [CURRENT_STATUS](CURRENT_STATUS.md)。
+> Earlier 1.7 implementation and delivery snapshots; “current” below refers to the recorded source and date. Use the linked active plans and channel snapshots for later work.
+> [历史文档索引 / Historical index](history/README.md)
+
 ## Current source summary / 当前实现概览 · 2026-10-09
 
 **更新 2026-10-16 / Updated 2026-10-16:** current delivery is **1.7.33 (274)** — local Xcode 27 archive, internal Floe QA availability and one publictest1 Beta App Review submission awaiting Apple review. See [CURRENT_STATUS](CURRENT_STATUS.md) and the [delivery record](releases/testflight/BUILD_274_LOCAL_VERIFICATION.md). The matrix below keeps its original dates and scope. 当前交付为 **1.7.33（274）**：本地 Xcode 27 归档、内部 Floe QA 可用，并已提交 publictest1 等待 Apple 审核；下方矩阵保留原始日期与适用范围，不自动延伸到新版本。

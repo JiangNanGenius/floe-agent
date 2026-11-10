@@ -116,10 +116,16 @@ struct StepGroupView: View {
         // A completed export is a user result, even after the outer activity
         // group collapses. Keep its invocation/file row reachable without
         // exposing unrelated diagnostic events or arbitrary tool paths.
-        for event in displayedEvents where hasOwnedOutputFiles(event) {
+        for event in displayedEvents where hasOwnedOutputFiles(event) || hasGitHubSource(event) {
             urgent.insert(event.id)
         }
         return displayedEvents.filter { urgent.contains($0.id) || pendingApproval(for: $0) != nil }
+    }
+
+    private func hasGitHubSource(_ event: RunEventRecord) -> Bool {
+        let result = event.kind == .toolRequest ? matchingResult(for: event) : event
+        guard result?.runID == event.runID else { return false }
+        return GitHubSourceReference.make(result: result, conversationID: conversationID) != nil
     }
 
     private func hasOwnedOutputFiles(_ event: RunEventRecord) -> Bool {
@@ -164,6 +170,7 @@ struct StepGroupView: View {
                             approvalSummary: approvalSummary(for: event),
                             toolRequestStatus: requestStatus(for: event),
                             toolRequestResultPayloadJSON: matchingResult(for: event)?.payloadJSON,
+                            toolRequestResultEvent: matchingResult(for: event),
                             toolRequestIsWaiting: pendingApproval(for: event) != nil,
                             decisionSummary: decisionSummary(for: event),
                             childRun: childRun(for: event),

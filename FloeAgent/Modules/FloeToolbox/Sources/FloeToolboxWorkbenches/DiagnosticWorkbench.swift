@@ -13,7 +13,14 @@ public protocol DiagnosticWorkbenchService: Sendable {
     func dns(name: String, type: DNSRecordType, timeout: Double) async throws -> [DNSRecord]
     func ports(target: String, ports: [UInt16], timeout: Double) async throws -> [PortObservation]
     func discover(type: String, seconds: Double) async throws -> [BonjourService]
+    func lanScan(types: [String], seconds: Double, onEvent: (@Sendable (LANDiscoveryEvent) -> Void)?) async throws -> LANScanReport
     func stop() async
+}
+public extension DiagnosticWorkbenchService {
+    // Existing non-LAN adapters do not gain an invented discovery fallback.
+    func lanScan(types: [String], seconds: Double, onEvent: (@Sendable (LANDiscoveryEvent) -> Void)?) async throws -> LANScanReport {
+        throw DiagnosticError.system("LAN discovery service is not configured")
+    }
 }
 extension DiagnosticService: DiagnosticWorkbenchService {}
 
@@ -24,15 +31,16 @@ public struct DiagnosticRequestSnapshot: Sendable {
     public let ports: String
     public let recordType: DNSRecordType
     public let serviceType: String
-    public init(id: UUID, tool: ToolboxTool, target: String, ports: String, recordType: DNSRecordType, serviceType: String) {
+    public let lanConfiguration: LANWorkbenchConfiguration?
+    public init(id: UUID, tool: ToolboxTool, target: String, ports: String, recordType: DNSRecordType, serviceType: String, lanConfiguration: LANWorkbenchConfiguration? = nil) {
         self.id = id; self.tool = tool; self.target = target; self.ports = ports
-        self.recordType = recordType; self.serviceType = serviceType
+        self.recordType = recordType; self.serviceType = serviceType; self.lanConfiguration = lanConfiguration
     }
     public var description: String {
         switch tool {
         case .dns: String(describing:recordType).uppercased() + " · " + target
         case .port: target + " · " + ports
-        case .lan: serviceType
+        case .lan: lanConfiguration?.summary(in: .current) ?? serviceType
         case .wifi: "Wi-Fi"
         default: target
         }
@@ -43,6 +51,9 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     @Published public var target = ""
     @Published public var ports = "22, 80, 443"
     @Published public var serviceType = "_http._tcp"
+    @Published public var lanConfiguration = LANWorkbenchConfiguration()
+    @Published public private(set) var lanServices: [LANDiscoveredService] = []
+    @Published public private(set) var lanReport: LANScanReport?
     @Published public var recordType = DNSRecordType.a
     @Published public private(set) var running = false
     @Published public private(set) var failed = false
@@ -65,17 +76,19 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     @discardableResult public func run() -> Task<Void,Never>? {
         guard !running else { return nil }
         let frozen = DiagnosticRequestSnapshot(id:UUID(),tool:tool,target:target.trimmingCharacters(in:.whitespacesAndNewlines),
-            ports:ports,recordType:recordType,serviceType:serviceType)
+            ports:ports,recordType:recordType,serviceType:serviceType,lanConfiguration:tool == .lan ? lanConfiguration : nil)
         // Rows belong only to this request, including its validation/failure
         // path. Previous successes are never implicitly reused as current data.
         generation = frozen.id; request = frozen; rows = []; failure = nil
+        lanServices = []; lanReport = nil
         cancelled = false; failed = false; running = true
         onRequestState?(frozen, .running)
-        let run = frozen.id, target = frozen.target, ports = frozen.ports, type = frozen.recordType, discoveryType = frozen.serviceType
+        let run = frozen.id, target = frozen.target, ports = frozen.ports, type = frozen.recordType
         operation = Task { [weak self] in
             guard let self else { return }
             do {
                 let results: [DiagnosticDisplayRow]
+                var outcome = DiagnosticRequestState.completed
                 switch tool {
                 case .ping:
                     results = try await service.ping(target:target,count:4,timeoutSeconds:1).map { value in
@@ -96,7 +109,21 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
                     let parsed = values.compactMap { UInt16($0.trimmingCharacters(in:.whitespaces)) }
                     guard values.count == parsed.count else { throw DiagnosticError.invalid("ports") }
                     results = try await service.ports(target:target,ports:parsed,timeout:2).map { DiagnosticDisplayRow(title:String($0.port),value:"",status:$0.status == .open ? .open : .noConnection) }
-                case .lan: results = try await service.discover(type:discoveryType,seconds:3).map { DiagnosticDisplayRow(title:$0.name,value:$0.type+" · "+$0.domain) }
+                case .lan:
+                    guard let configuration = frozen.lanConfiguration, configuration.isValid else { throw DiagnosticError.invalid("LAN scope") }
+                    let report = try await service.lanScan(types:configuration.requestedTypes,seconds:configuration.browseSeconds,onEvent:{ [weak self] event in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.generation == run, self.running else { return }
+                            self.acceptLAN(event)
+                        }
+                    })
+                    guard generation == run, !Task.isCancelled else { throw CancellationError() }
+                    lanReport = report; lanServices = report.services
+                    switch report.status {
+                    case .foundDevices, .noDevices: break
+                    case .permissionUncertain, .noWiFiPath, .outOfScopeOnly: failed = true; outcome = .failed
+                    }
+                    results = []
                 case .wifi:
                     let identity = try await WiFiObservationService.current(mayReadIdentity:mayReadWiFiIdentity)
                     results = [DiagnosticDisplayRow(title:"SSID",value:identity.ssid ?? "—"),DiagnosticDisplayRow(title:"BSSID",value:identity.bssid ?? "—"),DiagnosticDisplayRow(title:"RSSI",value:identity.signalDBM.map { "\($0) dBm" } ?? "—")]
@@ -104,14 +131,14 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
                 }
                 guard generation == run else { return }
                 guard !Task.isCancelled else {
-                    rows = []; running = false; operation = nil; cancelled = true
+                    rows = []; lanServices = []; lanReport = nil; running = false; operation = nil; cancelled = true
                     onRequestState?(frozen, .cancelled); return
                 }
                 rows = results; running = false; operation = nil
-                onRequestState?(frozen, .completed)
+                onRequestState?(frozen, outcome)
             } catch {
                 guard generation == run else { return }
-                rows = []; running = false; operation = nil
+                rows = []; lanServices = []; lanReport = nil; running = false; operation = nil
                 if error is CancellationError || Task.isCancelled || (error as? DiagnosticError) == .stopped {
                     cancelled = true; failed = false; failure = nil
                 } else {
@@ -126,9 +153,22 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
         let wasRunning = running
         generation = UUID(); operation?.cancel(); operation = nil; running = false
         if wasRunning {
-            rows = []; failure = nil; failed = false; cancelled = true
+            rows = []; lanServices = []; lanReport = nil; failure = nil; failed = false; cancelled = true
             if let request { onRequestState?(request, .cancelled) }
         }
+    }
+    public var manualTarget: String? { Self.normalizedTarget(target) }
+    static func normalizedTarget(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.count <= 253,
+              value.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45,46,58,91,93,95,37].contains($0) }) else { return nil }
+        return value
+    }
+    private func acceptLAN(_ event: LANDiscoveryEvent) {
+        let service: LANDiscoveredService
+        switch event { case .serviceFound(let value), .serviceResolved(let value): service = value; case .note: return }
+        if let index = lanServices.firstIndex(where: { $0.key == service.key }) { lanServices[index] = service }
+        else if lanServices.count < 256 { lanServices.append(service) }
     }
     public func close() async { cancel(); await service.stop() }
 }
@@ -136,7 +176,12 @@ public struct DiagnosticWorkbenchView: View {
     @ObservedObject private var model: DiagnosticWorkbenchModel
     @Environment(\.locale) private var locale
     private let history: AnyView?
-    public init(model: DiagnosticWorkbenchModel, history: AnyView? = nil) { self.model = model; self.history = history }
+    private let onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)?
+    private let onOpenSettings: (() -> Void)?
+    public init(model: DiagnosticWorkbenchModel, history: AnyView? = nil,
+                onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)? = nil, onOpenSettings: (() -> Void)? = nil) {
+        self.model = model; self.history = history; self.onUseEndpoint = onUseEndpoint; self.onOpenSettings = onOpenSettings
+    }
     private var title: String {
         switch model.tool {
         case .ping: "Ping"
@@ -158,15 +203,18 @@ public struct DiagnosticWorkbenchView: View {
     }
     public var body: some View {
         Form {
+            if model.tool == .lan {
+                LANDiscoveryWorkbenchSections(model: model, onUseEndpoint: onUseEndpoint, onOpenSettings: onOpenSettings)
+            } else {
             Section {
                 if ![ToolboxTool.lan,.wifi].contains(model.tool) { TextField(workbenchText("地址或主机名","Address or hostname",locale),text:$model.target).autocorrectionDisabled().disabled(model.running) }
                 if model.tool == .port { TextField(workbenchText("端口，以逗号分隔","Comma-separated ports",locale),text:$model.ports).disabled(model.running) }
                 if model.tool == .dns { Picker(workbenchText("记录类型","Record type",locale),selection:$model.recordType) { ForEach(DNSRecordType.allCases,id:\.rawValue) { Text(String(describing:$0).uppercased()).tag($0) } }.disabled(model.running) }
-                if model.tool == .lan { TextField(workbenchText("服务类型","Service type",locale),text:$model.serviceType).autocorrectionDisabled().disabled(model.running) }
                 HStack {
                     Button(workbenchText("开始","Start",locale)) { model.run() }.disabled(model.running)
                     if model.running { ProgressView().controlSize(.small); Button(workbenchText("停止","Stop",locale)) { model.cancel() } }
                 }
+            }
             }
             if let error = model.failure {
                 Section {
@@ -176,6 +224,7 @@ public struct DiagnosticWorkbenchView: View {
                     }
                 }
             }
+            if model.tool != .lan {
             Section(workbenchText("结果","Results",locale)) {
                 if let request = model.request {
                     LabeledContent(workbenchText("本次检测","This check",locale),value:request.description)
@@ -183,6 +232,7 @@ public struct DiagnosticWorkbenchView: View {
                 if model.cancelled { Text(workbenchText("本次检测已停止。","This check was stopped.",locale)).foregroundStyle(.secondary) }
                 ForEach(model.rows) { row in LabeledContent(row.title) { Text(display(row)).textSelection(.enabled) } }
                 if model.tool == .wifi { Text(workbenchText("未取得的信息显示为 —。","Unavailable information is shown as —.",locale)).font(.caption).foregroundStyle(.secondary) }
+            }
             }
             if let history { history }
         }.navigationTitle(title)

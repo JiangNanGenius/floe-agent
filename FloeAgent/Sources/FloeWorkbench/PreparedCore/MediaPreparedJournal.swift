@@ -67,7 +67,13 @@ public struct MediaPreparedCaptionStyleState: Sendable, Codable, Hashable {
     public init(style: CaptionStyle?, revision: UInt64) { self.style = style; self.revision = revision }
 }
 
+public struct MediaPreparedCanvasState: Sendable,Codable,Hashable {
+    public var canvas:MediaCanvas?
+    public var revision:UInt64
+    public init(canvas:MediaCanvas?,revision:UInt64) { self.canvas=canvas;self.revision=revision }
+}
 public enum MediaPreparedObjectState: Sendable, Codable, Hashable {
+    case canvas(MediaPreparedCanvasState)
     case captionStyle(MediaPreparedCaptionStyleState)
     case asset(MediaPreparedAssetState)
     case layer(MediaPreparedLayer)
@@ -102,6 +108,7 @@ public struct MediaPreparedObjectChange: Sendable, Codable, Hashable {
 public enum MediaPreparedJournalStatus: String, Sendable, Codable, Hashable {
     case committed
     case undone
+    case discarded
 }
 
 /// Durable record of one edit group. `operationIDs` is the replay/dedupe set;
@@ -119,11 +126,17 @@ public struct MediaPreparedJournalEntry: Sendable, Codable, Hashable, Identifiab
     public var committedRevision: Int64
     public var startedAt: Date
     public var committedAt: Date
+    /// Exact post-undo generations plus forward restore snapshots. Old journals decode without these fields.
+    public var redoChanges: [MediaPreparedObjectChange]?
+    public var undoneRevision: Int64?
+    /// A projected editor may undo only canonical edits in its own source scope.
+    public var compoundScopeID:UUID?
 
     public init(id: UUID, documentID: UUID, actor: MediaPreparedActorKind,
                 operationIDs: [UUID], changes: [MediaPreparedObjectChange],
                 status: MediaPreparedJournalStatus, baseRevision: Int64,
-                committedRevision: Int64, startedAt: Date, committedAt: Date) {
+                committedRevision: Int64, startedAt: Date, committedAt: Date,
+                redoChanges: [MediaPreparedObjectChange]? = nil, undoneRevision: Int64? = nil) {
         self.id = id
         self.documentID = documentID
         self.actor = actor
@@ -134,6 +147,9 @@ public struct MediaPreparedJournalEntry: Sendable, Codable, Hashable, Identifiab
         self.committedRevision = committedRevision
         self.startedAt = startedAt
         self.committedAt = committedAt
+        self.redoChanges = redoChanges
+        self.undoneRevision = undoneRevision
+        self.compoundScopeID = nil
     }
 
     public var touched: [MediaPreparedObjectRef] { changes.map(\.ref) }
@@ -150,6 +166,19 @@ public struct MediaPreparedJournal: Sendable, Codable, Hashable {
         entries.first { $0.id == id }
     }
 
+    public var nextUndo: MediaPreparedJournalEntry? {
+        entries.filter { $0.status == .committed }.max { $0.committedRevision < $1.committedRevision }
+    }
+    public var nextRedo: MediaPreparedJournalEntry? {
+        entries.filter { $0.status == .undone && $0.redoChanges != nil && $0.undoneRevision != nil }
+            .max { $0.undoneRevision! < $1.undoneRevision! }
+    }
+    /// Retain dedupe IDs when a fresh edit abandons the redo branch.
+    mutating func discardRedo(preserving active: Set<UUID>) {
+        for index in entries.indices where entries[index].status == .undone && !active.contains(entries[index].id) {
+            entries[index].status = .discarded; entries[index].redoChanges = nil; entries[index].undoneRevision = nil
+        }
+    }
     public var operationIDs: Set<UUID> {
         Set(entries.flatMap(\.operationIDs))
     }
@@ -176,7 +205,7 @@ public struct MediaPreparedJournal: Sendable, Codable, Hashable {
         guard maximumEntries > 0 else { entries.removeAll(); return }
         while entries.count > maximumEntries {
             if let index = entries.firstIndex(where: {
-                $0.status == .undone && !preserving.contains($0.id)
+                ($0.status == .undone || $0.status == .discarded) && !preserving.contains($0.id)
             }) {
                 entries.remove(at: index)
             } else if let index = entries.firstIndex(where: {
@@ -265,6 +294,7 @@ public enum MediaPreparedEngine {
             return MediaPreparedMutation(documentID: document.id,
                                          revision: document.revision, changes: [])
         }
+        if draft.trackGraph.tracks.contains(where: { $0.clips.contains(where: { $0.compound != nil }) }) { draft.schemaVersion = max(3,draft.schemaVersion) }
         draft.revision += 1
         draft.updatedAt = Date()
         try MediaPreparedIntegrity.validate(draft)
@@ -290,6 +320,7 @@ public enum MediaPreparedEngine {
             throw MediaPreparedCoreError.invalidOperation("journal entry has no changes to undo")
         }
 
+        let restoresCanvas=entry.changes.contains{$0.ref.kind == .canvas}
         let createdRefs = Set(entry.changes.filter { $0.before == nil }.map(\.ref))
         for change in entry.changes {
             let current = currentState(of: change.ref, in: document)
@@ -312,7 +343,7 @@ public enum MediaPreparedEngine {
                     "object \(change.ref.id.uuidString) (\(change.ref.kind.rawValue)) is missing")
             }
             if case .layer(let layer) = current, layer.isLocked,
-               !isLockTransition(change) {
+               !isLockTransition(change),!(restoresCanvas && isCanvasLayoutTransition(change)) {
                 throw MediaPreparedCoreError.lockedObject(change.ref)
             }
             if case .track(let track) = current, track.isLocked,
@@ -377,6 +408,51 @@ public enum MediaPreparedEngine {
     private static func apply(_ action: MediaPreparedAction,
                               to document: inout MediaPreparedDocument) throws -> [MediaPreparedObjectChange] {
         switch action {
+        case .editCompound(let clipID,let expectedRevision,let operations):
+            let generated = try MediaPreparedCompounds.innerEditOperations(clipID:clipID, expectedRevision:expectedRevision, operations:operations, in:document)
+            var result:[MediaPreparedObjectChange]=[]
+            for operation in generated {
+                for change in try apply(operation.action,to:&document) { merge(change,into:&result) }
+            }
+            return result
+        case .layoutCanvas(let expected,let canvas,let mode):
+            guard document.kind == .image,let old=document.canvas else { throw MediaPreparedCoreError.invalidOperation("image canvas required") }
+            let ref=MediaPreparedObjectRef(kind:.canvas,id:document.id),revision=document.canvasRevision ?? 0
+            try requireRevision(revision,expected,ref:ref)
+            try MediaCanvasLayout.validate(canvas)
+            guard old != canvas else { return [] }
+            guard revision<UInt64.max-1 else { throw MediaPreparedCoreError.limitsExceeded("canvas generation") }
+            let mapping=try MediaCanvasLayout.mapping(from:old,to:canvas,mode:mode)
+            var changes:[MediaPreparedObjectChange]=[]
+            for index in document.layers.indices where document.layers[index].parentID == nil {
+                let before=document.layers[index]
+                guard before.revision<UInt64.max-1 else { throw MediaPreparedCoreError.limitsExceeded("layer generation") }
+                var after=before,space=before.canvasSpace ?? .init(referenceCanvas:old)
+                space.transform=mapping.composed(after:space.transform);try space.validate()
+                after.canvasSpace=space;after.revision+=1;document.layers[index]=after
+                changes.append(.init(ref:.init(kind:.layer,id:before.id),before:.layer(before),after:.layer(after)))
+            }
+            document.canvas=canvas;document.canvasRevision=revision+1
+            changes.append(.init(ref:ref,before:.canvas(.init(canvas:old,revision:revision)),after:.canvas(.init(canvas:canvas,revision:revision+1))))
+            return changes
+        case .setVideoColorProfile(let expected,let profile):
+            guard document.kind == .video, let old = document.canvas else { throw MediaPreparedCoreError.invalidOperation("video color settings require a video canvas") }
+            let ref = MediaPreparedObjectRef(kind: .canvas,id: document.id), revision = document.canvasRevision ?? 0
+            try requireRevision(revision,expected,ref: ref)
+            guard old.videoColorProfile != profile else { return [] }
+            guard revision < UInt64.max-1 else { throw MediaPreparedCoreError.limitsExceeded("canvas generation") }
+            var next = old;next.videoColorProfile = profile
+            document.canvas = next;document.canvasRevision = revision+1
+            return [.init(ref: ref,before: .canvas(.init(canvas: old,revision: revision)),after: .canvas(.init(canvas: next,revision: revision+1)))]
+        case .setLayerCanvasSpace(let id,let expected,let space):
+            guard let index=document.layers.firstIndex(where:{$0.id == id}) else { throw MediaPreparedCoreError.unknownObject(.init(kind:.layer,id:id)) }
+            let before=document.layers[index],ref=MediaPreparedObjectRef(kind:.layer,id:id)
+            try requireRevision(before.revision,expected,ref:ref)
+            guard !before.isLocked else { throw MediaPreparedCoreError.lockedObject(ref) }
+            try space?.validate();guard before.canvasSpace != space else { return [] }
+            guard before.revision<UInt64.max-1 else { throw MediaPreparedCoreError.limitsExceeded("layer generation") }
+            var after=before;after.canvasSpace=space;after.revision+=1;document.layers[index]=after
+            return [.init(ref:ref,before:.layer(before),after:.layer(after))]
         case .setCaptionStyle(let expected, let style):
             guard document.kind == .video else {
                 throw MediaPreparedCoreError.invalidOperation("caption style requires a video document")
@@ -611,9 +687,17 @@ public enum MediaPreparedEngine {
                 inserted.clips[clipIndex].revision = 1
             }
             document.trackGraph.tracks.insert(inserted, at: position)
-            return [MediaPreparedObjectChange(
+            var changes = [MediaPreparedObjectChange(
                 ref: .init(kind: .track, id: inserted.id), position: position,
                 before: nil, after: .track(inserted.metadata))]
+            // Track metadata deliberately omits its children. Record initial
+            // clips separately so creation, undo and redo retain their exact
+            // ownership, position and generation, just as insertClip does.
+            for (index, clip) in inserted.clips.enumerated() {
+                changes.append(.init(ref:.init(kind:.clip,id:clip.id),containerID:inserted.id,position:index,
+                    before:nil,after:.clip(trackID:inserted.id,clip:clip)))
+            }
+            return changes
 
         case .removeTrack(let id, let expectedRevision):
             let ref = MediaPreparedObjectRef(kind: .track, id: id)
@@ -694,6 +778,7 @@ public enum MediaPreparedEngine {
             let clipIndex = try clipIndex(clipID, inTrack: trackIndex, in: document)
             let before = document.trackGraph.tracks[trackIndex].clips[clipIndex]
             try requireRevision(before.revision, expectedRevision, ref: ref)
+            guard before.compound == nil || updated.compound != nil else { throw MediaPreparedCoreError.invalidOperation("Expand or explicitly remove a compound instead of discarding its editable source") }
             guard updated.id == clipID else { throw MediaPreparedCoreError.invalidOperation("clip identity cannot change") }
             guard !sameClipIgnoringRevision(before, updated) else { return [] }
             updated.revision = before.revision + 1
@@ -748,6 +833,11 @@ public enum MediaPreparedEngine {
     private static func restore(_ change: MediaPreparedObjectChange,
                                 in document: inout MediaPreparedDocument) throws {
         switch change.ref.kind {
+        case .canvas:
+            guard change.ref.id == document.id,case .canvas(let before)?=change.before else { throw MediaPreparedCoreError.invalidOperation("canvas journal identity") }
+            let revision=document.canvasRevision ?? 0
+            guard revision<UInt64.max-1 else { throw MediaPreparedCoreError.limitsExceeded("canvas generation") }
+            document.canvas=before.canvas;document.canvasRevision=revision+1
         case .captionStyle:
             guard change.ref.id == document.id, case .captionStyle(let before)? = change.before else {
                 throw MediaPreparedCoreError.invalidOperation("caption style journal identity")
@@ -1030,6 +1120,7 @@ public enum MediaPreparedEngine {
             return false
         case (.some(let before), .some(let after)):
             switch (before, after) {
+            case (.canvas(let lhs),.canvas(let rhs)): return lhs.canvas == rhs.canvas
             case (.captionStyle(let lhs), .captionStyle(let rhs)):
                 return lhs.style == rhs.style
             case (.layer(let lhs), .layer(let rhs)):
@@ -1050,9 +1141,12 @@ public enum MediaPreparedEngine {
         }
     }
 
-    private static func currentState(of ref: MediaPreparedObjectRef,
+    static func currentState(of ref: MediaPreparedObjectRef,
                                      in document: MediaPreparedDocument) -> MediaPreparedObjectState? {
         switch ref.kind {
+        case .canvas:
+            guard ref.id == document.id else { return nil }
+            return .canvas(.init(canvas:document.canvas,revision:document.canvasRevision ?? 0))
         case .captionStyle:
             guard ref.id == document.id, document.kind == .video else { return nil }
             return .captionStyle(.init(style: document.trackGraph.captionStyle, revision: document.trackGraph.captionStyleRevision ?? 0))
@@ -1077,6 +1171,7 @@ public enum MediaPreparedEngine {
                                      _ expected: MediaPreparedObjectState,
                                      ref: MediaPreparedObjectRef) -> Bool {
         switch (actual, expected) {
+        case (.canvas(let lhs),.canvas(let rhs)): return lhs == rhs
         case (.captionStyle(let lhs), .captionStyle(let rhs)): return lhs == rhs
         case (.asset(let lhs), .asset(let rhs)): return lhs == rhs
         case (.layer(let lhs), .layer(let rhs)):
@@ -1098,11 +1193,16 @@ public enum MediaPreparedEngine {
     private static func stateKindMatches(_ lhs: MediaPreparedObjectState,
                                          _ rhs: MediaPreparedObjectState) -> Bool {
         switch (lhs, rhs) {
-        case (.captionStyle, .captionStyle), (.asset, .asset), (.layer, .layer), (.track, .track), (.clip, .clip): return true
+        case (.canvas,.canvas),(.captionStyle, .captionStyle), (.asset, .asset), (.layer, .layer), (.track, .track), (.clip, .clip): return true
         default: return false
         }
     }
 
+    private static func isCanvasLayoutTransition(_ change:MediaPreparedObjectChange) -> Bool {
+        guard case .layer(var before)?=change.before,case .layer(var after)?=change.after,before.parentID == nil,after.parentID == nil else { return false }
+        before.revision=0;after.revision=0;before.canvasSpace=nil;after.canvasSpace=nil
+        return before == after
+    }
     private static func isLockTransition(_ change: MediaPreparedObjectChange) -> Bool {
         guard case .layer(let before)? = change.before,
               case .layer(let after)? = change.after,

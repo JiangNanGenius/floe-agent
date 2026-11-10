@@ -1379,5 +1379,138 @@ class OpenShapeRecordTests(unittest.TestCase):
         self.assertTrue(any("expected MIT" in p for p in problems), problems)
 
 
+
+class FloeSlirpStackTests(unittest.TestCase):
+    """The FloeSlirp userspace network stack is a declared static-link exception."""
+
+    NAME = "FloeSlirp userspace network stack (libslirp + GLib core)"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.result = li.build()
+        cls.manifest = cls.result["manifest"]
+        cls.vendor = ROOT / "Vendor/FloeSlirp"
+        cls.provenance = json.loads((cls.vendor / "PROVENANCE.json").read_text())
+
+    def component(self) -> dict:
+        return next(c for c in self.manifest["components"] if c["name"] == self.NAME)
+
+    def test_stack_component_is_pinned_and_recorded(self):
+        component = self.component()
+        self.assertEqual(component["section"], "engines")
+        self.assertEqual(component["license"], li.FLOESLIRP_STACK_LICENSE)
+        self.assertEqual(component["noteKey"], "settings.licenses.note.slirp")
+        self.assertIn("4.9.7", component["version"])
+        self.assertIn("ce12dcddf710a71dc0de6450ec95edbadf8e9f66", component["version"])
+        self.assertIn("2.90.1", component["version"])
+        self.assertIn("10.46", component["version"])
+        self.assertIn("proxy-libintl 0.5", component["version"])
+
+    def test_static_copyleft_exception_is_exact_and_near_misses_rejected(self):
+        self.assertIn(li.FLOESLIRP_STACK_LICENSE, li.EXCEPTIONS)
+        violations, notices = li.license_gate(
+            [{"name": "slirp", "license": li.FLOESLIRP_STACK_LICENSE}]
+        )
+        self.assertEqual(violations, [])
+        self.assertEqual(len(notices), 1)
+        # Permissive BSD is independently allowed. The exact exception above
+        # applies to the combined static stack, not to unrelated BSD libraries.
+        permissive, _ = li.license_gate([{"name": "x", "license": "BSD-3-Clause"}])
+        self.assertEqual(permissive, [])
+        for near_miss in (
+            "LGPL-2.1-or-later",
+            "LGPL-2.0",
+            "LGPL-2.1",
+            li.FLOESLIRP_STACK_LICENSE + ".",
+        ):
+            violations, _ = li.license_gate([{"name": "x", "license": near_miss}])
+            self.assertEqual(len(violations), 1, near_miss)
+
+    def test_notices_and_source_offer_bundle_and_map(self):
+        rules = li.bundle_rules(li.PROJECT_YML.read_text())
+        for doc_id in (
+            "slirp-stack-licenses",
+            "slirp-glib-lgpl",
+            "slirp-proxy-libintl-lgpl",
+            "slirp-source-offer",
+        ):
+            document = next(d for d in self.manifest["documents"] if d["id"] == doc_id)
+            self.assertTrue(document["required"], doc_id)
+            self.assertEqual(document["section"], "engines", doc_id)
+            self.assertEqual(
+                li.bundle_path_for(rules, "FloeAgent/" + document["repositoryPath"]),
+                document["bundlePath"],
+                doc_id,
+            )
+            self.assertTrue((ROOT / document["repositoryPath"]).is_file(), doc_id)
+
+    def test_provenance_pins_match_the_tracked_bytes(self):
+        want = []
+        for pin in self.provenance["upstream"].values():
+            if pin.get("file"):
+                want.append((pin["file"], pin["sha256"]))
+            if pin.get("wrapdbPatchFile"):
+                want.append((pin["wrapdbPatchFile"], pin["wrapdbPatchSha256"]))
+            for mirror in pin.get("mirrors", {}).values():
+                want.append((mirror["file"], mirror["sha256"]))
+        for name, digest in want:
+            path = self.vendor / "vendor" / name
+            self.assertTrue(path.is_file(), name)
+            self.assertEqual(li.sha256_file(path), digest, name)
+        for rel, digest in self.provenance["delivered"].items():
+            path = self.vendor / rel
+            self.assertTrue(path.is_file(), rel)
+            self.assertEqual(li.sha256_file(path), digest, rel)
+        for rel, digest in self.provenance["localPatches"].items():
+            path = self.vendor / rel
+            self.assertEqual(li.sha256_file(path), digest, rel)
+
+    def test_license_member_copies_match_the_pinned_digests(self):
+        for name, info in self.provenance["licenses"].items():
+            path = self.vendor / "licenses" / name
+            self.assertTrue(path.is_file(), name)
+            self.assertEqual(li.sha256_file(path), info["sha256"], name)
+
+    def test_binary_notices_retain_mit_grants_and_copyrights(self):
+        notice = (ROOT / "FloeApp/Resources/Licenses/FloeSlirp-LICENSES.txt").read_text()
+        for holder in ("2011 AdaCore", "2004 Fabrice Bellard", "2012 Klaus Stengel",
+                       "2018 Red Hat, Inc.", "2004 Magnus Damm"):
+            self.assertIn(holder, notice)
+        self.assertGreaterEqual(notice.count("Permission is hereby granted"), 9)
+        self.assertIn("all copies or substantial portions of the Software", notice)
+        self.assertIn("src/arp_table.c (upstream leading notices, verbatim)", notice)
+        self.assertIn("src/util.h (upstream leading notices, verbatim)", notice)
+
+    def test_source_offer_records_the_pinned_facts(self):
+        notice = (ROOT / "FloeApp/Resources/Licenses/FloeSlirp-SOURCE-OFFER.txt").read_text()
+        for needle in (
+            "ce12dcddf710a71dc0de6450ec95edbadf8e9f66",
+            "2.90.1",
+            "10.46",
+            "proxy-libintl",
+            "Xcode 27.2",
+            "build/build-platform.sh",
+            "FloeSlirpBinary",
+            "Application source tag: ",
+        ):
+            self.assertIn(needle, notice)
+
+    def test_slirp_notes_and_titles_are_bilingual_and_aligned(self):
+        catalog = json.loads(li.XSTRINGS.read_text(encoding="utf-8"))["strings"]
+        note = next(n for n in self.manifest["notes"] if n["id"] == "slirp")
+        en = catalog[note["textKey"]]["localizations"]["en"]["stringUnit"]["value"]
+        self.assertEqual(en, note["fallback"])
+        self.assertTrue(
+            catalog[note["textKey"]]["localizations"]["zh-Hans"]["stringUnit"]["value"].strip()
+        )
+        for document in self.manifest["documents"]:
+            if document["id"].startswith("slirp-"):
+                entry = catalog[document["titleKey"]]["localizations"]
+                self.assertEqual(
+                    entry["en"]["stringUnit"]["value"], document["titleFallback"], document["id"]
+                )
+                self.assertTrue(entry["zh-Hans"]["stringUnit"]["value"].strip(), document["id"])
+
+
 if __name__ == "__main__":
     unittest.main()

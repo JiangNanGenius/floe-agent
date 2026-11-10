@@ -23,6 +23,7 @@ import FloeSkills
 import FloeProviders
 import FloeExecution
 import FloeAgentRuntime
+import FloeElectronicsCore
 
 @MainActor
 final class ContentUpdateCenter: ObservableObject {
@@ -180,7 +181,7 @@ final class ContentUpdateCenter: ObservableObject {
         providerPackageID: "1.1.5",
         promptsPackageID: builtInPromptsVersion,
         searchProviderPackageID: builtInSearchProvidersVersion
-    ]
+    ].merging(EDALibraryContent.builtInVersions) { current, _ in current }
 
     /// Declarative content may never require credentials. Script runtimes are
     /// gated by the codec's `containsScripts` contract.
@@ -421,6 +422,7 @@ final class ContentUpdateCenter: ObservableObject {
             }
         }
         helpFileCache = helpCache
+        await ElectronicsLibraryService.applySignedContent(from: self)
     }
 
     // MARK: - Checking
@@ -1083,6 +1085,12 @@ final class ContentUpdateCenter: ObservableObject {
 
     nonisolated static func domainValidator(entry: SignedContentEntry, files: [String: Data]) throws {
         try ContentPackageCodec(kind: entry.kind).validate(entry: entry, files: files)
+        if entry.id.hasPrefix(EDALibraryContent.packagePrefix) {
+            guard entry.kind == .templates, !entry.containsScripts else {
+                throw EDAError.invalid("electronics libraries require declarative template content")
+            }
+            _ = try EDALibraryContent.decode(packageID: entry.id, version: entry.version, files: files)
+        }
         if entry.kind == .providers {
             // Narrow dispatch by package identity/payload. The compatibility
             // package keeps its full ProviderCatalog validation; the search

@@ -168,7 +168,10 @@ import FloeBiologyHostAdapter
         let context = authorization.context
         try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
         let app = try access.app()
-        guard !context.temporaryReadOnly, !context.publicWebOnly, context.childExecution == nil,
+        // Same-task parity for canonical children: every identity, authority,
+        // environment and runtimeAuthority binding checked below is issued by
+        // the parent runtime for the exact call, not inferred from a child.
+        guard !context.temporaryReadOnly, !context.publicWebOnly,
               let taskID = context.conversationID,
               let run = try await app.runStore.run(id: context.runID), run.conversationID == taskID, run.endedAt == nil,
               let task = try await app.conversationStore.conversation(id: taskID), task.purpose == .ordinary,

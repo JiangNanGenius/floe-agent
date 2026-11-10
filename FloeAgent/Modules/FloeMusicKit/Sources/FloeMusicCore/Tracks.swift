@@ -174,9 +174,10 @@ public struct MusicMIDIClipPayload: Sendable, Codable, Hashable {
     public var durationTicks: Int64
     public var notes: [MusicMIDINote]
     public var controllerPoints: [MusicMIDIControllerPoint]
+    public var programChanges: [MusicMIDIProgramChange]
 
     public init(durationTicks: Int64, notes: [MusicMIDINote] = [],
-                controllerPoints: [MusicMIDIControllerPoint] = []) throws {
+                controllerPoints: [MusicMIDIControllerPoint] = [], programChanges: [MusicMIDIProgramChange] = []) throws {
         guard durationTicks > 0 else {
             throw MusicError.invalidClip(reason: "MIDI clip duration must be positive")
         }
@@ -186,22 +187,36 @@ public struct MusicMIDIClipPayload: Sendable, Codable, Hashable {
         guard controllerPoints.count <= Self.maxControllerPoints else {
             throw MusicError.boundsExceeded(field: "controllerPoints", limit: Self.maxControllerPoints)
         }
+        guard programChanges.count <= Self.maxControllerPoints else { throw MusicError.boundsExceeded(field: "programChanges", limit: Self.maxControllerPoints) }
         for note in notes {
             let (end, overflow) = note.startTick.value.addingReportingOverflow(note.durationTicks)
             guard !overflow, end <= durationTicks else {
                 throw MusicError.invalidMIDI(reason: "note ends at tick \(end), past clip length \(durationTicks)")
             }
         }
-        // Controllers must be sorted by (controller, tick) for determinism.
+        for point in controllerPoints {
+            _ = try MusicMIDIControllerPoint(controller: point.controller, tick: point.tick, value: point.value, channel: point.channel)
+            guard point.tick.value <= durationTicks else { throw MusicError.invalidMIDI(reason: "controller outside clip") }
+        }
+        for change in programChanges {
+            _ = try MusicMIDIProgramChange(tick: change.tick, channel: change.channel, program: change.program)
+            guard change.tick.value <= durationTicks else { throw MusicError.invalidMIDI(reason: "program outside clip") }
+        }
+        // Preserve the legacy order for channel zero, distinguishing channels.
         for i in controllerPoints.indices.dropFirst() {
             let prev = controllerPoints[i - 1], cur = controllerPoints[i]
-            guard (prev.controller, prev.tick.value) < (cur.controller, cur.tick.value) else {
-                throw MusicError.invalidMIDI(reason: "controller points must be sorted by (controller, tick)")
+            guard (prev.controller, prev.channel, prev.tick.value) < (cur.controller, cur.channel, cur.tick.value) else {
+                throw MusicError.invalidMIDI(reason: "controller points must be sorted by (controller, channel, tick)")
             }
+        }
+        for i in programChanges.indices.dropFirst() {
+            let a = programChanges[i - 1], b = programChanges[i]
+            guard (a.channel, a.tick.value) < (b.channel, b.tick.value) else { throw MusicError.invalidMIDI(reason: "program changes must be sorted by (channel, tick)") }
         }
         self.durationTicks = durationTicks
         self.notes = notes
         self.controllerPoints = controllerPoints
+        self.programChanges = programChanges
     }
 
     public init(from decoder: Decoder) throws {
@@ -209,8 +224,9 @@ public struct MusicMIDIClipPayload: Sendable, Codable, Hashable {
         let dur = try c.decode(Int64.self, forKey: .durationTicks)
         let notes = try c.decodeIfPresent([MusicMIDINote].self, forKey: .notes) ?? []
         let points = try c.decodeIfPresent([MusicMIDIControllerPoint].self, forKey: .controllerPoints) ?? []
+        let programs = try c.decodeIfPresent([MusicMIDIProgramChange].self, forKey: .programChanges) ?? []
         do {
-            try self.init(durationTicks: dur, notes: notes, controllerPoints: points)
+            try self.init(durationTicks: dur, notes: notes, controllerPoints: points, programChanges: programs)
         } catch let error as MusicError {
             throw DecodingError.dataCorruptedError(forKey: .durationTicks, in: c,
                                                    debugDescription: error.description)

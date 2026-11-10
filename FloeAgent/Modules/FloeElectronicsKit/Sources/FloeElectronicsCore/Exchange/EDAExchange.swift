@@ -89,7 +89,7 @@ public enum EDAExchange {
             guard let board else{throw EDAError.missing("board")}
             files=[.init(name:"Board.svg",mimeType:"image/svg+xml",data:Data(try svg(project,board:board,cancelled:cancelled).utf8))]
             if board.zones.contains(where:{$0.fillRevision != project.revision}){limitations.append("Unfilled or stale copper zones are shown as boundaries only.")}
-            if board.footprints.contains(where:{instance in project.footprints.first{$0.id==instance.definitionID}?.pads.contains{$0.shape == .roundRectangle} == true}){limitations.append("Round-rectangle pads lack a radius in this model; only their measured outer extent is drawn.")}
+            if board.footprints.contains(where:{instance in project.footprints.first{$0.id==instance.definitionID}?.pads.contains{$0.shape == .roundRectangle && $0.roundRectangleRadius == nil} == true}){limitations.append("Round-rectangle pads without an explicit radius retain only their measured outer extent.")}
         case .schematicSVG:
             for sheet in project.sheets {
                 files.append(.init(name:"Sheet-"+sheet.id.uuidString+".svg",mimeType:"image/svg+xml",data:Data(try svg(project,sheet:sheet,cancelled:cancelled).utf8)))
@@ -164,7 +164,14 @@ public enum EDAExchange {
                     func t(_ q:EDAPoint)->EDAPoint{fp.point(q.transformed(origin:pad.position,angle:pad.angle))}
                     let polygon:[EDAPoint]
                     switch pad.shape {
-                    case .rectangle,.roundRectangle:polygon=[.init(-w,-h),.init(w,-h),.init(w,h),.init(-w,h)]
+                    case .rectangle:polygon=[.init(-w,-h),.init(w,-h),.init(w,h),.init(-w,h)]
+                    case .roundRectangle:
+                        if let vertices=try? EDARoundedPadGeometry.vertices(pad) {
+                            try line(vertices.map(fp.point),color:"#aa7700",closed:true,fill:"#f7cc55")
+                            if let d=pad.drill{try circle(fp.point(pad.position),radius:d/2,color:"black",fill:"white")}
+                            continue
+                        }
+                        polygon=[.init(-w,-h),.init(w,-h),.init(w,h),.init(-w,h)]
                     case .polygon:
                         guard let vertices=pad.polygon else{throw EDAError.missing("pad.polygon")};polygon=vertices
                     case .circle:polygon=(0...48).map{let a=Double($0)*2*Double.pi/48;return .init(cos(a)*w,sin(a)*h)}
@@ -183,7 +190,7 @@ public enum EDAExchange {
             for placement in sheet.symbols {
                 guard let component=project.components.first(where:{$0.id==placement.componentID}),let definition=project.symbols.first(where:{$0.id==component.symbolID}) else{throw EDAError.missing("symbol definition")}
                 func t(_ p:EDAPoint)->EDAPoint{p.transformed(origin:placement.position,angle:placement.angle,mirrored:placement.mirrored)}
-                try graphics(definition.graphics,transform:t)
+                try graphics(definition.graphics(forUnit: placement.unit),transform:t)
                 for pin in definition.pins where pin.unit==0 || pin.unit==placement.unit{try circle(t(pin.position),radius:0.15,color:"black");try text(pin.number,t(pin.position),height:0.9)}
                 try text(component.reference+" "+component.value,placement.position + .init(0,4))
             }

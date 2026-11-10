@@ -234,7 +234,7 @@ public enum MutationTargetResolver {
     static let workspaceFileTools: Set<String> = [
         "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
         "workspace.createDirectory", "workspace.moveFile", "workspace.deleteFile",
-        "workspace.copyFile", "workspace.appendFile", "workspace.replaceText",
+        "workspace.copyFile", "workspace.importOutput", "workspace.appendFile", "workspace.replaceText",
         "document.createMarkdown"
     ]
 

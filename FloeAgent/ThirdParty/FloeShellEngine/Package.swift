@@ -5,7 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "FloeShellEngine",
-    products: [.library(name: "FloeShellEngine", targets: ["ios_system", "awk", "curl_ios", "files", "shell", "tar", "text", "libssh2", "openssl"])],
+    products: [.library(name: "FloeSSH2Transport", targets: ["libssh2", "openssl"]), .library(name: "FloeShellEngine", targets: ["ios_system", "awk", "curl_ios", "files", "shell", "tar", "text", "libssh2", "openssl"])],
     targets: [
         // Dynamic dependencies required by the pinned curl_ios binary.
         .binaryTarget(name: "libssh2", url: "https://github.com/holzschu/libssh2-apple/releases/download/v1.11.0/libssh2-dynamic.xcframework.zip", checksum: "cacfe1789b197b727119f7e32f561eaf9acc27bf38cd19975b74fce107f868a6"),

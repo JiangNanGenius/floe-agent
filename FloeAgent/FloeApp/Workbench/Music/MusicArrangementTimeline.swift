@@ -5,22 +5,28 @@ import FloeMusicCore
 
 struct MusicArrangementTimeline: View {
     @Bindable var session: MusicProjectSession
-    var zoom: Double
+    @Binding var zoom: Double
     var snap: Bool
     var showsAutomation: Bool
+    var onImport: (() -> Void)? = nil
     var onEdit: (MusicClip) -> Void
+    @State private var scrollPosition = ScrollPosition(x: 0)
+    @State private var horizontalOffset: CGFloat = 0
+    @State private var pinchStart: (zoom: Double, offset: CGFloat, anchor: CGFloat)?
+    @GestureState private var pinching = false
     private let rowHeight: CGFloat = 76
+    private let rulerHeight: CGFloat = 44
     private var scale: CGFloat { 48 * zoom }
     private var horizon: Double {
         let bpm = session.document.tempoMap.segments.first?.bpm ?? 120
-        return max(60 / bpm * 32, session.durationSeconds + 60 / bpm * 4)
+        return max(60 / bpm * 32, max(session.durationSeconds, session.playbackPosition) + 60 / bpm * 4)
     }
-    private var beatPositions: [Double] {
+    private var rulerMarks: [(mark: MusicBarBeatMark, seconds: Double)] {
         let map = session.document.tempoMap
         let last = (try? map.tick(atSample: .init(Int64(horizon * Double(map.sampleRate)))).value) ?? 0
-        return (0...min(4096, Int(last) / map.ticksPerQuarter + 1)).compactMap { beat in
-            guard let sample = try? map.sample(atTick: .init(Int64(beat * map.ticksPerQuarter))) else { return nil }
-            return Double(sample.value) / Double(map.sampleRate)
+        return MusicMusicalRuler.marks(tempoMap: map, through: last).compactMap { mark in
+            guard let sample = try? map.sample(atTick: .init(mark.tick)) else { return nil }
+            return (mark, Double(sample.value) / Double(map.sampleRate))
         }
     }
     var body: some View {
@@ -33,7 +39,7 @@ struct MusicArrangementTimeline: View {
                         HStack {
                             Text(WorkbenchText.t("轨道", "Tracks") + " · \(session.document.tracks.count)").font(.caption.weight(.medium))
                             Spacer()
-                        }.padding(.horizontal, 10).frame(height: 34)
+                        }.padding(.horizontal, 10).frame(height: rulerHeight)
                         ForEach(Array(session.document.tracks.enumerated()), id: \.element.id) { index, track in
                             trackHeader(track, color: MusicWorkbenchFormat.color(index))
                         }
@@ -47,9 +53,12 @@ struct MusicArrangementTimeline: View {
                                     ForEach(Array(session.document.tracks.enumerated()), id: \.element.id) { index, track in
                                         trackLane(track, color: MusicWorkbenchFormat.color(index), width: width)
                                     }
-                                    if session.document.tracks.isEmpty { emptyTimeline.frame(width: width, height: max(200, geometry.size.height - 34)) }
+                                    if session.document.tracks.isEmpty {
+                                        emptyTimeline(visibleWidth: max(0, geometry.size.width - labelWidth - 1))
+                                            .frame(width: width, height: max(200, geometry.size.height - rulerHeight))
+                                    }
                                 }
-                                TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                                TimelineView(.animation(minimumInterval: 0.1, paused: !session.playbackIsActive)) { _ in
                                     Rectangle().fill(Color.accentColor).frame(width: 1.5)
                                         .offset(x: CGFloat(session.playbackPosition) * scale)
                                         .allowsHitTesting(false).accessibilityHidden(true)
@@ -57,6 +66,19 @@ struct MusicArrangementTimeline: View {
                             }
                         }.frame(width: width)
                     }
+                    .scrollPosition($scrollPosition)
+                    .scrollIndicators(.visible, axes: .horizontal)
+                    .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, value in horizontalOffset = value }
+                    .simultaneousGesture(MagnifyGesture().updating($pinching) { _, state, _ in state = true }
+                        .onChanged { value in
+                            if pinchStart == nil { pinchStart = (zoom, horizontalOffset, value.startLocation.x) }
+                            guard let start = pinchStart else { return }
+                            let next = min(8, max(0.25, start.zoom * Double(value.magnification)))
+                            let offset = MusicTimelineEditing.anchoredScrollOffset(offset: Double(start.offset), anchorX: Double(start.anchor),
+                                oldScale: 48 * start.zoom, newScale: 48 * next)
+                            zoom = next; scrollPosition.scrollTo(x: CGFloat(offset))
+                        }.onEnded { _ in pinchStart = nil })
+                    .onChange(of: pinching) { _, active in if !active { pinchStart = nil } }
                 }.frame(minHeight: geometry.size.height, alignment: .top)
             }
         }
@@ -89,17 +111,31 @@ struct MusicArrangementTimeline: View {
         .accessibilityIdentifier("music.track." + track.id.rawValue)
     }
     private func ruler(width: CGFloat) -> some View {
-        SwiftUI.Canvas { context, size in
-            for (index, seconds) in beatPositions.enumerated() {
-                let x = CGFloat(seconds) * scale
-                if index % 4 == 0 {
-                    context.draw(Text("\(index / 4 + 1)").font(.caption2).foregroundColor(.secondary), at: CGPoint(x: x + 8, y: size.height / 2))
+        ZStack(alignment: .topLeading) {
+            SwiftUI.Canvas { context, size in
+                for entry in rulerMarks {
+                    let x = CGFloat(entry.seconds) * scale
+                    if entry.mark.beat == 1 {
+                        context.draw(Text("\(entry.mark.bar)").font(.caption2).foregroundColor(.secondary), at: CGPoint(x: x + 8, y: 12))
+                    }
                 }
             }
-        }.frame(width: width, height: 34)
+            TimelineView(.animation(minimumInterval: 0.05, paused: !session.playbackIsActive)) { _ in
+                Image(systemName: "arrowtriangle.down.fill").font(.system(size: 17)).foregroundStyle(Color.accentColor)
+                    .position(x: CGFloat(session.playbackPosition) * scale, y: rulerHeight - 12)
+                    .allowsHitTesting(false)
+            }
+            MusicTimelineInput(ruler: true, seek: { session.seek(to: Double($0 / scale)) })
+        }.frame(width: width, height: rulerHeight)
             .background(Color(uiColor: .tertiarySystemBackground))
-            .contentShape(Rectangle())
-            .gesture(SpatialTapGesture().onEnded { value in session.seek(to: Double(value.location.x / scale)) })
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(WorkbenchText.t("时间标尺与播放头", "Time ruler and playhead"))
+            .accessibilityValue(MusicWorkbenchFormat.time(session.playbackPosition))
+            .accessibilityAdjustableAction { direction in
+                let beat = 60 / (session.document.tempoMap.segments.first?.bpm ?? 120)
+                session.seek(to: session.playbackPosition + (direction == .increment ? beat : -beat))
+            }
+            .accessibilityIdentifier("music.timeline.ruler")
     }
     private func trackLane(_ track: MusicTrack, color: Color, width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
@@ -127,22 +163,30 @@ struct MusicArrangementTimeline: View {
     }
     private var grid: some View {
         SwiftUI.Canvas { context, size in
-            for (index, seconds) in beatPositions.enumerated() {
-                let x = CGFloat(seconds) * scale
+            for entry in rulerMarks {
+                let x = CGFloat(entry.seconds) * scale
                 var path = Path(); path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: size.height))
-                context.stroke(path, with: .color(.secondary.opacity(index % 4 == 0 ? 0.25 : 0.1)), lineWidth: 1)
+                context.stroke(path, with: .color(.secondary.opacity(entry.mark.beat == 1 ? 0.25 : 0.1)), lineWidth: 1)
             }
         }.allowsHitTesting(false)
     }
-    private var emptyTimeline: some View {
-        ZStack {
+    private func emptyTimeline(visibleWidth: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
             grid
-            VStack(spacing: 12) {
-                Image(systemName: "waveform.path").font(.largeTitle).foregroundStyle(.secondary)
-                Text(WorkbenchText.t("开始一段音乐", "Start a piece")).font(.headline)
-                Text(WorkbenchText.t("导入音频、MIDI，或添加乐器轨。", "Import audio or MIDI, or add an instrument track.")).font(.callout).foregroundStyle(.secondary)
-                Button(WorkbenchText.t("添加乐器轨", "Add instrument track")) { Task { await session.addTrack() } }.frame(minHeight: 44)
-            }.padding()
+            VStack(spacing: 8) {
+                Image(systemName: "music.note.list").font(.title2).foregroundStyle(.secondary)
+                Text(WorkbenchText.t("开始编曲", "Start arranging")).font(.headline)
+                Text(WorkbenchText.t("导入音频或 MIDI，也可以先添加乐器轨。", "Import audio or MIDI, or start with an instrument track."))
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                HStack(spacing: 12) {
+                    Button(WorkbenchText.t("添加乐器轨", "Add instrument track"), systemImage: "pianokeys") { Task { await session.addTrack() } }
+                        .buttonStyle(.bordered)
+                    if let onImport {
+                        Button(WorkbenchText.t("导入", "Import"), systemImage: "square.and.arrow.down", action: onImport)
+                            .buttonStyle(.borderedProminent)
+                    }
+                }.controlSize(.regular)
+            }.padding(12).frame(width: visibleWidth).offset(x: horizontalOffset)
         }
     }
 }
@@ -154,9 +198,19 @@ private struct MusicTimelineClip: View {
     let scale: CGFloat
     let snap: Bool
     let onEdit: (MusicClip) -> Void
-    @State private var movement: CGFloat = 0
-    @State private var revision: Int64?
-    private var length: Double { Double(((try? clip.endSample(tempoMap: session.document.tempoMap).value) ?? clip.offset.value + 1) - clip.offset.value) / Double(session.document.tempoMap.sampleRate) }
+    @State private var preview: MusicClip?
+    @State private var drag: DragSnapshot?
+    private struct DragSnapshot {
+        let clip: MusicClip
+        let revision: Int64
+        let tempoMap: MusicTempoMap
+        let scale: CGFloat
+        let snapping: Bool
+        let sourceDuration: Int64?
+    }
+    private var shownClip: MusicClip { preview ?? clip }
+    private var length: Double { Double(((try? shownClip.endSample(tempoMap: session.document.tempoMap).value) ?? shownClip.offset.value + 1) - shownClip.offset.value) / Double(session.document.tempoMap.sampleRate) }
+    private var movement: CGFloat { CGFloat(shownClip.offset.value - clip.offset.value) / CGFloat(session.document.tempoMap.sampleRate) * scale }
     var body: some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 5).fill(color.opacity(0.18))
@@ -164,38 +218,32 @@ private struct MusicTimelineClip: View {
                 Text(clip.name.isEmpty ? WorkbenchText.t("片段", "Clip") : clip.name).font(.caption2.weight(.medium)).lineLimit(1)
                 content
             }.padding(.horizontal, 10).padding(.vertical, 5).foregroundStyle(color)
-            HStack(spacing: 0) {
-                trimHandle(start: true)
-                Spacer(minLength: 4)
-                trimHandle(start: false)
+            if session.selectedClip == clip.id {
+                HStack(spacing: 0) {
+                    trimHandle
+                    Spacer(minLength: 4)
+                    trimHandle
+                }.allowsHitTesting(false)
             }
         }
         .frame(width: max(44, CGFloat(length) * scale), height: 62)
         .overlay { RoundedRectangle(cornerRadius: 5).stroke(session.selectedClip == clip.id ? color : color.opacity(0.3), lineWidth: session.selectedClip == clip.id ? 2 : 1) }
-        .offset(x: movement)
-        .onTapGesture(count: 2) { onEdit(clip) }
-        .onTapGesture { session.selectClip(clip) }
-        .gesture(DragGesture(minimumDistance: 8).onChanged { value in
-            if revision == nil { revision = session.document.revision; session.selectClip(clip) }
-            movement = value.translation.width
-        }.onEnded { value in
-            var next = clip
-            let seconds = Double(clip.offset.value) / Double(session.document.tempoMap.sampleRate) + Double(value.translation.width / scale)
-            next.offset = .init(Int64(snapped(max(0, seconds)) * Double(session.document.tempoMap.sampleRate)))
-            commit(next); movement = 0
-        })
-        .contextMenu {
-            Button(WorkbenchText.t("编辑片段", "Edit clip")) { onEdit(clip) }
-            Button(WorkbenchText.t("复制", "Duplicate")) { session.selectClip(clip); session.duplicateSelection() }
-            Button(WorkbenchText.t("删除", "Delete"), role: .destructive) { session.edit([.removeClip(clip.id)]) }
+        .overlay {
+            MusicTimelineInput(selected: session.selectedClip == clip.id,
+                select: { session.selectClip(clip) }, open: { onEdit(clip) }, edit: gesture)
         }
+        .offset(x: movement)
+        .onDisappear { drag = nil; preview = nil }
         .accessibilityElement(children: .ignore).accessibilityLabel(clip.name)
         .accessibilityValue(MusicWorkbenchFormat.time(Double(clip.offset.value) / Double(session.document.tempoMap.sampleRate)))
         .accessibilityAddTraits(.isButton).accessibilityAction { onEdit(clip) }
+        .accessibilityAction(named: WorkbenchText.t("选择", "Select")) { session.selectClip(clip) }
+        .accessibilityAction(named: WorkbenchText.t("复制", "Duplicate")) { session.selectClip(clip); session.duplicateSelection() }
+        .accessibilityAction(named: WorkbenchText.t("删除", "Delete")) { session.edit([.removeClip(clip.id)]) }
         .accessibilityIdentifier("music.clip." + clip.id.rawValue)
     }
     @ViewBuilder private var content: some View {
-        switch clip.body {
+        switch shownClip.body {
         case .audio(let payload):
             let asset = session.document.assets.first { $0.id == payload.assetID }
             if let peaks = session.waveforms[payload.assetID], let asset, asset.durationSamples.value > 0 {
@@ -219,34 +267,38 @@ private struct MusicTimelineClip: View {
             }
         }
     }
-    private func trimHandle(start: Bool) -> some View {
-        Rectangle().fill(color.opacity(session.selectedClip == clip.id ? 0.7 : 0.2)).frame(width: 4)
-            .padding(.horizontal, 6).frame(width: 18, height: 62).contentShape(Rectangle())
-            .highPriorityGesture(DragGesture(minimumDistance: 8).onChanged { _ in if revision == nil { revision = session.document.revision } }.onEnded { value in
-                let rate = Double(session.document.tempoMap.sampleRate)
-                let lower = Double(clip.offset.value) / rate
-                let upper = lower + length
-                let shifted = snapped((start ? lower : upper) + Double(value.translation.width / scale))
-                let a = start ? min(upper - 0.02, max(lower, shifted)) : lower
-                let b = start ? upper : max(lower + 0.02, min(upper, shifted))
-                do {
-                    let next = try MusicWorkbenchEditing.trim(clip, start: .init(Int64(a * rate)), end: .init(Int64(b * rate)), tempoMap: session.document.tempoMap)
-                    commit(next)
-                } catch { revision = nil; session.diagnostic = error.localizedDescription }
-            })
+    private var trimHandle: some View {
+        RoundedRectangle(cornerRadius: 2).fill(color.opacity(0.8)).frame(width: 4, height: 28)
+            .frame(width: 18, height: 62)
     }
-    private func snapped(_ seconds: Double) -> Double {
-        guard snap else { return seconds }
-        let map = session.document.tempoMap
-        let tick = (try? map.tick(atSample: .init(Int64(max(0, seconds) * Double(map.sampleRate)))).value) ?? 0
-        let quarter = Double(map.ticksPerQuarter) / 4
-        let gridTick = Int64((Double(tick) / quarter).rounded() * quarter)
-        return Double((try? map.sample(atTick: .init(gridTick)).value) ?? 0) / Double(map.sampleRate)
+    private func gesture(_ kind: MusicTimelineEditKind, _ delta: CGFloat, _ state: UIGestureRecognizer.State) {
+        if state == .began {
+            guard !session.saving, !session.isRecording, !session.isMIDIRecording else { return }
+            session.selectClip(clip)
+            let duration: Int64?
+            if case .audio(let payload) = clip.body {
+                duration = session.document.assets.first { $0.id == payload.assetID }?.durationSamples.value
+            } else { duration = nil }
+            drag = DragSnapshot(clip: clip, revision: session.document.revision,
+                tempoMap: session.document.tempoMap, scale: scale, snapping: snap, sourceDuration: duration)
+        }
+        guard let captured = drag else { return }
+        if state == .cancelled || state == .failed { drag = nil; preview = nil; return }
+        guard state == .began || state == .changed || state == .ended else { return }
+        do {
+            let next = try MusicTimelineEditing.edit(captured.clip, kind: kind, deltaSeconds: Double(delta / captured.scale),
+                snapping: captured.snapping, tempoMap: captured.tempoMap, sourceDurationSamples: captured.sourceDuration)
+            preview = next
+            guard state == .ended else { return }
+            drag = nil; preview = nil
+            guard next != captured.clip else { return }
+            Task { do { try await session.apply([.updateClip(next)], expectedRevision: captured.revision) }
+                catch { session.diagnostic = error.localizedDescription } }
+        } catch {
+            if state == .ended { drag = nil; preview = nil; session.diagnostic = error.localizedDescription }
+        }
     }
-    private func commit(_ next: MusicClip) {
-        let base = revision ?? session.document.revision; revision = nil
-        Task { do { try await session.apply([.updateClip(next)], expectedRevision: base) } catch { session.diagnostic = error.localizedDescription } }
-    }
+
 }
 
 struct MusicWaveformView: View {

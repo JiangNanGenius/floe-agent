@@ -21,6 +21,18 @@ public enum ChatInlineContentCatalog {
               !artifact.relativePath.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
               path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
               RunOutputFile.isValidSHA256Hex(artifact.sha256.lowercased()) else { return false }
+        let fileWriters: Set<String> = ["workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText"]
+        if fileWriters.contains(tool) {
+            let suffix: String
+            switch artifact.mimeType {
+            case "text/x-diff": suffix = ".diff"
+            case "application/vnd.floe.file-preview+json": suffix = ".preview.json"
+            default: return false
+            }
+            return artifact.byteCount <= 512 * 1024 && path.count == 3
+                && path[0] == "ChangeArtifacts" && path[1] == Substring(runID.uuidString)
+                && path[2] == Substring(artifact.sha256.lowercased() + suffix)
+        }
         if tool == "document.presentation.createInline" {
             let suffix: String
             switch artifact.mimeType {
@@ -112,6 +124,8 @@ public enum ChatInlineContentCatalog {
             case "application/vnd.floe.chart+json": title = "Chart"
             case "application/vnd.floe.table+json": title = "Table"
             case "text/html": title = tool == "audio.synthesize" ? "Audio preview" : "Interactive preview"
+            case "text/x-diff": title = "File changes"
+            case "application/vnd.floe.file-preview+json": title = "Saved file preview"
             default: title = "Image"
             }
             return .init(reference: reference, mimeType: artifact.mimeType, title: title)

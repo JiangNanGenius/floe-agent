@@ -1,5 +1,9 @@
 # Skill routing and upgrade work / 技能路由与升级实施
 
+> 历史参考 / Historical reference · 2026-11-10 标记。基于 1.4.96（127）的技能路由与升级实施计划，旧运行时分工和“无公测”只适用于该轮。现行依赖规范见[作者指南](skills/SKILL_DEPENDENCIES_AUTHOR_GUIDE.zh-CN.md)，交付范围按 [AGENTS.md](../AGENTS.md) 和[渠道记录](CURRENT_STATUS.md)。
+> Skill-routing plan based on 1.4.96 (127). Runtime choices and beta restrictions are historical; follow current dependency guidance and authorized delivery scope.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Accepted plan baseline: 1d63b74, 1.4.96 (127). Python and Executor are independent substrates; interactive shells belong to Terminal. Visible PDF/Office/Network skills support explicit GitHub-file/package upgrades; hidden guides are app-owned read-only resources. No public beta.

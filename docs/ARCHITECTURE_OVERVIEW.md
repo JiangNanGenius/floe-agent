@@ -1,10 +1,13 @@
 # Floe Agent Architecture Overview
 
-## Current architecture / 当前架构 · 2026-10-09
+<a id="current-architecture--当前架构--2026-10-09"></a>
+## Current architecture / 当前架构 · 2026-11-10
 
-The current source is 1.7.24 (265), with persistence schema v44. `FloeWorkbench` owns `cad.document`, `FloeDocuments` owns the shared `document.office.edit` command catalog, and media projects retain their own durable state. UI and AI routes share capabilities and revision checks; Notes, Canvas and task conversations retain separate ownership and undo histories. Proposals require user confirmation before applying. Release state is maintained in [CURRENT_STATUS](CURRENT_STATUS.md).
+This overview describes source responsibilities. Read the version/build from [`project.yml`](../FloeAgent/project.yml) and the database schema from [`DatabaseManager.currentSchemaVersion`](../FloeAgent/Sources/FloePersistence/DatabaseManager.swift); channel snapshots live in [CURRENT_STATUS](CURRENT_STATUS.md). `FloeWorkbench` owns `cad.document`, `FloeDocuments` owns the shared `document.office.edit` catalog, and media projects retain their own durable state. UI and AI routes share capabilities and revision checks; Notes, Canvas and task conversations retain separate ownership and undo histories.
 
-当前源码中的图纸助手、Office 与手记提案使用各自的持久状态、修订校验和确认流程；共享服务不等于共享编辑状态。画布媒体子工程备份包含素材、CAD 草稿与修订，完整恢复交互及原生 Office 引擎的真机验收分别记录。
+图纸助手、Office 与手记使用各自的持久状态及修订校验。显式提案保留采纳流程，任务已授权的普通文档、媒体和 CAD 编辑沿用既有权限策略，不要求每次编辑额外确认。运行时以[审批策略](../FloeAgent/Sources/FloeSecurity/ApprovalPolicy.swift)与[修改租约](../FloeAgent/Sources/FloeTools/MutationLease.swift)核对目标、所有权和适用例外。共享服务不等于共享编辑状态；源码说明也不代表安装包或真机已验收。
+
+Explicit proposals retain their acceptance flow. Ordinary task-authorized document, media and CAD edits use the existing permission policy, with target ownership, revision and save checks. Source documentation does not establish package or physical-device acceptance.
 
 
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
@@ -13,13 +16,16 @@ The current source is 1.7.24 (265), with persistence schema v44. `FloeWorkbench`
 
 Historical baseline: older build references below apply to their dated source. Current delivery is linked above.
 
-## Floe 1.7 integration boundaries
+<a id="floe-17-integration-boundaries"></a>
+## Integration boundaries
 
-`FloeEnvironments` owns environment records, layer types and resolved paths; `FloePackages` consumes these types instead of defining a second environment model. `EnvironmentExecutionCoordinator` resolves workspace/conversation ownership, leases executions and retains ownership until workers have actually stopped. Tool contexts and persisted background jobs carry `environmentID`; schema v40 added the background-job field and the line continues through v44 (media-job ownership/idempotency, durable private-workspace cleanup intents, conversation search index repair).
+`FloeEnvironments` owns environment records, layer types and resolved paths; `FloePackages` consumes these types instead of defining a second environment model. `EnvironmentExecutionCoordinator` resolves workspace/conversation ownership, leases executions and retains ownership until workers have actually stopped. Tool contexts and persisted background jobs carry `environmentID`. Database changes are append-only migrations; the migration code is the authority for the current schema.
 
-Resolution order is session, project, shared, then base, with an explicit write layer. The integration is not complete across all Python/WASM/install paths. Environment separation is dependency/data/lifecycle layering, not a security sandbox for native code in the same process.
+Resolution order is session, project, shared, then base, with an explicit write layer. Environment separation describes dependencies, data and lifecycle; it does not create a native-code security sandbox.
 
-Local Python, Node.js, shell commands and services run inside each environment's TinyEMU Linux guest; the App bundles no native Python, Node or Ruby payload, and the retired in-process CPython/NodeMobile recipes are archived under `FloeAgent/ThirdParty/NativeRuntimeArchive/` and blocked by `FloeAgent/scripts/audit_native_runtime_free.py`. First use of a Linux-required entry point runs one shared prepare/download/verify/install/start job and resumes the original command; the guest configures and reports its own network. Retired native/WASI package routes are not advertised as usable tools. Media transcode/audio conversion use bounded processing and verified temporary outputs. Unconnected enhancement runners are not registered as available tools. Package transactions stage and verify payloads before journaled file changes; current fixture coverage and remaining gaps are tracked in [implementation status](FLOE_1_7_IMPLEMENTATION_STATUS.md).
+Local Python, Node.js, shell commands and services run in one resident ARM64 Linux machine, with explicit project roots, project-owned sessions and dependency layers. [`ARM64ResidentGuestSessionFactory`](../FloeAgent/Sources/FloeExecution/Linux/ARM64ResidentGuestSessionFactory.swift) binds the shared machine to the existing guest lifecycle. CPU/RAM settings are shared. See [execution architecture](ARCHITECTURE_LOCAL_SHELL.md) for preparation, coordination, shutdown and restore behavior.
+
+Model-authored code uses the resolved environment through `exec.shell`, existing jobs and local-service entry points. Retired language-specific execution/package tools are not registered, and missing Linux never falls back to the host interpreter. The App bundles no native Python, Node or Ruby payload; `audit_native_runtime_free.py` guards this boundary. Media services use bounded processing and verified staged outputs. Package transactions stage and verify payloads before journaled file changes. Older TinyEMU and in-process interpreter designs remain in the [historical index](history/README.md).
 
 ## Domain vocabulary / 领域术语
 
@@ -42,13 +48,13 @@ flowchart TB
     PROVIDERS["Cloud adapters · text · vision · image"]
     LOCAL["Apple Foundation Models · MLX local runtime"]
     TOOLS["Compiled ToolCatalog · scoped runners"]
-    PERSIST["GRDB persistence · schema v44"]
+    PERSIST["GRDB persistence · append-only migrations"]
     SECURITY["Approval · catastrophic gate · audit chain"]
     BROWSER["Visible WKWebView · Floe Browser Protocol"]
     REMOTE["SSH · PTY · forwarding · VNC"]
     FILES["Private/Files workspaces · change artifacts · global font library"]
     GIT["Local Git · GitHub · cloud Git"]
-    LINUX["TinyEMU Linux guest · shared venv/npm"]
+    LINUX["Shared ARM64 Linux · project sessions and layers"]
 
     UI --> CENTER
     CENTER --> RUNTIME
@@ -116,10 +122,10 @@ Provider schema filtering reduces accidental requests; executor-side authorizati
 | `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX models, memory policy, dynamic context, and bounded local tool translation. |
 | `FloeAgentRuntime` | State machine, harness, context assembly, Plan/Goal/Memory, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time catalog, authorization, approvals, audit, and catastrophic-action detection. `CapabilityExecutionRouter` is the exhaustive, pure decision table declaring which backend owns each stable tool name: interpreters/CLIs/packages/servers in the Linux guest, heavy media/GPU work on native Apple frameworks with no silent emulator fallback, and remote-prefixed commands on a configured SSH host. `CapabilityRouteLedger` keeps a bounded trail of the routing actually used. |
-| `FloePersistence` | GRDB stores and append-only migrations through schema v44. |
+| `FloePersistence` | GRDB stores, atomic launch and append-only migrations; schema version comes from `DatabaseManager.currentSchemaVersion`. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scope, working copies, change artifacts, documents, and local image operations. `FloeWorkspace` also owns the native text/code editing kernel (`IDENativeTextWorkspace`: per-buffer drafts, bounded highlighting, conflict-safe saves) and the bounded archive engine (zip/tar/tar.gz/tar.xz create/list/extract, bzip2 create-only, 7z read-only; RAR through the app's signed decoder). |
 | `FloeGit` | Non-destructive local repository operations, GitHub connection, and local/cloud source-control tools. |
-| `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized remote execution, the TinyEMU Linux guest runtime and visible computer control. Guest Python/Node and signed WASI commands are separate capability paths. `FloeExecution` also owns Runtime v2: SHA-512 content-addressed images, immutable software templates with pinned per-environment copy-on-write deltas, the three-axis CPU/RAM/VM pool (SMP admission only from a verified image manifest; the six-vCPU performance tier stays dormant behind its evidence gate) and the local-service supervisor. `LinuxGuestMetricsSampler` produces bounded, consumer-limited resource samples (emulator-thread CPU, guest `/proc` CPU and memory, network counters; GPU always unavailable) and only runs while a foreground consumer is registered. |
+| `FloeSSH`, `FloeExecution`, `FloeVNC` | Authorized SSH/PTY/forwarding, shared ARM64 Linux execution and visible computer control. `FloeExecution` owns verified images, project sessions and software layers, global CPU/RAM configuration, owned jobs, metrics and local services. Model code uses the existing Linux execution path; internal compatibility libraries do not add separate language-execution tools. |
 | `FloeSkills` | Declarative package validation, compatibility, provenance, and per-run tool ceiling. |
 | `FloeApp` | Native iPhone/iPad interface, browser sessions, voice, notifications, and lifecycle coordination. `BackgroundRunCoordinator` is the single owner of background-work lifetime: it requests the system continued-processing task only for explicit foreground user actions, publishes snapshots into `BackgroundWorkRegistry`, keeps one foreground in-app banner instead of duplicating a system alert, routes notification deep links by payload identity, and applies the 3-second success completion dwell with generation-checked teardown (failures/checkpoints stay actionable). |
 
@@ -159,10 +165,10 @@ Office inspect exposes a digest. Saves validate expected versions, write a stage
 
 `document.convert` and the separate `document.pdf.convert` accept workspace input/output paths and a target format. A bundled, pinned JavaScript engine converts Markdown, DOCX and HTML; native rich-text and PDF services supply RTF and PDF input/output. It never asks a model to regenerate the body. Source bytes remain intact, outputs are staged and atomically published under new names, and the model receives only compact status, digests and limitations. Local images are authorized and embedded before rendering; a nonpersistent WebKit view blocks network/file loading and strips active content. Size, decoded-image, page-count, timeout and cancellation bounds apply throughout. Searchable PDF extraction is text-oriented; conversion does not promise exact Office layout fidelity. Export font glyph mappings preserve distinct source Unicode characters during PDF extraction.
 
-The official plugin catalog is verified against bundled trust keys and resolved source revisions. Before signing, the builder validates localized release notes and application versions against the app's decoding contract. Published ZIP versions are immutable. User removal of an exposed official plugin persists across launches. Expanded permissions remain visible during updates. See [qualification and outstanding work](WORKFLOW_UPGRADE.md).
+The official plugin catalog is verified against bundled trust keys and resolved source revisions. Before signing, the builder validates localized release notes and application versions against the app's decoding contract. Published ZIP versions are immutable. User removal of an exposed official plugin persists across launches. Expanded permissions remain visible during updates. The [historical upgrade record](WORKFLOW_UPGRADE.md) retains the earlier implementation scope; use build-specific evidence for later qualification.
 
 ## 1.7 手记与动态导图补充
 
 FloeNotes 持有独立文档、页面、笔迹、主题、来源、历史和授权；Canvas 仍持有节点及工作流。两者只共享模型、文件/权限和任务服务。导图为主题的原生画布：结构数据与有界图片直接渲染为原生主题卡片，确定性树形布局按内容尺寸排版，首次编辑才把坐标写回文档；文档修订与布局方向均由原生存储确认。PDF 小窗有独立编辑会话与撤销。
 
-手记永久删除使用数据库事务及独立资源回收日志。原文、历史、编辑回执和活动资源读取租约共同决定资源是否仍被引用；文件删除失败不得丢失回收记录。详见[恢复说明](FLOE_1_7_MIGRATION.md)与[当前验收记录](FLOE_1_7_CONTINUATION_STATUS.md)。
+手记永久删除使用数据库事务及独立资源回收日志。原文、历史、编辑回执和活动资源读取租约共同决定资源是否仍被引用；文件删除失败不得丢失回收记录。详见[恢复说明](FLOE_1_7_MIGRATION.md)与[历史验收记录](FLOE_1_7_CONTINUATION_STATUS.md)；后续状态按对应构建的证据核对。

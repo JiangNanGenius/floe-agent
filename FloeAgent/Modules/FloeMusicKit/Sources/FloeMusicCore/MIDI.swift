@@ -73,8 +73,10 @@ public struct MusicMIDIControllerPoint: Sendable, Codable, Hashable {
     public var controller: Int
     public var tick: MusicTick
     public var value: Int
+    public var channel: Int
 
-    public init(controller: Int, tick: MusicTick, value: Int) throws {
+    public init(controller: Int, tick: MusicTick, value: Int, channel: Int = 0) throws {
+        guard (0...15).contains(channel) else { throw MusicError.invalidMIDI(reason: "controller channel outside [0,15]") }
         guard controller >= 0, controller <= 128 else {
             throw MusicError.invalidMIDI(reason: "controller \(controller) outside [0, 128]")
         }
@@ -88,6 +90,7 @@ public struct MusicMIDIControllerPoint: Sendable, Codable, Hashable {
         self.controller = controller
         self.tick = tick
         self.value = value
+        self.channel = channel
     }
 
     public init(from decoder: Decoder) throws {
@@ -95,11 +98,26 @@ public struct MusicMIDIControllerPoint: Sendable, Codable, Hashable {
         let controller = try c.decode(Int.self, forKey: .controller)
         let tick = try c.decode(MusicTick.self, forKey: .tick)
         let value = try c.decode(Int.self, forKey: .value)
+        let channel = try c.decodeIfPresent(Int.self, forKey: .channel) ?? 0
         do {
-            try self.init(controller: controller, tick: tick, value: value)
+            try self.init(controller: controller, tick: tick, value: value, channel: channel)
         } catch let error as MusicError {
             throw DecodingError.dataCorruptedError(forKey: .value, in: c,
                                                    debugDescription: error.description)
         }
+    }
+}
+
+public struct MusicMIDIProgramChange: Sendable, Codable, Hashable {
+    public var tick: MusicTick
+    public var channel: Int
+    public var program: Int
+    public init(tick: MusicTick, channel: Int, program: Int) throws {
+        guard tick.value >= 0, (0...15).contains(channel), (0...127).contains(program) else { throw MusicError.invalidMIDI(reason: "invalid MIDI program change") }
+        self.tick = tick; self.channel = channel; self.program = program
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(tick: c.decode(MusicTick.self, forKey: .tick), channel: c.decode(Int.self, forKey: .channel), program: c.decode(Int.self, forKey: .program))
     }
 }

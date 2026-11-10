@@ -198,6 +198,18 @@ import FloeHeavyEditorSupport
     /// Dismissal does not stop a service-owned model edit. Its use lease still
     /// prevents moving/deleting this original until the actual invocation ends.
     func presentationEnded() async { hasPresentation = false; await controller.endPresentation(); closeIfUnused() }
+    /// Explicit Continue from the native leave decision only. Every model edit
+    /// commits through the existing controller/host hook; this is not a flush
+    /// receipt and does not release or transfer that model's original lease.
+    func endPresentationKeepingModelWork() async -> Bool {
+        guard !isClosed, !isRefreshing, !modelUses.isEmpty else { return false }
+        do {
+            try await requireOriginal()
+            guard !isClosed, !isRefreshing, !modelUses.isEmpty else { return false }
+            await presentationEnded()
+            return true
+        } catch { listingError = error.localizedDescription; return false }
+    }
     static func prepareForFileAction(id: UUID, directory: URL) async throws {
         guard opening[id] == nil else { throw PersonalFileActionError.busy }
         guard let value = sessions[id], !value.isClosed else { return }

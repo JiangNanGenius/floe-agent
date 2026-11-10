@@ -15,6 +15,7 @@ struct NoteMindMapView: View {
     let onHistory: @MainActor (Bool) -> Void
     let onError: (String) -> Void
     var images: [UUID: Data] = [:]
+    var searchFocus: NotesSession.NoteSearchFocus? = nil
     var onSelection: (UUID?) -> Void = { _ in }
     /// The add-child/add-sibling actions live in the surrounding editor's own
     /// compact icon control group (document header or floating-window row),
@@ -26,6 +27,8 @@ struct NoteMindMapView: View {
     @State private var viewport = CanvasViewportTransform(scale: 1, pan: .zero)
     @State private var sizes: [UUID: MindMapSize] = [:]
     @State private var selectedID: UUID?
+    @State private var searchRevealNodeID: UUID?
+    @State private var lastSearchRequestID: UUID?
     @State private var editingID: UUID?
     @State private var editDraft = ""
     @State private var drag: NodeDrag?
@@ -44,6 +47,7 @@ struct NoteMindMapView: View {
     // MARK: - Layout
 
     private var visibleNodes: [MindMapNode] {
+        let document = displayedDocument
         guard let root = document.nodes.first(where: { $0.parentID == nil }) else { return [] }
         var output: [MindMapNode] = [root]
         var queue: [UUID] = root.isCollapsed ? [] : [root.id]
@@ -62,8 +66,10 @@ struct NoteMindMapView: View {
     /// tree per evaluation showed up as the map's main cost. The key is the
     /// document plus measured sizes, so any real change still re-lays out.
     private var frames: [UUID: NoteRect] {
-        frameCache.frames(document: document, sizes: sizes, includeCollapsed: false)
+        frameCache.frames(document: displayedDocument, sizes: sizes, includeCollapsed: false)
     }
+
+    private var displayedDocument: NoteDocument { MindMapSearchPresentation.revealing(searchRevealNodeID, in: document) }
 
     private var renderedFrames: [UUID: NoteRect] {
         guard let drag else { return frames }
@@ -147,6 +153,7 @@ struct NoteMindMapView: View {
             .contentShape(Rectangle())
             .onTapGesture { handleCanvasTap() }
             .onAppear { fitIfNeeded(in: geometry.size) }
+            .onChange(of: searchFocus?.requestID, initial: true) { _, _ in focusSearchResult(in: geometry.size) }
             .onChange(of: document.id) { _, _ in fitIfNeeded(in: geometry.size, force: true) }
             .onChange(of: geometry.size) { _, newValue in
                 // Window resize or rotation re-fits, matching the document reader.
@@ -210,6 +217,21 @@ struct NoteMindMapView: View {
         guard force || fittedKey != key else { return }
         fittedKey = key
         fit(in: size)
+    }
+
+    private func focusSearchResult(in size: CGSize) {
+        guard let request = searchFocus, request.documentID == document.id,
+              request.requestID != lastSearchRequestID, let nodeID = request.nodeID,
+              document.nodes.contains(where: { $0.id == nodeID }), size.width > 0, size.height > 0 else { return }
+        lastSearchRequestID = request.requestID
+        searchRevealNodeID = nodeID
+        selectedID = nodeID
+        onSelection(nodeID)
+        guard let frame = frames[nodeID] else { return }
+        let scale = min(1.4, max(0.05, min((size.width - 48) / max(1, frame.width), (size.height - 48) / max(1, frame.height))))
+        viewport = CanvasViewportTransform(scale: scale,
+            pan: CGSize(width: size.width / 2 - (frame.x + frame.width / 2) * scale,
+                        height: size.height / 2 - (frame.y + frame.height / 2) * scale))
     }
 
     private func mapCanvas(size: CGSize) -> some View {
@@ -466,6 +488,7 @@ struct NoteMindMapView: View {
     }
 
     private func toggleCollapse(_ node: MindMapNode) {
+        searchRevealNodeID = nil
         if editingID != nil { commitActiveEditing() }
         var updated = node
         updated.isCollapsed.toggle()

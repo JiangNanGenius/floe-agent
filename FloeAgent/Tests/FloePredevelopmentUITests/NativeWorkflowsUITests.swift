@@ -21,11 +21,26 @@ import XCTest
            ProcessInfo.processInfo.environment["FLOE_QA_ENABLE_ENGINEERING_LAYOUT_OBSERVATION"] == "1" {
             app.launchArguments.append("--floe-engineering-layout-observation")
         }
+        if (name.contains("testMusicTimelineRulerSupportsContinuousScrubbing")
+                || name.contains("test2DCADOffersPlanarNavigationAndDrawingInputControls")
+                || name.contains("testUpdatedNativeMediaPagesUseTheAvailableHeight")
+                || name.contains("testNativeElectronicsLibrarySearchAndPreview")
+                || name.contains("testNewWordOriginalReachesNativeEditorAndReopens")),
+           ProcessInfo.processInfo.environment["FLOE_QA_ENABLE_EDITOR_INPUT_OBSERVATION"] == "1" {
+            app.launchArguments.append("--floe-editor-input-ownership-observation")
+        }
         app.launch()
     }
     override func tearDownWithError() throws {
         app.terminate()
         XCUIDevice.shared.orientation = .portrait
+    }
+    override func record(_ issue: XCTIssue) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = "Test issue screen"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        super.record(issue)
     }
     private func attachNativeInputObservation(_ phase: String) {
         guard app.launchArguments.contains("--floe-native-input-observation") else { return }
@@ -501,12 +516,12 @@ import XCTest
         // Native menu actions expose their user-visible titles on this SDK.
         let deleteAction = app.buttons["删除"].firstMatch
         XCTAssertTrue(deleteAction.waitForExistence(timeout: 10)); deleteAction.tap()
-        let confirmationTitle = app.staticTexts["移到最近删除？"].firstMatch
+        let confirmationTitle = app.staticTexts["移到回收站？"].firstMatch
         XCTAssertTrue(confirmationTitle.waitForExistence(timeout: 10))
         let confirm = app.buttons["删除"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
         XCTAssertTrue(documentMenu.waitForNonExistence(timeout: 15))
-        app.buttons["space.more"].tap(); app.buttons["最近删除"].tap()
+        app.buttons["space.more"].tap(); app.buttons["回收站"].tap()
         // The restored Files cell remains in the background accessibility tree.
         // Match only the actual Recently Deleted list for removal assertions.
         let trashList = app.collectionViews["space.files.trash.list"]
@@ -529,7 +544,7 @@ import XCTest
         XCTAssertTrue(confirmationTitle.waitForExistence(timeout: 10))
         XCTAssertTrue(confirm.waitForExistence(timeout: 10)); confirm.tap()
         XCTAssertTrue(folder.waitForNonExistence(timeout: 15))
-        app.buttons["space.more"].tap(); app.buttons["最近删除"].tap()
+        app.buttons["space.more"].tap(); app.buttons["回收站"].tap()
         XCTAssertTrue(trashList.waitForExistence(timeout: 15))
         let deletedFolder = trashList.cells.containing(.staticText, identifier: folderName).firstMatch
         XCTAssertTrue(deletedFolder.waitForExistence(timeout: 15)); deletedFolder.buttons["恢复"].firstMatch.tap()
@@ -1515,10 +1530,24 @@ import XCTest
     func test2DCADOffersPlanarNavigationAndDrawingInputControls() {
         XCUIDevice.shared.orientation = .landscapeLeft
         openFiles()
-        app.buttons["space.new"].tap()
-        app.buttons["space.new.cad"].tap()
-        app.buttons["二维 CAD"].firstMatch.tap()
-        confirmWorkCreation(appendTitle: " QA-N17-" + UUID().uuidString.prefix(8))
+        if let id = ProcessInfo.processInfo.environment["FLOE_QA_CAD_PROJECT_ID"],
+           let title = ProcessInfo.processInfo.environment["FLOE_QA_CAD_PROJECT_TITLE"] {
+            XCTAssertNotNil(UUID(uuidString: id)); XCTAssertTrue(title.contains("QA-N17-"))
+            let search = app.searchFields.firstMatch
+            XCTAssertTrue(search.waitForExistence(timeout: 10)); search.tap()
+            if let value = search.value as? String, !value.isEmpty, value != search.placeholderValue {
+                search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count))
+            }
+            search.typeText(title)
+            let fixture = app.buttons["space.file." + id].firstMatch
+            XCTAssertTrue(fixture.waitForExistence(timeout: 15)); fixture.tap()
+            XCTAssertTrue(app.buttons["space.editor.done"].waitForExistence(timeout: 25))
+        } else {
+            app.buttons["space.new"].tap()
+            app.buttons["space.new.cad"].tap()
+            app.buttons["二维 CAD"].firstMatch.tap()
+            confirmWorkCreation(appendTitle: " QA-N17-" + UUID().uuidString.prefix(8))
+        }
         XCTAssertTrue(app.descendants(matching: .any)["CAD2DDraftingBar"].firstMatch.waitForExistence(timeout: 30))
         XCTAssertTrue(app.buttons["CADFingerDrawingToggle"].firstMatch.exists)
         let views = app.buttons["ViewsMenu"].firstMatch
@@ -1530,7 +1559,13 @@ import XCTest
         XCTAssertFalse(app.switches["Orthographic"].exists)
         plane.tap()
         XCTAssertTrue(app.descendants(matching: .any)["CAD2DDraftingBar"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["平移图纸 — 选择工具开始绘制"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["拖动以旋转视角 — 选择工具开始绘制"].exists)
         capture("2D CAD uses the drawing plane and keeps its editing controls")
+        let viewport = app.descendants(matching: .any)["CADEditorViewport"].firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(viewport.frame.maxY, app.windows.firstMatch.frame.maxY - 48,
+            "The actual CAD viewport must use the space down to the bottom safe area")
         closeEditor()
     }
 
@@ -1582,7 +1617,7 @@ import XCTest
         capture("Files long press selection and batch actions")
         // Only this newly created, uniquely titled fixture is removed.
         remove.tap()
-        XCTAssertTrue(app.staticTexts["将所选项目移到最近删除？"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["将所选项目移到回收站？"].firstMatch.waitForExistence(timeout: 10))
         app.buttons["删除"].firstMatch.tap()
         XCTAssertTrue(row.waitForNonExistence(timeout: 15))
         app.buttons["space.more"].tap()
@@ -1668,6 +1703,345 @@ import XCTest
         XCTAssertTrue(original.waitForExistence(timeout: 15), "Find the saved print fixture through the actual Files search.")
         original.tap()
     }
+    func testToolboxBrowserIsOperatedDirectlyWithoutATaskHandoff() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        app.segmentedControls["space.sections"].buttons["工具箱"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["toolbox.home"].firstMatch.waitForExistence(timeout: 20))
+        app.buttons.containing(.staticText, identifier: "浏览器").firstMatch.tap()
+        let address = app.textFields["browser.address"].firstMatch
+        XCTAssertTrue(address.waitForExistence(timeout: 20))
+        address.tap()
+        let tabs = app.buttons["browser.newTab"].firstMatch
+        if tabs.exists && tabs.isHittable {tabs.tap()}
+        XCTAssertFalse(app.descendants(matching: .any)["browser.taskHandoff"].firstMatch.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["browser.taskHandoffNotified"].firstMatch.exists)
+        XCTAssertFalse(app.buttons["完成并交还模型"].exists)
+        capture("Toolbox browser has normal browsing controls without a task handoff")
+    }
+
+    func testMusicTimelineRulerSupportsContinuousScrubbing() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        if let id = ProcessInfo.processInfo.environment["FLOE_QA_TIMELINE_PROJECT_ID"],
+           let title = ProcessInfo.processInfo.environment["FLOE_QA_TIMELINE_PROJECT_TITLE"] {
+            XCTAssertNotNil(UUID(uuidString: id))
+            XCTAssertTrue(title.contains("QA-RQ45-"))
+            let search = app.searchFields.firstMatch
+            XCTAssertTrue(search.waitForExistence(timeout: 10)); search.tap()
+            if let value = search.value as? String, !value.isEmpty, value != search.placeholderValue {
+                search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count))
+            }
+            search.typeText(title)
+            let fixture = app.buttons["space.file." + id].firstMatch
+            XCTAssertTrue(fixture.waitForExistence(timeout: 15)); fixture.tap()
+        } else {
+            app.buttons["space.new"].tap()
+            app.buttons["space.create.music"].firstMatch.tap()
+            confirmWorkCreation(appendTitle: " QA-RQ45-" + UUID().uuidString.prefix(8))
+        }
+        let ruler = app.descendants(matching: .any)["music.timeline.ruler"].firstMatch
+        XCTAssertTrue(ruler.waitForExistence(timeout: 25))
+        let before = ruler.value as? String ?? ""
+        XCTAssertFalse(before.isEmpty, "The actual playhead position is exposed on the timeline")
+        capture("Music timeline before a continuous ruler drag")
+        let status = app.descendants(matching: .any)["music.status"].firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(status.frame.maxY, app.windows.firstMatch.frame.maxY - 48,
+            "The actual Music workbench must use the space down to the bottom safe area")
+        XCTAssertTrue(ruler.isHittable, "The ruler must be exposed for direct manipulation")
+        let window = app.windows.firstMatch
+        let visible = ruler.frame.intersection(window.frame)
+        XCTAssertGreaterThan(visible.width, 160)
+        let origin = window.coordinate(withNormalizedOffset: .zero)
+        let from = origin.withOffset(CGVector(dx: visible.minX + 48, dy: visible.midY))
+        let to = origin.withOffset(CGVector(dx: visible.minX + min(visible.width - 30, 240), dy: visible.midY))
+        from.press(forDuration: 0.1, thenDragTo: to)
+        capture("Music timeline immediately after a continuous ruler drag")
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let value = ruler.value as? String ?? ""
+            return !value.isEmpty && value != before
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 10), .completed,
+            "Dragging the visible ruler must move the real playback position")
+        capture("Music timeline playhead after a continuous ruler drag")
+        closeEditor()
+        // The unique fixture is retained only until the run owner exports
+        // its evidence and performs scoped QA cleanup.
+    }
+
+    func testProfessionalMusicPanelsKeepNativeControlsAndAvailableHeight() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        app.buttons["space.new"].tap()
+        app.buttons["space.create.music"].firstMatch.tap()
+        confirmWorkCreation(appendTitle: " QA-Music72-" + UUID().uuidString.prefix(8))
+        let add = app.buttons["添加轨道或导入素材"].firstMatch
+        XCTAssertTrue(add.waitForExistence(timeout: 25)); add.tap()
+        let instrument = app.buttons["乐器轨"].firstMatch
+        XCTAssertTrue(instrument.waitForExistence(timeout: 10)); instrument.tap()
+        // Visit every panel once in landscape, ending on the keyboard.
+        // Rotation checks follow the complete tour and cannot disturb a later tap.
+        for (title, identifier) in [("调音台", "music.mixer"), ("钢琴卷帘", "music.pianoRoll"),
+                                    ("鼓机", "music.drums"), ("DJ 打碟", "music.dj"),
+                                    ("乐谱", "music.notation.workbench"), ("电子琴", "music.keyboard")] {
+            let choice = app.buttons[title].firstMatch
+            XCTAssertTrue(choice.waitForExistence(timeout: 10))
+            choice.tap()
+            let selected=XCTNSPredicateExpectation(predicate:NSPredicate { _,_ in choice.isSelected },object:nil)
+            XCTAssertEqual(XCTWaiter.wait(for:[selected],timeout:10),.completed,
+                           "One real tap must select the requested panel; never retry a missed transition")
+            if title == "DJ 打碟" {
+                for label in ["A盘点动","B盘点动"] {
+                    let deck=app.descendants(matching:.any).matching(NSPredicate(format:"label == %@",label)).firstMatch
+                    XCTAssertTrue(deck.waitForExistence(timeout:20),"Both actual decks must be rendered")
+                    XCTAssertGreaterThan(deck.frame.width,0);XCTAssertGreaterThan(deck.frame.height,0)
+                    XCTAssertTrue(deck.isHittable)
+                }
+                XCTAssertFalse(app.descendants(matching:.any)["floe.music.keyboard.keybed"].firstMatch.exists,
+                               "The DJ deck panel must not present the keyboard keybed")
+            } else {
+                XCTAssertTrue(app.descendants(matching: .any)[identifier].firstMatch.waitForExistence(timeout: 20))
+            }
+            if title == "乐谱" {
+                XCTAssertTrue(app.staticTexts["正在打开乐谱…"].waitForNonExistence(timeout: 35))
+                XCTAssertFalse(app.staticTexts["无法打开乐谱"].exists)
+                XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 15))
+            } else {
+                let status = app.descendants(matching: .any)["music.status"].firstMatch
+                XCTAssertTrue(status.exists)
+                XCTAssertGreaterThanOrEqual(status.frame.maxY, app.windows.firstMatch.frame.maxY - 48)
+            }
+            if title == "电子琴" {
+                let keys = app.descendants(matching: .any)["floe.music.keyboard.keybed"].firstMatch
+                // The SwiftUI ScrollView's virtual toolbar identifier is not
+                // guaranteed to be exported. Check the actual native controls,
+                // preserving the same toolbar height budget and keyboard tests.
+                let preset = app.buttons["音色库"].firstMatch
+                let enable = app.buttons["启用琴声"].firstMatch
+                let sustain = app.descendants(matching: .any)["floe.music.keyboard.sustain"].firstMatch
+                let record = app.buttons["录制演奏"].firstMatch
+                let status = app.descendants(matching: .any)["music.status"].firstMatch
+                XCTAssertTrue(keys.waitForExistence(timeout: 10))
+                let toolbarControls = [preset, enable, sustain, record]
+                for control in toolbarControls {
+                    XCTAssertTrue(control.exists, "Every native keyboard toolbar control must exist")
+                    if control.isEnabled { XCTAssertTrue(control.isHittable) }
+                }
+                let toolbar = toolbarControls.map(\.frame).reduce(CGRect.null) { $0.union($1) }
+                for control in toolbarControls {
+                    XCTAssertLessThanOrEqual(abs(control.frame.midY-preset.frame.midY), 12,
+                        "The performance controls must stay in the same row")
+                }
+                XCTAssertGreaterThan(keys.frame.height, 140, "Performance keys need usable depth.")
+                XCTAssertLessThanOrEqual(toolbar.height, 80, "The controls must not absorb the keyboard's height.")
+                XCTAssertLessThanOrEqual(abs(keys.frame.maxY - status.frame.minY), 18,
+                    "No unused lower region may remain beneath the performance keys.")
+                let inspector = app.descendants(matching: .any)["music.inspector"].firstMatch
+                let toggle = app.buttons["music.inspector.toggle"].firstMatch
+                XCTAssertFalse(inspector.exists)
+                XCTAssertTrue(toggle.exists)
+                let fullWidth = keys.frame.width
+                toggle.tap()
+                XCTAssertTrue(inspector.waitForExistence(timeout: 10))
+                XCTAssertLessThanOrEqual(inspector.frame.width, 261)
+                let narrowed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                    keys.frame.width < fullWidth - 200
+                }, object: nil)
+                XCTAssertEqual(XCTWaiter.wait(for: [narrowed], timeout: 10), .completed)
+                capture("Native keyboard — optional inspector")
+                toggle.tap()
+                XCTAssertTrue(inspector.waitForNonExistence(timeout: 10))
+                let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                    abs(keys.frame.width - fullWidth) <= 2
+                }, object: nil)
+                XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 10), .completed)
+                capture("Native keyboard — full width")
+            }
+            capture("Native music panel — " + title)
+        }
+        let keys = app.descendants(matching: .any)["floe.music.keyboard.keybed"].firstMatch
+        let status = app.descendants(matching: .any)["music.status"].firstMatch
+        let landscapeHeight = keys.frame.height
+        XCUIDevice.shared.orientation = .portrait
+        let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.app.windows.firstMatch.frame.width < self.app.windows.firstMatch.frame.height
+                && keys.frame.height > landscapeHeight
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 10), .completed)
+        XCTAssertLessThanOrEqual(abs(keys.frame.maxY - status.frame.minY), 18)
+        capture("Native keyboard — portrait height")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.app.windows.firstMatch.frame.width > self.app.windows.firstMatch.frame.height
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [landscape], timeout: 10), .completed)
+        closeEditor()
+    }
+
+    func testUpdatedNativeMediaPagesUseTheAvailableHeight() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        for title in ["绘画／图片", "视频"] {
+            app.buttons["space.new"].tap()
+            let choice = app.buttons[title].firstMatch
+            XCTAssertTrue(choice.waitForExistence(timeout: 10)); choice.tap()
+            confirmWorkCreation(appendTitle: " QA-Media71-" + UUID().uuidString.prefix(8))
+            XCTAssertTrue(app.descendants(matching: .any)["media.v2.toolbox"].firstMatch.waitForExistence(timeout: 25))
+            let status = app.descendants(matching: .any)["media.v2.status"].firstMatch
+            XCTAssertTrue(status.waitForExistence(timeout: 10))
+            capture(title == "视频" ? "Updated native video tools and full editor" : "Updated native image tools and full editor")
+            XCTAssertGreaterThanOrEqual(status.frame.maxY, app.windows.firstMatch.frame.maxY - 48,
+                "The media editor must keep its actual footer at the bottom of the available page")
+            closeEditor()
+        }
+    }
+
+    func testNativeElectronicsLibrarySearchAndPreview() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        app.buttons["space.new"].tap()
+        let entry = app.buttons["space.create.electronics"].firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 10)); entry.tap()
+        confirmWorkCreation(appendTitle: " QA-EDA71-" + UUID().uuidString.prefix(8))
+        let workbench = app.descendants(matching: .any)["electronics.workbench"].firstMatch
+        XCTAssertTrue(workbench.waitForExistence(timeout: 25))
+        capture("Native schematic canvas and contextual tools")
+        // SwiftUI forwards the workbench identifier to its top tab strip.
+        // Measure the real drawing viewport; the original screen/limit stays.
+        let canvas = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "设计画布")).firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(canvas.frame.height, 300)
+        XCTAssertGreaterThanOrEqual(canvas.frame.maxY, app.windows.firstMatch.frame.maxY - 48)
+        let parts = app.buttons["放置元件"].firstMatch
+        XCTAssertTrue(parts.waitForExistence(timeout: 10)); parts.tap()
+        let browser = app.descendants(matching: .any)["electronics.library.browser"].firstMatch
+        XCTAssertTrue(browser.waitForExistence(timeout: 20))
+        let part = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "electronics.library.entry.")).firstMatch
+        XCTAssertTrue(part.waitForExistence(timeout: 20)); part.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["electronics.library.partDetail"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["electronics.library.place"].firstMatch.exists)
+        capture("Native library symbol footprint and actual pin mapping preview")
+        // The compact sheet pushes a native part-detail destination. Return
+        // through its real Back control before closing the library root.
+        let detailBar = app.navigationBars["元件"]
+        if detailBar.exists {
+            let back = detailBar.buttons.firstMatch
+            XCTAssertTrue(back.isHittable); back.tap()
+        }
+        let done = app.navigationBars["放置元件"].buttons["完成"].firstMatch
+        XCTAssertTrue(done.exists); done.tap()
+        let board = app.buttons["PCB"].firstMatch
+        XCTAssertTrue(board.waitForExistence(timeout: 10)); board.tap()
+        capture("Native PCB canvas and its editing tools")
+        closeEditor()
+    }
+
+    func testTrashOffersSelectAllAndBatchActionsWithoutChangingItsContents() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        app.buttons["space.more"].tap(); app.buttons["回收站"].tap()
+        XCTAssertTrue(app.navigationBars["回收站"].waitForExistence(timeout: 15))
+        let selectionMode = app.buttons["space.files.trash.selectionMode"].firstMatch
+        XCTAssertTrue(selectionMode.waitForExistence(timeout: 10))
+        if !selectionMode.isEnabled {
+            XCTAssertTrue(app.staticTexts["回收站为空"].exists)
+        } else {
+            selectionMode.tap()
+            let selectAll = app.buttons["space.files.trash.selectAll"].firstMatch
+            XCTAssertTrue(selectAll.waitForExistence(timeout: 10)); XCTAssertTrue(selectAll.isHittable)
+            XCTAssertEqual(selectAll.label, "全选"); selectAll.tap()
+            XCTAssertEqual(selectAll.label, "取消全选")
+            let count = app.staticTexts["space.files.trash.selectionCount"].firstMatch
+            XCTAssertTrue(count.exists); XCTAssertNotEqual(count.label, "已选 0 项")
+            XCTAssertTrue(app.buttons["space.files.trash.restoreSelected"].isEnabled)
+            XCTAssertTrue(app.buttons["space.files.trash.deleteSelected"].isEnabled)
+            capture("Trash Select All and both batch actions")
+            // The shared simulator has retained user items. Verify selection
+            // without restoring or deleting any of those items.
+            selectAll.tap()
+            XCTAssertEqual(selectAll.label, "全选")
+            XCTAssertEqual(count.label, "已选 0 项")
+            XCTAssertFalse(app.buttons["space.files.trash.restoreSelected"].isEnabled)
+            XCTAssertFalse(app.buttons["space.files.trash.deleteSelected"].isEnabled)
+            selectionMode.tap()
+        }
+        app.buttons["space.files.recentlyDeleted.done"].tap()
+        XCTAssertTrue(app.buttons["space.more"].waitForExistence(timeout: 10))
+    }
+
+    /// Real Space creation -> bundled native editable readiness -> guarded
+    /// close -> the same exact record reopened. No simulator-only fallback.
+    /// Root exports the owned receipt before invoking the existing cleanup API.
+    func testNewWordOriginalReachesNativeEditorAndReopens() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        openFiles()
+        let new = app.buttons["space.new"].firstMatch
+        XCTAssertTrue(new.waitForExistence(timeout: 15)); new.tap()
+        let documents = app.buttons["space.new.document"].firstMatch
+        XCTAssertTrue(documents.waitForExistence(timeout: 10)); documents.tap()
+        // The actual nested UIKit menu exports this leaf's title, without
+        // forwarding SwiftUI's space.create.docx identifier (attempt5 AX).
+        let word = app.buttons.matching(NSPredicate(format: "label == %@", "Word 文档")).firstMatch
+        XCTAssertTrue(word.waitForExistence(timeout: 10)); XCTAssertTrue(word.isHittable); word.tap()
+        let title = app.textFields["space.creation.title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10)); title.tap()
+        let suffix = "QA-Office326-" + UUID().uuidString
+        title.typeText(suffix)
+        let ownedTitle = try XCTUnwrap(title.value as? String)
+        XCTAssertTrue(ownedTitle.contains(suffix))
+        let intent = XCTAttachment(string: "Unique task-owned Word creation title: " + ownedTitle
+            + "\nIf the first open fails, resolve exactly this title to its actual UUID before cleanup; never delete by a broad title prefix.")
+        intent.name = "Office326 owned Word creation intent"; intent.lifetime = .keepAlways; add(intent)
+        FileHandle.standardOutput.write(Data(("FLOE_QA_WORD_CREATION_TITLE|" + ownedTitle + "\n").utf8))
+        let create = app.buttons["space.creation.create"]
+        XCTAssertTrue(create.isEnabled && create.isHittable); create.tap()
+        XCTAssertTrue(create.waitForNonExistence(timeout: 20))
+        func assertEditableReady() {
+            let native = app.descendants(matching: .any).matching(identifier: "office.editor.native").firstMatch
+            XCTAssertTrue(native.waitForExistence(timeout: 120), "The real native Word editor must mount; a missing-engine failure is not acceptance")
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { element, _ in
+                guard let value = (element as? XCUIElement)?.value as? String else { return false }
+                return value == "文档已就绪" || value == "Document ready"
+            }, object: native)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 60), .completed,
+                           "The engine must acknowledge the editable document, not only display a toolbar")
+            let back = app.buttons["office.editor.back"]
+            XCTAssertTrue(back.exists && back.isEnabled && back.isHittable)
+        }
+        assertEditableReady(); capture("New original Word reaches the actual native editable surface")
+        let back = app.buttons["office.editor.back"]; back.tap()
+        XCTAssertTrue(back.waitForNonExistence(timeout: 45), "Use the production save/close path")
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 15)); search.tap()
+        if let old = search.value as? String, old != search.placeholderValue {
+            search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count))
+        }
+        // Select the genuine search result with the keyboard still visible.
+        // Reopening must handle the source field's responder itself.
+        search.typeText(ownedTitle)
+        let rows = app.buttons.matching(NSPredicate(format:
+            "identifier BEGINSWITH %@ AND label CONTAINS %@ AND NOT label BEGINSWITH %@",
+            "space.file.", ownedTitle, "更多操作："))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15)); XCTAssertEqual(rows.count, 1)
+        let row = rows.firstMatch
+        XCTAssertTrue(row.isHittable, "The exact saved Word search result must be tappable")
+        let identifier = row.identifier
+        let recordID = String(identifier.dropFirst("space.file.".count))
+        XCTAssertNotNil(UUID(uuidString: recordID))
+        let receipt: [String: String] = ["recordID": recordID, "title": ownedTitle,
+            "kind": "document", "format": "docx", "rowIdentifier": identifier,
+            "cleanup": "Root must resolve this exact UUID and hash/export the actual original before the existing owned-work cleanup"]
+        let json = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+        let attachment = XCTAttachment(data: json, uniformTypeIdentifier: "public.json")
+        attachment.name = "Office326 exact owned Word record"; attachment.lifetime = .keepAlways; add(attachment)
+        FileHandle.standardOutput.write(Data(("FLOE_QA_WORD_OWNED_RECORD|" + String(decoding: json, as: UTF8.self) + "\n").utf8))
+        row.tap(); assertEditableReady(); capture("The same exact Word original reopens in the native editor")
+        app.buttons["office.editor.back"].tap()
+        XCTAssertTrue(back.waitForNonExistence(timeout: 45))
+        XCTAssertTrue(app.buttons.matching(identifier: identifier).firstMatch.waitForExistence(timeout: 15))
+    }
+
     private func openFiles() {
         let space = app.collectionViews["sidebar.list"].cells.containing(.staticText, identifier: "sidebar.notes").firstMatch
         XCTAssertTrue(space.waitForExistence(timeout: 25)); space.tap()
@@ -1679,16 +2053,10 @@ import XCTest
         XCTAssertTrue(create.waitForExistence(timeout: 10))
         if let appendTitle {
             let title = app.textFields["space.creation.title"]
-            XCTAssertTrue(title.exists); title.tap(); title.typeText(appendTitle)
-            // The naming sheet moves when its keyboard opens. Use the real
-            // iPad keyboard control before resolving the confirmation target.
-            if app.keyboards.firstMatch.exists {
-                let hide = app.buttons["隐藏键盘"].firstMatch
-                XCTAssertTrue(hide.waitForExistence(timeout: 5)); XCTAssertTrue(hide.isHittable); hide.tap()
-                XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
-            }
+            XCTAssertTrue(title.exists); title.tap(); title.typeText(appendTitle + "\n")
+        } else {
+            create.tap()
         }
-        create.tap()
         XCTAssertTrue(create.waitForNonExistence(timeout: 15))
         XCTAssertTrue(app.buttons["space.editor.done"].waitForExistence(timeout: 25))
     }

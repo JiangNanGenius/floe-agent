@@ -27,7 +27,7 @@ The music project retains the complete notation original under its managed `Musi
 | S07 | `analysis.js`: navigable rhythm/range/tie/slur diagnostics, notated duration checks, interval/chord analysis, duration-weighted key estimate, transposition, rhythmic repair, blank/piano/quartet/ensemble/orchestra/voice/guitar/drum templates | Real diagnostic-to-note targets and gap repair; musical fixture analysis |
 | S08 | `ScoreNativePanels.swift`, `native.js`: native iPad outline/staff/measure lists, input toolbar, inspector, transport/mix/piano and linked-part/layout controls; compact sheets; `main.js` retains OSMD note hit targets and drag transposition | 17 focused Node/Web checks; independent macOS/iOS Simulator object compilation plus native outline, engraved AX selection, piano editing/save and music-parent return passed; production App integration remains separate ([evidence](../../Qualification/HeavyEditors/Evidence/20261108-native/results.json)) |
 | S09 | Fixed OSMD 2.2.1 / VexFlow 1.2.93 offline bundle and Gonville/custom/microtonal path glyphs; no MuseScore/LilyPond code, no system font redistributed | `Web/bundle-inputs.json`, shared lock, third-party notices and original glyph terms |
-| S10 | 57 original commands plus 4 hidden transient native-UI commands in `score.project.*`, `score.edit.*`, `score.parts.*`, `score.layout.*`, `score.playback.*`, `score.analyze.*`, `score.import.*`, `score.export`; generic `file.import`, `document.*`, `history.*`; native capability token only during authorized execution | Shared original and history; invalid explicit IDs reject; transport marked `sideEffecting`; `Integration/smoke-plan.json` for real host |
+| S10 | 57 original commands, 3 professional-entry commands, plus 4 hidden transient native-UI commands in `score.project.*`, `score.edit.*`, `score.parts.*`, `score.layout.*`, `score.playback.*`, `score.analyze.*`, `score.import.*`, `score.export`; generic `file.import`, `document.*`, `history.*`; native capability token only during authorized execution | Shared original and history; invalid explicit IDs reject; transport marked `sideEffecting`; `Integration/smoke-plan.json` for real host |
 
 ## Build and focused qualification
 
@@ -56,3 +56,17 @@ Native panel DTO, command arguments and integration boundaries: [Integration/NAT
 - PDF uses actual SVG vectors for Latin-text pages. Pages containing other Unicode text are rasterized at 3× into the PDF so CJK titles/lyrics retain visible glyphs without distributing a system font or substituting missing jsPDF glyphs. SVG text uses viewer fonts; music glyphs are paths. PNG is genuine rasterized page output, one file per page.
 - The reference audio is real mono PCM16/22.05 kHz AVFoundation playback with synthetic reference timbres; it is not a General MIDI sample library. It supports up to 15 minutes / 50,000 events. Longer scores can export MIDI or use an injected host music service. Acoustic interpretation of ornaments is currently the notated main pitch; editorial ornament glyphs remain intact. Host music timbres and full-App audio integration require the host adapter.
 - Changing notation during playback pauses the current performance before replacing its score. Mix changes recompile at the current playback position; tempo/loop settings restart at the loop start. Cancel or presentation close stops only the injected score owner's audio. Physical listening, Pencil feel and the formal App route are separate acceptance tasks.
+
+## Linked parts, TAB and drum entry
+
+The score stays one MusicXML original under the parent music project. Linked parts have their own page settings; changing one part does not rewrite the full score or another part. Full-score and linked-part exports use explicit source scopes, and all linked parts can be exported as PDF, SVG, PNG, MusicXML, MXL or MIDI. Printed pages follow the chosen paper size. Export engraving is isolated from the visible view, selection and revision.
+
+六线谱底栏提供直接弦／品位输入和调弦／变调夹；键盘输入与移调保留可演奏的弦品对应。鼓谱底栏提供常用鼓件，不必先输入钢琴音符再逐个改表单。新命令为 `score.parts.tuning`、`score.edit.tabInsert` 和 `score.edit.percussionInsert`，继续经同一原件、修订与 AI 调度器执行。多声部输入只替换同声部同谱表的选中音符。
+
+Focused contracts (supply owned SSD scratch and an evidence directory):
+
+```sh
+FLOE_SCORE_PROFESSIONAL_SCRATCH="$HOME/Library/Caches/CodexBuild/FloeHeavyEditors/score-professional" node FloeAgent/Modules/FloeScoreKit/Tests/run-professional.mjs Local/Private/score-professional-proof
+```
+
+The runner uses actual engine/model/format code and labels its controlled engraving-source stub explicitly. Actual OSMD engraving and PDF/PNG decoding require the native component qualification or App checks; Node success alone does not establish them.

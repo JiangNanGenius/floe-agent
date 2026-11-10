@@ -51,6 +51,8 @@ public actor MediaPreparedCoordinator {
         var inputAssetRevisions: [UUID: UInt64]
     }
 
+    private let compoundScope: MediaPreparedCompoundCoordinatorScope?
+    var compoundRuns: [UUID: MediaPreparedCompoundScopedRun] = [:]
     private let store: MediaProjectStore
     private let limits: Limits
     private var envelopes: [UUID: MediaProject] = [:]
@@ -80,6 +82,24 @@ public actor MediaPreparedCoordinator {
     public init(store: MediaProjectStore, limits: Limits = Limits()) {
         self.store = store
         self.limits = limits
+        self.compoundScope = nil
+    }
+
+
+    private init(store:MediaProjectStore,limits:Limits,scope:MediaPreparedCompoundCoordinatorScope) {
+        self.store=store;self.limits=limits;self.compoundScope=scope
+    }
+    public func scopedToCompound(_ clipID:UUID,in documentID:UUID) async throws -> MediaPreparedCoordinator {
+        guard compoundScope == nil else { throw MediaPreparedCoreError.invalidOperation("nested compounds are not supported") }
+        let document=try await loadDocument(id:documentID)
+        _ = try MediaPreparedCompounds.source(clipID:clipID,in:document)
+        return MediaPreparedCoordinator(store:store,limits:limits,scope:.init(root:self,documentID:documentID,clipID:clipID))
+    }
+    public func loadProjectSnapshot(id:UUID,reload:Bool=false) async throws -> MediaProject {
+        if let scope=compoundScope { return try await compoundProject(scope:scope,id:id,reload:reload) }
+        if reload { _ = try await reloadDocument(id:id) }
+        await acquireDocument(id);defer { releaseDocument(id) }
+        return try await envelope(for:id)
     }
 
     // MARK: Loading
@@ -87,6 +107,7 @@ public actor MediaPreparedCoordinator {
     /// Loads a prepared document. A v1 document is NOT upgraded implicitly:
     /// callers must ask for `upgradeDocument(id:)` explicitly.
     public func loadDocument(id: UUID) async throws -> MediaPreparedDocument {
+        if let scope=compoundScope { return try await compoundProject(scope:scope,id:id,reload:false).prepared! }
         await acquireDocument(id)
         defer { releaseDocument(id) }
         let project = try await envelope(for: id)
@@ -98,6 +119,7 @@ public actor MediaPreparedCoordinator {
 
     /// Drops the in-memory cache and re-reads the document from the store.
     public func reloadDocument(id: UUID) async throws -> MediaPreparedDocument {
+        if let scope=compoundScope { return try await compoundProject(scope:scope,id:id,reload:true).prepared! }
         await acquireDocument(id)
         defer { releaseDocument(id) }
         envelopes.removeValue(forKey: id)
@@ -117,6 +139,7 @@ public actor MediaPreparedCoordinator {
     /// compare-and-swap; a concurrent write refuses instead of overwriting.
     @discardableResult
     public func upgradeDocument(id: UUID) async throws -> MediaPreparedDocument {
+        if let scope=compoundScope { return try await compoundProject(scope:scope,id:id,reload:false).prepared! }
         await acquireDocument(id)
         defer { releaseDocument(id) }
         guard let project = try await store.loadProject(id: id) else {
@@ -162,7 +185,9 @@ public actor MediaPreparedCoordinator {
     public func beginInstruction(documentID: UUID,
                                  targets: Set<MediaPreparedObjectRef>,
                                  actor: MediaPreparedActorKind = .model,
-                                 groupID: UUID = UUID()) async throws -> MediaPreparedInstruction {
+                                 groupID: UUID = UUID(),
+                                 inputAssetIDs: Set<UUID> = []) async throws -> MediaPreparedInstruction {
+        if let scope=compoundScope { return try await beginCompound(scope:scope,documentID:documentID,targets:targets,actor:actor,groupID:groupID) }
         await acquireDocument(documentID)
         defer { releaseDocument(documentID) }
         let project = try await envelope(for: documentID)
@@ -183,7 +208,7 @@ public actor MediaPreparedCoordinator {
             }
             if actor == .model {
                 switch state {
-                case .asset, .captionStyle: break
+                case .asset, .captionStyle, .canvas: break
                 case .layer(let layer):
                     if layer.isLocked { throw MediaPreparedCoreError.lockedObject(target) }
                 case .track(let metadata):
@@ -211,10 +236,11 @@ public actor MediaPreparedCoordinator {
         // Reading an asset does not take an exclusive write lease. Capture
         // its generation instead: a source update may proceed, while a later
         // callback based on old pixels must refuse rather than paint over it.
-        var assetIDs = Set<UUID>()
+        var assetIDs = inputAssetIDs
+        guard assetIDs.allSatisfy({document.asset($0) != nil}) else { throw MediaPreparedCoreError.invalidOperation("instruction source asset is missing") }
         for target in targets {
             switch target.kind {
-            case .captionStyle: break
+            case .captionStyle, .canvas: break
             case .asset: assetIDs.insert(target.id)
             case .layer:
                 if let layer = document.layer(target.id), case .raster(let raster) = layer.content,
@@ -245,6 +271,7 @@ public actor MediaPreparedCoordinator {
     @discardableResult
     public func apply(_ operations: [MediaPreparedOperation],
                       instruction: MediaPreparedInstruction) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope { return try await applyCompound(scope:scope,operations:operations,instruction:instruction) }
         await acquireDocument(instruction.documentID)
         defer { releaseDocument(instruction.documentID) }
         try Task.checkCancellation()
@@ -254,25 +281,20 @@ public actor MediaPreparedCoordinator {
         guard !run.finished else {
             throw MediaPreparedCoreError.instructionFinished(instruction.id)
         }
-        guard operations.count <= limits.maximumOperationsPerApply else {
+        let replayIDs=try MediaPreparedCompounds.operationIDs(operations)
+        guard replayIDs.count <= limits.maximumOperationsPerApply else {
             throw MediaPreparedCoreError.limitsExceeded(
                 "at most \(limits.maximumOperationsPerApply) operations per apply")
         }
-        guard run.operationIDs.count + operations.count
+        guard run.operationIDs.count + replayIDs.count
                 <= limits.maximumOperationsPerInstruction else {
             throw MediaPreparedCoreError.limitsExceeded(
                 "instruction operation count exceeds \(limits.maximumOperationsPerInstruction)")
         }
 
         var batchIDs = Set<UUID>()
-        for operation in operations {
-            guard batchIDs.insert(operation.id).inserted else {
-                throw MediaPreparedCoreError.duplicateOperation(operation.id)
-            }
-            guard !run.operationIDSet.contains(operation.id),
-                  processedOperations[run.handle.documentID]?.contains(operation.id) != true else {
-                throw MediaPreparedCoreError.duplicateOperation(operation.id)
-            }
+        for id in replayIDs {
+            guard batchIDs.insert(id).inserted,!run.operationIDSet.contains(id),processedOperations[run.handle.documentID]?.contains(id) != true else { throw MediaPreparedCoreError.duplicateOperation(id) }
         }
 
         let project = try await envelope(for: run.handle.documentID)
@@ -285,6 +307,7 @@ public actor MediaPreparedCoordinator {
                 throw MediaPreparedCoreError.staleObject(.init(kind: .asset, id: assetID))
             }
         }
+        if instruction.actor == .model { try MediaPreparedCompounds.validateModelInnerEdits(operations,in:prepared) }
         let mutation = try MediaPreparedEngine.apply(operations, to: &prepared)
         guard !mutation.isEmpty else {
             return MediaPreparedCommit(groupID: run.handle.id,
@@ -316,10 +339,10 @@ public actor MediaPreparedCoordinator {
         var merged = run.changes
         for change in mutation.changes { merge(change, into: &merged) }
         merged.removeAll(where: MediaPreparedEngine.isNetNoOp)
-        let operationIDs = run.operationIDs + operations.map(\.id)
+        let operationIDs = run.operationIDs + replayIDs
         let operationIDSet = run.operationIDSet.union(batchIDs)
         let now = Date()
-        let entry = MediaPreparedJournalEntry(
+        var entry = MediaPreparedJournalEntry(
             id: run.handle.id,
             documentID: run.handle.documentID,
             actor: run.handle.actor,
@@ -331,6 +354,20 @@ public actor MediaPreparedCoordinator {
             startedAt: run.handle.startedAt,
             committedAt: now)
 
+        let scopes=Set(operations.compactMap { op -> UUID? in if case .editCompound(let id,_,_) = op.action { return id };return nil })
+        if scopes.count == 1 { entry.compoundScopeID=scopes.first }
+        else if scopes.isEmpty {
+            // Updating a verified proxy is part of this source's *canonical*
+            // history too. The inner editor can first undo that update, then
+            // undo the source edit; it never forks or bypasses the root undo.
+            let refreshed=try mutation.changes.compactMap { change -> UUID? in
+                guard case .clip(_,let before)?=change.before,case .clip(_,let after)?=change.after,
+                      let old=before.compound,let next=after.compound,old.proxy.video.id != next.proxy.video.id,
+                      try MediaPreparedCompounds.sourceSignature(old.source) == MediaPreparedCompounds.sourceSignature(next.source) else { return nil }
+                return after.id
+            }
+            if Set(refreshed).count == 1 { entry.compoundScopeID=refreshed.first }
+        }
         var journal = project.preparedJournal ?? MediaPreparedJournal()
         if merged.isEmpty {
             // The group's net effect vanished (for example a created object
@@ -340,11 +377,14 @@ public actor MediaPreparedCoordinator {
             journal.upsert(entry)
         }
         let activeGroups = Set(runs.values.filter { !$0.finished }.map(\.handle.id))
+        journal.discardRedo(preserving: activeGroups)
         journal.trim(maximumEntries: limits.maximumJournalEntries,
                      preserving: activeGroups)
 
         var draft = project
         draft.prepared = prepared
+        draft.schemaVersion = max(draft.schemaVersion,prepared.schemaVersion)
+        draft.canvas = prepared.canvas
         draft.preparedJournal = journal
         draft.revision = prepared.revision
         draft.updatedAt = now
@@ -382,6 +422,7 @@ public actor MediaPreparedCoordinator {
     /// only leases owned by this instruction are released, and later applies
     /// are fenced. Repeated stop is idempotent cleanup.
     public func stop(_ instruction: MediaPreparedInstruction) async throws {
+        if let scope=compoundScope { try await stopCompound(scope:scope,instruction:instruction);return }
         // Wait for an already admitted atomic commit before acknowledging stop.
         // No pending apply can revive the finished run after this returns.
         await acquireDocument(instruction.documentID)
@@ -405,6 +446,7 @@ public actor MediaPreparedCoordinator {
                                     to documentID: UUID,
                                     groupID: UUID = UUID(),
                                     actor: MediaPreparedActorKind = .user) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope { return try await userCompound(scope:scope,operations:operations,documentID:documentID,groupID:groupID,actor:actor) }
         let targets = try await targets(of: operations, in: documentID)
         let instruction = try await beginInstruction(documentID: documentID,
                                                      targets: targets,
@@ -427,6 +469,7 @@ public actor MediaPreparedCoordinator {
     /// object survive, a later edit to a TOUCHED object refuses the whole undo.
     @discardableResult
     public func undoGroup(_ groupID: UUID, in documentID: UUID) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope { return try await undoCompound(scope:scope,groupID:groupID,documentID:documentID,redo:false) }
         await acquireDocument(documentID)
         defer { releaseDocument(documentID) }
         try Task.checkCancellation()
@@ -451,13 +494,22 @@ public actor MediaPreparedCoordinator {
             }
         }
 
+        let beforeUndo = prepared
         try MediaPreparedEngine.undo(entry, in: &prepared)
         guard journal.markUndone(groupID) else {
             throw MediaPreparedCoreError.groupAlreadyUndone(groupID)
         }
+        var undoneEntry = entry
+        undoneEntry.status = .undone
+        undoneEntry.redoChanges = MediaPreparedEngine.inverseChanges(entry.changes, before: beforeUndo, after: prepared)
+        undoneEntry.undoneRevision = prepared.revision
+        journal.upsert(undoneEntry)
+        journal.rebaseUndoBoundary(changed: Set(entry.touched), document: prepared, excluding: groupID)
         let now = Date()
         var draft = project
         draft.prepared = prepared
+        draft.schemaVersion = max(draft.schemaVersion,prepared.schemaVersion)
+        draft.canvas = prepared.canvas
         draft.preparedJournal = journal
         draft.revision = prepared.revision
         draft.updatedAt = now
@@ -478,11 +530,54 @@ public actor MediaPreparedCoordinator {
                                    operationCount: 0)
     }
 
+    /// Replays the most recently undone group against exact post-undo object
+    /// generations. The forward content, branch and CAS are durable together.
+    @discardableResult
+    public func redoGroup(_ groupID: UUID, in documentID: UUID) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope { return try await undoCompound(scope:scope,groupID:groupID,documentID:documentID,redo:true) }
+        await acquireDocument(documentID)
+        defer { releaseDocument(documentID) }
+        try Task.checkCancellation()
+        let project = try await envelope(for: documentID)
+        guard var prepared = project.prepared else { throw MediaPreparedCoreError.notPrepared(documentID) }
+        var journal = project.preparedJournal ?? .init()
+        guard var entry = journal.entry(groupID) else { throw MediaPreparedCoreError.unknownGroup(groupID) }
+        guard entry.status == .undone, let changes = entry.redoChanges,
+              journal.nextRedo?.id == groupID else {
+            throw MediaPreparedCoreError.conflict("redo is unavailable or a newer undo must be redone first")
+        }
+        for change in changes {
+            if let owner = leases[LeaseKey(documentID: documentID, ref: change.ref)], owner != groupID {
+                throw MediaPreparedCoreError.busyObject(change.ref)
+            }
+        }
+        var forward = entry; forward.status = .committed; forward.changes = changes
+        try MediaPreparedEngine.undo(forward, in: &prepared)
+        for index in entry.changes.indices {
+            entry.changes[index].after = MediaPreparedEngine.currentState(of: entry.changes[index].ref, in: prepared)
+        }
+        entry.status = .committed; entry.committedRevision = prepared.revision
+        entry.committedAt = Date(); entry.redoChanges = nil; entry.undoneRevision = nil
+        journal.upsert(entry)
+        journal.rebaseRedoBoundary(changed: Set(entry.touched), document: prepared, excluding: groupID)
+        var draft = project; draft.prepared = prepared; draft.canvas = prepared.canvas; draft.preparedJournal = journal
+        draft.revision = prepared.revision; draft.updatedAt = Date()
+        do { try await store.save(draft, expectedRevision: project.revision) }
+        catch { envelopes.removeValue(forKey: documentID); processedOperations.removeValue(forKey: documentID); throw error }
+        envelopes[documentID] = draft
+        return .init(groupID: groupID, documentID: documentID, revision: prepared.revision,
+                     touched: entry.touched, created: entry.changes.filter { $0.before == nil }.map(\.ref),
+                     deleted: entry.changes.filter { $0.after == nil }.map(\.ref), operationCount: 0)
+    }
+
     // MARK: State helpers
 
     private func state(of ref: MediaPreparedObjectRef,
                        in document: MediaPreparedDocument) -> MediaPreparedObjectState? {
         switch ref.kind {
+        case .canvas:
+            guard ref.id == document.id else { return nil }
+            return .canvas(.init(canvas:document.canvas,revision:document.canvasRevision ?? 0))
         case .captionStyle:
             guard ref.id == document.id, document.kind == .video else { return nil }
             return .captionStyle(.init(style: document.trackGraph.captionStyle, revision: document.trackGraph.captionStyleRevision ?? 0))
@@ -521,6 +616,15 @@ public actor MediaPreparedCoordinator {
         }
         for operation in operations {
             switch operation.action {
+            case .editCompound(let id,_,let inner):
+                guard let located=document.trackGraph.clip(id:id),located.clip.compound != nil else { throw MediaPreparedCoreError.unknownObject(.init(kind:.clip,id:id)) }
+                target(.track,located.track.id);target(.clip,id)
+                for edit in inner { if case .replaceAsset(let asset,_,_)=edit.action { target(.asset,asset.id) } }
+            case .layoutCanvas:
+                target(.canvas,document.id)
+                for layer in document.layers where layer.parentID == nil { target(.layer,layer.id) }
+            case .setVideoColorProfile: target(.canvas,document.id)
+            case .setLayerCanvasSpace(let id,_,_): target(.layer,id)
             case .setCaptionStyle: target(.captionStyle, document.id)
             case .insertAsset(let asset): introduced(.asset, asset.id)
             case .replaceAsset(let expected, _, _): target(.asset, expected.id)

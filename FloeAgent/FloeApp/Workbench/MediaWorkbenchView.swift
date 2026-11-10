@@ -39,7 +39,7 @@ struct MediaWorkbenchView: View {
                     .sheet(item: $center.drawer) { drawer in drawerContent(drawer) }
             } else if let context = center.musicContext {
                 MusicWorkbenchContextView(context: context, onExported: onExported)
-                    .navigationTitle(context.record.title)
+                    .navigationTitle(context.session.document.name)
                     .navigationBarTitleDisplayMode(.inline)
             } else if center.project?.prepared != nil {
                 ProgressView(WorkbenchText.t("正在打开工作区…", "Opening workspace…"))

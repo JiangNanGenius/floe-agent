@@ -4,6 +4,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import FloeMusicCore
+import FloeMusicNative
 
 /// File authority for a Music document inside an explicitly owned personal
 /// project. MusicProjectStore supplies edit/session fences; this adapter
@@ -18,11 +19,11 @@ actor NativeMusicRepository: MusicRepository {
         }
     }
 
-    private func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
-    private func identity(_ value: String) -> String { digest(Data(value.utf8)) }
-    private func assetRecord(_ id: MusicAssetID) -> URL { root.appendingPathComponent("assets/\(identity(id.rawValue)).json") }
-    private func documentFile(_ id: MusicProjectID) -> URL { root.appendingPathComponent("documents/\(identity(id.rawValue)).json") }
-    private func blob(_ asset: MusicAsset) -> URL {
+    private nonisolated func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+    private nonisolated func identity(_ value: String) -> String { digest(Data(value.utf8)) }
+    private nonisolated func assetRecord(_ id: MusicAssetID) -> URL { root.appendingPathComponent("assets/\(identity(id.rawValue)).json") }
+    private nonisolated func documentFile(_ id: MusicProjectID) -> URL { root.appendingPathComponent("documents/\(identity(id.rawValue)).json") }
+    private nonisolated func blob(_ asset: MusicAsset) -> URL {
         let ext: String
         switch asset.kind {
         case .audioMP3: ext = "mp3"
@@ -34,7 +35,7 @@ actor NativeMusicRepository: MusicRepository {
         return root.appendingPathComponent("blobs/\(asset.contentHash).\(ext)")
     }
 
-    private func locked<T>(_ name: String, _ operation: () throws -> T) throws -> T {
+    private nonisolated func locked<T>(_ name: String, _ operation: () throws -> T) throws -> T {
         let path = root.appendingPathComponent("locks/\(name)").path
         let fd = Darwin.open(path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -44,7 +45,7 @@ actor NativeMusicRepository: MusicRepository {
         return try operation()
     }
 
-    private func writeAtomic(_ bytes: Data, to destination: URL, fence: MusicCommitFence? = nil, document: MusicDocument? = nil) throws {
+    private nonisolated func writeAtomic(_ bytes: Data, to destination: URL, fence: MusicCommitFence? = nil, document: MusicDocument? = nil) throws {
         let stage = destination.deletingLastPathComponent().appendingPathComponent(".stage-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: stage) }
         try bytes.write(to: stage, options: .withoutOverwriting)
@@ -57,7 +58,7 @@ actor NativeMusicRepository: MusicRepository {
         else { try Task.checkCancellation(); try commit() }
     }
 
-    private func encode<T: Encodable>(_ value: T) throws -> Data {
+    private nonisolated func encode<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(value)
     }
@@ -76,6 +77,115 @@ actor NativeMusicRepository: MusicRepository {
                 guard digest(try Data(contentsOf: destination, options: .mappedIfSafe)) == payload.asset.contentHash else { throw MusicError.invalidAsset(reason: "corrupt blob") }
             } else { try writeAtomic(payload.bytes, to: destination) }
             if !FileManager.default.fileExists(atPath: record.path) { try writeAtomic(encode(payload.asset), to: record) }
+        }
+    }
+
+    /// Host-resolved recorded files are staged without materializing a large
+    /// take as Data. The existing immutable-asset lock/hash/atomic rename is
+    /// retained; the owned recording is removed only after the document saves.
+    func stageAssetFile(_ asset: MusicAsset, source: URL) async throws {
+        guard source.isFileURL, source.standardizedFileURL == source.standardizedFileURL.resolvingSymlinksInPath(),
+              source.path.hasPrefix(root.path + "/"),
+              try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true,
+              try MusicAudioPreparation.hashFile(source) == asset.contentHash else {
+            throw MusicError.invalidAsset(reason: "recorded source identity changed")
+        }
+        try locked("asset-" + identity(asset.id.rawValue)) {
+            let record = assetRecord(asset.id)
+            if FileManager.default.fileExists(atPath: record.path) {
+                let old = try JSONDecoder().decode(MusicAsset.self, from: Data(contentsOf: record))
+                guard old.id == asset.id, old.contentHash == asset.contentHash, old.sourceRevision == asset.sourceRevision else {
+                    throw MusicError.invalidAsset(reason: "immutable asset identity collision")
+                }
+            }
+            let destination = blob(asset)
+            if !FileManager.default.fileExists(atPath: destination.path) {
+                let staged = destination.deletingLastPathComponent().appendingPathComponent(".stage-" + UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: staged) }
+                try FileManager.default.copyItem(at: source, to: staged)
+                let synced = try FileHandle(forWritingTo: staged)
+                try synced.synchronize(); try synced.close()
+                guard try MusicAudioPreparation.hashFile(staged) == asset.contentHash else { throw MusicError.invalidAsset(reason: "recording copy integrity failure") }
+                try Task.checkCancellation()
+                do { try FileManager.default.moveItem(at: staged, to: destination) }
+                catch { if !FileManager.default.fileExists(atPath: destination.path) { throw error } }
+            }
+            guard try MusicAudioPreparation.hashFile(destination) == asset.contentHash else { throw MusicError.invalidAsset(reason: "corrupt recording blob") }
+            if !FileManager.default.fileExists(atPath: record.path) { try writeAtomic(encode(asset), to: record) }
+        }
+    }
+
+    /// Cross-process CAS uses the same project lock as MusicDocument.save,
+    /// then the DJ lock. It verifies the on-disk Music revision, source pins,
+    /// exact prior sidecar hash and one-step DJ revision before a durable swap.
+    nonisolated func saveDJWorkspace(_ value: MusicDJWorkspace, expectedSHA256: String?,
+                                     expectedMusicRevision: Int64) throws -> String {
+        try value.session.validate()
+        return try locked("project-" + identity(value.projectID.rawValue)) {
+            let music = try JSONDecoder().decode(MusicDocument.self, from: Data(contentsOf: documentFile(value.projectID)))
+            guard music.id == value.projectID, music.revision == expectedMusicRevision else {
+                throw MusicError.staleRevision(expected: expectedMusicRevision, actual: music.revision)
+            }
+            guard music.assets == value.session.assets else { throw MusicError.invalidDJ(reason: "DJ source bindings differ from the saved Music original") }
+            return try locked("dj-" + identity(value.projectID.rawValue)) {
+                let target = root.appendingPathComponent("dj-session.json")
+                if FileManager.default.fileExists(atPath: target.path) {
+                    guard target.standardizedFileURL == target.standardizedFileURL.resolvingSymlinksInPath(),
+                          try target.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true,
+                          (try target.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 16 * 1_024 * 1_024 else {
+                        throw MusicError.invalidDJ(reason: "DJ sidecar is not a bounded regular original")
+                    }
+                    let bytes = try Data(contentsOf: target)
+                    let old = try MusicDJWorkspace.decodeSaved(bytes, projectID: value.projectID)
+                    guard expectedSHA256 == digest(bytes), old.revision < Int64.max, value.revision == old.revision + 1 else {
+                        throw MusicError.staleRevision(expected: value.revision - 1, actual: old.revision)
+                    }
+                } else {
+                    guard expectedSHA256 == nil, value.revision == 1 else { throw MusicError.invalidDJ(reason: "missing DJ original for CAS") }
+                }
+                let bytes = try encode(value)
+                try writeAtomic(bytes, to: target)
+                let readback = try Data(contentsOf: target)
+                guard readback == bytes else { throw MusicError.invalidDJ(reason: "DJ save read-back differs") }
+                return digest(readback)
+            }
+        }
+    }
+
+    nonisolated func resetDJWorkspace(expectedSHA256: String, expectedMusicRevision: Int64,
+                                      projectID: MusicProjectID) throws -> (MusicDJWorkspace, String) {
+        try locked("project-" + identity(projectID.rawValue)) {
+            let music = try JSONDecoder().decode(MusicDocument.self, from: Data(contentsOf: documentFile(projectID)))
+            guard music.id == projectID, music.revision == expectedMusicRevision else {
+                throw MusicError.staleRevision(expected: expectedMusicRevision, actual: music.revision)
+            }
+            return try locked("dj-" + identity(projectID.rawValue)) {
+                let target = root.appendingPathComponent("dj-session.json")
+                let resource = try target.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard target.standardizedFileURL == target.standardizedFileURL.resolvingSymlinksInPath(),
+                      resource.isRegularFile == true, (resource.fileSize ?? Int.max) <= 16 * 1_024 * 1_024 else {
+                    throw MusicError.invalidDJ(reason: "DJ recovery source is not a bounded regular file")
+                }
+                let original = try Data(contentsOf: target)
+                guard digest(original) == expectedSHA256 else { throw MusicError.invalidDJ(reason: "DJ recovery source changed") }
+                let old = try? MusicDJWorkspace.decodeSaved(original, projectID: projectID)
+                let revision = old?.revision ?? 0
+                guard revision < Int64.max else { throw MusicError.invalidDJ(reason: "DJ revision overflow") }
+                let next = try MusicDJWorkspace(projectID: projectID, revision: revision + 1,
+                    session: MusicDJSession(assets: music.assets, sampleRate: music.tempoMap.sampleRate))
+                let backups = root.appendingPathComponent("DJBackups")
+                try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
+                guard backups.standardizedFileURL == backups.standardizedFileURL.resolvingSymlinksInPath() else {
+                    throw MusicError.invalidDJ(reason: "DJ recovery directory changed")
+                }
+                let backup = backups.appendingPathComponent(UUID().uuidString + ".json")
+                try original.write(to: backup, options: .withoutOverwriting)
+                let handle = try FileHandle(forWritingTo: backup); try handle.synchronize(); try handle.close()
+                guard try Data(contentsOf: backup) == original else { throw MusicError.invalidDJ(reason: "DJ recovery backup differs") }
+                let bytes = try encode(next); try writeAtomic(bytes, to: target)
+                guard try Data(contentsOf: target) == bytes else { throw MusicError.invalidDJ(reason: "DJ recovery read-back differs") }
+                return (next, digest(bytes))
+            }
         }
     }
 

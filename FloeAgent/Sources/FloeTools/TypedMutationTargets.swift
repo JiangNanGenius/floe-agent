@@ -484,6 +484,18 @@ public enum TypedMutationContract {
             return [.init(argument: "outputPath", role: .outputWrite,
                           whenAbsent: .boundDirectory(.workspaceDirectory(relative: "QRCode")))]
 
+        case "image.renderSVG":
+            if let raw = arguments["outputPath"] as? String,
+               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return [.init(argument: "outputPath", role: .outputWrite, whenAbsent: .required)]
+            }
+            // Default name is SVGExport/<base>-<identity>.png|jpg: the
+            // identity embeds the trusted call plus the exact render
+            // options, so a retry replays and an option change never
+            // collides. Bound the directory.
+            return [.init(argument: "outputPath", role: .outputWrite,
+                          whenAbsent: .boundDirectory(.workspaceDirectory(relative: "SVGExport")))]
+
         default:
             return []
         }

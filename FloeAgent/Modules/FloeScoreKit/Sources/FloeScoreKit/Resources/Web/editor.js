@@ -13,11 +13,11 @@ var FloeBundledEditor = (() => {
       throw err3 = [e3], e3;
     }
   };
-  var __commonJS = (cb, mod) => function __require() {
+  var __commonJS = (cb, mod2) => function __require() {
     try {
-      return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+      return mod2 || (0, cb[__getOwnPropNames(cb)[0]])((mod2 = { exports: {} }).exports, mod2), mod2.exports;
     } catch (e3) {
-      throw mod = 0, e3;
+      throw mod2 = 0, e3;
     }
   };
   var __export = (target, all) => {
@@ -32,15 +32,15 @@ var FloeBundledEditor = (() => {
     }
     return to;
   };
-  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  var __toESM = (mod2, isNodeMode, target) => (target = mod2 != null ? __create(__getProtoOf(mod2)) : {}, __copyProps(
     // If the importer is in node compatibility mode or this is not an ESM
     // file that has been converted to a CommonJS file using a Babel-
     // compatible transform (i.e. "__esModule" has not been set), then set
     // "default" to the CommonJS "module.exports" for node compatibility.
-    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-    mod
+    isNodeMode || !mod2 || !mod2.__esModule ? __defProp(target, "default", { value: mod2, enumerable: true }) : target,
+    mod2
   ));
-  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+  var __toCommonJS = (mod2) => __copyProps(__defProp({}, "__esModule", { value: true }), mod2);
 
   // ../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/opensheetmusicdisplay/build/opensheetmusicdisplay.min.js
   var require_opensheetmusicdisplay_min = __commonJS({
@@ -31707,7 +31707,7 @@ var FloeBundledEditor = (() => {
         var CP = 18;
         var EX = 19;
         var IN = 20;
-        var NS = 21;
+        var NS2 = 21;
         var OP = 22;
         var QU = 23;
         var IS = 24;
@@ -31778,7 +31778,7 @@ var FloeBundledEditor = (() => {
             }
             indices.push(index2);
             if (classType === CJ) {
-              return types.push(lineBreak2 === "strict" ? NS : ID);
+              return types.push(lineBreak2 === "strict" ? NS2 : ID);
             }
             if (classType === SA) {
               return types.push(AL);
@@ -31901,7 +31901,7 @@ var FloeBundledEditor = (() => {
           if (isAdjacentWithSpaceIgnored(QU, OP, currentIndex, classTypes)) {
             return BREAK_NOT_ALLOWED$1;
           }
-          if (isAdjacentWithSpaceIgnored([CL, CP], NS, currentIndex, classTypes)) {
+          if (isAdjacentWithSpaceIgnored([CL, CP], NS2, currentIndex, classTypes)) {
             return BREAK_NOT_ALLOWED$1;
           }
           if (isAdjacentWithSpaceIgnored(B22, B22, currentIndex, classTypes)) {
@@ -31916,7 +31916,7 @@ var FloeBundledEditor = (() => {
           if (next === CB || current === CB) {
             return BREAK_ALLOWED$1;
           }
-          if ([BA, HY, NS].indexOf(next) !== -1 || current === BB) {
+          if ([BA, HY, NS2].indexOf(next) !== -1 || current === BB) {
             return BREAK_NOT_ALLOWED$1;
           }
           if (before === HL && HYPHEN.indexOf(current) !== -1) {
@@ -34565,8 +34565,8 @@ var FloeBundledEditor = (() => {
                   return 4;
               }
               return 0;
-            }).filter(function(line) {
-              return line !== 0;
+            }).filter(function(line2) {
+              return line2 !== 0;
             });
           }
         };
@@ -35426,11 +35426,11 @@ var FloeBundledEditor = (() => {
           });
           var offset = 0;
           var prev = {};
-          var supports = textList.every(function(text2, i5) {
+          var supports = textList.every(function(text3, i5) {
             range.setStart(node3, offset);
-            range.setEnd(node3, offset + text2.length);
+            range.setEnd(node3, offset + text3.length);
             var rect = range.getBoundingClientRect();
-            offset += text2.length;
+            offset += text3.length;
             var boundAhead = rect.x > prev.x || rect.y > prev.y;
             prev = rect;
             if (i5 === 0) {
@@ -35480,10 +35480,10 @@ var FloeBundledEditor = (() => {
           var img = new Image();
           var greenImageSrc = canvas.toDataURL();
           img.src = greenImageSrc;
-          var svg2 = createForeignObjectSVG(size, size, 0, 0, img);
+          var svg3 = createForeignObjectSVG(size, size, 0, 0, img);
           ctx.fillStyle = "red";
           ctx.fillRect(0, 0, size, size);
-          return loadSerializedSVG$1(svg2).then(function(img2) {
+          return loadSerializedSVG$1(svg3).then(function(img2) {
             ctx.drawImage(img2, 0, 0);
             var data = ctx.getImageData(0, 0, size, size).data;
             ctx.fillStyle = "red";
@@ -35501,27 +35501,27 @@ var FloeBundledEditor = (() => {
         };
         var createForeignObjectSVG = function(width, height, x4, y4, node3) {
           var xmlns = "http://www.w3.org/2000/svg";
-          var svg2 = document.createElementNS(xmlns, "svg");
+          var svg3 = document.createElementNS(xmlns, "svg");
           var foreignObject = document.createElementNS(xmlns, "foreignObject");
-          svg2.setAttributeNS(null, "width", width.toString());
-          svg2.setAttributeNS(null, "height", height.toString());
+          svg3.setAttributeNS(null, "width", width.toString());
+          svg3.setAttributeNS(null, "height", height.toString());
           foreignObject.setAttributeNS(null, "width", "100%");
           foreignObject.setAttributeNS(null, "height", "100%");
           foreignObject.setAttributeNS(null, "x", x4.toString());
           foreignObject.setAttributeNS(null, "y", y4.toString());
           foreignObject.setAttributeNS(null, "externalResourcesRequired", "true");
-          svg2.appendChild(foreignObject);
+          svg3.appendChild(foreignObject);
           foreignObject.appendChild(node3);
-          return svg2;
+          return svg3;
         };
-        var loadSerializedSVG$1 = function(svg2) {
+        var loadSerializedSVG$1 = function(svg3) {
           return new Promise(function(resolve, reject) {
             var img = new Image();
             img.onload = function() {
               return resolve(img);
             };
             img.onerror = reject;
-            img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(svg2));
+            img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(svg3));
           });
         };
         var FEATURES = {
@@ -35569,8 +35569,8 @@ var FloeBundledEditor = (() => {
         var TextBounds = (
           /** @class */
           /* @__PURE__ */ (function() {
-            function TextBounds2(text2, bounds) {
-              this.text = text2;
+            function TextBounds2(text3, bounds) {
+              this.text = text3;
               this.bounds = bounds;
             }
             return TextBounds2;
@@ -35580,29 +35580,29 @@ var FloeBundledEditor = (() => {
           var textList = breakText(value2, styles);
           var textBounds = [];
           var offset = 0;
-          textList.forEach(function(text2) {
-            if (styles.textDecorationLine.length || text2.trim().length > 0) {
+          textList.forEach(function(text3) {
+            if (styles.textDecorationLine.length || text3.trim().length > 0) {
               if (FEATURES.SUPPORT_RANGE_BOUNDS) {
-                var clientRects = createRange(node3, offset, text2.length).getClientRects();
+                var clientRects = createRange(node3, offset, text3.length).getClientRects();
                 if (clientRects.length > 1) {
-                  var subSegments = segmentGraphemes(text2);
+                  var subSegments = segmentGraphemes(text3);
                   var subOffset_1 = 0;
                   subSegments.forEach(function(subSegment) {
                     textBounds.push(new TextBounds(subSegment, Bounds.fromDOMRectList(context3, createRange(node3, subOffset_1 + offset, subSegment.length).getClientRects())));
                     subOffset_1 += subSegment.length;
                   });
                 } else {
-                  textBounds.push(new TextBounds(text2, Bounds.fromDOMRectList(context3, clientRects)));
+                  textBounds.push(new TextBounds(text3, Bounds.fromDOMRectList(context3, clientRects)));
                 }
               } else {
-                var replacementNode = node3.splitText(text2.length);
-                textBounds.push(new TextBounds(text2, getWrapperBounds(context3, node3)));
+                var replacementNode = node3.splitText(text3.length);
+                textBounds.push(new TextBounds(text3, getWrapperBounds(context3, node3)));
                 node3 = replacementNode;
               }
             } else if (!FEATURES.SUPPORT_RANGE_BOUNDS) {
-              node3 = node3.splitText(text2.length);
+              node3 = node3.splitText(text3.length);
             }
-            offset += text2.length;
+            offset += text3.length;
           });
           return textBounds;
         };
@@ -35700,16 +35700,16 @@ var FloeBundledEditor = (() => {
             return TextContainer2;
           })()
         );
-        var transform = function(text2, transform2) {
+        var transform = function(text3, transform2) {
           switch (transform2) {
             case 1:
-              return text2.toLowerCase();
+              return text3.toLowerCase();
             case 3:
-              return text2.replace(CAPITALIZE, capitalize);
+              return text3.replace(CAPITALIZE, capitalize);
             case 2:
-              return text2.toUpperCase();
+              return text3.toUpperCase();
             default:
-              return text2;
+              return text3;
           }
         };
         var CAPITALIZE = /(^|\s|:|-|\(|\))([a-z])/g;
@@ -36821,10 +36821,10 @@ var FloeBundledEditor = (() => {
                       var counterStates = _this.counters.getCounterValues(counter.value);
                       var counterType_1 = counterStyle && isIdentToken(counterStyle) ? listStyleType.parse(_this.context, counterStyle.value) : 3;
                       var separator = delim && delim.type === 0 ? delim.value : "";
-                      var text2 = counterStates.map(function(value3) {
+                      var text3 = counterStates.map(function(value3) {
                         return createCounterText(value3, counterType_1, false);
                       }).join(separator);
-                      anonymousReplacedElement.appendChild(document2.createTextNode(text2));
+                      anonymousReplacedElement.appendChild(document2.createTextNode(text3));
                     }
                   } else ;
                 } else if (token.type === 20) {
@@ -37985,16 +37985,16 @@ var FloeBundledEditor = (() => {
                 });
               });
             };
-            CanvasRenderer2.prototype.renderTextWithLetterSpacing = function(text2, letterSpacing2, baseline) {
+            CanvasRenderer2.prototype.renderTextWithLetterSpacing = function(text3, letterSpacing2, baseline) {
               var _this = this;
               if (letterSpacing2 === 0) {
-                this.ctx.fillText(text2.text, text2.bounds.left, text2.bounds.top + baseline);
+                this.ctx.fillText(text3.text, text3.bounds.left, text3.bounds.top + baseline);
               } else {
-                var letters = segmentGraphemes(text2.text);
+                var letters = segmentGraphemes(text3.text);
                 letters.reduce(function(left, letter) {
-                  _this.ctx.fillText(letter, left, text2.bounds.top + baseline);
+                  _this.ctx.fillText(letter, left, text3.bounds.top + baseline);
                   return left + _this.ctx.measureText(letter).width;
-                }, text2.bounds.left);
+                }, text3.bounds.left);
               }
             };
             CanvasRenderer2.prototype.createFontStyle = function(styles) {
@@ -38009,7 +38009,7 @@ var FloeBundledEditor = (() => {
                 fontSize2
               ];
             };
-            CanvasRenderer2.prototype.renderTextNode = function(text2, styles) {
+            CanvasRenderer2.prototype.renderTextNode = function(text3, styles) {
               return __awaiter(this, void 0, void 0, function() {
                 var _a2, font, fontFamily2, fontSize2, _b2, baseline, middle, paintOrder2;
                 var _this = this;
@@ -38021,20 +38021,20 @@ var FloeBundledEditor = (() => {
                   this.ctx.textBaseline = "alphabetic";
                   _b2 = this.fontMetrics.getMetrics(fontFamily2, fontSize2), baseline = _b2.baseline, middle = _b2.middle;
                   paintOrder2 = styles.paintOrder;
-                  text2.textBounds.forEach(function(text3) {
+                  text3.textBounds.forEach(function(text4) {
                     paintOrder2.forEach(function(paintOrderLayer) {
                       switch (paintOrderLayer) {
                         case 0:
                           _this.ctx.fillStyle = asString(styles.color);
-                          _this.renderTextWithLetterSpacing(text3, styles.letterSpacing, baseline);
+                          _this.renderTextWithLetterSpacing(text4, styles.letterSpacing, baseline);
                           var textShadows = styles.textShadow;
-                          if (textShadows.length && text3.text.trim().length) {
+                          if (textShadows.length && text4.text.trim().length) {
                             textShadows.slice(0).reverse().forEach(function(textShadow2) {
                               _this.ctx.shadowColor = asString(textShadow2.color);
                               _this.ctx.shadowOffsetX = textShadow2.offsetX.number * _this.options.scale;
                               _this.ctx.shadowOffsetY = textShadow2.offsetY.number * _this.options.scale;
                               _this.ctx.shadowBlur = textShadow2.blur.number;
-                              _this.renderTextWithLetterSpacing(text3, styles.letterSpacing, baseline);
+                              _this.renderTextWithLetterSpacing(text4, styles.letterSpacing, baseline);
                             });
                             _this.ctx.shadowColor = "";
                             _this.ctx.shadowOffsetX = 0;
@@ -38046,24 +38046,24 @@ var FloeBundledEditor = (() => {
                             styles.textDecorationLine.forEach(function(textDecorationLine2) {
                               switch (textDecorationLine2) {
                                 case 1:
-                                  _this.ctx.fillRect(text3.bounds.left, Math.round(text3.bounds.top + baseline), text3.bounds.width, 1);
+                                  _this.ctx.fillRect(text4.bounds.left, Math.round(text4.bounds.top + baseline), text4.bounds.width, 1);
                                   break;
                                 case 2:
-                                  _this.ctx.fillRect(text3.bounds.left, Math.round(text3.bounds.top), text3.bounds.width, 1);
+                                  _this.ctx.fillRect(text4.bounds.left, Math.round(text4.bounds.top), text4.bounds.width, 1);
                                   break;
                                 case 3:
-                                  _this.ctx.fillRect(text3.bounds.left, Math.ceil(text3.bounds.top + middle), text3.bounds.width, 1);
+                                  _this.ctx.fillRect(text4.bounds.left, Math.ceil(text4.bounds.top + middle), text4.bounds.width, 1);
                                   break;
                               }
                             });
                           }
                           break;
                         case 1:
-                          if (styles.webkitTextStrokeWidth && text3.text.trim().length) {
+                          if (styles.webkitTextStrokeWidth && text4.text.trim().length) {
                             _this.ctx.strokeStyle = asString(styles.webkitTextStrokeColor);
                             _this.ctx.lineWidth = styles.webkitTextStrokeWidth;
                             _this.ctx.lineJoin = !!window.chrome ? "miter" : "round";
-                            _this.ctx.strokeText(text3.text, text3.bounds.left, text3.bounds.top + baseline);
+                            _this.ctx.strokeText(text4.text, text4.bounds.left, text4.bounds.top + baseline);
                           }
                           _this.ctx.strokeStyle = "";
                           _this.ctx.lineWidth = 0;
@@ -38890,12 +38890,12 @@ var FloeBundledEditor = (() => {
             }
             ForeignObjectRenderer2.prototype.render = function(element2) {
               return __awaiter(this, void 0, void 0, function() {
-                var svg2, img;
+                var svg3, img;
                 return __generator(this, function(_a2) {
                   switch (_a2.label) {
                     case 0:
-                      svg2 = createForeignObjectSVG(this.options.width * this.options.scale, this.options.height * this.options.scale, this.options.scale, this.options.scale, element2);
-                      return [4, loadSerializedSVG(svg2)];
+                      svg3 = createForeignObjectSVG(this.options.width * this.options.scale, this.options.height * this.options.scale, this.options.scale, this.options.scale, element2);
+                      return [4, loadSerializedSVG(svg3)];
                     case 1:
                       img = _a2.sent();
                       if (this.options.backgroundColor) {
@@ -38911,14 +38911,14 @@ var FloeBundledEditor = (() => {
             return ForeignObjectRenderer2;
           })(Renderer)
         );
-        var loadSerializedSVG = function(svg2) {
+        var loadSerializedSVG = function(svg3) {
           return new Promise(function(resolve, reject) {
             var img = new Image();
             img.onload = function() {
               resolve(img);
             };
             img.onerror = reject;
-            img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(svg2));
+            img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(svg3));
           });
         };
         var Logger = (
@@ -39399,12 +39399,12 @@ var FloeBundledEditor = (() => {
       ...svg$1,
       ...svgFilters,
       ...mathMl$1,
-      ...text
+      ...text2
     ]);
     let ALLOWED_ATTR = null;
     const DEFAULT_ALLOWED_ATTR = addToSet({}, [
       ...html,
-      ...svg,
+      ...svg2,
       ...mathMl,
       ...xml
     ]);
@@ -39607,7 +39607,7 @@ var FloeBundledEditor = (() => {
       if (SAFE_FOR_TEMPLATES) ALLOW_DATA_ATTR = false;
       if (RETURN_DOM_FRAGMENT) RETURN_DOM = true;
       if (USE_PROFILES) {
-        ALLOWED_TAGS = addToSet({}, text);
+        ALLOWED_TAGS = addToSet({}, text2);
         ALLOWED_ATTR = create(null);
         if (USE_PROFILES.html === true) {
           addToSet(ALLOWED_TAGS, html$1);
@@ -39615,12 +39615,12 @@ var FloeBundledEditor = (() => {
         }
         if (USE_PROFILES.svg === true) {
           addToSet(ALLOWED_TAGS, svg$1);
-          addToSet(ALLOWED_ATTR, svg);
+          addToSet(ALLOWED_ATTR, svg2);
           addToSet(ALLOWED_ATTR, xml);
         }
         if (USE_PROFILES.svgFilters === true) {
           addToSet(ALLOWED_TAGS, svgFilters);
-          addToSet(ALLOWED_ATTR, svg);
+          addToSet(ALLOWED_ATTR, svg2);
           addToSet(ALLOWED_ATTR, xml);
         }
         if (USE_PROFILES.mathMl === true) {
@@ -40386,7 +40386,7 @@ var FloeBundledEditor = (() => {
     };
     return DOMPurify;
   }
-  var entries, setPrototypeOf, isFrozen, getPrototypeOf, getOwnPropertyDescriptor, freeze, seal, create, _ref, apply2, construct, arrayForEach, arrayLastIndexOf, arrayPop, arrayPush, arraySlice, arraySplice, arrayIsArray, setCreate, setAdd, setHas, stringToLowerCase, stringToString, stringMatch, stringReplace, stringIndexOf, stringTrim, numberToString, booleanToString, bigintToString, symbolToString, objectHasOwnProperty, objectToString, regExpTest, typeErrorCreate, html$1, svg$1, svgFilters, svgDisallowed, mathMl$1, mathMlDisallowed, text, html, svg, mathMl, xml, MUSTACHE_EXPR, ERB_EXPR, TMPLIT_EXPR, DATA_ATTR, ARIA_ATTR, IS_ALLOWED_URI, IS_SCRIPT_OR_DATA, ATTR_WHITESPACE, DOCTYPE_NAME, CUSTOM_ELEMENT, ELEMENT_MARKUP_PROBE, COMMENT_MARKUP_PROBE, FALLBACK_TAG_CLOSE, SELF_CLOSING_TAG, NODE_TYPE, LITERAL_TEXT_ELEMENTS, getGlobal, _createTrustedTypesPolicy, _createHooksMap, _resolveSetOption, _resolveObjectOption, purify_default;
+  var entries, setPrototypeOf, isFrozen, getPrototypeOf, getOwnPropertyDescriptor, freeze, seal, create, _ref, apply2, construct, arrayForEach, arrayLastIndexOf, arrayPop, arrayPush, arraySlice, arraySplice, arrayIsArray, setCreate, setAdd, setHas, stringToLowerCase, stringToString, stringMatch, stringReplace, stringIndexOf, stringTrim, numberToString, booleanToString, bigintToString, symbolToString, objectHasOwnProperty, objectToString, regExpTest, typeErrorCreate, html$1, svg$1, svgFilters, svgDisallowed, mathMl$1, mathMlDisallowed, text2, html, svg2, mathMl, xml, MUSTACHE_EXPR, ERB_EXPR, TMPLIT_EXPR, DATA_ATTR, ARIA_ATTR, IS_ALLOWED_URI, IS_SCRIPT_OR_DATA, ATTR_WHITESPACE, DOCTYPE_NAME, CUSTOM_ELEMENT, ELEMENT_MARKUP_PROBE, COMMENT_MARKUP_PROBE, FALLBACK_TAG_CLOSE, SELF_CLOSING_TAG, NODE_TYPE, LITERAL_TEXT_ELEMENTS, getGlobal, _createTrustedTypesPolicy, _createHooksMap, _resolveSetOption, _resolveObjectOption, purify_default;
   var init_purify_es = __esm({
     "../../../Users/jiangnangenius/Library/Caches/CodexBuild/FloeHeavyEditors/shared-main/web-toolchain/node_modules/dompurify/dist/purify.es.mjs"() {
       AsyncGenerator.prototype["function" == typeof Symbol && Symbol.asyncIterator || "@@asyncIterator"] = function() {
@@ -40718,7 +40718,7 @@ var FloeBundledEditor = (() => {
         "mprescripts",
         "none"
       ]);
-      text = freeze(["#text"]);
+      text2 = freeze(["#text"]);
       html = freeze([
         "accept",
         "action",
@@ -40839,7 +40839,7 @@ var FloeBundledEditor = (() => {
         "wrap",
         "xmlns"
       ]);
-      svg = freeze([
+      svg2 = freeze([
         "accent-height",
         "accumulate",
         "additive",
@@ -49074,13 +49074,13 @@ var FloeBundledEditor = (() => {
           var fontSize = this.getFontSize();
           return new BoundingBox(this.x, this.y - fontSize, this.x + this.measureText(ctx), this.y);
         }
-        getGlyph(font, text2, i4) {
-          var char = text2[i4];
+        getGlyph(font, text3, i4) {
+          var char = text3[i4];
           var glyph = null;
           if (font.isArabic) {
-            var len = text2.length;
-            var prevChar = text2[i4 - 1];
-            var nextChar = text2[i4 + 1];
+            var len = text3.length;
+            var prevChar = text3[i4 - 1];
+            var nextChar = text3[i4 + 1];
             var arabicForm = "isolated";
             if ((i4 === 0 || prevChar === " ") && i4 < len - 1 && nextChar !== " ") {
               arabicForm = "terminal";
@@ -49111,18 +49111,18 @@ var FloeBundledEditor = (() => {
           var childNodes = Array.from(textNode.parentNode.childNodes);
           var index2 = childNodes.indexOf(textNode);
           var lastIndex = childNodes.length - 1;
-          var text2 = compressSpaces(
+          var text3 = compressSpaces(
             // textNode.value
             // || textNode.text
             textNode.textContent || ""
           );
           if (index2 === 0) {
-            text2 = trimLeft(text2);
+            text3 = trimLeft(text3);
           }
           if (index2 === lastIndex) {
-            text2 = trimRight(text2);
+            text3 = trimRight(text3);
           }
-          return text2;
+          return text3;
         }
         renderChildren(ctx) {
           if (this.type !== "text") {
@@ -49156,11 +49156,11 @@ var FloeBundledEditor = (() => {
             var fontSize = parent.getStyle("font-size").getNumber(ctxFont.fontSize);
             var fontStyle = parent.getStyle("font-style").getString(ctxFont.fontStyle);
             var scale = fontSize / unitsPerEm;
-            var text2 = customFont.isRTL ? renderText.split("").reverse().join("") : renderText;
+            var text3 = customFont.isRTL ? renderText.split("").reverse().join("") : renderText;
             var dx = toNumbers(parent.getAttribute("dx").getString());
-            var len = text2.length;
+            var len = text3.length;
             for (var i4 = 0; i4 < len; i4++) {
-              var glyph = this.getGlyph(customFont, text2, i4);
+              var glyph = this.getGlyph(customFont, text3, i4);
               ctx.translate(this.x, this.y);
               ctx.scale(scale, -scale);
               var lw = ctx.lineWidth;
@@ -49341,12 +49341,12 @@ var FloeBundledEditor = (() => {
           var customFont = parent.getStyle("font-family").getDefinition();
           if (customFont) {
             var fontSize = this.getFontSize();
-            var text2 = customFont.isRTL ? targetText.split("").reverse().join("") : targetText;
+            var text3 = customFont.isRTL ? targetText.split("").reverse().join("") : targetText;
             var dx = toNumbers(parent.getAttribute("dx").getString());
-            var len = text2.length;
+            var len = text3.length;
             var _measure = 0;
             for (var i4 = 0; i4 < len; i4++) {
-              var glyph = this.getGlyph(customFont, text2, i4);
+              var glyph = this.getGlyph(customFont, text3, i4);
               _measure += (glyph.horizAdvX || customFont.horizAdvX) * fontSize / customFont.fontFace.unitsPerEm;
               if (typeof dx[i4] !== "undefined" && !isNaN(dx[i4])) {
                 _measure += dx[i4];
@@ -50426,11 +50426,11 @@ var FloeBundledEditor = (() => {
             rotation
           };
         }
-        measureText(ctx, text2) {
+        measureText(ctx, text3) {
           var {
             measuresCache
           } = this;
-          var targetText = text2 || this.getText();
+          var targetText = text3 || this.getText();
           if (measuresCache.has(targetText)) {
             return measuresCache.get(targetText);
           }
@@ -50931,8 +50931,8 @@ var FloeBundledEditor = (() => {
             } else {
               try {
                 var response = yield _this2.document.fetch(href);
-                var svg2 = yield response.text();
-                _this2.image = svg2;
+                var svg3 = yield response.text();
+                _this2.image = svg3;
               } catch (err3) {
                 console.error('Error while loading image "'.concat(href, '":'), err3);
               }
@@ -51570,13 +51570,13 @@ var FloeBundledEditor = (() => {
          * @param svg - SVG Document.
          * @param options - Rendering options.
          */
-        constructor(ctx, svg2) {
+        constructor(ctx, svg3) {
           var options = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : {};
           this.parser = new Parser(options);
           this.screen = new Screen(ctx, options);
           this.options = options;
           var document2 = new Document(this, options);
-          var documentElement = document2.createDocumentElement(svg2);
+          var documentElement = document2.createDocumentElement(svg3);
           this.document = document2;
           this.documentElement = documentElement;
         }
@@ -51587,12 +51587,12 @@ var FloeBundledEditor = (() => {
          * @param options - Rendering options.
          * @returns Canvg instance.
          */
-        static from(ctx, svg2) {
+        static from(ctx, svg3) {
           var _arguments = arguments;
           return _asyncToGenerator(function* () {
             var options = _arguments.length > 2 && _arguments[2] !== void 0 ? _arguments[2] : {};
             var parser = new Parser(options);
-            var svgDocument = yield parser.parse(svg2);
+            var svgDocument = yield parser.parse(svg3);
             return new _Canvg(ctx, svgDocument, options);
           })();
         }
@@ -51603,10 +51603,10 @@ var FloeBundledEditor = (() => {
          * @param options - Rendering options.
          * @returns Canvg instance.
          */
-        static fromString(ctx, svg2) {
+        static fromString(ctx, svg3) {
           var options = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : {};
           var parser = new Parser(options);
-          var svgDocument = parser.parseFromString(svg2);
+          var svgDocument = parser.parseFromString(svg3);
           return new _Canvg(ctx, svgDocument, options);
         }
         /**
@@ -51616,9 +51616,9 @@ var FloeBundledEditor = (() => {
          * @param options - Rendering options.
          * @returns Canvg instance.
          */
-        fork(ctx, svg2) {
+        fork(ctx, svg3) {
           var options = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : {};
-          return _Canvg.from(ctx, svg2, _objectSpread(_objectSpread({}, this.options), options));
+          return _Canvg.from(ctx, svg3, _objectSpread(_objectSpread({}, this.options), options));
         }
         /**
          * Create new Canvg instance with inherited options.
@@ -51627,9 +51627,9 @@ var FloeBundledEditor = (() => {
          * @param options - Rendering options.
          * @returns Canvg instance.
          */
-        forkString(ctx, svg2) {
+        forkString(ctx, svg3) {
           var options = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : {};
-          return _Canvg.fromString(ctx, svg2, _objectSpread(_objectSpread({}, this.options), options));
+          return _Canvg.fromString(ctx, svg3, _objectSpread(_objectSpread({}, this.options), options));
         }
         /**
          * Document is ready promise.
@@ -52349,14 +52349,14 @@ var FloeBundledEditor = (() => {
       var TAU = Math.PI * 2;
       function unit_vector_angle(ux, uy, vx, vy) {
         var sign = ux * vy - uy * vx < 0 ? -1 : 1;
-        var dot = ux * vx + uy * vy;
-        if (dot > 1) {
-          dot = 1;
+        var dot2 = ux * vx + uy * vy;
+        if (dot2 > 1) {
+          dot2 = 1;
         }
-        if (dot < -1) {
-          dot = -1;
+        if (dot2 < -1) {
+          dot2 = -1;
         }
-        return sign * Math.acos(dot);
+        return sign * Math.acos(dot2);
       }
       function get_arc_center(x1, y1, x22, y22, fa, fs, rx, ry, sin_phi, cos_phi) {
         var x1p = cos_phi * (x1 - x22) / 2 + sin_phi * (y1 - y22) / 2;
@@ -52947,6 +52947,9 @@ var FloeBundledEditor = (() => {
   __export(main_exports, {
     scoreEngine: () => scoreEngine
   });
+  var import_opensheetmusicdisplay2 = __toESM(require_opensheetmusicdisplay_min());
+
+  // FloeAgent/Modules/FloeScoreKit/Web/engraving-export.js
   var import_opensheetmusicdisplay = __toESM(require_opensheetmusicdisplay_min());
 
   // FloeAgent/Modules/FloeHeavyEditorSupport/Web/runtime.js
@@ -53331,16 +53334,16 @@ var FloeBundledEditor = (() => {
         table.append(rows);
         dialog.append(table);
         if (value2.length > 2 && typeof value2[0].meters === "number" && value2.some((row) => typeof row.elevation === "number" && Number.isFinite(row.elevation))) {
-          const ns = "http://www.w3.org/2000/svg", svg2 = document.createElementNS(ns, "svg");
-          svg2.setAttribute("viewBox", "0 0 540 200");
+          const ns = "http://www.w3.org/2000/svg", svg3 = document.createElementNS(ns, "svg");
+          svg3.setAttribute("viewBox", "0 0 540 200");
           const good = value2.filter((v4) => typeof v4.elevation === "number" && Number.isFinite(v4.elevation)), min = Math.min(...good.map((v4) => v4.elevation)), max2 = Math.max(...good.map((v4) => v4.elevation));
-          const line = document.createElementNS(ns, "polyline");
-          line.setAttribute("points", good.map((v4) => `${20 + v4.meters / (value2.at(-1).meters || 1) * 500},${180 - (v4.elevation - min) / (max2 - min || 1) * 160}`).join(" "));
-          line.setAttribute("fill", "none");
-          line.setAttribute("stroke", "#2879c7");
-          line.setAttribute("stroke-width", "2");
-          svg2.append(line);
-          dialog.prepend(svg2);
+          const line2 = document.createElementNS(ns, "polyline");
+          line2.setAttribute("points", good.map((v4) => `${20 + v4.meters / (value2.at(-1).meters || 1) * 500},${180 - (v4.elevation - min) / (max2 - min || 1) * 160}`).join(" "));
+          line2.setAttribute("fill", "none");
+          line2.setAttribute("stroke", "#2879c7");
+          line2.setAttribute("stroke-width", "2");
+          svg3.append(line2);
+          dialog.prepend(svg3);
         }
       } else dialog.append(element("pre", { text: typeof value2 === "string" ? value2 : JSON.stringify(value2, null, 2) }));
       dialog.append(element("button", { text: t("\u5B8C\u6210", "Done"), onclick: () => dialog.close() }));
@@ -53710,6 +53713,401 @@ var FloeBundledEditor = (() => {
     return serialize(copy);
   }
 
+  // FloeAgent/Modules/FloeScoreKit/Web/jianpu.js
+  var NS = "http://www.w3.org/2000/svg";
+  var STEPS = ["C", "D", "E", "F", "G", "A", "B"];
+  var SHARPS = ["F", "C", "G", "D", "A", "E", "B"];
+  var FLATS = ["B", "E", "A", "D", "G", "C", "F"];
+  var mod = (n2, d3) => (n2 % d3 + d3) % d3;
+  var svg = (name, attributes = {}, text3) => {
+    const n2 = document.createElementNS(NS, name);
+    for (const [k3, v4] of Object.entries(attributes)) {
+      if (k3 === "xmlns") n2.setAttributeNS("http://www.w3.org/2000/xmlns/", k3, String(v4));
+      else n2.setAttribute(k3, String(v4));
+    }
+    if (text3 !== void 0) n2.textContent = String(text3);
+    return n2;
+  };
+  function text(parent, x4, y4, label, size = 18, attrs = {}) {
+    const n2 = svg("text", { x: x4, y: y4, "font-size": size, "font-family": 'Arial, "PingFang SC", sans-serif', fill: "#17243a", ...attrs }, label);
+    parent.append(n2);
+    return n2;
+  }
+  function line(parent, x1, y1, x22, y22, width = 1) {
+    parent.append(svg("line", { x1, y1, x2: x22, y2: y22, stroke: "#17243a", "stroke-width": width }));
+  }
+  function dot(parent, x4, y4, r2 = 1.8) {
+    parent.append(svg("circle", { cx: x4, cy: y4, r: r2, fill: "#17243a" }));
+  }
+  function notationMode(layout = {}, doc) {
+    if (["staff", "jianpu"].includes(layout.notation)) return layout.notation;
+    return [...doc?.querySelectorAll("clef > sign") ?? []].some((n2) => n2.textContent === "jianpu") ? "jianpu" : "staff";
+  }
+  function registerNumberedNotation(e3) {
+    e3.register({
+      id: "score.view.notation",
+      title: t("\u4E94\u7EBF\u8C31\uFF0F\u7B80\u8C31", "Staff / numbered notation"),
+      group: t("\u6392\u7248\u4E0E\u89C6\u56FE", "Layout & view"),
+      access: "edit",
+      fields: [field("notation", t("\u8BB0\u8C31\u65B9\u5F0F", "Notation"), "select", { options: [{ value: "staff", label: t("\u4E94\u7EBF\u8C31", "Staff") }, { value: "jianpu", label: t("\u7B80\u8C31", "Numbered") }], default: (e4) => e4.state.layout?.notation ?? "staff" })]
+    }, (args) => {
+      if (!["staff", "jianpu"].includes(args.notation)) throw new Error("Choose staff or jianpu");
+      e3.state.layout = { ...e3.state.layout, notation: args.notation };
+      return { notation: args.notation };
+    });
+  }
+  function keyValue(key, previous = { fifths: 0, mode: "major", unsupported: false }) {
+    if (!key) return previous;
+    const fifths = Number(string(key, "fifths", previous.fifths)), mode = string(key, "mode", previous.mode);
+    return { fifths, mode, unsupported: !Number.isInteger(fifths) || Math.abs(fifths) > 7 || !["major", "minor"].includes(mode) || children(key, "key-step").length > 0 };
+  }
+  function keyAt(part, index2) {
+    let key = { fifths: 0, mode: "major", unsupported: false };
+    for (let i4 = 0; i4 <= index2 && i4 < part.measures.length; i4++) for (const entry of part.measures[i4].children) {
+      if (i4 === index2 && ["note", "backup", "forward"].includes(entry.tagName)) break;
+      if (entry.tagName === "attributes") key = keyValue(child(entry, "key"), key);
+    }
+    return key;
+  }
+  function alterations(fifths) {
+    const map = Object.fromEntries(STEPS.map((s4) => [s4, 0]));
+    const order = fifths < 0 ? FLATS : SHARPS;
+    for (let i4 = 0; i4 < Math.abs(fifths); i4++) map[order[i4 % 7]] += fifths < 0 ? -1 : 1;
+    return map;
+  }
+  function tonic(key) {
+    const index2 = mod(key.fifths * 4, 7), step = STEPS[index2], alter = alterations(key.fifths)[step];
+    return { index: index2, step, alter };
+  }
+  function spelled(step, alter, octave) {
+    return step + (alter > 0 ? "#".repeat(alter) : "b".repeat(-alter)) + octave;
+  }
+  function degreePitch(key, degree, octave = 4, alter = 0) {
+    if (key.unsupported || !Number.isInteger(degree) || degree < 1 || degree > 7 || !Number.isInteger(octave) || octave < 0 || octave > 8 || !Number.isInteger(alter) || Math.abs(alter) > 2) throw new Error("Unsupported numbered-note input");
+    const root = tonic(key), offset = root.index + degree - 1, step = STEPS[offset % 7], noteOctave = octave + Math.floor(offset / 7);
+    if (noteOctave > 9) throw new Error("Numbered-note input is outside MusicXML octave range");
+    return spelled(step, alterations(key.fifths)[step] + alter, noteOctave);
+  }
+  function numberedInput(part, index2, input = {}) {
+    const key = keyAt(part, index2), octave = Number(input.octave ?? 4), alter = Number(input.numberAlter ?? 0);
+    return {
+      supported: !key.unsupported,
+      key: keyLabel(key),
+      alter,
+      octave,
+      keys: key.unsupported ? [] : Array.from({ length: 7 }, (_4, i4) => ({ degree: i4 + 1, pitch: degreePitch(key, i4 + 1, octave, alter) }))
+    };
+  }
+  function numberForNote(note, key) {
+    if (note.rest) return { digit: "0", octave: 0, alter: 0, rest: true };
+    const pitch = child(note.node, "pitch");
+    if (!pitch) return { digit: "\xD7", octave: 0, alter: 0, unpitched: true };
+    const step = string(pitch, "step", "C"), alter = Number(string(pitch, "alter", 0)), octave = Number(string(pitch, "octave", 4));
+    if (key.unsupported || !STEPS.includes(step) || !Number.isInteger(alter) || !Number.isInteger(octave)) return { digit: "?", octave: 0, alter: 0, unsupported: true };
+    const root = tonic(key), distance = (octave - 4) * 7 + STEPS.indexOf(step) - root.index;
+    return { digit: String(mod(distance, 7) + 1), octave: Math.floor(distance / 7), alter: alter - alterations(key.fifths)[step], spelled: spelled(step, alter, octave), natural: string(note.node, "accidental") === "natural" };
+  }
+  function keyLabel(key) {
+    if (key.unsupported) return t("\u81EA\u5B9A\u4E49\u8C03\u53F7", "Custom key");
+    const root = tonic(key), alter = alterations(key.fifths), minor = key.mode === "minor", step = minor ? STEPS[(root.index + 5) % 7] : root.step;
+    return (minor ? "6=" : "1=") + step + (alter[step] > 0 ? "\u266F".repeat(alter[step]) : "\u266D".repeat(-alter[step]));
+  }
+  function partData(part) {
+    let key = { fifths: 0, mode: "major", unsupported: false };
+    const lanes = /* @__PURE__ */ new Map(), bars = [];
+    let noteCount = 0;
+    for (let index2 = 0; index2 < part.measures.length; index2++) {
+      const timeline = noteTimeline(part, index2), keys = /* @__PURE__ */ new Map(), measure = part.measures[index2];
+      let initial;
+      for (const entry of measure.children) {
+        if (entry.tagName === "attributes") key = keyValue(child(entry, "key"), key);
+        else if (entry.tagName === "note") {
+          initial ??= key;
+          keys.set(entry.getAttribute("id"), key);
+        }
+      }
+      const notes = timeline.notes.map((note) => ({ ...note, key: keys.get(note.id) ?? key, number: numberForNote(note, keys.get(note.id) ?? key) }));
+      for (const note of notes) {
+        const id = note.staff + ":" + note.voice;
+        if (!lanes.has(id)) lanes.set(id, { id, staff: note.staff, voice: note.voice });
+        noteCount++;
+      }
+      bars.push({ index: index2, measure, timeline, notes, key: initial ?? key });
+    }
+    if (!lanes.size) lanes.set("1:1", { id: "1:1", staff: 1, voice: "1" });
+    return { part, bars, lanes: [...lanes.values()].sort((a3, b5) => a3.staff - b5.staff || a3.voice.localeCompare(b5.voice, void 0, { numeric: true })), noteCount };
+  }
+  function durationSpec(note) {
+    const types = { maxima: 32, long: 16, breve: 8, whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625, "128th": 0.03125, "256th": 0.015625, "512th": 78125e-7, "1024th": 390625e-8 };
+    const type = string(note.node, "type", ""), dots = children(note.node, "dot").length;
+    if (types[type]) return { base: types[type], dots };
+    if (note.grace) return { base: 0.5, dots };
+    const modification = child(note.node, "time-modification"), actual = Number(string(modification, "actual-notes", 1)), normal = Number(string(modification, "normal-notes", 1));
+    for (const base of Object.values(types)) for (let d3 = 0; d3 <= 3; d3++) if (Math.abs(base * (2 - 1 / 2 ** d3) * normal / actual - value(note.duration)) < 1e-8) return { base, dots: d3 };
+    return { base: 1, dots: 0, unsupported: true };
+  }
+  function noteShape(parent, note, x4, y4, keyState) {
+    const n2 = note.number, group = svg("g", { "data-score-note": note.id, class: "jp-note", transform: `translate(${x4},${y4})` });
+    const spec = durationSpec(note), { base, dots } = spec, beams = Math.max(0, Math.round(-Math.log2(Math.min(1, base))));
+    group.append(svg("rect", { x: -16, y: -38, width: 34, height: 64, rx: 5, fill: "transparent", class: "jp-hit" }));
+    let accidental = n2.alter === 0 ? "" : n2.alter > 0 ? "\u266F".repeat(n2.alter) : "\u266D".repeat(-n2.alter);
+    const stateID = n2.digit + ":" + n2.octave;
+    if (!n2.rest && !n2.unpitched && !n2.unsupported) {
+      if (n2.alter === 0 && (n2.natural || keyState.get(stateID))) accidental = "\u266E";
+      keyState.set(stateID, n2.alter);
+    }
+    if (accidental) text(group, -18, -2, accidental, 15, { "text-anchor": "end", class: "jp-accidental" });
+    text(group, 0, 0, spec.unsupported ? "?" : n2.digit, note.grace ? 17 : 24, { "text-anchor": "middle", "font-weight": "600", class: "jp-number" });
+    if (n2.unsupported) group.setAttribute("data-jianpu-unsupported", "pitch");
+    for (let i4 = 0; i4 < beams; i4++) line(group, -8, 7 + i4 * 4, 8, 7 + i4 * 4, 1.4);
+    for (let i4 = 0; i4 < dots; i4++) dot(group, 13 + i4 * 6, -8, 1.9);
+    for (let i4 = 0; i4 < Math.max(0, n2.octave); i4++) dot(group, 0, -28 - i4 * 6);
+    for (let i4 = 0; i4 < Math.max(0, -n2.octave); i4++) dot(group, 0, 16 + beams * 4 + i4 * 6);
+    const actual = Number(string(child(note.node, "time-modification"), "actual-notes", 1));
+    if (actual > 1) text(group, 0, -40 - Math.max(0, n2.octave - 1) * 6, actual, 11, { "text-anchor": "middle", class: "jp-tuplet" });
+    if (note.grace) line(group, 10, -22, 16, -33, 1);
+    parent.append(group);
+    return { group, base, beams };
+  }
+  function measureWidth(data, index2) {
+    const events = /* @__PURE__ */ new Set();
+    let quarters = 1, caption = 0;
+    for (const p4 of data) {
+      const bar = p4.bars[index2];
+      if (!bar) continue;
+      quarters = Math.max(quarters, value(bar.timeline.duration));
+      for (const n2 of bar.notes) {
+        events.add(Math.round(value(n2.onset) * 1e8));
+        caption = Math.max(caption, ...children(n2.node, "lyric").map((x4) => string(x4, "text").length));
+      }
+    }
+    return Math.max(176, events.size * Math.max(44, caption * 12 + 12) + 40, quarters * 44 + 32);
+  }
+  function barline(parent, x4, top, bottom, measure, final = false) {
+    const marks = measure ? children(measure, "barline") : [], right = marks.find((n2) => (n2.getAttribute("location") ?? "right") === "right"), style = string(right, "bar-style", final ? "light-heavy" : "regular");
+    line(parent, x4, top, x4, bottom, style === "heavy" || style === "heavy-light" ? 2.4 : 1);
+    if (["light-light", "light-heavy", "heavy-light", "heavy-heavy"].includes(style)) line(parent, x4 + 5, top, x4 + 5, bottom, style.endsWith("heavy") ? 2.7 : 1);
+    if (child(right, "repeat")?.getAttribute("direction") === "backward") {
+      dot(parent, x4 - 7, (top + bottom) / 2 - 5);
+      dot(parent, x4 - 7, (top + bottom) / 2 + 5);
+    }
+  }
+  function renderNumberedScore(doc, layout = {}, availableWidth = 1e3, { exporting = false } = {}) {
+    const data = partList(doc).map(partData), noteCount = data.reduce((n2, p4) => n2 + p4.noteCount, 0);
+    if (noteCount > 5e4) throw new Error(t("\u7B80\u8C31\u5185\u5BB9\u8FC7\u591A\uFF0C\u8BF7\u7F29\u5C0F\u5206\u8C31\u8303\u56F4\u6216\u5207\u56DE\u4E94\u7EBF\u8C31\u3002", "This numbered score is too large; choose a linked part or use staff notation."));
+    const lanes = data.flatMap((p4) => p4.lanes.map((lane) => ({ ...lane, data: p4 })));
+    if (lanes.length > 64) throw new Error(t("\u58F0\u90E8\u8FC7\u591A\uFF0C\u8BF7\u5148\u9009\u62E9\u5206\u8C31\u3002", "Too many voices; choose a linked part."));
+    const warnings = /* @__PURE__ */ new Set();
+    for (const p4 of data) for (const bar of p4.bars) {
+      if (bar.key.unsupported) warnings.add("key");
+      for (const n2 of bar.notes) {
+        if (n2.number.unsupported) warnings.add("pitch");
+        if (n2.number.unpitched) warnings.add("percussion");
+        if (durationSpec(n2).unsupported) warnings.add("duration");
+      }
+    }
+    if (doc.querySelector("direction,harmony,ornaments,glissando,slide,bend,slur,articulations,technical,ending")) warnings.add("marks");
+    const zoom = exporting ? 1 : Math.max(0.3, Math.min(3, Number(layout.zoom ?? 1))), margin = Math.max(20, Math.min(100, Number(layout.margin ?? 15) * 3));
+    const baseWidth = Math.max(640, Math.min(1600, Number(availableWidth) || 1e3)), left = margin + 120, measureCount = Math.max(0, ...data.map((p4) => p4.bars.length));
+    const widths = Array.from({ length: measureCount }, (_4, i4) => measureWidth(data, i4)), continuous = Boolean(layout.continuous) && !exporting;
+    const width = continuous ? Math.max(baseWidth, left + widths.reduce((s4, n2) => s4 + n2, 0) + margin) : baseWidth;
+    const systems = [];
+    let current = [], used = 0;
+    const cap = Math.max(1, Math.min(32, Number(layout.measuresPerSystem) || 32));
+    for (let i4 = 0; i4 < measureCount; i4++) {
+      const forced = data.some((p4) => {
+        const pr = child(p4.bars[i4]?.measure, "print");
+        return pr?.getAttribute("new-system") === "yes" || pr?.getAttribute("new-page") === "yes";
+      });
+      if (!continuous && current.length && (used + widths[i4] > width - left - margin || current.length >= cap || forced)) {
+        systems.push(current);
+        current = [];
+        used = 0;
+      }
+      current.push(i4);
+      used += widths[i4];
+    }
+    if (current.length) systems.push(current);
+    const rowMetrics = lanes.map((lane) => {
+      let chord = 1, high = 0, low = 0, lyrics = 0;
+      const groups = /* @__PURE__ */ new Map();
+      for (const bar of lane.data.bars) for (const n2 of bar.notes) if (n2.staff === lane.staff && n2.voice === lane.voice) {
+        const key = bar.index + ":" + value(n2.onset) + ":" + n2.grace;
+        groups.set(key, (groups.get(key) ?? 0) + 1);
+        chord = Math.max(chord, groups.get(key));
+        high = Math.max(high, n2.number.octave);
+        low = Math.max(low, -n2.number.octave);
+        lyrics = Math.max(lyrics, children(n2.node, "lyric").length);
+      }
+      const up = (chord - 1) * 42 + high * 6 + 56, down = Math.max(42, low * 6 + 38) + lyrics * 22;
+      return { up, height: up + down };
+    });
+    const systemHeight = rowMetrics.reduce((s4, n2) => s4 + n2.height, 0) + 38, paperRatio = { A4_P: 297 / 210, A4_L: 210 / 297, A3_P: 420 / 297, Letter_P: 279.4 / 215.9 }[layout.paper] ?? 297 / 210;
+    const pageHeight = continuous ? margin * 2 + systemHeight + 96 : Math.max(width * paperRatio, systemHeight + margin * 2 + 96), pages = [], noteVisuals = /* @__PURE__ */ new Map(), positions = [];
+    let page, y4;
+    const newPage = () => {
+      page = svg("svg", { xmlns: NS, width: width * zoom, height: pageHeight * zoom, viewBox: `0 0 ${width} ${pageHeight}`, class: "jianpu-page", "data-score-notation": "jianpu", role: "group", "aria-label": t("\u53EF\u7F16\u8F91\u7B80\u8C31", "Editable numbered score") });
+      page.append(svg("rect", { width, height: pageHeight, fill: "white" }));
+      pages.push(page);
+      y4 = margin;
+      const title = doc.querySelector("work-title")?.textContent ?? doc.querySelector("movement-title")?.textContent ?? "";
+      text(page, width / 2, y4 + 24, title, 24, { "text-anchor": "middle", "font-weight": "600" });
+      const composer = doc.querySelector('creator[type="composer"]')?.textContent ?? "";
+      if (composer) text(page, width - margin, y4 + 46, composer, 13, { "text-anchor": "end" });
+      if (warnings.size) text(page, margin, y4 + 66, t("\u5B8C\u6574\u8BB0\u53F7\u8BF7\u67E5\u770B\u4E94\u7EBF\u8C31\u3002", "View the staff score for all marks."), 11, { "data-jianpu-warning": [...warnings].join(","), class: "jp-warning" });
+      y4 += 76;
+    };
+    for (let systemIndex = 0; systemIndex < systems.length; systemIndex++) {
+      const bars = systems[systemIndex], newPageRequested = data.some((p4) => child(p4.bars[bars[0]]?.measure, "print")?.getAttribute("new-page") === "yes");
+      if (!page || !continuous && (y4 + systemHeight > pageHeight - margin || newPageRequested && systemIndex > 0)) newPage();
+      const top = y4 + 14, system = svg("g", { "data-jianpu-system": systemIndex });
+      page.append(system);
+      let rowY = top;
+      const total = bars.reduce((n2, i4) => n2 + widths[i4], 0), factor = !continuous && bars.length > 1 ? Math.max(1, (width - left - margin) / total) : 1;
+      for (let laneIndex = 0; laneIndex < lanes.length; laneIndex++) {
+        const lane = lanes[laneIndex], baseline = rowY + rowMetrics[laneIndex].up, label = lane.data.part.name + (lane.data.lanes.length > 1 ? " \xB7 " + lane.staff + "/" + lane.voice : "");
+        const abbreviated = [...label].slice(0, /[\u2e80-\uffff]/.test(label) ? 8 : 17).join(""), labelNode = text(system, margin, baseline - 4, abbreviated === label ? label : abbreviated + "\u2026", 13, { "data-jianpu-part": lane.data.part.id });
+        labelNode.append(svg("title", {}, label));
+        let x4 = left;
+        for (const index2 of bars) {
+          const bar = lane.data.bars[index2], barWidth = widths[index2] * factor;
+          if (!bar) {
+            x4 += barWidth;
+            continue;
+          }
+          const local = svg("g", { "data-jianpu-measure": bar.measure.getAttribute("id"), "data-jianpu-voice": lane.id });
+          system.append(local);
+          if (laneIndex === 0) text(local, x4 + 8, top - 8, bar.measure.getAttribute("number") ?? index2 + 1, 12, { "data-jianpu-measure-number": index2 + 1 });
+          text(local, x4 + 8, rowY + 4, keyLabel(bar.key) + "  " + bar.timeline.attrs.beats + "/" + bar.timeline.attrs.beatType, 11, { "data-jianpu-meter": "yes" });
+          const forwardRepeat = children(bar.measure, "barline").find((n2) => n2.getAttribute("location") === "left" && child(n2, "repeat")?.getAttribute("direction") === "forward");
+          if (forwardRepeat) {
+            line(local, x4, rowY - 12, x4, rowY + rowMetrics[laneIndex].height - 12, 2.7);
+            line(local, x4 + 5, rowY - 12, x4 + 5, rowY + rowMetrics[laneIndex].height - 12);
+            dot(local, x4 + 12, baseline - 15);
+            dot(local, x4 + 12, baseline - 5);
+          }
+          const notes = bar.notes.filter((n2) => n2.staff === lane.staff && n2.voice === lane.voice), groups = /* @__PURE__ */ new Map(), keyState = /* @__PURE__ */ new Map(), duration = Math.max(0.125, value(bar.timeline.duration));
+          for (const note of notes) {
+            const onset = value(note.onset), key = String(onset) + (note.grace ? ":grace" : "");
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(note);
+          }
+          const quarter = (barWidth - 40) / duration;
+          for (const groupNotes of groups.values()) {
+            groupNotes.sort((a3, b5) => (b5.pitch ?? -1) - (a3.pitch ?? -1));
+            const group = svg("g", {
+              "data-score-notes": groupNotes.map((n2) => n2.id).join(","),
+              role: "button",
+              tabindex: 0,
+              "aria-label": groupNotes.map((n2) => n2.rest ? t("\u4F11\u6B62", "Rest") : n2.number.digit + " (" + (n2.number.spelled ?? t("\u9F13\u97F3", "Drum")) + ")").join(", ") + ", " + t("\u5C0F\u8282", "measure") + " " + (index2 + 1)
+            });
+            local.append(group);
+            const noteX = x4 + 20 + value(groupNotes[0].onset) * quarter;
+            for (let k3 = 0; k3 < groupNotes.length; k3++) {
+              const note = groupNotes[k3], noteY = baseline - (groupNotes.length - 1 - k3) * 42, drawn = noteShape(group, note, noteX, noteY, keyState);
+              noteVisuals.set(note.id, drawn.group);
+              for (let beat = 1; beat < Math.floor(drawn.base); beat++) line(drawn.group, beat * quarter - 6, -7, beat * quarter + 6, -7, 1.5);
+              for (const [verse, lyric] of children(note.node, "lyric").entries()) text(local, noteX, baseline + 34 + verse * 20, string(lyric, "text"), 14, { "text-anchor": "middle", "data-jianpu-lyric": note.id });
+              if (child(child(note.node, "notations"), "fermata")) text(group, noteX, noteY - 45, "\u{1D110}", 18, { "text-anchor": "middle" });
+              positions.push({ note, x: noteX, y: noteY, parent: system, page: pages.length - 1, system: systemIndex, lane: lane.data.part.id + ":" + lane.id, left, right: left + total * factor });
+            }
+          }
+          if (index2 === bars[0]) line(local, x4, rowY - 12, x4, rowY + rowMetrics[laneIndex].height - 12, 1);
+          barline(local, x4 + barWidth, rowY - 12, rowY + rowMetrics[laneIndex].height - 12, bar.measure, index2 === measureCount - 1);
+          x4 += barWidth;
+        }
+        rowY += rowMetrics[laneIndex].height;
+      }
+      y4 += systemHeight;
+    }
+    for (let i4 = 0; i4 < positions.length; i4++) {
+      const current2 = positions[i4];
+      if (!children(current2.note.node, "tie").some((n2) => n2.getAttribute("type") === "start")) continue;
+      const next = positions.slice(i4 + 1).find((n2) => n2.lane === current2.lane && n2.note.pitch === current2.note.pitch && !n2.note.rest);
+      if (next) {
+        const curve = (parent, x1, y1, x22, y22) => {
+          if (x22 - x1 > 3) parent.append(svg("path", { d: `M ${x1} ${y1} Q ${(x1 + x22) / 2} ${Math.min(y1, y22) - 18} ${x22} ${y22}`, fill: "none", stroke: "#17243a", "stroke-width": 1.2, "data-jianpu-tie": "yes" }));
+        };
+        if (next.page === current2.page && next.system === current2.system) curve(current2.parent, current2.x + 8, current2.y - 18, next.x - 8, next.y - 18);
+        else {
+          curve(current2.parent, current2.x + 8, current2.y - 18, current2.right - 8, current2.y - 18);
+          curve(next.parent, next.left + 4, next.y - 18, next.x - 8, next.y - 18);
+        }
+      }
+    }
+    return { pages, noteVisuals, warnings: [...warnings], noteCount, systemCount: systems.length };
+  }
+
+  // FloeAgent/Modules/FloeScoreKit/Web/engraving-export.js
+  async function createScoreExportSurface(doc, layout, width = 1e3) {
+    const surface = document.createElement("div");
+    surface.style.cssText = `position:fixed;left:-100000px;top:0;width:${Math.max(640, Math.min(2400, width || 1e3))}px;visibility:hidden;pointer-events:none`;
+    document.body.append(surface);
+    let engraver;
+    const dispose = () => {
+      try {
+        engraver?.clear();
+      } finally {
+        surface.remove();
+      }
+    };
+    try {
+      if (notationMode(layout, doc) === "jianpu") {
+        const rendered = renderNumberedScore(doc, layout, width, { exporting: true });
+        surface.append(...rendered.pages);
+        return { surface, dispose };
+      }
+      for (const sign of doc.querySelectorAll("clef > sign")) if (sign.textContent === "jianpu") sign.textContent = "G";
+      engraver = new import_opensheetmusicdisplay.OpenSheetMusicDisplay(surface, { backend: "svg", autoResize: false, drawTitle: true, drawComposer: true, drawPartNames: true, drawPartAbbreviations: true, followCursor: false, disableCursor: true });
+      engraver.setOptions({ pageFormat: layout.paper ?? "A4_P", newSystemFromXML: true, newPageFromXML: true, renderSingleHorizontalStaffline: false, autoGenerateMultipleRestMeasuresFromRestMeasures: Boolean(layout.condenseRests) });
+      engraver.zoom = 1;
+      if (layout.margin) {
+        const margin = layout.margin / 1.75;
+        for (const key of ["PageLeftMargin", "PageRightMargin", "PageTopMargin", "PageBottomMargin"]) engraver.EngravingRules[key] = margin;
+      }
+      if (layout.staffSpacing) engraver.EngravingRules.StaffDistance = layout.staffSpacing;
+      await engraver.load(new DOMParser().parseFromString(canonicalXML(doc), "application/xml"));
+      engraver.render();
+      return { surface, dispose };
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+  }
+
+  // FloeAgent/Modules/FloeScoreKit/Web/score-layout.js
+  function effectiveScoreLayout(e3, part = e3.viewPart) {
+    const base = e3.state.layout ?? {}, layout = { ...base, ...part ? base.partLayouts?.[part] : {} };
+    delete layout.partLayouts;
+    return layout;
+  }
+  function applyXMLLayout(doc, layout) {
+    const defaults = ensure(doc.documentElement, "defaults"), scaling = ensure(defaults, "scaling");
+    set(scaling, "millimeters", 7);
+    set(scaling, "tenths", 40);
+    const page = ensure(defaults, "page-layout"), sizes = { A4_P: [210, 297], A4_L: [297, 210], A3_P: [297, 420], Letter_P: [215.9, 279.4] }, size = sizes[layout.paper] ?? sizes.A4_P, factor = 40 / 7, margin = Math.max(5, Math.min(50, Number(layout.margin ?? 15)));
+    set(page, "page-height", size[1] * factor);
+    set(page, "page-width", size[0] * factor);
+    const margins = ensure(page, "page-margins");
+    margins.setAttribute("type", "both");
+    for (const name of ["left-margin", "right-margin", "top-margin", "bottom-margin"]) set(margins, name, margin * factor);
+    const per = Math.max(0, Math.min(32, Math.trunc(layout.measuresPerSystem ?? 4)));
+    for (const p4 of partList(doc)) for (let i4 = 0; i4 < p4.measures.length; i4++) {
+      const m5 = p4.measures[i4], print = child(m5, "print");
+      if (print?.getAttribute("data-floe-system") === "yes") {
+        print.removeAttribute("new-system");
+        print.removeAttribute("data-floe-system");
+      }
+      if (per && i4 > 0 && i4 % per === 0) {
+        const pr = ensure(m5, "print");
+        pr.setAttribute("new-system", "yes");
+        pr.setAttribute("data-floe-system", "yes");
+        m5.insertBefore(pr, m5.firstElementChild);
+      }
+    }
+    return doc;
+  }
+
   // FloeAgent/Modules/FloeScoreKit/Web/parts.js
   var instruments = {
     piano: { name: ["\u94A2\u7434", "Piano"], short: "Pno.", program: 1, clefs: ["G", "F"], range: [21, 108] },
@@ -53986,6 +54384,84 @@ var FloeBundledEditor = (() => {
     });
   }
 
+  // FloeAgent/Modules/FloeScoreKit/Web/fretboard.js
+  var semitones = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  function staffDetails(part, index2, staff = 1) {
+    const attrs = attributesAt(part, index2), clef = attrs.clefs[staff]?.sign ?? "G";
+    let lines = clef === "TAB" ? 6 : 5, capo = 0;
+    const byLine = /* @__PURE__ */ new Map();
+    for (let i4 = 0; i4 <= index2; i4++) for (const entry of part.measures[i4]?.children ?? []) {
+      if (i4 === index2 && ["note", "backup", "forward"].includes(entry.tagName)) break;
+      if (entry.tagName !== "attributes") continue;
+      for (const details of children(entry, "staff-details")) if (Number(details.getAttribute("number") ?? 1) === staff) {
+        if (child(details, "staff-lines")) lines = Number(string(details, "staff-lines"));
+        if (child(details, "capo")) capo = Number(string(details, "capo"));
+        for (const tuning2 of children(details, "staff-tuning")) {
+          const line2 = Number(tuning2.getAttribute("line")), step = string(tuning2, "tuning-step"), octave = Number(string(tuning2, "tuning-octave")), alter = Number(string(tuning2, "tuning-alter", 0));
+          const pitch = (octave + 1) * 12 + semitones[step] + alter;
+          if (!Number.isInteger(line2) || line2 < 1 || !Number.isFinite(pitch) || pitch < 0 || pitch > 127) throw new Error("Invalid staff tuning");
+          byLine.set(line2, pitch);
+        }
+      }
+    }
+    if (!Number.isInteger(lines) || lines < 1 || lines > 12 || !Number.isInteger(capo) || capo < 0 || capo > 36) throw new Error("Invalid fretted staff details");
+    const count = clef === "TAB" ? lines : byLine.size ? Math.max(...byLine.keys()) : 6, fallback = [40, 45, 50, 55, 59, 64], assumed = byLine.size === 0 && count === 6;
+    const tuning = Array.from({ length: count }, (_4, i4) => byLine.get(count - i4) ?? (assumed ? fallback[count - i4 - 1] : null));
+    return { staff, clef, lines, capo, tuning, assumedStandardTuning: assumed, percussion: clef === "percussion", transpose: attrs.transpose.chromatic + (attrs.transpose.octave ?? 0) * 12 };
+  }
+  function frettedPitch(details, stringNo, fret) {
+    if (!Number.isInteger(stringNo) || stringNo < 1 || stringNo > details.tuning.length || !Number.isInteger(fret) || fret < 0 || fret > 36) throw new Error("Invalid string or fret");
+    const open2 = details.tuning[stringNo - 1];
+    if (open2 === null) throw new Error("Configure this staff tuning first");
+    const pitch = open2 + details.capo + fret - details.transpose;
+    if (!Number.isInteger(pitch) || pitch < 0 || pitch > 127) throw new Error("Fretted note is outside the MIDI range");
+    return pitch;
+  }
+  function setTuning(doc, part, index2, staff, pitches, capo) {
+    if (!Array.isArray(pitches) || pitches.length < 1 || pitches.length > 12 || pitches.some((p4) => !Number.isInteger(p4) || p4 < 0 || p4 > 127) || !Number.isInteger(capo) || capo < 0 || capo > 24) throw new Error("Invalid tuning or capo");
+    const measure = part.measures[index2], attrs = ensure(measure, "attributes");
+    measure.insertBefore(attrs, measure.firstElementChild);
+    let clef = children(attrs, "clef").find((n2) => Number(n2.getAttribute("number") ?? 1) === staff);
+    if (!clef) {
+      clef = node(doc, "clef", null, { number: staff });
+      attrs.append(clef);
+    }
+    set(clef, "sign", "TAB");
+    child(clef, "line")?.remove();
+    let details = children(attrs, "staff-details").find((n2) => Number(n2.getAttribute("number") ?? 1) === staff);
+    if (!details) {
+      details = node(doc, "staff-details", null, { number: staff });
+      attrs.append(details);
+    }
+    set(details, "staff-lines", pitches.length);
+    for (const old of children(details, "staff-tuning")) old.remove();
+    child(details, "capo")?.remove();
+    const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    for (let i4 = pitches.length - 1; i4 >= 0; i4--) {
+      const pitch = pitches[i4], name = names[pitch % 12], tuning = node(doc, "staff-tuning", null, { line: pitches.length - i4 });
+      tuning.append(node(doc, "tuning-step", name[0]));
+      if (name.length > 1) tuning.append(node(doc, "tuning-alter", 1));
+      tuning.append(node(doc, "tuning-octave", Math.floor(pitch / 12) - 1));
+      details.append(tuning);
+    }
+    details.append(node(doc, "capo", capo));
+  }
+  function alignFrettedNote(note, details, usedStrings = null) {
+    const technical = child(child(note, "notations"), "technical"), oldString = Number(string(technical, "string", 0)), pitch = pitchMIDI(note);
+    if (details.clef !== "TAB" && !oldString) return;
+    if (pitch === null) {
+      child(technical, "string")?.remove();
+      child(technical, "fret")?.remove();
+      return;
+    }
+    const options = details.tuning.map((open2, i4) => ({ string: i4 + 1, fret: open2 === null ? NaN : pitch + details.transpose - open2 - details.capo })).filter((x4) => Number.isInteger(x4.fret) && x4.fret >= 0 && x4.fret <= 36 && !usedStrings?.has(x4.string)).sort((a3, b5) => (a3.string === oldString ? -1 : 0) - (b5.string === oldString ? -1 : 0) || a3.fret - b5.fret || a3.string - b5.string);
+    if (!options.length) throw new Error("No playable string for this note or chord");
+    const chosen = options[0], target = ensure(ensure(note, "notations"), "technical");
+    set(target, "string", chosen.string);
+    set(target, "fret", chosen.fret);
+    usedStrings?.add(chosen.string);
+  }
+
   // FloeAgent/Modules/FloeScoreKit/Web/edit.js
   var durationFields = () => [selectField("type", t("\u65F6\u503C", "Duration"), ["whole", "half", "quarter", "eighth", "16th", "32nd", "64th", "128th"], "quarter"), numberField("dots", t("\u9644\u70B9", "Dots"), 0, { min: 0, max: 3 }), numberField("actual", t("\u8FDE\u97F3\u6570", "Tuplet notes"), 1, { min: 1, max: 32 }), numberField("normal", t("\u5360\u7528\u97F3\u6570", "In the time of"), 1, { min: 1, max: 32 })];
   var positionFields = () => [partField(), measureField(), field("onset", t("\u5C0F\u8282\u5185\u56DB\u5206\u97F3\u7B26\u4F4D\u7F6E\uFF08\u53EF\u75281/3\uFF09", "Quarter position in bar (e.g. 1/3)"), "text", { default: "0" }), numberField("voice", t("\u58F0\u90E8", "Voice"), 1, { min: 1, max: 16 }), numberField("staff", t("\u8C31\u8868", "Staff"), 1, { min: 1, max: 8 })];
@@ -54021,14 +54497,14 @@ var FloeBundledEditor = (() => {
     options.sort((a3, b5) => a3.error - b5.error);
     const best = options[0];
     set(note, "type", best.type);
-    for (const dot of children(note, "dot")) dot.remove();
+    for (const dot2 of children(note, "dot")) dot2.remove();
     for (let i4 = 0; i4 < best.dots; i4++) note.append(node(note.ownerDocument, "dot"));
     if (best.error < 1e-9) child(note, "time-modification")?.remove();
     else {
-      const ratio = fraction(best.f.n * duration.d, best.f.d * duration.n), mod = ensure(note, "time-modification");
-      set(mod, "actual-notes", ratio.n);
-      set(mod, "normal-notes", ratio.d);
-      set(mod, "normal-type", best.type);
+      const ratio = fraction(best.f.n * duration.d, best.f.d * duration.n), mod2 = ensure(note, "time-modification");
+      set(mod2, "actual-notes", ratio.n);
+      set(mod2, "normal-notes", ratio.d);
+      set(mod2, "normal-type", best.type);
     }
   }
   function rewriteChanged(part, events) {
@@ -54045,7 +54521,7 @@ var FloeBundledEditor = (() => {
     let onset = args.onset !== void 0 ? parseFraction(args.onset) : selected ? mode === "append" ? add(selected.onset, selected.duration) : selected.onset : fraction(0);
     checkPosition(onset, staff, voice);
     const entry = makeNote(doc, { ...args, voice, staff }), notes = timeline.notes.filter((n2) => !(n2.rest && child(n2.node, "rest")?.getAttribute("measure") === "yes" && n2.voice === voice && n2.staff === staff));
-    if (mode === "replace" && selected && args.onset === void 0) {
+    if (mode === "replace" && selected && selected.voice === voice && selected.staff === staff && args.onset === void 0) {
       for (let i4 = notes.length - 1; i4 >= 0; i4--) if (notes[i4].id === selected.id) notes.splice(i4, 1);
     }
     if (mode === "insert") {
@@ -54080,6 +54556,7 @@ var FloeBundledEditor = (() => {
         if (a3.voice !== void 0) n2.voice = String(a3.voice);
         if (a3.staff !== void 0) n2.staff = Math.trunc(a3.staff);
         checkPosition(n2.onset, n2.staff, n2.voice);
+        alignFrettedNote(n2.node, staffDetails(n2.part, n2.index, n2.staff));
       }
       rewriteChanged(events[0].part, events);
       commit(e3, doc);
@@ -54088,11 +54565,12 @@ var FloeBundledEditor = (() => {
     register(e3, "score.edit.chord", t("\u6DFB\u52A0\u548C\u5F26\u97F3", "Add chord tones"), group, "edit", [field("pitches", t("\u97F3\u9AD8\uFF0C\u7528\u9017\u53F7\u5206\u9694", "Pitches, comma separated"), "text", { default: "E4,G4" })], (a3) => {
       const doc = scoreDocument(e3.state), { part, measure, note } = currentNote(e3, doc, a3), index2 = part.measures.indexOf(measure), notes = noteTimeline(part, index2).notes, source = notes.find((n2) => n2.node === note);
       if (source.rest) throw new Error("Choose a pitched note");
-      const ids = [];
+      const usedStrings = new Set(notes.filter((n2) => value(n2.onset) === value(source.onset) && n2.staff === source.staff).map((n2) => Number(string(child(child(n2.node, "notations"), "technical"), "string", 0))).filter(Boolean)), ids = [];
       for (const pitch of String(a3.pitches ?? "").split(/[\s,]+/).filter(Boolean)) {
         const entry = note.cloneNode(true);
         entry.setAttribute("id", "floe-note-" + uid());
         changePitch(entry, pitch);
+        alignFrettedNote(entry, staffDetails(part, index2, source.staff), usedStrings);
         for (const lyric of children(entry, "lyric")) lyric.remove();
         notes.push({ ...source, node: entry, id: entry.getAttribute("id") });
         ids.push(entry.getAttribute("id"));
@@ -54108,9 +54586,9 @@ var FloeBundledEditor = (() => {
       return { changed: events.length };
     });
     register(e3, "score.edit.transpose", t("\u79FB\u8C03\u9009\u533A", "Transpose selection"), region, "edit", [numberField("semitones", t("\u534A\u97F3\uFF08\u8D1F\u6570\u5411\u4E0B\uFF09", "Semitones (negative down)"), 0, { min: -48, max: 48 }), numberField("diatonic", t("\u97F3\u7EA7\uFF080\u4E3A\u81EA\u52A8\uFF09", "Diatonic steps (0 automatic)"), 0), field("wholePart", t("\u6574\u4E2A\u4E50\u5668", "Whole instrument"), "checkbox"), field("transposeKey", t("\u540C\u6B65\u79FB\u8C03\u8C03\u53F7", "Transpose key signatures"), "checkbox")], (a3) => {
-      const doc = scoreDocument(e3.state), p4 = currentPart(e3, doc, a3.part), events = a3.wholePart ? p4.measures.flatMap((_4, i4) => noteTimeline(p4, i4).notes.map((n2) => ({ ...n2, index: i4, part: p4 }))) : selectedEvents(e3, doc, a3), semitones = Math.trunc(a3.semitones ?? 0), steps = Math.trunc(a3.diatonic ?? 0), names = "CDEFGAB", naturals = [0, 2, 4, 5, 7, 9, 11];
+      const doc = scoreDocument(e3.state), p4 = currentPart(e3, doc, a3.part), events = a3.wholePart ? p4.measures.flatMap((_4, i4) => noteTimeline(p4, i4).notes.map((n2) => ({ ...n2, index: i4, part: p4 }))) : selectedEvents(e3, doc, a3), semitones2 = Math.trunc(a3.semitones ?? 0), steps = Math.trunc(a3.diatonic ?? 0), names = "CDEFGAB", naturals = [0, 2, 4, 5, 7, 9, 11];
       for (const n2 of events) if (n2.pitch !== null) {
-        const target = n2.pitch + semitones;
+        const target = n2.pitch + semitones2;
         if (target < 0 || target > 127) throw new Error("Transposition exceeds MIDI range");
         if (steps) {
           const pitch = child(n2.node, "pitch"), degree = names.indexOf(string(pitch, "step")) + Number(string(pitch, "octave")) * 7 + steps, octave = Math.floor(degree / 7), step = (degree % 7 + 7) % 7, alter = target - ((octave + 1) * 12 + naturals[step]);
@@ -54122,8 +54600,9 @@ var FloeBundledEditor = (() => {
           }
         } else changePitch(n2.node, chooseSpelling(target, attributesAt(p4, n2.index).fifths < 0));
       }
+      for (const n2 of events) if (n2.pitch !== null) alignFrettedNote(n2.node, staffDetails(p4, n2.index, n2.staff));
       if (a3.transposeKey) for (const m5 of p4.measures) for (const key of m5.querySelectorAll("attributes > key")) {
-        let fifths = Number(string(key, "fifths", 0)) + semitones * 7;
+        let fifths = Number(string(key, "fifths", 0)) + semitones2 * 7;
         while (fifths > 7) fifths -= 12;
         while (fifths < -7) fifths += 12;
         set(key, "fifths", fifths);
@@ -54338,6 +54817,50 @@ var FloeBundledEditor = (() => {
     });
   }
 
+  // FloeAgent/Modules/FloeScoreKit/Web/professional.js
+  function registerProfessionalScore(e3) {
+    const group = t("\u9F13\u8C31\u4E0E\u516D\u7EBF\u8C31", "Drums & tablature");
+    register(e3, "score.parts.tuning", t("\u8C03\u5F26\u4E0E\u53D8\u8C03\u5939", "Tuning & capo"), group, "edit", [partField(), measureField(), numberField("staff", t("\u8C31\u8868", "Staff"), 1, { min: 1, max: 16 }), field("tuning", t("\u7A7A\u5F26\uFF08\u4ECE\u7B2C\u4E00\u5F26\u5230\u672B\u5F26\uFF09", "Open strings (highest string first)"), "text", { default: "E4 B3 G3 D3 A2 E2" }), numberField("capo", t("\u53D8\u8C03\u5939\u54C1\u4F4D", "Capo fret"), 0, { min: 0, max: 24 })], (a3) => {
+      const doc = scoreDocument(e3.state), { part, measure } = currentMeasure(e3, doc, a3), index2 = part.measures.indexOf(measure), staff = Number(a3.staff ?? e3.input?.staff ?? 1);
+      if (!Number.isInteger(staff) || staff < 1 || staff > attributesAt(part, index2).staves) throw new Error("Invalid tuning staff");
+      const values = String(a3.tuning ?? "").trim().split(/[\s,]+/).filter(Boolean).map((name) => {
+        const p4 = pitchParts(name), steps = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+        return (p4.octave + 1) * 12 + steps[p4.step] + p4.alter;
+      });
+      setTuning(doc, part, index2, staff, values, Number(a3.capo ?? 0));
+      commit(e3, doc);
+      return { part: part.id, staff, strings: values.length, capo: Number(a3.capo ?? 0) };
+    });
+    const fields = [partField(), measureField(), numberField("staff", t("\u8C31\u8868", "Staff"), 1, { min: 1, max: 16 }), numberField("voice", t("\u58F0\u90E8", "Voice"), 1, { min: 1, max: 64 }), selectField("type", t("\u65F6\u503C", "Duration"), ["whole", "half", "quarter", "eighth", "16th", "32nd"], "quarter"), numberField("dots", t("\u9644\u70B9", "Dots"), 0, { min: 0, max: 3 }), selectField("mode", t("\u8F93\u5165\u65B9\u5F0F", "Entry mode"), ["replace", "append", "insert"], "append")];
+    register(e3, "score.edit.tabInsert", t("\u8F93\u5165\u516D\u7EBF\u8C31\u97F3\u7B26", "Enter TAB note"), group, "edit", [...fields, numberField("string", t("\u5F26", "String"), 1, { min: 1, max: 12 }), numberField("fret", t("\u54C1\u4F4D", "Fret"), 0, { min: 0, max: 36 })], (a3) => {
+      const doc = scoreDocument(e3.state), { part, measure } = currentMeasure(e3, doc, a3), index2 = part.measures.indexOf(measure), staff = Number(a3.staff ?? e3.input?.staff ?? 1), details = staffDetails(part, index2, staff);
+      if (details.clef !== "TAB" || staff < 1 || staff > attributesAt(part, index2).staves) throw new Error("Choose a tablature staff");
+      let stringNo = Number(a3.string ?? 1), fret = Number(a3.fret ?? 0);
+      if (a3.pitch !== void 0) {
+        const p4 = pitchParts(a3.pitch), steps = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }, wanted = (p4.octave + 1) * 12 + steps[p4.step] + p4.alter;
+        const options = details.tuning.map((open2, i4) => ({ string: i4 + 1, fret: open2 === null ? NaN : wanted + details.transpose - open2 - details.capo })).filter((x4) => Number.isInteger(x4.fret) && x4.fret >= 0 && x4.fret <= 36).sort((a4, b5) => a4.fret - b5.fret || a4.string - b5.string);
+        if (!options.length) throw new Error("The pitch is outside this fretboard");
+        stringNo = options[0].string;
+        fret = options[0].fret;
+      }
+      const pitch = frettedPitch(details, stringNo, fret), result = insert(e3, { ...a3, staff, pitch: chooseSpelling(pitch), rest: false });
+      const updated = scoreDocument(e3.state), note = updated.querySelector('note[id="' + result.note + '"]');
+      if (!note) throw new Error("Inserted TAB note was not found");
+      const technical = ensure(ensure(note, "notations"), "technical");
+      set(technical, "string", stringNo);
+      set(technical, "fret", fret);
+      commit(e3, updated);
+      return { ...result, string: stringNo, fret, pitch };
+    });
+    register(e3, "score.edit.percussionInsert", t("\u8F93\u5165\u9F13\u4EF6", "Enter drum hit"), group, "edit", [...fields, numberField("drum", t("\u9F13\u4EF6 MIDI \u97F3\u9AD8", "Drum MIDI pitch"), 38, { min: 35, max: 81 })], (a3) => {
+      const doc = scoreDocument(e3.state), { part, measure } = currentMeasure(e3, doc, a3), index2 = part.measures.indexOf(measure), staff = Number(a3.staff ?? e3.input?.staff ?? 1), drum = Number(a3.drum ?? 38);
+      if (staffDetails(part, index2, staff).clef !== "percussion" || staff < 1 || staff > attributesAt(part, index2).staves || !Number.isInteger(drum) || drum < 35 || drum > 81 || !part.definition) throw new Error("Choose a percussion staff and a valid drum");
+      const result = insert(e3, { ...a3, staff, pitch: "C5", rest: false });
+      e3.commands.get("score.edit.percussion").handler({ drum, part: part.id, measure: measure.getAttribute("id"), notes: result.note });
+      return { ...result, drum };
+    });
+  }
+
   // FloeAgent/Modules/FloeScoreKit/Web/notation.js
   function directionAt(doc, measure, attrs, onset, staff = 1) {
     const direction = node(doc, "direction", null, { id: "floe-direction-" + uid(), placement: "above" });
@@ -54389,7 +54912,7 @@ var FloeBundledEditor = (() => {
       const actual = Math.max(1, Math.min(32, Math.trunc(a3.actual ?? 3))), normal = Math.max(1, Math.min(32, Math.trunc(a3.normal ?? 2))), p4 = events[0].part;
       const grouped = /* @__PURE__ */ new Map();
       for (const n2 of events) {
-        const mod = child(n2.node, "time-modification"), oldActual = Number(string(mod ?? n2.node, "actual-notes", 1)), oldNormal = Number(string(mod ?? n2.node, "normal-notes", 1));
+        const mod2 = child(n2.node, "time-modification"), oldActual = Number(string(mod2 ?? n2.node, "actual-notes", 1)), oldNormal = Number(string(mod2 ?? n2.node, "normal-notes", 1));
         n2.duration = a3.remove ? fraction(n2.duration.n * oldActual, n2.duration.d * oldNormal) : fraction(n2.duration.n * normal, n2.duration.d * actual);
         child(n2.node, "time-modification")?.remove();
         for (const tuple of n2.node.querySelectorAll("notations > tuplet")) tuple.remove();
@@ -54463,18 +54986,17 @@ var FloeBundledEditor = (() => {
       commit(e3, doc);
       return { syllables: Math.min(tokens.length, events.length) };
     });
-    register(e3, "score.edit.technical", t("\u6307\u6CD5\u4E0E\u516D\u7EBF\u8C31", "Fingering & tablature"), group, "edit", [field("fingering", t("\u6307\u6CD5", "Fingering")), numberField("string", t("\u5F26\uFF081\u6700\u9AD8\uFF0C0\u4FDD\u6301\uFF09", "String (1 highest, 0 unchanged)"), 0, { min: 0, max: 6 }), numberField("fret", t("\u54C1\u4F4D", "Fret"), 0, { min: 0, max: 36 }), selectField("mark", t("\u5176\u4ED6\u6280\u5DE7", "Technique"), ["", "up-bow", "down-bow", "harmonic", "open-string", "hammer-on", "pull-off"], "")], (a3) => {
+    register(e3, "score.edit.technical", t("\u6307\u6CD5\u4E0E\u516D\u7EBF\u8C31", "Fingering & tablature"), group, "edit", [field("fingering", t("\u6307\u6CD5", "Fingering")), numberField("string", t("\u5F26\uFF081\u6700\u9AD8\uFF0C0\u4FDD\u6301\uFF09", "String (1 highest, 0 unchanged)"), 0, { min: 0, max: 12 }), numberField("fret", t("\u54C1\u4F4D", "Fret"), 0, { min: 0, max: 36 }), selectField("mark", t("\u5176\u4ED6\u6280\u5DE7", "Technique"), ["", "up-bow", "down-bow", "harmonic", "open-string", "hammer-on", "pull-off"], "")], (a3) => {
       const doc = scoreDocument(e3.state), events = selectedEvents(e3, doc, a3);
       for (const n2 of events) {
         const technical = ensure(ensure(n2.node, "notations"), "technical");
         if (a3.fingering !== void 0) set(technical, "fingering", a3.fingering || null);
         if (a3.string > 0) {
           const stringNo = Math.trunc(a3.string), fret = Math.trunc(a3.fret ?? 0);
-          if (stringNo > 6 || fret < 0 || fret > 36) throw new Error("Invalid string or fret");
+          const details = staffDetails(n2.part, n2.index, n2.staff), pitch = frettedPitch(details, stringNo, fret);
           set(technical, "string", stringNo);
           set(technical, "fret", fret);
-          const tuning = [64, 59, 55, 50, 45, 40];
-          changePitch(n2.node, chooseSpelling(tuning[stringNo - 1] + fret));
+          changePitch(n2.node, chooseSpelling(pitch));
         }
         if (a3.mark) {
           if (!["up-bow", "down-bow", "harmonic", "open-string", "hammer-on", "pull-off"].includes(a3.mark)) throw new Error("Unknown technique");
@@ -54504,7 +55026,8 @@ var FloeBundledEditor = (() => {
         set(unpitched, "display-octave", midi === 36 ? 4 : 5);
         const i4 = ensure(n2.node, "instrument");
         i4.setAttribute("id", iid);
-        if (midi >= 42) set(n2.node, "notehead", "x");
+        if ([42, 44, 46, 49, 51, 52, 53, 55, 57, 59].includes(midi)) set(n2.node, "notehead", "x");
+        else child(n2.node, "notehead")?.remove();
       }
       commit(e3, doc);
       return { notes: events.length, midi };
@@ -54795,7 +55318,7 @@ var FloeBundledEditor = (() => {
           }
           let velocity = n2.node.hasAttribute("dynamics") ? Number(n2.node.getAttribute("dynamics")) / 100 * 127 : dynamic;
           if (n2.node.querySelector("accent,strong-accent")) velocity = Math.min(127, velocity + 16);
-          const event = { part: p4.id, note: n2.id, measure: bar.index + 1, pass: bar.pass, staff: n2.staff, voice: n2.voice, pitch: Math.round(pitch), velocity: Math.max(1, Math.min(127, Math.round(velocity))), program, channel, percussion: Boolean(drum), startQuarter: Math.max(0, startQuarter), durationQuarter, volume: muted ? 0 : Math.max(0, Math.min(1, Number(respectMix ? config.volume ?? 1 : 1))), tiedNoteIDs: [n2.id], pedal: pedaled, gate: n2.node.querySelector("staccato,staccatissimo")?.tagName === "staccatissimo" ? 0.3 : n2.node.querySelector("staccato") ? 0.55 : 0.97 };
+          const event = { part: p4.id, note: n2.id, measure: bar.index + 1, pass: bar.pass, staff: n2.staff, voice: n2.voice, pitch: Math.round(pitch), velocity: Math.max(1, Math.min(127, Math.round(velocity))), program, nativePreset: config.nativePreset ?? null, channel, percussion: Boolean(drum), startQuarter: Math.max(0, startQuarter), durationQuarter, volume: muted ? 0 : Math.max(0, Math.min(1, Number(respectMix ? config.volume ?? 1 : 1))), tiedNoteIDs: [n2.id], pedal: pedaled, gate: n2.node.querySelector("staccato,staccatissimo")?.tagName === "staccatissimo" ? 0.3 : n2.node.querySelector("staccato") ? 0.55 : 0.97 };
           partEvents.push(event);
           if (tieTypes.includes("start")) ties.set(key, event);
           else ties.delete(key);
@@ -54828,7 +55351,10 @@ var FloeBundledEditor = (() => {
         events.push({ part: "metronome", note: "click", measure: bar.index + 1, pitch: q3 === 0 ? 84 : 77, velocity: q3 === 0 ? 110 : 80, volume: 0.35, program: 115, channel: 9, percussion: true, startQuarter, durationQuarter: 0.06, start: clock.seconds(startQuarter), duration: 0.045 });
       }
     }
-    return { format: "floe.score.performance/1", duration: clock.seconds(base), quarters: base, tempo: clock.points, signatures, route, parts: parts.map((p4) => ({ id: p4.id, name: p4.name })), events: events.sort((a3, b5) => a3.start - b5.start || a3.pitch - b5.pitch) };
+    return { format: "floe.score.performance/1", duration: clock.seconds(base), quarters: base, tempo: clock.points, signatures, route, parts: parts.map((p4) => {
+      const midi = children(p4.definition, "midi-instrument")[0];
+      return { id: p4.id, name: p4.name, program: Math.max(0, Math.min(127, Number(string(midi ?? p4.definition, "midi-program", 1)) - 1)), percussion: Number(string(midi ?? p4.definition, "midi-channel", 1)) === 10, nativePreset: mix[p4.id]?.nativePreset ?? null };
+    }), events: events.sort((a3, b5) => a3.start - b5.start || a3.pitch - b5.pitch) };
   }
   var BrowserScorePlayer = class {
     constructor() {
@@ -54953,10 +55479,34 @@ var FloeBundledEditor = (() => {
         position = status.position ?? 0;
       }
       const p4 = currentPartID(e3, a3.part);
-      e3.state.playback.parts[p4] = { solo: Boolean(a3.solo), mute: Boolean(a3.mute), volume: Math.max(0, Math.min(1, Number(a3.volume ?? 1))) };
+      e3.state.playback.parts[p4] = { ...e3.state.playback.parts[p4], solo: Boolean(a3.solo), mute: Boolean(a3.mute), volume: Math.max(0, Math.min(1, Number(a3.volume ?? 1))) };
       if (e3.transport?.playing) await executeTransport(e3, { action: "start", position });
       return e3.state.playback.parts[p4];
     });
+    const musicHost = Array.isArray(globalThis.FloeEditorNativeOperations) && globalThis.FloeEditorNativeOperations.includes("score.arrange");
+    if (musicHost) {
+      register(e3, "score.playback.timbre", t("\u6F14\u594F\u97F3\u8272", "Performance sound"), group, "edit", [partField(), numberField("preset", t("\u539F\u751F\u97F3\u8272\uFF08-1\u8DDF\u968F\u4E50\u5668\uFF09", "Native preset (-1: instrument default)"), (e4, a3 = {}) => e4.state.playback.parts[currentPartID(e4, a3.part)]?.nativePreset ?? -1, { min: -1, max: 4096 })], async (a3) => {
+        const preset = Number(a3.preset), p4 = currentPartID(e3, a3.part);
+        if (!Number.isInteger(preset) || preset < -1 || preset > 4096) throw new Error(t("\u8BF7\u9009\u62E9\u6709\u6548\u97F3\u8272\u3002", "Choose a valid sound."));
+        let position = 0;
+        if (e3.transport?.playing) {
+          const status = await executeTransport(e3, { action: "status" });
+          position = status.position ?? 0;
+        }
+        const mix = { ...e3.state.playback.parts[p4] };
+        if (preset === -1) delete mix.nativePreset;
+        else mix.nativePreset = preset;
+        e3.state.playback.parts[p4] = mix;
+        if (e3.transport?.playing) await executeTransport(e3, { action: "start", position });
+        return { part: p4, nativePreset: mix.nativePreset ?? null };
+      });
+      register(e3, "score.playback.arrange", t("\u6F14\u594F\u5E76\u52A0\u5165\u7F16\u66F2", "Perform & add to arrangement"), group, "read", [numberField("musicRevision", t("\u7F16\u66F2\u4FEE\u8BA2\uFF08\u89C1score.describe\uFF09", "Arrangement revision (from score.describe)"), 0, { min: 0 })], async (a3) => {
+        if (!Number.isSafeInteger(a3.musicRevision) || a3.musicRevision < 0) throw new Error(t("\u8BF7\u5237\u65B0\u5F53\u524D\u7F16\u66F2\u540E\u91CD\u8BD5\u3002", "Refresh the arrangement before continuing."));
+        if (!globalThis.webkit?.messageHandlers?.floeEditor) throw new Error(t("\u8BF7\u5728\u97F3\u4E50\u5DE5\u7A0B\u4E2D\u6F14\u594F\u5E76\u52A0\u5165\u7F16\u66F2\u3002", "Perform and add this score from its music project."));
+        return await e3.native("score.arrange", { performance: compileScore(e3.state), scoreRevision: e3.revision, musicRevision: a3.musicRevision });
+      });
+      e3.commands.get("score.playback.arrange").descriptor.sideEffecting = true;
+    }
     register(e3, "score.playback.compile", t("\u67E5\u770B\u6F14\u594F\u4E8B\u4EF6", "Inspect performance events"), group, "read", [], () => compileScore(e3.state));
     register(
       e3,
@@ -61161,14 +61711,14 @@ var FloeBundledEditor = (() => {
     }
   }
   var latin1Regex = /^[\u0000-\u00FF]*$/;
-  function validateLatin1(text2) {
-    if (!latin1Regex.test(text2)) {
+  function validateLatin1(text3) {
+    if (!latin1Regex.test(text3)) {
       throw new Error("invalid latin1 text");
     }
   }
-  function decodetEXt(text2, buffer, length) {
+  function decodetEXt(text3, buffer, length) {
     const keyword = readKeyword(buffer);
-    text2[keyword] = readLatin1(buffer, length - keyword.length - 1);
+    text3[keyword] = readLatin1(buffer, length - keyword.length - 1);
   }
   function readKeyword(buffer) {
     buffer.mark();
@@ -71157,12 +71707,12 @@ var FloeBundledEditor = (() => {
   }
 
   // FloeAgent/Modules/FloeScoreKit/Web/formats.js
-  function safeMusicXML(text2) {
-    if (/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(text2)) throw new Error("Entity declarations are not allowed in score files");
-    return text2.replace(/<!DOCTYPE\s[^>]*>/gi, "");
+  function safeMusicXML(text3) {
+    if (/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(text3)) throw new Error("Entity declarations are not allowed in score files");
+    return text3.replace(/<!DOCTYPE\s[^>]*>/gi, "");
   }
-  function parseMusicXML(text2) {
-    const doc = parseXML(safeMusicXML(text2));
+  function parseMusicXML(text3) {
+    const doc = parseXML(safeMusicXML(text3));
     if (doc.documentElement.tagName === "score-timewise") {
       const original = doc.documentElement, root = node(doc, "score-partwise", null, { version: original.getAttribute("version") ?? "4.0" }), list = child(original, "part-list"), ids = children(list, "score-part").map((n2) => n2.getAttribute("id"));
       for (const n2 of [...original.children]) if (n2.tagName !== "measure") root.append(n2.cloneNode(true));
@@ -71234,10 +71784,10 @@ var FloeBundledEditor = (() => {
     if (concert) for (const p4 of partList(doc)) {
       const effective = p4.measures.map((_4, i4) => attributesAt(p4, i4));
       for (let i4 = 0; i4 < p4.measures.length; i4++) {
-        const attrs = effective[i4], semitones = attrs.transpose.chromatic + (attrs.transpose.octave ?? 0) * 12;
-        for (const n2 of noteTimeline(p4, i4).notes) if (n2.pitch !== null) changePitch(n2.node, chooseSpelling(n2.pitch + semitones, attrs.fifths < 0));
+        const attrs = effective[i4], semitones2 = attrs.transpose.chromatic + (attrs.transpose.octave ?? 0) * 12;
+        for (const n2 of noteTimeline(p4, i4).notes) if (n2.pitch !== null) changePitch(n2.node, chooseSpelling(n2.pitch + semitones2, attrs.fifths < 0));
         for (const key of p4.measures[i4].querySelectorAll("attributes > key")) {
-          let fifths = Number(string(key, "fifths", 0)) + semitones * 7;
+          let fifths = Number(string(key, "fifths", 0)) + semitones2 * 7;
           while (fifths > 7) fifths -= 12;
           while (fifths < -7) fifths += 12;
           set(key, "fifths", fifths);
@@ -71310,59 +71860,83 @@ var FloeBundledEditor = (() => {
       URL.revokeObjectURL(url);
     }
   }
-  async function exportGraphic(e3, format, { scale = 2 } = {}) {
-    if (!e3.scoreSurface) throw new Error("Open the rendered score before exporting");
-    await e3.ensureScoreRendered?.();
-    const pages = [...e3.scoreSurface.querySelectorAll("svg")].filter((s4) => s4.querySelector("path,line,text")), artifacts = [], name = safeName(e3.state.title);
-    if (!pages.length) throw new Error("The score has no rendered pages");
-    let pdf;
-    for (let i4 = 0; i4 < pages.length; i4++) {
-      const source = pages[i4], svg2 = source.cloneNode(true);
-      for (const selected of svg2.querySelectorAll(".score-selected,.score-playing")) selected.classList.remove("score-selected", "score-playing");
-      const width = Number.parseFloat(svg2.getAttribute("width")) || source.getBoundingClientRect().width || 800, height = Number.parseFloat(svg2.getAttribute("height")) || source.getBoundingClientRect().height || 1131;
-      svg2.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-      svg2.setAttribute("viewBox", svg2.getAttribute("viewBox") || `0 0 ${width} ${height}`);
-      svg2.setAttribute("width", width);
-      svg2.setAttribute("height", height);
-      const data = serialize(svg2), suffix = pages.length > 1 ? "-" + (i4 + 1) : "";
-      if (format === "svg") artifacts.push(artifact(name + suffix + ".svg", "image/svg+xml", data));
-      else if (format === "png") artifacts.push(artifact(name + suffix + ".png", "image/png", await rasterSVG(data, width, height, scale)));
-      else if (format === "pdf") {
-        const pageWidth = e3.state.layout.paper?.startsWith("Letter") ? 215.9 : e3.state.layout.paper?.startsWith("A3") ? 297 : 210, pageHeight = pageWidth * height / width;
-        if (!pdf) pdf = new E({ orientation: pageWidth > pageHeight ? "landscape" : "portrait", unit: "mm", format: [pageWidth, pageHeight], compress: true });
-        else pdf.addPage([pageWidth, pageHeight], pageWidth > pageHeight ? "landscape" : "portrait");
-        const unicodeText = [...svg2.querySelectorAll("text")].some((n2) => /[^\u0000-\u00ff]/.test(n2.textContent));
-        if (unicodeText) pdf.addImage(await rasterSVG(data, width, height, 3), "PNG", 0, 0, pageWidth, pageHeight, void 0, "FAST");
-        else await pdf.svg(svg2, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+  async function exportGraphic(e3, format, { scale = 2, part = null, concert = false, name = safeName(e3.state.title), signal } = {}) {
+    if (!e3.createScoreExportSurface) throw new Error("Score engraving is not ready");
+    const layout = effectiveScoreLayout(e3, part), doc = viewDocument(e3, { part, concert });
+    if (part && e3.state.layout?.partLayouts?.[part]) applyXMLLayout(doc, layout);
+    const rendered = await e3.createScoreExportSurface(doc, layout);
+    try {
+      const pages = [...rendered.surface.querySelectorAll("svg")].filter((s4) => s4.querySelector("path,line,text")), artifacts = [];
+      if (!pages.length) throw new Error("The score has no rendered pages");
+      let pdf;
+      for (let i4 = 0; i4 < pages.length; i4++) {
+        if (signal?.aborted) throw new Error("Cancelled");
+        const source = pages[i4], svg3 = source.cloneNode(true);
+        for (const selected of svg3.querySelectorAll(".score-selected,.score-playing")) selected.classList.remove("score-selected", "score-playing");
+        const width = Number.parseFloat(svg3.getAttribute("width")) || source.getBoundingClientRect().width || 800, height = Number.parseFloat(svg3.getAttribute("height")) || source.getBoundingClientRect().height || 1131;
+        svg3.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        svg3.setAttribute("viewBox", svg3.getAttribute("viewBox") || `0 0 ${width} ${height}`);
+        svg3.setAttribute("width", width);
+        svg3.setAttribute("height", height);
+        const data = serialize(svg3), suffix = pages.length > 1 ? "-" + (i4 + 1) : "";
+        if (format === "svg") artifacts.push(artifact(name + suffix + ".svg", "image/svg+xml", data));
+        else if (format === "png") artifacts.push(artifact(name + suffix + ".png", "image/png", await rasterSVG(data, width, height, scale)));
+        else if (format === "pdf") {
+          const [pageWidth, pageHeight] = { A4_P: [210, 297], A4_L: [297, 210], A3_P: [297, 420], Letter_P: [215.9, 279.4] }[layout.paper] ?? [210, 297], fit = Math.min(pageWidth / width, pageHeight / height), drawWidth = width * fit, drawHeight = height * fit, x4 = (pageWidth - drawWidth) / 2;
+          if (!pdf) pdf = new E({ orientation: pageWidth > pageHeight ? "landscape" : "portrait", unit: "mm", format: [pageWidth, pageHeight], compress: true });
+          else pdf.addPage([pageWidth, pageHeight], pageWidth > pageHeight ? "landscape" : "portrait");
+          const unicodeText = [...svg3.querySelectorAll("text")].some((n2) => /[^\u0000-\u00ff]/.test(n2.textContent));
+          if (unicodeText) pdf.addImage(await rasterSVG(data, width, height, 3), "PNG", x4, 0, drawWidth, drawHeight, void 0, "FAST");
+          else await pdf.svg(svg3, { x: x4, y: 0, width: drawWidth, height: drawHeight });
+        }
       }
+      if (pdf) artifacts.push(artifact(name + ".pdf", "application/pdf", new Uint8Array(pdf.output("arraybuffer"))));
+      return { result: { pages: pages.length, format, part: part ?? null, concert: Boolean(concert) }, artifacts };
+    } finally {
+      rendered.dispose();
     }
-    if (pdf) artifacts.push(artifact(name + ".pdf", "application/pdf", new Uint8Array(pdf.output("arraybuffer"))));
-    return { result: { pages: pages.length, format }, artifacts };
   }
   function registerFormats(e3) {
+    const owner = e3;
     const group = t("\u5BFC\u5165\u5BFC\u51FA", "Import & export");
     register(e3, "file.import", t("\u5BFC\u5165\u4E50\u8C31", "Import score"), group, "importFile", [field("name", t("\u6587\u4EF6\u540D", "Filename")), field("base64", t("\u6587\u4EF6\u8D44\u6599", "File data"), "textarea"), selectField("mode", t("\u65B9\u5F0F", "Mode"), ["replace", "append"], "replace"), field("quantization", t("MIDI\u91CF\u5316\uFF081/4\u4E3A\u5341\u516D\u5206\u97F3\u7B26\uFF0C0\u4E3A\u539F\u65F6\u5E8F\uFF09", "MIDI grid (1/4: sixteenth, 0: original)"), "text", { default: "1/4" })], (a3) => importScore(e3, a3));
     e3.commands.get("file.import").descriptor.hidden = true;
     register(e3, "score.import.musicxml", t("\u7C98\u8D34 MusicXML", "Paste MusicXML"), group, "importFile", [field("xml", t("MusicXML", "MusicXML"), "textarea", { rows: 10 }), selectField("mode", t("\u65B9\u5F0F", "Mode"), ["replace", "append"], "replace")], (a3) => importScore(e3, { name: "Pasted.musicxml", base64: bytes64(new TextEncoder().encode(a3.xml ?? "")), mode: a3.mode }));
-    register(e3, "score.export", t("\u5BFC\u51FA\u4E50\u8C31\u6216\u6F14\u594F", "Export score or performance"), group, "exportFile", [selectField("format", t("\u683C\u5F0F", "Format"), ["musicxml", "mxl", "midi", "pdf", "svg", "png", "floescore"], "musicxml"), field("linkedPart", t("\u4EC5\u5F53\u524D\u5173\u8054\u5206\u8C31", "Current linked part only"), "checkbox"), numberField("scale", t("PNG\u500D\u7387", "PNG scale"), 2, { min: 1, max: 4 })], async (a3) => {
-      const format = a3.format ?? "musicxml", doc = a3.linkedPart ? viewDocument(e3) : scoreDocument(e3.state), name = safeName(e3.state.title);
-      if (["pdf", "svg", "png"].includes(format)) return exportGraphic(e3, format, a3);
+    register(e3, "score.export", t("\u5BFC\u51FA\u4E50\u8C31\u6216\u6F14\u594F", "Export score or performance"), group, "exportFile", [selectField("format", t("\u683C\u5F0F", "Format"), ["musicxml", "mxl", "midi", "pdf", "svg", "png", "floescore"], "musicxml"), field("linkedPart", t("\u4EC5\u5F53\u524D\u5173\u8054\u5206\u8C31", "Current linked part only"), "checkbox"), field("concert", t("\u5B9E\u97F3\u5BFC\u51FA", "Concert-pitch export"), "checkbox"), numberField("scale", t("PNG\u500D\u7387", "PNG scale"), 2, { min: 1, max: 4 })], async (a3, signal) => {
+      const e4 = { state: clone(owner.state), viewPart: owner.viewPart, concertPitch: owner.concertPitch, createScoreExportSurface: owner.createScoreExportSurface };
+      const format = a3.format ?? "musicxml", part = a3.linkedPart ? e4.viewPart : null, concert = Boolean(a3.concert ?? (a3.linkedPart && e4.concertPitch));
+      if (a3.linkedPart && !part) throw new Error("Choose a linked part first");
+      const doc = viewDocument(e4, { part, concert }), name = safeName(e4.state.title);
+      if (part && e4.state.layout?.partLayouts?.[part]) applyXMLLayout(doc, effectiveScoreLayout(e4, part));
+      if (["pdf", "svg", "png"].includes(format)) return exportGraphic(e4, format, { ...a3, part, concert, name, signal });
       if (format === "musicxml") return { artifacts: [artifact(name + ".musicxml", "application/vnd.recordare.musicxml+xml", canonicalXML(doc))] };
-      if (format === "mxl") return { artifacts: [artifact(name + ".mxl", "application/vnd.recordare.musicxml", writeMXL(doc, e3.state.archive))] };
+      if (format === "mxl") return { artifacts: [artifact(name + ".mxl", "application/vnd.recordare.musicxml", writeMXL(doc, e4.state.archive))] };
       if (format === "midi") {
-        const state = { ...e3.state, xml: serialize(doc) }, performance2 = compileScore(state, { includeMetronome: false, respectMix: false });
+        const state = { ...e4.state, xml: serialize(doc) }, performance2 = compileScore(state, { includeMetronome: false, respectMix: false });
         return { result: { events: performance2.events.length, duration: performance2.duration }, artifacts: [artifact(name + ".mid", "audio/midi", writeMIDI(state, performance2))] };
       }
-      if (format === "floescore") return { artifacts: [artifact(name + ".floescore", "application/vnd.floe.score+json", JSON.stringify({ schemaVersion: 1, kind: "score", content: e3.payload }, null, 2))] };
+      if (format === "floescore") return { artifacts: [artifact(name + ".floescore", "application/vnd.floe.score+json", JSON.stringify({ schemaVersion: 1, kind: "score", content: e4.payload }, null, 2))] };
       throw new Error("Unknown score export format");
     });
-    register(e3, "score.parts.export", t("\u5BFC\u51FA\u5168\u90E8\u5173\u8054\u5206\u8C31", "Export all linked parts"), group, "exportFile", [selectField("format", t("\u683C\u5F0F", "Format"), ["musicxml", "mxl"], "musicxml")], (a3) => {
-      const artifacts = [];
-      for (const [index2, p4] of partList(scoreDocument(e3.state)).entries()) {
-        const doc = viewDocument(e3, { part: p4.id, concert: false }), name = safeName(e3.state.title) + "-" + (index2 + 1) + "-" + safeName(p4.name);
-        artifacts.push(a3.format === "mxl" ? artifact(name + ".mxl", "application/vnd.recordare.musicxml", writeMXL(doc, e3.state.archive)) : artifact(name + ".musicxml", "application/vnd.recordare.musicxml+xml", canonicalXML(doc)));
+    register(e3, "score.parts.export", t("\u5BFC\u51FA\u5168\u90E8\u5173\u8054\u5206\u8C31", "Export all linked parts"), group, "exportFile", [selectField("format", t("\u683C\u5F0F", "Format"), ["musicxml", "mxl", "midi", "pdf", "svg", "png"], "musicxml"), numberField("scale", t("PNG\u500D\u7387", "PNG scale"), 2, { min: 1, max: 4 })], async (a3, signal) => {
+      const e4 = { state: clone(owner.state), viewPart: owner.viewPart, concertPitch: owner.concertPitch, createScoreExportSurface: owner.createScoreExportSurface };
+      const artifacts = [], parts = partList(scoreDocument(e4.state)), format = a3.format ?? "musicxml";
+      if (!["musicxml", "mxl", "midi", "pdf", "svg", "png"].includes(format)) throw new Error("Unknown part export format");
+      for (const [index2, p4] of parts.entries()) {
+        if (signal?.aborted) throw new Error("Cancelled");
+        const doc = viewDocument(e4, { part: p4.id, concert: false }), name = safeName(e4.state.title) + "-" + (index2 + 1) + "-" + safeName(p4.name);
+        if (e4.state.layout?.partLayouts?.[p4.id]) applyXMLLayout(doc, effectiveScoreLayout(e4, p4.id));
+        if (["pdf", "svg", "png"].includes(format)) {
+          const output = await exportGraphic(e4, format, { scale: a3.scale ?? 2, part: p4.id, concert: false, name, signal });
+          artifacts.push(...output.artifacts);
+        } else if (format === "midi") {
+          const state = { ...e4.state, xml: serialize(doc) }, performance2 = compileScore(state, { includeMetronome: false, respectMix: false });
+          artifacts.push(artifact(name + ".mid", "audio/midi", writeMIDI(state, performance2)));
+        } else artifacts.push(format === "mxl" ? artifact(name + ".mxl", "application/vnd.recordare.musicxml", writeMXL(doc, e4.state.archive)) : artifact(name + ".musicxml", "application/vnd.recordare.musicxml+xml", canonicalXML(doc)));
+        if (artifacts.length > 256 || artifacts.reduce((sum, a4) => sum + (a4.base64?.length ?? 0), 0) > 64 * 1024 * 1024) throw new Error("Part exports exceed the size limit; export linked parts individually");
       }
-      return { result: { parts: artifacts.length }, artifacts };
+      if (signal?.aborted) throw new Error("Cancelled");
+      return { result: { parts: parts.length, format }, artifacts };
     });
   }
 
@@ -71459,30 +72033,21 @@ var FloeBundledEditor = (() => {
       e3.scrollToSelection?.();
       return issue;
     });
-    register(e3, "score.layout.settings", t("\u9875\u9762\u3001\u95F4\u8DDD\u4E0E\u89C6\u56FE", "Page, spacing & view"), layout, "edit", [selectField("paper", t("\u7EB8\u5F20", "Paper"), ["A4_P", "A4_L", "A3_P", "Letter_P"], (e4) => e4.state.layout.paper ?? "A4_P"), field("continuous", t("\u8FDE\u7EED\u89C6\u56FE", "Continuous view"), "checkbox", { default: (e4) => Boolean(e4.state.layout.continuous) }), field("condenseRests", t("\u5408\u5E76\u8FDE\u7EED\u7A7A\u5C0F\u8282", "Condense consecutive rests"), "checkbox", { default: (e4) => Boolean(e4.state.layout.condenseRests) }), numberField("zoom", t("\u7F29\u653E", "Zoom"), (e4) => e4.state.layout.zoom ?? 1, { min: 0.3, max: 3 }), numberField("measuresPerSystem", t("\u6BCF\u884C\u5C0F\u8282\u6570\uFF080\u4E3A\u81EA\u52A8\uFF09", "Measures per system (0 automatic)"), (e4) => e4.state.layout.measuresPerSystem ?? 4, { min: 0, max: 32 }), numberField("margin", t("\u9875\u8FB9\u8DDD\uFF08\u6BEB\u7C73\uFF09", "Page margin (mm)"), (e4) => e4.state.layout.margin ?? 15, { min: 5, max: 50 }), numberField("staffSpacing", t("\u8C31\u8868\u95F4\u8DDD", "Staff spacing"), (e4) => e4.state.layout.staffSpacing ?? 7, { min: 3, max: 20 })], (a3) => {
-      e3.state.layout = { ...e3.state.layout, ...a3, zoom: Math.max(0.3, Math.min(3, Number(a3.zoom ?? 1))) };
-      const doc = scoreDocument(e3.state), defaults = ensure(doc.documentElement, "defaults"), scaling = ensure(defaults, "scaling");
-      set(scaling, "millimeters", 7);
-      set(scaling, "tenths", 40);
-      const page = ensure(defaults, "page-layout"), sizes = { A4_P: [210, 297], A4_L: [297, 210], A3_P: [297, 420], Letter_P: [215.9, 279.4] }, size = sizes[e3.state.layout.paper] ?? sizes.A4_P, factor = 40 / 7, margin = Math.max(5, Math.min(50, Number(a3.margin ?? 15)));
-      set(page, "page-height", size[1] * factor);
-      set(page, "page-width", size[0] * factor);
-      const margins = ensure(page, "page-margins");
-      margins.setAttribute("type", "both");
-      for (const name of ["left-margin", "right-margin", "top-margin", "bottom-margin"]) set(margins, name, margin * factor);
-      const per = Math.max(0, Math.trunc(a3.measuresPerSystem ?? 4));
-      for (const p4 of partList(doc)) for (let i4 = 0; i4 < p4.measures.length; i4++) {
-        const m5 = p4.measures[i4], print = child(m5, "print");
-        if (print?.getAttribute("data-floe-system") === "yes") print.remove();
-        if (per && i4 > 0 && i4 % per === 0) {
-          const pr = ensure(m5, "print");
-          pr.setAttribute("new-system", "yes");
-          pr.setAttribute("data-floe-system", "yes");
-          m5.insertBefore(pr, m5.firstElementChild);
-        }
+    register(e3, "score.layout.settings", t("\u9875\u9762\u3001\u95F4\u8DDD\u4E0E\u89C6\u56FE", "Page, spacing & view"), layout, "edit", [selectField("scope", t("\u5E94\u7528\u8303\u56F4", "Apply to"), ["score", "part"], (e4) => e4.viewPart ? "part" : "score"), partField(), selectField("paper", t("\u7EB8\u5F20", "Paper"), ["A4_P", "A4_L", "A3_P", "Letter_P"], (e4, a3) => effectiveScoreLayout(e4, a3.scope === "part" ? a3.part ?? e4.viewPart : null).paper ?? "A4_P"), field("continuous", t("\u8FDE\u7EED\u89C6\u56FE", "Continuous view"), "checkbox", { default: (e4, a3) => Boolean(effectiveScoreLayout(e4, a3.scope === "part" ? a3.part ?? e4.viewPart : null).continuous) }), field("condenseRests", t("\u5408\u5E76\u8FDE\u7EED\u7A7A\u5C0F\u8282", "Condense consecutive rests"), "checkbox", { default: (e4, a3) => Boolean(effectiveScoreLayout(e4, a3.scope === "part" ? a3.part ?? e4.viewPart : null).condenseRests) }), numberField("zoom", t("\u7F29\u653E", "Zoom"), (e4, a3) => effectiveScoreLayout(e4, a3.scope === "part" ? a3.part ?? e4.viewPart : null).zoom ?? 1, { min: 0.3, max: 3 }), numberField("measuresPerSystem", t("\u6BCF\u884C\u5C0F\u8282\u6570\uFF080\u4E3A\u81EA\u52A8\uFF09", "Measures per system (0 automatic)"), (e4, a3) => effectiveScoreLayout(e4, a3.scope === "part" ? a3.part ?? e4.viewPart : null).measuresPerSystem ?? 4, { min: 0, max: 32 }), numberField("margin", t("\u9875\u8FB9\u8DDD\uFF08\u6BEB\u7C73\uFF09", "Page margin (mm)"), (e4, a3) => effectiveScoreLayout(e4, a3.scope === "part" ? a3.part ?? e4.viewPart : null).margin ?? 15, { min: 5, max: 50 }), numberField("staffSpacing", t("\u8C31\u8868\u95F4\u8DDD", "Staff spacing"), (e4, a3) => effectiveScoreLayout(e4, a3.scope === "part" ? a3.part ?? e4.viewPart : null).staffSpacing ?? 7, { min: 3, max: 20 })], (a3) => {
+      if (a3.scope !== void 0 && !["score", "part"].includes(a3.scope)) throw new Error("Invalid layout scope");
+      const doc = scoreDocument(e3.state), part = a3.scope === "part" ? currentPart(e3, doc, a3.part ?? e3.viewPart) : null;
+      const current = effectiveScoreLayout(e3, part?.id ?? null);
+      const settings = { paper: a3.paper ?? current.paper ?? "A4_P", continuous: Boolean(a3.continuous ?? current.continuous), condenseRests: Boolean(a3.condenseRests ?? current.condenseRests), zoom: Math.max(0.3, Math.min(3, Number(a3.zoom ?? current.zoom ?? 1))), measuresPerSystem: Math.max(0, Math.min(32, Math.trunc(a3.measuresPerSystem ?? current.measuresPerSystem ?? 4))), margin: Math.max(5, Math.min(50, Number(a3.margin ?? current.margin ?? 15))), staffSpacing: Math.max(3, Math.min(20, Number(a3.staffSpacing ?? current.staffSpacing ?? 7))) };
+      if (!["A4_P", "A4_L", "A3_P", "Letter_P"].includes(settings.paper) || Object.values(settings).filter((v4) => typeof v4 === "number").some((v4) => !Number.isFinite(v4))) throw new Error("Invalid page settings");
+      if (part) {
+        e3.state.layout.partLayouts = { ...e3.state.layout.partLayouts ?? {}, [part.id]: settings };
+      } else {
+        e3.state.layout = { ...e3.state.layout, ...settings };
+        applyXMLLayout(doc, settings);
       }
       commit(e3, doc);
       e3.renderKey = null;
+      return { scope: part ? "part" : "score", part: part?.id ?? null };
     });
     register(e3, "score.layout.break", t("\u6362\u884C\u6216\u6362\u9875", "System or page break"), layout, "edit", [partField(), measureField(), selectField("kind", t("\u8FB9\u754C", "Break"), ["system", "page", "remove"], "system"), field("allParts", t("\u540C\u6B65\u6240\u6709\u4E50\u5668", "All instruments"), "checkbox", { default: true })], (a3) => {
       const doc = scoreDocument(e3.state), p4 = partList(doc).find((p5) => p5.id === (a3.part ?? e3.selection?.part)) ?? partList(doc)[0], index2 = p4.measures.findIndex((m5) => m5.getAttribute("id") === (a3.measure ?? e3.selection?.measure)), parts = a3.allParts === false ? [p4] : partList(doc);
@@ -71504,7 +72069,7 @@ var FloeBundledEditor = (() => {
   }
 
   // FloeAgent/Modules/FloeScoreKit/Web/native.js
-  var scoreInputDefaults = () => ({ type: "quarter", dots: 0, voice: 1, staff: 1, octave: 4, mode: "replace", rest: false });
+  var scoreInputDefaults = () => ({ type: "quarter", dots: 0, voice: 1, staff: 1, octave: 4, mode: "replace", rest: false, numberAlter: 0 });
   var fractionText = (f4) => f4.d === 1 ? String(f4.n) : f4.n + "/" + f4.d;
   function context2(e3, doc = scoreDocument(e3.state)) {
     const part = currentPart(e3, doc), index2 = Math.max(0, part.measures.findIndex((m5) => m5.getAttribute("id") === e3.selection?.measure));
@@ -71553,7 +72118,7 @@ var FloeBundledEditor = (() => {
   }
   function scoreNativeSnapshot(e3) {
     synchronizeScoreNativeContext(e3);
-    const empty2 = () => ({ schemaVersion: 1, kind: "score", title: e3.state?.title ?? "", revision: e3.revision ?? 0, selection: { part: "", measure: "", note: null, notes: [], count: 0 }, parts: [], measures: [], current: { notes: [], marks: [], staves: 1 }, input: clone(e3.input), layout: clone(e3.state?.layout ?? {}), view: { part: "", concert: false, keyboardVisible: e3.nativeUI?.keyboardVisible !== false }, playback: { tempoScale: 1, loop: false, loopFrom: 0, loopTo: 0, metronome: false, ...clone(e3.state?.playback ?? {}) }, transport: scoreTransportSnapshot(e3), diagnostics: [] });
+    const empty2 = () => ({ schemaVersion: 1, kind: "score", title: e3.state?.title ?? "", revision: e3.revision ?? 0, selection: { part: "", measure: "", note: null, notes: [], count: 0 }, parts: [], measures: [], current: { notes: [], marks: [], staves: 1 }, input: clone(e3.input), layout: clone(e3.state?.layout ?? {}), view: { notation: notationMode(e3.state?.layout ?? {}), part: "", concert: false, keyboardVisible: e3.nativeUI?.keyboardVisible !== false }, playback: { tempoScale: 1, loop: false, loopFrom: 0, loopTo: 0, metronome: false, ...clone(e3.state?.playback ?? {}) }, transport: scoreTransportSnapshot(e3), diagnostics: [] });
     if (!e3.state?.xml) return empty2();
     const parsed = scoreDocument(e3.state);
     if (!partList(parsed).length) return empty2();
@@ -71572,10 +72137,12 @@ var FloeBundledEditor = (() => {
         const attrs = attributesAt(part, i4);
         return { id: m5.getAttribute("id"), number: m5.getAttribute("number") ?? String(i4 + 1), index: i4 + 1, beats: attrs.beats, beatType: attrs.beatType, notesCount: children(m5, "note").length };
       }),
-      current: { part: part.id, partName: part.name, measure: measure.getAttribute("id"), index: index2 + 1, beats: timeline.attrs.beats, beatType: timeline.attrs.beatType, fifths: timeline.attrs.fifths, staves: timeline.attrs.staves, clefs: Object.entries(timeline.attrs.clefs).map(([staff, clef]) => ({ staff: Number(staff), ...clef })), notes, note: current, marks: [...measure.children].filter((n2) => ["direction", "harmony"].includes(n2.tagName)).map((n2) => ({ id: n2.getAttribute("id"), kind: n2.tagName, label: markLabel(n2) })) },
+      current: { part: part.id, partName: part.name, measure: measure.getAttribute("id"), index: index2 + 1, beats: timeline.attrs.beats, beatType: timeline.attrs.beatType, fifths: timeline.attrs.fifths, staves: timeline.attrs.staves, staffDetails: staffDetails(part, index2, e3.input?.staff ?? 1), clefs: Object.entries(timeline.attrs.clefs).map(([staff, clef]) => ({ staff: Number(staff), ...clef })), notes, note: current, marks: [...measure.children].filter((n2) => ["direction", "harmony"].includes(n2.tagName)).map((n2) => ({ id: n2.getAttribute("id"), kind: n2.tagName, label: markLabel(n2) })) },
       input: clone(e3.input),
-      layout: clone(e3.state.layout ?? {}),
-      view: { part: e3.viewPart ?? "", concert: Boolean(e3.concertPitch), keyboardVisible: e3.nativeUI?.keyboardVisible !== false },
+      numberedInput: numberedInput(part, index2, e3.input),
+      notationWarnings: e3.jianpuWarnings ?? [],
+      layout: clone(effectiveScoreLayout(e3)),
+      view: { notation: notationMode(effectiveScoreLayout(e3), parsed), part: e3.viewPart ?? "", concert: Boolean(e3.concertPitch), keyboardVisible: e3.nativeUI?.keyboardVisible !== false },
       playback: { tempoScale: 1, loop: false, loopFrom: 0, loopTo: 0, metronome: false, ...clone(e3.state.playback ?? {}) },
       transport: scoreTransportSnapshot(e3),
       diagnostics: (e3.diagnostics ?? []).slice(0, 100).map((issue, index3) => ({ index: index3 + 1, ...issue }))
@@ -71645,6 +72212,7 @@ var FloeBundledEditor = (() => {
         integer("staff", 1, attributesAt(current.part, current.index).staves);
       }
       integer("octave", 0, 8);
+      integer("numberAlter", -1, 1);
       if (args.rest !== void 0) {
         if (typeof args.rest !== "boolean") throw new Error("Invalid rest input");
         next.rest = args.rest;
@@ -71688,8 +72256,8 @@ var FloeBundledEditor = (() => {
       e3.drag = null;
       if (activated?.kind === "pointer") activated.stamp = event.timeStamp;
       if (Math.abs(dy) > 12) {
-        const semitones = Math.round(-dy / (7 * (e3.state.layout.zoom ?? 1)));
-        if (semitones) Promise.resolve(drag.selection).then(() => transpose(semitones)).catch(() => {
+        const semitones2 = Math.round(-dy / (7 * (e3.state.layout.zoom ?? 1)));
+        if (semitones2) Promise.resolve(drag.selection).then(() => transpose(semitones2)).catch(() => {
         });
       }
     });
@@ -71744,13 +72312,16 @@ var FloeBundledEditor = (() => {
   registerFormats(engine);
   registerAnalysisAndLayout(engine);
   registerScoreNative(engine);
+  registerProfessionalScore(engine);
+  registerNumberedNotation(engine);
+  engine.createScoreExportSurface = (doc, layout) => createScoreExportSurface(doc, layout, engine.canvas?.clientWidth ?? 1e3);
   var scoreEngine = expose(engine);
-  function button(text2, action, args = {}, className = "") {
-    return element("button", { text: text2, class: className, onclick: () => engine.perform(action, args).catch(() => {
+  function button(text3, action, args = {}, className = "") {
+    return element("button", { text: text3, class: className, onclick: () => engine.perform(action, args).catch(() => {
     }) });
   }
-  function actionButton(text2, action, preset = {}) {
-    return element("button", { text: text2, onclick: () => engine.showAction(engine.command(action), preset) });
+  function actionButton(text3, action, preset = {}) {
+    return element("button", { text: text3, onclick: () => engine.showAction(engine.command(action), preset) });
   }
   function labelSelect(label, options, initial, changed) {
     const select = element("select", { "aria-label": label }, options.map((o3) => element("option", { value: o3.value ?? o3, text: o3.label ?? o3 })));
@@ -71780,6 +72351,10 @@ var FloeBundledEditor = (() => {
       e3.input.rest = !e3.input.rest;
       rest.setAttribute("aria-pressed", String(e3.input.rest));
     } });
+    const notation = labelSelect(t("\u8BB0\u8C31", "Notation"), [{ value: "staff", label: t("\u4E94\u7EBF\u8C31", "Staff") }, { value: "jianpu", label: t("\u7B80\u8C31", "Numbered") }], "staff", (v4) => e3.perform("score.view.notation", { notation: v4 }).catch(() => {
+    }));
+    notation.querySelector("select").dataset.scoreNotation = "yes";
+    e3.quick.append(notation);
     e3.quick.append(rest, actionButton(t("\u548C\u5F26", "Chord"), "score.edit.chord"), actionButton(t("\u8FDE\u7EBF", "Tie / slur"), "score.edit.spanner"), actionButton(t("\u66F4\u591A\u8BB0\u53F7", "More marks"), "score.edit.articulation"), actionButton(t("\u6392\u7248", "Layout"), "score.layout.settings"));
     e3.transportBar = element("div", { class: "score-transport" });
     e3.positionLabel = element("output", { text: "0:00" });
@@ -71793,7 +72368,7 @@ var FloeBundledEditor = (() => {
     }
     e3.canvas.replaceChildren(...e3.nativeChrome ? [e3.scoreSurface] : [e3.quick, e3.scoreSurface, e3.transportBar, e3.keyboard]);
     e3.canvas.addEventListener("keydown", keyDown);
-    installScoreInteractions(e3, { select: (id, extend) => selectNote(e3, id, extend), transpose: (semitones) => e3.perform("score.edit.transpose", { semitones }), edit: () => e3.showAction(e3.command("score.edit.update"), currentNotePreset(e3)) });
+    installScoreInteractions(e3, { select: (id, extend) => selectNote(e3, id, extend), transpose: (semitones2) => e3.perform("score.edit.transpose", { semitones: semitones2 }), edit: () => e3.showAction(e3.command("score.edit.update"), currentNotePreset(e3)) });
     e3.scrollToSelection = () => {
       e3.noteVisuals.get(e3.selection?.note)?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
     };
@@ -71838,7 +72413,7 @@ var FloeBundledEditor = (() => {
     const resize = new ResizeObserver(() => {
       clearTimeout(e3.resizeTimer);
       e3.resizeTimer = setTimeout(() => {
-        if (e3.osmd) {
+        if (e3.scoreSurface) {
           e3.renderKey = null;
           renderScore(e3).catch((error) => e3.status(error.message, true));
         }
@@ -71910,6 +72485,20 @@ var FloeBundledEditor = (() => {
       event.preventDefault();
       return;
     }
+    if (/^[0-7]$/.test(key) && notationMode(e3.state.layout, scoreDocument(e3.state)) === "jianpu") {
+      const doc = scoreDocument(e3.state), part = currentPart(e3, doc), index2 = Math.max(0, part.measures.findIndex((m5) => m5.getAttribute("id") === e3.selection?.measure)), percussion = attributesAt(part, index2).clefs[e3.input.staff ?? 1]?.sign === "percussion";
+      if (!percussion || key === "0") {
+        event.preventDefault();
+        if (key === "0") e3.perform("score.edit.insert", { ...e3.input, rest: true }).catch(() => {
+        });
+        else {
+          const input = numberedInput(part, index2, e3.input), pitch = input.keys.find((n2) => n2.degree === Number(key))?.pitch;
+          if (pitch) e3.perform("score.edit.insert", { ...e3.input, rest: false, pitch }).catch(() => {
+          });
+        }
+        return;
+      }
+    }
     const types = { 1: "whole", 2: "half", 3: "quarter", 4: "eighth", 5: "16th", 6: "32nd", 7: "64th" };
     if (types[key]) {
       if (e3.nativeChrome) e3.perform("score.ui.input", { type: types[key] }).catch(() => {
@@ -71942,10 +72531,13 @@ var FloeBundledEditor = (() => {
     if (e3.nativeChrome) synchronizeScoreNativeContext(e3);
     if (!e3.root || !e3.canvas || !e3.scoreSurface) return;
     e3.root.classList.toggle("score-native-chrome", Boolean(e3.nativeChrome));
+    const notation = e3.quick?.querySelector("select[data-score-notation]");
+    if (notation) notation.value = notationMode(e3.state.layout, scoreDocument(e3.state));
     const nodes = e3.nativeChrome ? [e3.scoreSurface] : [e3.quick, e3.scoreSurface, e3.transportBar, e3.keyboard];
     if (e3.canvas.children.length !== nodes.length || nodes.some((node3, index2) => e3.canvas.children[index2] !== node3)) e3.canvas.replaceChildren(...nodes);
   }
   async function renderEditor(e3) {
+    synchronizeScoreNativeContext(e3);
     if (!e3.scoreSurface) initChrome(e3);
     syncScoreChrome(e3);
     if (e3.transport?.playing && e3.playingXML !== e3.state.xml) {
@@ -71987,7 +72579,7 @@ var FloeBundledEditor = (() => {
     const summary = element("div", { class: "score-selection-summary" });
     summary.append(element("strong", { text: p4.name }), element("p", { text: t("\u9009\u4E2D\u97F3\u7B26\uFF1A", "Selected notes: ") + (e3.selection?.notes?.length ?? 0) }));
     e3.inspector.append(summary, actionButton(t("\u4FEE\u6539\u97F3\u7B26", "Change note"), "score.edit.update", currentNotePreset(e3)), actionButton(t("\u8F93\u5165\u97F3\u7B26", "Enter note"), "score.edit.insert", { part: p4.id, measure: measure.getAttribute("id"), ...e3.input }), actionButton(t("\u6B4C\u8BCD", "Lyrics"), "score.edit.lyrics"), actionButton(t("\u529B\u5EA6\uFF0F\u6587\u5B57", "Dynamics / text"), "score.edit.direction", { part: p4.id, measure: measure.getAttribute("id") }));
-    const table = element("table", { class: "data-table score-note-table" }, element("thead", {}, element("tr", {}, [t("\u4F4D\u7F6E", "Beat"), t("\u97F3\u9AD8", "Pitch"), t("\u65F6\u503C", "Length"), t("\u58F0\u90E8", "Voice")].map((text2) => element("th", { text: text2 })))));
+    const table = element("table", { class: "data-table score-note-table" }, element("thead", {}, element("tr", {}, [t("\u4F4D\u7F6E", "Beat"), t("\u97F3\u9AD8", "Pitch"), t("\u65F6\u503C", "Length"), t("\u58F0\u90E8", "Voice")].map((text3) => element("th", { text: text3 })))));
     const body = element("tbody");
     for (const n2 of notes) {
       const row = element("tr", { class: e3.selection?.notes?.includes(n2.id) ? "selected" : "", tabIndex: 0, "aria-label": (n2.pitch === null ? t("\u4F11\u6B62\uFF0F\u9F13\u97F3", "Rest / drum") : chooseSpelling(n2.pitch)) + " " + n2.duration.n + "/" + n2.duration.d, onclick: (event) => selectNote(e3, n2.id, event.shiftKey || event.metaKey), onkeydown: (event) => {
@@ -72018,11 +72610,24 @@ var FloeBundledEditor = (() => {
     }
     const task = (async () => {
       try {
-        const layout = e3.state.layout, doc = viewDocument(e3);
+        const layout = effectiveScoreLayout(e3), doc = viewDocument(e3);
+        if (e3.viewPart && e3.state.layout?.partLayouts?.[e3.viewPart]) applyXMLLayout(doc, layout);
         e3.scoreSurface.style.width = layout.continuous ? Math.max(e3.canvas.clientWidth, partList(doc)[0].measures.length * 180 * (layout.zoom ?? 1)) + "px" : "100%";
         e3.scoreSurface.style.minWidth = "320px";
         e3.osmd?.clear();
-        e3.osmd ??= new import_opensheetmusicdisplay.OpenSheetMusicDisplay(e3.scoreSurface, { backend: "svg", autoResize: false, drawTitle: true, drawComposer: true, drawPartNames: true, drawPartAbbreviations: true, followCursor: false, disableCursor: false });
+        if (notationMode(layout, doc) === "jianpu") {
+          const rendered = renderNumberedScore(doc, layout, e3.canvas.clientWidth);
+          e3.scoreSurface.replaceChildren(...rendered.pages);
+          e3.noteVisuals = rendered.noteVisuals;
+          e3.jianpuWarnings = rendered.warnings;
+          e3.renderKey = key;
+          e3.status(rendered.warnings.length ? t("\u90E8\u5206\u590D\u6742\u8BB0\u53F7\u8BF7\u5207\u56DE\u4E94\u7EBF\u8C31\u6838\u5BF9\u3002", "Check complex marks in staff notation.") : t("\u7B80\u8C31\u5DF2\u6392\u7248", "Numbered score engraved"));
+          updateSelectionHighlight(e3);
+          return;
+        }
+        e3.jianpuWarnings = [];
+        for (const sign of doc.querySelectorAll("clef > sign")) if (sign.textContent === "jianpu") sign.textContent = "G";
+        e3.osmd ??= new import_opensheetmusicdisplay2.OpenSheetMusicDisplay(e3.scoreSurface, { backend: "svg", autoResize: false, drawTitle: true, drawComposer: true, drawPartNames: true, drawPartAbbreviations: true, followCursor: false, disableCursor: false });
         e3.osmd.setOptions({ pageFormat: layout.continuous ? "Endless" : layout.paper ?? "A4_P", newSystemFromXML: true, newPageFromXML: !layout.continuous, renderSingleHorizontalStaffline: Boolean(layout.continuous), autoGenerateMultipleRestMeasuresFromRestMeasures: Boolean(layout.condenseRests) });
         e3.osmd.zoom = Math.max(0.3, Math.min(3, layout.zoom ?? 1));
         if (layout.margin) {

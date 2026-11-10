@@ -59,7 +59,7 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 
 ## 主要功能
 
-**正式版与新功能版本。** App Store 当前正式版为 **1.7.74**；GitHub／Feather 最新安装包为 **1.8.5（325）**，需要自行签名。新工作台的使用说明见[空间与专用工作台教程](docs/WORKSPACES_GUIDE.zh-CN.md)，并按教程的适用版本选择安装渠道；开发中的功能会单独标明。TestFlight 资格及版本以实际测试组为准。
+**正式版与新功能版本。** App Store、GitHub／Feather 与 Android 的版本及核实日期统一见[渠道状态](docs/CURRENT_STATUS.md)。GitHub／Feather 的 IPA 需要自行签名。新工作台的使用说明见[空间与专用工作台教程](docs/WORKSPACES_GUIDE.zh-CN.md)，按教程及所选版本的发布说明选择安装渠道；TestFlight 资格及版本以实际测试组为准。
 
 下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://www.floe-agent.com/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_zh)。
 
@@ -76,7 +76,7 @@ iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音�
 | 语音 | 语音输入生成可编辑草稿、进行语音对话，并让最终回答使用系统、设备端增强或已配置在线语音朗读。Android 已接入系统／配置的云端语音通路，供应商和设备行为继续验证，不提供 App 管理的本地语音模型。 | [语音输入与朗读](docs/USER_GUIDE.zh-CN.md#16-语音输入与转录) |
 | Skills 与 Skill Hub | 安装带精确依赖声明和版本管理的受审技能、统一更新，并使用 MCP 服务与邮件操作自动化。Android 已接入签名 Hub 客户端，兼容包供给和任务 Linux 依赖分别校验。 | [Skills、MCP 与自动任务](docs/USER_GUIDE.zh-CN.md#17-skillsmcp邮件与自动任务) |
 | 空间与专用工作台 | 通过空间、手记与创作入口使用图示、混合画布、会议、音乐、加工与打印；按适用版本阅读分步教程。 | [工作台教程](docs/WORKSPACES_GUIDE.zh-CN.md) |
-| 开发中的工作台 | LaTeX、GIS、字体与电子设计仍在开发，安装前请先查看适用版本。 | [新工作流与适用版本](docs/WORKSPACES_GUIDE.zh-CN.md) |
+| 专用编辑器 | LaTeX、GIS、字体和电子工程的入口与功能范围随版本提供，选择安装包前核对工作台教程。 | [新工作流与适用版本](docs/WORKSPACES_GUIDE.zh-CN.md) |
 
 云端模型请求直接发送至你选择的服务商；支持的本地模型在设备端完成推理。密钥保存在设备的受保护存储中。文件、上传与远程操作遵循任务权限，重要操作按当前策略确认。详见[安全说明](SECURITY.zh-CN.md)。
 

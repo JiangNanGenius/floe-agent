@@ -50,18 +50,22 @@ extension PersonalOfficeFormat {
     let directory: URL
     let url: URL
     let session = OfficeFileSession()
+    private let contentService: PersonalContentService
     private let openedDigest: String
     private var started = false
     private var mounted = false
     private var closed = false
-    private var closing = false
+    private var ownershipGeneration = UUID()
+    private var openTask: Task<Void, Never>?
+    private var closeTask: Task<Bool, Never>?
 
-    private init(record: PersonalContentRecord, directory: URL, url: URL) throws {
-        self.record = record; self.directory = directory; self.url = url
+    private init(record: PersonalContentRecord, directory: URL, url: URL, contentService: PersonalContentService) throws {
+        self.record = record; self.directory = directory; self.url = url; self.contentService = contentService
         openedDigest = try FloeDigest.sha256Hex(ofFileAt: url)
     }
 
-    static func open(record: PersonalContentRecord, directory: URL, url: URL) async throws -> PersonalOfficeDocument {
+    static func open(record: PersonalContentRecord, directory: URL, url: URL,
+                     contentService: PersonalContentService = .shared) async throws -> PersonalOfficeDocument {
         try PersonalLibraryFileActions.requireAvailable(record.id)
         guard record.kind == .document, WorkspaceFileType.isOffice(url.lastPathComponent),
               url.deletingLastPathComponent().lastPathComponent == "Original",
@@ -72,7 +76,7 @@ extension PersonalOfficeFormat {
             // A second mounted view must not create a competing working copy.
             guard !previous.mounted, await previous.close() else { throw PersonalFileActionError.closeFirst }
         }
-        let owner = try Self(record: record, directory: directory, url: url)
+        let owner = try Self(record: record, directory: directory, url: url, contentService: contentService)
         sessions[record.id] = owner
         return owner
     }
@@ -81,14 +85,40 @@ extension PersonalOfficeFormat {
         guard sessions[projectID] == nil else { throw PersonalFileActionError.closeFirst }
     }
 
-    func start(environment: AppEnvironment) async {
+    /// Opening belongs to this document, not the lifetime of a SwiftUI task.
+    /// A temporary cover can cancel its view task without cancelling the open.
+    @discardableResult
+    func start(environment: AppEnvironment) async -> Bool {
+        guard !closed, closeTask == nil, Self.sessions[record.id] === self else { return false }
         mounted = true
-        guard !started, !closed, Self.sessions[record.id] === self else { return }
+        guard !started else { return true }
         started = true
+        let generation = ownershipGeneration
+        let task = Task { @MainActor in
+            await self.openOwned(environment: environment, generation: generation)
+        }
+        openTask = task
+        await task.value
+        openTask = nil
+        // This appearance was accepted. A real close that cancelled it must
+        // never be mistaken for a request to create another owner.
+        return true
+    }
+
+    private func ownsOpen(_ generation: UUID) -> Bool {
+        mounted && !closed && ownershipGeneration == generation && Self.sessions[record.id] === self
+    }
+
+    private func openOwned(environment: AppEnvironment, generation: UUID) async {
+        session.recordOwnerStage("space.open.resolve.started")
         do {
-            let location = try await PersonalContentService.shared.library().resolve(record.id)
-            let original = try await PersonalContentService.shared.originalFile(record.id)
-            guard mounted, location.url.standardizedFileURL == directory.standardizedFileURL,
+            try Task.checkCancellation()
+            let location = try await contentService.library().resolve(record.id)
+            guard ownsOpen(generation) else { return }
+            let original = try await contentService.originalFile(record.id)
+            try Task.checkCancellation()
+            guard ownsOpen(generation) else { return }
+            guard location.url.standardizedFileURL == directory.standardizedFileURL,
                   original.standardizedFileURL == url.standardizedFileURL else { throw PersonalContentError.changedDocument }
             session.shedIdleLocalModelForOffice = { [weak environment] reason in
                 await environment?.shedIdleLocalModelForOffice(reason: reason)
@@ -97,32 +127,63 @@ extension PersonalOfficeFormat {
                 await environment?.officeDeviceFontFacts() ?? [:]
             }
             await session.open(url)
-            guard mounted, !closed, Self.sessions[record.id] === self else { _ = await close(); return }
+            guard ownsOpen(generation), !Task.isCancelled else { return }
             if session.error == nil { await session.requestEditing() }
-        } catch { session.reportOpenFailure(error) }
+        } catch {
+            guard ownsOpen(generation) else { return }
+            session.reportOpenFailure(error)
+        }
     }
 
     /// Called by OfficeDocumentEditorView only after its real save/discard/keep
     /// decision. A failed original save never reaches this close callback.
     func close() async -> Bool {
         if closed { return true }
-        guard !closing else { return false }
-        closing = true; defer { closing = false }
+        if let closeTask { return await closeTask.value }
+        mounted = false
+        ownershipGeneration = UUID()
+        openTask?.cancel()
+        let task = Task { @MainActor in await self.closeOwnedSession() }
+        closeTask = task
+        let result = await task.value
+        closeTask = nil
+        return result
+    }
+
+    private func closeOwnedSession() async -> Bool {
+        // The cancelled opener checks the generation after every suspension.
+        // Drain it before releasing its session so it cannot mount a controller
+        // after close or reopen an old copy behind a replacement owner.
+        if let openTask { await openTask.value }
         await session.release()
         // A requested teardown may still be queued behind an engine operation.
         // Keep the owner/file-action barrier until a real idle close is observed.
         guard session.phase == .idle else { return false }
         do {
-            let current = try await PersonalContentService.shared.library().resolve(record.id)
+            let current = try await contentService.library().resolve(record.id)
             guard current.url.standardizedFileURL == directory.standardizedFileURL else { throw PersonalContentError.changedDocument }
             if try FloeDigest.sha256Hex(ofFileAt: url) != openedDigest {
-                try await PersonalContentService.shared.library().markChanged(record.id)
+                try await contentService.library().markChanged(record.id)
                 NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: record.id)
             }
             closed = true; mounted = false
             if Self.sessions[record.id] === self { Self.sessions.removeValue(forKey: record.id) }
             return true
         } catch { session.error = error.localizedDescription; return false }
+    }
+
+    /// The factory resolves the same owned original again after a real close.
+    /// It never substitutes a working/recovery copy or revives this instance.
+    func replacement() async throws -> PersonalOfficeDocument {
+        guard await close() else { throw PersonalFileActionError.closeFirst }
+        let location = try await contentService.library().resolve(record.id)
+        let original = try await contentService.originalFile(record.id)
+        guard location.url.standardizedFileURL == directory.standardizedFileURL,
+              original.standardizedFileURL == url.standardizedFileURL else {
+            throw PersonalContentError.changedDocument
+        }
+        return try await Self.open(record: location.record, directory: location.url, url: original,
+                                   contentService: contentService)
     }
 
     func unmount() async {
@@ -137,6 +198,9 @@ struct PersonalOfficeDocumentView: View {
     let document: PersonalOfficeDocument
     let onClose: () -> Void
     let onAssistant: () -> Void
+    let presentationIsActive: Bool
+    let onRetryOpen: () -> Void
+    var beforeClose: (@MainActor () async -> Bool)? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @State private var visible = false
 
@@ -153,16 +217,37 @@ struct PersonalOfficeDocumentView: View {
                     onClose()
                 }
             },
+            beforeDocumentLeave: beforeClose,
             inlineHeader: AnyView(HStack(spacing: 8) {
                 Text(document.record.title).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 Button(IDELanguageRunText.t("作品助手", "Work assistant"), systemImage: "sparkles", action: onAssistant)
                     .labelStyle(.iconOnly).frame(width: 44, height: 44)
                     .accessibilityIdentifier("space.editor.assistant")
             }),
-            requestsEditingOnAppear: false)
+            requestsEditingOnAppear: false,
+            retryOpen: {
+                // A retained working-copy recovery owns its own reopen. Only
+                // the pre-mount idle outcome asks the original-file loader.
+                if visible, presentationIsActive, document.session.phase == .idle { onRetryOpen() }
+            })
+        // Give the document its own group instead of propagating this virtual
+        // identifier onto native editor controls and their readiness state.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("space.office.editor")
-        .task { visible = true; await document.start(environment: environment) }
-        .onDisappear { visible = false; Task { await document.unmount() } }
+        .task {
+            visible = true
+            let retained = await document.start(environment: environment)
+            if !retained, visible, presentationIsActive { onRetryOpen() }
+        }
+        .onChange(of: presentationIsActive) { _, active in
+            if !active { visible = false; Task { await document.unmount() } }
+        }
+        .onDisappear {
+            visible = false
+            // The parent remains presented while an internal sheet/cover is
+            // visible. Only a real departure closes this document owner.
+            if !presentationIsActive { Task { await document.unmount() } }
+        }
     }
 }
 #endif

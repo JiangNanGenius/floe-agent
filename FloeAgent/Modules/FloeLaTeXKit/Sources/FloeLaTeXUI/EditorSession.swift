@@ -218,6 +218,7 @@ public typealias LaTeXTypesetAction = @MainActor @Sendable (LaTeXProjectStore,In
     }
     public func compile() async {
         guard !isBuilding else {return}
+        error=nil
         stopRequested=false
         preparingTypeset=true
         defer {

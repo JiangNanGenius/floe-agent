@@ -280,14 +280,14 @@ struct ToolboxBrowserWorkspace: View {
     @State private var failed = false
     var body: some View {
         Group {
-            if ownerID != nil { BrowserView(center: environment.browserCenter) }
+            if ownerID != nil { BrowserView(center: environment.toolboxBrowser.center) }
             else if failed { ContentUnavailableView(IDELanguageRunText.t("暂时无法打开浏览器", "Unable to open browser"), systemImage: "globe") }
             else { ProgressView() }
         }
             .task {
                 do {
                     let id = try await environment.toolboxBrowser.owner()
-                    ownerID = id; environment.browserCenter.bind(to: id)
+                    ownerID = id; environment.toolboxBrowser.center.bind(to: id)
                 } catch { ownerID = nil; failed = true }
             }
     }

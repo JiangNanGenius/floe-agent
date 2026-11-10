@@ -15,9 +15,15 @@ import FloePersistence
 
 struct AgentPermissionsView: View {
     @ObservedObject var center: SettingsCenter
+    @ObservedObject private var conversationCenter: ConversationCenter
     @State private var isConfirmingFullAccess = false
     @State private var authenticationError: String?
     @State private var approvalSaveError: String?
+
+    init(center: SettingsCenter) {
+        self.center = center
+        self.conversationCenter = center.environment.conversationCenter
+    }
 
     var body: some View {
         Form {
@@ -47,10 +53,11 @@ struct AgentPermissionsView: View {
             Section("settings.agent_permissions_view.auto_approval_model") {
                 Picker("settings.agent_permissions_view.approval_model", selection: approvalModelBinding) {
                     Text("settings.agent_permissions_view.not_configured_asks_on_medium_risk").tag(UUID?.none)
-                    ForEach(center.environment.conversationCenter.approvalModels) { model in
+                    ForEach(conversationCenter.approvalModels) { model in
                         Text(model.displayName).tag(UUID?.some(model.id))
                     }
                 }
+                .accessibilityIdentifier("settings.approvalModel")
                 Text("settings.agent_permissions_view.the_approval_model_gets_no_tools")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -141,13 +148,13 @@ struct AgentPermissionsView: View {
 
     private var approvalModelBinding: Binding<UUID?> {
         Binding(
-            get: { center.environment.conversationCenter.modelPreferences.approvalModelID },
+            get: { conversationCenter.modelPreferences.approvalModelID },
             set: { value in
                 Task {
-                    var preferences = center.environment.conversationCenter.modelPreferences
+                    var preferences = conversationCenter.modelPreferences
                     preferences.approvalModelID = value
                     do {
-                        try await center.environment.conversationCenter.saveModelPreferences(preferences)
+                        try await conversationCenter.saveModelPreferences(preferences)
                         approvalSaveError = nil
                     } catch {
                         approvalSaveError = FloeL10n.l("settings.agent_permissions_view.the_approval_model_setting_was_not", error.localizedDescription)

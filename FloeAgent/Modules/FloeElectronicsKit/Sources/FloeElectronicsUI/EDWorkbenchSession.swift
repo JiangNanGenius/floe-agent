@@ -35,6 +35,7 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
 }
 
 @MainActor @Observable public final class EDWorkbenchSession {
+    public var library: EDLibraryController?
     public let store: EDAProjectStore
     private var editing: EDAEditingSession
     public var project: EDAProject { editing.project }
@@ -141,8 +142,10 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
             try candidate.apply(edits, expectedRevision: candidate.project.revision)
         }
     }
-    public func transaction(expectedRevision: UInt64? = nil, _ change: (inout EDAProject) throws -> Void) async throws {
-        try await perform("edit", expectedRevision: expectedRevision) { candidate in
+    public func transaction(expectedRevision: UInt64? = nil, cancelBeforeCommit: Bool = false, cancelled: @escaping @Sendable () -> Bool = { false }, _ change: (inout EDAProject) throws -> Void) async throws {
+        if cancelBeforeCommit { try Task.checkCancellation(); guard !cancelled() else { throw EDAError.cancelled } }
+        let check: (() throws -> Void)? = cancelBeforeCommit ? { try Task.checkCancellation(); guard !cancelled() else { throw EDAError.cancelled } } : nil
+        try await perform("edit", expectedRevision: expectedRevision, beforeCommit: check) { candidate in
             try candidate.transaction(expectedRevision: candidate.project.revision, change)
         }
     }

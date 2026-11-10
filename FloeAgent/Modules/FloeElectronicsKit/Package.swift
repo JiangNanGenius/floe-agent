@@ -12,8 +12,8 @@ let package = Package(
     dependencies: [.package(path: "../../ThirdParty/Clipper2")],
     targets: [
         .target(name: "FloeElectronicsCore", dependencies: [.product(name: "Clipper2C", package: "Clipper2")]),
-        .target(name: "FloeElectronicsUI", dependencies: ["FloeElectronicsCore"]),
-        .testTarget(name: "FloeElectronicsCoreTests", dependencies: ["FloeElectronicsCore"]),
+        .target(name: "FloeElectronicsUI", dependencies: ["FloeElectronicsCore"], resources: [.copy("Resources/Libraries")]),
+        .testTarget(name: "FloeElectronicsCoreTests", dependencies: ["FloeElectronicsCore"], resources: [.copy("Fixtures")]),
         .testTarget(name: "FloeElectronicsUITests", dependencies: ["FloeElectronicsUI"])
     ]
 )

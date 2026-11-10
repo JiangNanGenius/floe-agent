@@ -1,5 +1,9 @@
 # TinyEMU Runtime v2
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本文记录 TinyEMU 时期的 VM 租约与持久布局设计。部分持久层概念继续复用，但本文不定义现行 ARM64 机器拓扑、资源分配或恢复步骤；现行说明见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)。
+> Records TinyEMU-era VM leases and storage design. Some persistence concepts remain in use; this page does not define current ARM64 topology, allocation or recovery.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Runtime v2 separates durable Linux environments from temporary emulator

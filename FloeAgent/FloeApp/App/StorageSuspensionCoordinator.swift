@@ -26,7 +26,25 @@ enum StorageMainActorDelivery {
 /// synchronous-delivery regression; production uses `.default`.
 @MainActor
 final class StorageLifecycleObserver {
+    private final class Delivery: @unchecked Sendable {
+        private let lock = NSLock()
+        private var revision: UInt64 = 0
+
+        func next() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            revision &+= 1
+            return revision
+        }
+
+        func isCurrent(_ value: UInt64) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return revision == value
+        }
+    }
     private let center: NotificationCenter
+    private let delivery = Delivery()
     private var tokens: [NSObjectProtocol] = []
 
     init(center: NotificationCenter = .default) {
@@ -34,12 +52,18 @@ final class StorageLifecycleObserver {
     }
 
     func observe(_ name: Notification.Name, action: @escaping @MainActor () -> Void) {
+        let delivery = delivery
         tokens.append(center.addObserver(forName: name, object: nil, queue: nil) { _ in
-            StorageMainActorDelivery.perform { action() }
+            let expected = delivery.next()
+            StorageMainActorDelivery.perform {
+                guard delivery.isCurrent(expected) else { return }
+                action()
+            }
         })
     }
 
     func stop() {
+        _ = delivery.next() // fence callbacks already queued on the main actor
         for token in tokens { center.removeObserver(token) }
         tokens.removeAll()
     }
@@ -68,7 +92,7 @@ final class StorageSuspensionCoordinator {
     private var isBackground = false
     private var needsForeground = false
     private var quiescenceComplete = false
-    private var connectionsSuspended = false
+    private var connectionsSuspended: Bool { DatabaseManager.connectionsAreSuspended }
     /// True while the final quiesced lease fences SQLite and drains its
     /// writer before returning the last system assertion. New background
     /// admissions are refused during this handoff so a fresh writer cannot
@@ -124,7 +148,13 @@ final class StorageSuspensionCoordinator {
     }
 
     private func beginOperation(authorizedSystemCallback: Bool = false) throws -> StorageOperationLease {
-        let backgroundNow = isBackground || UIApplication.shared.applicationState == .background
+        let backgroundNow = UIApplication.shared.applicationState == .background
+        if !backgroundNow, isBackground {
+            // A delayed/missed background delivery must not keep a visible
+            // window behind a stale process storage fence. Inactive overlays
+            // are foreground here; scene focus never grants suspension power.
+            enterForeground()
+        }
         guard StorageSuspensionAdmission.permitsOperation(
             backgroundNow: backgroundNow,
             needsForeground: needsForeground,
@@ -151,7 +181,6 @@ final class StorageSuspensionCoordinator {
         // its last lease suspends it again after quiescence. No VM/keepalive.
         if connectionsSuspended {
             DatabaseManager.resumeConnections()
-            connectionsSuspended = false
         }
         return lease
     }
@@ -193,6 +222,7 @@ final class StorageSuspensionCoordinator {
         // queue. Keep the budget registered while draining so its expiration
         // handler can still return the assertion if the drain outlives it.
         let expected = generation
+        let storageGeneration = DatabaseManager.suspensionGeneration()
         finalizingHandoffGeneration = expected
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -210,8 +240,7 @@ final class StorageSuspensionCoordinator {
                     // first await, then join the writer queues. A queued
                     // foreground admission that resumes the pool in between
                     // is corrected by beginOperation itself.
-                    DatabaseManager.suspendConnections()
-                    self.connectionsSuspended = true
+                    guard DatabaseManager.suspendConnections(ifCurrent: storageGeneration) else { return }
                     await DatabaseManager.drainWriterQueues()
                     await NotesRepository.shared.drainWriterForSuspension()
                 },
@@ -238,7 +267,6 @@ final class StorageSuspensionCoordinator {
                     // Foreground must never be left with a suspended pool.
                     if !self.isBackground {
                         DatabaseManager.resumeConnections()
-                        self.connectionsSuspended = false
                     }
                     // expireOperation may already have removed the budget and
                     // returned this assertion; only the still-registered owner
@@ -256,20 +284,25 @@ final class StorageSuspensionCoordinator {
     private func expireOperation(_ id: UUID) {
         guard let budget = budgets.removeValue(forKey: id) else { return }
         budget.lease.expire()
-        if isBackground || UIApplication.shared.applicationState == .background {
+        if UIApplication.shared.applicationState == .background {
             needsForeground = true
             // Synchronously fence admission/cancel actual owners and interrupt
             // SQL BEFORE returning the expired system assertion. File handles
             // close only after their owner drains; never force-unlock I/O.
             requestOwnerSuspension()
             DatabaseManager.suspendConnections()
-            connectionsSuspended = true
             enterBackground()
+        } else if isBackground || connectionsSuspended {
+            enterForeground()
         }
         if budget.assertion != .invalid { UIApplication.shared.endBackgroundTask(budget.assertion) }
     }
 
     private func enterBackground() {
+        guard UIApplication.shared.applicationState == .background else {
+            if isBackground || connectionsSuspended { enterForeground() }
+            return
+        }
         isBackground = true
         requestOwnerSuspension()
         quiescenceComplete = false
@@ -304,7 +337,6 @@ final class StorageSuspensionCoordinator {
         // last background task first can make the process suspend with the
         // pool still fenced.
         DatabaseManager.resumeConnections()
-        connectionsSuspended = false
         endDeferredFinishedBudgets()
         let previous = transition
         transition = Task { [weak self] in
@@ -345,7 +377,6 @@ final class StorageSuspensionCoordinator {
     private func suspendConnectionsIfIdle() {
         guard isBackground, quiescenceComplete, budgets.isEmpty, !connectionsSuspended else { return }
         DatabaseManager.suspendConnections()
-        connectionsSuspended = true
     }
 
     private func requestOwnerSuspension() {

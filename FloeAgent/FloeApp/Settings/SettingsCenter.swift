@@ -91,6 +91,7 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var verifyFinalAnswer: Bool = false
     /// Used only when publishing a new explicitly optional choice with fallback.
     @Published private(set) var userQuestionDefaults = UserQuestionDefaults()
+    @Published private(set) var documentAssistantLeavePolicy: DocumentAssistantLeavePolicy = .ask
     /// Model-written semantic summaries during context compaction (cloud
     /// models only; local models stay deterministic). Default on.
     @Published private(set) var semanticContextCompaction: Bool = true
@@ -447,6 +448,7 @@ final class SettingsCenter: ObservableObject {
 
     private func loadUserDefaults() {
         userQuestionDefaults = UserQuestionDefaults.load(from: defaults)
+        documentAssistantLeavePolicy = .restored(defaults.string(forKey: DocumentAssistantLeavePolicy.defaultsKey))
         let syncPreferences = SyncControlPreferences.load(from: defaults)
         overallSyncEnabled = syncPreferences.overallEnabled
         configurationSyncEnabled = syncPreferences.configurationEnabled
@@ -482,6 +484,11 @@ final class SettingsCenter: ObservableObject {
     }
 
     // MARK: - Setters (UserDefaults layer)
+
+    func setDocumentAssistantLeavePolicy(_ value: DocumentAssistantLeavePolicy) {
+        defaults.set(value.rawValue, forKey: DocumentAssistantLeavePolicy.defaultsKey)
+        documentAssistantLeavePolicy = value
+    }
 
     func setAppearance(_ value: AppearancePreference) {
         appearance = value

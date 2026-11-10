@@ -42,7 +42,7 @@ private struct ChatInlineContentView: View {
     @State private var attempt = 0
     private var request: ChatInlineContentRequest { .init(uri: uri, scope: scope, attempt: attempt) }
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 0) {
             if failed {
                 VStack(alignment: .leading, spacing: 6) {
                     Label(IDELanguageRunText.t("内容暂时无法显示，请重试或重新生成。", "Content is unavailable. Retry or generate it again."), systemImage: "doc.badge.ellipsis")
@@ -57,7 +57,8 @@ private struct ChatInlineContentView: View {
                             ArtifactImageView(artifact: verifiedArtifact.artifact, index: 0, preverified: verifiedArtifact)
                         } else {
                             RichArtifactView(artifact: verifiedArtifact.artifact, preverified: verifiedArtifact,
-                                compactAudio: tool == "audio.synthesize")
+                                compactAudio: tool == "audio.synthesize",
+                                fileDiffDisposition: NativeFileDiffDisposition.writeTools.contains(tool) ? .applied : .reference)
                         }
                     } else { ProgressView().controlSize(.small) }
                 case .output(let receipt, let context): RunOutputFileView(receipt: receipt, context: context)
@@ -67,6 +68,7 @@ private struct ChatInlineContentView: View {
             } else { ProgressView().controlSize(.small) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.inlineContent")
         .task(id: request) {
             resolved = nil; verifiedArtifact = nil; failed = false

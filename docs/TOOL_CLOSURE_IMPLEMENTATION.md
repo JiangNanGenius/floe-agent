@@ -1,5 +1,9 @@
 # 工具闭环实施清单 / Tool closure implementation checklist
 
+> 历史参考 / Historical reference · 2026-11-10 标记。旧一轮工具闭环需求与验收清单。未勾选项保留原始证据边界，不能据此断言当前仍全部未实现；其中内部测试限制也不构成新一轮发布授权。现行研发见[在研计划](README.md)，交付见[渠道状态](CURRENT_STATUS.md)。
+> Earlier tool-closure requirements and gates. Preserve original open items without projecting them onto later builds; the old beta scope does not authorize a new release.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 Accepted scope: VNC post-action evidence, complete Canvas interaction loop,

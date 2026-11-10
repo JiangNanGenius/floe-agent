@@ -30,7 +30,7 @@ public struct NoteRect: Codable, Hashable, Sendable {
 }
 
 public struct NoteSourceReference: Codable, Hashable, Sendable {
-    public enum Space: String, Codable, Sendable { case notes, canvas, workspace }
+    public enum Space: String, Codable, Sendable { case notes, canvas, workspace, conversation }
     public var space: Space
     public var documentID: UUID
     public var revision: Int

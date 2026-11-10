@@ -1,13 +1,8 @@
 # Floe Linux guest side (runner + image startup)
 
-This directory is the **guest half** of the Floe Linux environment backend
-(TinyEMU RV64). It contains the long-lived console runner that executes
-`exec.shell`, package-manager and service commands inside the guest, plus the
-startup/mount material the guest image needs. The host half lives in
-`Sources/FloeExecution/Linux/` and `FloeApp/Execution/LinuxGuestBackend.swift`;
-the wire contract is documented in
-[`docs/FLOE_LINUX_GUEST_BACKEND.md`](../../docs/FLOE_LINUX_GUEST_BACKEND.md)
-and [`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md).
+This directory contains the guest console runner, startup/mount scripts and image inputs. Current iOS execution uses one resident ARM64 Linux machine with project-owned sessions; see the [execution architecture](../../docs/ARCHITECTURE_LOCAL_SHELL.md), [ARM64 session factory](../Sources/FloeExecution/Linux/ARM64ResidentGuestSessionFactory.swift) and [ARM64 image inputs](image/arm64/).
+
+The host path remains `Sources/FloeExecution/Linux/` and `FloeApp/Execution/LinuxGuestBackend.swift`. Earlier TinyEMU/RISC-V wiring and console protocol evolution are retained in the historical [backend record](../../docs/FLOE_LINUX_GUEST_BACKEND.md) and [protocol extensions](../../docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md); they do not define the current machine topology or image selection.
 
 | Path | Purpose |
 | --- | --- |
@@ -21,6 +16,8 @@ and [`docs/FLOE_LINUX_GUEST_PROTOCOL_EXTENSIONS.md`](../../docs/FLOE_LINUX_GUEST
 | `tests/clock_arg_check.c` | Native pure-function check for the `floe.epoch=` parser and the bounded cmdline reader |
 
 ## Build
+
+The RISC-V cross-compiler/image examples below belong to the retired TinyEMU route. Use the ARM64 inputs linked above for current images; retained runner/protocol checks remain scoped to their actual target.
 
 ```sh
 # Developer host / CI protocol checks:

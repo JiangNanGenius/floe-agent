@@ -59,7 +59,7 @@ The iOS setup guide offers four recommendations to prefill choices for models, s
 
 ## Features
 
-**Stable and newer-feature builds.** The current App Store release is **1.7.74**; the latest GitHub/Feather installer is **1.8.5 (325)** and requires your own signing. Follow the [Space and specialist workspaces guide](docs/WORKSPACES_GUIDE.md) and its version notes when choosing a channel. Features still in development are marked separately; TestFlight access and versions follow your actual test group.
+**Stable and newer-feature builds.** See [channel versions and verification dates](docs/CURRENT_STATUS.md) for the App Store, GitHub/Feather and Android snapshots. The GitHub/Feather IPA requires your own signing. Follow the [Space and specialist workspaces guide](docs/WORKSPACES_GUIDE.md) and the selected release notes when choosing a channel. TestFlight access and versions follow your actual test group.
 
 The features below describe Floe core workflows. Availability varies by platform and release; see the installation notes above and the [Android release](https://www.floe-agent.com/en/releases?platform=android&utm_source=github&utm_medium=referral&utm_campaign=readme_en) for the current Android alpha.
 
@@ -76,7 +76,7 @@ The features below describe Floe core workflows. Availability varies by platform
 | Voice | Dictate editable drafts, hold voice conversations and have final answers read aloud with system, enhanced on-device or configured online voices. Android includes system/configured cloud voice paths; provider and device behavior remains under validation, and Android has no App-managed local voice model. | [Voice input & read-aloud](docs/USER_GUIDE.md#16-voice-input-and-transcription) |
 | Skills & Skill Hub | Install reviewed skills with declared dependencies and version management, keep them updated, and automate with MCP services and mail actions. Android includes the signed Hub client; compatible package supply and task Linux dependencies remain independently checked. | [Skills, MCP & automation](docs/USER_GUIDE.md#17-skills-mcp-mail-and-automation) |
 | Space & specialist workspaces | Reach diagrams, mixed canvases, meetings, music, machining and print preparation through Space, Notes and Creative mode. Follow the relevant build requirements. | [Workspace tutorials](docs/WORKSPACES_GUIDE.md) |
-| In development | LaTeX, GIS, font and electronics workspaces are being developed; see the availability guide before choosing a build. | [Workflows and availability](docs/WORKSPACES_GUIDE.md) |
+| Specialist editors | LaTeX, GIS, font and electronics workflows have release-specific entry points and limits; check the workspace guide before choosing a build. | [Workflows and availability](docs/WORKSPACES_GUIDE.md) |
 
 Cloud model requests go directly to your chosen provider; supported local models run inference on the device. Credentials stay in protected storage on your device. Files, uploads and remote actions follow task permissions, with consequential actions confirmed under the current policy. See [security](SECURITY.md).
 

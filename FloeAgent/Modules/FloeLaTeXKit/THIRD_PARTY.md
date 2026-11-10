@@ -4,15 +4,18 @@ Floe-authored editor, store, worker and host-adapter files remain MPL-2.0 under 
 
 ## Production package
 
-`Package.swift` has no native TeX binary target and no dependency on `Native/Experiment`. `verify_production_boundary.py` checks this boundary and can check the linked binary with `--binary`.
+`Package.swift` uses only the new `FloeTeXNativeXDVBinary` and its namespaced C bridge for the native TeX component. It has no dependency on `Native/Experiment`. The normal producer records the real Cargo closure, archive members and required/forbidden symbols; `verify_production_boundary.py` checks the source offer, actual artifact hashes and linked archive with `--artifact-manifest` and `--binary`.
 
 | Component | Pinned source | Selected terms | Use |
 | --- | --- | --- | --- |
 | ZIPFoundation | `0.9.20`, https://github.com/weichsel/ZIPFoundation/tree/0.9.20 | MIT; upstream copyright/license retained in SwiftPM dependency | Bounded project ZIP import/export |
+| Native XeTeX/BibTeX and selected C dependencies | Tectonic `8c0126a9653239a2e6e0a5274af9b8510f643030` plus the complete pinned local patch | [Selected branches and retained notices](Native/licenses/native-xdv-selected-licenses.json); complete [production source inputs](Native/patches/production-xdv-source-manifest.json) and [local sources](Native/patches/production-xdv-local-sources.json) | Native XDV production and actual font data/outlines; old `tectonic_pdf_io` and `tectonic_engine_xdvipdfmx` are excluded from the compiled closure |
 | Apple platform zlib | OS SDK `libz` | System-provided library | Bounded gzip decoding for SyncTeX |
 | Host formula renderer | Injected callback | Existing host dependency's own terms | The package neither bundles SwiftMath nor redistributes its fonts |
 
-The production engine adapter calls independent, installed TeX tools through the App's explicitly resolved Linux `exec.shell` and jobs services. No host interpreter fallback, downloaded native App plug-in or new arbitrary-language execution tool is added. An environment's TeX Live, engines, Biber, fonts and macro packages retain their individual licenses and notices. They are not covered by the editor's MPL license. CLI/file separation is an architectural boundary, not an automatic legal conclusion or an App Store approval guarantee.
+The production App typesets with native XeTeX/BibTeX and uses Apple CoreGraphics/CoreText for PDF inside the existing protected host boundary. Its compiled closure and bundled notices are bound by `Native/Production/Vendor/FloeTeXNativeXDV.manifest.json`. The old GPL PDF backend is not reused, relabeled or made acceptable by a C ABI. Document macro/font resources retain their individual terms; neither on-demand downloading nor the editor's MPL license relicenses them.
+
+The separate Linux adapter can invoke independent environment tools when an integrating host explicitly selects that backend. Such packages, including user-installed pip dependencies, remain third-party components of that environment. This is distinct from bundling or linking a component into the App; redistribution and integration still require checking the particular terms. No host-interpreter fallback or downloaded native App plug-in is added, and the architectural boundary is not an App Store approval guarantee.
 
 The Linux worker also requires the independently installed `bubblewrap` program. Its actual distro copyright/source records belong with the selected environment's package inventory; it is not linked into the Apple binary. The caller defines the mount/process/network policy, as explained by the [upstream project](https://github.com/containers/bubblewrap#sandbox-security). The qualification inventory retains installed package/source versions and original notices; passing those engineering checks does not approve a new redistribution catalog.
 

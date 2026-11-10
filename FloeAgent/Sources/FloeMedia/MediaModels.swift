@@ -255,7 +255,7 @@ public actor ModelArtifactStore {
                 try fileManager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: target, options: .atomic)
             }
-            if artifact.kind == "coreml", ["video.interpolate", "video.superResolution"].contains(artifact.capability) {
+            if artifact.kind == "coreml", ["video.interpolate", "video.superResolution", "audio.separate.vocals"].contains(artifact.capability) {
                 try validateEnhancementBundle(at: staging, id: artifact.id, version: artifact.version, capability: artifact.capability)
             }
             // Never replace a registered model until explicit removal has completed.
@@ -420,6 +420,10 @@ public actor ModelArtifactStore {
     /// Checks the downloadable layout before it becomes a registered install.
     /// This proves identity and bytes; runtime inference readiness is separate.
     private func validateEnhancementBundle(at root: URL, id: String, version: String, capability: String) throws {
+        if capability == "audio.separate.vocals" {
+            _ = try AudioStemModelBundle.verify(at: root, expectedID: id, expectedVersion: version)
+            return
+        }
         // Foundation may enumerate /var URLs as /private/var. Use the same
         // canonical root for reads, enumeration and membership; never infer a
         // relative member by subtracting an unresolved path's character count.

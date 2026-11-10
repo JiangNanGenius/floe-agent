@@ -148,7 +148,7 @@ nonisolated struct ChemistryNativeRunMetadata: Codable, Sendable {
         let root = ChemistryWorkerFiles.canonical(projectRoot)
         let result = try ChemistryWorkerFiles.child("ChemistryJobs", root: root)
         try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
-        guard try ChemistryWorkerFiles.child("ChemistryJobs", root: root) == result else { throw FloeError.unauthorized }
+        guard try ChemistryWorkerFiles.child("ChemistryJobs", root: root).path == result.path else { throw FloeError.unauthorized }
         return result
     }
     private func save(_ attempt: ChemistryWorkerAttempt, root: URL) throws {
@@ -175,7 +175,11 @@ nonisolated struct ChemistryNativeRunMetadata: Codable, Sendable {
     private func binding(_ context: ToolContext) async throws -> TaskExecutionBinding {
         try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
         let environment = try app()
-        guard !context.temporaryReadOnly, !context.publicWebOnly, context.childExecution == nil,
+        // Same-task parity for canonical children: the durable run→task
+        // pairing, execution-binding pin, generation and backend identity
+        // below come from the runtime-issued context and registry, which the
+        // parent already validated per call.
+        guard !context.temporaryReadOnly, !context.publicWebOnly,
               let taskID = context.conversationID, let id = context.environmentID,
               context.workspaceRootURL != nil,
               let run = try await environment.runStore.run(id: context.runID), run.conversationID == taskID,

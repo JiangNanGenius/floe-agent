@@ -1,0 +1,70 @@
+diff -ru a/meson.build b/meson.build
+--- a/meson.build	2026-11-10 06:09:33
++++ b/meson.build	2026-11-10 06:09:40
+@@ -118,7 +118,7 @@
+   if target_winver != ''
+     cargs += '-DTARGET_WINVER=@0@'.format(target_winver)
+   endif
+-elif host_system == 'darwin'
++elif host_system == 'darwin' or host_system == 'ios'
+   libslirp_deps += [
+     cc.find_library('resolv')
+   ]
+diff -ru a/src/misc.c b/src/misc.c
+--- a/src/misc.c	2026-11-10 06:09:40
++++ b/src/misc.c	2026-11-10 06:10:02
+@@ -133,6 +133,21 @@
+     return -1;
+ }
+ 
++#ifdef SLIRP_NO_HOST_EXEC
++/*
++ * Floe iOS candidate hardening (see patches/README.md): host process
++ * execution support is compiled out entirely, so that no g_spawn(),
++ * fork() or exec() code paths can be linked into the final image.
++ * fork_exec() keeps the upstream failure convention (return 0 => the
++ * caller closes the connection) and never spawns anything.
++ */
++int fork_exec(struct socket *so, const char *ex)
++{
++    (void)so;
++    (void)ex;
++    return 0;
++}
++#else  /* !SLIRP_NO_HOST_EXEC */
+ static void fork_exec_child_setup(gpointer data)
+ {
+ #ifndef _WIN32
+@@ -256,6 +271,8 @@
+     slirp_register_poll_socket(so);
+     return 1;
+ }
++
++#endif /* !SLIRP_NO_HOST_EXEC */
+ 
+ int open_unix(struct socket *so, const char *unixpath)
+ {
+diff -ru a/src/slirp.c b/src/slirp.c
+--- a/src/slirp.c	2026-11-10 06:09:40
++++ b/src/slirp.c	2026-11-10 06:10:02
+@@ -1604,12 +1604,20 @@
+ int slirp_add_exec(Slirp *slirp, const char *cmdline,
+                    struct in_addr *guest_addr, int guest_port)
+ {
++#ifdef SLIRP_NO_HOST_EXEC
++    /* Floe iOS candidate hardening: reject instead of registering a
++     * command to execute on the host (see patches/README.md). */
++    g_warning("slirp_add_exec: host execution is disabled in this build");
++    (void)cmdline;
++    return -1;
++#else  /* !SLIRP_NO_HOST_EXEC */
+     if (!check_guestfwd(slirp, guest_addr, guest_port)) {
+         return -1;
+     }
+ 
+     add_exec(&slirp->guestfwd_list, cmdline, *guest_addr, htons(guest_port));
+     return 0;
++#endif /* !SLIRP_NO_HOST_EXEC */
+ }
+ 
+ int slirp_add_unix(Slirp *slirp, const char *unixsock,

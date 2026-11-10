@@ -588,12 +588,29 @@ private struct GISSnapshot {
     let controller: HeavyEditorController
     var body: some View {
         let snapshot = GISSnapshot(raw: controller.presentation)
-        HStack(spacing: 12) {
-            Text(snapshot.raw["crs"].gisString)
-            if let layer = snapshot.layer { Text(layer.name).lineLimit(1) }
-            Spacer()
-            if let count = snapshot.raw["selection"]["count"].number { Text(gisText("已选", "Selected") + " \(Int(count))") }
-            if let action = snapshot.raw["ui"]["vertexAction"].string { Text(action == "insert" ? gisText("点按线段插入节点", "Tap a segment to insert a vertex") : gisText("点按节点删除", "Tap a vertex to delete")) }
+        VStack(alignment: .leading, spacing: 6) {
+            if let notice = snapshot.raw["ui"]["notice"].string, !notice.isEmpty {
+                HStack(spacing: 8) {
+                    Label(notice, systemImage: "info.circle").lineLimit(2)
+                    Spacer(minLength: 4)
+                    if snapshot.layer?.kind != "vector" {
+                        Button(gisText("新建矢量图层", "New vector layer")) {
+                            GISNativeActions(controller: controller).form("layer.create")
+                        }.frame(minHeight: 44)
+                    } else if snapshot.layer?.locked == true, let layer = snapshot.layer {
+                        Button(gisText("解锁", "Unlock")) {
+                            GISNativeActions(controller: controller).run("layer.properties", ["layer": .string(layer.id), "locked": .bool(false)])
+                        }.frame(minHeight: 44)
+                    }
+                }.accessibilityIdentifier("gis.native.editNotice")
+            }
+            HStack(spacing: 12) {
+                Text(snapshot.raw["crs"].gisString)
+                if let layer = snapshot.layer { Text(layer.name).lineLimit(1) }
+                Spacer()
+                if let count = snapshot.raw["selection"]["count"].number { Text(gisText("已选", "Selected") + " \(Int(count))") }
+                if let action = snapshot.raw["ui"]["vertexAction"].string { Text(action == "insert" ? gisText("点按线段插入节点", "Tap a segment to insert a vertex") : gisText("点按节点删除", "Tap a vertex to delete")) }
+            }
         }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 5)
     }
 }

@@ -13,6 +13,7 @@
 #include "sysreg.h"
 #include "mmu.h"
 #include "../Source/src/net/usernet.h"
+#include "net_wait.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -26,10 +27,9 @@
 #ifndef AE_COMPLETE_OBSERVER
 #define AE_COMPLETE_OBSERVER(s) ((void)0)
 #endif
-/* Upper bound on the usernet descriptors a readiness wait snapshots. The
- * backend's own poll table is capped far lower; this only sizes local
- * arrays, and any snapshot overflow degrades to the wake pipe + deadline. */
-#define AE_WAIT_FDS_MAX 128
+/* The readiness park now sizes its descriptor set from what the backend
+ * actually reports (see net_wait.h), bounded there by AE_NET_WAIT_FD_CEILING,
+ * so no fixed local cap is needed here. */
 static pthread_mutex_t registry=PTHREAD_MUTEX_INITIALIZER;
 static AESession *live;
 static uint64_t generation;
@@ -308,28 +308,23 @@ int floe_ae_wait_event(floe_ae_handle h,uint64_t expected,uint64_t max_ns,uint64
     if(s->last_reason!=FLOE_AE_PARKED&&s->last_reason!=FLOE_AE_OUTPUT_FULL)wait=0;
     if(s->last_reason==FLOE_AE_OUTPUT_FULL&&s->channels[0].output.cap-s->channels[0].output.count>=1024)wait=0;
     if(wait&&s->sequence==expected&&!atomic_load(&s->stop)) {
-        /* Readiness-driven park: poll the owned wake pipe together with a
-         * dup'd snapshot of the usernet descriptors, timed by the earliest
-         * real deadline (cpu/rtc/budget/caller cap). Wake sources: host
-         * input/stop/winsize/ABI signals (pipe byte from ae_signal_locked),
-         * usernet socket readiness (listeners, TCP, UDP, ICMP), deadline
-         * expiry. Never a fixed poll interval. The snapshot is taken while
-         * holding the session mutex: attach/detach, hostfwd add/remove and
-         * destroy all require the same quiescence this waiter represents
-         * (they return BUSY while waiters>0), so the listed descriptors
-         * cannot be closed or reused underneath poll(2); each fd is dup'd
-         * anyway so the poll set owns independent references. */
-        struct pollfd pf[AE_WAIT_FDS_MAX+2];
-        int nfds=0,held[AE_WAIT_FDS_MAX],nheld=0,pipe_idx=-1;
-        if(s->wake_pipe_ready){pipe_idx=nfds;pf[nfds].fd=s->wake_pipe[0];pf[nfds].events=POLLIN|POLLERR|POLLHUP;nfds++;}
+        /* Readiness-driven park: the owned wake pipe together with the
+         * backend's own descriptor set, each with the exact interest mask the
+         * backend computed (read, write-ready, exception) and bounded by the
+         * earliest real deadline — the caller cap, the cpu/rtc/budget deadline
+         * and the backend's next network timer. Never a fixed poll interval,
+         * and no longer POLLIN-only: a descriptor that libslirp wants to write
+         * to now wakes the park instead of stalling the guest until an
+         * unrelated deadline. The snapshot is taken while holding the session
+         * mutex and with s->waiters already incremented, so attach/detach,
+         * hostfwd add/remove and destroy all return BUSY and the descriptors
+         * cannot change underneath us; net_wait.h additionally dup()s every
+         * descriptor so the poll set owns independent references. */
         UserNet *un=s->machine.net?virtio_net_usernet(s->machine.net):NULL;
-        int raw[AE_WAIT_FDS_MAX];int nraw=un?usernet_wait_fds(un,raw,AE_WAIT_FDS_MAX):0;
-        for(int i=0;i<nraw;i++){int d=dup(raw[i]);if(d>=0){pf[nfds].fd=d;pf[nfds].events=POLLIN|POLLERR|POLLHUP;held[nheld++]=d;nfds++;}}
         pthread_mutex_unlock(&s->mutex);
-        int ready=poll(pf,(nfds_t)nfds,(int)((wait+999999)/1000000));
+        bool pipe_ready=ae_net_wait_park(s,un,wait);
         pthread_mutex_lock(&s->mutex);
-        for(int i=0;i<nheld;i++)close(held[i]);
-        if(ready>0&&pipe_idx>=0&&(pf[pipe_idx].revents&(POLLIN|POLLERR|POLLHUP)))ae_wake_drain(s);
+        if(pipe_ready)ae_wake_drain(s);
     }
     *new_sequence=s->sequence;s->waiters--;pthread_mutex_unlock(&s->mutex);return 0;
 }
@@ -425,8 +420,18 @@ int floe_ae_net_get_info(floe_ae_handle h,floe_ae_net_info *out) {
         unsigned tcp=0,udp=0;uint64_t in=0,ok=0,ref=0;
         usernet_get_stats(un,&in,&ok,&ref,&tcp,&udp);
         out->network_enabled=1;
-        out->dns_server=usernet_dns_server(un);
-        out->dns_available=out->dns_server!=0;
+        /* dns_server keeps its exact documented meaning: the host-order IPv4
+         * resolver guest DNS actually relays to, or 0 when there is none. On
+         * an IPv6-only host that field is legitimately 0 while DNS still
+         * works over IPv6, so dns_available is no longer derived from it —
+         * it reports the versioned resolver snapshot, which knows both
+         * families. Never substitute the guest-visible virtual nameserver
+         * (10.0.2.3) for a host resolver: that would claim a host DNS that
+         * does not exist. */
+        UserNetDnsInfo dns;memset(&dns,0,sizeof(dns));
+        out->dns_server=usernet_get_dns_info(un,&dns)==0
+            ? dns.v4_addr : usernet_dns_server(un);
+        out->dns_available=(dns.v4_valid||dns.v6_valid)?1u:0u;
         out->forward_count=(uint32_t)s->machine.n_net_fwds;
         out->active_tcp=tcp;out->active_udp=udp;
         out->rx_frames=in;out->tx_frames=ok;out->rx_refused=ref;

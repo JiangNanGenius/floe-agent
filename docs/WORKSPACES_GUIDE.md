@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-11-08 -->
+<!-- docs-updated: 2026-11-10 -->
 # Space and specialist workbenches
 
 [简体中文](WORKSPACES_GUIDE.zh-CN.md) · [User manual](USER_GUIDE.md) · [Quickstart](QUICKSTART.md)
@@ -7,13 +7,14 @@ Task-based tutorials for Floe's personal library and dedicated workbenches: Spac
 
 ## Which build do I need?
 
-Floe's channels carry different feature sets. Each section below is labeled with the build it needs:
+Floe's channels carry different feature sets. Labels below identify a workflow's release baseline; current channel versions and verification dates are maintained in [CURRENT_STATUS](CURRENT_STATUS.md):
 
 | Label | Where you get it | What it covers here |
 | --- | --- | --- |
 | **1.7.74** | [App Store](https://apps.apple.com/app/id6801209053), iOS/iPadOS 26+ | The stable public release. Only sections labeled 1.7.74 apply; Space and the specialist workbenches are not in this build yet. |
-| **1.8.5** | [GitHub Releases](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5) (unsigned IPA; sign it yourself) or internal TestFlight | The newer-feature baseline for Space, meetings, music, diagrams, manufacturing and printing, the toolbox, and chemistry. |
-| **Next update** | Not in any public installer | LaTeX, maps/GIS, electronics/PCB, biology, font design and related assistants exist only in development builds. |
+| **1.8.5 baseline** | [Original release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5); follow channel status when choosing a newer installer | Original tutorial baseline for Space, meetings, music, diagrams, manufacturing and printing, the toolbox, and chemistry. |
+| **1.8.6 additions** | [Published unsigned IPA](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.6); TestFlight availability is separate | LaTeX, schematic/PCB, biology and CAD engineering-analysis entries are included; advanced PCB and simulation work remains in progress. |
+| **Other specialist editors** | Check the selected release and integration record | GIS, font design, notation and Image Playground have separate scope and qualification; development changes are not automatically in your installer. |
 
 Find your installed version in Settings → Diagnostics & About. Per-channel availability is tracked in [release and installation status](CURRENT_STATUS.md); the [release centre](https://www.floe-agent.com/en/releases) lists every published build.
 
@@ -60,6 +61,10 @@ Space music works keep arrangement, keyboard, mixer and DJ workflows in one proj
 3. Import audio or MIDI material, or ask the assistant to propose edits; each proposal shows what changes before you accept it.
 4. Save is automatic into the work. Render when you want an audio file, then check the receipt against the actual rendered file and share or export it from the work.
 
+**Music in this test update:** In Score, switch between Staff and Numbered notation while editing and saving the same score. Open Performance sounds to choose synthesized instrument sounds for each part. Perform & add renders audio, inserts a new track at the current playhead and returns to the arrangement when complete. Ordinary playback is for auditioning. Switch back to Staff to see complex marks omitted from the numbered view.
+
+The keyboard uses the available height for its keys. On wide screens, Show inspector / Hide inspector opens or collapses the right inspector. Expand the lower editor for a larger performance area.
+
 **Limits:** AI-assisted editing uses your configured models; playback and rendering run on device and follow the project's real capabilities.
 
 ## 4. Diagrams and the mixed canvas — **1.8.5**
@@ -101,18 +106,18 @@ A measurement covers one endpoint and path, not your whole network. Reports expo
 
 Create a **Chemistry project** from Space → New. The native structure editor saves structures into the project, calculation records stay attached to it, and structure images can be referenced from Notes. Heavy recalculation runs in your configured execution environment — check the environment before a long job.
 
-## 8. Coming in the next update — **Next update** (not in public builds)
+<a id="8-coming-in-the-next-update--next-update-not-in-public-builds"></a>
+## 8. Additional workbenches and build requirements
 
-These workbenches are integrated in development builds and are not part of the App Store release or the 1.8.5 installer:
+[1.8.6 release notes](releases/notes/RELEASE_NOTES_1.8.6_BUILD_326.md) record these additions to the published installer:
 
-- **LaTeX projects** — source editing with the on-device engine (XeLaTeX workflow), compilation, PDF output and Notes handoff.
-- **Maps/GIS** — GIS projects with layer editing and exports.
-- **Electronics/PCB** — schematic and PCB editing projects.
-- **Biology projects** — native editing with Notes structure references.
-- **Font design** — AI-assisted font design beside the existing font management.
-- Also in development: Apple Image Playground integration and music notation tools.
+- **LaTeX** — a project workbench, source folding and PDF full-text search, with retained reading/search state across full-screen changes.
+- **Electronics/PCB** — schematic/PCB editing, canvas interaction, design-rule checks and synchronization; PCB-to-schematic updates include a difference preview and confirmation.
+- **Biology and CAD engineering analysis** — additional native workbench entries in Space, with editing, preview and save/reopen work included in the release scope.
 
-Expect these in a future release; check the [release notes](https://www.floe-agent.com/en/releases) for the build that ships them.
+Some advanced PCB and simulation operations remain in development; native USB serial drivers are not included in that build. These release notes do not establish that every specialist feature or later source change has shipped.
+
+For GIS, font design, notation and Image Playground, check the [specialist-editor integration plan](FLOE_GIS_SCORE_FONT_PREDEVELOPMENT.zh-CN.md), [active integration records](README.md) and the selected release notes. Availability is feature-specific; source integration alone does not establish delivery.
 
 ## Saving, exporting and help
 

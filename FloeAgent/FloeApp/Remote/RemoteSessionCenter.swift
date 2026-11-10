@@ -291,7 +291,8 @@ final class RemoteSessionCenter: ObservableObject {
     /// TOFU handler: surfaces the challenge as a pending trust prompt and
     /// awaits the user's decision. Never auto-trusts.
     private func hostKeyDecision(_ challenge: HostKeyChallenge) async -> Bool {
-        await withCheckedContinuation { continuation in
+        guard pendingTrust == nil, !Task.isCancelled else { return false }
+        return await withCheckedContinuation { continuation in
             trustContinuations[challenge.id] = continuation
             pendingTrust = PendingHostKeyTrust(challenge: challenge)
         }

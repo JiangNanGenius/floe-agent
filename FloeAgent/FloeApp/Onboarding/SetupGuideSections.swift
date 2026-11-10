@@ -47,10 +47,15 @@ struct SetupGuideSectionView: View {
 
 struct SetupChatModelsSection: View {
     @ObservedObject var model: SetupGuideModel
+    @ObservedObject private var center: ConversationCenter
     @State private var showsModelPicker = false
 
-    private var center: ConversationCenter { model.center }
     private var environment: AppEnvironment { center.environment }
+
+    init(model: SetupGuideModel) {
+        self.model = model
+        _center = ObservedObject(wrappedValue: model.center)
+    }
 
     var body: some View {
         List {

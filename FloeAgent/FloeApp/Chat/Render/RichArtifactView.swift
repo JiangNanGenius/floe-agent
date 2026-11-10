@@ -7,14 +7,17 @@ import FloeExecution
 import FloeModels
 import FloeCore
 import FloeTools
+import FloeNativeChartsCore
+import FloeNativeChartsUI
 
 struct RichArtifactGallery: View {
     let artifacts: [ToolArtifactReference]
+    var fileDiffDisposition: NativeFileDiffDisposition = .reference
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(artifacts) { artifact in
-                RichArtifactView(artifact: artifact)
+                RichArtifactView(artifact: artifact, fileDiffDisposition: fileDiffDisposition)
             }
         }
     }
@@ -24,10 +27,12 @@ struct RichArtifactView: View {
     let artifact: ToolArtifactReference
     var preverified: VerifiedChatInlineArtifact? = nil
     var compactAudio = false
+    var fileDiffDisposition: NativeFileDiffDisposition = .reference
     @State private var data: Data?
     @State private var fileURL: URL?
     @State private var error: String?
     @State private var showExpandedWeb = false
+    @State private var decodedChart: DecodedChart?
 
     var body: some View {
         Group {
@@ -67,8 +72,27 @@ struct RichArtifactView: View {
                 NativeArtifactTable(document: document, fileURL: fileURL)
             } else { invalidContent }
         case "application/vnd.floe.chart+json":
-            if let document = try? JSONDecoder().decode(PresentationChartDocument.self, from: data) {
+            if case .v2(let chart)? = decodedChart {
+                NativeChartViewer(chart: chart)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("chat.chart.native.v2")
+            } else if let document = try? JSONDecoder().decode(PresentationChartDocument.self, from: data) {
                 NativeArtifactChart(document: document, fileURL: fileURL)
+            } else { invalidContent }
+        case "application/vnd.floe.file-preview+json":
+            if let preview = try? JSONDecoder().decode(WorkspaceFileChangePreview.self, from: data),
+               preview.version == 1, preview.byteCount >= preview.text.utf8.count,
+               RunOutputFile.isValidSHA256Hex(preview.sha256),
+               preview.truncated || (preview.byteCount == preview.text.utf8.count && FloeDigest.sha256Hex(Data(preview.text.utf8)) == preview.sha256) {
+                NativeSavedFilePreviewCard(document: preview, disposition: fileDiffDisposition)
+            } else { invalidContent }
+        case "text/x-diff":
+            if let diff = String(data: data, encoding: .utf8) {
+                NativeFileChangeCard(diffText: diff, disposition: fileDiffDisposition, fileURL: fileURL)
+            } else { invalidContent }
+        case "image/svg+xml":
+            if let svg = String(data: data, encoding: .utf8) {
+                SVGCodeBlockView(language: "svg", code: svg)
             } else { invalidContent }
         case "text/html":
             if let html = String(data: data, encoding: .utf8) {
@@ -114,12 +138,13 @@ struct RichArtifactView: View {
 
     private func loadVerifiedData() {
         if let preverified, preverified.artifact == artifact {
-            data = preverified.data; fileURL = preverified.fileURL; error = nil
+            acceptVerifiedData(preverified.data, url: preverified.fileURL)
             return
         }
         let allowedRoots = ["PresentationArtifacts/", "ChangeArtifacts/"]
         let limit: Int
         switch artifact.mimeType {
+        case "image/svg+xml": limit = 1 * 1_024 * 1_024
         case "text/html": limit = 1 * 1_024 * 1_024
         case "application/vnd.floe.table+json", "application/vnd.floe.chart+json": limit = 2 * 1_024 * 1_024
         default: limit = 512 * 1_024
@@ -146,8 +171,19 @@ struct RichArtifactView: View {
             error = FloeL10n.l("chat.rich_artifact_view.artifact_verification_failed")
             return
         }
-        data = loaded
-        fileURL = candidate
+        acceptVerifiedData(loaded, url: candidate)
+    }
+
+    private func acceptVerifiedData(_ loaded: Data, url: URL) {
+        if artifact.mimeType == "application/vnd.floe.chart+json" {
+            do { decodedChart = try ChartDocumentCodec.decode(loaded) }
+            catch {
+                data = nil; fileURL = nil; decodedChart = nil
+                self.error = IDELanguageRunText.t("无法打开这张图表，请重新生成。", "This chart could not be opened. Generate it again.")
+                return
+            }
+        } else { decodedChart = nil }
+        data = loaded; fileURL = url; error = nil
     }
 }
 

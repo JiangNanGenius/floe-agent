@@ -20,6 +20,12 @@ public actor GitHubService {
         self.session = session
     }
 
+    /// Collaboration reuses this service's exact injected session and origin;
+    /// account/credential storage and OAuth consent remain unchanged.
+    public nonisolated func collaborationClient() -> GitHubCollaborationClient {
+        GitHubCollaborationClient(client: GitHubActionsClient(session: session, baseURL: baseURL))
+    }
+
     /// Default OAuth scopes: repository read/write plus the user identity.
     public static let defaultOAuthScope = "repo read:user"
     /// `workflow` is required to create or update files under

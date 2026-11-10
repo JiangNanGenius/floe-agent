@@ -8,15 +8,19 @@ public struct InteractiveViewStrings: Sendable {
     public var continueAnalysis: String
     public var save: String
     public var unsavedChanges: String
+    public var actionFailed: String
+    public var details: String
     public init(retry: String, continueAnalysis: String, save: String,
-                unsavedChanges: String = "Changes have not been saved. Your input is still here.") {
+                unsavedChanges: String = "Changes have not been saved. Your input is still here.",
+                actionFailed: String = "The action could not finish. Your input is still here.", details: String = "Details") {
         self.retry = retry; self.continueAnalysis = continueAnalysis; self.save = save
         self.unsavedChanges = unsavedChanges
+        self.actionFailed = actionFailed; self.details = details
     }
     public static func localized(locale: Locale = .current) -> Self {
         locale.language.languageCode?.identifier == "zh"
             ? .init(retry: "重试", continueAnalysis: "继续分析", save: "保存",
-                    unsavedChanges: "更改尚未保存，当前输入仍保留。")
+                    unsavedChanges: "更改尚未保存，当前输入仍保留。", actionFailed: "操作未完成，当前输入仍保留。", details: "详情")
             : .init(retry: "Retry", continueAnalysis: "Continue analysis", save: "Save")
     }
 }
@@ -29,7 +33,10 @@ public struct InteractiveContentView: View {
     private let onContinue: ((InteractiveState) -> Void)?
     private let onSave: ((Data) -> Void)?
     private let managesLifecycle: Bool
-    @State private var actionFailed = false
+    @State private var actionError: String?
+    @State private var failedAction: ContentAction?
+    @State private var isPerformingAction = false
+    private enum ContentAction { case continueAnalysis, save }
 
     public init(controller: InteractiveWebController, strings: InteractiveViewStrings = .localized(),
                 onContinue: ((InteractiveState) -> Void)? = nil, onSave: ((Data) -> Void)? = nil,
@@ -54,26 +61,44 @@ public struct InteractiveContentView: View {
             }
             if onContinue != nil || onSave != nil {
                 HStack {
-                    if let onContinue {
-                        Button(strings.continueAnalysis) {
-                            Task { do { onContinue(try await controller.currentState()) }
-                                   catch { actionFailed = true } }
-                        }
+                    if onContinue != nil {
+                        Button(strings.continueAnalysis) { perform(.continueAnalysis) }
                     }
-                    if let onSave {
-                        Button(strings.save) {
-                            Task { do { onSave(try await controller.exportHTML()) }
-                                   catch { actionFailed = true } }
-                        }
+                    if onSave != nil {
+                        Button(strings.save) { perform(.save) }
                     }
+                    if isPerformingAction { ProgressView().controlSize(.small) }
                 }
-                .disabled(!controller.isReady)
+                .disabled(!controller.isReady || isPerformingAction)
             }
-            if actionFailed { Text(controller.document.fallbackText).font(.footnote) }
+            if let actionError {
+                Text(strings.actionFailed).font(.footnote)
+                DisclosureGroup(strings.details) { Text(actionError).font(.caption).textSelection(.enabled) }
+                if let failedAction {
+                    Button(strings.retry) { perform(failedAction) }.disabled(isPerformingAction || !controller.isReady)
+                }
+            }
             if controller.hasUnsavedChanges { Text(strings.unsavedChanges).font(.footnote) }
         }
         .task { if managesLifecycle { await controller.resume() } }
         .onDisappear { if managesLifecycle { Task { await controller.suspend() } } }
+    }
+
+    private func perform(_ action: ContentAction) {
+        guard !isPerformingAction, controller.isReady else { return }
+        isPerformingAction = true
+        actionError = nil
+        failedAction = action
+        Task { @MainActor in
+            defer { isPerformingAction = false }
+            do {
+                switch action {
+                case .continueAnalysis: onContinue?(try await controller.currentState())
+                case .save: onSave?(try await controller.exportHTML())
+                }
+                failedAction = nil
+            } catch { actionError = error.localizedDescription }
+        }
     }
 }
 

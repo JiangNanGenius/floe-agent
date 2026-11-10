@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import AVFoundation
+import CryptoKit
 import Darwin
 import Foundation
 import Observation
@@ -36,7 +37,8 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private static var sessions: [UUID: MusicProjectSession] = [:]
     static func requireIdleForDeletion(id: UUID) throws {
         guard let value = sessions[id] else { return }
-        guard value.notation?.isBusy != true, !value.notationImporting, !value.notationRestoring, !value.saving, !value.isRendering, !value.isLive, value.previewPresetIndex == nil, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording else { throw PersonalFileActionError.busy }
+        guard value.notation?.isBusy != true, !value.notationImporting, !value.notationRestoring, !value.saving, !value.isRendering, !value.isLive, value.previewPresetIndex == nil, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording, !value.djIsActive, !value.djLoading, !value.djCaptureBusy, value.djAnalysisTasks.isEmpty else { throw PersonalFileActionError.busy }
+        value.stopDJ() // Release this idle graph's file handles before deletion.
     }
 
     /// Read-only lookup; observing audio must not construct an editor, prefetch
@@ -97,12 +99,42 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private(set) var waveforms: [MusicAssetID: [Float]] = [:]
     private(set) var waveformErrors: [MusicAssetID: String] = [:]
     private(set) var dj: MusicDJSession?
+    private var djWorkspace: MusicDJWorkspace?
+    private var djSavedHash: String?
+    private(set) var djRecoveryRequired = false
+    private(set) var djDiagnosticDetails: String?
+    var djRevision: Int64 { djWorkspace?.revision ?? 0 }
+    enum DJCapturePhase: String, Sendable, Codable { case idle, starting, recording, finishing }
+    private(set) var djCapturePhase = DJCapturePhase.idle
+    private(set) var djLastRecording: MusicDJRecordingReceipt?
+    private var djCaptureTask: Task<Void, Never>?
+    private var djCaptureLease: MusicRenderLease?
+    private var djCaptureID: UUID?
+    private var djCaptureError: (any Error)?
+    private var djCaptureCancellation: CancellationToken?
+    private var djCaptureMonitor: Task<Void, Never>?
+    private var djCloseAfterCapture = false
+    var djCaptureBusy: Bool { djCapturePhase != .idle }
+    var djRecordingID: UUID? { djCaptureBusy ? djCaptureID : nil }
+    var djWorkspaceForInspection: MusicDJWorkspace? { djWorkspace }
+    private(set) var djLastExportMusicRevision: Int64?
+    private(set) var djLastExportRevision: Int64?
+    private(set) var djLoading = false
+    private(set) var djBeatEstimates: [MusicAssetID: MusicDJBeatEstimate] = [:]
+    @ObservationIgnored private var djTransport: MusicDJTransport?
+    @ObservationIgnored private var djLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var djAnalysisTasks: [MusicAssetID: Task<Void, Never>] = [:]
+    private var djIdentity = UUID()
+    private var djPrepared: [MusicAssetID: MusicDJPreparedSource] = [:]
     private var waveformTasks: [MusicAssetID: Task<Void, Never>] = [:]
     var diagnostic: String?
     var preset: String { String(currentTrack?.instrument?.presetIndex ?? 0) }
     private var midiStart: UInt64?
     private var heldNotes: [String: (PerformanceNote, Int64)] = [:]
     private var capturedNotes: [MusicMIDINote] = []
+    private var capturedControllers: [String: MusicMIDIControllerPoint] = [:]
+    private var midiCaptureTempo: MusicTempoMap?
+    private var midiCaptureOffset: Int64 = 0
     private let renderer = MusicOfflineRenderer()
     private let mp3 = MusicMP3Exporter()
 
@@ -114,8 +146,18 @@ private nonisolated struct MusicImportDirectory: Sendable {
         keyboard = KeyboardPerformanceController(owner: KeyboardOwnerToken(id.uuidString), sink: sink)
         selectedTrack = document.tracks.first?.id
         sink.handler = { [weak self] in self?.receive($0) }
-        if let bytes = try? Data(contentsOf: root.appendingPathComponent("dj-session.json")),
-           let saved = try? JSONDecoder().decode(MusicDJSession.self, from: bytes) { dj = saved }
+        let savedDJ = root.appendingPathComponent("dj-session.json")
+        if FileManager.default.fileExists(atPath: savedDJ.path) {
+            do {
+                let bytes = try MusicNotationPackage.regularData(savedDJ, maximum: 16 * 1_024 * 1_024)
+                let saved = try MusicDJWorkspace.decodeSaved(bytes, projectID: document.id)
+                djWorkspace = saved; dj = saved.session; djSavedHash = djHash(bytes)
+            } catch {
+                djRecoveryRequired = true
+                diagnostic = IDELanguageRunText.t("未能读取已保存的双碟设置，原文件已保留。", "Saved deck settings could not be opened. The original file was retained.")
+                djDiagnosticDetails = String(describing: error)
+            }
+        }
     }
     static func open(id: UUID, directory: URL, environment: AppEnvironment) async throws -> MusicProjectSession {
         if let value = sessions[id] { return value }
@@ -134,7 +176,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     /// pending commit fences before either original directory can be exchanged.
     func beginNotationRestore(expected: MusicNotationSnapshot) async throws -> MusicNotationRestoreAuthority {
         guard expected.parentID == id, expected.musicRevision == document.revision,
-              !saving, !notationRestoring, !isRendering, !isRecording, !isMIDIRecording,
+              !saving, !notationRestoring, !isRendering, !isRecording, !isMIDIRecording, !djCaptureBusy,
               notation?.isBusy != true else { throw PersonalContentError.changedDocument }
         try MusicNotationPackage.requireUnchanged(expected, root: root)
         let ticket = MusicNotationRestoreAuthority(identity: UUID(), ownerToken: handle.ownerToken, oldStore: store, oldDocument: document)
@@ -157,9 +199,10 @@ private nonisolated struct MusicImportDirectory: Sendable {
         waveformTasks.removeAll(); waveforms.removeAll(); waveformErrors.removeAll()
         exportedFile = nil; exportedFiles = []
         store = next; document = restored; handle = nextHandle
-        if let bytes = try? Data(contentsOf: root.appendingPathComponent("dj-session.json")) {
-            dj = try JSONDecoder().decode(MusicDJSession.self, from: bytes)
-        } else { dj = nil }
+        if let bytes = try? MusicNotationPackage.regularData(root.appendingPathComponent("dj-session.json"), maximum: 16 * 1_024 * 1_024) {
+            let saved = try MusicDJWorkspace.decodeSaved(bytes, projectID: restored.id)
+            djWorkspace = saved; djSavedHash = djHash(bytes); dj = saved.session; djRecoveryRequired = false
+        } else { dj = nil; djWorkspace = nil; djSavedHash = nil; djRecoveryRequired = false }
         reconcileSelection()
     }
     func completeNotationRestore(_ ticket: MusicNotationRestoreAuthority) {
@@ -174,7 +217,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
 
     func apply(_ operations: [MusicEditOp], expectedRevision: Int64? = nil) async throws {
-        guard !saving, !notationRestoring, !notationImporting else { throw MusicError.invalidBatch(reason: "another edit is saving") }
+        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { throw MusicError.invalidBatch(reason: "finish the current recording or save before editing the arrangement") }
         if let expectedRevision, expectedRevision != document.revision {
             throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision)
         }
@@ -244,7 +287,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         return clip
     }
     func undo(redo: Bool = false) async {
-        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else {
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording, !djCaptureBusy else {
             diagnostic = IDELanguageRunText.t("请先结束录制，再撤销或重做。", "Finish recording before undoing or redoing."); return
         }
         saving = true
@@ -265,8 +308,9 @@ private nonisolated struct MusicImportDirectory: Sendable {
     func importFile(_ url: URL) async {
         let importRevision = document.revision
         do {
-            guard !notationRestoring else { throw PersonalContentError.changedDocument }
+            guard !notationRestoring, !djCaptureBusy else { throw PersonalContentError.changedDocument }
             let repository = self.repository, sampleRate = document.tempoMap.sampleRate
+            let targetPPQ = document.tracks.isEmpty ? nil : document.tempoMap.ticksPerQuarter
             let imported = try await Task.detached(priority: .userInitiated) { () -> (MusicAsset, [FloeMusicCore.MusicTrack], MusicTempoMap?) in
                 let access = url.startAccessingSecurityScopedResource()
                 defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -274,7 +318,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
                 guard size <= 128 * 1_024 * 1_024 else { throw MusicError.invalidAsset(reason: "file size limit") }
                 let data = try Data(contentsOf: url, options: .mappedIfSafe)
                 if ["mid", "midi"].contains(url.pathExtension.lowercased()) {
-                    let imported = try MusicMIDINoteImport.read(url: url, sampleRate: sampleRate)
+                    let imported = try MusicMIDINoteImport.read(url: url, sampleRate: sampleRate, ticksPerQuarter: targetPPQ)
                     try await repository.stageAsset(.init(asset: imported.source, bytes: data))
                     return (imported.source, imported.tracks, imported.tempoMap)
                 }
@@ -305,11 +349,12 @@ private nonisolated struct MusicImportDirectory: Sendable {
     /// task workspace binding, never from a model-authored native path.
     func importAuthorizedFile(_ url: URL, sourceRoot: URL, sourceReference: String, provenance: String,
                               expectedRevision: Int64, expectedSHA256: String?, cancellation: CancellationToken,
+                              offsetSeconds: Double = 0,
                               validateSource: @escaping @MainActor @Sendable () async throws -> Void) async throws -> AuthorizedImport {
         let worker = Task { @MainActor in
             try await self.commitAuthorizedImport(url, sourceRoot: sourceRoot, sourceReference: sourceReference,
                 provenance: provenance, expectedRevision: expectedRevision, expectedSHA256: expectedSHA256,
-                cancellation: cancellation, validateSource: validateSource)
+                cancellation: cancellation, offsetSeconds: offsetSeconds, validateSource: validateSource)
         }
         let monitor = Task {
             while !Task.isCancelled {
@@ -322,17 +367,23 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     private func commitAuthorizedImport(_ url: URL, sourceRoot: URL, sourceReference: String, provenance: String,
                                         expectedRevision: Int64, expectedSHA256: String?, cancellation: CancellationToken,
+                                        offsetSeconds: Double,
                                         validateSource: @escaping @MainActor @Sendable () async throws -> Void) async throws -> AuthorizedImport {
-        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording, !djCaptureBusy else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
         guard expectedRevision == document.revision else { throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision) }
         try cancellation.throwIfCancelled(); try await validateSource()
         let ext = url.pathExtension.lowercased()
+        let offsetSamples = offsetSeconds * Double(document.tempoMap.sampleRate)
+        guard offsetSeconds.isFinite, offsetSeconds >= 0, offsetSamples < Double(Int64.max),
+              offsetSeconds == 0 || !["mid", "midi"].contains(ext) else { throw MusicError.invalidAsset(reason: "Invalid audio placement") }
+        let frozenOffset = Int64(offsetSamples.rounded())
         guard ["wav", "caf", "aif", "aiff", "mp3", "m4a", "mid", "midi"].contains(ext),
               !sourceReference.isEmpty, sourceReference.utf8.count <= 1_024 else { throw MusicError.invalidAsset(reason: "Choose a supported audio or MIDI file") }
-        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording, !djCaptureBusy else { throw MusicError.invalidBatch(reason: "another edit or recording is active") }
         guard document.revision == expectedRevision else { throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision) }
         saving = true; defer { saving = false }
         let destinationRoot = try MusicImportDirectory(root), sampleRate = document.tempoMap.sampleRate
+        let targetPPQ = document.tracks.isEmpty ? nil : document.tempoMap.ticksPerQuarter
         let prepared = try await personalPreviewOffMain { () -> (MusicAsset, [FloeMusicCore.MusicTrack], MusicTempoMap?, Data, PersonalPreviewFile) in
             try cancellation.throwIfCancelled(); try destinationRoot.validate()
             let source = try PersonalPreviewFile(root: sourceRoot, url: url,
@@ -347,11 +398,11 @@ private nonisolated struct MusicImportDirectory: Sendable {
             try bytes.write(to: stage, options: .withoutOverwriting)
             var asset: MusicAsset; let tracks: [FloeMusicCore.MusicTrack]; let tempo: MusicTempoMap?
             if ["mid", "midi"].contains(ext) {
-                let parsed = try MusicMIDINoteImport.read(url: stage, sampleRate: sampleRate)
+                let parsed = try MusicMIDINoteImport.read(url: stage, sampleRate: sampleRate, ticksPerQuarter: targetPPQ)
                 asset = parsed.source; tracks = parsed.tracks; tempo = parsed.tempoMap
             } else {
                 asset = try MusicAudioPreparation.inspect(url: stage, projectSampleRate: sampleRate)
-                let id = MusicTrackID(), clip = try MusicClip(name: url.lastPathComponent, trackID: id, offset: .init(0),
+                let id = MusicTrackID(), clip = try MusicClip(name: url.lastPathComponent, trackID: id, offset: .init(frozenOffset),
                     body: .audio(.init(assetID: asset.id, durationSamples: asset.durationSamples.value)))
                 tracks = [try FloeMusicCore.MusicTrack(id: id, name: url.lastPathComponent, kind: .audio, clips: [clip])]; tempo = nil
             }
@@ -386,7 +437,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
             revision: document.revision, byteCount: prepared.3.count)
     }
     func startLive() {
-        guard !saving, !notationRestoring, !notationImporting else { return }
+        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
         guard !isLive else { return }
         stopPresetPreview()
         liveIdentity = UUID()
@@ -416,7 +467,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     /// A late track-save callback may finish its authorized save after panel
     /// closure, but cannot activate audio or recording in a closed context.
     func activateKeyboard(recording: Bool = false) async {
-        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else {
+        guard !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording, !djCaptureBusy else {
             diagnostic = IDELanguageRunText.t("请先结束当前录制或保存。", "Finish recording or saving first."); return
         }
         let identity = UUID()
@@ -446,7 +497,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     /// Auditions never write an instrument or enter the keyboard recording sink.
     /// One session-owned voice and cancellation fence cover every exit path.
     func previewPreset(_ index: Int) {
-        guard !saving, !notationRestoring, !notationImporting else { return }
+        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
         guard MusicPresetCatalog.preset(index: index) != nil else {
             diagnostic = IDELanguageRunText.t("此音色不可用。", "This preset is unavailable."); return
         }
@@ -497,18 +548,23 @@ private nonisolated struct MusicImportDirectory: Sendable {
         return patch.parameters[key] ?? MusicPresetCatalog.preset(index: patch.presetIndex)?.parameters[key] ?? fallback
     }
     func startMIDIRecording() {
-        guard !saving, !notationRestoring, !notationImporting else { return }
+        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
         guard !isRecording, midiStart == nil else { return }
         startLive()
         guard isLive else { return }
-        capturedNotes = []; heldNotes = [:]; midiStart = mach_absolute_time()
+        capturedNotes = []; capturedControllers = [:]; heldNotes = [:]
+        midiCaptureTempo = document.tempoMap
+        midiCaptureOffset = Int64(min(9.0e15, max(0, playheadSeconds * Double(document.tempoMap.sampleRate))))
+        midiStart = mach_absolute_time()
     }
     var isMIDIRecording: Bool { midiStart != nil }
     private func recordingTick() throws -> Int64 {
         guard let start = midiStart else { return 0 }
         let seconds = AVAudioTime.seconds(forHostTime: mach_absolute_time() - start)
-        let samples = min(Double(Int64.max / 2), seconds * Double(document.tempoMap.sampleRate))
-        return try document.tempoMap.tick(atSample: .init(Int64(samples.rounded()))).value
+        let map = midiCaptureTempo ?? document.tempoMap
+        let samples = min(Double(Int64.max / 2), seconds * Double(map.sampleRate))
+        let absolute = Int64(samples.rounded()) + midiCaptureOffset
+        return try map.tick(atSample: .init(absolute)).value - map.tick(atSample: .init(midiCaptureOffset)).value
     }
     func stopMIDIRecording() async {
         guard midiStart != nil else { return }
@@ -519,7 +575,8 @@ private nonisolated struct MusicImportDirectory: Sendable {
                     durationTicks: max(1, end - value.1), velocity: max(1, Int(value.0.velocity)), channel: Int(value.0.channel)))
             }
             heldNotes = [:]; midiStart = nil
-            guard !capturedNotes.isEmpty else { return }
+            guard !capturedNotes.isEmpty || !capturedControllers.isEmpty else { return }
+            guard midiCaptureTempo == document.tempoMap else { throw MusicError.invalidMIDI(reason: "tempo changed during the MIDI take; captured events were retained") }
             var operations: [MusicEditOp] = []
             let track: FloeMusicCore.MusicTrack
             if let selected = document.tracks.first(where: { $0.id == selectedTrack && $0.kind == .midi }) { track = selected }
@@ -528,16 +585,23 @@ private nonisolated struct MusicImportDirectory: Sendable {
                     instrument: .init(pluginID: MusicNativeBuiltins.synth, presetIndex: Int(preset) ?? 0))
                 operations.append(.insertTrack(track))
             }
-            let length = capturedNotes.map { $0.startTick.value + $0.durationTicks }.max() ?? end
+            let points = capturedControllers.values.sorted { ($0.controller, $0.channel, $0.tick.value) < ($1.controller, $1.channel, $1.tick.value) }
+            let length = max(end, capturedNotes.map { $0.startTick.value + $0.durationTicks }.max() ?? end)
             let clip = try MusicClip(name: IDELanguageRunText.t("录制片段", "Recorded clip"), trackID: track.id,
-                offset: .init(0), body: .midi(.init(durationTicks: max(1, length), notes: capturedNotes)))
+                offset: .init(midiCaptureOffset), body: .midi(.init(durationTicks: max(1, length), notes: capturedNotes, controllerPoints: points)))
             operations.append(.insertClip(clip))
             try await apply(operations)
-            selectedTrack = track.id; capturedNotes = []
+            selectedTrack = track.id; selectedClip = clip.id; capturedNotes = []; capturedControllers = [:]; midiCaptureTempo = nil
         } catch { midiStart = nil; diagnostic = error.localizedDescription }
     }
     private func receive(_ event: KeyboardPerformanceEvent) {
         do {
+            let eventOwner: KeyboardOwnerToken
+            switch event {
+            case .noteOn(let owner, _), .noteOff(let owner, _, _), .sustain(let owner, _),
+                 .pitchBend(let owner, _), .modulation(let owner, _), .allNotesOff(let owner): eventOwner = owner
+            }
+            guard eventOwner == keyboard.owner, isLive, instrument?.ownerToken == eventOwner.rawValue else { return }
             let owner: KeyboardOwnerToken, message: MusicPerformanceMessage
             switch event {
             case .noteOn(let token, let note):
@@ -549,16 +613,36 @@ private nonisolated struct MusicImportDirectory: Sendable {
                     capturedNotes.append(try .init(pitch: Int(note), startTick: .init(held.1),
                         durationTicks: max(1, (try recordingTick()) - held.1), velocity: max(1, Int(held.0.velocity)), channel: Int(channel)))
                 }
-            case .sustain(let token, let enabled): owner = token; message = .sustain(enabled)
-            case .pitchBend(let token, let value): owner = token; message = .pitchBend(value)
-            case .modulation(let token, let value): owner = token; message = .modulation(value)
-            case .allNotesOff(let token): owner = token; message = .allNotesOff
+            case .sustain(let token, let enabled):
+                owner = token; message = .sustain(enabled)
+                try captureController(64, value: enabled ? 127 : 0)
+            case .pitchBend(let token, let value):
+                owner = token; message = .pitchBend(value)
+                guard value.isFinite else { return }
+                try captureController(128, value: Int(((Double(min(1, max(-1, value))) + 1) * 8191.5).rounded()))
+            case .modulation(let token, let value):
+                owner = token; message = .modulation(value)
+                guard value.isFinite else { return }
+                try captureController(1, value: Int((Double(min(1, max(0, value))) * 127).rounded()))
+            case .allNotesOff(let token):
+                owner = token; message = .allNotesOff
+                if midiStart != nil {
+                    let end = try recordingTick()
+                    for (_, held) in heldNotes { capturedNotes.append(try .init(pitch: Int(held.0.note), startTick: .init(held.1), durationTicks: max(1, end - held.1), velocity: max(1, Int(held.0.velocity)), channel: Int(held.0.channel))) }
+                    heldNotes = [:]; try captureController(64, value: 0)
+                }
             }
             if let instrument, isLive { try instrument.send(message, ownerToken: owner.rawValue) }
         } catch { diagnostic = error.localizedDescription }
     }
+    private func captureController(_ controller: Int, value: Int) throws {
+        guard midiStart != nil else { return }
+        let tick = try recordingTick()
+        guard capturedControllers.count < MusicMIDIClipPayload.maxControllerPoints else { throw MusicError.boundsExceeded(field: "controllerPoints", limit: MusicMIDIClipPayload.maxControllerPoints) }
+        capturedControllers["\(controller):0:\(tick)"] = try MusicMIDIControllerPoint(controller: controller, tick: .init(tick), value: value, channel: 0)
+    }
     func render(asMP3: Bool, play: Bool = false, tailFrames: Int64 = 48_000) {
-        guard !isRendering, !notationRestoring, !notationImporting else { return }
+        guard !isRendering, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
         do { try validateRenderTail(tailFrames) }
         catch { renderError = error; diagnostic = error.localizedDescription; return }
         stopPresetPreview()
@@ -610,7 +694,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         }
     }
     func renderAndWait(asMP3: Bool, tailFrames: Int64 = 48_000) async throws -> URL {
-        guard !isRendering else { throw MusicError.invalidBatch(reason: "another render is running") }
+        guard !isRendering, !djCaptureBusy, !notationRestoring, !notationImporting else { throw MusicError.invalidBatch(reason: "another render, recording or restore is running") }
         try validateRenderTail(tailFrames)
         render(asMP3: asMP3, tailFrames: tailFrames)
         await withTaskCancellationHandler { await renderTask?.value } onCancel: {
@@ -623,6 +707,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
     func cancelRender() { lease?.invalidate(); lease = nil; renderTask?.cancel() }
     func stopPlayback() {
+        stopDJ()
         notation?.stopAudio()
         stopPresetPreview()
         let owned = player != nil
@@ -630,11 +715,12 @@ private nonisolated struct MusicImportDirectory: Sendable {
         if owned { audio.releasePlayback() }
     }
     func startMicrophone() async {
-        guard !saving, !notationRestoring, !notationImporting else { return }
+        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
         guard !isRecording, !isLive, !isPlaying else { return }
         stopPresetPreview()
         do {
             guard await AVAudioApplication.requestRecordPermission() else { throw MusicNativeError.invalid("microphone permission denied") }
+            guard !djCaptureBusy, !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else { throw MusicNativeError.invalid("another recording or save started") }
             try audio.acquireRecording()
             let directory = root.appendingPathComponent("Recordings")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -657,10 +743,14 @@ private nonisolated struct MusicImportDirectory: Sendable {
         return Double(last) / Double(document.tempoMap.sampleRate)
     }
     var playbackPosition: Double { player?.isPlaying == true ? player?.currentTime ?? playheadSeconds : playheadSeconds }
-    var playbackIsActive: Bool { player?.isPlaying == true }
+    var playbackIsActive: Bool { player?.isPlaying == true || djIsActive }
     func seek(to seconds: Double) {
-        playheadSeconds = min(max(0, seconds), max(durationSeconds, 1))
-        if player != nil { player?.currentTime = playheadSeconds }
+        guard let position = MusicTimelineEditing.cursor(seconds: seconds, sampleRate: document.tempoMap.sampleRate) else { return }
+        playheadSeconds = position
+        if let player {
+            if position >= player.duration { stopPlayback() }
+            else { player.currentTime = position }
+        }
     }
     func setLooping(_ value: Bool) { looping = value; player?.numberOfLoops = value ? -1 : 0 }
     func selectTrack(_ id: MusicTrackID) {
@@ -822,19 +912,376 @@ private nonisolated struct MusicImportDirectory: Sendable {
             }
         }
     }
+    var djPresentationState: MusicDJSession? {
+        guard var value = dj else { return nil }
+        if let transport = djTransport, let snapshot = try? transport.snapshot(ownerToken: transport.ownerToken) {
+            value.deckA.playheadSamples = snapshot.deckA.positionSamples; value.deckA.playing = snapshot.deckA.playing
+            value.deckB.playheadSamples = snapshot.deckB.positionSamples; value.deckB.playing = snapshot.deckB.playing
+        }
+        return value
+    }
+    var djIsActive: Bool {
+        let value = djPresentationState
+        return value?.deckA.playing == true || value?.deckB.playing == true
+    }
+    private func djHash(_ bytes: Data) -> String {
+        SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+    private func persistDJ(_ next: MusicDJWorkspace) throws {
+        let guardRoot = try MusicImportDirectory(root)
+        let hash = try repository.saveDJWorkspace(next, expectedSHA256: djSavedHash, expectedMusicRevision: document.revision)
+        try guardRoot.validate()
+        djWorkspace = next; djSavedHash = hash; dj = next.session
+        Task { try? await PersonalContentService.shared.library().markChanged(id) }
+    }
+
+    private func editDJ(expectedDJRevision: Int64, expectedMusicRevision: Int64,
+                        _ change: (inout MusicDJSession) throws -> Void) throws -> MusicDJWorkspace {
+        guard !saving, !notationRestoring, !notationImporting, !djLoading, !djRecoveryRequired,
+              djCapturePhase != .starting, djCapturePhase != .finishing else {
+            throw MusicNativeError.invalid("DJ settings are busy or need recovery")
+        }
+        let current = djPresentationState
+        let base = try djWorkspace ?? MusicDJWorkspace(projectID: document.id,
+            session: MusicDJSession(assets: document.assets, sampleRate: document.tempoMap.sampleRate))
+        let next = try base.editing(document: document, expectedMusicRevision: expectedMusicRevision,
+            expectedDJRevision: expectedDJRevision, runtime: current, change: change)
+        let seeks = Set([MusicDJSession.DeckSlot.a, .b].filter { slot in
+            let a = slot == .a ? current?.deckA : current?.deckB
+            let b = slot == .a ? next.session.deckA : next.session.deckB
+            return a?.playheadSamples != b.playheadSamples
+        })
+        if (next.session.deckA.playing || next.session.deckB.playing), (isRecording || isMIDIRecording || isRendering) {
+            throw MusicNativeError.invalid("Finish the current recording or export before playing the decks")
+        }
+        try persistDJ(next)
+        queueDJPlayback(next.session, seeking: seeks)
+        return next
+    }
     func changeDJ(_ change: (inout MusicDJSession) throws -> Void) {
-        guard !saving, !notationRestoring, !notationImporting else { return }
+        do { _ = try editDJ(expectedDJRevision: djRevision, expectedMusicRevision: document.revision, change) }
+        catch {
+            diagnostic = IDELanguageRunText.t("双碟设置未能保存，请稍后重试。", "Deck settings could not be saved. Try again shortly.")
+            djDiagnosticDetails = String(describing: error)
+        }
+    }
+    /// Called by the existing studio.read/edit relay, under its normal Music
+    /// project/task authorization. The same UI/session/file is authoritative.
+    func applyDJBatch(_ batch: MusicDJEditBatch, expectedMusicRevision: Int64) throws -> MusicDJWorkspace {
+        guard batch.workspace == "dj", !batch.commands.isEmpty, batch.commands.count <= 100 else {
+            throw MusicNativeError.invalid("Use workspace:'dj' with 1...100 commands")
+        }
+        return try editDJ(expectedDJRevision: batch.expectedDJRevision, expectedMusicRevision: expectedMusicRevision) { value in
+            for (index, command) in batch.commands.enumerated() {
+                do { try command.apply(to: &value, currentAssets: document.assets) }
+                catch { throw MusicEditJSONError(code: "invalidDJCommand", path: "$.commands[\(index)]",
+                    reason: String(describing: error), expected: "the required fields and current asset IDs from the DJ contract") }
+            }
+        }
+    }
+    func resetDJSettingsForModel(expectedMusicRevision: Int64, expectedSHA256: String) throws -> MusicDJWorkspace {
+        guard !djLoading, !djCaptureBusy, !djIsActive, !saving, !notationRestoring, !notationImporting else {
+            throw MusicNativeError.invalid("Stop the decks and current work before resetting their settings")
+        }
+        guard document.revision == expectedMusicRevision else { throw MusicError.staleRevision(expected: expectedMusicRevision, actual: document.revision) }
+        let guardRoot = try MusicImportDirectory(root)
+        let (saved, hash) = try repository.resetDJWorkspace(expectedSHA256: expectedSHA256,
+            expectedMusicRevision: expectedMusicRevision, projectID: document.id)
+        try guardRoot.validate()
+        djWorkspace = saved; djSavedHash = hash; dj = saved.session; djRecoveryRequired = false
+        return saved
+    }
+    func resetDJSettingsPreservingOriginal() {
         do {
-            let old = dj
-            var next = try MusicDJSession(id: old?.id ?? MusicDJSessionID(), assets: document.assets,
-                deckA: old?.deckA ?? .init(), deckB: old?.deckB ?? .init(), crossfader: old?.crossfader ?? 0.5,
-                cueSource: old?.cueSource ?? .none, cueGain: old?.cueGain ?? 1, masterGain: old?.masterGain ?? 1,
-                sampleRate: document.tempoMap.sampleRate)
-            try change(&next); try next.validate()
-            try JSONEncoder().encode(next).write(to: root.appendingPathComponent("dj-session.json"), options: .atomic)
-            dj = next
+            let file = root.appendingPathComponent("dj-session.json")
+            let size = try file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard size.isRegularFile == true, (size.fileSize ?? Int.max) <= 16 * 1_024 * 1_024 else { throw PersonalContentError.changedDocument }
+            _ = try resetDJSettingsForModel(expectedMusicRevision: document.revision, expectedSHA256: MusicAudioPreparation.hashFile(file))
+        } catch { diagnostic = IDELanguageRunText.t("未能重置双碟设置，原文件已保留。", "Deck settings could not be reset. The original was retained."); djDiagnosticDetails = String(describing: error) }
+    }
+
+    func toggleDJ(_ slot: MusicDJSession.DeckSlot? = nil) {
+        if slot == nil, djIsActive { stopDJ(); return }
+        guard !isRecording, !isMIDIRecording, !isRendering, !djLoading,
+              djCapturePhase != .starting, djCapturePhase != .finishing else { return }
+        if player != nil { stopPlayback() }
+        notation?.stopAudio(); stopLive()
+        changeDJ { value in
+            if let slot {
+                let state = slot == .a ? value.deckA : value.deckB
+                guard state.assetID != nil else { throw MusicNativeError.invalid("Load a track first") }
+                try value.setPlaying(slot, !state.playing)
+            } else {
+                try value.setPlaying(.a, value.deckA.assetID != nil)
+                try value.setPlaying(.b, value.deckB.assetID != nil)
+            }
+        }
+    }
+    func seekDJ(_ slot: MusicDJSession.DeckSlot, sample: Int64, commit: Bool) {
+        if commit { changeDJ { try $0.seek(slot, sample: max(0, sample)) }; return }
+        guard !djLoading, var value = djPresentationState else { return }
+        do {
+            try value.seek(slot, sample: max(0, sample))
+            if let transport = djTransport { try transport.apply(value, seeking: [slot], ownerToken: handle.ownerToken) }
+            dj = value
         } catch { diagnostic = error.localizedDescription }
     }
+    func loadDJ(_ slot: MusicDJSession.DeckSlot, asset: MusicAsset) {
+        changeDJ { try $0.loadDeck(slot, asset: asset) }
+        analyzeDJ(assetID: asset.id, slot: slot)
+    }
+    private func queueDJPlayback(_ value: MusicDJSession, seeking: Set<MusicDJSession.DeckSlot>) {
+        let needed = Set([value.deckA.assetID, value.deckB.assetID].compactMap { $0 })
+        let missing = needed.filter { id in djPrepared[id]?.source.asset != document.assets.first(where: { $0.id == id }) }
+        if missing.isEmpty {
+            do {
+                if djTransport == nil, !needed.isEmpty {
+                    djTransport = try MusicDJTransport(ownerToken: handle.ownerToken, authority: audio, sampleRate: value.sampleRate)
+                }
+                try djTransport?.apply(value, prepared: Array(djPrepared.values), seeking: seeking, ownerToken: handle.ownerToken)
+            } catch { stopDJ(); diagnostic = error.localizedDescription }
+            return
+        }
+        djLoading = true; djIdentity = UUID()
+        let identity = djIdentity, revision = document.revision, token = handle.ownerToken
+        djLoadTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if djIdentity == identity { djLoading = false; djLoadTask = nil } }
+            do {
+                let guardRoot = try MusicImportDirectory(root)
+                var prepared: [MusicDJPreparedSource] = []
+                for id in missing {
+                    guard let asset = document.assets.first(where: { $0.id == id }) else { throw PersonalContentError.changedDocument }
+                    let url = try await repository.resolvedURL(for: asset)
+                    prepared.append(try await MusicDJPreparedSource.prepare(.init(asset: asset, url: url), projectSampleRate: value.sampleRate))
+                }
+                try Task.checkCancellation(); try guardRoot.validate()
+                guard djIdentity == identity, document.revision == revision, handle.ownerToken == token,
+                      !notationRestoring, !notationImporting else { throw PersonalContentError.changedDocument }
+                for value in prepared { djPrepared[value.source.asset.id] = value }
+                if djTransport == nil { djTransport = try MusicDJTransport(ownerToken: token, authority: audio, sampleRate: value.sampleRate) }
+                try djTransport?.apply(value, prepared: Array(djPrepared.values), seeking: seeking, ownerToken: token)
+                djLoading = false
+                for slot in [MusicDJSession.DeckSlot.a, .b] {
+                    let deck = slot == .a ? dj?.deckA : dj?.deckB
+                    if let id = deck?.assetID, let estimate = djBeatEstimates[id] { applyDJBeatEstimate(estimate, slot: slot) }
+                }
+            } catch {
+                if djIdentity == identity { stopDJ(); if !(error is CancellationError) { diagnostic = error.localizedDescription } }
+            }
+        }
+    }
+    func startDJRecording(expectedMusicRevision: Int64, expectedDJRevision: Int64,
+                          cancellation: CancellationToken? = nil) async throws -> UUID {
+        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy, !isRendering,
+              !isRecording, !isMIDIRecording, !djRecoveryRequired,
+              let state = djPresentationState, state.deckA.assetID != nil || state.deckB.assetID != nil else {
+            throw MusicNativeError.invalid("Load a track and finish the current recording or save first")
+        }
+        guard document.revision == expectedMusicRevision else { throw MusicError.staleRevision(expected: expectedMusicRevision, actual: document.revision) }
+        guard djRevision == expectedDJRevision else { throw MusicError.staleRevision(expected: expectedDJRevision, actual: djRevision) }
+        try cancellation?.throwIfCancelled()
+        let recordingID = UUID(), token = handle.ownerToken, frozen = document
+        djCaptureID = recordingID; djCaptureError = nil; djLastRecording = nil; djCapturePhase = .starting
+        djCaptureCancellation = cancellation
+        let work = Task { @MainActor [self] in
+            do {
+                let guardRoot = try MusicImportDirectory(root)
+                if player != nil { player?.stop(); player = nil; isPlaying = false; audio.releasePlayback() }
+                notation?.stopAudio(); stopLive()
+                if djTransport == nil { queueDJPlayback(state, seeking: []) }
+                await djLoadTask?.value
+                try Task.checkCancellation(); try cancellation?.throwIfCancelled(); try guardRoot.validate()
+                guard handle.ownerToken == token, document.revision == frozen.revision, djCaptureID == recordingID,
+                      let transport = djTransport else { throw PersonalContentError.changedDocument }
+                let directory = root.appendingPathComponent("Recordings")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                _ = try MusicImportDirectory(directory)
+                let ticket = try MusicRenderLease(document: frozen, ownerToken: token)
+                djCaptureLease = ticket
+                try await transport.startRecording(document: frozen, lease: ticket,
+                    destination: directory.appendingPathComponent("dj-take-" + recordingID.uuidString + ".wav"), ownerToken: token)
+                try Task.checkCancellation(); try cancellation?.throwIfCancelled(); try guardRoot.validate()
+                guard document.revision == frozen.revision, handle.ownerToken == token else { throw PersonalContentError.changedDocument }
+                if djCapturePhase == .starting { djCapturePhase = .recording }
+                if let cancellation {
+                    djCaptureMonitor = Task { @MainActor [weak self] in
+                        while !Task.isCancelled {
+                            guard let self, self.djCaptureID == recordingID, self.djCaptureBusy else { return }
+                            if cancellation.isCancelled {
+                                self.djCaptureLease?.invalidate(); self.finishDJRecording(closePlayback: false); return
+                            }
+                            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                        }
+                    }
+                }
+            } catch {
+                djCaptureError = error
+                if djCapturePhase == .starting {
+                    if let transport = djTransport, transport.isRecording {
+                        if let receipt = try? await transport.finishRecording(recovery: true, ownerToken: transport.ownerToken) {
+                            djLastRecording = receipt; exportedFile = receipt.file; exportedFiles = [receipt.file]
+                        }
+                    }
+                    djCapturePhase = .idle; djCaptureLease = nil
+                }
+                if !(error is CancellationError) { diagnostic = IDELanguageRunText.t("录制未能开始。", "Recording could not start."); djDiagnosticDetails = String(describing: error) }
+            }
+        }
+        djCaptureTask = work
+        await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        if Task.isCancelled { finishDJRecording(closePlayback: false); await djCaptureTask?.value; throw CancellationError() }
+        guard djCaptureID == recordingID, djCapturePhase == .recording else { throw djCaptureError ?? MusicNativeError.invalid("Recording did not start") }
+        return recordingID
+    }
+    func finishDJRecording(closePlayback: Bool = false) {
+        guard djCapturePhase != .idle else { if closePlayback { closeDJPlaybackSavingPosition() }; return }
+        djCloseAfterCapture = djCloseAfterCapture || closePlayback
+        if closePlayback, let transport = djTransport { try? transport.stop(ownerToken: transport.ownerToken) }
+        guard djCapturePhase != .finishing else { return }
+        let old = djCaptureTask, transport = djTransport, token = handle.ownerToken
+        let cancellation = djCaptureCancellation
+        if djCapturePhase == .starting { old?.cancel() }
+        djCapturePhase = .finishing
+        if closePlayback { try? transport?.stop(ownerToken: token) }
+        djCaptureTask = Task { @MainActor [self] in
+            await old?.value
+            defer {
+                djCapturePhase = .idle; djCaptureLease = nil; djCaptureTask = nil
+                djCaptureMonitor?.cancel(); djCaptureMonitor = nil; djCaptureCancellation = nil
+                if djCloseAfterCapture { djCloseAfterCapture = false; closeDJPlaybackSavingPosition() }
+            }
+            do {
+                guard let transport, transport.isRecording else { return }
+                let guardRoot = try MusicImportDirectory(root)
+                if cancellation?.isCancelled == true { djCaptureLease?.invalidate() }
+                let receipt = try await transport.finishRecording(recovery: cancellation?.isCancelled == true, ownerToken: token)
+                try guardRoot.validate()
+                djLastRecording = receipt; exportedFile = receipt.file; exportedFiles = [receipt.file]
+                guard !receipt.recovered, cancellation?.isCancelled != true,
+                      receipt.projectID == document.id.rawValue, receipt.sourceRevision == document.revision,
+                      handle.ownerToken == token else {
+                    diagnostic = IDELanguageRunText.t("已保留录制的音频。", "The recorded audio was retained."); return
+                }
+                try await attachDJRecording(receipt)
+            } catch {
+                djCaptureError = error
+                diagnostic = djLastRecording == nil
+                    ? IDELanguageRunText.t("录制未完成，请稍后重试。", "Recording did not finish. Try again shortly.")
+                    : IDELanguageRunText.t("录音已保留，保存未完成。", "The recording was retained, but saving did not finish.")
+                djDiagnosticDetails = String(describing: error)
+            }
+        }
+    }
+    func stopDJRecordingAndWait(recordingID: UUID) async throws -> MusicDJRecordingReceipt {
+        guard djCaptureID == recordingID, djCaptureBusy else { throw MusicNativeError.staleOwner }
+        finishDJRecording(closePlayback: false)
+        await djCaptureTask?.value
+        if let error = djCaptureError { throw error }
+        guard let receipt = djLastRecording else { throw MusicNativeError.invalid("No recorded audio is available") }
+        return receipt
+    }
+    private func attachDJRecording(_ receipt: MusicDJRecordingReceipt) async throws {
+        let revision = document.revision, token = handle.ownerToken, guardRoot = try MusicImportDirectory(root)
+        let sampleRate = document.tempoMap.sampleRate
+        var asset = try await Task.detached(priority: .utility) {
+            try MusicAudioPreparation.inspect(url: receipt.file, projectSampleRate: sampleRate)
+        }.value
+        asset.name = IDELanguageRunText.t("双碟录音", "Deck recording") + " " + Date().formatted(date: .abbreviated, time: .shortened)
+        asset.sourceLocator = "native-dj/" + (djCaptureID?.uuidString ?? UUID().uuidString)
+        asset.provenance = "Native dual-deck mix; source Music revision " + String(receipt.sourceRevision)
+        guard asset.contentHash == receipt.sha256 else { throw PersonalContentError.changedDocument }
+        try await repository.stageAssetFile(asset, source: receipt.file)
+        try guardRoot.validate()
+        guard document.revision == revision, handle.ownerToken == token, djCapturePhase == .finishing else { throw PersonalContentError.changedDocument }
+        document = try await store.commit(.init(baseRevision: revision, author: "native-dj-recording", ops: [.insertAsset(asset)]), as: handle)
+        handle = .init(sessionID: handle.sessionID, ownerToken: handle.ownerToken, baseRevision: document.revision)
+        let canonical = try await repository.resolvedURL(for: asset)
+        let saved = MusicDJRecordingReceipt(projectID: receipt.projectID, sourceRevision: receipt.sourceRevision,
+            frames: receipt.frames, sampleRate: receipt.sampleRate, sha256: receipt.sha256, file: canonical,
+            recovered: receipt.recovered, diagnostic: receipt.diagnostic)
+        djLastRecording = saved; exportedFile = canonical; exportedFiles = [canonical]
+        loadWaveforms(); await publishSavedChange(previousRevision: revision)
+        // Only the newly recorded redundant file is retired after its exact
+        // bytes are durable in this document's immutable asset repository.
+        if receipt.file.deletingLastPathComponent().standardizedFileURL == root.appendingPathComponent("Recordings").standardizedFileURL,
+           receipt.file.lastPathComponent.hasPrefix("dj-take-"), receipt.file != canonical {
+            let duplicateHash = try? await Task.detached(priority: .utility) { try MusicAudioPreparation.hashFile(receipt.file) }.value
+            try guardRoot.validate()
+            if duplicateHash == receipt.sha256 { try? FileManager.default.removeItem(at: receipt.file) }
+        }
+    }
+    func stopDJ() {
+        djIdentity = UUID(); djLoadTask?.cancel(); djLoadTask = nil; djLoading = false
+        if djCaptureBusy { finishDJRecording(closePlayback: true); return }
+        closeDJPlaybackSavingPosition()
+    }
+    private func closeDJPlaybackSavingPosition() {
+        let current = djPresentationState
+        if var value = current, let base = djWorkspace {
+            value.deckA.playing = false; value.deckB.playing = false
+            do {
+                let next = try base.editing(document: document, expectedMusicRevision: document.revision,
+                    expectedDJRevision: base.revision, runtime: value) { _ in }
+                try persistDJ(next)
+            } catch { dj = value; djDiagnosticDetails = String(describing: error) }
+        }
+        if let transport = djTransport { try? transport.close(ownerToken: transport.ownerToken) }
+        djTransport = nil
+    }
+
+    func analyzeDJ(assetID: MusicAssetID, slot: MusicDJSession.DeckSlot) {
+        guard djAnalysisTasks[assetID] == nil, let asset = document.assets.first(where: { $0.id == assetID && $0.kind != .midiFile }) else { return }
+        let revision = document.revision, token = handle.ownerToken
+        djAnalysisTasks[assetID] = Task { [weak self] in
+            guard let self else { return }
+            defer { djAnalysisTasks[assetID] = nil }
+            do {
+                let rootGuard = try MusicImportDirectory(root)
+                let url = try await repository.resolvedURL(for: asset)
+                let prepared = try await MusicDJPreparedSource.prepare(.init(asset: asset, url: url), projectSampleRate: document.tempoMap.sampleRate)
+                let estimate = try await MusicDJBeatAnalysis.analyze(prepared, projectSampleRate: document.tempoMap.sampleRate)
+                try Task.checkCancellation(); try rootGuard.validate()
+                guard document.revision == revision, handle.ownerToken == token,
+                      document.assets.contains(asset), !notationRestoring else { return }
+                djBeatEstimates[assetID] = estimate
+                applyDJBeatEstimate(estimate, slot: slot)
+            } catch { if !(error is CancellationError) { diagnostic = error.localizedDescription } }
+        }
+    }
+
+    func exportMIDI() {
+        guard !isRendering, !notationRestoring, !notationImporting, !saving else { return }
+        let frozen = document
+        isRendering = true; diagnostic = nil; renderError = nil
+        renderTask = Task { [self] in
+            defer { isRendering = false; renderTask = nil; lease = nil }
+            let staged = root.appendingPathComponent("Exports/.midi-" + UUID().uuidString + ".mid")
+            defer { try? FileManager.default.removeItem(at: staged) }
+            do {
+                let ticket = try MusicRenderLease(document: frozen, ownerToken: handle.ownerToken)
+                lease = ticket
+                let work = Task.detached(priority: .userInitiated) { try MusicMIDIFileExchange.write(frozen) }
+                let bytes = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
+                try Task.checkCancellation(); try ticket.validate(document: document)
+                let rootGuard = try MusicImportDirectory(root)
+                try await personalPreviewOffMain {
+                    try Task.checkCancellation(); try rootGuard.validate()
+                    try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    let directory = try MusicImportDirectory(staged.deletingLastPathComponent())
+                    try bytes.write(to: staged, options: .withoutOverwriting)
+                    guard try MusicAudioPreparation.hashFile(staged) == previewHash(bytes) else { throw MusicNativeError.invalid("MIDI export verification") }
+                    try directory.validate(); try rootGuard.validate(); try Task.checkCancellation()
+                }
+                try ticket.validate(document: document); try Task.checkCancellation()
+                let output = staged.deletingLastPathComponent().appendingPathComponent("music-r\(frozen.revision)-\(UUID().uuidString).mid")
+                try FileManager.default.moveItem(at: staged, to: output)
+                exportedFile = output; exportedFiles = [output]
+            } catch is CancellationError { diagnostic = IDELanguageRunText.t("已取消导出", "Export cancelled") }
+            catch { renderError = error; diagnostic = error.localizedDescription }
+        }
+    }
+
     func exportOriginals(stems: Bool) {
         guard !isRendering, !notationRestoring, !notationImporting else { return }
         stopPresetPreview()
@@ -875,7 +1322,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
                         try await target.stageAsset(.init(asset: asset, bytes: bytes))
                     }
                     _ = try await target.save(document: frozen, expectedRevision: nil, fence: nil)
-                    if let dj { try JSONEncoder().encode(dj).write(to: staging.appendingPathComponent("dj-session.json"), options: .atomic) }
+                    if let djWorkspace { try JSONEncoder().encode(djWorkspace).write(to: staging.appendingPathComponent("dj-session.json"), options: .atomic) }
                     let notationManifest = try MusicNotationPackage.stageCompanion(source: root, destination: staging, parentID: id, music: frozen)
                     let output = directory.appendingPathComponent("music-project-r\(frozen.revision)-\(UUID().uuidString).zip")
                     let stagedZip = directory.appendingPathComponent(".package-\(UUID().uuidString).zip")
@@ -902,45 +1349,126 @@ private nonisolated struct MusicImportDirectory: Sendable {
             } catch { renderError = error; if !Task.isCancelled { diagnostic = error.localizedDescription } }
         }
     }
+    func analyzeDJForModel(_ slot: MusicDJSession.DeckSlot, expectedMusicRevision: Int64,
+                           expectedDJRevision: Int64) async throws -> MusicDJBeatEstimate {
+        guard document.revision == expectedMusicRevision else { throw MusicError.staleRevision(expected: expectedMusicRevision, actual: document.revision) }
+        guard djRevision == expectedDJRevision else { throw MusicError.staleRevision(expected: expectedDJRevision, actual: djRevision) }
+        guard !notationRestoring, !notationImporting, let state = djPresentationState,
+              let id = (slot == .a ? state.deckA : state.deckB).assetID,
+              let asset = document.assets.first(where: { $0.id == id }) else { throw MusicNativeError.invalid("Load a project audio asset on this deck first") }
+        let rootGuard = try MusicImportDirectory(root), token = handle.ownerToken
+        let url = try await repository.resolvedURL(for: asset)
+        let prepared = try await MusicDJPreparedSource.prepare(.init(asset: asset, url: url), projectSampleRate: document.tempoMap.sampleRate)
+        let estimate = try await MusicDJBeatAnalysis.analyze(prepared, projectSampleRate: document.tempoMap.sampleRate)
+        try Task.checkCancellation(); try rootGuard.validate()
+        guard document.revision == expectedMusicRevision, djRevision == expectedDJRevision,
+              handle.ownerToken == token else { throw PersonalContentError.changedDocument }
+        return estimate
+    }
+    private func applyDJBeatEstimate(_ estimate: MusicDJBeatEstimate, slot: MusicDJSession.DeckSlot) {
+        guard !djLoading, let bpm = estimate.bpm, let current = dj,
+              let asset = document.assets.first(where: { $0.id == estimate.assetID && $0.contentHash == estimate.assetContentHash }) else { return }
+        let deck = slot == .a ? current.deckA : current.deckB
+        guard deck.assetID == asset.id, deck.beatGrid == nil else { return }
+        changeDJ { value in
+            let available = max(0, asset.durationSamples.value - estimate.firstBeatSample)
+            let beats = min(100_000, max(1, Int(Double(available) / Double(value.sampleRate) * bpm / 60)))
+            try value.setBeatGrid(slot, bpm: bpm, firstBeatSample: estimate.firstBeatSample, beatCount: beats)
+        }
+    }
+
+    var maximumDJExportSeconds: Double { min(3_600, Double(268_435_456) / Double(document.tempoMap.sampleRate)) }
+    var suggestedDJExportSeconds: Double {
+        guard let value = djPresentationState else { return 60 }
+        if value.deckA.activeLoop != nil || value.deckB.activeLoop != nil { return 60 }
+        var remaining: Double = 0
+        var hasLoadedSource = false
+        for deck in [value.deckA, value.deckB] where deck.assetID != nil {
+            hasLoadedSource = true
+            let frames = max(Int64(0), deck.assetDurationSamples - deck.playheadSamples)
+            let seconds = Double(frames) / Double(value.sampleRate) / deck.rate
+            remaining = max(remaining, seconds)
+        }
+        return min(maximumDJExportSeconds, max(1, hasLoadedSource ? remaining : 60))
+    }
     func renderDJ(deck: MusicDJSession.DeckSlot? = nil) {
-        guard !saving, !notationRestoring, !notationImporting else { return }
-        guard !isRendering, var snapshot = dj else { return }
-        stopPresetPreview()
+        exportDJ(asMP3: false, durationSeconds: suggestedDJExportSeconds, deck: deck)
+    }
+    func exportDJ(asMP3: Bool, durationSeconds: Double, deck: MusicDJSession.DeckSlot? = nil) {
+        guard !saving, !notationRestoring, !notationImporting, !isRendering, !djCaptureBusy, !djLoading,
+              var snapshot = djPresentationState else { return }
+        guard durationSeconds.isFinite, (0.01...maximumDJExportSeconds).contains(durationSeconds) else {
+            diagnostic = IDELanguageRunText.t("导出时长应在 0.01 到 3600 秒之间。", "Export duration must be between 0.01 and 3600 seconds."); return
+        }
         do {
             try snapshot.setPlaying(.a, snapshot.deckA.assetID != nil && deck != .b)
             try snapshot.setPlaying(.b, snapshot.deckB.assetID != nil && deck != .a)
-        } catch { diagnostic = error.localizedDescription; return }
-        let frozen = document
-        isRendering = true; diagnostic = nil; renderError = nil
-        renderTask = Task { [self, snapshot] in
-            defer { isRendering = false; renderTask = nil }
+            if let deck { try snapshot.setCrossfader(deck == .a ? 0 : 1) }
+        } catch { diagnostic = IDELanguageRunText.t("请先载入音频。", "Load audio first."); return }
+        let frozen = document, sourceDJRevision = djRevision
+        let frames = Int64((durationSeconds * Double(frozen.tempoMap.sampleRate)).rounded())
+        isRendering = true; renderedFrames = 0; diagnostic = nil; renderError = nil
+        renderTask = Task { @MainActor [self, snapshot] in
+            defer { isRendering = false; renderTask = nil; lease = nil }
             do {
-                let lease = try MusicRenderLease(document: frozen, ownerToken: handle.ownerToken)
-                self.lease = lease
+                let rootGuard = try MusicImportDirectory(root), ticket = try MusicRenderLease(document: frozen, ownerToken: handle.ownerToken)
+                lease = ticket
                 let directory = root.appendingPathComponent("Exports")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let output = directory.appendingPathComponent("dj-r\(frozen.revision)-\(UUID().uuidString).wav")
-                var sources: [ResolvedMusicSource] = []
-                for asset in frozen.assets where asset.kind != .midiFile {
-                    sources.append(.init(asset: asset, url: try await repository.resolvedURL(for: asset)))
+                _ = try MusicImportDirectory(directory)
+                let output = directory.appendingPathComponent("dj-r\(sourceDJRevision)-" + UUID().uuidString + ".wav")
+                let needed = Set([snapshot.deckA.assetID, snapshot.deckB.assetID].compactMap { $0 })
+                var sources: [MusicDJPreparedSource] = []
+                for asset in frozen.assets where needed.contains(asset.id) {
+                    if let value = djPrepared[asset.id], value.source.asset == asset { sources.append(value) }
+                    else {
+                        let url = try await repository.resolvedURL(for: asset)
+                        sources.append(try await MusicDJPreparedSource.prepare(.init(asset: asset, url: url), projectSampleRate: snapshot.sampleRate))
+                    }
                 }
-                let remaining = [snapshot.deckA, snapshot.deckB].filter(\.playing).map {
-                    Double($0.assetDurationSamples - $0.playheadSamples) / $0.rate
-                }.max() ?? 0
-                let frames = Int64(min(remaining, Double(frozen.tempoMap.sampleRate) * 60))
-                _ = try await MusicDJBounce().render(session: snapshot, sources: sources, document: frozen,
-                    lease: lease, frames: frames, destination: output)
-                try Task.checkCancellation(); try lease.validate(document: document)
-                exportedFile = output
-                exportedFiles = [output]
-                stopPlayback(); try audio.acquirePlayback()
-                do {
-                    let player = try AVAudioPlayer(contentsOf: output)
-                    guard player.play() else { throw MusicNativeError.render("DJ preview did not start") }
-                    self.player = player; isPlaying = true
-                } catch { audio.releasePlayback(); throw error }
-            } catch { renderError = error; if !Task.isCancelled { diagnostic = error.localizedDescription } }
+                try Task.checkCancellation(); try rootGuard.validate(); try ticket.validate(document: document)
+                let receipt = try await MusicDJExport.render(session: snapshot, document: frozen, lease: ticket,
+                    prepared: sources, frames: frames, destination: output, onProgress: { [weak self] value in self?.renderedFrames = value })
+                try Task.checkCancellation(); try rootGuard.validate(); try ticket.validate(document: document)
+                var result = receipt.file
+                exportedFile = receipt.file; exportedFiles = [receipt.file]
+                if asMP3 {
+                    let compressed = directory.appendingPathComponent("dj-r\(sourceDJRevision)-" + UUID().uuidString + ".mp3")
+                    result = try await mp3.encode(wav: output, destination: compressed, document: frozen, lease: ticket)
+                    try ticket.validate(document: document); try rootGuard.validate()
+                    // The PCM proof remains a recoverable actual output if
+                    // encoding fails; after success the requested MP3 is saved.
+                    exportedFiles = [result, output]
+                } else { exportedFiles = [result] }
+                exportedFile = result; djLastExportMusicRevision = frozen.revision; djLastExportRevision = sourceDJRevision
+            } catch let failure as MusicDJExportFailure {
+                renderError = failure
+                if let retained = failure.recovery { exportedFile = retained.file; exportedFiles = [retained.file] }
+                diagnostic = IDELanguageRunText.t("导出未完成，已保留生成的音频。", "Export did not finish. Any generated audio was retained.")
+                djDiagnosticDetails = failure.reason
+            } catch {
+                renderError = error
+                diagnostic = IDELanguageRunText.t("双碟混音未能导出。", "The deck mix could not be exported.")
+                djDiagnosticDetails = String(describing: error)
+            }
         }
+    }
+    func exportDJAndWait(asMP3: Bool, durationSeconds: Double, expectedMusicRevision: Int64,
+                         expectedDJRevision: Int64) async throws -> URL {
+        guard document.revision == expectedMusicRevision else { throw MusicError.staleRevision(expected: expectedMusicRevision, actual: document.revision) }
+        guard djRevision == expectedDJRevision else { throw MusicError.staleRevision(expected: expectedDJRevision, actual: djRevision) }
+        guard !isRendering, !djCaptureBusy, !djLoading, !saving, !notationRestoring, !notationImporting, djPresentationState != nil,
+              durationSeconds.isFinite, (0.01...maximumDJExportSeconds).contains(durationSeconds) else {
+            throw MusicNativeError.invalid("DJ export is busy, has no saved state, or its duration is outside 0.01...3600 seconds")
+        }
+        exportDJ(asMP3: asMP3, durationSeconds: durationSeconds)
+        guard let work = renderTask else { throw MusicNativeError.invalid("The deck export did not start") }
+        await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        if let renderError { throw renderError }
+        try Task.checkCancellation()
+        guard djLastExportMusicRevision == expectedMusicRevision, djLastExportRevision == expectedDJRevision,
+              let exportedFile else { throw PersonalContentError.changedDocument }
+        return exportedFile
     }
 }
 #endif

@@ -89,6 +89,20 @@ public struct GitHubActionsClient: Sendable {
 
     // MARK: Transport
 
+    /// Read-only GitHub source reads reuse this client's authenticated request
+    /// builder/session configuration. No Actions mutation or OAuth scope changes.
+    func readLinkResource(
+        _ segments: [String], query: [URLQueryItem] = [], token: String,
+        accept: String = "application/vnd.github+json", maximumBytes: Int
+    ) async throws -> GitHubLinkHTTPResponse {
+        let url = try GitHubLinkTransport.apiURL(baseURL: baseURL, segments: segments, query: query)
+        guard url.scheme == "https", url.user == nil, url.password == nil,
+              url.port == nil || url.port == 443 else { throw GitHubLinkError.invalidLink("API origin") }
+        var read = request(url, method: "GET", token: token, body: nil, accept: accept, apiVersion: Self.stableAPIVersion)
+        if token.isEmpty { read.setValue(nil, forHTTPHeaderField: "Authorization") }
+        return try await GitHubLinkTransport.read(read, session: session, maximumBytes: maximumBytes)
+    }
+
     private struct ErrorPayload: Decodable { let message: String? }
 
     private func send(
@@ -513,7 +527,7 @@ public struct GitHubActionsClient: Sendable {
         let url = try apiURL(["repos", owner, repository, "actions", "jobs", String(jobID), "logs"])
         var request = URLRequest(url: url)
         request.timeoutInterval = 60
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         request.setValue("FloeAgent", forHTTPHeaderField: "User-Agent")
         return try await boundedText(request, token: token, maxBytes: maxBytes)
     }

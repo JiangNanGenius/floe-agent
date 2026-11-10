@@ -3,6 +3,7 @@ import Crypto
 import FloeCore
 import FloeModels
 import FloeTools
+import FloeNativeChartsCore
 
 public struct PresentationTableDocument: Codable, Sendable, Equatable {
     public var title: String?
@@ -54,6 +55,7 @@ public struct PresentationArtifactTool: AgentTool {
         public var chartType: PresentationChartDocument.ChartType?
         public var series: [PresentationChartDocument.Series]?
         public var html: String?
+        public var chart: InlineChartPayload?
 
         public init(
             kind: Kind,
@@ -62,7 +64,8 @@ public struct PresentationArtifactTool: AgentTool {
             rows: [[String]]? = nil,
             chartType: PresentationChartDocument.ChartType? = nil,
             series: [PresentationChartDocument.Series]? = nil,
-            html: String? = nil
+            html: String? = nil,
+            chart: InlineChartPayload? = nil
         ) {
             self.kind = kind
             self.title = title
@@ -71,13 +74,14 @@ public struct PresentationArtifactTool: AgentTool {
             self.chartType = chartType
             self.series = series
             self.html = html
+            self.chart = chart
         }
     }
 
     public static let name = "document.presentation.createInline"
     public static let toolDescription =
-        "Create a rich conversation result. Copy the returned inlineMarkdown verbatim onto a standalone line between answer paragraphs to insert the actual native result in your reply. Use table for native rows, chart for native line/bar/area/pie/scatter, or web for a self-contained sandboxed preview. Web previews cannot access networks, frames, forms, plug-ins, native bridges or arbitrary files. The saved result is hash-verified and shareable. Use chat.content.list to recover older references from this task. For an editable .pptx file use document.presentation.createDeck."
-    public static let parametersJSON = #"""
+        "Create a rich conversation result. Copy returned inlineMarkdown verbatim onto a standalone line between answer paragraphs to insert the actual native result. For 40 native chart types, first call document.presentation.chartContract with the desired type, then submit kind:chart and the complete chart object (schemaVersion:2), using numeric/time coordinates and real statistics/finance/graph records. Native charts support values, filtering, zoom, fullscreen and PNG/PDF/JSON export. Existing chartType plus series still reads the five legacy categorical charts. Do not combine legacy fields with chart. Use table for rows or web for a self-contained sandboxed preview with no network, frames, forms, plug-ins or native bridges. Results are hash-verified and shareable. chat.content.list recovers task references; document.presentation.createDeck creates editable .pptx."
+    private static let legacyParametersJSON = #"""
     {
       "type":"object",
       "properties":{
@@ -117,6 +121,16 @@ public struct PresentationArtifactTool: AgentTool {
       "additionalProperties":false
     }
     """#
+    public static let parametersJSON: String = {
+        do {
+            var root = try JSONSerialization.jsonObject(with: Data(legacyParametersJSON.utf8)) as! [String: Any]
+            let chart = try JSONSerialization.jsonObject(with: ChartWireSchema.documentSchema()) as! [String: Any]
+            var properties = root["properties"] as! [String: Any]
+            properties["chart"] = ["$ref": "#/$defs/ChartDocument"]
+            root["properties"] = properties; root["$defs"] = chart["$defs"]
+            return String(decoding: try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]), as: UTF8.self)
+        } catch { preconditionFailure("The static chart field contract is invalid") }
+    }()
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .internalState
@@ -137,6 +151,9 @@ public struct PresentationArtifactTool: AgentTool {
         if let title = args.title, title.count > 160 {
             throw FloeError.validationFailed("title exceeds 160 characters")
         }
+        if args.chart != nil, args.kind != .chart {
+            throw FloeError.validationFailed("chart is only valid with kind:chart")
+        }
         switch args.kind {
         case .table:
             guard let columns = args.columns, !columns.isEmpty, columns.count <= 32,
@@ -147,6 +164,16 @@ public struct PresentationArtifactTool: AgentTool {
                 throw FloeError.validationFailed("table requires 1...32 columns and up to 500 rectangular rows")
             }
         case .chart:
+            if let chart = args.chart {
+                guard args.chartType == nil, args.series == nil else {
+                    throw FloeError.validationFailed("Use chart alone; do not combine it with legacy chartType or series")
+                }
+                if let title = args.title, let chartTitle = chart.document.title, title != chartTitle {
+                    throw FloeError.validationFailed("title and chart.title disagree; supply one title")
+                }
+                _ = try ChartValidator.prepare(chart.document)
+                return
+            }
             guard args.chartType != nil, let series = args.series,
                   !series.isEmpty, series.count <= 16,
                   series.reduce(0, { $0 + $1.points.count }) <= 2_000,
@@ -182,9 +209,14 @@ public struct PresentationArtifactTool: AgentTool {
             mimeType = "application/vnd.floe.table+json"
             fileExtension = "table.json"
         case .chart:
-            document = try encoder.encode(PresentationChartDocument(
-                title: args.title, type: args.chartType ?? .line, series: args.series ?? []
-            ))
+            if var chart = args.chart?.document {
+                if chart.title == nil { chart.title = args.title }
+                document = try ChartDocumentCodec.encode(chart)
+            } else {
+                document = try encoder.encode(PresentationChartDocument(
+                    title: args.title, type: args.chartType ?? .line, series: args.series ?? []
+                ))
+            }
             mimeType = "application/vnd.floe.chart+json"
             fileExtension = "chart.json"
         case .web:
@@ -213,7 +245,7 @@ public struct PresentationArtifactTool: AgentTool {
         )
         let reference = ChatContentReference(kind: .artifact, ownerID: context.runID, contentID: id.uuidString)!
         let summary = try JSONSerialization.data(withJSONObject: ["status": "created", "kind": args.kind.rawValue,
-            "inlineMarkdown": reference.markdown(title: args.title ?? args.kind.rawValue)], options: [.sortedKeys])
+            "inlineMarkdown": reference.markdown(title: args.title ?? args.chart?.document.title ?? args.kind.rawValue)], options: [.sortedKeys])
         return ToolExecutionOutput(
             summary: String(decoding: summary, as: UTF8.self),
             fullOutputSHA256: digest,

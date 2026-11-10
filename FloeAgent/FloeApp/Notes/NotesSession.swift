@@ -13,12 +13,22 @@ final class NotesSession {
     private(set) var documents: [NoteDocument] = []
     private(set) var recentDocumentIDs: [UUID] = []
     private(set) var notebooks: [Notebook] = []
-    private(set) var document: NoteDocument?
+    private(set) var document: NoteDocument? {
+        didSet {
+            if oldValue?.id != document?.id {
+                navigationGeneration = UUID()
+                assistantLeaveApprovals.invalidate()
+            }
+        }
+    }
     private(set) var tabs = NoteWorkspaceTabs()
     private(set) var isSwitchingDocument = false
+    private(set) var navigationGeneration = UUID()
     @ObservationIgnored private var tabDefaults: UserDefaults?
     @ObservationIgnored private var editorStates: [UUID: NoteWorkspaceTabs.EditorState] = [:]
     @ObservationIgnored private var leaveGuards: [UUID: @MainActor () async -> Bool] = [:]
+    @ObservationIgnored var assistantLeaveGuard: (@MainActor (UUID, DocumentAssistantNavigationReason) async -> Bool)?
+    @ObservationIgnored private var assistantLeaveApprovals = DocumentAssistantNavigationApprovals()
     private static let tabsKey = "notes.workspace.tabs.v1"
 
     init(tabDefaults: UserDefaults? = nil) {
@@ -300,11 +310,31 @@ final class NotesSession {
     }
 
     @discardableResult
-    func select(_ value: NoteDocument?) async -> Bool {
+    func prepareAssistantLeave(documentID id: UUID) async -> DocumentAssistantNavigationApproval? {
+        guard document?.id == id, !isSwitchingDocument else { return nil }
+        let generation = navigationGeneration
+        assistantLeaveApprovals.invalidate()
+        if let assistantLeaveGuard, !(await assistantLeaveGuard(id, .leaveDocument)) { return nil }
+        guard !Task.isCancelled, document?.id == id, navigationGeneration == generation else { return nil }
+        return assistantLeaveApprovals.issue(documentID: id, generation: generation)
+    }
+
+    @discardableResult
+    func select(_ value: NoteDocument?, reason: DocumentAssistantNavigationReason = .switchDocumentTab,
+                assistantApproval: DocumentAssistantNavigationApproval? = nil) async -> Bool {
         guard !isSwitchingDocument else { return false }
         if document?.id == value?.id { return true }
+        let leavingID = document?.id
         isSwitchingDocument = true
         defer { isSwitchingDocument = false }
+        let actualReason: DocumentAssistantNavigationReason = value == nil && reason == .switchDocumentTab ? .leaveDocument : reason
+        if let leavingID, actualReason.requiresLeaveDecision {
+            let alreadyApproved = assistantLeaveApprovals.consume(assistantApproval, documentID: leavingID,
+                                                                  generation: navigationGeneration)
+            if !alreadyApproved, let assistantLeaveGuard {
+                guard await assistantLeaveGuard(leavingID, actualReason), document?.id == leavingID else { return false }
+            }
+        }
         await tail?.value
         guard pendingWrites == 0 else { errorMessage = FloeL10n.l("notes.notes_session.saving_switch_documents_shortly"); return false }
         if let current = document?.id {
@@ -318,6 +348,7 @@ final class NotesSession {
         if value != nil && target == nil { errorMessage = FloeL10n.l("notes.notes_session.this_document_was_deleted"); return false }
         do {
             if let id = target?.id, let store { try await store.markOpened(id) }
+            guard document?.id == leavingID else { return false }
             document = target
             requestedPageID = nil
             try await reload()
@@ -331,7 +362,15 @@ final class NotesSession {
         updated.close(id)
         if document?.id == id {
             let next = updated.selectedID.flatMap { id in documents.first { $0.id == id && $0.deletedAt == nil } }
-            guard await select(next) else { return }
+            guard await select(next, reason: .closeTab) else { return }
+        } else {
+            let selectedID = document?.id
+            isSwitchingDocument = true
+            defer { isSwitchingDocument = false }
+            if let assistantLeaveGuard {
+                guard await assistantLeaveGuard(id, .closeTab), document?.id == selectedID,
+                      tabs.documentIDs.contains(id) else { return }
+            }
         }
         tabs.close(id)
         persistTabs()

@@ -138,7 +138,8 @@ public struct DNSRecord: Equatable, Sendable {
 
 /// Uses public DNS-SD APIs, with a bounded result window. No custom resolver or network
 /// configuration is installed. Cancellation deallocates the query on its owning queue.
-private final class DNSQuery: @unchecked Sendable {
+/// Module-internal so the shared LAN discovery engine reuses the same bounded path.
+final class DNSQuery: @unchecked Sendable {
     private let queue = DispatchQueue(label:"floe.toolbox.dns")
     private var reference: DNSServiceRef?
     private var source: DispatchSourceRead?
@@ -192,10 +193,14 @@ private final class DNSQuery: @unchecked Sendable {
 public actor DiagnosticService {
     public nonisolated let lease: SessionLease
     private let authorize: DiagnosticAuthorizer
+    /// LAN scanning reuses the shared core semantics; live NWBrowser/DNS-SD
+    /// browsing is injected by the host app from the existing
+    /// FloeExecution.LANDiscoveryService (one implementation for both paths).
+    private let lanProbe: LANDiscoveryProbe?
     private var stopped = false
     private var generation = UUID()
     private var tokens: [UUID:CancellationToken] = [:]
-    public init(lease: SessionLease, authorize: @escaping DiagnosticAuthorizer) { self.lease = lease; self.authorize = authorize }
+    public init(lease: SessionLease, authorize: @escaping DiagnosticAuthorizer, lanProbe: LANDiscoveryProbe? = nil) { self.lease = lease; self.authorize = authorize; self.lanProbe = lanProbe }
     private func permit(_ target: String, _ operation: DiagnosticOperation) async throws -> UUID {
         guard !stopped, !Task.isCancelled, !target.isEmpty, target.utf8.count <= 253,
               !target.unicodeScalars.contains(where:{ CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }),
@@ -262,6 +267,22 @@ public actor DiagnosticService {
         let run = try await permit("local.",.discovery(type))
         let result = try await BonjourDiscovery.browse(type:type,seconds:seconds)
         try check(run); return result
+    }
+    /// Shared bounded multi-type scan used by the Toolbox LAN page and the
+    /// `network.scanLAN` adapter. Types outside the app-declared scope are
+    /// reported as rejected instead of silently browsing to nothing. Live
+    /// browsing/resolution comes from the existing LANDiscoveryService via
+    /// the injected probe; no probe means a typed unavailable error, never
+    /// an empty success.
+    public func lanScan(types: [String], seconds: Double,
+                        onEvent: (@Sendable (LANDiscoveryEvent) -> Void)?) async throws -> LANScanReport {
+        guard let lanProbe else { throw DiagnosticError.system("LAN discovery service is not configured") }
+        let requested = types.isEmpty ? LANDiscoveryScope.declaredBonjourTypes : types
+        let run = try await permit("local.", .discovery(requested.joined(separator: ",")))
+        let report = try await LANDiscoveryEngine.scan(
+            try LANDiscoveryEngine.Request(requestedTypes: requested, browseSeconds: seconds),
+            probe: lanProbe, onEvent: onEvent)
+        try check(run); return report
     }
     public func stop() { stopped = true; generation = UUID(); for token in tokens.values { token.cancel() }; tokens.removeAll() }
 }

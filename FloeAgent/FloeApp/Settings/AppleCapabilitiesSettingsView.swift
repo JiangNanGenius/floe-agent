@@ -93,7 +93,7 @@ enum AppleCapability: String, CaseIterable, Identifiable, Sendable {
         case .media: "music.note.list"
         case .nfc: "antenna.radiowaves.left.and.right"
         case .alarm: "alarm"
-        case .imagePlayground: "photo.badge.sparkles"
+        case .imagePlayground: "wand.and.stars"
         }
     }
     var detail: String {

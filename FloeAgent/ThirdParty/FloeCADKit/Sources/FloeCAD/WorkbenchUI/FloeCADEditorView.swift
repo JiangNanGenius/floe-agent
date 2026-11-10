@@ -32,10 +32,21 @@ nonisolated public struct CADWorkbenchTransientCoverKey: EnvironmentKey {
     public static let defaultValue = false
 }
 
+/// Hosts can distinguish real text entry from a canvas shortcut responder.
+/// Standalone editors retain normal keyboard avoidance by default.
+nonisolated public struct CADCanvasKeyboardAvoidanceKey: EnvironmentKey {
+    public static let defaultValue = true
+}
+
 public extension EnvironmentValues {
     nonisolated var cadWorkbenchTransientlyCovered: Bool {
         get { self[CADWorkbenchTransientCoverKey.self] }
         set { self[CADWorkbenchTransientCoverKey.self] = newValue }
+    }
+
+    nonisolated var cadCanvasKeyboardAvoidanceEnabled: Bool {
+        get { self[CADCanvasKeyboardAvoidanceKey.self] }
+        set { self[CADCanvasKeyboardAvoidanceKey.self] = newValue }
     }
 }
 
@@ -529,6 +540,7 @@ struct FloeCADEditorView: View {
     /// True while this editor is covered by a transient presentation (the
     /// workbench fullscreen cover); its disappearance is not a close.
     @Environment(\.cadWorkbenchTransientlyCovered) private var transientlyCovered
+    @Environment(\.cadCanvasKeyboardAvoidanceEnabled) private var keyboardAvoidanceEnabled
     /// Host-installed selection observer; nil in standalone/qualification
     /// hosts, in which case no context is published.
     @Environment(\.cadSelectionObserver) private var selectionObserver
@@ -792,6 +804,9 @@ struct FloeCADEditorView: View {
                                               "Select sketch geometry to move or rotate")
                         : FloeCADStrings.text("cad.status.dragOrExactValue",
                                               "Drag an arrow or tap for an exact value")
+                }
+                if draftingOnly {
+                    return FloeCADStrings.text("cad.status.dragToPan", "Pan the drawing — pick a tool to draw")
                 }
                 return FloeCADStrings.text("cad.status.dragToOrbit", "Drag to orbit — pick a tool to draw")
             default: break
@@ -1690,7 +1705,12 @@ struct FloeCADEditorView: View {
             // is an identifier only; the Metal view and its gestures are
             // unchanged.
             .accessibilityIdentifier("CADEditorViewport")
-            .ignoresSafeArea()
+            // Drafting has an outer top tool strip. Keep both the viewport
+            // and its status overlays inside that inset instead of sliding
+            // their upper controls underneath it.
+            .ignoresSafeArea(keyboardAvoidanceEnabled ? .container : .all,
+                             edges: draftingOnly ? .bottom : .all)
+            .cadCanvasLayoutObservation("viewport")
             .overlay {
                 marqueeOverlay(viewModel)
             }
@@ -2884,6 +2904,7 @@ struct FloeCADEditorView: View {
             // downstream of the insets below, also reserves the compact strip
             // and status bar without changing the full-bleed viewport itself.
             viewportChrome(viewModel, paletteContentFrame: contentGeometry.frame(in: .global))
+                .frame(width: contentGeometry.size.width, height: contentGeometry.size.height)
         }
             // Compact widths get an IN-CONTENT control strip: the system
             // navigation bar collapses whole toolbar groups into an
@@ -2907,6 +2928,13 @@ struct FloeCADEditorView: View {
                     }
                 }
             }
+            // Apply at the actual canvas GeometryReader: NavigationStack
+            // can retain a source search field's keyboard inset even after
+            // the presented editor and its native host are full height.
+            // The host restores avoidance whenever a real editor field owns
+            // input; container safe areas and compact chrome stay intact.
+            .ignoresSafeArea(.keyboard, edges: keyboardAvoidanceEnabled ? [] : .bottom)
+            .cadCanvasLayoutObservation("content")
             // ONE importer for every Import-menu entry (see `ImportRequest`).
             .fileImporter(
                 isPresented: $showImporter,

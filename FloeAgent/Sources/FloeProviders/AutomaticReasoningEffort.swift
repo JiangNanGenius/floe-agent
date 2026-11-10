@@ -39,7 +39,7 @@ public enum AutomaticReasoningEffortSupport {
 
     /// The level whose wire value the endpoint will actually use. Today only
     /// DeepSeek's wire alias (no native medium), Ark's `maximum` downgrade
-    /// and the model-specific OpenAI/Anthropic `maximum` downgrades need
+    /// Gemini's native levels and model-specific OpenAI/Anthropic `maximum` downgrades need
     /// rewriting; everything else is already the truthful tier.
     public static func clamped(
         _ effort: ModelReasoningEffort,

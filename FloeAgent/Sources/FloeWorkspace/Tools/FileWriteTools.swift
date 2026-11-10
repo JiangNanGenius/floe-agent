@@ -67,39 +67,45 @@ public struct WorkspaceCreateFileTool: AgentTool {
         try context.authorizeWorkspacePath(args.path)
         if let route = try await environment.networkRoute(path: args.path, context: context) {
             var expectedEntityTag: String?
+            var priorMetadata: NetworkWorkspaceFileMetadata?
             do {
                 let metadata = try await route.adapter.metadata(path: route.relativePath)
                 guard args.overwrite == true else {
                     throw WorkspaceToolError.alreadyExistsOverwritable(args.path)
                 }
                 expectedEntityTag = metadata.entityTag
+                priorMetadata = metadata
             } catch let error as NetworkWorkspaceError where error.code == .notFound {
                 // Expected for create-only semantics.
             }
+            var baseline: String?
+            if let priorMetadata, priorMetadata.byteCount >= 0, priorMetadata.byteCount <= environment.maxReadBytes,
+               priorMetadata.entityTag?.isEmpty == false {
+                do {
+                    let previous = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxReadBytes)
+                    let after = try await route.adapter.metadata(path: route.relativePath)
+                    baseline = WorkspaceFileChangeEvidence.remoteBaseline(bytes: previous, before: priorMetadata, after: after)
+                } catch {
+                    // Optional comparison failure is visible in its saved-file preview.
+                    // Cancellation cannot be converted into permission to write.
+                    try context.cancellation.throwIfCancelled()
+                    try Task.checkCancellation()
+                }
+            }
             let data = Data(args.content.utf8)
             let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: expectedEntityTag)
-            return WorkspaceToolSupport.output("created=\(args.path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) mtime=\(result.modifiedAt?.timeIntervalSince1970 ?? 0) network=true")
+            let artifacts = try WorkspaceFileChangeEvidence.artifacts(original: baseline, modified: args.content,
+                path: args.path, runID: context.runID)
+            return WorkspaceToolSupport.output("created=\(args.path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) mtime=\(result.modifiedAt?.timeIntervalSince1970 ?? 0) network=true", artifacts: artifacts)
         }
         let service = try environment.makeService(context: context)
-        let prior = args.overwrite == true
-            ? try? service.readFile(args.path, cancellation: context.cancellation)
-            : nil
-        let outcome = try service.createFile(
-            args.path,
-            content: args.content,
-            overwrite: args.overwrite == true,
-            cancellation: context.cancellation
-        )
-        let diff: String
-        if let prior, !prior.truncated {
-            diff = service.diff(original: prior.text, modified: args.content, label: args.path)
-        } else {
-            diff = service.diff(original: "", modified: args.content, label: args.path)
-        }
-        let artifact = try WorkspaceToolSupport.changeArtifact(diff: diff, runID: context.runID)
+        let (outcome, prior) = try service.createFileWithChangeBaseline(args.path, content: args.content,
+            overwrite: args.overwrite == true, cancellation: context.cancellation)
+        let artifacts = try WorkspaceFileChangeEvidence.artifacts(original: prior, modified: args.content,
+            path: args.path, runID: context.runID)
         return WorkspaceToolSupport.output(
             "created=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            artifacts: artifact.map { [$0] } ?? []
+            artifacts: artifacts
         )
     }
 }
@@ -173,6 +179,7 @@ public struct WorkspaceWriteFileTool: AgentTool {
         }
         try context.authorizeWorkspacePath(args.path)
         if let route = try await environment.networkRoute(path: args.path, context: context) {
+            let before = try await route.adapter.metadata(path: route.relativePath)
             let previous = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxReadBytes)
             if let expectedSHA256 = args.expectedSHA256,
                WorkspaceFileService.sha256Hex(of: previous) != expectedSHA256 {
@@ -185,36 +192,22 @@ public struct WorkspaceWriteFileTool: AgentTool {
             }
             let data = Data(args.content.utf8)
             let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: metadata.entityTag)
-            let diff = String(decoding: previous, as: UTF8.self)
-            let localService = try environment.makeService(context: context)
-            let artifact = try WorkspaceToolSupport.changeArtifact(
-                diff: localService.diff(original: diff, modified: args.content, label: args.path),
-                runID: context.runID
-            )
+            let baseline = WorkspaceFileChangeEvidence.remoteBaseline(bytes: previous, before: before, after: metadata)
+            let artifacts = try WorkspaceFileChangeEvidence.artifacts(original: baseline, modified: args.content,
+                path: args.path, runID: context.runID)
             return WorkspaceToolSupport.output(
                 "written=\(args.path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) mtime=\(result.modifiedAt?.timeIntervalSince1970 ?? 0) network=true",
-                artifacts: artifact.map { [$0] } ?? []
+                artifacts: artifacts
             )
         }
         let service = try environment.makeService(context: context)
-        let prior = try? service.readFile(args.path, cancellation: context.cancellation)
-        let outcome = try service.writeFile(
-            args.path,
-            content: args.content,
-            expectedMtime: args.expectedMtime,
-            expectedSHA256: args.expectedSHA256,
-            cancellation: context.cancellation
-        )
-        let diff: String
-        if let prior, !prior.truncated {
-            diff = service.diff(original: prior.text, modified: args.content, label: args.path)
-        } else {
-            diff = ""
-        }
-        let artifact = try WorkspaceToolSupport.changeArtifact(diff: diff, runID: context.runID)
+        let (outcome, prior) = try service.writeFileWithChangeBaseline(args.path, content: args.content,
+            expectedMtime: args.expectedMtime, expectedSHA256: args.expectedSHA256, cancellation: context.cancellation)
+        let artifacts = try WorkspaceFileChangeEvidence.artifacts(original: prior, modified: args.content,
+            path: args.path, runID: context.runID)
         return WorkspaceToolSupport.output(
             "written=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            artifacts: artifact.map { [$0] } ?? []
+            artifacts: artifacts
         )
     }
 }
@@ -280,6 +273,9 @@ public struct WorkspaceApplyPatchTool: AgentTool {
             // the remote entity tag as the conflict precondition.
             let metadata = try await route.adapter.metadata(path: route.relativePath)
             let original = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxReadBytes)
+            guard metadata.byteCount == original.count else {
+                throw WorkspaceToolError.invalidArguments("Incomplete read; refresh the file before editing")
+            }
             let leasedRoot = try await StorageCleanupLeaseCenter.shared.makeLeasedScratch(purpose: "workspace")
             let temporaryRoot = leasedRoot.url
             defer {

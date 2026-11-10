@@ -9,6 +9,7 @@ import FloeTools
 import FloeHeavyEditorSupport
 import FloeHeavyEditorsHostAdapter
 import FloeScoreKit
+import FloeMusicCore
 
 /// Six Score names from the existing 18-tool adapter. Every selector is resolved
 /// through Studio's real saved-task binding. No model argument can choose a root,
@@ -153,6 +154,43 @@ import FloeScoreKit
         var result = value
         var files: [RunOutputFile] = []
         var reusableExports: [EditorJSON] = []
+        if operation == .invoke, let fileID = value["result"]["fileID"].string,
+           let performed = service.performanceReceipt(fileID: fileID) {
+            guard context.executionToolName == "score.invoke", performed.projectID == id,
+                  try performed.json() == value["result"] else { throw HeavyEditorError.invalidDocument }
+            try await validate()
+            do {
+                let url = try service.performanceFileURL(fileID: fileID)
+                let original = try PersonalPreviewFile(root: projectRoot, url: url, maximumBytes: RunOutputCaps.standard.perFileBytes)
+            guard original.identity.size == performed.byteCount,
+                  original.url.lastPathComponent == performed.name else { throw PersonalContentError.changedDocument }
+            let token = context.cancellation
+            let digest = try await personalPreviewOffMain { try original.sha256 { try token.throwIfCancelled(); try Task.checkCancellation() } }
+            guard digest == performed.sha256 else { throw PersonalContentError.changedDocument }
+            let publication = RunOutputSnapshotRequest(producerTool: "score.invoke", slot: "score-performance-" + performed.operationID.uuidString.lowercased(),
+                commit: .init(sourceURL: original.url, sha256: performed.sha256, byteCount: performed.byteCount,
+                    displayName: performed.name, mimeType: "audio/wav", uti: UTType.wav.identifier))
+            try await validate(); try original.validate()
+                let file = try await personalPreviewOffMain { try RunOutputSnapshotStore.publish(publication, using: context) }
+                guard file.sha256 == performed.sha256, file.byteCount == performed.byteCount,
+                      case .verified = RunOutputSnapshotStore.verify(file) else { throw PersonalContentError.changedDocument }
+                files.append(file)
+                if case .object(var object) = result {
+                    object["audioFile"] = .object(["fileID": .string("output:\(file.runID.uuidString):\(file.outputID)"),
+                        "name": .string(file.displayName), "byteCount": .number(Double(file.byteCount)), "sha256": .string(file.sha256)])
+                    result = .object(object)
+                }
+            } catch {
+                try context.cancellation.throwIfCancelled(); try Task.checkCancellation(); try await validate()
+                // The native arrangement commit already succeeded. A separate
+                // attachment failure is not permission to render/insert again.
+                if case .object(var object) = result {
+                    object["audioAttachmentPending"] = .bool(true)
+                    object["message"] = .string("Audio was added to the arrangement. Its task attachment is unavailable; keep the actual asset/track receipt and do not repeat the insertion.")
+                    result = .object(object)
+                }
+            }
+        }
         if operation == .export {
             guard context.executionToolName == "score.export", value["exports"].array.count <= RunOutputCaps.standard.perRunFiles else { throw HeavyEditorError.invalidCommand }
             var seen = Set<String>()
@@ -186,6 +224,12 @@ import FloeScoreKit
         if operation == .describe, case .object(var object) = result {
             object["revisionScope"] = .string("score")
             object["parentMusicID"] = .string(id.uuidString)
+            if let revision = service.parentMusicRevision { object["parentMusicRevision"] = .number(Double(revision)) }
+            object["nativeTimbres"] = .array(MusicPresetCatalog.all.map { preset in
+                .object(["preset": .number(Double(preset.index)), "name": .string(preset.displayName(isChinese: IDELanguageRunText.isChinese)),
+                    "category": .string(preset.category.rawValue)])
+            })
+            object["performanceWorkflow"] = .string("Use score.invoke/score.playback.timbre to save a real per-part native sound (-1 restores its GM-mapped default). Ordinary playback uses those same patches. To create actual audio and insert one new track at the current playhead, invoke score.playback.arrange with musicRevision from parentMusicRevision and baseRevision from this score. No existing track is overwritten; a stale arrangement is refused, and uncertain outcomes must be inspected before a new insertion.")
             object["inputFiles"] = try await inputs(context: context)
             result = .object(object)
         }

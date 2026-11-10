@@ -35,6 +35,8 @@ struct ThreadEventView: View {
     /// Final payload for the same call ID. This lets one expandable invocation
     /// own its arguments, approval, output, artifacts, and duration.
     var toolRequestResultPayloadJSON: String? = nil
+    /// Exact paired persisted row, required to recover a GitHub source.
+    var toolRequestResultEvent: RunEventRecord? = nil
     /// True while this call is the one a human approval card is waiting on.
     var toolRequestIsWaiting: Bool = false
     /// Concise decision record projected onto this call (see
@@ -98,7 +100,7 @@ struct ThreadEventView: View {
     }
 
     var body: some View {
-        if isDelegateCall || hasImageArtifacts {
+        if isDelegateCall || hasImageArtifacts || gitHubSource != nil {
             // A delegate row must NOT be combined into one accessibility
             // element: the card owns a real "View subagents" button, and
             // combining made the row container inherit that button's
@@ -119,6 +121,17 @@ struct ThreadEventView: View {
     private var hasImageArtifacts: Bool {
         let source = event.kind == .toolRequest ? toolRequestResultPayload : payload
         return artifacts(from: source).contains(where: ToolArtifactPresentation.isImage)
+    }
+
+    private var gitHubSource: GitHubSourceReference? {
+        let result: RunEventRecord?
+        if event.kind == .toolRequest {
+            guard let paired = toolRequestResultEvent, paired.runID == event.runID,
+                  let fields = GitHubSourceResolver.payload(paired), fields["id"] == payload["id"],
+                  fields["tool"] == payload["tool"] else { return nil }
+            result = paired
+        } else { result = event }
+        return GitHubSourceReference.make(result: result, conversationID: conversationID)
     }
 
     private var rowBody: some View {
@@ -207,7 +220,9 @@ struct ThreadEventView: View {
                     duration: duration(from: toolRequestResultPayload),
                     artifacts: artifacts(from: toolRequestResultPayload),
                     outputFiles: outputFiles(from: toolRequestResultPayload),
-                    outputContext: outputContext(from: toolRequestResultPayload)
+                    outputContext: outputContext(from: toolRequestResultPayload),
+                    outcomeUnknown: toolRequestResultPayload["outcomeUnknown"] == "true",
+                    gitHubSource: gitHubSource
                 )
             }
 
@@ -237,7 +252,9 @@ struct ThreadEventView: View {
                     duration: duration(from: payload),
                     artifacts: artifacts(from: payload),
                     outputFiles: outputFiles(from: payload),
-                    outputContext: outputContext(from: payload)
+                    outputContext: outputContext(from: payload),
+                    outcomeUnknown: payload["outcomeUnknown"] == "true",
+                    gitHubSource: gitHubSource
                 )
             }
 

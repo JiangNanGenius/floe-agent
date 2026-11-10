@@ -48,8 +48,12 @@ import FloeBiologyHostAdapter
         return value
     }
     func task(_ context: ToolContext, requireCall: Bool) async throws -> UUID {
+        // Same-task parity: the parent runtime builds this context's
+        // runID/conversationID for main AND canonical delegated child calls;
+        // the run↔conversation pairing, active-run fence, purpose check and
+        // per-call tool/ceiling identity below stay authoritative.
         try Task.checkCancellation(); try context.cancellation.throwIfCancelled()
-        guard !context.temporaryReadOnly, !context.publicWebOnly, context.childExecution == nil,
+        guard !context.temporaryReadOnly, !context.publicWebOnly,
               let id = context.conversationID,
               let run = try await runs.run(id: context.runID),
               run.conversationID == id, run.endedAt == nil,

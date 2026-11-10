@@ -1,5 +1,10 @@
 # ARM64 scheduling qualification — 2026-11-05
 
+> Historical qualification / 历史资格记录. For current evidence and measurement
+> scopes, start at [ARM64 runtime performance](ARM64_RUNTIME_PERFORMANCE.md).
+> Later CPU-state separation and Build 319 results are recorded separately;
+> this report does not describe the current multicore baseline.
+
 ## 简体中文
 
 315 的调度改动限定在 `parallel_runtime.c`：合并已经撤销的重复 IRQ

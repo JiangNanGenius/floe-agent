@@ -28,13 +28,17 @@ private final class RetainedBuildLifetimes:@unchecked Sendable {
     func publish(file:URL,project:LaTeXHostProject,context:ToolContext) async throws -> ToolExecutionOutput
     func cachedEngine(project:LaTeXHostProject,context:ToolContext) async -> (any LaTeXEngineRunning)?
     func prepareEngine(project:LaTeXHostProject,context:ToolContext,binding:RuntimeAuthorityBinding?) async throws -> (any LaTeXEngineRunning)?
+    func prepareDocument(project:LaTeXHostProject,expectedRevision:Int64?,configuration:LaTeXBuildConfiguration,context:ToolContext,binding:RuntimeAuthorityBinding?) async throws -> (any LaTeXEngineRunning)?
     func installToolchain(project:LaTeXHostProject,profile:String,context:ToolContext,binding:RuntimeAuthorityBinding?) async throws
 }
 public extension LaTeXHostAccess {
     func cachedEngine(project:LaTeXHostProject,context:ToolContext) async -> (any LaTeXEngineRunning)? {nil}
-    /// Resolve/probe only through the existing scoped exec.shell/jobs and nested
-    /// authorization seam. Never replace the host interpreter or pick an environment.
+    /// Prepare the configured native document engine under this original's
+    /// existing runtime authority. No command environment is acquired.
     func prepareEngine(project:LaTeXHostProject,context:ToolContext,binding:RuntimeAuthorityBinding?) async throws -> (any LaTeXEngineRunning)? {nil}
+    func prepareDocument(project:LaTeXHostProject,expectedRevision:Int64?,configuration:LaTeXBuildConfiguration,context:ToolContext,binding:RuntimeAuthorityBinding?) async throws -> (any LaTeXEngineRunning)? {
+        try await prepareEngine(project:project,context:context,binding:binding)
+    }
     func installToolchain(project:LaTeXHostProject,profile:String,context:ToolContext,binding:RuntimeAuthorityBinding?) async throws {throw LaTeXError.unavailable("Toolchain installation is unavailable in this host.")}
 }
 
@@ -148,8 +152,8 @@ public enum LaTeXHostTools {
     private struct Typeset:BoundLaTeXTool {
         struct Arguments:Decodable,Sendable {var projectID:UUID;var action:String;var expectedRevision:Int64?;var buildID:UUID?;var offline:Bool?;var wait:Bool?;var timeoutSeconds:Int?;var installProfile:String?}
         static let name="latex.typeset"
-        static let toolDescription="prepare optionally installs the fixed standard/full TeX Live profile through the existing Linux exec.shell/jobs (installProfile), then probes actual engines and auxiliary tool versions in this operation's explicitly resolved environment. If missing, use ordinary exec.shell and the selected Linux package manager, then prepare again. Run the real typesetting service for the inspected revision, with snapshot isolation, actual PDF/SyncTeX and saved logs. start requires expectedRevision and waits for the operation so the owning run stays alive. timeoutSeconds optionally bounds all passes together (1-600 seconds; default 600). Offline requires prepared resources and verified network isolation. status reads an owned build; cancel stops it and joins the engine before releasing its source. A successful engine download is not a successful build. Only actually available engines are advertised by latex.inspect."
-        static let parametersJSON=#"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["prepare","start","status","cancel"]},"expectedRevision":{"type":"integer","minimum":0},"buildID":{"type":"string","format":"uuid"},"offline":{"type":"boolean"},"wait":{"type":"boolean"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":600},"installProfile":{"type":"string","enum":["standard","full"]}},"required":["projectID","action"],"additionalProperties":false}"#
+        static let toolDescription="prepare resolves this coherent source revision with the native XeLaTeX/BibTeX engine. The engine downloads missing package files, fonts and transitive dependencies actually requested by the document, and reuses the verified resource cache; there is no minimal/full installation profile. Resources absent from the available bundle fail explicitly and may be supplied in the project. start prepares resources, then compiles the immutable snapshot to XDV and uses Apple's protected PDF renderer; only the verified saved PDF/SyncTeX is success. No Linux boot, shell permission or APT toolchain is used. Task networking policy and offline control resource downloads. Native capabilities are explicit: XeLaTeX and BibTeX only; Biber and other TeX engines fail visibly without changing the source or falling back to Linux. start requires expectedRevision and wait=true. timeoutSeconds is 1-600. status reads the owned saved build; cancel joins the actual native worker before releasing source."
+        static let parametersJSON=#"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["prepare","start","status","cancel"]},"expectedRevision":{"type":"integer","minimum":0},"buildID":{"type":"string","format":"uuid"},"offline":{"type":"boolean"},"wait":{"type":"boolean"},"timeoutSeconds":{"type":"integer","minimum":1,"maximum":600}},"required":["projectID","action"],"additionalProperties":false}"#
         static let riskLabels:Set<RiskLabel>=[.persistsPersonalData,.executesLocalCode]
         static let isSideEffecting=true
         static let toolEffect:ToolEffect = .internalState
@@ -158,21 +162,21 @@ public enum LaTeXHostTools {
             guard ["prepare","start","status","cancel"].contains(a.action),a.action != "start" || (a.expectedRevision ?? -1)>=0 else {throw FloeError.validationFailed("Inspect the revision before typesetting.")}
             guard a.timeoutSeconds == nil || (1...600).contains(a.timeoutSeconds!) else {throw FloeError.validationFailed("Choose a typesetting time limit between 1 and 600 seconds.")}
             guard a.action != "start" || a.wait != false else {throw FloeError.validationFailed("Typesetting must retain its owning run through verified completion. Omit wait or set it to true.")}
-            guard a.installProfile==nil || (a.action=="prepare" && ["standard","full"].contains(a.installProfile!)) else {throw FloeError.validationFailed("Install a standard or full toolchain using prepare.")}
+            guard a.installProfile==nil else {throw FloeError.validationFailed("Tools are prepared automatically for this project. Omit installProfile and retry prepare or start.")}
         }
         func execute(_ a:Arguments,context:ToolContext,binding:RuntimeAuthorityBinding?) async throws -> ToolExecutionOutput {
             try LaTeXHostTools.validate(context,mutating:true)
             let access=try await host.acquire(projectID:a.projectID,context:context,editing:true),service=await host.builds
+            let configuration=LaTeXBuildConfiguration(offline:a.offline ?? false,timeoutSeconds:a.timeoutSeconds ?? LaTeXBuildConfiguration.defaultTimeoutSeconds)
             if a.action == "prepare" {
-                if let profile=a.installProfile {try await host.installToolchain(project:access,profile:profile,context:context,binding:binding)}
-                let engine=try await host.prepareEngine(project:access,context:context,binding:binding)
+                let engine=try await host.prepareDocument(project:access,expectedRevision:a.expectedRevision,configuration:configuration,context:context,binding:binding)
                 if let engine {return try output(await engine.capabilities())}
                 return try output(await service.capabilities())
             }
             let record:LaTeXBuildRecord
             if a.action == "start" {
-                let engine=try await host.prepareEngine(project:access,context:context,binding:binding)
-                record=try await service.start(store:access.store,expectedRevision:a.expectedRevision,configuration:.init(offline:a.offline ?? false,timeoutSeconds:a.timeoutSeconds ?? LaTeXBuildConfiguration.defaultTimeoutSeconds),executionOwner:.init(taskID:context.conversationID!,runID:context.runID,environmentID:context.environmentID),lifetime:access,engineOverride:engine)
+                let engine=try await host.prepareDocument(project:access,expectedRevision:a.expectedRevision,configuration:configuration,context:context,binding:binding)
+                record=try await service.start(store:access.store,expectedRevision:a.expectedRevision,configuration:configuration,executionOwner:.init(taskID:context.conversationID!,runID:context.runID,environmentID:nil),lifetime:access,engineOverride:engine)
             } else {
                 let history=try await service.history(store:access.store)
                 guard let selected=a.buildID.flatMap({id in history.first{$0.id==id}}) ?? (a.buildID == nil ? history.first:nil),selected.projectID==a.projectID else {throw FloeError.validationFailed("The requested build does not belong to this project.")}

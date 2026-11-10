@@ -214,7 +214,7 @@ public enum MusicPatternTools {
 
     private static func update(_ clip: MusicClip, payload: MusicMIDIClipPayload) throws -> [MusicEditOp] {
         let validated = try MusicMIDIClipPayload(durationTicks: payload.durationTicks,
-            notes: payload.notes, controllerPoints: payload.controllerPoints)
+            notes: payload.notes, controllerPoints: payload.controllerPoints, programChanges: payload.programChanges)
         var result = clip
         result.body = .midi(validated)
         return result == clip ? [] : [.updateClip(result)]

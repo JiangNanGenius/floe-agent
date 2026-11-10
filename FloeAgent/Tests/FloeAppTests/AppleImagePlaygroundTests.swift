@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
@@ -8,18 +9,40 @@ import FloeTools
 @testable import FloeApp
 
 final class AppleImagePlaygroundTests: XCTestCase {
+    @MainActor func testTheAppleCapabilityHasARealSystemSymbol() {
+        XCTAssertNotNil(UIImage(systemName: AppleCapability.imagePlayground.icon))
+    }
+
+    @MainActor func testOldWorkspaceArtifactIsHiddenOnlyBehindItsOwnMatchingOutputReceipt() throws {
+        let fixture = try fixture(); defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let output = try AppleImagePlaygroundOutput.persist(fixture.image, context: fixture.context,
+            snapshotRoot: fixture.directory.appendingPathComponent("snapshots"))
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+        let path = try XCTUnwrap(receipt["path"] as? String)
+        let legacy = ToolArtifactReference(id: UUID(), relativePath: path, mimeType: fixture.image.mimeType,
+            byteCount: fixture.image.data.count, sha256: fixture.image.sha256)
+        let context = RunOutputReceiptContext(runID: fixture.context.runID, conversationID: fixture.context.conversationID,
+            callID: fixture.context.toolCallID, toolName: "image.playground")
+        XCTAssertTrue(ToolArtifactPresentation.withoutLegacyPlaygroundDuplicates([legacy], outputs: output.outputFiles, context: context).isEmpty)
+        var wrong = context; wrong.runID = UUID()
+        XCTAssertEqual(ToolArtifactPresentation.withoutLegacyPlaygroundDuplicates([legacy], outputs: output.outputFiles, context: wrong), [legacy])
+        XCTAssertEqual(ToolArtifactPresentation.withoutLegacyPlaygroundDuplicates([legacy], outputs: [], context: context), [legacy])
+    }
+
     func testWorkspaceCommitAndRunSnapshotPreserveActualPNGBytes() throws {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let output = try AppleImagePlaygroundOutput.persist(fixture.image, context: fixture.context,
             snapshotRoot: fixture.directory.appendingPathComponent("snapshots"))
         XCTAssertEqual(output.exitStatus, 0)
-        XCTAssertEqual(output.artifacts.count, 1)
+        XCTAssertTrue(output.artifacts.isEmpty, "A task-workspace path must not be advertised as an App artifact")
         XCTAssertEqual(output.outputFiles.count, 1)
-        let path = try XCTUnwrap(output.artifacts.first?.relativePath)
+        let receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+        let path = try XCTUnwrap(receipt["path"] as? String)
         XCTAssertEqual(try Data(contentsOf: fixture.root.appendingPathComponent(path)), fixture.image.data)
-        XCTAssertEqual(output.artifacts.first?.sha256, fixture.image.sha256)
-        XCTAssertEqual(output.artifacts.first?.mimeType, "image/png")
+        XCTAssertEqual(output.outputFiles.first?.sha256, fixture.image.sha256)
+        XCTAssertEqual(output.outputFiles.first?.mimeType, "image/png")
+        XCTAssertTrue((receipt["inlineMarkdown"] as? String ?? "").contains(output.outputFiles[0].outputID))
         XCTAssertEqual(try Data(contentsOf: fixture.root.appendingPathComponent("original.png")), fixture.image.data)
         let replay = try AppleImagePlaygroundOutput.persist(fixture.image, context: fixture.context,
             snapshotRoot: fixture.directory.appendingPathComponent("snapshots"))

@@ -3,10 +3,14 @@
 import Foundation
 import CoreGraphics
 import FloeWorkbench
+import FloeMedia
 
-struct MediaV2ToolInput: Codable {
+struct MediaV2ToolInput: Codable, Sendable {
     var objectID: UUID?
     var objectIDs: [UUID]?
+    /// Video-only typed clip selection and same-original nested source scope.
+    var clipIDs:[UUID]?
+    var compoundID:UUID?
     var expectedRevision: Int64?
     var selectionFence: String?
     var number: Double?
@@ -19,10 +23,17 @@ struct MediaV2ToolInput: Codable {
     var flag: Bool?
     var points: [ImageFreehandStroke.Point]?
     var captionStyle: CaptionStyle?
+    var adjustment: ImageLayerAdjustment?
+    var noiseReduction: AudioSpectralDenoiseSettings?
+    var dialogueDucking: AudioDuckingSettings?
+    var voiceSeparation: AudioVoiceSeparationSelection?
+    var audioProcessing: MediaAudioProcessing?
+    var chromaKey: MediaVideoChromaKey?
+    var videoGrade: MediaVideoGrade?
     init() {}
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case objectID, objectIDs, expectedRevision, selectionFence, number, secondary, start, duration, text, color, property, flag, points, captionStyle
+        case objectID, objectIDs, clipIDs, compoundID, expectedRevision, selectionFence, number, secondary, start, duration, text, color, property, flag, points, captionStyle, adjustment, noiseReduction, dialogueDucking, voiceSeparation, audioProcessing, chromaKey, videoGrade
     }
     private struct Field: CodingKey {
         let stringValue: String
@@ -39,6 +50,8 @@ struct MediaV2ToolInput: Codable {
         let value = try decoder.container(keyedBy: CodingKeys.self)
         objectID = try value.decodeIfPresent(UUID.self, forKey: .objectID)
         objectIDs = try value.decodeIfPresent([UUID].self, forKey: .objectIDs)
+        clipIDs = try value.decodeIfPresent([UUID].self,forKey:.clipIDs)
+        compoundID = try value.decodeIfPresent(UUID.self,forKey:.compoundID)
         expectedRevision = try value.decodeIfPresent(Int64.self, forKey: .expectedRevision)
         selectionFence = try value.decodeIfPresent(String.self, forKey: .selectionFence)
         if let selectionFence, selectionFence.range(of: "^[a-f0-9]{64}$", options: .regularExpression) == nil {
@@ -61,6 +74,13 @@ struct MediaV2ToolInput: Codable {
             }
         }
         captionStyle = try value.decodeIfPresent(CaptionStyle.self, forKey: .captionStyle)
+        adjustment = try value.decodeIfPresent(ImageLayerAdjustment.self, forKey: .adjustment)
+        noiseReduction = try value.decodeIfPresent(AudioSpectralDenoiseSettings.self, forKey: .noiseReduction)
+        dialogueDucking = try value.decodeIfPresent(AudioDuckingSettings.self, forKey: .dialogueDucking)
+        voiceSeparation = try value.decodeIfPresent(AudioVoiceSeparationSelection.self, forKey: .voiceSeparation)
+        audioProcessing = try value.decodeIfPresent(MediaAudioProcessing.self,forKey:.audioProcessing)
+        chromaKey = try value.decodeIfPresent(MediaVideoChromaKey.self,forKey:.chromaKey)
+        videoGrade = try value.decodeIfPresent(MediaVideoGrade.self,forKey:.videoGrade)
     }
 }
 struct MediaV2ToolReceipt: Codable {
@@ -69,6 +89,15 @@ struct MediaV2ToolReceipt: Codable {
     let toolID: String
     let groupID: UUID?
     let selectionOnly: Bool
+    var analysis: MediaVideoScopeSnapshot? = nil
+    var imageWarp: MediaV2ImageWarpReceipt? = nil
+    var audioDerivation: MediaV2AudioDerivationReceipt? = nil
+    var voiceSeparation: MediaV2VoiceSeparationReceipt? = nil
+    var tracking: MediaVideoTracking? = nil
+    var stabilization: MediaVideoStabilization? = nil
+    var colorMatch: MediaVideoColorMatch? = nil
+    var colorProfile: MediaVideoColorProfile? = nil
+    var compound:MediaV2CompoundReceipt? = nil
 }
 enum MediaV2CommandError: Error, LocalizedError {
     case unavailable, missingSelection, invalidInput, invalidCaptionStyle, exportInProgress, missingExport
@@ -86,20 +115,49 @@ enum MediaV2CommandError: Error, LocalizedError {
 
 extension MediaV2Session {
     static let localToolIDs: Set<String> = [
+        "image.remove", "image.content-fill", "image.heal", "image.patch", "image.smudge", "image.clone", "image.gradient", "image.blur-brush", "image.sharpen-brush", "image.layer-effect",
+        "image.perspective", "image.distort", "image.wand", "image.subject", "image.refine-edge", "image.expand", "image.smooth", "image.background", "image.curves", "image.balance", "image.lut", "image.denoise",
         "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
         "image.brush", "image.eraser", "image.fill", "image.eyedropper", "image.layer-mask", "image.vector-mask", "image.clip-mask",
         "image.adjustment-layer", "image.group-layer", "image.duplicate-layer", "image.merge-layer", "image.crop", "image.rotate", "image.flip",
-        "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw",
+        "image.boolean", "image.path-text", "image.outline", "image.resize", "image.canvas-size", "image.text", "image.shape", "image.pen", "image.anchor", "image.stroke-fill", "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw",
+        "video.video-curves", "video.wheels", "video.video-hsl", "video.video-lut", "video.tracking", "video.stabilize", "video.color-match", "video.hdr",
+        "video.chroma", "video.video-blend", "video.scopes", "video.eq", "video.compressor", "video.noise", "video.duck",
+        "video.graph", "video.motion-path", "video.motion-title", "video.preset-motion",
+        "video.reverse", "video.freeze", "video.caption-style", "video.nest",
         "video.trim", "video.split", "video.slip", "video.speed", "video.transition", "video.pip",
         "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing", "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll", "video.srt", "image.align", "image.blend-mode"
     ]
     var catalog: [MediaPreparedToolDescriptor] { (try? MediaPreparedBundledCatalog.load().entries) ?? [] }
-    var applicableTools: [MediaPreparedToolDescriptor] { catalog.filter { $0.kind.rawValue == project.kind.rawValue } }
+    var applicableTools: [MediaPreparedToolDescriptor] { catalog.filter { $0.kind.rawValue == project.kind.rawValue && (compoundScopeID == nil || $0.id != "video.nest") } }
 
     /// Called only after the existing task authority has admitted the edit.
     /// Every advertised local route below either edits the canonical document
     /// or explicitly reports a selection-only editor operation.
-    func performTool(_ id: String, input: MediaV2ToolInput, actor: MediaPreparedActorKind = .user) async throws -> MediaV2ToolReceipt {
+    func performTool(_ id: String, input: MediaV2ToolInput, actor: MediaPreparedActorKind = .user,
+                     providerAuthority: MediaV2ProviderAuthority? = nil) async throws -> MediaV2ToolReceipt {
+        if input.compoundID != nil { return try await performScopedCompoundTool(id,input:input,actor:actor,authority:providerAuthority) }
+        guard input.clipIDs == nil || id == "video.nest" else { throw MediaV2CommandError.invalidInput }
+        if id == "video.voice-separate",
+           let candidate = input.objectID.flatMap({ document.trackGraph.clip(id: $0) }) ?? (actor == .user ? selectedClip : nil),
+           candidate.track.kind == .visual {
+            // Resolve an existing source-audio association without editing the
+            // document before the provider's native revision/authority checks.
+            let linked = document.trackGraph.tracks.filter { $0.kind == .audio }.flatMap { track in
+                track.clips.filter { $0.sourceVisualClipID == candidate.clip.id }
+            }
+            guard linked.count == 1, let audio = linked.first else {
+                throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t(
+                    "请先提取此视频的音频，再选择音频片段进行人声分离。",
+                    "Extract this video's audio first, then select the audio clip for voice separation."))
+            }
+            var routed = input; routed.objectID = audio.id
+            return try await performProviderTool(id,input:routed,actor:actor,suppliedAuthority:providerAuthority)
+        }
+        if Self.providerToolIDs.contains(id) {
+            return try await performProviderTool(id,input:input,actor:actor,suppliedAuthority:providerAuthority)
+        }
+        guard !canvasLayoutInProgress else { throw MediaPreparedCoreError.conflict("a canvas layout operation is running") }
         guard Self.localToolIDs.contains(id) else { throw MediaV2CommandError.unavailable }
         _ = try MediaPreparedBundledCatalog.load().descriptor(id: id)
         if let expected = input.expectedRevision, expected != document.revision { throw MediaPreparedCoreError.documentChanged }
@@ -131,6 +189,43 @@ extension MediaV2Session {
         if actor == .model, let ids = input.objectIDs {
             guard !ids.isEmpty, ids.count <= 256, Set(ids).count == ids.count,
                   ids.allSatisfy({ document.layer($0) != nil }) else { throw MediaV2CommandError.invalidInput }
+        }
+        if ["image.boolean","image.path-text","image.outline"].contains(id) {
+            return try await performVectorTextTool(id,input:input,actor:actor,fencedSelection:fencedSelection)
+        }
+        if ["image.resize","image.canvas-size"].contains(id) {
+            return try await performCanvasTool(id,input:input,actor:actor)
+        }
+        if id == "video.hdr" {
+            return try await performHDRTool(input:input,selected:selected,actor:actor)
+        }
+        if id == "video.color-match" {
+            return try await performColorMatchTool(input:input,selected:selected,actor:actor)
+        }
+        if id == "video.nest" { return try await performCompoundTool(input:input,actor:actor) }
+        if ["video.tracking","video.stabilize"].contains(id) {
+            return try await performVideoMotionTool(id,input:input,selected:selected,actor:actor)
+        }
+        if id == "video.scopes" {
+            let result = try await readVideoScopes(at:input.start ?? cursor)
+            return .init(documentID:document.id,revision:document.revision,toolID:id,groupID:nil,selectionOnly:true,analysis:result)
+        }
+        if ["video.eq", "video.compressor", "video.noise", "video.duck"].contains(id),let selected,selected.track.kind == .visual {
+            let audio = try await editableSourceAudio(for:selected.clip.id)
+            var routed = input;routed.objectID = audio.clip.id;routed.expectedRevision = document.revision;routed.selectionFence = nil
+            return try await performTool(id,input:routed,actor:actor)
+        }
+        if Self.audioDerivationToolIDs.contains(id) {
+            return try await performAudioDerivationTool(id, input: input, selected: selected, actor: actor)
+        }
+        if Self.imageWarpToolIDs.contains(id) {
+            return try await performImageWarpTool(id, input: input, layer: layer, region: region, actor: actor)
+        }
+        if Self.extendedAnimationTools.contains(id) {
+            return try await performAnimationTool(id,input:input,selected:selected,cursor:cursor,actor:actor)
+        }
+        if Self.extendedImageTools.contains(id) || (id == "image.layer-mask" && region?.bitmap != nil && input.flag != false) {
+            return try await performExtendedImageTool(id,input:input,layer:layer,region:region,fencedSelection:fencedSelection,actor:actor)
         }
         var actions: [MediaPreparedAction] = []
         func layerContent(_ content: MediaPreparedLayerContent) throws {
@@ -217,10 +312,8 @@ extension MediaV2Session {
             let ids = Set(input.objectIDs ?? layer.map { [$0.id] } ?? [])
             guard !ids.isEmpty, ids.isSubset(of: Set(document.layers.map(\.id))), ["centerX", "centerY", "center"].contains(input.property ?? "center") else { throw MediaV2CommandError.invalidInput }
             for target in document.layers where ids.contains(target.id) {
-                var transform = target.transform
-                if input.property != "centerY" { transform.centerX = 0.5 }
-                if input.property != "centerX" { transform.centerY = 0.5 }
-                actions.append(.updateLayerTransform(id: target.id, expectedRevision: target.revision, transform: transform))
+                let space=try MediaCanvasLayout.alignedSpace(target,in:document,axis:input.property ?? "center")
+                actions.append(.setLayerCanvasSpace(id:target.id,expectedRevision:target.revision,space:space))
             }
         case "image.adjustment-layer": insertLayer(.adjustment(.init(exposureEV: input.number ?? 0)), name: WorkbenchText.t("调整图层", "Adjustment"))
         case "image.group-layer":
@@ -261,7 +354,14 @@ extension MediaV2Session {
             if id == "image.flip" { if input.property == "vertical" { transform.flipY = !(transform.flipY ?? false) } else { transform.flipX = !(transform.flipX ?? false) } } else { transform.rotationDegrees += input.number ?? 90 }
             actions.append(.updateLayerTransform(id: layer.id, expectedRevision: layer.revision, transform: transform))
         case "image.text":
-            let content = ImageTextContent(text: input.text ?? WorkbenchText.t("文字", "Text"), fontSize: input.number ?? 72, colorHex: input.color ?? colorHex)
+            var content = layer.flatMap { target -> ImageTextContent? in if case .text(let text)=target.content { text } else { nil } } ?? ImageTextContent(text:WorkbenchText.t("文字", "Text"),fontSize:72,colorHex:colorHex)
+            if let text=input.text { content.text=text }
+            if let size=input.number { content.fontSize=size }
+            if let color=input.color { content.colorHex=color }
+            if let layer,layer.contentKind == .text,content.pathLayout != nil {
+                let commit=try await applyEditablePathText(content,to:layer,revision:document.revision,actor:actor)
+                return .init(documentID:document.id,revision:document.revision,toolID:id,groupID:commit.groupID,selectionOnly:false)
+            }
             if let layer, layer.contentKind == .text { try layerContent(.text(content)) }
             else {
                 if actor == .model, input.objectID != nil { throw MediaV2CommandError.invalidInput }
@@ -289,7 +389,8 @@ extension MediaV2Session {
         case "video.srt":
             guard let text = input.text else { throw MediaV2CommandError.invalidInput }
             actions.append(contentsOf: try captionImportActions(text, offset: input.start ?? 0))
-        case "video.caption":
+        case "video.caption", "video.caption-style":
+            if id == "video.caption-style", input.captionStyle == nil || input.text != nil || input.start != nil || input.duration != nil { throw MediaV2CommandError.invalidCaptionStyle }
             guard project.kind == .video, input.objectIDs == nil, input.secondary == nil, input.flag == nil, input.points == nil else {
                 throw MediaV2CommandError.invalidCaptionStyle
             }
@@ -345,24 +446,95 @@ extension MediaV2Session {
                 actions.append(contentsOf: try rollActions(track: selected.track, right: clip, boundary: input.start ?? clip.timelineRange.startSeconds + (input.number ?? 0)))
                 let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor)
                 return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
-            case "video.slip": clip.sourceRange = try Self.range(start: max(0, clip.sourceRange.startSeconds + (input.number ?? 0)), duration: clip.sourceRange.durationSeconds)
+            case "video.slip":
+                let nextStart = max(0, clip.sourceRange.startSeconds + (input.number ?? 0))
+                if let hold = clip.sourcePlayback?.holdSeconds { clip.sourcePlayback?.holdSeconds = hold + nextStart - clip.sourceRange.startSeconds }
+                clip.sourceRange = try Self.range(start: nextStart, duration: clip.sourceRange.durationSeconds)
+                if selected.track.kind == .visual { actions.append(contentsOf:try linkedSourceAudioActions(for:clip)) }
             case "video.caption-time", "video.audio-sync": clip.timelineRange = try Self.range(start: max(0, input.start ?? clip.timelineRange.startSeconds + (input.number ?? 0)), duration: clip.timelineRange.durationSeconds)
+            case "video.video-curves", "video.wheels", "video.video-hsl", "video.video-lut":
+                guard selected.track.kind == .visual else { throw MediaV2CommandError.missingSelection }
+                clip.videoGrade = try Self.updatedVideoGrade(tool: id, input: input, current: clip.videoGrade)
+            case "video.chroma":
+                guard selected.track.kind == .visual else { throw MediaV2CommandError.missingSelection }
+                if input.flag == false { clip.chromaKey = nil }
+                else {
+                    let key = input.chromaKey ?? .init(colorHex:input.color ?? "#00FF00",tolerance:input.number ?? 0.18,softness:input.secondary ?? 0.12)
+                    try key.validate();clip.chromaKey = key
+                }
+            case "video.video-blend":
+                guard selected.track.kind == .visual else { throw MediaV2CommandError.missingSelection }
+                if input.flag == false { clip.blendMode = nil;clip.visualOpacity = nil }
+                else {
+                    guard let mode = MediaVideoBlendMode(rawValue:input.property ?? "normal") else { throw MediaV2CommandError.invalidInput }
+                    clip.blendMode = mode;clip.visualOpacity = input.number ?? 1
+                }
+            case "video.eq", "video.compressor":
+                guard selected.track.kind == .audio else { throw MediaV2CommandError.missingSelection }
+                var controls = clip.audioProcessing ?? .init()
+                if id == "video.eq" {
+                    if input.flag == false { controls.eqBands = [] }
+                    else if let supplied = input.audioProcessing { controls.eqBands = supplied.eqBands }
+                    else {
+                        guard let filter = PreparedVideoEQFilter(rawValue:input.property ?? "parametric") else { throw MediaV2CommandError.invalidInput }
+                        let frequency = input.secondary ?? (filter == .lowShelf ? 80 : filter == .highShelf ? 8_000 : 1_000)
+                        controls.eqBands.removeAll { $0.filter == filter && abs($0.frequency-frequency)<0.01 }
+                        controls.eqBands.append(.init(frequency:frequency,gain:input.number ?? 0,filter:filter))
+                    }
+                } else if input.flag == false { controls.dynamics = nil;controls.limiter = nil }
+                else if let supplied = input.audioProcessing { controls.dynamics = supplied.dynamics;controls.limiter = supplied.limiter }
+                else if input.property == "limiter" { controls.limiter = .init(ceilingDB:input.number ?? -1) }
+                else { controls.dynamics = .init(threshold:input.number ?? -20,headRoom:input.secondary ?? 5) }
+                try controls.validate();clip.audioProcessing = controls.isEmpty ? nil : controls
+            case "video.reverse", "video.freeze":
+                guard selected.track.kind == .visual,
+                      clip.assetID.flatMap({ document.asset($0)?.kind }) == .video else { throw MediaV2CommandError.missingSelection }
+                if id == "video.reverse" {
+                    clip.sourcePlayback = .init(isReversed: input.flag ?? !(clip.sourcePlayback?.isReversed ?? false))
+                    clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: clip.sourceRange.durationSeconds / clip.speed)
+                } else if input.flag == false {
+                    clip.sourcePlayback = nil
+                    clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: clip.sourceRange.durationSeconds / clip.speed)
+                } else {
+                    guard input.start != nil || fencedSelection else { throw MediaV2CommandError.invalidInput }
+                    let at = input.start ?? cursor
+                    guard at >= clip.timelineRange.startSeconds, at < clip.timelineRange.endSeconds else { throw MediaV2CommandError.invalidInput }
+                    let cadence = 1 / max(1, clip.assetID.flatMap { document.asset($0)?.metadata?.frameRate } ?? document.trackGraph.frameRate?.seconds ?? 30)
+                    let hold = try MediaSourcePlaybackMath.sourceSeconds(sourceStart: clip.sourceRange.startSeconds,
+                        sourceDuration: clip.sourceRange.durationSeconds, speed: clip.speed,
+                        localTime: at - clip.timelineRange.startSeconds, playback: clip.sourcePlayback, frameDuration: cadence)
+                    clip.sourcePlayback = .init(holdSeconds: hold)
+                    if let duration = input.duration {
+                        guard duration.isFinite, duration > 0 else { throw MediaV2CommandError.invalidInput }
+                        clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: duration)
+                    }
+                }
+                clip.keyframeTracks = try slicedKeyframes(clip.keyframeTracks, from: 0, duration: clip.timelineRange.durationSeconds)
+                actions.append(contentsOf: try linkedSourceAudioActions(for: clip))
             case "video.speed":
-                guard selected.track.kind == .visual else { throw MediaV2CommandError.unavailable }
+                guard selected.track.kind == .visual || selected.track.kind == .audio else { throw MediaV2CommandError.unavailable }
                 let previousSpeed = clip.speed
                 clip.speed = input.number ?? 1; guard clip.speed.isFinite, clip.speed > 0 else { throw MediaV2CommandError.invalidInput }
                 let factor = previousSpeed / clip.speed
-                clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: clip.sourceRange.durationSeconds / clip.speed)
+                let nextDuration = clip.sourcePlayback?.holdSeconds != nil ? clip.timelineRange.durationSeconds * factor : clip.sourceRange.durationSeconds / clip.speed
+                clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: nextDuration)
                 for index in clip.keyframeTracks.indices { for key in clip.keyframeTracks[index].keyframes.indices { clip.keyframeTracks[index].keyframes[key].time = try Self.time(clip.keyframeTracks[index].keyframes[key].time.seconds * factor) } }
+                if selected.track.kind == .visual { actions.append(contentsOf: try linkedSourceAudioActions(for: clip, timeScale: factor)) }
             case "video.fades": guard selected.track.kind == .audio else { throw MediaV2CommandError.unavailable }
                 clip.fadeIn = try Self.time(min(clip.timelineRange.durationSeconds, max(0, input.number ?? 0))); clip.fadeOut = try Self.time(min(clip.timelineRange.durationSeconds, max(0, input.secondary ?? 0)))
-            case "video.pip", "video.video-transform", "video.keyframes", "video.easing":
+            case "video.pip", "video.video-transform", "video.keyframes", "video.easing", "video.graph":
                 guard selected.track.kind == .visual else { throw MediaV2CommandError.unavailable }
                 let property = input.property ?? "scale", local = max(0, min(clip.timelineRange.durationSeconds, input.start ?? cursor - clip.timelineRange.startSeconds))
                 guard ["scale", "centerX", "centerY", "rotationDegrees", "opacity"].contains(property) else { throw MediaV2CommandError.invalidInput }
                 let value = input.number ?? (id == "video.pip" ? 0.4 : 1)
-                let interpolation = MediaKeyframeInterpolation(rawValue: input.text ?? "") ?? (id == "video.easing" ? .easeIn : .linear)
-                let key = MediaKeyframe(time: try Self.time(local), value: .number(value), interpolation: interpolation)
+                let interpolation = MediaKeyframeInterpolation(rawValue: input.text ?? "") ?? (id == "video.easing" ? .easeIn : id == "video.graph" ? .cubicBezier : .linear)
+                let curve: MediaCubicBezier?
+                if let points = input.points {
+                    guard points.count == 2 else { throw MediaV2CommandError.invalidInput }
+                    curve = .init(control1:points[0],control2:points[1]);try curve?.validate()
+                } else { curve = nil }
+                let key = MediaKeyframe(time: try Self.time(local), value: .number(value),
+                    interpolation: interpolation,curve:curve)
                 let propertyName = clip.keyframeTracks.first { $0.property == property || $0.property == "transform." + property }?.property ?? property
                 var keys = clip.keyframeTracks.first { $0.property == propertyName }?.keyframes ?? []
                 keys.removeAll { abs($0.time.seconds - local) < 0.00001 }; if input.flag != false { keys.append(key) }; keys.sort { $0.time < $1.time }
@@ -383,15 +555,33 @@ extension MediaV2Session {
                 guard offset > 0, offset < clip.timelineRange.durationSeconds else { throw MediaV2CommandError.invalidInput }
                 var right = clip; right.id = UUID(); right.revision = 0
                 right.timelineRange = try Self.range(start: at, duration: clip.timelineRange.durationSeconds - offset)
-                right.sourceRange = try Self.range(start: clip.sourceRange.startSeconds + offset * clip.speed, duration: clip.sourceRange.durationSeconds - offset * clip.speed)
+                let rightSource = try MediaSourcePlaybackMath.sourceTrim(sourceStart: clip.sourceRange.startSeconds,
+                    sourceDuration: clip.sourceRange.durationSeconds, speed: clip.speed, offset: offset,
+                    duration: right.timelineRange.durationSeconds, playback: clip.sourcePlayback)
+                right.sourceRange = try Self.range(start: rightSource.start, duration: rightSource.duration)
+                let leftSource = try MediaSourcePlaybackMath.sourceTrim(sourceStart: clip.sourceRange.startSeconds,
+                    sourceDuration: clip.sourceRange.durationSeconds, speed: clip.speed, offset: 0,
+                    duration: offset, playback: clip.sourcePlayback)
                 clip.timelineRange = try Self.range(start: clip.timelineRange.startSeconds, duration: offset)
-                clip.sourceRange = try Self.range(start: clip.sourceRange.startSeconds, duration: offset * clip.speed)
+                clip.sourceRange = try Self.range(start: leftSource.start, duration: leftSource.duration)
                 right.keyframeTracks = try slicedKeyframes(selected.clip.keyframeTracks, from: offset, duration: right.timelineRange.durationSeconds)
                 clip.keyframeTracks = try slicedKeyframes(selected.clip.keyframeTracks, from: 0, duration: offset)
                 if let fade = clip.fadeOut { clip.fadeOut = try Self.time(min(offset, fade.seconds)) }
                 if let fade = right.fadeIn { right.fadeIn = try Self.time(min(right.timelineRange.durationSeconds, fade.seconds)) }
                 right.leadingTransition = .none; right.transitionDuration = nil
                 actions.append(.insertClip(trackID: selected.track.id, clip: right, index: nil))
+                if selected.track.kind == .visual {
+                    actions.append(contentsOf: try linkedSourceAudioActions(for: clip))
+                    for track in document.trackGraph.tracks where track.kind == .audio {
+                        for source in track.clips where source.sourceVisualClipID == clip.id {
+                            var sound = source; sound.id = UUID(); sound.revision = 0; sound.sourceVisualClipID = right.id
+                            sound.timelineRange = right.timelineRange; sound.sourceRange = right.sourceRange
+                            sound.sourcePlayback = right.sourcePlayback; sound.fadeIn = nil
+                            if let fade = sound.fadeOut { sound.fadeOut = try Self.time(min(fade.seconds,right.timelineRange.durationSeconds)) }
+                            actions.append(.insertClip(trackID: track.id, clip: sound, index: nil))
+                        }
+                    }
+                }
             default: throw MediaV2CommandError.unavailable
             }
             try replace(clip)

@@ -5,12 +5,13 @@ import FloeElectronicsCore
 struct EDAInspector: View {
     @Bindable var session: EDWorkbenchSession
     let context: EDADocumentContext?
+    var onReplaceLibrary: (() -> Void)? = nil
     @ViewBuilder var body: some View {
         switch context {
         case .schematic(let sheetID):
             if let placement = session.project.sheets.first(where: { $0.id == sheetID })?.symbols.first(where: { session.selection.objectIDs.contains($0.id) }),
                let component = session.project.components.first(where: { $0.id == placement.componentID }) {
-                EDComponentProperties(session: session, sheetID: sheetID, placement: placement, component: component).id(placement.id)
+                EDComponentProperties(session: session, sheetID: sheetID, placement: placement, component: component, onReplaceLibrary: onReplaceLibrary).id(placement.id)
             } else if let value=EDBusInspectorSelection.read(session.project,sheetID:sheetID,objectIDs:session.selection.objectIDs) {
                 switch value {
                 case .bus(let bus):EDBusProperties(session:session,sheetID:sheetID,value:bus).id(bus.id)
@@ -49,6 +50,7 @@ private struct EDComponentProperties: View {
     let sheetID: UUID
     let placement: EDASymbolPlacement
     let component: EDAComponent
+    var onReplaceLibrary: (() -> Void)? = nil
     var body: some View {
         EDInspectorEditor(session: session, value: EDComponentInspectorValue(placement: placement, component: component),
             source: { EDComponentInspectorValue.read($0, sheetID: sheetID, placementID: placement.id) },
@@ -65,6 +67,10 @@ private struct EDComponentProperties: View {
                     scene: .component(value.wrappedValue, sheetID: sheetID, project: session.project))
                 EDInspectorTextField(edText("编号", "Reference"), text: value.component.reference)
                 EDInspectorTextField(edText("值", "Value"), text: value.component.value)
+                if let onReplaceLibrary {
+                    Button(action: onReplaceLibrary) { Label(edText("从元件库替换…", "Replace from library…"), systemImage: "arrow.triangle.2.circlepath") }
+                        .disabled(value.wrappedValue != EDComponentInspectorValue(placement: placement, component: component))
+                }
                 HStack {
                     EDInspectorNumberField(edText("旋转 (°)", "Rotation (°)"), value: value.placement.angle)
                     Button { value.placement.angle.wrappedValue += 90 } label: { Image(systemName: "rotate.right") }
@@ -75,9 +81,13 @@ private struct EDComponentProperties: View {
                     VStack(alignment: .leading, spacing: 12) {
                         EDInspectorPointFields(value.placement.position)
                         EDInspectorIntegerField(edText("符号单元", "Symbol unit"), value: value.placement.unit)
-                        Picker(edText("封装", "Footprint"), selection: value.component.footprintID) {
-                            Text(edText("未分配", "Unassigned")).tag(Optional<UUID>.none)
-                            ForEach(session.project.footprints) { Text($0.name).tag(Optional($0.id)) }
+                        if component.fields[EDALibraryProject.snapshotField] != nil {
+                            LabeledContent(edText("封装", "Footprint"), value: session.project.footprints.first { $0.id == component.footprintID }?.name ?? edText("未分配", "Unassigned"))
+                        } else {
+                            Picker(edText("封装", "Footprint"), selection: value.component.footprintID) {
+                                Text(edText("未分配", "Unassigned")).tag(Optional<UUID>.none)
+                                ForEach(session.project.footprints) { Text($0.name).tag(Optional($0.id)) }
+                            }
                         }
                     }.padding(.top, 8)
                 }

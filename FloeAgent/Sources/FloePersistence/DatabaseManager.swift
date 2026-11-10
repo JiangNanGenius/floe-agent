@@ -11,7 +11,82 @@
 import Foundation
 import GRDB
 import FloeCore
-import FloeSecurity
+
+/// An opaque observation of the process storage lifecycle. A deferred
+/// background fence must not override a newer foreground resume.
+public struct DatabaseSuspensionGeneration: Sendable, Equatable {
+    fileprivate let value: UInt64
+}
+
+/// Serialize the complete GRDB notification fan-out, not just a flag update.
+/// Concurrent posts otherwise can resume pool A and then suspend pool B with
+/// the tail of an older notification. This queue never waits for SQL or an
+/// async drain; GRDB's observers only change admission and interrupt SQLite.
+private final class DatabaseConnectionSuspensionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let delivery = DispatchQueue(label: "org.floeagent.database-suspension")
+    private let deliveryKey = DispatchSpecificKey<UInt8>()
+    private var generation: UInt64 = 0
+    private var suspended = false
+
+    init() { delivery.setSpecific(key: deliveryKey, value: 1) }
+
+    func snapshot() -> (generation: DatabaseSuspensionGeneration, suspended: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (DatabaseSuspensionGeneration(value: generation), suspended)
+    }
+
+    @discardableResult
+    func request(_ suspend: Bool, ifCurrent expected: DatabaseSuspensionGeneration? = nil) -> Bool {
+        lock.lock()
+        if let expected, expected.value != generation {
+            lock.unlock()
+            return false
+        }
+        generation &+= 1
+        let requested = generation
+        lock.unlock()
+        return ordered { [self] in
+            lock.lock()
+            guard requested == generation else {
+                lock.unlock()
+                return false
+            }
+            suspended = suspend
+            lock.unlock()
+            NotificationCenter.default.post(
+                name: suspend ? Database.suspendNotification : Database.resumeNotification,
+                object: nil
+            )
+            return true
+        }
+    }
+
+    /// New pools can register after the last process notification. Apply the
+    /// current completed state to them without creating a lifecycle epoch.
+    func applyToNewConnection() {
+        _ = ordered { [self] in
+            let state = snapshot().suspended
+            NotificationCenter.default.post(
+                name: state ? Database.suspendNotification : Database.resumeNotification,
+                object: nil
+            )
+            return true
+        }
+    }
+
+    private func ordered(_ action: @escaping @Sendable () -> Bool) -> Bool {
+        if DispatchQueue.getSpecific(key: deliveryKey) != nil {
+            // A notification observer may request a newer lifecycle. Enqueue
+            // that one request after the current fan-out instead of deadlocking
+            // or recursively interleaving posts. This is not a SQL retry.
+            delivery.async { _ = action() }
+            return true
+        }
+        return delivery.sync(execute: action)
+    }
+}
 
 /// Actor-isolated facade over a GRDB `DatabasePool`. All database access in
 /// the app goes through `reader(_:)` / `writer(_:)`.
@@ -43,6 +118,7 @@ public actor DatabaseManager {
         }
     }
     private static let suspensionDrainRegistry = SuspensionDrainRegistry()
+    private static let connectionSuspensionState = DatabaseConnectionSuspensionState()
 
     private let pool: DatabasePool?
     private let queue: DatabaseQueue?
@@ -57,13 +133,14 @@ public actor DatabaseManager {
     /// v56 adds durable task-bound user questions; v57 adds the trusted
     /// conversation origin used by scheduled-task presentation; v59 adds the
     /// generic per-skill configuration store.
-    public static let currentSchemaVersion = 59
+    public static let currentSchemaVersion = 60
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
         self.queue = nil
         Self.registerMigrations(into: &migrator)
         Self.suspensionDrainRegistry.register(self)
+        Self.connectionSuspensionState.applyToNewConnection()
     }
 
     private init(inMemory: Void) throws {
@@ -71,6 +148,7 @@ public actor DatabaseManager {
         self.queue = try DatabaseQueue(configuration: Self.configuration())
         Self.registerMigrations(into: &migrator)
         Self.suspensionDrainRegistry.register(self)
+        Self.connectionSuspensionState.applyToNewConnection()
     }
 
     /// Registers every published migration in order. Migrations are never
@@ -135,6 +213,7 @@ public actor DatabaseManager {
         V57SchedulePresentation.register(into: &migrator)
         V58TaskExecutionBindings.register(into: &migrator)
         V59SkillConfiguration.register(into: &migrator)
+        V60ExecutionExperiences.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {
@@ -187,13 +266,18 @@ public actor DatabaseManager {
     /// Read-only access. The closure runs outside the actor's serial
     /// executor via GRDB's concurrent reads (pool) or serially (queue).
     public func reader<T: Sendable>(_ block: @Sendable (Database) throws -> T) async throws -> T {
-        if let queue {
-            return try await queue.read { db in try block(db) }
+        do {
+            if let queue {
+                return try await queue.read { db in try block(db) }
+            }
+            guard let pool else {
+                throw FloeError.internalError("DatabaseManager has no configured reader")
+            }
+            return try await pool.read { db in try block(db) }
+        } catch {
+            Self.recordSuspensionFailure(error, operation: "read")
+            throw error
         }
-        guard let pool else {
-            throw FloeError.internalError("DatabaseManager has no configured reader")
-        }
-        return try await pool.read { db in try block(db) }
     }
 
     /// Serialized write access (GRDB guarantees a single writer at a time).
@@ -201,6 +285,7 @@ public actor DatabaseManager {
         do {
             return try await performWrite(block)
         } catch {
+            Self.recordSuspensionFailure(error, operation: "write")
             StorageSpaceFailure.reportIfNeeded(error)
             throw error
         }
@@ -228,11 +313,37 @@ public actor DatabaseManager {
     /// GRDB interrupts unsafe transactions and prevents a suspended writer
     /// acquiring a SQLite lock. WAL readers can continue without that lock.
     public nonisolated static func suspendConnections() {
-        NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+        connectionSuspensionState.request(true)
     }
 
     public nonisolated static func resumeConnections() {
-        NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+        connectionSuspensionState.request(false)
+    }
+
+    public nonisolated static var connectionsAreSuspended: Bool {
+        connectionSuspensionState.snapshot().suspended
+    }
+
+    public nonisolated static func suspensionGeneration() -> DatabaseSuspensionGeneration {
+        connectionSuspensionState.snapshot().generation
+    }
+
+    /// Returns false if a foreground resume or other newer transition won
+    /// after this deferred fence was scheduled. No stale notification is sent.
+    @discardableResult
+    public nonisolated static func suspendConnections(ifCurrent generation: DatabaseSuspensionGeneration) -> Bool {
+        connectionSuspensionState.request(true, ifCurrent: generation)
+    }
+
+    private nonisolated static func recordSuspensionFailure(_ error: Error, operation: String) {
+        guard let database = error as? DatabaseError,
+              database.resultCode == .SQLITE_ABORT || database.resultCode == .SQLITE_INTERRUPT else { return }
+        let state = connectionSuspensionState.snapshot()
+        // Fixed phase/state/code only. Never log SQL, arguments, paths, or the
+        // localized DatabaseError (which contains the user's statement).
+        FloeLogger(category: .persistence).warning(
+            "databaseAccessFailed operation=\(operation) sqliteCode=\(database.resultCode.rawValue) suspended=\(state.suspended) generation=\(state.generation.value)"
+        )
     }
 
     /// Fences GRDB and joins the writer queues of every live manager before

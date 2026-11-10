@@ -108,7 +108,7 @@ struct LocalServicePreview: View {
     /// the existing Settings/local-services behavior of deriving the endpoint
     /// from the durable progress document.
     var resolvedURL: URL? = nil
-    @StateObject private var browser = BrowserSessionCenter(durableHandoffs: false)
+    @StateObject private var browser = BrowserSessionCenter(durableHandoffs: false, taskHandoffsEnabled: false)
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {

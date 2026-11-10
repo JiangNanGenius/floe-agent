@@ -12,20 +12,40 @@
     "bytes": 18739
   },
   {
+    "source": "FloeScoreKit/Web/jianpu.js",
+    "bytes": 17942
+  },
+  {
+    "source": "FloeScoreKit/Web/engraving-export.js",
+    "bytes": 1900
+  },
+  {
+    "source": "FloeScoreKit/Web/score-layout.js",
+    "bytes": 1476
+  },
+  {
     "source": "FloeScoreKit/Web/parts.js",
     "bytes": 17109
   },
   {
+    "source": "FloeScoreKit/Web/fretboard.js",
+    "bytes": 4566
+  },
+  {
     "source": "FloeScoreKit/Web/edit.js",
-    "bytes": 20742
+    "bytes": 21280
+  },
+  {
+    "source": "FloeScoreKit/Web/professional.js",
+    "bytes": 4294
   },
   {
     "source": "FloeScoreKit/Web/notation.js",
-    "bytes": 20755
+    "bytes": 20861
   },
   {
     "source": "FloeScoreKit/Web/playback.js",
-    "bytes": 18669
+    "bytes": 20824
   },
   {
     "source": "npm/fflate/esm/browser.js",
@@ -877,15 +897,15 @@
   },
   {
     "source": "FloeScoreKit/Web/formats.js",
-    "bytes": 13250
+    "bytes": 15480
   },
   {
     "source": "FloeScoreKit/Web/analysis.js",
-    "bytes": 10956
+    "bytes": 11546
   },
   {
     "source": "FloeScoreKit/Web/native.js",
-    "bytes": 9745
+    "bytes": 10188
   },
   {
     "source": "FloeScoreKit/Web/interaction.js",
@@ -893,10 +913,10 @@
   },
   {
     "source": "FloeScoreKit/Web/score.css",
-    "bytes": 5039
+    "bytes": 5634
   },
   {
     "source": "FloeScoreKit/Web/main.js",
-    "bytes": 19798
+    "bytes": 22092
   }
 ]

@@ -54,7 +54,10 @@ public struct WorkspaceReplaceTextTool: AgentTool {
         try await WorkspaceTextEdit.apply(path: args.path, expectedSHA256: args.expectedSHA256, environment: environment, context: context) { original in
             let parts = original.components(separatedBy: args.oldText)
             guard parts.count - 1 == (args.expectedOccurrences ?? 1) else {
-                throw WorkspaceToolError.invalidArguments("Expected \(args.expectedOccurrences ?? 1) exact matches; found \(parts.count - 1). Read the file and provide an unambiguous range.")
+                throw WorkspaceToolError.invalidArguments(WorkspaceEditRecoveryHint.mismatch(
+                    original: original, oldText: args.oldText, newText: args.newText,
+                    expected: args.expectedOccurrences ?? 1, actual: parts.count - 1
+                ))
             }
             return parts.joined(separator: args.newText)
         }

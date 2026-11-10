@@ -108,9 +108,10 @@ enum EDAPlot {
                 let r=min(w,h),a=EDAPoint(w>h ? w-r:0,w>h ? 0:h-r)
                 let points=(0...32).map { i -> EDAPoint in let theta=Double(i)*2*Double.pi/32;return transform(.init(cos(theta)*r+(cos(theta)>=0 ? a.x:-a.x),sin(theta)*r+(sin(theta)>=0 ? a.y:-a.y))) }
                 line(points,color,0.12,closed:true,fill:true)
-            case .rectangle,.roundRectangle:
-                // No corner radius exists in the current native model.
-                // Show its measured outer extent; do not invent a radius.
+            case .roundRectangle:
+                if let points = try? EDARoundedPadGeometry.vertices(pad) { line(points.map(world),color,0.12,closed:true,fill:true) }
+                else { line([.init(-w,-h),.init(w,-h),.init(w,h),.init(-w,h)].map(transform),color,0.12,closed:true,fill:true) }
+            case .rectangle:
                 line([.init(-w,-h),.init(w,-h),.init(w,h),.init(-w,h)].map(transform),color,0.12,closed:true,fill:true)
             }
             if let drill=pad.drill{circle(center,drill/2,.white)}
@@ -159,7 +160,7 @@ enum EDAPlot {
                 guard let component=project.components.first(where:{$0.id==item.componentID}),let definition=project.symbols.first(where:{$0.id==component.symbolID}) else{continue}
                 func transform(_ q:EDAPoint)->EDAPoint{q.transformed(origin:item.position,angle:item.angle,mirrored:item.mirrored)}
                 let color:Color=selected.contains(item.id) ? .blue:.primary
-                graphics(definition.graphics,transform:transform,color:color)
+                graphics(definition.graphics(forUnit: item.unit),transform:transform,color:color)
                 for pin in definition.pins where pin.unit==0 || pin.unit==item.unit{circle(transform(pin.position),0.2,color);label(pin.number,transform(pin.position + .init(0,0.5)),color,0.9)}
                 label(component.reference+" "+component.value,item.position + .init(0,4),color)
             }
@@ -249,7 +250,7 @@ extension EDAPlot {
         for point in points.dropLast(){let q=p.screen(point);canvas.fill(Path(ellipseIn:.init(x:q.x-3,y:q.y-3,width:6,height:6)),with:.color(.accentColor))}
     }
     static func drawPlacement(project:EDAProject,context:EDADocumentContext,definitionID:UUID?,position:EDAPoint,
-                              angle:Double,flipped:Bool,projection:EDAProjection,in canvas:inout GraphicsContext){
+                              angle:Double,flipped:Bool,projection:EDAProjection,unit:Int=1,in canvas:inout GraphicsContext){
         guard let definitionID else{return}
         var preview=project;preview.components=[];preview.sheets=[];preview.boards=[]
         var selected:Set<UUID>=[]
@@ -262,7 +263,7 @@ extension EDAPlot {
         case .schematic(let id):
             guard project.symbols.contains(where:{$0.id==definitionID}) else{return}
             let component=EDAComponent(symbolID:definitionID)
-            let placed=EDASymbolPlacement(componentID:component.id,position:position,angle:angle,mirrored:flipped)
+            let placed=EDASymbolPlacement(componentID:component.id,unit:unit,position:position,angle:angle,mirrored:flipped)
             preview.components=[component];preview.sheets=[EDASheet(id:id,symbols:[placed])];selected=[placed.id]
         default:return
         }
@@ -327,6 +328,9 @@ struct EDAInputSurface: UIViewRepresentable {
         private lazy var pointerHover=UIHoverGestureRecognizer(target:self,action:#selector(hovered))
         private lazy var pinch=UIPinchGestureRecognizer(target:self,action:#selector(pinched))
         override init(frame:CGRect){super.init(frame:frame);backgroundColor = .clear
+            isAccessibilityElement = true
+            accessibilityLabel = edText("设计画布", "Design canvas")
+            accessibilityIdentifier = "electronics.canvas.input"
             for gesture in [editTap,editDrag,viewPan,pinch,selectionTap,pointerHover]{gesture.delegate=self;addGestureRecognizer(gesture)}
             editTap.require(toFail:editDrag);editDrag.maximumNumberOfTouches=1
             selectionTap.allowedTouchTypes=[NSNumber(value:UITouch.TouchType.direct.rawValue)]

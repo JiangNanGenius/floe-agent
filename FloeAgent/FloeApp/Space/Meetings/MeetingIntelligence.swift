@@ -8,7 +8,13 @@ import FloeMeetings
 import FloeNotes
 
 struct MeetingIntelligenceState: Codable {
-    struct Translation: Codable { let original: String; let text: String }
+    struct Translation: Codable {
+        let original: String
+        let text: String
+        // Optional for decoding older saved translations. A missing language
+        // is displayed as needing refresh instead of claiming a target match.
+        var language: String? = nil
+    }
     struct Answer: Codable, Identifiable {
         var id = UUID()
         let question: String
@@ -132,35 +138,60 @@ extension MeetingProjectSession {
         catch { intelligence = previous; diagnostic = error.localizedDescription }
     }
 
-    func analyze(_ action: String, question: String = "") {
+    func analyze(_ action: String, question: String = "", segmentIDs: Set<UUID>? = nil) {
         guard !isAnalyzing else { return }
         let segments: [TranscriptSegment]
         if action == "summary" {
             segments = rollingTranscriptWindow()
         } else if action == "translate" {
-            segments = Array(transcript.filter { intelligence.translations[$0.id.rawValue]?.original != $0.text }.prefix(40))
+            segments = Array(transcript.filter {
+                (segmentIDs?.contains($0.id.rawValue) ?? true)
+                && (intelligence.translations[$0.id.rawValue]?.original != $0.text
+                    || intelligence.translations[$0.id.rawValue]?.language != intelligence.translationLanguage)
+            }.prefix(40))
         } else { segments = Array(transcript.suffix(300)) }
         guard !segments.isEmpty else {
             diagnostic = IDELanguageRunText.t("先录音或导入素材，再转写内容。", "Record or import media, then transcribe it first."); return
         }
+        let targetLanguage = intelligence.translationLanguage
+        var translationBindings: [UUID: MeetingTranslationBinding] = [:]
+        if action == "translate" {
+            for segment in segments {
+                let binding = MeetingTranslationBinding(original: segment.text, language: targetLanguage)
+                translationBindings[segment.id.rawValue] = binding
+                translationWork[segment.id.rawValue] = binding
+                translationFailures[segment.id.rawValue] = nil
+            }
+        }
         isAnalyzing = true; diagnostic = nil
         intelligenceTask = Task { [self] in
-            defer { isAnalyzing = false; intelligenceTask = nil }
+            defer {
+                for (id, binding) in translationBindings where translationWork[id] == binding { translationWork[id] = nil }
+                isAnalyzing = false; intelligenceTask = nil
+            }
             do {
                 let provider = try MeetingIntelligenceProvider.configured(in: environment)
                 let source = segments.map { "[\($0.id.rawValue.uuidString) · \(sourceDescription(.recording(session: $0.sessionID, range: $0.range)) ?? meetingTime($0.range.start))] \($0.text)" }.joined(separator: "\n")
                 let answer: String
                 switch action {
                 case "translate":
-                    answer = try await provider.request(instruction: "Translate each segment into \(intelligence.translationLanguage), preserving its meaning. Reply with exactly a JSON object mapping each supplied UUID to its translated string. No Markdown fences.", source: source)
+                    answer = try await provider.request(instruction: "Translate each segment into \(targetLanguage), preserving its meaning. Reply with exactly a JSON object mapping each supplied UUID to its translated string. No Markdown fences.", source: source)
                     let translations = try JSONDecoder().decode([UUID: String].self, from: Data(answer.utf8))
                     try Task.checkCancellation()
-                    for segment in segments where transcript.first(where: { $0.id == segment.id })?.text == segment.text {
-                        if let value = translations[segment.id.rawValue], value.utf8.count <= 16_384 {
-                            intelligence.translations[segment.id.rawValue] = .init(original: segment.text, text: value)
+                    let previous = intelligence.translations
+                    for segment in segments where transcript.first(where: { $0.id == segment.id })?.text == segment.text
+                        && intelligence.translationLanguage == targetLanguage {
+                        let id = segment.id.rawValue
+                        guard let value = translations[id], !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                              value.utf8.count <= 16_384 else {
+                            translationFailures[id] = translationBindings[id]
+                            continue
                         }
+                        intelligence.translations[id] = .init(original: segment.text, text: value, language: targetLanguage)
+                        translationFailures[id] = nil
                     }
-                    try saveIntelligence()
+                    do { try saveIntelligence() }
+                    catch { intelligence.translations = previous; throw error }
                 case "summary":
                     let template = minutesTemplate
                     let conclusions = decisions.map(\.text).joined(separator: "\n")
@@ -179,7 +210,13 @@ extension MeetingProjectSession {
                     intelligence.answers = Array(intelligence.answers.suffix(40)); try saveIntelligence()
                 default: throw PersonalContentError.invalidProject
                 }
-            } catch is CancellationError {} catch { diagnostic = error.localizedDescription }
+            } catch is CancellationError {} catch {
+                for (id, binding) in translationBindings where transcript.first(where: { $0.id.rawValue == id })?.text == binding.original
+                    && intelligence.translationLanguage == binding.language {
+                    translationFailures[id] = binding
+                }
+                diagnostic = error.localizedDescription
+            }
         }
     }
 

@@ -17,6 +17,7 @@ import FloeElectronicsUI
 
     private init(id: UUID, directory: URL, workbench: EDWorkbenchSession) {
         self.id = id; self.directory = directory; self.workbench = workbench
+        workbench.library = try? ElectronicsLibraryService.shared()
         workbench.onSaved = { [weak self] _ in self?.schedulePublication() }
     }
     static func open(id: UUID, directory: URL) async throws -> ElectronicsProjectSession {

@@ -1696,6 +1696,68 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
+    /// The in-flight pre-switch history cleanup for the composer's model
+    /// selection. A newer switch replaces (cancels) the older attempt; an
+    /// in-flight pass for a left conversation or a superseded selection can
+    /// never publish status over the newer state.
+    private var modelSwitchHistoryTask: Task<Void, Never>?
+
+    /// Recoverable history cleanup fired the moment the user's composer
+    /// selection changes, BEFORE the smaller-window model ever receives a
+    /// dispatch. The durable decision/commit rules live in
+    /// ``ModelSwitchHistoryPreparer`` (FloeAgentRuntime); this glue only owns
+    /// the task identity and the honest status surface. Fitting histories are
+    /// a silent local no-op (no provider call, nothing rendered); a completed
+    /// cleanup reuses the existing compaction status line; a failed or stale
+    /// attempt leaves the original history, checkpoint and selection untouched
+    /// and reports through the same status line. The next dispatch keeps its
+    /// existing in-run compaction safety net either way, and answers always
+    /// come from the model the user currently sees as selected.
+    func handleModelSwitchForHistory(previousModelID: UUID?, incoming: ModelProfile) {
+        guard !isTemporary, incoming.id != previousModelID else { return }
+        let conversationID = self.conversationID
+        let toolsEnabledForNextRun = effectiveAgentMode.toolsEnabled
+        modelSwitchHistoryTask?.cancel()
+        modelSwitchHistoryTask = Task { [weak self] in
+            guard let self else { return }
+            let outcome: ModelSwitchHistoryPreparer.Outcome
+            do {
+                outcome = try await self.center.prepareHistoryForIncomingModel(
+                    conversationID: conversationID,
+                    outgoingModelID: previousModelID,
+                    incomingModelID: incoming.id,
+                    toolsEnabledForNextRun: toolsEnabledForNextRun
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                // Stale/failure paths persisted nothing: the durable history
+                // and checkpoints are exactly as before the switch.
+                guard !Task.isCancelled, self.conversationID == conversationID,
+                      self.selectedModelID == incoming.id else { return }
+                self.compactionStatus = FloeL10n.l(
+                    "chat.thread_detail_view_model.compaction_did_not_finish",
+                    error.localizedDescription
+                )
+                return
+            }
+            guard !Task.isCancelled, self.conversationID == conversationID,
+                  self.selectedModelID == incoming.id else { return }
+            switch outcome {
+            case .compacted(let before, let after, _):
+                self.compactionStatus = FloeL10n.l(
+                    "remote.conversation_center.context_compacted_about_tokens_the_full",
+                    before, after
+                )
+            case .noHistory, .fits, .busy, .stale:
+                // Silent: nothing needed changing, a run owns the conversation,
+                // or the durable state was left untouched by design. The user
+                // can still run the explicit manual compaction at any time.
+                break
+            }
+        }
+    }
+
     // MARK: - Typed live feedback (context compression / tool settlement)
 
     /// Projects one real compression snapshot. Sizing is deliberately a
@@ -1958,7 +2020,8 @@ final class ThreadDetailViewModel: ObservableObject {
         do {
             let started = try await center.retry(
                 runID: runID,
-                startOrigin: .explicitUserAction
+                startOrigin: .explicitUserAction,
+                conversationID: conversationID
             )
             mergeRunHeaders(try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30))
             locallyStoppedRunIDs.remove(started.runID)

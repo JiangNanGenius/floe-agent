@@ -1,5 +1,9 @@
 # Local execution implementation checkpoint — 2026-09-12
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本文是 2026-09-12 的本地 Shell 实施记录，涉及旧原生后端、mini-root 与当时检查。现行执行方式见[共享 ARM64 Linux 架构](ARCHITECTURE_LOCAL_SHELL.md)。
+> Implementation record from 2026-09-12 for the earlier native backend and mini-root. Use the shared ARM64 Linux architecture for current execution.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 The user deferred the app release while adding more features. No tag, TestFlight

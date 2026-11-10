@@ -14,6 +14,12 @@ struct NotesOfficeView: View {
     var onAssistant: () -> Void
     var onLinkedMaps: () -> Void
     @StateObject private var office = OfficeFileSession()
+    @StateObject private var officeSearch = OfficeSearchBridge()
+    @State private var showingSearch = false
+    @State private var assistantLeaveApproval: DocumentAssistantNavigationApproval?
+    @State private var searchQuery = ""
+    @State private var searchNotice: String?
+    @State private var consumedSearchFocusID: UUID?
     @State private var draftURL: URL?
     @State private var baseRevision: Int?
     @State private var baseResourceID: UUID?
@@ -130,6 +136,7 @@ struct NotesOfficeView: View {
             if !OfficeFileSession.available {
                 ContentUnavailableView("notes.office.unavailable.title", systemImage: "doc", description: Text("notes.office.unavailable.description"))
             } else {
+                if showingSearch { officeSearchBar }
                 OfficeDocumentEditorView(relativePath: document.officeFileName ?? document.title,
                                          session: office,
                                          stableInkIdentity: inkIdentity,
@@ -158,6 +165,8 @@ struct NotesOfficeView: View {
                         return
                     }
                     session.removeLeaveGuard(for: document.id)
+                    let approval = assistantLeaveApproval
+                    assistantLeaveApproval = nil
                     Task {
                         // Re-fence INSIDE the scheduled task, immediately
                         // before the navigation: whatever selects a new
@@ -168,11 +177,24 @@ struct NotesOfficeView: View {
                             recordStage("notes.exit.refused.staleClose")
                             return
                         }
-                        await session.select(nil)
+                        await session.select(nil, assistantApproval: approval)
                     }
+                }, beforeDocumentLeave: {
+                    guard isVisible, session.document?.id == document.id else { return false }
+                    let approval = await session.prepareAssistantLeave(documentID: document.id)
+                    assistantLeaveApproval = approval
+                    return approval != nil
                 }, inlineHeader: AnyView(
                     HStack(spacing: 4) {
                         NotesDocumentTabs(session: session)
+                        Button {
+                            showingSearch.toggle()
+                            if !showingSearch { closeOfficeSearch() }
+                        } label: {
+                            Image(systemName: "magnifyingglass").frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel(OfficeInkText.t("在文档中查找", "Find in Document"))
+                        .accessibilityIdentifier("notes.office.search.open")
                         Menu {
                             Button("notes.notes_linked_mind_maps.floe_assistant", systemImage: FloeTheme.assistantSymbol, action: onAssistant)
                             Button("notes.notes_office_view.mind_map", systemImage: "point.3.connected.trianglepath.dotted", action: onLinkedMaps)
@@ -194,7 +216,17 @@ struct NotesOfficeView: View {
             }
         }
         .onChange(of: office.documentActionsReady) { _, ready in
-            if ready { scheduleMissingPreview() }
+            if ready {
+                scheduleMissingPreview()
+                bindOfficeSearchIfReady()
+                consumeOfficeSearchFocus()
+            }
+        }
+        .onChange(of: session.searchFocus, initial: true) { _, _ in consumeOfficeSearchFocus() }
+        .onChange(of: document.id) { _, _ in
+            officeSearch.detach()
+            showingSearch = false; searchQuery = ""; searchNotice = nil; consumedSearchFocusID = nil
+            consumeOfficeSearchFocus()
         }
         .onChange(of: office.coverRenderObserved) { _, observed in
             if observed { scheduleMissingPreview() }
@@ -202,6 +234,8 @@ struct NotesOfficeView: View {
         .onChange(of: baseResourceID) { _, _ in scheduleMissingPreview() }
         .onAppear {
             isVisible = true
+            bindOfficeSearchIfReady()
+            consumeOfficeSearchFocus()
             // Publish this mounted editor to the Notes assistant tooling:
             // only the document selected here, only while this view is alive,
             // and every consumer re-checks session identity, so a switch,
@@ -337,6 +371,7 @@ struct NotesOfficeView: View {
         }
         .onDisappear {
             isVisible = false
+            officeSearch.detach()
             NotesOfficeLiveBinding.unbind(documentID: document.id, session: office)
             office.installAutosaveOwner(nil)
             pendingExternalResource = nil
@@ -344,6 +379,111 @@ struct NotesOfficeView: View {
             session.removeLeaveGuard(for: document.id)
             Task { await office.release() }
         }
+    }
+
+    private var officeSearchBar: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                TextField(OfficeInkText.t("在文档中查找", "Find in Document"), text: Binding(
+                    get: { searchQuery },
+                    set: {
+                        searchQuery = $0; searchNotice = nil
+                        consumedSearchFocusID = session.searchFocus?.requestID
+                        officeSearch.clearPresentation()
+                    }))
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.search)
+                    .onSubmit { runOfficeSearch() }
+                    .accessibilityIdentifier("notes.office.search.query")
+                if officeSearch.isSearching { ProgressView().controlSize(.small) }
+                Button { runOfficeSearch(backwards: true, useLastResult: true) } label: {
+                    Image(systemName: "chevron.up").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(OfficeInkText.t("上一个匹配", "Previous Match"))
+                .accessibilityIdentifier("notes.office.search.previous")
+                .disabled(!canNavigateSearch)
+                Button { runOfficeSearch(useLastResult: true) } label: {
+                    Image(systemName: "chevron.down").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(OfficeInkText.t("下一个匹配", "Next Match"))
+                .accessibilityIdentifier("notes.office.search.next")
+                .disabled(!canNavigateSearch)
+                Button { closeOfficeSearch() } label: {
+                    Image(systemName: "xmark").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(OfficeInkText.t("关闭查找", "Close Find"))
+                .accessibilityIdentifier("notes.office.search.close")
+            }
+            if let label = searchNotice ?? officeSearchStatusText {
+                Text(label).font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("notes.office.search.status")
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    private var canNavigateSearch: Bool {
+        office.documentActionsReady && !officeSearch.isSearching && officeSearch.status == .found
+            && searchQuery == officeSearch.query
+    }
+
+    private var officeSearchStatusText: String? {
+        switch officeSearch.status {
+        case .idle: nil
+        case .searching: OfficeInkText.t("正在查找…", "Finding…")
+        // ExecuteSearch returns the selected result, not a total occurrence
+        // count. Do not invent a "1 of N" caption from that event.
+        case .found: OfficeInkText.t("已定位匹配。", "Match found.")
+        case .notFound: OfficeInkText.t("未找到匹配内容。", "No matches found.")
+        case .unavailable: OfficeInkText.t("暂时无法查找，请稍后重试。", "Find is unavailable. Try again shortly.")
+        case .timedOut: OfficeInkText.t("查找响应超时，请重新打开文档后再试。", "Find timed out. Reopen the document and try again.")
+        }
+    }
+
+    private func bindOfficeSearchIfReady() {
+        guard isVisible, office.documentActionsReady, let controller = office.controller,
+              controller.isViewLoaded,
+              let web = OfficeExplicitSaveBridge.findWebView(in: controller.view) else { return }
+        let owner = document.id, source = document.officeResourceID
+        officeSearch.bind(documentID: owner, resourceID: source, webView: web) {
+            isVisible && session.document?.id == owner && session.document?.officeResourceID == source
+                && office.controller === controller && office.documentActionsReady
+        }
+    }
+
+    private func consumeOfficeSearchFocus() {
+        guard let focus = session.searchFocus, focus.documentID == document.id,
+              focus.sourceKind == "office", focus.requestID != consumedSearchFocusID else { return }
+        showingSearch = true
+        guard document.officeTextResourceID == document.officeResourceID,
+              let text = document.officeExtractedText, let offset = focus.utf16Offset,
+              let length = focus.utf16Length,
+              let phrase = OfficeSearchText.phrase(in: text, offset: offset, length: length) else {
+            searchNotice = OfficeInkText.t("文档已更新，请重新搜索。", "The document changed. Search again.")
+            consumedSearchFocusID = focus.requestID
+            return
+        }
+        searchQuery = phrase
+        guard isVisible, office.documentActionsReady else { return }
+        consumedSearchFocusID = focus.requestID
+        runOfficeSearch()
+    }
+
+    private func runOfficeSearch(backwards: Bool = false, useLastResult: Bool = false) {
+        guard isVisible, session.document?.id == document.id, office.documentActionsReady else { return }
+        guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            officeSearch.clearPresentation(); return
+        }
+        bindOfficeSearchIfReady()
+        searchNotice = nil
+        officeSearch.submit(searchQuery, backwards: backwards, useLastResult: useLastResult)
+    }
+
+    private func closeOfficeSearch() {
+        showingSearch = false
+        consumedSearchFocusID = session.searchFocus?.requestID
+        officeSearch.clearPresentation()
     }
 
     /// Compact Notes-owned navigation for the no-engine branch. It mirrors the

@@ -18,7 +18,7 @@ struct AppleImagePlaygroundTool: AgentTool {
 
     static let name = "image.playground"
     static let toolDescription = """
-        Create an image or edit an original with Apple's built-in Image Playground. No configured cloud image supplier or API key is required. Pass a description and optionally an existing workspace-relative sourcePath; omit intent to edit when an original is supplied, otherwise generate. Editing requires iOS 27+. This one call opens Apple's system sheet in the owning foreground task and waits for the person to choose an image or cancel; it cannot run unattended or auto-confirm. Newer systems may use Apple Private Cloud Compute, so do not promise offline generation. Width/height request the closest system-supported size, not an exact output resolution. Returns a verified new image file and durable task output; never overwrites the original. Use this native route when the person asks for Apple Image Playground or has no configured cloud image supplier. Use image.generate for configured external image suppliers. Unavailable hardware/language/region/settings, a missing visible host or cancellation returns no image.
+        Create an image or edit an original with Apple's built-in Image Playground (图乐园). No cloud image API key is required. Pass a description and optionally a workspace-relative sourcePath; intent defaults to edit with an original, otherwise generate. Editing requires iOS 27+. This opens Apple's sheet in the owning foreground task and waits for the person to choose an image or cancel; it cannot run unattended or auto-confirm. Newer systems may use Apple Private Cloud Compute, so do not promise offline generation. Width/height request the closest supported size. Returns a verified new file and durable task output, preserving the original. Call this dedicated tool when the user explicitly requests Image Playground. For ordinary image requests use image.models and image.generate: they prefer configured cloud routes and honor the independent automatic Image Playground switch. Do not bypass that switch with an unsolicited direct call. Explicit requests remain supported when automatic participation is off. Unsupported system/device/language/region, a missing visible host or cancellation returns no image.
         """
     static let parametersJSON = #"""
         {"type":"object","properties":{"prompt":{"type":"string","minLength":1,"maxLength":16384,"description":"Description of the image or requested modification"},"sourcePath":{"type":"string","description":"Optional existing image path relative to this task's workspace"},"intent":{"type":"string","enum":["generate","edit"],"description":"Defaults to edit with sourcePath, otherwise generate. generate uses the original as inspiration; edit preserves it as closely as the system supports."},"style":{"type":"string","enum":["automatic","animation","illustration","sketch"]},"width":{"type":"integer","minimum":64,"maximum":4096},"height":{"type":"integer","minimum":64,"maximum":4096}},"required":["prompt"],"additionalProperties":false}
@@ -55,6 +55,12 @@ struct AppleImagePlaygroundTool: AgentTool {
     }
 
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try await execute(args, context: context, producerTool: Self.name)
+    }
+
+    func execute(_ args: Arguments, context: ToolContext, producerTool: String) async throws -> ToolExecutionOutput {
+        guard [Self.name, "image.generate"].contains(producerTool),
+              context.executionToolName == nil || context.executionToolName == producerTool else { throw FloeError.unauthorized }
         try validate(args)
         try context.cancellation.throwIfCancelled()
         guard !context.temporaryReadOnly, !context.publicWebOnly,
@@ -102,7 +108,7 @@ struct AppleImagePlaygroundTool: AgentTool {
         }
         try Task.checkCancellation()
         try context.cancellation.throwIfCancelled()
-        return try AppleImagePlaygroundOutput.persist(image, context: context)
+        return try AppleImagePlaygroundOutput.persist(image, context: context, producerTool: producerTool)
     }
 
     private struct FailureResult: Encodable { let state: String; let message: String }
@@ -125,7 +131,11 @@ enum AppleImagePlaygroundOutput {
     /// Single standard workspace commit + immutable run-output publication.
     /// Qualification may inject its own snapshot root; model arguments cannot.
     static func persist(_ image: AppleImagePlaygroundImage, context: ToolContext,
-                        snapshotRoot: URL? = nil) throws -> ToolExecutionOutput {
+                        snapshotRoot: URL? = nil,
+                        producerTool: String = AppleImagePlaygroundTool.name) throws -> ToolExecutionOutput {
+        guard [AppleImagePlaygroundTool.name, "image.generate"].contains(producerTool) else {
+            throw FloeError.unauthorized
+        }
         try context.cancellation.throwIfCancelled()
         try validateDestinationAccess(context)
         guard !context.temporaryReadOnly, !context.publicWebOnly,
@@ -157,7 +167,7 @@ enum AppleImagePlaygroundOutput {
         }
         try context.cancellation.throwIfCancelled()
         let output = try RunOutputSnapshotStore.publish(RunOutputSnapshotRequest(
-            producerTool: AppleImagePlaygroundTool.name, slot: "image",
+            producerTool: producerTool, slot: "image",
             commit: RunOutputCommit(sourceURL: url, sha256: image.sha256, byteCount: image.data.count,
                 displayName: "Image Playground.\(image.fileExtension)", mimeType: image.mimeType, uti: image.uti)),
             using: context, artifactRoot: snapshotRoot)
@@ -170,14 +180,15 @@ enum AppleImagePlaygroundOutput {
             let sha256: String
             let width: Int
             let height: Int
+            let inlineMarkdown: String
         }
         let receipt = Receipt(path: path, mimeType: image.mimeType, byteCount: image.data.count,
-            sha256: image.sha256, width: image.width, height: image.height)
+            sha256: image.sha256, width: image.width, height: image.height,
+            inlineMarkdown: ChatContentReference(kind: .output, ownerID: context.runID,
+                contentID: output.outputID)!.markdown(title: "Image Playground"))
         let bytes = try JSONEncoder().encode(receipt)
         return ToolExecutionOutput(summary: String(decoding: bytes, as: UTF8.self),
             fullOutputSHA256: FloeDigest.sha256Hex(bytes), exitStatus: 0,
-            artifacts: [ToolArtifactReference(id: UUID(), relativePath: path,
-                mimeType: image.mimeType, byteCount: image.data.count, sha256: image.sha256)],
             outputFiles: [output])
     }
 }

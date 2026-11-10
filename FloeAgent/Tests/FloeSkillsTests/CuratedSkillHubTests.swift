@@ -551,9 +551,9 @@ struct CuratedSkillHubTests {
         #expect(CuratedSkillHub.signaturePath(for: .ios, layout: .full) == "catalog-full.sig")
         #expect(CuratedSkillHub.signaturePath(for: .android, layout: .full) == "android/catalog-full.sig")
         #expect(Set(CuratedSkillCatalogLayout.allCases.map { $0.catalogPath(for: .ios) })
-                == Set(["catalog.json", "catalog-full.json"]))
+                == Set(["catalog.json", "catalog-full.json", "catalog-large-source-v1.json"]))
         #expect(Set(CuratedSkillCatalogLayout.allCases.map { $0.signaturePath(for: .android) })
-                == Set(["android/catalog.sig", "android/catalog-full.sig"]))
+                == Set(["android/catalog.sig", "android/catalog-full.sig", "android/catalog-large-source-v1.sig"]))
 
         let legacy = try CuratedSkillHub.source(channel: .ios)
         let full = try CuratedSkillHub.source(channel: .ios, layout: .full)
@@ -1318,6 +1318,232 @@ private enum JSONValue: Decodable {
         case .bool(let flag): return flag
         case .number(let number): return number
         case .other: return nil
+        }
+    }
+}
+
+
+// MARK: Large source profile contracts (synthetic signed fixture only)
+
+private func largeSourceFixtureFiles(version: String = "2.0.0") throws -> [String: Data] {
+    var transport = try iosFixtureFiles()
+    let original = try Archive(data: curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"), accessMode: .read)
+    var payload: [String: Data] = [:]
+    for entry in original {
+        var data = Data()
+        _ = try original.extract(entry) { data.append($0) }
+        payload[entry.path] = data
+    }
+    let manifestData = try #require(payload["floe.json"])
+    let manifestObject = try JSONSerialization.jsonObject(with: manifestData)
+    var manifest = try #require(manifestObject as? [String: Any])
+    manifest["version"] = version
+    payload["floe.json"] = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+    // Both the default count and total bounds are exceeded, without any
+    // native payload, real upstream data, network, VM or executable call.
+    let blob = Data(repeating: 65, count: 30_720)
+    for index in 0..<300 { payload["assets/large-\(index).txt"] = blob }
+    let archive = try Archive(data: Data(), accessMode: .create)
+    for (name, data) in payload.sorted(by: { $0.key < $1.key }) {
+        try archive.addEntry(with: name, type: .file, uncompressedSize: Int64(data.count)) { position, size in
+            data.subdata(in: Int(position)..<min(Int(position)+size, data.count))
+        }
+    }
+    let zip = try #require(archive.data), digest = SignedContentArchive.canonicalDigest(payload)
+    var review = try #require(JSONSerialization.jsonObject(with: curatedFixture("reviews/fixture-reviewed/1.0.0.review.json")) as? [String: Any])
+    review["version"] = version; review["contentDigest"] = digest; review["packageSha256"] = sha256Hex(zip)
+    let reviewBytes = try JSONSerialization.data(withJSONObject: review, options: [.sortedKeys])
+    var catalog = try #require(JSONSerialization.jsonObject(with: curatedFixture("catalog.json")) as? [String: Any])
+    var entries = try #require(catalog["entries"] as? [[String: Any]])
+    let index = try #require(entries.firstIndex(where: { $0["id"] as? String == "fixture-reviewed" }))
+    entries[index]["version"] = version
+    var package = try #require(entries[index]["package"] as? [String: Any])
+    let packagePath = "packages/fixture-reviewed/\(version)/fixture-reviewed.zip"
+    package["path"] = packagePath; package["size"] = zip.count
+    package["sha256"] = sha256Hex(zip); package["contentDigest"] = digest
+    package["profile"] = "large-source-v1"; entries[index]["package"] = package
+    var binding = try #require(entries[index]["review"] as? [String: Any])
+    let reviewPath = "reviews/fixture-reviewed/\(version).review.json"
+    binding["path"] = reviewPath; binding["sha256"] = sha256Hex(reviewBytes); entries[index]["review"] = binding
+    catalog["entries"] = entries
+    let catalogBytes = try JSONSerialization.data(withJSONObject: catalog, options: [.sortedKeys])
+    transport["catalog-large-source-v1.json"] = catalogBytes
+    transport["catalog-large-source-v1.sig"] = try signedEnvelope(over: catalogBytes)
+    transport[packagePath] = zip
+    transport[reviewPath] = reviewBytes; transport[reviewPath+".sig"] = try signedEnvelope(over: reviewBytes)
+    return transport
+}
+
+private func largeSourceStage(version: String, at root: URL) async throws -> CuratedSkillHub.StagedSkill {
+    let transport = HubTransport(files: try largeSourceFixtureFiles(version: version), commits: [String(repeating: "b", count: 40)])
+    let (resolve, fetch) = makeClosures(transport)
+    let publication = try await CuratedSkillHub.loadPublication(channel: .ios, mode: fixtureMode(),
+        layout: .largeSourceV1, resolve: resolve, fetch: fetch)
+    return try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "999.0.0", at: root,
+        fetch: fetch, fetchPackage: { source, commit, path, authorization in
+            let bound = try SkillHubTransportBudget.maximumBytes(owner: source.owner, repository: source.repository,
+                ref: commit, path: path, verifiedPackage: authorization)
+            #expect(bound > 8_388_608 && bound <= 67_108_864)
+            #expect(SkillHubTransportBudget.maximumBytes(owner: source.owner, repository: source.repository, path: path) == 8_388_608)
+            #expect(throws: CuratedSkillHubFailure.self) {
+                try authorization.maximumBytes(owner: "other", repository: source.repository, ref: commit, path: path)
+            }
+            #expect(throws: CuratedSkillHubFailure.self) {
+                try authorization.maximumBytes(owner: source.owner, repository: source.repository, ref: "main", path: path)
+            }
+            #expect(throws: CuratedSkillHubFailure.self) {
+                try authorization.maximumBytes(owner: source.owner, repository: source.repository, ref: commit, path: "packages/other/1.0.0/other.zip")
+            }
+            return try await transport.fetch(commit: commit, path: path)
+        })
+}
+
+private struct LargeSourceMetadataFailure: Error {}
+private actor RejectLargeSourceMetadata: SkillInstallationMetadataStore {
+    func persist(_ record: SkillInstallationRecord) throws { throw LargeSourceMetadataFailure() }
+}
+
+extension CuratedSkillHubTests {
+    @Test("Capability entries cannot enter old projections or use a generic fetch callback")
+    func largeSourceRequiresVerifiedRoute() async throws {
+        let files = try largeSourceFixtureFiles()
+        var wrong = files
+        wrong["catalog-full.json"] = files["catalog-large-source-v1.json"]
+        wrong["catalog-full.sig"] = files["catalog-large-source-v1.sig"]
+        let badTransport = HubTransport(files:wrong,commits:[String(repeating:"b",count:40)])
+        let (badResolve,badFetch) = makeClosures(badTransport)
+        try await expectCuratedFailureAsync({
+            _ = try await CuratedSkillHub.loadPublication(channel:.ios,mode:fixtureMode(),layout:.full,
+                resolve:badResolve,fetch:badFetch)
+        },case:"feed")
+        let transport=HubTransport(files:files,commits:[String(repeating:"b",count:40)])
+        let (resolve,fetch)=makeClosures(transport)
+        let publication=try await CuratedSkillHub.loadPublication(channel:.ios,mode:fixtureMode(),layout:.largeSourceV1,
+            resolve:resolve,fetch:fetch)
+        let root=stagingRoot()
+        try await expectCuratedFailureAsync({
+            _ = try await CuratedSkillHub.stage(publication,entryID:"fixture-reviewed",appVersion:"999.0.0",at:root,fetch:fetch)
+        },case:"compatibility")
+        #expect(!FileManager.default.fileExists(atPath:root.path))
+        let standard=try await CuratedSkillHub.loadPublication(channel:.ios,mode:fixtureMode(),
+            ref:publication.publicationCommit,layout:.legacy,resolve:{_ in publication.publicationCommit},fetch:fetch)
+        let oldRoot=stagingRoot();defer {try? FileManager.default.removeItem(at:oldRoot)}
+        let old=try await CuratedSkillHub.stage(standard,entryID:"fixture-reviewed",appVersion:"999.0.0",at:oldRoot,fetch:fetch)
+        var object=try #require(JSONSerialization.jsonObject(with:JSONEncoder().encode(old.receipt)) as? [String:Any])
+        object.removeValue(forKey:"packageProfile")
+        let receipt=try JSONDecoder().decode(CuratedSkillHub.Receipt.self,from:JSONSerialization.data(withJSONObject:object))
+        #expect(receipt.packageProfile==nil)
+        #expect(try receipt.resourceAuthorization()==nil)
+    }
+
+    @Test("Signed profile defaults preserve old entries; unknown/tampered profiles fail")
+    func largeSourceProfileCompatibility() throws {
+        let original = try curatedFixture("catalog.json")
+        let old = try CuratedSkillHub.verifiedFeed(bytes: original, signature: signedEnvelope(over: original), channel: .ios, mode: fixtureMode())
+        #expect(old.feed.entry(id: "fixture-reviewed")?.package?.profile == .standard)
+        let files = try largeSourceFixtureFiles(), bytes = try #require(files["catalog-large-source-v1.json"])
+        let valid = try CuratedSkillHub.verifiedFeed(bytes: bytes, signature: signedEnvelope(over: bytes), channel: .ios, mode: fixtureMode())
+        #expect(valid.feed.entry(id: "fixture-reviewed")?.package?.profile == .largeSourceV1)
+        let unknown = try mutate(bytes, "large-source-v1", to: "unbounded-v1")
+        #expect(throws: CuratedSkillHubFailure.self) {
+            try CuratedSkillHub.verifiedFeed(bytes: unknown, signature: signedEnvelope(over: unknown), channel: .ios, mode: fixtureMode())
+        }
+        #expect(throws: CuratedSkillHubFailure.self) {
+            try CuratedSkillHub.verifiedFeed(bytes: unknown, signature: signedEnvelope(over: bytes), channel: .ios, mode: fixtureMode())
+        }
+        var object = try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        var entries = try #require(object["entries"] as? [[String: Any]])
+        let index = try #require(entries.firstIndex(where: {$0["id"] as? String == "fixture-reviewed"}))
+        var package = try #require(entries[index]["package"] as? [String: Any]);package["size"] = 67_108_865
+        entries[index]["package"] = package;object["entries"] = entries
+        let oversized = try JSONSerialization.data(withJSONObject: object)
+        #expect(throws: CuratedSkillHubFailure.self) {
+            try CuratedSkillHub.verifiedFeed(bytes: oversized, signature: signedEnvelope(over: oversized), channel: .ios, mode: fixtureMode())
+        }
+    }
+
+    @Test("Large signed package stages, installs, reopens and restores the old bytes on metadata failure")
+    func largeSourceInstallReopenAndRollback() async throws {
+        let base = stagingRoot();try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let first = try await largeSourceStage(version: "2.0.0", at: base.appendingPathComponent("stage1"))
+        #expect(first.content.files.count > 256)
+        #expect(first.content.files.values.reduce(0, {$0+$1.count}) > 8_388_608)
+        #expect(first.receipt.packageProfile == .largeSourceV1)
+        // Real fixture provenance survives receipt coding; fixture metadata
+        // never becomes production trust, including on local reopen.
+        let encoded = try JSONEncoder().encode(first.receipt)
+        let decoded = try JSONDecoder().decode(CuratedSkillHub.Receipt.self, from: encoded)
+        #expect(throws: CuratedSkillHubFailure.self) { try decoded.resourceAuthorization() }
+        let resourceAuthorization = try decoded.resourceAuthorization(mode: fixtureMode())
+        let authority = try #require(resourceAuthorization)
+        let install = base.appendingPathComponent("installed")
+        let originalProvenance = SkillInstallProvenance(sourceURL: URL(string: "https://example.invalid/source.zip")!,
+            originalSHA256: first.content.package.canonicalSHA256, expectedRewrittenSHA256: first.content.package.canonicalSHA256,
+            rewriteModelID: "review-fixture", compatibilitySummary: "synthetic profile transaction")
+        let record = try await SkillInstallStagingService(installationRoot: install).installRewrittenPackage(
+            at: first.content.package.rootURL, provenance: originalProvenance, resourceAuthorization: authority)
+        #expect(record.resourceProfile == .largeSourceV1)
+        #expect(throws: SkillValidationError.self) {
+            try SkillContentSnapshot(root: record.canonicalPackageURL, expectedDigest: record.canonicalSHA256)
+        }
+        let reopened = try SkillContentSnapshot(root: record.canonicalPackageURL, expectedDigest: record.canonicalSHA256,
+            resourceAuthorization: authority)
+        #expect(reopened.files == first.content.files)
+        let next = try await largeSourceStage(version: "2.1.0", at: base.appendingPathComponent("stage2"))
+        let provenance = SkillInstallProvenance(sourceURL: originalProvenance.sourceURL,
+            originalSHA256: next.content.package.canonicalSHA256, expectedRewrittenSHA256: next.content.package.canonicalSHA256,
+            rewriteModelID: "review-fixture", compatibilitySummary: "synthetic profile update")
+        let unrelated = install.appendingPathComponent("other-record.txt");try Data("keep".utf8).write(to: unrelated)
+        await #expect(throws: LargeSourceMetadataFailure.self) {
+            try await SkillInstallStagingService(installationRoot: install, metadataStore: RejectLargeSourceMetadata())
+                .installRewrittenPackage(at: next.content.package.rootURL, provenance: provenance, replaceExisting: true,
+                    resourceAuthorization: next.content.resourceAuthorization)
+        }
+        let restored = try SkillContentSnapshot(root: record.canonicalPackageURL, expectedDigest: record.canonicalSHA256,
+            resourceAuthorization: authority)
+        #expect(restored.files == first.content.files)
+        #expect(try Data(contentsOf: unrelated) == Data("keep".utf8))
+        #expect(throws: SkillValidationError.digestMismatch) {
+            try SkillContentSnapshot(root: record.canonicalPackageURL, expectedDigest: record.canonicalSHA256,
+                resourceAuthorization: next.content.resourceAuthorization)
+        }
+    }
+
+    @Test("Large profile never relaxes per-file, traversal, native payload or file-count gates")
+    func largeSourceSafetyCaps() throws {
+        func zip(_ files: [String: Data]) throws -> Data {
+            let archive = try Archive(data: Data(), accessMode: .create)
+            for (name,data) in files {
+                try archive.addEntry(with: name, type: .file, uncompressedSize: Int64(data.count)) { position,size in
+                    data.subdata(in: Int(position)..<min(Int(position)+size,data.count))
+                }
+            }
+            return try #require(archive.data)
+        }
+        let limits = SkillPackageResourceProfile.largeSourceV1.archiveLimits
+        #expect(limits.maximumEntries == 2048 && limits.maximumTotalBytes == 67_108_864 && limits.maximumFileBytes == 2_097_152)
+        let cases: [[String:Data]] = [
+            ["assets/large.txt": Data(repeating: 65,count:2_097_153)],
+            ["../escape":Data("x".utf8)],
+            Dictionary(uniqueKeysWithValues: (0..<2049).map { ("assets/\($0).txt",Data([65])) })
+        ]
+        for files in cases {
+            let root=stagingRoot()
+            #expect(throws: SignedContentFailure.self) {
+                try SignedContentArchive.extract(zip(files),at:root,limits:limits,allowedTopLevel:SkillPackageValidator.packageTopLevelEntries)
+            }
+            #expect(!FileManager.default.fileExists(atPath:root.path))
+        }
+        let root=stagingRoot();try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer {try? FileManager.default.removeItem(at:root)}
+        try Data("---\nname: native-reject\ndescription: Fixture\n---\nBody\n".utf8).write(to:root.appendingPathComponent("SKILL.md"))
+        let manifest=SkillManifest(id:"native-reject",version:"1.0.0",capabilities:[],tools:[],scriptRuntime:.none)
+        try JSONEncoder().encode(manifest).write(to:root.appendingPathComponent("floe.json"))
+        try FileManager.default.createDirectory(at:root.appendingPathComponent("assets"),withIntermediateDirectories:true)
+        try Data([0x7f,0x45,0x4c,0x46]).write(to:root.appendingPathComponent("assets/native.dat"))
+        #expect(throws:SkillValidationError.self) {
+            try SkillPackageValidator(limits:SkillPackageResourceProfile.largeSourceV1.validationLimits).validate(packageAt:root)
         }
     }
 }

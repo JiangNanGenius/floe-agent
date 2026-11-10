@@ -44,6 +44,10 @@ struct ToolCallCardView: View {
     /// Trusted identity of the persisted tool-result row that carries the
     /// receipts; nil for calls without a verifiable envelope.
     var outputContext: RunOutputReceiptContext? = nil
+    /// Native outcome uncertainty must never become a Saved badge.
+    var outcomeUnknown = false
+    /// The exact native completion, never a link parsed from model text.
+    var gitHubSource: GitHubSourceReference? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -51,14 +55,22 @@ struct ToolCallCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
+            if let gitHubSource { GitHubSourceCard(reference: gitHubSource, inputSummary: inputSummary) }
             if name.hasPrefix("studio."), ["ok", "success", "succeeded"].contains(status), let resultSummary {
                 StudioToolResultView(toolName: name, summary: resultSummary)
             }
             if !imageArtifacts.isEmpty {
                 ArtifactImageGallery(artifacts: imageArtifacts)
             }
+            // File changes remain visible even when technical tool details are folded.
+            if let proposal = NativeFileDiffDisposition.proposedPatch(tool: name, status: status, input: inputSummary),
+               !richArtifacts.contains(where: { $0.mimeType == "text/x-diff" }) {
+                NativeFileChangeCard(diffText: proposal, disposition: .proposal)
+            }
             if !richArtifacts.isEmpty {
-                RichArtifactGallery(artifacts: richArtifacts)
+                RichArtifactGallery(artifacts: richArtifacts,
+                    fileDiffDisposition: NativeFileDiffDisposition.result(tool: name, status: status,
+                        summary: resultSummary, outcomeUnknown: outcomeUnknown))
             }
             if let outputContext, !outputFiles.isEmpty {
                 RunOutputFilesCard(receipts: outputFiles, context: outputContext)
@@ -173,11 +185,16 @@ struct ToolCallCardView: View {
     }
 
     private var imageArtifacts: [ToolArtifactReference] {
-        artifacts.filter(ToolArtifactPresentation.isImage)
+        displayedArtifacts.filter(ToolArtifactPresentation.isImage)
     }
 
     private var richArtifacts: [ToolArtifactReference] {
-        artifacts.filter { !ToolArtifactPresentation.isImage($0) }
+        displayedArtifacts.filter { !ToolArtifactPresentation.isImage($0) }
+    }
+
+    private var displayedArtifacts: [ToolArtifactReference] {
+        ToolArtifactPresentation.withoutLegacyPlaygroundDuplicates(artifacts,
+            outputs: outputFiles, context: outputContext)
     }
 
     private var statusIcon: String {
@@ -231,6 +248,20 @@ struct ToolCallCardView: View {
 /// the same canonical MIME policy so an image row is never collapsed into one
 /// accessibility element that hides its individual preview controls.
 enum ToolArtifactPresentation {
+    static func withoutLegacyPlaygroundDuplicates(_ artifacts: [ToolArtifactReference], outputs: [RunOutputFile],
+        context: RunOutputReceiptContext?) -> [ToolArtifactReference] {
+        guard let context, context.toolName == "image.playground", let callID = context.callID else { return artifacts }
+        let owned = outputs.filter {
+            $0.runID == context.runID && $0.producerCallID == callID && $0.producerTool == context.toolName
+                && (context.conversationID == nil || $0.taskID == context.conversationID)
+        }
+        return artifacts.filter { artifact in
+            // Older native calls incorrectly called a workspace file an App
+            // artifact. Keep its sealed output card; do not adopt its path.
+            guard artifact.relativePath.hasPrefix("GeneratedImages/Apple/\(context.runID.uuidString)/") else { return true }
+            return !owned.contains { $0.sha256 == artifact.sha256 && $0.byteCount == artifact.byteCount && $0.mimeType == artifact.mimeType }
+        }
+    }
     static func isImage(_ artifact: ToolArtifactReference) -> Bool {
         ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil
     }

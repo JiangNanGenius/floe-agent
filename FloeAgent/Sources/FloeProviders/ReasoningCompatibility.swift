@@ -25,6 +25,7 @@ enum ReasoningCompatibility {
         policy: ProviderReasoningPolicy = .modelDefault
     ) -> String? {
         if policy == .disabled {
+            if provider.traits(model: model).isGeminiThinkingFamily { return nil }
             if provider.kind == .alibabaStudio || isDashScope(provider) { return "none" }
             if isOpenAIReasoningFamily(provider: provider, model: model) {
                 return supportsOpenAINone(model.remoteModelID) ? "none" : nil
@@ -32,6 +33,9 @@ enum ReasoningCompatibility {
             return nil
         }
         let effort = model.effectiveReasoningEffort
+        if effort != .automatic, provider.traits(model: model).isGeminiThinkingFamily {
+            return geminiEffort(effort, modelID: model.remoteModelID)
+        }
         guard effort != .automatic, isOpenAIReasoningFamily(provider: provider, model: model) else {
             return nil
         }
@@ -51,6 +55,9 @@ enum ReasoningCompatibility {
         policy: ProviderReasoningPolicy = .modelDefault
     ) -> ChatOptions {
         if policy == .disabled {
+            // Modern Gemini thinking cannot be disabled with OpenAI's `none`.
+            // Omit unsupported disable controls and retain the model default.
+            if provider.traits(model: model).isGeminiThinkingFamily { return ChatOptions() }
             if provider.kind == .alibabaStudio || isDashScope(provider) {
                 return ChatOptions(enableThinking: false)
             }
@@ -65,6 +72,13 @@ enum ReasoningCompatibility {
         }
         let effort = model.effectiveReasoningEffort
         guard effort != .automatic else { return ChatOptions() }
+
+        if provider.traits(model: model).isGeminiThinkingFamily {
+            // The compatibility endpoint accepts reasoning_effort. Do not also
+            // send native thinking_level/thinking_budget or a legacy thinking
+            // object. Gemini 3.8 Flash and 4 Argon use low/medium/high.
+            return ChatOptions(reasoningEffort: geminiEffort(effort, modelID: model.remoteModelID))
+        }
 
         if isDeepSeek(provider: provider, model: model) {
             // Official chat contract (api-docs.deepseek.com/api/create-chat-completion):
@@ -153,6 +167,21 @@ enum ReasoningCompatibility {
         provider.traits().isDashScope
     }
 
+    private static func geminiEffort(_ effort: ModelReasoningEffort, modelID: String) -> String {
+        let id = modelID.lowercased().split(separator: "/").last.map(String.init) ?? ""
+        switch effort {
+        case .low: return "low"
+        case .medium:
+            // These older variants have no native medium thinking level.
+            if id == "gemini-3-pro-preview" || id.hasPrefix("gemini-3.1-flash-lite-image") {
+                return "high"
+            }
+            return "medium"
+        case .high, .maximum: return "high"
+        case .automatic: return "medium" // Callers omit the field for automatic.
+        }
+    }
+
     private static func supportsOpenAINone(_ modelID: String) -> Bool {
         let id = modelID.lowercased()
         return id.hasPrefix("gpt-5.1") || id.hasPrefix("gpt-5.2")
@@ -224,7 +253,7 @@ enum ReasoningCompatibility {
     }
 
     /// Freezes the level whose wire value the endpoint will actually use.
-    /// Mirrors `chatOptions` precedence (DeepSeek, Ark, DashScope, OpenAI
+    /// Mirrors `chatOptions` precedence (Gemini, DeepSeek, Ark, DashScope, OpenAI
     /// family, Anthropic family) so a stored decision never claims a tier the
     /// endpoint does not have.
     static func clampAutomaticReasoningEffort(
@@ -233,6 +262,9 @@ enum ReasoningCompatibility {
         model: ModelProfile
     ) -> ModelReasoningEffort {
         let traits = provider.traits(model: model)
+        if traits.isGeminiThinkingFamily, effort != .automatic {
+            return ModelReasoningEffort(rawValue: geminiEffort(effort, modelID: model.remoteModelID)) ?? effort
+        }
         if traits.isDeepSeek {
             // No native medium tier: `medium` is only a compatibility alias
             // that lands as `high`.

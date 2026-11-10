@@ -4,7 +4,7 @@ import SwiftUI
 import FloeHeavyEditorSupport
 public enum GISWorkbench {
     public static var descriptor: HeavyEditorDescriptor {
-        HeavyEditorDescriptor(kind: .gis, title: EditorText.t("地理信息", "GIS"), symbol: "map",
+        HeavyEditorDescriptor(kind: .gis, title: EditorText.t("地图编辑器", "Map Editor"), symbol: "map",
             resourceRoot: Bundle.module.url(forResource: "Web", withExtension: nil)!, projectExtension: "floegis",
             importExtensions: ["floegis", "geojson", "json", "csv", "gpx", "kml", "kmz", "zip", "shp", "dbf", "shx", "cpg", "prj", "png", "jpg", "jpeg", "webp", "pgw", "jgw", "tfw", "wld", "pngw", "jpgw", "gpkg", "tif", "tiff", "asc", "mbtiles"])
     }

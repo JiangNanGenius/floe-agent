@@ -34,7 +34,7 @@ import Foundation
 import Testing
 import FloeCore
 import FloeExecution
-import FloeSkills
+@testable import FloeSkills
 import FloeTools
 @testable import FloeApp
 
@@ -904,6 +904,54 @@ struct SkillReadProductionResourceRouteTests {
         #expect(await fixture.probe.requests.isEmpty)
         #expect(!FileManager.default.fileExists(
             atPath: fixture.workspace.appendingPathComponent(".floe").path))
+    }
+}
+
+
+extension SkillWorkspaceResourceStagerTests {
+    @Test func largeSignedProfileStagesTheExactColdWorkspaceBundle() async throws {
+        // Synthetic internal authority is used only for this App stager
+        // contract. FloeSkills tests exercise the actual signed-entry mint.
+        // The remote-runtime fixture must include a real bundled script.
+        // Its asset consumer also needs the exact sibling files staged below.
+        let script = """
+            import json
+            from pathlib import Path
+
+            assets = Path(__file__).resolve().parents[1] / "assets"
+            files = sorted(assets.glob("*.txt"))
+            print(json.dumps({"files": len(files), "bytes": sum(len(path.read_bytes()) for path in files)}, sort_keys=True))
+            """
+        let original = try makeBundleFixture(extras: ["scripts/summarize_assets.py": script + "\n"])
+        let workspace = try makeSkillResourceTemporaryDirectory("large-workspace")
+        defer {try? FileManager.default.removeItem(at:workspace)}
+        defer {try? FileManager.default.removeItem(at:original.packageRoot)}
+        let assets=original.packageRoot.appendingPathComponent("assets")
+        try FileManager.default.createDirectory(at:assets,withIntermediateDirectories:true)
+        let data=Data(repeating:65,count:30_720)
+        for index in 0..<300 {try data.write(to:assets.appendingPathComponent("\(index).txt"))}
+        let profile=SkillPackageResourceProfile.largeSourceV1
+        let package=try SkillPackageValidator(limits:profile.validationLimits).validate(packageAt:original.packageRoot)
+        let authorization=SkillPackageResourceAuthorization(profile:profile,skillID:package.manifest.id,
+            version:package.manifest.version,contentDigest:package.canonicalSHA256)
+        let snapshot=try SkillContentSnapshot(root:original.packageRoot,expectedDigest:package.canonicalSHA256,
+            resourceAuthorization:authorization)
+        let fixture=SkillBundleFixture(packageRoot:original.packageRoot,snapshot:snapshot,
+            skillID:package.manifest.id,digest:package.canonicalSHA256)
+        #expect(SkillWorkspaceResourceStager.stagingBundle(manifestID:package.manifest.id,digest:package.canonicalSHA256,
+            declaredFiles:package.files,bytes:snapshot.files,limits:SkillValidationLimits()) == nil)
+        let stager=SkillWorkspaceResourceStager {_ in makeWorkspaceShareMap(exporting:workspace)}
+        let outcome=await stage(stager,fixture,environmentID:"exact-fixture-environment",workspace:workspace)
+        let staged=try #require(stagedBundle(outcome))
+        #expect(staged.fileCount==303) // 300 assets, guide, manifest and script.
+        #expect(staged.guestRoot=="/workspace/.floe/skills/\(fixture.leaf)")
+        let root=workspace.appendingPathComponent(".floe/skills/\(fixture.leaf)")
+        for (path,bytes) in snapshot.files {#expect(try Data(contentsOf:root.appendingPathComponent(path))==bytes)}
+        let tampered=root.appendingPathComponent("assets/0.txt")
+        try Data("foreign".utf8).write(to:tampered)
+        #expect(await stage(stager,fixture,environmentID:"exact-fixture-environment",workspace:workspace)
+            == .unavailable(reason:SkillStageReason.pathBlocked))
+        #expect(try Data(contentsOf:tampered)==Data("foreign".utf8))
     }
 }
 #endif

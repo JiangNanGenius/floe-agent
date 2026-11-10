@@ -1,11 +1,11 @@
-<!-- docs-updated: 2026-11-08 -->
+<!-- docs-updated: 2026-11-10 -->
 # 从安装到第一个成果
 
 本页主要面向 iOS / iPadOS；Android 的差异会单独说明。功能以所选版本的发布说明为准。
 
 ## 选择安装方式
 
-先打开[版本中心](https://www.floe-agent.com/releases)，按产品选择 Floe Agent、Mac Bridge 或 iOS Bridge。Floe Agent 的 App Store 正式版已上架（1.7.74，iOS/iPadOS 26+），可直接安装与更新。GitHub iOS IPA 需要自行签名，但包含较新功能——当前较新功能构建为 1.8.5（325）。想使用 TestFlight，可在[官网申请](https://www.floe-agent.com/#beta)，申请不等于立即获得测试资格。
+先打开[版本中心](https://www.floe-agent.com/releases)，按产品选择 Floe Agent、Mac Bridge 或 iOS Bridge。Floe Agent 正式版已上架 App Store（iOS/iPadOS 26+），可直接安装与更新。GitHub iOS IPA 需要自行签名，可能包含较新功能；选择安装包前核对[渠道版本及核实日期](CURRENT_STATUS.md)。想使用 TestFlight，可在[官网申请](https://www.floe-agent.com/#beta)，申请不等于立即获得测试资格。
 
 Android 选择对应公开测试版的签名 APK。可直接下载最新完整包，不必逐版升级；增量包只能用于其标明的精确基础版本。安装提示签名不一致时先保留数据，不要为完成安装而直接卸载。
 
@@ -44,7 +44,7 @@ Android 选择对应公开测试版的签名 APK。可直接下载最新完整�
 
 ## 在空间试用一个作品（较新构建）
 
-**准备：** 1.8.5 较新功能安装包（GitHub 下载后自行签名）或 TestFlight 构建。空间不在 App Store 1.7.74 正式版中。
+**准备：** 包含空间功能的安装包，适用版本见[工作台教程](WORKSPACES_GUIDE.zh-CN.md)，渠道可用性见[版本状态](CURRENT_STATUS.md)。GitHub IPA 下载后需自行签名。
 
 1. 从侧栏打开**空间**，切换到“文件”。点**新建**创建一个绘画或文档作品并命名。
 2. 编辑作品后关闭，再从“继续使用”重新打开，确认保存成功。

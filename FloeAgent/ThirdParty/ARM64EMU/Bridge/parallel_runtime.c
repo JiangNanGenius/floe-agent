@@ -8,6 +8,7 @@
 #include "mmu.h"
 #include "sysreg.h"
 #include "../Source/src/net/usernet.h"
+#include "net_wait.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -523,18 +524,23 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
          * destroy) requires this same quiescence, so the snapshotted fds
          * cannot be closed or reused underneath poll(2). */
         AESession *ps=p->session;
-        struct pollfd pf[132];
-        int nfds=0,held[128],nheld=0,pipe_idx=-1;
-        if(ps->wake_pipe_ready){pipe_idx=nfds;pf[nfds].fd=ps->wake_pipe[0];pf[nfds].events=POLLIN|POLLERR|POLLHUP;nfds++;}
         UserNet *un=m->net?virtio_net_usernet(m->net):NULL;
-        int raw[128];int nraw=un?usernet_wait_fds(un,raw,128):0;
-        for(int i=0;i<nraw;i++){int d=dup(raw[i]);if(d>=0){pf[nfds].fd=d;pf[nfds].events=POLLIN|POLLERR|POLLHUP;held[nheld++]=d;nfds++;}}
         u64 wait_ns=deadline_snapshot>now?deadline_snapshot-now:0;if(timer<wait_ns)wait_ns=timer;
-        int ready=0;
-        if(wait_ns)ready=poll(pf,(nfds_t)nfds,(int)((wait_ns+999999)/1000000));
+        /* Same readiness contract as floe_ae_wait_event, through the shared
+         * net_wait.h helper: the backend's exact descriptor set with the exact
+         * interest mask libslirp computed (including write-ready, which the
+         * previous POLLIN-only snapshot could never observe), dup'd so no
+         * descriptor can be closed or reused underneath poll(2), and bounded by
+         * the earliest of this slice's deadline, the next machine timer and the
+         * backend's own next network timer. Lock order is respected: the
+         * snapshot is taken with the parallel mutex released, and every backend
+         * mutation path (hostfwd add/remove, share attach/detach, destroy)
+         * requires this same quiescence. Guest MMIO to virtio-net is serviced
+         * on this coordinator thread through the RPC_BUS mailbox, so no worker
+         * is inside the backend concurrently. */
+        bool pipe_ready=ae_net_wait_park(ps,un,wait_ns);
         pthread_mutex_lock(&p->mutex);
-        for(int i=0;i<nheld;i++)close(held[i]);
-        if(ready>0&&pipe_idx>=0&&(pf[pipe_idx].revents&(POLLIN|POLLERR|POLLHUP)))ae_wake_drain(ps);
+        if(pipe_ready)ae_wake_drain(ps);
         /* A worker/RPC/control change between observation and wait cannot be
          * consumed by the old condition signal. Re-enter the full predicates. */
         if(p->progress!=observed_progress||pending(p)>=0)continue;

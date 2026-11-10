@@ -1,0 +1,23 @@
+diff --git a/libgit2/src/util/rand.c b/libgit2/src/util/rand.c
+--- a/libgit2/src/util/rand.c
++++ b/libgit2/src/util/rand.c
+@@ -102,6 +102,11 @@
+ 	}
+ # endif
+ 
++# if defined(__APPLE__)
++	/* Floe: entropy failure must not repurpose system uptime as a seed. */
++	arc4random_buf(seed, sizeof(*seed));
++	return 0;
++# else
+ 	/* Fall-through: generate a seed from the time and system state */
+ 	if (gettimeofday(&tv, NULL) < 0) {
+ 		git_error_set(GIT_ERROR_OS, "could get time for random seed");
+@@ -134,6 +139,7 @@
+ 	*seed ^= ((uint64_t)((size_t)((void *)&errno)));
+ 
+ 	return 0;
++# endif
+ }
+ #endif
+ 

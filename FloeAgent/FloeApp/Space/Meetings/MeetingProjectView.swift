@@ -282,41 +282,11 @@ struct MeetingProjectView: View {
             .background(Color(uiColor: .secondarySystemGroupedBackground))
     }
     private var transcriptPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack { Text(t("逐字稿", "Transcript")).font(.headline); Spacer()
-                    Toggle(t("双语", "Bilingual"), isOn: $bilingual).fixedSize().font(.caption)
-                }
-                liveTranscriptionStatus
-                if bilingual {
-                    Button(t("翻译未处理的段落", "Translate new segments"), systemImage: "character.bubble") { session.analyze("translate") }
-                        .disabled(session.isAnalyzing || session.transcript.isEmpty)
-                }
-                if session.transcript.isEmpty {
-                    ContentUnavailableView(t("转写会显示在这里", "The transcript appears here"), systemImage: "text.bubble",
-                        description: Text(t("录音时分段转写；也可在素材中转写已保存的音视频。", "Recording transcribes in chunks. Saved media can also be transcribed from Media.")))
-                    Button(t("录音与素材", "Recordings and media")) { recordings = true }
-                }
-                ForEach(session.transcript) { segment in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            if let current = session.speakers.first(where: { $0.id == segment.speakerID }) {
-                                Button(current.label) { speakerName = current.label; speaker = current }.font(.caption.weight(.medium))
-                            } else { Text(t("发言", "Speech")).font(.caption).foregroundStyle(.secondary) }
-                            Spacer(); Button(time(segment.range.start)) { session.play(segment) }.font(.caption.monospacedDigit())
-                        }
-                        Text(segment.text).textSelection(.enabled)
-                        if bilingual, let value = session.intelligence.translations[segment.id.rawValue], value.original == segment.text {
-                            Text(value.text).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                    }.contextMenu {
-                        Button(t("更正文字", "Correct text")) { correctedText = segment.text; correction = segment }
-                        Button(t("插入笔记", "Insert in notes")) { insert("[\(time(segment.range.start))] \(segment.text)", ai: false) }
-                    }
-                    Divider()
-                }
-            }.padding(16)
-        }.accessibilityIdentifier("meeting.transcript")
+        MeetingTranscriptPanel(session: session, bilingual: $bilingual,
+            onCorrect: { correctedText = $0.text; correction = $0 },
+            onRenameSpeaker: { speakerName = $0.label; speaker = $0 },
+            onInsert: { insert($0, ai: false) }, onOpenMedia: { recordings = true },
+            liveStatus: liveTranscriptionStatus)
     }
     private var liveTranscriptionText: String {
         guard let live = session.liveTranscription else { return t("转写准备中", "Preparing transcription") }

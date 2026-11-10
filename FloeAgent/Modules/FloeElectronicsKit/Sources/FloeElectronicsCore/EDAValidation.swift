@@ -53,6 +53,11 @@ public enum EDAValidation {
                 guard !pin.number.isEmpty, pin.unit >= 0, pin.position.isValid else { throw EDAError.invalid("symbol pin") }
             }
             try graphics(definition.graphics)
+            if let units = definition.graphicUnits {
+                guard units.count == definition.graphics.count, units.allSatisfy({ (0...1_000).contains($0) }) else {
+                    throw EDAError.invalid("symbol graphic unit mapping")
+                }
+            }
         }
         var polygonPadWork = 0
         for definition in project.footprints {
@@ -65,12 +70,26 @@ public enum EDAValidation {
                     guard polygonPadWork <= 20_000_000 else { throw EDAError.invalid("polygon pad validation budget") }
                 }
                 try EDAPolygonPadGeometry.validate(pad)
+                try EDARoundedPadGeometry.validate(pad)
                 guard !pad.layers.isEmpty else { throw EDAError.invalid("pad layers") }
                 if let drill = pad.drill { try positive(drill) }
                 if pad.drill == nil && pad.drillPlated != nil { throw EDAError.invalid("pad plating without drill") }
             }
             try graphics(definition.graphics)
             try EDAGraphicLayers.validateLayout(graphics: definition.graphics, layers: definition.graphicLayers)
+        }
+        var checkedLibrarySnapshots: Set<String> = []
+        for component in project.components {
+            if let hash = component.fields[EDALibraryProject.snapshotField], checkedLibrarySnapshots.insert(hash).inserted {
+                _ = try EDALibraryProject.snapshot(hash, in: project)
+            }
+            if let map = try EDALibraryProject.pinMap(component: component) {
+                guard let symbol = project.symbols.first(where: { $0.id == component.symbolID }),
+                      let footprintID = component.footprintID, let footprint = project.footprints.first(where: { $0.id == footprintID }) else {
+                    throw EDAError.missing("mapped library symbol or footprint")
+                }
+                try map.validate(symbol: symbol, footprint: footprint)
+            }
         }
         let nonEntryIDs = EDABusEditing.objectIDs(project, includeEntries: false)
         var entryIDs: Set<UUID> = []

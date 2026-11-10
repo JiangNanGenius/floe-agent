@@ -314,7 +314,7 @@ struct NotesDocumentEditor: View {
                 else { NoteMindMapView(document: document, onEdit: { edits, revision in
                     try await session.commit(edits, documentID: document.id, expectedRevision: revision)
                 }, onHistory: { session.undo(redo: $0) }, onError: { session.errorMessage = $0 },
-                   images: mapImages, onSelection: { selectedMapNodeID = $0 },
+                   images: mapImages, searchFocus: session.searchFocus, onSelection: { selectedMapNodeID = $0 },
                    onTopicActions: { mapTopicActions = $0 }) }
             } else if let page {
                 if !hidesEmbeddedChrome { writingTools; Divider() }
@@ -642,9 +642,15 @@ struct NotesDocumentEditor: View {
     private func consumeSearchFocus(_ focus: NotesSession.NoteSearchFocus?) {
         guard let focus, focus.documentID == document.id else { return }
         guard focus.requestID != lastAppliedFocusRequestID else { return }
+        if document.kind == .office {
+            // The mounted Office bridge locates this request in the actual document.
+            focusNotice = nil
+            return
+        }
         if document.kind == .mindMap {
             if let nodeID = focus.nodeID, document.nodes.contains(where: { $0.id == nodeID }) {
                 selectedMapNodeID = nodeID
+                showOutline = false
             }
             return
         }

@@ -11,7 +11,8 @@ const pointerEvents=new Set(['pointerdown','pointermove','pointerdrag','pointeru
 const clickEvents=new Set(['click','singleclick','dblclick']);
 export const gis2DViewOptions={enableRotation:false,rotation:0};
 
-// Transient input state belongs to this map, not the document or its undo stack.
+export { gisEditTools, gisEditNotice } from './readiness.js';
+
 export function gisInputPolicy({fingerDrawing=()=>false,editing=()=>false}={}){
   let activeCount=0,multiple=false,suppressClick=false;
   const events=new WeakMap();

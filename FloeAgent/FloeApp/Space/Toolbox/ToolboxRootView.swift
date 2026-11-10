@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import FloeExecution
 import FloeToolboxCore
@@ -19,6 +20,7 @@ struct ToolboxRootView: View {
     @State private var selection: ToolboxTool?
     @State private var exportArtifact: ToolboxExportArtifact?
     @State private var exportFailed = false
+    @State private var diagnosticOpenFailed = false
     @State private var showingCaptures = false
     init(center: ToolboxCenter) { self.center = center; files = center.files }
     private var availability: [ToolboxTool: ToolboxAvailability] {
@@ -70,6 +72,9 @@ struct ToolboxRootView: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(IDELanguageRunText.t("完成", "Done")) { exportArtifact = nil } } }
             }.presentationDetents([.medium, .large])
         }
+        .alert(IDELanguageRunText.t("无法打开检测", "Unable to open check"), isPresented: $diagnosticOpenFailed) {
+            Button(IDELanguageRunText.t("好", "OK"), role:.cancel) {}
+        }
         .alert(IDELanguageRunText.t("未能导出", "Unable to export"), isPresented: $exportFailed) {
             Button(IDELanguageRunText.t("好", "OK"), role: .cancel) {}
         }
@@ -79,7 +84,7 @@ struct ToolboxRootView: View {
         case .http, .webSocket, .mqtt, .serialAssistant:
             ToolboxConnectionPage(tool: tool, center: center, onSave: showExport, onExport: { save($0, extension: "jsonl") })
         case .ping, .traceroute, .dns, .port, .lan:
-            ToolboxDiagnosticPage(tool: tool, center: environment.toolboxDiagnostics)
+            ToolboxDiagnosticPage(tool: tool, center: environment.toolboxDiagnostics, onUseEndpoint: useDiagnosticEndpoint)
         case .wifi:
             ToolboxWiFiPage(center: environment.toolboxDiagnostics)
         case .roaming:
@@ -91,6 +96,16 @@ struct ToolboxRootView: View {
         case .terminal, .vnc: ToolboxRemoteWorkspace(kind: tool == .terminal ? .terminal : .vnc)
         case .browser: ToolboxBrowserWorkspace()
         }
+    }
+    private func useDiagnosticEndpoint(_ tool: ToolboxTool, _ host: String, _ port: UInt16?) {
+        guard tool == .ping || tool == .port else { return }
+        do {
+            let model = try environment.toolboxDiagnostics.model(for:tool)
+            guard !model.running else { diagnosticOpenFailed = true; return }
+            model.target = host
+            if tool == .port, let port { model.ports = String(port) }
+            selection = tool // Fill only. An explicit Start on the destination performs the check.
+        } catch { diagnosticOpenFailed = true }
     }
     private func showExport(_ url: URL) { exportArtifact = ToolboxExportArtifact(url: url) }
     private func save(_ data: Data, extension suffix: String) {
@@ -376,12 +391,17 @@ private struct ToolboxConnectionPage: View {
 private struct ToolboxDiagnosticPage: View {
     let tool: ToolboxTool
     @ObservedObject var center: ToolboxDiagnosticsCenter
+    var onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)? = nil
     @State private var model: DiagnosticWorkbenchModel?
     @State private var failed = false
     var body: some View {
         Group {
             if let model {
-                DiagnosticWorkbenchView(model: model, history: AnyView(ToolboxDiagnosticHistory(model: model, history: center.history)))
+                DiagnosticWorkbenchView(model:model,history:AnyView(ToolboxDiagnosticHistory(model:model,history:center.history)),
+                    onUseEndpoint:onUseEndpoint,onOpenSettings:{
+                        guard let url = URL(string:UIApplication.openSettingsURLString) else { return }
+                        UIApplication.shared.open(url)
+                    })
             }
             else if failed { ContentUnavailableView(IDELanguageRunText.t("暂时无法打开", "Unable to open"), systemImage: "network.slash") }
             else { ProgressView() }

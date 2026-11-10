@@ -3,7 +3,7 @@
 > 用户操作：[中文手册](../docs/USER_GUIDE.zh-CN.md) · [English manual](../docs/USER_GUIDE.md) · [当前版本与验证状态](../docs/CURRENT_STATUS.md)。工程构建证据与 TestFlight 可安装状态分别记录。
 
 
-Current iOS source candidate: **1.8.2 (322)**, with iOS/iPadOS 26 minimum and local Xcode 27.2 (27B52). This round integrates the predevelopment work into the existing App for internal TestFlight. See the [integration and validation record](../docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md), [candidate notes](../docs/releases/notes/RELEASE_NOTES_1.8.2_BUILD_322.md) and [architecture](../docs/ARCHITECTURE_OVERVIEW.md). App compilation, interface checks, Apple processing and installability remain separate. The existing Build 315 formal-review and automatic-release choice is unchanged.
+Read the source version/build from [`project.yml`](project.yml), channel snapshots from [CURRENT_STATUS](../docs/CURRENT_STATUS.md), and the authorized delivery scope from [AGENTS.md](../AGENTS.md). The App supports iOS/iPadOS 26 and newer; use the installed toolchain specified in AGENTS.md. See the [integration record](../docs/FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md), [active plans](../docs/README.md) and [architecture](../docs/ARCHITECTURE_OVERVIEW.md). Compilation, interface checks, Apple processing and installability remain separate.
 
 当前源码与安装渠道分别核对。优先本地 Xcode 27 定向测试、完整 App 编译与模拟器/归档验证；CI 只作补充独立检查，不作为必须等待的门槛。旧构建过程记录保留在[历史工程记录](../docs/history/ENGINEERING_RELEASE_CHRONOLOGY.pre-20261009.md)。
 
@@ -18,7 +18,7 @@ The scripts use `DEVELOPER_DIR` where practical and do not require changing the 
 
 ## Build and test
 
-Local Xcode 27 qualification is the default path: focused module tests, a full App compile, Simulator verification and archiving run on this machine. CI is a short supplementary lane for independent read-only/asset checks and an optional full matrix — it is not a required release waiting gate. From the repository root, with a full Xcode selected through `DEVELOPER_DIR`:
+Local Xcode qualification is the default path. Choose focused tests, relevant compilation and App/Simulator checks for the affected behavior; use archiving when delivery requires it. CI supplies independent checks and an optional full matrix. The following are examples, not a suite required for every edit. Run from the repository root with full Xcode selected through `DEVELOPER_DIR`:
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
@@ -33,8 +33,7 @@ python3 -m unittest discover -s FloeAgent/scripts/tests -p test_readme_source_li
 resolver/interfaces/git-safe-directory files and the `net=up|partial|down`
 status vocabulary; the ioctl and resolver-probe side is Linux-only and needs a
 booted guest. `test_readme_source_links.py` keeps the README quick-add badges
-linked to the official HTTPS quick-add endpoints (`/add/feather`,
-`/add/altstore`), the badge assets present, the release download link separate
+linked to the app-specific HTTPS quick-add URLs, the badge assets present, the release download link separate
 and GitHub-safe, and pins the shared Feather source URL. Cloud CI runs the
 native IDE editor cases with
 `-only-testing:FloeAgentUITests/WorkspaceIDEUITests` on iPad and iPhone
@@ -49,9 +48,9 @@ Python/Node marker, a precompiled wheel payload or a native Ruby/Rust runtime
 returns to the project or the packaged app. The retired
 recipes (pinned runtime bootstrap, ios-wheelhouse builders, Node tools) are
 archived, not wired into the build, under
-`FloeAgent/ThirdParty/NativeRuntimeArchive/`. WASM stays a separate
-compatibility route (`ThirdParty/WasmKit`, `ThirdParty/PHPWASI`, signed
-capability catalog) and is not an App-bundled language runtime.
+`FloeAgent/ThirdParty/NativeRuntimeArchive/`. Retained internal WASM
+compatibility libraries do not restore retired model-facing execution or
+package tools; model-authored code uses the resolved Linux environment.
 
 Check mode does not install resources or modify locks. Qualification covers environment, package, media, persistence and signed catalog paths; it does not replace App or device tests. Run commands sharing the SwiftPM scratch directory sequentially.
 
@@ -62,11 +61,11 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 bash FloeAgent/scripts/gen_project.sh
 xcodebuild -project FloeAgent/FloeAgent.xcodeproj -scheme FloeAgent \
   -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath "$HOME/Library/Caches/CodexBuild/Floe/README-qual/app" \
+  -derivedDataPath "$HOME/Library/Caches/CodexBuild/Floe/main/xcode27/app" -jobs 6 \
   CODE_SIGNING_ALLOWED=NO build-for-testing
 ```
 
-Use a task-specific derived-data path on the internal SSD and start heavy builds at six jobs, adjusting from measured memory pressure; `gen_project.sh` fails when the tree is dirty, so a failing check is not a successful generation. Version bumps, tags, signing, uploads and distribution are separate, explicitly authorized actions. See [complete build and acceptance instructions](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [local qualification](../docs/FLOE_LOCAL_QUALIFICATION.md).
+Use an internal-SSD cache isolated by checkout, toolchain and target; start heavy builds at six jobs and adjust from measured pressure. `gen_project.sh` regenerates first, then fails if tracked changes remain in its checked scope; inspect the generated diff without discarding other work. Generic compilation does not boot a Simulator. Actual local runs use only the canonical existing iPad selected by `scripts/select_test_simulator.py --canonical` and its `--with-lock` wrapper, with parallel testing disabled, as required by AGENTS.md. Versioning and distribution need the round's authorization. See [build and acceptance](../docs/FLOE_1_7_BUILD_AND_ACCEPTANCE.md) and [local qualification](../docs/FLOE_LOCAL_QUALIFICATION.md).
 
 A Command Line Tools-only selection cannot provide iOS Simulator builds or all Swift Testing macro plugins reliably. Adjust the Xcode path to the installed full developer directory.
 
@@ -75,8 +74,8 @@ A Command Line Tools-only selection cannot provide iOS Simulator builds or all S
 `project.yml` is the source of truth and the `.xcodeproj` is committed so contributors and release automation see the same graph. After changing targets, resources, build settings, versions, or schemes:
 
 ```bash
-xcodegen generate
-git diff -- FloeAgent.xcodeproj/project.pbxproj project.yml
+bash FloeAgent/scripts/gen_project.sh
+git diff -- FloeAgent/FloeAgent.xcodeproj/project.pbxproj FloeAgent/project.yml
 ```
 
 CI regenerates the project and fails if the committed project differs.
@@ -90,7 +89,7 @@ CI regenerates the project and fails if the committed project differs.
 | `FloeLocalModels` | Apple Foundation Models availability/runtime, curated MLX downloads, resource policy, dynamic local context, and bounded local tool-call translation. |
 | `FloeAgentRuntime` | Continuous run state machine, context assembly, Plan/Goal/Memory, harness, checkpoints, and tool loop. |
 | `FloeTools`, `FloeSecurity` | Compile-time tool catalog, scoped execution, approvals, audit chain, Keychain, and catastrophic-action gate. |
-| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state, and append-only migrations through v46, including media-job owner/idempotency columns, durable private-workspace cleanup intents, the conversation search index repair, the child-run lifecycle tables and schedule occurrences, and explicit model-capability provenance. |
+| `FloePersistence` | GRDB stores, atomic run launch, credential metadata, archive state and append-only migrations. The current schema is defined by `DatabaseManager.currentSchemaVersion` in `Sources/FloePersistence/DatabaseManager.swift`. |
 | `FloeWorkspace`, `FloeDocuments`, `FloeImages` | File scopes, change evidence, document working copies, and image operations. Also the native text/code editing workspace (`IDENativeTextWorkspace`, with the Web workbench retained as the advanced fallback) and the bounded native archive engine (zip/tar/tar.gz/tar.xz create, list and extract; bzip2 create-only; 7z read-only). |
 | `FloeGit` | Non-destructive libgit2 repository operations, GitHub API/Keychain integration, and model-facing local/cloud source-control tools. |
 | `FloeSSH`, `FloeExecution`, `FloeVNC` | SSH/jump/PTY/forwarding, remote execution, and Metal-backed VNC. `FloeExecution` owns Runtime v2: content-addressed images, immutable software templates with pinned per-environment deltas, global CPU/RAM configuration, owned project sessions, and the ARM64 guest service. |
@@ -113,7 +112,14 @@ CI regenerates the project and fails if the committed project differs.
 
 ## Release checks
 
-Current policy: the repository [`AGENTS.md`](../AGENTS.md) governs releases. Local Xcode 27 compilation, relevant tests, Simulator verification and archiving are the qualification path; CI remains supplementary and is not a mandatory waiting gate. Only the release owner bumps versions or build numbers, tags, signs, uploads or distributes, and each round states its own authorized scope. The pipeline description below is retained as historical and recovery context.
+Current policy: the repository [`AGENTS.md`](../AGENTS.md) governs releases. Local Xcode 27 compilation, relevant tests, Simulator verification and archiving are the qualification path; CI remains supplementary and is not a mandatory waiting gate. Only the release owner bumps versions or build numbers, tags, signs, uploads or distributes, and each round states its own authorized scope. The optional cloud/recovery route is documented below as historical context; local qualification remains the default.
+
+Version and build number live in `project.yml`. Prepare the matching bilingual release notes, TestFlight copy and generated project before freezing a tag, then run the existing read-only release preflight on that exact tag. Save source-bound device artifacts and symbols immediately; distribution retries reuse them.
+
+Public unsigned delivery uses the existing [`release-unsigned-ipa.yml`](../.github/workflows/release-unsigned-ipa.yml) local-publish route, its unsigned producer and Actions attestation, strict publication read-back, and the awaited Feather job. TestFlight processing, group availability, public beta review and GitHub/feed status are checked separately. See the [release archive](../docs/releases/README.md) and [asset-recovery rules](../docs/releases/repairs/FLOE_GITHUB_RELEASE_ASSETS_20261018.md).
+
+<details>
+<summary>Historical cloud dual-SDK and recovery route</summary>
 
 Version and build number live in `project.yml`. A SemVer tag must match `MARKETING_VERSION`, and the integer build must increase from the previous tag.
 
@@ -125,21 +131,23 @@ scripts/license_inventory.sh
 scripts/sbom.sh
 ```
 
-The release workflow freezes a validated tag, then runs SDK 27 qualification and the App Store-accepted Xcode 26.6 (17F113, SDK 26.5) build/qualification in parallel. Successful push or manually dispatched full CI for the exact source SHA can supply SDK 27 App and both Notes UI result bundles; each bundle is revalidated before reuse. Otherwise SDK 27 builds its simulator test hosts once. Each SDK retains its own compiled simulator host before tests. Notes runs in separate iPad/iPhone steps with strict gates; executed failures are not automatically retried. A source-, digest- and toolchain-bound recovery can reuse an accepted-SDK host instead of rebuilding it. Cloud simulator builds select arm64, matching their actual devices, and omit unused Intel compilation. Both independent Release device builds remain required. Signing starts only after both jobs succeed and restores the already-qualified accepted-SDK application from an artifact whose SHA-256, source commit, bundle ID and version/build are checked. No application compilation occurs in the upload job. Version 27-only compiler-gated interfaces use compatibility paths in that upload. Reviewed bundle normalization removes pinned non-iOS pnpm resources and preserves libssh2 generic arm64 code while correcting its minimum-OS metadata. It also compares all embedded bundle deployment commands, aligns dash framework metadata with the actual binary and removes stale template build provenance. Distribution recovery records application-source and packaging-policy commits separately and verifies any reused test evidence. Beta tags skip automatic GitHub publication by default. Historical feedback builds used GitHub prereleases. The current normal App release follows AGENTS.md: stable/latest, with a verified unsigned IPA and checksum pair, strict publication readback and an awaited Feather update; a tag alone is not a release. Production release remains a separate action. See [the root README](../README.md#unsigned-ipa) for the user-facing distinction between these packages.
+The release workflow freezes a validated tag, then runs SDK 27 qualification and the App Store-accepted Xcode 26.6 (17F113, SDK 26.5) build/qualification in parallel. Successful push or manually dispatched full CI for the exact source SHA can supply SDK 27 App and both Notes UI result bundles; each bundle is revalidated before reuse. Otherwise SDK 27 builds its simulator test hosts once. Each SDK retains its own compiled simulator host before tests. Notes runs in separate iPad/iPhone steps with strict gates; executed failures are not automatically retried. A source-, digest- and toolchain-bound recovery can reuse an accepted-SDK host instead of rebuilding it. Cloud simulator builds select arm64, matching their actual devices, and omit unused Intel compilation. Both independent Release device builds remain required. Signing starts only after both jobs succeed and restores the already-qualified accepted-SDK application from an artifact whose SHA-256, source commit, bundle ID and version/build are checked. No application compilation occurs in the upload job. Version 27-only compiler-gated interfaces use compatibility paths in that upload. Reviewed bundle normalization removes pinned non-iOS pnpm resources and preserves libssh2 generic arm64 code while correcting its minimum-OS metadata. It also compares all embedded bundle deployment commands, aligns dash framework metadata with the actual binary and removes stale template build provenance. Distribution recovery records application-source and packaging-policy commits separately and verifies any reused test evidence. Beta tags skip automatic GitHub publication by default. Historical feedback builds used GitHub prereleases. The current normal App release follows AGENTS.md: stable/latest, with a verified unsigned IPA and checksum pair, strict publication readback and an awaited Feather update; a tag alone is not a release. Production release remains a separate action. See [the root README](../README.md#get-started) for the user-facing distinction between these packages.
+
+</details>
 
 ## Documentation discipline
 
 - Update both English and Simplified Chinese user guidance when behavior, navigation, permissions, installation, or recovery changes.
 - Keep public product architecture in [`docs/ARCHITECTURE_OVERVIEW.md`](../docs/ARCHITECTURE_OVERVIEW.md).
-- Keep internal plans, audits, validation evidence, App Review research and release handoffs outside the public repository.
+- Keep private operations, credentials, raw diagnostics and internal handoffs in the Git-ignored `Local/` area. Public redacted qualification and release evidence may live in `docs/`; preserve their recorded source, date and limits.
 - Never copy credentials, personal paths, hostnames, device identifiers, or unredacted diagnostics into fixtures or documentation.
 
 ## Workflow-upgrade verification
 
-The [current upgrade record](../docs/WORKFLOW_UPGRADE.md) distinguishes implemented behavior from pending engine/device verification. Focused app suites cover canvas contracts, workspace cleanup, plugin lifecycle and PDF refresh. `HomeChatVoiceIPhoneUITests.testCanvasCreationRemainsVisibleInPortraitAndLandscape` drives real compact navigation and both creation menus, retaining screenshot attachments. iPad navigation tests retain plugin, selection and workspace-manager screenshots.
+The [historical upgrade record](../docs/WORKFLOW_UPGRADE.md) retains the earlier scope and engine/device limits. Use the [active integration plans](../docs/README.md) and build-specific evidence for current work. Focused app suites cover canvas contracts, workspace cleanup, plugin lifecycle and PDF refresh. `HomeChatVoiceIPhoneUITests.testCanvasCreationRemainsVisibleInPortraitAndLandscape` drives real compact navigation and both creation menus, retaining screenshot attachments. iPad navigation tests retain plugin, selection and workspace-manager screenshots.
 
 Run `scripts/qualify_office_engine.sh --check` for the isolated pinned Collabora prerequisite check; the separate cloud workflow can perform the native build. Qualification does not enable advanced editing or certify app embedding, licensing, or file fidelity. Heavy engine builds belong on an adequately provisioned build host.
 
 ### Durable Office component recovery
 
-The build-time Office bootstrap retains its pinned archive checks and can recover the same bytes from an immutable `office-native-host-<archive SHA-256>` component release after a short-lived Actions artifact expires. Component publication uses the exact locally retained producer artifact and matching private dSYM, with the descriptor, archive, checksum and licenses verified together. Symbols stay in the local private archive; public repository Actions artifacts are not a private symbol transport. Component releases never own the App latest pointer or appear in its Feather feed. The new recovery path is source-ready and awaits the S5–S7 shared qualification.
+The build-time Office bootstrap retains its pinned archive checks and can recover the same bytes from an immutable `office-native-host-<archive SHA-256>` component release after a short-lived Actions artifact expires. Component publication uses the exact locally retained producer artifact and matching private dSYM, with the descriptor, archive, checksum and licenses verified together. Symbols stay in the local private archive; public repository Actions artifacts are not a private symbol transport. Component releases never own the App latest pointer or appear in its Feather feed. The earlier integration note recorded this path as source-ready and awaiting S5–S7 shared qualification; consult component and build evidence for later outcomes.

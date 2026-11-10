@@ -17,7 +17,7 @@ public actor MediaPreparedVideoDelivery {
             throw PreparedVideoError.unsupportedCapability("output frame rate must match the project")
         }
         let settings = try PreparedVideoOutputSettings(width: options.width, height: options.height,
-            frameRate: plan.frameRate, codec: options.codec == .hevc ? .hevc : .h264, quality: options.quality)
+            frameRate: plan.frameRate, codec: options.codec == .hevc ? .hevc : .h264, quality: options.quality,colorProfile: options.colorProfile ?? plan.colorProfile)
         let total = plan.frameRate.frameIndex(for: plan.duration, rounding: .up)
         guard total > 0, plan.duration.seconds <= 3600 else { throw PreparedVideoError.invalidPlan("output duration outside 0...3600 seconds") }
         let directory = destination.deletingLastPathComponent()
@@ -66,6 +66,10 @@ public actor MediaPreparedVideoDelivery {
         let duration = try await verified.load(.duration).seconds
         guard let track = try await verified.loadTracks(withMediaType: .video).first else { throw PreparedVideoError.renderFailed("final video missing") }
         let size = try await track.load(.naturalSize)
+        if let profile = settings.colorProfile {
+            guard let description = try await track.load(.formatDescriptions).first else { throw PreparedVideoError.renderFailed("final video color description missing") }
+            try MediaVideoColorProfile.validateEncoded(profile,description: description)
+        }
         guard abs(duration - plan.duration.seconds) <= 1 / options.frameRate + 0.01,
               Int(size.width) == options.width, Int(size.height) == options.height else { throw PreparedVideoError.renderFailed("final output metadata mismatch") }
         guard !FileManager.default.fileExists(atPath: destination.path) else { throw PreparedVideoError.renderFailed("output already exists") }

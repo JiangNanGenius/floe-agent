@@ -58,7 +58,10 @@ nonisolated enum ChemistryWorkerFiles {
                                          maxWriteBytes: 64 * 1024 * 1024)
         let url = try guarder.resolve(path)
         let lexical = canonical(root).appendingPathComponent(path).standardizedFileURL
-        guard url == lexical else { throw FloeError.unauthorized }
+        // URL equality also compares the directory hint, which changes when a
+        // previously missing directory is created. Compare canonical paths;
+        // the workspace guard and the lexical comparison still reject links.
+        guard url.path == lexical.path else { throw FloeError.unauthorized }
         return url
     }
     static func read(_ url: URL, limit: Int) throws -> Data {
@@ -83,7 +86,7 @@ nonisolated enum ChemistryWorkerFiles {
         guard data.count <= limit else { throw FloeError.validationFailed("Chemistry artifact exceeds its size limit") }
         let url = try child(path, root: root)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard try child(path, root: root) == url else { throw FloeError.unauthorized }
+        guard try child(path, root: root).path == url.path else { throw FloeError.unauthorized }
         if FileManager.default.fileExists(atPath: url.path) {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true else { throw FloeError.unauthorized }

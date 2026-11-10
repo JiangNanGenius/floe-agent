@@ -8,6 +8,8 @@ import WebKit
     public private(set) var document: HeavyEditorDocument
     public private(set) var isReady = false
     public private(set) var isWorking = false
+    public private(set) var queuedOperationCount = 0
+    public private(set) var operationPhase: HeavyEditorOperationPhase = .preparing
     public private(set) var engineDiagnostics: [String] = []
     public private(set) var presentation: EditorJSON = .object([:])
     public private(set) var commandCatalog: [EditorJSON] = []
@@ -23,9 +25,8 @@ import WebKit
     @ObservationIgnored private let nativeExtension: HeavyEditorNativeExtension?
     @ObservationIgnored private var nativeCapability: String?
     @ObservationIgnored private var allowedCommands: Set<String> = []
-    @ObservationIgnored private var tail: Task<EditorJSON, any Error>?
-    @ObservationIgnored private var tailID: UUID?
-    @ObservationIgnored private var requests: [UUID: Task<EditorJSON, any Error>] = [:]
+    @ObservationIgnored private let operationQueue = HeavyEditorOperationQueue<EditorJSON>()
+    @ObservationIgnored private let callbackBridge = HeavyEditorCallbackBridge<EditorJSON>()
     @ObservationIgnored private var activeOperation: UUID?
     @ObservationIgnored private var activeCommand: String?
     @ObservationIgnored private var activeAuthorizer: HeavyEditorOperationAuthorizer?
@@ -49,11 +50,21 @@ import WebKit
         // WebKit's custom URL scheme does not provide fetch/XHR for WASM on
         // every Apple target. Bootstrap only fixed, bundled binary assets;
         // this exposes no host file reader, project data or model-selected URL.
+        let nativeOperations = try JSONEncoder().encode((nativeExtension?.operations ?? []).sorted())
         configuration.userContentController.addUserScript(WKUserScript(
-            source: try Self.binaryAssetsScript(root: descriptor.resourceRoot),
+            source: try Self.binaryAssetsScript(root: descriptor.resourceRoot)
+                + "\nglobalThis.FloeEditorNativeOperations="
+                + String(decoding: nativeOperations, as: UTF8.self) + ";",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        operationQueue.onStateChanged = { [weak self] in
+            guard let self else { return }
+            self.queuedOperationCount = self.operationQueue.pendingCount
+            if !self.isWorking, self.isReady {
+                self.operationPhase = self.queuedOperationCount > 0 ? .queued : .idle
+            }
+        }
         let messages = HeavyEditorMessageBridge(); messages.controller = self
         configuration.userContentController.add(messages, name: "floeEditor")
         messageBridge = messages
@@ -96,10 +107,16 @@ import WebKit
         if isReady { try await refreshPresentation() }
     }
     public func refreshPresentation() async throws {
+        try await refreshPresentation(owner: nil)
+    }
+    private func refreshPresentation(owner: UUID?) async throws {
         guard isReady else { return }
-        try await hooks.authorize(access(.read, "document.presentation"))
-        let value = try await call("return JSON.stringify({presentation:window.FloeEditor.nativeSnapshot(),commands:window.FloeEditor.commandIndex()});", value: .null)
+        let value = try await readPresentation(owner: owner)
         presentation = value["presentation"]; commandCatalog = value["commands"].array
+    }
+    private func readPresentation(owner: UUID?) async throws -> EditorJSON {
+        try await hooks.authorize(access(.read, "document.presentation"))
+        return try await call("return JSON.stringify({presentation:window.FloeEditor.nativeSnapshot(),commands:window.FloeEditor.commandIndex()});", value: .null, owner: owner)
     }
     public func commandForm(_ name: String, arguments: EditorJSON = .object([:]), discovery: HeavyEditorDiscoveryPage? = nil, authorization: HeavyEditorOperationAuthorizer? = nil) async throws -> EditorJSON {
         try await waitUntilReady()
@@ -127,6 +144,8 @@ import WebKit
             do {
                 let response = try await execute(name, arguments: arguments)
                 if showResult { presentResult(name, value: response["result"]) }
+            } catch is CancellationError {
+                // Stopping is an ordinary owned-operation outcome.
             } catch { errorMessage = error.localizedDescription }
         }
     }
@@ -185,30 +204,38 @@ import WebKit
     public func execute(_ name: String, arguments: EditorJSON = .object([:]), expectedRevision: UInt64? = nil, authorization: HeavyEditorOperationAuthorizer? = nil) async throws -> EditorJSON {
         try Task.checkCancellation()
         guard isReady, allowedCommands.contains(name) else { throw HeavyEditorError.invalidCommand }
-        guard requests.count < 256 else { throw HeavyEditorError.unavailable }
-        let id = UUID()
-        let predecessor = tail
-        let task = Task { @MainActor [self] in
-            _ = try? await predecessor?.value
-            try Task.checkCancellation()
-            return try await perform(name, arguments: arguments, expectedRevision: expectedRevision, operationID: id, authorization: authorization)
-        }
-        tail = task; tailID = id; requests[id] = task
-        defer { requests[id] = nil; if tailID == id { tail = nil; tailID = nil } }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
-            Task { @MainActor [weak self] in
-                if self?.activeOperation == id { self?.abortEngine() }
+        do {
+            return try await operationQueue.execute(onCancel: { [weak self] id in
+                self?.abortEngine(ifOwned: id)
+            }) { [self] id in
+                guard isReady, callbackBridge.isValid else { throw HeavyEditorError.unavailable }
+                return try await perform(name, arguments: arguments, expectedRevision: expectedRevision,
+                    operationID: id, authorization: authorization)
             }
+        } catch HeavyEditorOperationStateError.queueFull {
+            throw HeavyEditorError.engine(EditorText.t("操作正在排队，请稍后再试。", "Several operations are queued. Try again shortly."))
         }
+    }
+    /// Recheck the same queued native continuation before its host commits a
+    /// long-running result. This cannot create/adopt a call or change authority.
+    public func validateNativeContinuation(_ invocationID: UUID, command: String) async throws {
+        guard let operation = activeOperation, activeCommand == command,
+              activeNativeInvocations.contains(invocationID), nativeCapability != nil,
+              callbackBridge.isValid, operationQueue.isActive(operation) else { throw CancellationError() }
+        let generation = callbackBridge.generation
+        try await authorize(activeAccess, command, using: activeAuthorizer)
+        try Task.checkCancellation()
+        guard activeOperation == operation, activeCommand == command,
+              activeNativeInvocations.contains(invocationID), nativeCapability != nil,
+              callbackBridge.isValid, callbackBridge.generation == generation,
+              operationQueue.isActive(operation) else { throw CancellationError() }
     }
     public func cancel() {
-        if let activeOperation { requests[activeOperation]?.cancel() }
-        abortEngine()
+        if isWorking { operationPhase = .stopping }
+        operationQueue.cancelActive()
     }
-    private func abortEngine() {
+    private func abortEngine(ifOwned operationID: UUID?) {
+        guard let operationID, activeOperation == operationID else { return }
         // Computation workers receive the same cancellation request; no guest or
         // host process is created by this internal editor service.
         webView.evaluateJavaScript("window.FloeEditor?.cancel()", completionHandler: nil)
@@ -235,13 +262,23 @@ import WebKit
         _ = try await execute("document.save")
     }
     fileprivate func ready() async {
+        guard callbackBridge.isValid else { return }
+        let generation = callbackBridge.generation
         do {
             try await hooks.authorize(access(.read, "document.open"))
             let catalog = try await call("return JSON.stringify(window.FloeEditor.commandIndex());", value: .null)
             allowedCommands = Set(catalog.array.compactMap { $0["id"].string })
             _ = try await call("await window.FloeEditor.setNativeChrome(true);return 'null';", value: .null)
-            try await reload(); isReady = true
-            try await refreshPresentation()
+            try await reload()
+            let loadedDocument = document
+            // Publish readiness only after the same live page has supplied its
+            // first native snapshot and commands for this loaded original.
+            let value = try await readPresentation(owner: nil)
+            try Task.checkCancellation()
+            guard callbackBridge.isValid, callbackBridge.generation == generation,
+                  document == loadedDocument else { throw CancellationError() }
+            presentation = value["presentation"]; commandCatalog = value["commands"].array
+            isReady = true; operationPhase = .idle
         } catch {
             let detail = (error as NSError).userInfo["WKJavaScriptExceptionMessage"].map { String(describing: $0) } ?? error.localizedDescription
             engineDiagnostics.append(String(detail.prefix(2048)))
@@ -273,13 +310,35 @@ import WebKit
                 guard let activeOperation, let activeCommand else { throw HeavyEditorError.invalidCommand }
                 try await authorize(activeAccess, activeCommand, using: activeAuthorizer)
                 guard self.activeOperation == activeOperation, message["token"].string == self.nativeCapability,
-                      requests[activeOperation]?.isCancelled == false else { throw CancellationError() }
+                      operationQueue.isActive(activeOperation) else { throw CancellationError() }
                 let nativeCallID = UUID(); activeNativeOperation = nativeCallID; activeNativeInvocations.insert(nativeCallID)
-                defer { if activeNativeOperation == nativeCallID { activeNativeOperation = nil } }
-                let response: EditorJSON
-                if let run = nativeExtension.runInvocation { response = try await run(nativeCallID, operation, message["arguments"]) }
-                else { response = try await nativeExtension.run(operation, message["arguments"]) }
-                await reply(id, result: response, error: nil)
+                let expectedGeneration = callbackBridge.generation
+                defer {
+                    activeNativeInvocations.remove(nativeCallID)
+                    if activeNativeOperation == nativeCallID { activeNativeOperation = nil }
+                }
+                // A cancelled native call may still return. Reply only to its
+                // original page/operation; a cancelled result only rejects that
+                // original JS promise so it can actually settle.
+                do {
+                    let response: EditorJSON
+                    if let run = nativeExtension.runInvocation { response = try await run(nativeCallID, operation, message["arguments"]) }
+                    else { response = try await nativeExtension.run(operation, message["arguments"]) }
+                    guard self.activeOperation == activeOperation, callbackBridge.isValid,
+                          callbackBridge.generation == expectedGeneration,
+                          message["token"].string == self.nativeCapability else { return }
+                    if operationQueue.isActive(activeOperation) {
+                        await reply(id, result: response, error: nil, owner: activeOperation)
+                    } else {
+                        await reply(id, result: .null, error: EditorText.t("已取消。", "Cancelled."), owner: activeOperation)
+                    }
+                } catch {
+                    guard self.activeOperation == activeOperation, callbackBridge.isValid,
+                          callbackBridge.generation == expectedGeneration,
+                          message["token"].string == self.nativeCapability else { return }
+                    let detail = operationQueue.isActive(activeOperation) ? error.localizedDescription : EditorText.t("已取消。", "Cancelled.")
+                    await reply(id, result: .null, error: detail, owner: activeOperation)
+                }
             case "request":
                 guard let command = message["command"].string else { throw HeavyEditorError.invalidCommand }
                 let revision = message["revision"].number.flatMap { $0 >= 0 && $0 < Double(UInt64.max) ? UInt64($0) : nil }
@@ -288,7 +347,7 @@ import WebKit
             default: throw HeavyEditorError.invalidCommand
             }
         } catch {
-            errorMessage = error.localizedDescription
+            if !(error is CancellationError) { errorMessage = error.localizedDescription }
             await reply(id, result: .null, error: error.localizedDescription)
         }
     }
@@ -305,9 +364,10 @@ import WebKit
     private func perform(_ name: String, arguments: EditorJSON, expectedRevision: UInt64?, operationID: UUID, authorization: HeavyEditorOperationAuthorizer?) async throws -> EditorJSON {
         if let expectedRevision, expectedRevision != document.revision { throw HeavyEditorError.revisionConflict }
         isWorking = true; activeOperation = operationID; activeCommand = name; activeAuthorizer = authorization; activeNativeInvocations = []
-        defer { isWorking = false; activeOperation = nil; activeCommand = nil; activeAuthorizer = nil; activeAccess = .read; activeNativeInvocations = [] }
+        defer { isWorking = false; activeOperation = nil; activeCommand = nil; activeAuthorizer = nil; activeAccess = .read; activeNativeInvocations = []; operationPhase = callbackBridge.isValid ? (queuedOperationCount > 0 ? .queued : .idle) : .unavailable }
+        operationPhase = .authorizing
         // Mutation/access metadata comes from the bundled registry, never caller fields.
-        let metadata = try await call("return JSON.stringify(window.FloeEditor.command(value));", value: .string(name))
+        let metadata = try await call("return JSON.stringify(window.FloeEditor.command(value));", value: .string(name), owner: operationID)
         let mode = HeavyEditorAccess(rawValue: metadata["access"].string ?? "read") ?? .read
         activeAccess = mode
         try await authorize(mode, name, using: authorization)
@@ -316,14 +376,17 @@ import WebKit
         defer { nativeCapability = nil }
         let request: EditorJSON = .object(["command": .string(name), "arguments": arguments, "revision": .number(Double(document.revision)), "nativeToken": .string(capability)])
         do {
-            let response = try await call("return JSON.stringify(await window.FloeEditor.execute(value));", value: request)
+            operationPhase = .running
+            let response = try await call("return JSON.stringify(await window.FloeEditor.execute(value));", value: request, timeout: .seconds(180), owner: operationID)
             try Task.checkCancellation()
             if mode == .edit || mode == .importFile {
                 try await authorize(mode, name, using: authorization)
                 try Task.checkCancellation()
+                operationPhase = .saving
                 let updated = try await store.commit(content: response["state"], title: response["state"]["data"]["title"].string, expectedRevision: document.revision)
                 document = updated; await hooks.didSave(updated)
             }
+            operationPhase = .returning
             var receipts: [EditorJSON] = []
             for item in response["artifacts"].array {
                 try await authorize(.exportFile, name, using: authorization)
@@ -333,31 +396,109 @@ import WebKit
                 let receipt = try await hooks.export(document.id, HeavyEditorArtifact(name: filename, mediaType: media, data: bytes))
                 receipts.append(try encoded(receipt))
             }
-            _ = try await call("window.FloeEditor.acknowledge(value); return 'null';", value: .number(Double(document.revision)))
-            try await refreshPresentation()
+            _ = try await call("window.FloeEditor.acknowledge(value); return 'null';", value: .number(Double(document.revision)), owner: operationID)
+            try await refreshPresentation(owner: operationID)
             if case .object(var object) = response { object["exports"] = .array(receipts); return .object(object) }
             throw HeavyEditorError.invalidDocument
         } catch {
-            // Retain the durable original if engine execution or a staged save fails.
-            try? await reload()
+            // Cancellation is a caller outcome, not proof that JS stopped.
+            // Hold this operation's FIFO slot until actual provider settlement
+            // and a bounded restore, or quarantine this page generation.
+            abortEngine(ifOwned: operationID)
+            if error is CancellationError { operationPhase = .stopping }
+            await restoreAfterFailure(operationID: operationID)
             throw error
         }
     }
     private func encoded<T: Encodable>(_ value: T) throws -> EditorJSON { try EditorJSON.decode(JSONEncoder().encode(value)) }
-    private func call(_ body: String, value: EditorJSON) async throws -> EditorJSON {
-        // Foundation may intern empty NSArray instances. Passing the decoded
-        // object graph through WK preserves those aliases: modifying glyphs[]
-        // could then also modify axes[]/masters[]. Transfer JSON values as text
-        // and parse inside the page so every array/object has JSON semantics.
+    private func call(_ body: String, value: EditorJSON, timeout: Duration = .seconds(15), owner: UUID? = nil, allowCancelledOwner: Bool = false) async throws -> EditorJSON {
+        // JSON text preserves value semantics across WK's Foundation bridge.
         let argument = String(decoding: try value.data(), as: UTF8.self)
-        let result = try await webView.callAsyncJavaScript("const value=JSON.parse(serializedValue);\n" + body,
-            arguments: ["serializedValue": argument], in: nil, contentWorld: .page)
-        guard let text = result as? String, let data = text.data(using: .utf8) else { throw HeavyEditorError.invalidDocument }
-        return try EditorJSON.decode(data)
+        // Discovery and independent presentation calls do not inherit another
+        // operation's cancellation authority from whichever command is active.
+        let expectedGeneration = callbackBridge.generation
+        do {
+            return try await callbackBridge.perform(timeout: timeout, owner: owner,
+                onCancel: { [weak self] in self?.abortEngine(ifOwned: owner) },
+                onTimeout: { [weak self] in self?.invalidatePage(ifOwned: owner) }) { [self] complete in
+                webView.callAsyncJavaScript("const value=JSON.parse(serializedValue);\n" + body,
+                    arguments: ["serializedValue": argument], in: nil, in: .page) { [weak self] result in
+                    guard let self, self.callbackBridge.isValid,
+                          self.callbackBridge.generation == expectedGeneration else { return }
+                    // Late completion settles the old provider but cannot
+                    // publish a successful outcome for a cancelled operation.
+                    if let owner, !allowCancelledOwner, !self.operationQueue.isActive(owner) {
+                        complete(.failure(CancellationError())); return
+                    }
+                    do {
+                        let raw = try result.get()
+                        guard let text = raw as? String, let data = text.data(using: .utf8) else { throw HeavyEditorError.invalidDocument }
+                        complete(.success(try EditorJSON.decode(data)))
+                    } catch { complete(.failure(error)) }
+                }
+            }
+        } catch HeavyEditorOperationStateError.timedOut {
+            throw HeavyEditorError.engine(EditorText.t("操作超时，请重新打开作品后重试。", "The operation timed out. Reopen the work and try again."))
+        } catch HeavyEditorOperationStateError.invalidated {
+            throw HeavyEditorError.engine(EditorText.t("请重新打开作品后继续。", "Reopen the work to continue."))
+        } catch HeavyEditorOperationStateError.queueFull {
+            throw HeavyEditorError.engine(EditorText.t("操作正在排队，请稍后再试。", "Several operations are queued. Try again shortly."))
+        }
     }
-    private func reply(_ id: String, result: EditorJSON, error: String?) async {
+    private func invalidatePage(ifOwned owner: UUID?) {
+        abortEngine(ifOwned: owner)
+        isReady = false
+        operationPhase = .unavailable
+        callbackBridge.invalidate()
+        errorMessage = EditorText.t("操作未能完成，请重新打开作品后重试。", "The operation could not finish. Reopen the work and try again.")
+    }
+    @MainActor private final class RecoveryWork {
+        var task: Task<Void, Never>?
+    }
+    private func restoreAfterFailure(operationID: UUID) async {
+        // This service-owned recovery task does not inherit the failed caller's
+        // cancelled status. Both acknowledgement and recovery are bounded;
+        // a late file read is checked before touching this page again.
+        let recovery = Task { @MainActor [self] in
+            guard callbackBridge.isValid, activeOperation == operationID else { return }
+            guard await callbackBridge.waitForSettlement(owner: operationID, timeout: .seconds(3)) else {
+                invalidatePage(ifOwned: operationID); return
+            }
+            let deadline = HeavyEditorCallbackBridge<Void>(), work = RecoveryWork()
+            do {
+                try await deadline.perform(timeout: .seconds(10), owner: operationID,
+                    onTimeout: { [self] in work.task?.cancel(); invalidatePage(ifOwned: operationID) }) { [self] complete in
+                    work.task = Task { @MainActor [self] in
+                        do {
+                            let fresh = try await store.read()
+                            try Task.checkCancellation()
+                            guard activeOperation == operationID, callbackBridge.isValid else { throw CancellationError() }
+                            guard fresh.id == document.id, fresh.kind == descriptor.kind else { throw HeavyEditorError.wrongDocument }
+                            document = fresh
+                            _ = try await call("return JSON.stringify(await window.FloeEditor.load(value));", value: try encoded(fresh), timeout: .seconds(8), owner: operationID, allowCancelledOwner: true)
+                            try Task.checkCancellation()
+                            if isReady {
+                                try await hooks.authorize(access(.read, "document.presentation"))
+                                let value = try await call("return JSON.stringify({presentation:window.FloeEditor.nativeSnapshot(),commands:window.FloeEditor.commandIndex()});", value: .null, timeout: .seconds(8), owner: operationID, allowCancelledOwner: true)
+                                try Task.checkCancellation()
+                                guard activeOperation == operationID, callbackBridge.isValid else { throw CancellationError() }
+                                presentation = value["presentation"]; commandCatalog = value["commands"].array
+                            }
+                            complete(.success(()))
+                        } catch { complete(.failure(error)) }
+                    }
+                }
+            } catch {
+                work.task?.cancel()
+                invalidatePage(ifOwned: operationID)
+            }
+            deadline.invalidate()
+        }
+        await recovery.value
+    }
+    private func reply(_ id: String, result: EditorJSON, error: String?, owner: UUID? = nil) async {
         let value: EditorJSON = .object(["requestID": .string(id), "result": result, "error": error.map(EditorJSON.string) ?? .null])
-        _ = try? await call("window.FloeEditor.hostReply(value); return 'null';", value: value)
+        _ = try? await call("window.FloeEditor.hostReply(value); return 'null';", value: value, owner: owner)
     }
 }
 

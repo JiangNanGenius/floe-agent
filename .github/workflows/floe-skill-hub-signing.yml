@@ -59,7 +59,7 @@ env:
   # NON-DISPATCHABLE until the root substitutes the exact reviewed 40-hex
   # tooling commit HERE (after the bridge code lands on the Hub default
   # branch and the root has verified that commit):
-  TOOLING_COMMIT: ec71e8ded53753c7c10e4e483c5a59c132d9bee1
+  TOOLING_COMMIT: e0d0a7c38efb875aac8246adab141cf12bf376c2
 
 jobs:
   sign:

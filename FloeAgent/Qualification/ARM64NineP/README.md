@@ -16,8 +16,9 @@ Run from the repository root, using the shared native build window when
 working on the project development host:
 
 ```sh
-export DEVELOPER_DIR=/Applications/Xcode-27.1.app/Contents/Developer
-FLOE_NINEP_BUILD="$HOME/Library/Caches/CodexBuild/FloeAgent/main/xcode-27A9275/NineP"
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+xcodebuild -version # Confirm the installed toolchain; reviewed 27.2 (27B52).
+FLOE_NINEP_BUILD="$HOME/Library/Caches/CodexBuild/FloeAgent/main/xcode-27B52/NineP"
 mkdir -p "$FLOE_NINEP_BUILD"
 xcrun clang -std=c11 -D_DARWIN_C_SOURCE -O1 -g -ffunction-sections \
   -fsanitize=address,undefined -Wl,-dead_strip \

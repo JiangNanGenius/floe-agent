@@ -102,7 +102,7 @@ private struct BrowserSurface: View {
             }
             .background(.bar)
             BrowserProgressBar(session: session)
-            if session.isUserControlling || center.handoffNeedsContinue || center.handoffError != nil {
+            if center.taskHandoffsEnabled && (session.isUserControlling || center.handoffNeedsContinue || center.handoffError != nil) {
                 HStack {
                     Text(center.handoffError ?? (center.handoffNeedsContinue
                         ? IDELanguageRunText.t("通知已保存，原任务未运行", "Notification saved; the original task is not running")
@@ -122,10 +122,12 @@ private struct BrowserSurface: View {
                     .disabled(center.returningControl)
                     .frame(minHeight: 44)
                 }.padding(.horizontal, 12)
+                    .accessibilityIdentifier("browser.taskHandoff")
             }
-            if center.handoffNotified {
+            if center.taskHandoffsEnabled && center.handoffNotified {
                 Label(IDELanguageRunText.t("已通知原任务", "Original task notified"), systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("browser.taskHandoffNotified")
             }
             Divider()
             BrowserWebContainer(webView: session.activeWebView)
@@ -470,8 +472,9 @@ private struct BrowserAddressBar: View {
                         UIApplication.shared.open(url)
                     }
                 }
-                if !session.isUserControlling, center.deliverHandoff != nil {
+                if center.taskHandoffsEnabled, !session.isUserControlling, center.deliverHandoff != nil {
                     Button(IDELanguageRunText.t("接管浏览器", "Take control"), systemImage: "hand.tap") { center.takeControl() }
+                        .accessibilityIdentifier("browser.takeControl")
                 }
             }
             Section {

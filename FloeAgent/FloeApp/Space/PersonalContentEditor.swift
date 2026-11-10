@@ -33,6 +33,12 @@ struct PersonalContentEditor: View {
     @State private var chemistryNotesRequest: ChemistryNotesRequest?
     @State private var chemistryEpoch = UUID()
     @StateObject private var biologyNotesReturn = BiologyNotesReturn()
+    @StateObject private var assistantLeave = DocumentAssistantLeaveCoordinator()
+    @StateObject private var sourceAssistantLeave = DocumentAssistantLeaveCoordinator()
+    @State private var closing = false
+    @State private var presentationGeneration = UUID()
+    @State private var editorOwnsTextInput = false
+    @State private var officeReopenInFlight = false
 
     private struct ChemistryNotesRequest: Identifiable {
         let id = UUID()
@@ -61,11 +67,28 @@ struct PersonalContentEditor: View {
     }
 
     var body: some View {
+        GeometryReader { viewport in
+            editorPresentation
+                .frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading)
+                .editorLayoutObservation("presentation.frame")
+        }
+        .editorLayoutObservation("presentation.viewport")
+        .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+    }
+
+    private var canvasKeyboardEdges: Edge.Set {
+        let office: Bool
+        if case .office? = content { office = true } else { office = false }
+        let canvas = office || [.music, .cad2D, .cad3D, .drawing, .image, .video, .electronics, .chemistry].contains(record.kind)
+        return canvas && !editorOwnsTextInput ? .bottom : []
+    }
+
+    private var editorPresentation: some View {
         Group {
             if let content, case .diagram(let model) = content {
                 // This editor owns its split navigation. Wrapping that split in
                 // another NavigationStack can discard its detail column.
-                DiagramEditorView(model: model, onClose: { Task { await model.close(); dismissAfterClosing() } },
+                DiagramEditorView(model: model, onClose: { Task { await finish() } },
                     onAssistant: { showingAssistant = true })
             } else if let content, case .canvas(let store) = content {
                 // The original canvas owns its split navigation and close path.
@@ -75,24 +98,44 @@ struct PersonalContentEditor: View {
                     onAssistant: { showingAssistant = true })
             } else if let content, case .manufacturing(let model) = content {
                 ManufacturingWorkbenchView(model: model, onClose: {
-                    do { try model.saveDraft(); dismissAfterClosing() } catch { model.report(error) }
+                    Task { await finish() }
                 }, onAssistant: { showingAssistant = true })
             } else if let content, case .office(let document) = content {
                 NavigationStack {
                     PersonalOfficeDocumentView(document: document, onClose: { dismissAfterClosing() },
-                        onAssistant: { showingAssistant = true })
+                        onAssistant: { showingAssistant = true },
+                        presentationIsActive: isPresented,
+                        onRetryOpen: { Task { await reopenOffice(document) } },
+                        beforeClose: { await authorizeAssistantDeparture() })
+                        .id(ObjectIdentifier(document))
+                        .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+                        .editorLayoutObservation("office.original")
+                        .background {
+                            EditorInputOwnership(ownerID: record.id) { editorOwnsTextInput = $0 }
+                                .id(record.id).allowsHitTesting(false)
+                        }
                 }
+                .editorLayoutObservation("office.navigation.host")
+                .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
             } else {
                 navigationContent
             }
         }
         .task { await load() }
         .interactiveDismissDisabled()
+        .documentAssistantLeavePresentation(assistantLeave)
+        .environment(\.documentAssistantLeaveIntent, DocumentAssistantLeaveIntent(authorize: {
+            guard !closing else { return false }
+            closing = true; defer { closing = false }
+            return await authorizeAssistantDeparture()
+        }))
         .onChange(of: isPresented) { _, presented in
             if !presented {
+                presentationGeneration = UUID()
                 biologyNotesReturn.cancel()
                 if case .biology(let session) = content { Task { await session.close() } }
                 if case .geography(let session) = content { Task { await session.presentationEnded() } }
+                if case .office(let document) = content { Task { await document.unmount() } }
                 fileUsage?.release(); fileUsage = nil
             }
         }
@@ -101,6 +144,7 @@ struct PersonalContentEditor: View {
             // Only dismissal releases its ownership; state deinit is a fallback.
             if !isPresented { fileUsage?.release(); fileUsage = nil }
         }
+        .environment(\.editorCanvasOwnsTextInput, editorOwnsTextInput)
         .environment(\.cadWorkbenchTransientlyCovered,
                      (showingAssistant && horizontalSizeClass != .regular)
                      || childWork != nil || sourceNote != nil || printPreparation != nil)
@@ -112,6 +156,8 @@ struct PersonalContentEditor: View {
             Button(IDELanguageRunText.t("好", "OK")) { printPreparationError = nil }
         } message: { Text(printPreparationError ?? "") }
         .onChange(of: record.id) { _, _ in
+            presentationGeneration = UUID()
+            editorOwnsTextInput = false
             biologyNotesReturn.cancel()
             showingAssistant = false
             printPreparation = nil; chemistryNotesRequest = nil; chemistryEpoch = UUID()
@@ -149,9 +195,17 @@ struct PersonalContentEditor: View {
                     NotesDocumentEditor(session: sourceNotes, document: current, embedded: true)
                         .modifier(NotesConflictAccess(session: sourceNotes))
                         .toolbar { ToolbarItem(placement: .confirmationAction) {
-                            Button(IDELanguageRunText.t("完成", "Done")) { sourceNote = nil }
+                            Button(IDELanguageRunText.t("完成", "Done")) {
+                                Task { if await sourceNotes.select(nil) { sourceNote = nil } }
+                            }
                         } }
                 }
+            }
+            .interactiveDismissDisabled()
+            .documentAssistantLeavePresentation(sourceAssistantLeave)
+            .task {
+                DocumentAssistantLeaveBindings.installNotes(on: sourceNotes, environment: environment,
+                                                            coordinator: sourceAssistantLeave)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .floeStudioDocumentDidChange)) { notification in
@@ -171,7 +225,7 @@ struct PersonalContentEditor: View {
 
     private var editorNavigation: some View {
         NavigationStack {
-            Group {
+            ZStack(alignment: .topLeading) {
                 if let content {
                     switch content {
                     case .canvas(let store):
@@ -186,10 +240,22 @@ struct PersonalContentEditor: View {
                         EmptyView()
                     case .music(let session):
                         MusicEditorView(session: session)
+                            .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+                            .editorLayoutObservation("music")
+                            .background {
+                                EditorInputOwnership(ownerID: record.id) { editorOwnsTextInput = $0 }
+                                    .id(record.id).allowsHitTesting(false)
+                            }
                     case .meeting(let session):
                         MeetingProjectView(session: session, record: record, assistantRequested: $showingAssistant)
                     case .chemistry(let session):
                         chemistrySurface(session)
+                            .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+                            .editorLayoutObservation("chemistry")
+                            .background {
+                                EditorInputOwnership(ownerID: record.id) { editorOwnsTextInput = $0 }
+                                    .id(record.id).allowsHitTesting(false)
+                            }
                     case .biology(let session):
                         BiologyEditorSurface(session: session, onInsertIntoNotes: { [returns = biologyNotesReturn] payload in
                             try await returns.insert(payload, host: session.host)
@@ -198,6 +264,12 @@ struct PersonalContentEditor: View {
                         LaTeXEditorSurface(session:session)
                     case .electronics(let session):
                         ElectronicsEditorSurface(session: session)
+                            .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+                            .editorLayoutObservation("electronics")
+                            .background {
+                                EditorInputOwnership(ownerID: record.id) { editorOwnsTextInput = $0 }
+                                    .id(record.id).allowsHitTesting(false)
+                            }
                     case .geography:
                         EmptyView() // GIS owns its qualified native split-view chrome above.
                     case .text(let document):
@@ -206,11 +278,18 @@ struct PersonalContentEditor: View {
                         EmptyView() // The Office branch above owns guarded close and chrome.
                     case .media(let directory):
                         PersonalMediaEditorView(record: record, directory: directory, onAssistant: { showingAssistant = true })
+                            .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+                            .editorLayoutObservation("media")
+                            .background {
+                                EditorInputOwnership(ownerID: record.id) { editorOwnsTextInput = $0 }
+                                    .id(record.id).allowsHitTesting(false)
+                            }
                     case .cad(let document):
                         Group {
                             if record.kind == .cad2D { FloeCAD2DWorkbenchView(document: document) }
                             else { FloeCADWorkbenchView(document: document) }
                         }
+                        .environment(\.cadCanvasKeyboardAvoidanceEnabled, editorOwnsTextInput)
                         .modifier(CADManufacturingEntry(document: document,
                             directory: document.url.deletingLastPathComponent().appendingPathComponent("Manufacturing", isDirectory: true),
                             ownerID: record.id,
@@ -218,6 +297,12 @@ struct PersonalContentEditor: View {
                             onAssistant: { showingAssistant = true }))
                         .modifier(CADSimulationEntry(document:document,
                             directory:document.url.deletingLastPathComponent().appendingPathComponent("Simulation",isDirectory:true),ownerID:record.id))
+                        .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+                        .editorLayoutObservation("cad")
+                        .background {
+                            EditorInputOwnership(ownerID: record.id) { editorOwnsTextInput = $0 }
+                                .id(record.id).allowsHitTesting(false)
+                        }
                     }
                 } else if let error {
                     ContentUnavailableView {
@@ -229,7 +314,10 @@ struct PersonalContentEditor: View {
                     ProgressView(IDELanguageRunText.t("正在打开", "Opening"))
                 }
             }
-            .navigationTitle(record.title)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+            .editorLayoutObservation("navigation.content")
+            .navigationTitle(editorTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -254,6 +342,12 @@ struct PersonalContentEditor: View {
                 }
             }
         }
+        .editorLayoutObservation("navigation.host")
+        .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
+    }
+    private var editorTitle: String {
+        if let content, case .music(let session) = content { return session.document.name }
+        return record.title
     }
 
     @MainActor private func chemistrySurface(_ session: ChemistryProjectSession) -> some View {
@@ -361,6 +455,29 @@ struct PersonalContentEditor: View {
         }
     }
 
+    /// Recovery of a pre-mount failure must resolve and open the same original
+    /// again. A terminally closed owner is never reused for the new attempt.
+    @MainActor private func reopenOffice(_ previous: PersonalOfficeDocument) async {
+        guard !officeReopenInFlight, isPresented, record.id == previous.record.id,
+              case .office(let current) = content, current === previous else { return }
+        officeReopenInFlight = true
+        defer { officeReopenInFlight = false }
+        let generation = presentationGeneration
+        func isCurrent() -> Bool {
+            guard isPresented, presentationGeneration == generation, record.id == previous.record.id,
+                  case .office(let current) = content else { return false }
+            return current === previous
+        }
+        do {
+            let replacement = try await previous.replacement()
+            guard isCurrent() else { _ = await replacement.close(); return }
+            content = .office(replacement)
+        } catch {
+            guard isCurrent() else { return }
+            previous.session.reportOpenFailure(error)
+        }
+    }
+
     @MainActor private func refreshEditor() {
         switch content {
         case .diagram(let model):
@@ -376,11 +493,27 @@ struct PersonalContentEditor: View {
         }
     }
     @MainActor private func dismissAfterClosing() {
+        presentationGeneration = UUID()
         fileUsage?.release(); fileUsage = nil
         dismiss()
     }
+    @MainActor private func authorizeAssistantDeparture() async -> Bool {
+        let id = record.id, generation = presentationGeneration
+        do {
+            return try await DocumentAssistantLeaveBindings.studio(record: record, environment: environment,
+                coordinator: assistantLeave, isStillCurrent: {
+                    record.id == id && presentationGeneration == generation && isPresented
+                })
+        } catch { self.error = error.localizedDescription; return false }
+    }
     @MainActor private func finish() async {
+        guard !closing else { return }
+        closing = true; defer { closing = false }
+        guard await authorizeAssistantDeparture() else { return }
         switch content {
+        case .diagram(let model): await model.close()
+        case .manufacturing(let model):
+            do { try model.saveDraft() } catch { model.report(error); return }
         case .text(let document): guard await document.close() else { return }
         case .chemistry(let session): guard await session.flushForClose() else { return }
         case .biology(let session):
@@ -388,7 +521,14 @@ struct PersonalContentEditor: View {
             await session.close()
         case .latex(let session): guard await session.flushForClose() else {return}
         case .electronics(let session): guard await session.flushForClose() else { return }
-        case .geography(let session): guard await session.flushForClose() else { return }
+        case .geography(let session):
+            if let continued = assistantLeave.continuedSnapshot,
+               continued.documentID == record.id,
+               environment.conversationCenter.documentAssistantWorkIsOutstanding(continued),
+               await session.endPresentationKeepingModelWork() {
+                // The same service still owns its lease and pending commit.
+                // This ends only presentation, and makes no save-success claim.
+            } else { guard await session.flushForClose() else { return } }
         case .cad(let document):
             do { try await CADSimulationSessions.close(document:document) }
             catch { self.error = error.localizedDescription; return }

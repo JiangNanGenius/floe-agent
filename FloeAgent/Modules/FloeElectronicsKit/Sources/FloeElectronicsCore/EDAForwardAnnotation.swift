@@ -42,9 +42,18 @@ public enum EDAForwardAnnotation {
             let previous = index.map { board.footprints[$0] }
             var footprint = previous ?? EDAFootprint(definitionID: definitionID, componentID: component.id)
             footprint.definitionID = definitionID; footprint.reference = component.reference; footprint.value = component.value
-            footprint.padNets = Dictionary(uniqueKeysWithValues: Set(definition.pads.map(\.number)).compactMap { number in
-                netForPin[EDAPinReference(componentID: component.id, number: number)].map { (number, $0) }
-            })
+            if let pinMap = try EDALibraryProject.pinMap(component: component) {
+                guard let symbol = project.symbols.first(where: { $0.id == component.symbolID }) else { throw EDAError.missing("mapped component symbol") }
+                try pinMap.validate(symbol: symbol, footprint: definition)
+                let pinNets = Dictionary(uniqueKeysWithValues: Set(symbol.pins.map(\.number)).compactMap { number in
+                    netForPin[EDAPinReference(componentID: component.id, number: number)].map { (number, $0) }
+                })
+                footprint.padNets = try pinMap.padNets(pinNets: pinNets)
+            } else {
+                footprint.padNets = Dictionary(uniqueKeysWithValues: Set(definition.pads.map(\.number)).compactMap { number in
+                    netForPin[EDAPinReference(componentID: component.id, number: number)].map { (number, $0) }
+                })
+            }
             if let previous {
                 for (number, oldNet) in previous.padNets where !oldNet.isEmpty {
                     if let next = footprint.padNets[number] { mapping[oldNet, default: []].insert(next) }

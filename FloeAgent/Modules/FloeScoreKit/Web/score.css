@@ -7,3 +7,13 @@
 .score-pages path.score-selected,.score-pages text.score-selected{fill:#14786e!important;stroke:#14786e!important}.score-pages path.score-playing,.score-pages text.score-playing{fill:#d47418!important;stroke:#d47418!important}
 /* Native hosts own all chrome; OSMD remains the interactive engraving surface. */
 .score-native-chrome .score-quick,.score-native-chrome .score-transport,.score-native-chrome .score-piano{display:none!important}.score-native-chrome .score-pages{min-height:100%;padding:12px 8px 20px;box-shadow:none}.score-native-chrome .canvas{padding:0}
+
+/* Numbered notation shares the same score surface, focus and hit path. */
+.jianpu-page{display:block;margin:0 auto 20px;background:white;box-shadow:0 2px 12px #00000012;max-width:none}
+.jianpu-page [data-score-notes]{cursor:pointer;outline:none}
+.jianpu-page .jp-note .jp-hit{fill:transparent}
+.jianpu-page .score-selected .jp-hit{fill:#1686e51b}
+.jianpu-page .score-selected .jp-number{fill:#087dcc}
+.jianpu-page .score-playing .jp-hit{fill:#1ca26726}
+.jianpu-page .score-playing .jp-number{fill:#078052}
+.jianpu-page [data-score-notes]:focus-visible .jp-hit{stroke:#087dcc;stroke-width:1.5}

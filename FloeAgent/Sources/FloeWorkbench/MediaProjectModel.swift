@@ -31,7 +31,10 @@ public struct MediaCanvas: Sendable, Codable, Hashable {
     public var height: Int
     public var frameRate: Double?
 
-    public init(width: Int, height: Int, frameRate: Double? = nil) {
+    public var videoColorProfile: MediaVideoColorProfile?
+
+    public init(width: Int, height: Int, frameRate: Double? = nil, videoColorProfile: MediaVideoColorProfile? = nil) {
+        self.videoColorProfile = videoColorProfile
         self.width = width
         self.height = height
         self.frameRate = frameRate
@@ -165,11 +168,13 @@ public struct ImageTextContent: Sendable, Codable, Hashable {
     public var strokeColorHex: String?
     public var strokeWidth: Double?
     public var shadow: ImageTextShadow?
+    /// Optional editable Core Text layout on a saved native path snapshot.
+    public var pathLayout: MediaTextPathLayout?
 
     public init(text: String, fontSize: Double = 48, colorHex: String = "#000000",
                 fontName: String? = nil, tracking: Double? = nil, leading: Double? = nil,
                 alignment: ImageTextAlignment? = nil, strokeColorHex: String? = nil,
-                strokeWidth: Double? = nil, shadow: ImageTextShadow? = nil) {
+                strokeWidth: Double? = nil, shadow: ImageTextShadow? = nil, pathLayout: MediaTextPathLayout? = nil) {
         self.text = text
         self.fontSize = fontSize
         self.colorHex = colorHex
@@ -180,6 +185,7 @@ public struct ImageTextContent: Sendable, Codable, Hashable {
         self.strokeColorHex = strokeColorHex
         self.strokeWidth = strokeWidth
         self.shadow = shadow
+        self.pathLayout = pathLayout
     }
 }
 
@@ -280,12 +286,13 @@ public struct ImageSelection: Sendable, Codable, Hashable {
     public var shapes: [ImageSelectionShape]
     public var feather: Double
     public var inverted: Bool
+    public var bitmap: ImageSelectionBitmap?
 
-    public init(shapes: [ImageSelectionShape] = [], feather: Double = 0, inverted: Bool = false) {
-        self.shapes = shapes; self.feather = feather; self.inverted = inverted
+    public init(shapes: [ImageSelectionShape] = [], feather: Double = 0, inverted: Bool = false, bitmap: ImageSelectionBitmap? = nil) {
+        self.shapes = shapes; self.feather = feather; self.inverted = inverted; self.bitmap = bitmap
     }
 
-    public var isEmpty: Bool { shapes.isEmpty && !inverted }
+    public var isEmpty: Bool { shapes.isEmpty && bitmap == nil && !inverted }
 }
 
 /// Level adjustment: input black/white points and gamma.
@@ -367,11 +374,19 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
     public var mosaicBlockSize: Int?
     /// Built-in color filter identifier (deterministic Core Image name set).
     public var filterID: String?
+    public var toneCurve: [ImageFreehandStroke.Point]?
+    public var colorBalance: ImageColorBalance?
+    public var colorLUT: ImageColorLUT?
+    public var noiseReduction: Double?
+    /// Applies extended curves/balance/LUT/noise only inside this canvas selection.
+    public var effectRegion: ImageSelection?
 
     public init(saturation: Double? = nil, contrast: Double? = nil, brightness: Double? = nil,
                 exposureEV: Double? = nil, blurRadius: Double? = nil, sharpenRadius: Double? = nil,
                 mosaicBlockSize: Int? = nil, filterID: String? = nil,
-                temperature: Double? = nil, hueDegrees: Double? = nil, levels: ImageLevels? = nil) {
+                temperature: Double? = nil, hueDegrees: Double? = nil, levels: ImageLevels? = nil,
+                toneCurve: [ImageFreehandStroke.Point]? = nil, colorBalance: ImageColorBalance? = nil,
+                colorLUT: ImageColorLUT? = nil, noiseReduction: Double? = nil, effectRegion: ImageSelection? = nil) {
         self.saturation = saturation
         self.contrast = contrast
         self.brightness = brightness
@@ -383,12 +398,13 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
         self.temperature = temperature
         self.hueDegrees = hueDegrees
         self.levels = levels
+        self.toneCurve=toneCurve;self.colorBalance=colorBalance;self.colorLUT=colorLUT;self.noiseReduction=noiseReduction;self.effectRegion=effectRegion
     }
 
     public var isIdentity: Bool {
         saturation == nil && contrast == nil && brightness == nil && exposureEV == nil &&
         blurRadius == nil && sharpenRadius == nil && mosaicBlockSize == nil && filterID == nil &&
-        temperature == nil && hueDegrees == nil && levels == nil
+        temperature == nil && hueDegrees == nil && levels == nil && toneCurve == nil && colorBalance == nil && colorLUT == nil && noiseReduction == nil
     }
 }
 
@@ -652,15 +668,17 @@ public struct VideoExportOptions: Sendable, Codable, Hashable {
     /// 0.01...1 quality dial mapped to an explicit bitrate budget.
     public var quality: Double
     public var fileName: String
+    public var colorProfile: MediaVideoColorProfile?
 
     public init(codec: VideoExportCodec = .h264, width: Int, height: Int, frameRate: Double,
-                quality: Double = 0.9, fileName: String = "export") {
+                quality: Double = 0.9, fileName: String = "export", colorProfile: MediaVideoColorProfile? = nil) {
         self.codec = codec
         self.width = width
         self.height = height
         self.frameRate = frameRate
         self.quality = quality
         self.fileName = fileName
+        self.colorProfile = colorProfile
     }
 
     public var container: String { "mp4" }
@@ -673,7 +691,7 @@ public struct MediaProject: Sendable, Codable {
     /// still default to `defaultSchemaVersion` (v1) so current UI behavior is
     /// stable; v2 content is written only by an explicit
     /// `MediaPreparedUpgrade.upgrade` call.
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
     /// Schema written by `MediaProject.init` unless the caller opts in.
     public static let defaultSchemaVersion = 1
 

@@ -74,6 +74,7 @@ struct MusicExportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var content = "mix"
     @State private var format = "mp3"
+    @State private var djSeconds = 60.0
     @State private var restoringBackup = false
     @State private var restoreBase: MusicNotationSnapshot?
     var body: some View {
@@ -82,20 +83,33 @@ struct MusicExportSheet: View {
                 Section {
                     Picker(WorkbenchText.t("导出内容", "Export content"), selection: $content) {
                         Text(WorkbenchText.t("总混音", "Stereo mix")).tag("mix")
+                        Text(WorkbenchText.t("双碟混音", "Deck mix")).tag("dj")
                         Text(WorkbenchText.t("分轨音频", "Track stems")).tag("stems")
                         Text(WorkbenchText.t("完整工程包", "Project package")).tag("project")
+                        Text(WorkbenchText.t("已编辑 MIDI", "Edited MIDI")).tag("midi")
                     }
-                    if content == "mix" {
+                    if content == "mix" || content == "dj" {
                         Picker(WorkbenchText.t("格式", "Format"), selection: $format) { Text("MP3").tag("mp3"); Text("WAV").tag("wav") }.pickerStyle(.segmented)
-                    } else { Text(content == "stems" ? "WAV" : "ZIP").font(.caption).foregroundStyle(.secondary) }
-                    LabeledContent(WorkbenchText.t("范围", "Range"), value: WorkbenchText.t("整个工程", "Entire project"))
-                    LabeledContent(WorkbenchText.t("时长", "Duration"), value: MusicWorkbenchFormat.time(session.durationSeconds))
+                    } else { Text(content == "stems" ? "WAV" : content == "midi" ? "MIDI" : "ZIP").font(.caption).foregroundStyle(.secondary) }
+                    if content == "dj" {
+                        HStack {
+                            Text(WorkbenchText.t("导出时长（秒）", "Export duration (seconds)"))
+                            TextField(WorkbenchText.t("秒", "Seconds"), value: $djSeconds, format: .number.precision(.fractionLength(0...2)))
+                                .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        }
+                    }
+                    if content == "midi" { Text(WorkbenchText.t("导出当前音符、表达、音色编号和速度拍号；音频与原文件的其他事件保留在工程包中。", "Exports edited notes, expression, programs, tempo and meter. Audio and other original events remain in the project package.")).font(.caption).foregroundStyle(.secondary) }
+                    LabeledContent(WorkbenchText.t("范围", "Range"), value: content == "dj" ? WorkbenchText.t("当前双碟混音", "Current deck mix") : WorkbenchText.t("整个工程", "Entire project"))
+                    LabeledContent(WorkbenchText.t("时长", "Duration"), value: MusicWorkbenchFormat.time(content == "dj" ? djSeconds : session.durationSeconds))
                     LabeledContent(WorkbenchText.t("保存到", "Save to"), value: WorkbenchText.t("当前工程", "Current project"))
                     Button {
                         if content == "mix" { session.render(asMP3: format == "mp3") }
+                        else if content == "dj" { session.exportDJ(asMP3: format == "mp3", durationSeconds: djSeconds) }
+                        else if content == "midi" { session.exportMIDI() }
                         else { session.exportOriginals(stems: content == "stems") }
                     } label: { Label(WorkbenchText.t("生成文件", "Create files"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
-                        .disabled(session.isRendering || session.notationImporting || (content != "project" && session.document.tracks.flatMap(\.clips).isEmpty))
+                        .disabled(session.isRendering || session.notationImporting || (content != "project" && content != "dj" && session.document.tracks.flatMap(\.clips).isEmpty)
+                            || (content == "dj" && (session.djCaptureBusy || session.djLoading || session.djPresentationState == nil)))
                         .accessibilityIdentifier("music.export.create")
                 }
                 Section(WorkbenchText.t("工程备份", "Project backup")) {
@@ -103,7 +117,7 @@ struct MusicExportSheet: View {
                         do { restoreBase = try session.notationBackupSnapshot(); restoringBackup = true }
                         catch { session.diagnostic = error.localizedDescription }
                     } label: { Label(WorkbenchText.t("恢复本工程备份", "Restore this project's backup"), systemImage: "arrow.counterclockwise") }
-                        .disabled(session.isRendering || session.notationImporting || session.saving)
+                        .disabled(session.isRendering || session.notationImporting || session.saving || session.djCaptureBusy)
                         .accessibilityIdentifier("music.backup.restore")
                     Text(WorkbenchText.t("恢复编排与乐谱，并保留当前版本。", "Restore the arrangement and score while retaining the current version."))
                         .font(.caption).foregroundStyle(.secondary)
@@ -135,6 +149,7 @@ struct MusicExportSheet: View {
             .navigationTitle(WorkbenchText.t("导出音乐", "Export music")).navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { dismiss() } } }
         }
+        .onAppear { djSeconds = session.suggestedDJExportSeconds }
         .fileImporter(isPresented: $restoringBackup, allowedContentTypes: [.zip]) { result in
             switch result {
             case .success(let source):

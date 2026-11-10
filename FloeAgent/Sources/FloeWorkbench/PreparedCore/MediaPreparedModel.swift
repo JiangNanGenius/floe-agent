@@ -229,12 +229,14 @@ public struct MediaKeyframe: Sendable, Codable, Hashable {
     public var time: MediaRationalTime
     public var value: MediaKeyframeValue
     public var interpolation: MediaKeyframeInterpolation
+    public var curve: MediaCubicBezier?
 
     public init(time: MediaRationalTime, value: MediaKeyframeValue,
-                interpolation: MediaKeyframeInterpolation = .linear) {
+                interpolation: MediaKeyframeInterpolation = .linear, curve: MediaCubicBezier? = nil) {
         self.time = time
         self.value = value
         self.interpolation = interpolation
+        self.curve = curve
     }
 }
 
@@ -442,6 +444,7 @@ public struct MediaPreparedLayer: Sendable, Codable, Hashable, Identifiable {
     /// Per-layer non-destructive color/effect adjustments (v1 parity).
     public var adjustment: ImageLayerAdjustment
     public var content: MediaPreparedLayerContent
+    public var canvasSpace: MediaLayerCanvasSpace?
     public var mask: MediaPreparedLayerMask?
     public var clip: MediaPreparedClipRelationship?
     public var revision: UInt64
@@ -463,6 +466,7 @@ public struct MediaPreparedLayer: Sendable, Codable, Hashable, Identifiable {
         self.transform = transform
         self.adjustment = adjustment
         self.content = content
+        self.canvasSpace = nil
         self.mask = mask
         self.clip = clip
         self.revision = revision
@@ -502,10 +506,26 @@ public struct MediaPreparedClip: Sendable, Codable, Hashable, Identifiable {
     /// Caption/title text for `.caption` tracks; nil for media clips.
     public var captionText: String?
     public var captionSource: CaptionSegment.CaptionSource?
+    public var sourceCaptionID: UUID?
+    public var captionLanguage: String?
     public var leadingTransition: VideoTransitionKind
     public var transitionDuration: MediaRationalTime?
     public var keyframeTracks: [MediaKeyframeTrack]
     public var revision: UInt64
+    /// Explicit link for source audio extracted from this visual clip; never inferred from names.
+    public var sourceVisualClipID: UUID?
+    public var sourcePlayback: MediaSourcePlayback?
+    public var motionTitle: MediaMotionTitle?
+    public var audioProcessing: MediaAudioProcessing?
+    public var chromaKey: MediaVideoChromaKey?
+    public var blendMode: MediaVideoBlendMode?
+    public var visualOpacity: Double?
+    public var videoGrade: MediaVideoGrade?
+    public var videoTracking: MediaVideoTracking?
+    public var stabilization: MediaVideoStabilization?
+    /// Editable one-level source. Only its anchor visual clip carries this value.
+    public var compound: MediaPreparedCompound?
+    public var compoundAudioOwnerID:UUID?
 
     public init(id: UUID = UUID(), assetID: UUID? = nil,
                 timelineRange: MediaTimeRange, sourceRange: MediaTimeRange,
@@ -518,7 +538,10 @@ public struct MediaPreparedClip: Sendable, Codable, Hashable, Identifiable {
                 leadingTransition: VideoTransitionKind = .none,
                 transitionDuration: MediaRationalTime? = nil,
                 keyframeTracks: [MediaKeyframeTrack] = [],
-                revision: UInt64 = 0) {
+                revision: UInt64 = 0, sourceVisualClipID: UUID? = nil,
+                sourcePlayback: MediaSourcePlayback? = nil, motionTitle: MediaMotionTitle? = nil, audioProcessing: MediaAudioProcessing? = nil, chromaKey: MediaVideoChromaKey? = nil,
+                blendMode: MediaVideoBlendMode? = nil, visualOpacity: Double? = nil, videoGrade: MediaVideoGrade? = nil,
+                videoTracking: MediaVideoTracking? = nil, stabilization: MediaVideoStabilization? = nil) {
         self.id = id
         self.assetID = assetID
         self.timelineRange = timelineRange
@@ -533,10 +556,18 @@ public struct MediaPreparedClip: Sendable, Codable, Hashable, Identifiable {
         self.fadeOut = fadeOut
         self.captionText = captionText
         self.captionSource = captionSource
+        self.sourceCaptionID = nil;self.captionLanguage = nil
         self.leadingTransition = leadingTransition
         self.transitionDuration = transitionDuration
         self.keyframeTracks = keyframeTracks
         self.revision = revision
+        self.sourceVisualClipID = sourceVisualClipID
+        self.sourcePlayback = sourcePlayback
+        self.motionTitle = motionTitle
+        self.audioProcessing = audioProcessing
+        self.chromaKey = chromaKey;self.blendMode = blendMode;self.visualOpacity = visualOpacity;self.videoGrade = videoGrade
+        self.videoTracking = videoTracking; self.stabilization = stabilization
+        self.compound = nil;self.compoundAudioOwnerID=nil
     }
 }
 
@@ -628,6 +659,7 @@ public struct MediaPreparedDocument: Sendable, Codable, Hashable {
     public var updatedAt: Date
     public var revision: Int64
     public var canvas: MediaCanvas?
+    public var canvasRevision: UInt64?
     public var assets: [MediaAssetReference]
     /// Absent for the initial upgraded references; their generation is zero.
     public var assetRevisions: [UUID: UInt64]?
@@ -665,6 +697,7 @@ public struct MediaPreparedDocument: Sendable, Codable, Hashable {
         self.updatedAt = updatedAt
         self.revision = revision
         self.canvas = canvas
+        self.canvasRevision = nil
         self.assets = assets
         self.assetRevisions = assetRevisions
         self.sourceAssetID = sourceAssetID
@@ -805,6 +838,7 @@ public extension MediaPreparedDocument {
 public enum MediaPreparedObjectKind: String, Sendable, Codable, Hashable, CaseIterable {
     /// One global object per video document, identified by the document ID.
     case captionStyle
+    case canvas
     case asset
     case layer
     case track
@@ -840,6 +874,11 @@ public struct MediaPreparedOperation: Sendable, Codable, Hashable, Identifiable 
 }
 
 public enum MediaPreparedAction: Sendable, Codable, Hashable {
+    /// One canonical root-clip journal change; inner operation IDs remain replay-fenced.
+    case editCompound(clipID:UUID, expectedRevision:UInt64, operations:[MediaPreparedOperation])
+    case layoutCanvas(expectedRevision: UInt64,canvas:MediaCanvas,mode:MediaCanvasLayoutMode)
+    case setVideoColorProfile(expectedRevision: UInt64, profile: MediaVideoColorProfile?)
+    case setLayerCanvasSpace(id:UUID,expectedRevision:UInt64,space:MediaLayerCanvasSpace?)
     case setCaptionStyle(expectedRevision: UInt64, style: CaptionStyle?)
     case insertAsset(MediaAssetReference)
     case replaceAsset(expected: MediaAssetReference, expectedRevision: UInt64, replacement: MediaAssetReference)

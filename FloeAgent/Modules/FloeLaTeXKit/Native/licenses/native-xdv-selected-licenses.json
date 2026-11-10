@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "product": "FloeTeXNativeXDV",
+  "scope": "Selection for actual XDV-only native closure; old PDF sources/artifacts retained separately and forbidden in new Cargo/object graph",
+  "components": [
+    {
+      "component": "TECkit",
+      "selectedLicense": "CPL-1.0",
+      "notices": [
+        {
+          "file": "licenses/teckit-LICENSING-2.5.4.txt",
+          "sha256": "e6cd37f625b98a1453ec8e0cc527bf6768c0eb0d357fb9073a8790a163b489e2"
+        },
+        {
+          "file": "licenses/CPL-1.0.txt",
+          "sha256": "9698f2ba346a875a47a9cc6bb602e3d126758774dde1f575b4f3369dc3f2574f"
+        }
+      ]
+    },
+    {
+      "component": "FreeType",
+      "selectedLicense": "FTL",
+      "notices": [
+        {
+          "file": "licenses/freetype-LICENSE.TXT",
+          "sha256": "bd36c8b474855fa294c2ec5c184544478ef3720aad37d65a6296a4f264fd2d3b"
+        },
+        {
+          "file": "licenses/freetype-FTL.TXT",
+          "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f"
+        }
+      ]
+    },
+    {
+      "component": "Graphite2",
+      "selectedLicense": "MPL-2.0",
+      "notices": [
+        {
+          "file": "licenses/graphite2-COPYING",
+          "sha256": "2c272829ff23f182c8bf7ea12fedea69b0ae148663123ed5240c117cb129c9c1"
+        },
+        {
+          "file": "licenses/graphite2-LICENSE",
+          "sha256": "cab46cd45adbfea4b1d0f14b033c70062c73074fa0b56532c2f351576ddf455e"
+        },
+        {
+          "file": "licenses/MPL-2.0.txt",
+          "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+        }
+      ]
+    },
+    {
+      "component": "HarfBuzz",
+      "selectedLicense": "MIT",
+      "notices": [
+        {
+          "file": "licenses/harfbuzz-COPYING",
+          "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+        }
+      ]
+    },
+    {
+      "component": "ICU",
+      "selectedLicense": "Unicode-3.0",
+      "notices": [
+        {
+          "file": "licenses/icu-LICENSE",
+          "sha256": "e09827667e0bb3c808b2a463548ba814a5e6249b67353234d70c8dfc2bcc417d"
+        }
+      ]
+    },
+    {
+      "component": "libpng",
+      "selectedLicense": "libpng-2.0",
+      "notices": [
+        {
+          "file": "licenses/libpng-LICENSE",
+          "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526"
+        }
+      ]
+    }
+  ],
+  "TECkit": {
+    "versionInActualEngineSource": "2.5.4",
+    "sourcePin": {
+      "upstream": "https://github.com/tectonic-typesetting/tectonic",
+      "tag": "tectonic@0.17.0",
+      "commit": "8c0126a9653239a2e6e0a5274af9b8510f643030",
+      "licensing": "MIT umbrella; retain per-component licenses",
+      "patches": [
+        "patches/apple-and-embedded.patch"
+      ],
+      "patchSHA256": "e2a6a7203da8af036f3efaf1b7a4464130cb8f7533a4591efa574fba3f30bc48"
+    },
+    "exactVendoredSource": [
+      {
+        "path": "tectonic/crates/engine_xetex/xetex/teckit-Common.h",
+        "bytes": 3872,
+        "sha256": "bbc9079b26e121b009b596c29d7b9f0cca9e2370ac7a0e3bc3cc6b072d63ae38"
+      },
+      {
+        "path": "tectonic/crates/engine_xetex/xetex/teckit-Compiler.h",
+        "bytes": 2710,
+        "sha256": "9ed9cdfc3cd6781164b02eeb410f48fec40d3a8b3e87e39d1ccf00243366dac6"
+      },
+      {
+        "path": "tectonic/crates/engine_xetex/xetex/teckit-Engine.cpp",
+        "bytes": 57272,
+        "sha256": "707befff4b320ea0bba1fb548798de39a28f9899717fc325939baa962b39f8b3"
+      },
+      {
+        "path": "tectonic/crates/engine_xetex/xetex/teckit-Format.h",
+        "bytes": 7802,
+        "sha256": "5d62b9d21f0352eccd030956ebd8e7a88eea47dfac6a239049293cd3c54bf7aa"
+      },
+      {
+        "path": "tectonic/crates/engine_xetex/xetex/teckit-NormalizationData.c",
+        "bytes": 305074,
+        "sha256": "fe6d43c6c6d3be3dbedb9537e8ed1593cfc843b2a9c52fa5fa30f6d6dbb448a6"
+      },
+      {
+        "path": "tectonic/crates/engine_xetex/xetex/teckit-c-Engine.h",
+        "bytes": 7444,
+        "sha256": "89f239df5a46b9a1d1062b323d85f0176bd550a25dbd2c86ec5285866567deaf"
+      },
+      {
+        "path": "tectonic/crates/engine_xetex/xetex/teckit-cxx-Engine.h",
+        "bytes": 4682,
+        "sha256": "2773012c442c658ce097cfa1301a415c1bdb9bd0c5c06e5f0da783b0d6b16991"
+      }
+    ],
+    "licensingBasis": "Actual source headers offer Common Public License OR LGPL. Original TECkit2.5.4 LICENSING.txt offers CPL0.5 or any later version; this product selects CPL1.0. Preserve SIL and Tectonic modifications/source notices.",
+    "originalLicensingURL": "https://raw.githubusercontent.com/silnrsi/teckit/2.5.4/license/LICENSING.txt",
+    "completeSelectedLicense": "licenses/CPL-1.0.txt",
+    "sourceAvailability": "Matching immutable Floe source includes Native/tectonic/crates/engine_xetex/xetex/teckit*; retain source, headers and local patches under selected CPL terms."
+  },
+  "tectonic": "MIT applies to Tectonic original Rust components only; retain XeTeX/SIL MIT notices, SyncTeX notice, public-domain TeX notices and TECkit CPL separately. Cargo MIT labels are not evidence that every embedded C/C++ component is MIT.",
+  "nativeSourcePolicy": "Floe Apple C shims and Rust bridge MPL2.0; preserve per-file notices. Runtime TeX/font data retains its own original licenses; no font substitution or binary reuse."
+}

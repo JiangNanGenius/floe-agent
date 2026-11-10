@@ -284,6 +284,7 @@ struct ProviderProfileTests {
     private func makeDraft(
         providerID: UUID = UUID(),
         name: String = "DeepSeek",
+        baseURLString: String = "  https://api.deepseek.com  ",
         key: String = "",
         existing: ProviderProfile? = nil,
         models: [ModelProfile] = [],
@@ -298,7 +299,7 @@ struct ProviderProfileTests {
             providerID: existing?.id ?? providerID,
             kind: .custom,
             wireProtocol: .openAIChatCompletions,
-            baseURLString: "  https://api.deepseek.com  ",
+            baseURLString: baseURLString,
             displayName: name,
             presetID: resolvedPresetID,
             existingSecretRef: existing?.secretRef,
@@ -316,6 +317,28 @@ struct ProviderProfileTests {
             existingSyncRevision: existing?.syncRevision ?? 0,
             region: existing?.region
         )
+    }
+
+    @Test("HTTP(S) save endpoints need a real host before transport-policy checks",
+          arguments: ["http://", "https://", "http:///v1", "https:///v1"])
+    func draftRejectsHTTPSEndpointsMissingHost(_ endpoint: String) {
+        switch makeDraft(baseURLString: endpoint).makeRequest() {
+        case .success: Issue.record("A host-less network endpoint was accepted")
+        case .failure(let report):
+            #expect(report.issues.map(\.problem) == [.baseURLMalformed])
+            #expect(report.issues.first?.field == .baseURL)
+            #expect(report.issues.first?.messageKey == "providers.validation.endpoint_malformed")
+        }
+    }
+
+    @Test("The missing-host check preserves unsupported-scheme validation")
+    func draftRetainsUnsupportedSchemeIssue() {
+        switch makeDraft(baseURLString: "ftp://example.com/v1").makeRequest() {
+        case .success: Issue.record("An unsupported endpoint scheme was accepted")
+        case .failure(let report):
+            #expect(report.issues.contains { $0.problem == .baseURLUnsupportedScheme && $0.field == .baseURL })
+            #expect(!report.issues.contains { $0.problem == .baseURLMalformed })
+        }
     }
 
     @Test("Editing a provider preserves its saved region")

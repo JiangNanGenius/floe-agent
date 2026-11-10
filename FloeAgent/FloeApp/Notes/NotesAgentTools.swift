@@ -278,6 +278,8 @@ enum NotesAssistantToolCatalog {
         "latex.create", "latex.inspect", "latex.edit", "latex.typeset", "latex.restore", "latex.export",
         "conversation.search", "conversation.read", "conversation.list",
         "checklist.readPlan", "checklist.updatePlan", "memory.recall",
+        "user.ask", "chat.present", "chat.content.list", "document.presentation.createInline", "document.presentation.chartContract",
+        "github.readLink",
         "tools.search", "tools.list"
     ]
 
@@ -285,7 +287,7 @@ enum NotesAssistantToolCatalog {
     /// the task scratch. Image inspection and Image Playground are excluded
     /// because document bytes may leave the device; exec tools are additionally gated on
     /// the task network policy inside the approval policy.
-    static let scopedAutoGrantToolNames: Set<String> = toolNames.subtracting(["image.inspect", "image.playground"])
+    static let scopedAutoGrantToolNames: Set<String> = toolNames.subtracting(["image.inspect", "image.playground", "github.readLink"])
 }
 
 struct NotesSearchTool: AgentTool {

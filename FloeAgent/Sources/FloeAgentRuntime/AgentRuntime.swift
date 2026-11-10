@@ -2562,6 +2562,48 @@ public actor FloeAgentRuntime {
                 }
             )
         }
+        // Old-task native-first refresh: a continued conversation may carry
+        // discovery state (SQLite store or checkpoint-restored presentation)
+        // written before this app version installed new capabilities, and the
+        // first-turn guess above only runs while the set is empty. Re-match
+        // the BOUNDED REAL task context against the LIVE ceiling descriptors
+        // on every preparation, so both old-task paths — a new message in the
+        // old task and a checkpoint Continue — re-discover currently available
+        // capabilities within the task's EXISTING authorization. The bounded
+        // context is the current user message + the run's original user goal
+        // + the CURRENT run's own checklist step titles (same run-ownership
+        // rule as taskClosureFacts): the asset substep the agent decomposed
+        // ("生成 BGM 资产") lives in the plan, while assistant prose and tool
+        // output are never read, so an old scripting route is not inherited.
+        // Refresh is catalog-driven via ToolDiscovery matching with routing-
+        // metadata exclusions (generic interpreters/retired), additive,
+        // capped, idempotent, and it never invents an unoffered tool or
+        // widens any ceiling. An explicit code route in the CURRENT user
+        // message suppresses it. `persistDiscoveryIfChanged()` below keeps the
+        // widened presentation set; every later load still intersects it with
+        // the live ceiling.
+        let routingChecklist = configuration.planChecklistProvider != nil
+            ? await configuration.planChecklistProvider?() : nil
+        let routingPlanTitles = routingChecklist?.runID == runID
+            ? (routingChecklist?.steps ?? []).map(\.title) : []
+        let routingContext = NativeAuthoringRouting.boundedTaskContext(
+            currentUserTask: userTask,
+            originalGoal: messages.first(where: { $0.role == "user" })?.content,
+            planStepTitles: routingPlanTitles
+        )
+        let nativeAdditions = NativeAuthoringRouting.taskBoundAdditions(
+            userTask: userTask,
+            taskContext: routingContext,
+            liveDescriptors: catalogDescriptors,
+            discoveredNames: discoveredToolNames
+        )
+        if !nativeAdditions.isEmpty {
+            let additionNames = nativeAdditions.map(\.name)
+            discoveredToolNames.formUnion(additionNames)
+            let seenAdditions = Set(additionNames)
+            discoveryPriority = additionNames + discoveryPriority.filter { !seenAdditions.contains($0) }
+        }
+        let nativeBindingNames = nativeAdditions.map(\.name)
         // Fast chat presents the same progressive discovery as a task run:
         // goal-text matching, the schema budget and eviction notices behave
         // identically for every run; chat mode changes the envelope and
@@ -2757,6 +2799,27 @@ public actor FloeAgentRuntime {
             )
             legacyMessages[index].content += "\n\n" + discovery
             contentMessages[index].content.append(.text(discovery))
+        }
+        // Turn-bound capability guidance for EVERY provider kind. Local
+        // adapters skip the full cloud directory above, but the bounded
+        // substep rule plus a request-matched binding is exactly what an old
+        // task or a small local model needs before it defaults to generic
+        // code for a natively supported operation. Names come only from this
+        // run's live catalog; an unoffered capability is never named, and the
+        // lines grant nothing.
+        if supportsTools, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            let taskLines = NativeAuthoringRouting.contextLines(
+                userTask: userTask,
+                taskContext: routingContext,
+                descriptors: discoverableDescriptors,
+                bindingNames: nativeBindingNames,
+                displayName: { CompatToolNames.wireName($0, for: configuration.provider) }
+            )
+            if !taskLines.isEmpty {
+                let note = taskLines.joined(separator: "\n")
+                legacyMessages[index].content += "\n\n" + note
+                contentMessages[index].content.append(.text(note))
+            }
         }
         // Everything below the marker changes per turn; everything above it is
         // stable within the run and eligible for provider prefix caching.

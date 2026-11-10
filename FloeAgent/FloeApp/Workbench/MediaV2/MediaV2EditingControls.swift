@@ -92,8 +92,10 @@ extension MediaV2Session {
            let sourceLimit = asset.metadata?.durationSeconds,
            sourceStart + sourceDuration > sourceLimit + 0.001 { throw MediaV2CommandError.invalidInput }
         var next = clip
-        let offset = (sourceStart - clip.sourceRange.startSeconds) / clip.speed
-        let duration = sourceDuration / clip.speed
+        let offset = clip.sourcePlayback?.isReversed == true
+            ? (clip.sourceRange.endSeconds - sourceStart - sourceDuration) / clip.speed
+            : (sourceStart - clip.sourceRange.startSeconds) / clip.speed
+        let duration = clip.sourcePlayback?.holdSeconds != nil ? clip.timelineRange.durationSeconds : sourceDuration / clip.speed
         next.sourceRange = try Self.range(start: sourceStart, duration: sourceDuration)
         next.timelineRange = try Self.range(start: timelineStart ?? clip.timelineRange.startSeconds, duration: duration)
         next.keyframeTracks = try slicedKeyframes(clip.keyframeTracks, from: offset, duration: duration)
@@ -105,36 +107,13 @@ extension MediaV2Session {
         return next
     }
     func slicedKeyframes(_ tracks: [MediaKeyframeTrack], from offset: Double, duration: Double) throws -> [MediaKeyframeTrack] {
-        try tracks.map { track in
-            let name = track.property.replacingOccurrences(of: "transform.", with: "")
-            guard let property = PreparedVideoAnimatableProperty(rawValue: name) else { throw MediaV2CommandError.unavailable }
-            let keys = try track.keyframes.map { key -> PreparedVideoKeyframe in
-                guard case .number(let value) = key.value,
-                      let interpolation = PreparedVideoInterpolation(rawValue: key.interpolation.rawValue) else { throw MediaV2CommandError.unavailable }
-                return .init(time: try PreparedVideoTime(seconds: key.time.seconds, timescale: 600), value: value, interpolation: interpolation)
-            }
-            let prepared = PreparedVideoKeyframeTrack(property: property, keyframes: keys)
-            var sliced: [MediaKeyframe] = []
-            if let value = try PreparedVideoFrameEvaluator.interpolate(track: prepared,
-                at: PreparedVideoTime(seconds: max(0, offset), timescale: 600)) {
-                let interpolation = track.keyframes.last(where: { $0.time.seconds <= offset })?.interpolation
-                    ?? track.keyframes.first?.interpolation ?? .linear
-                sliced.append(.init(time: try Self.time(0), value: .number(value), interpolation: interpolation))
-            }
-            for key in track.keyframes where key.time.seconds > offset + 0.000_01 && key.time.seconds < offset + duration - 0.000_01 {
-                var shifted = key; shifted.time = try Self.time(key.time.seconds - offset); sliced.append(shifted)
-            }
-            if let value = try PreparedVideoFrameEvaluator.interpolate(track: prepared,
-                at: PreparedVideoTime(seconds: max(0, offset + duration), timescale: 600)) {
-                sliced.append(.init(time: try Self.time(duration), value: .number(value)))
-            }
-            return .init(property: track.property, keyframes: sliced)
-        }
+        try MediaAnimation.sliced(tracks,from:offset,duration:duration)
     }
     func trimActions(track: MediaPreparedTrack, clip: MediaPreparedClip, sourceStart: Double,
                      sourceDuration: Double, timelineStart: Double? = nil, ripple: Bool = false) throws -> [MediaPreparedAction] {
         let next = try trimmedClip(clip, sourceStart: sourceStart, sourceDuration: sourceDuration, timelineStart: timelineStart)
         var actions: [MediaPreparedAction] = [.replaceClip(trackID: track.id, clipID: clip.id, expectedRevision: clip.revision, clip: next)]
+        if track.kind == .visual { actions.append(contentsOf: try linkedSourceAudioActions(for: next)) }
         if ripple {
             let delta = next.timelineRange.endSeconds - clip.timelineRange.endSeconds
             for later in track.clips where later.id != clip.id && later.timelineRange.startSeconds >= clip.timelineRange.endSeconds - 0.000_01 {
@@ -152,26 +131,84 @@ extension MediaV2Session {
               abs(left.timelineRange.endSeconds - right.timelineRange.startSeconds) <= frame,
               left.leadingTransition == .none, right.leadingTransition == .none else { throw MediaV2CommandError.invalidInput }
         let delta = boundary - right.timelineRange.startSeconds
-        let leftDuration = left.sourceRange.durationSeconds + delta * left.speed
-        let rightDuration = right.sourceRange.durationSeconds - delta * right.speed
-        guard leftDuration / left.speed >= frame, rightDuration / right.speed >= frame else { throw MediaV2CommandError.invalidInput }
-        let nextLeft = try trimmedClip(left, sourceStart: left.sourceRange.startSeconds, sourceDuration: leftDuration)
-        let nextRight = try trimmedClip(right, sourceStart: right.sourceRange.startSeconds + delta * right.speed,
-            sourceDuration: rightDuration, timelineStart: boundary)
-        return [.replaceClip(trackID: track.id, clipID: left.id, expectedRevision: left.revision, clip: nextLeft),
+        let leftDuration = left.timelineRange.durationSeconds + delta
+        let rightDuration = right.timelineRange.durationSeconds - delta
+        guard leftDuration >= frame, rightDuration >= frame else { throw MediaV2CommandError.invalidInput }
+        let nextLeft = try timelineTrimmedClip(left,offset:0,duration:leftDuration)
+        let nextRight = try timelineTrimmedClip(right,offset:delta,duration:rightDuration,timelineStart:boundary)
+        var actions: [MediaPreparedAction] = [.replaceClip(trackID: track.id, clipID: left.id, expectedRevision: left.revision, clip: nextLeft),
                 .replaceClip(trackID: track.id, clipID: right.id, expectedRevision: right.revision, clip: nextRight)]
+        if track.kind == .visual {
+            actions.append(contentsOf:try linkedSourceAudioActions(for:nextLeft))
+            actions.append(contentsOf:try linkedSourceAudioActions(for:nextRight))
+        }
+        return actions
     }
-    func trimTimelineEdge(track: MediaPreparedTrack, clip: MediaPreparedClip, leading: Bool, to seconds: Double) {
+    private func timelineTrimmedClip(_ clip: MediaPreparedClip, offset: Double, duration: Double, timelineStart: Double? = nil) throws -> MediaPreparedClip {
+        let source = try MediaSourcePlaybackMath.sourceTrim(sourceStart:clip.sourceRange.startSeconds,
+            sourceDuration:clip.sourceRange.durationSeconds,speed:clip.speed,offset:offset,duration:duration,playback:clip.sourcePlayback)
+        if let limit = clip.assetID.flatMap({document.asset($0)?.metadata?.durationSeconds}), source.start + source.duration > limit + 0.001 {
+            throw MediaV2CommandError.invalidInput
+        }
+        var next = clip
+        next.sourceRange = try Self.range(start:source.start,duration:source.duration)
+        next.timelineRange = try Self.range(start:timelineStart ?? clip.timelineRange.startSeconds,duration:duration)
+        next.keyframeTracks = try slicedKeyframes(clip.keyframeTracks,from:offset,duration:duration)
+        if let fade = next.fadeIn { next.fadeIn = try Self.time(min(duration,fade.seconds)) }
+        if let fade = next.fadeOut { next.fadeOut = try Self.time(min(duration,fade.seconds)) }
+        if let transition = next.transitionDuration { next.transitionDuration = try Self.time(min(duration,transition.seconds)) }
+        return next
+    }
+    func linkedSourceAudioActions(for clip: MediaPreparedClip, timeScale: Double = 1) throws -> [MediaPreparedAction] {
+        try document.trackGraph.tracks.filter { $0.kind == .audio }.flatMap { track in
+            try track.clips.filter { $0.sourceVisualClipID == clip.id }.map { source in
+                var sound = source
+                sound.timelineRange = clip.timelineRange; sound.sourceRange = clip.sourceRange
+                sound.speed = clip.speed; sound.sourcePlayback = clip.sourcePlayback
+                sound.fadeIn = try source.fadeIn.map { try Self.time(min(clip.timelineRange.durationSeconds, $0.seconds * timeScale)) }
+                sound.fadeOut = try source.fadeOut.map { try Self.time(min(clip.timelineRange.durationSeconds, $0.seconds * timeScale)) }
+                return .replaceClip(trackID: track.id, clipID: sound.id, expectedRevision: source.revision, clip: sound)
+            }
+        }
+    }
+    func timelineTrimTarget(_ seconds: Double, clip: MediaPreparedClip, leading: Bool) -> Double {
+        let frame = 1 / max(1, document.trackGraph.frameRate?.seconds ?? 30)
+        if clip.sourcePlayback?.holdSeconds != nil {
+            return leading ? min(clip.timelineRange.endSeconds - frame,max(0,seconds)) : max(clip.timelineRange.startSeconds + frame,seconds)
+        }
+        let limit = clip.assetID.flatMap { document.asset($0)?.metadata?.durationSeconds }
+        let reversed = clip.sourcePlayback?.isReversed == true
+        let ceiling = limit ?? clip.sourceRange.endSeconds
+        return MediaTimelineViewportMath.trimTarget(seconds, leading: leading,
+            start: clip.timelineRange.startSeconds, end: clip.timelineRange.endSeconds,
+            sourceStart: reversed ? max(0,ceiling - clip.sourceRange.endSeconds) : clip.sourceRange.startSeconds,
+            sourceEnd: reversed ? ceiling - clip.sourceRange.startSeconds : clip.sourceRange.endSeconds,
+            speed: clip.speed, assetDuration: limit, frameDuration: frame)
+    }
+    func trimTimelineEdge(track: MediaPreparedTrack, clip: MediaPreparedClip, leading: Bool, to seconds: Double, expectedRevision: Int64? = nil) {
         do {
-            let frame = 1 / max(1, document.trackGraph.frameRate?.seconds ?? 30)
-            let target = snapTime(seconds, excluding: clip.id)
-            let delta = leading ? target - clip.timelineRange.startSeconds : target - clip.timelineRange.endSeconds
-            let sourceStart = leading ? clip.sourceRange.startSeconds + delta * clip.speed : clip.sourceRange.startSeconds
-            let duration = clip.sourceRange.durationSeconds + (leading ? -delta : delta) * clip.speed
-            guard duration / clip.speed >= frame else { throw MediaV2CommandError.invalidInput }
-            submit(try trimActions(track: track, clip: clip, sourceStart: sourceStart, sourceDuration: duration,
-                timelineStart: leading ? target : nil, ripple: !leading && rippleCurrentTrack))
+            let target = timelineTrimTarget(snapTime(seconds, excluding: clip.id),clip:clip,leading:leading)
+            let offset = leading ? target - clip.timelineRange.startSeconds : 0
+            let duration = leading ? clip.timelineRange.endSeconds - target : target - clip.timelineRange.startSeconds
+            let next = try timelineTrimmedClip(clip,offset:offset,duration:duration,timelineStart:leading ? target:nil)
+            var actions: [MediaPreparedAction] = [.replaceClip(trackID:track.id,clipID:clip.id,expectedRevision:clip.revision,clip:next)]
+            if track.kind == .visual { actions.append(contentsOf:try linkedSourceAudioActions(for:next)) }
+            if !leading && rippleCurrentTrack {
+                let delta = next.timelineRange.endSeconds - clip.timelineRange.endSeconds
+                for later in track.clips where later.id != clip.id && later.timelineRange.startSeconds >= clip.timelineRange.endSeconds - 0.000_01 {
+                    var moved = later
+                    moved.timelineRange = try Self.range(start:max(0,later.timelineRange.startSeconds + delta),duration:later.timelineRange.durationSeconds)
+                    actions.append(.replaceClip(trackID:track.id,clipID:later.id,expectedRevision:later.revision,clip:moved))
+                    if track.kind == .visual { actions.append(contentsOf:try linkedSourceAudioActions(for:moved)) }
+                }
+            }
+            commitTimelineGesture(actions,revision:expectedRevision ?? document.revision)
         } catch { diagnostic = error.localizedDescription }
+    }
+
+    func commitTimelineGesture(_ actions:[MediaPreparedAction],revision:Int64) {
+        Task { do { _ = try await apply(actions.map{.init(action:$0)},expectedRevision:revision) }
+            catch { diagnostic = error.localizedDescription } }
     }
 
     func keyframeValue(for property: String, in clip: MediaPreparedClip) -> Double {
@@ -184,13 +221,9 @@ extension MediaV2Session {
         let name = track.property.replacingOccurrences(of: "transform.", with: "")
         guard let property = PreparedVideoAnimatableProperty(rawValue: name) else { return nil }
         do {
-            let keys = try track.keyframes.map { key -> PreparedVideoKeyframe in
-                guard case .number(let value) = key.value,
-                      let interpolation = PreparedVideoInterpolation(rawValue: key.interpolation.rawValue) else { throw MediaV2CommandError.unavailable }
-                return .init(time: try PreparedVideoTime(seconds: key.time.seconds, timescale: 600), value: value, interpolation: interpolation)
-            }
+            let keys = try track.keyframes.map { try MediaAnimation.preparedKey($0,timescale:90_000) }
             return try PreparedVideoFrameEvaluator.interpolate(track: .init(property: property, keyframes: keys),
-                at: PreparedVideoTime(seconds: max(0, localTime), timescale: 600))
+                at: PreparedVideoTime(seconds: max(0, localTime), timescale: 90_000))
         } catch { return nil }
     }
     func removeKeyframe(property: String, time: MediaRationalTime) {

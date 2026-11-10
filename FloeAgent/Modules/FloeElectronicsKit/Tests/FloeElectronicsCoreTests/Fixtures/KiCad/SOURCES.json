@@ -1,0 +1,58 @@
+[
+  {
+    "path": "kicad-symbols/Device.kicad_symdir/R.kicad_sym",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+    "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+    "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/R.kicad_sym",
+    "bytes": 2106,
+    "sha256": "db1dd3eb60dbcc9e239d107e2d123ee253aefdd841186076e9df39444d4e11c7"
+  },
+  {
+    "path": "kicad-symbols/Amplifier_Operational.kicad_symdir/LM358.kicad_sym",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+    "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+    "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Amplifier_Operational.kicad_symdir/LM358.kicad_sym",
+    "bytes": 1604,
+    "sha256": "8f1c5305cd5f1b0fa886834aadc33a9c5b87238e5ec1189ab8b68f893683dedc"
+  },
+  {
+    "path": "kicad-symbols/Amplifier_Operational.kicad_symdir/LM2904.kicad_sym",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+    "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+    "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Amplifier_Operational.kicad_symdir/LM2904.kicad_sym",
+    "bytes": 4244,
+    "sha256": "29ee56ff220ad1a341943f0bc181bae1ba7d1f5b69ed63c5cf64b137ea414abf"
+  },
+  {
+    "path": "kicad-symbols/Transistor_FET.kicad_symdir/2N7002.kicad_sym",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+    "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+    "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_FET.kicad_symdir/2N7002.kicad_sym",
+    "bytes": 1526,
+    "sha256": "12f0895ef64e148ef00c1a7a696b014105081928729db65a5fd50cf84d6fb442"
+  },
+  {
+    "path": "kicad-symbols/Transistor_FET.kicad_symdir/Q_NMOS_GSD.kicad_sym",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+    "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+    "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_FET.kicad_symdir/Q_NMOS_GSD.kicad_sym",
+    "bytes": 4430,
+    "sha256": "00e9d626faf0e7630687d29a091eb4ce05b128e996476b57980d6c873bc411c7"
+  },
+  {
+    "path": "kicad-footprints/Package_TO_SOT_SMD.pretty/SOT-23.kicad_mod",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+    "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+    "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_TO_SOT_SMD.pretty/SOT-23.kicad_mod",
+    "bytes": 4485,
+    "sha256": "0d88c86c1b6d8c1aae4aa8c09386264c089d4451a128b6ccd63ed253f4300b15"
+  },
+  {
+    "path": "kicad-footprints/Package_DIP.pretty/DIP-8_W7.62mm.kicad_mod",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+    "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+    "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_DIP.pretty/DIP-8_W7.62mm.kicad_mod",
+    "bytes": 3641,
+    "sha256": "222fb44370968119abbd978176814cc43a71bc32ac2de275d8a3c418c0830fc6"
+  }
+]

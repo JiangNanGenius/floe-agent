@@ -622,6 +622,47 @@ struct PendingApproval: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Owns one invocation from synchronous admission through its last cleanup.
+/// A detached task dictionary or a late cleanup cannot admit/erase another
+/// invocation of the same durable run. Cancellation keeps the cleanup barrier.
+struct ConversationRunInvocationOwnership: Sendable {
+    struct Token: Sendable, Equatable {
+        let runID: UUID
+        fileprivate let generation: UUID
+    }
+    private struct Entry: Sendable {
+        let token: Token
+        let conversationID: UUID?
+        var cancelled = false
+    }
+    private var entries: [UUID: Entry] = [:]
+
+    mutating func claim(_ runID: UUID, conversationID: UUID? = nil, generation: UUID = UUID()) -> Token? {
+        guard entries[runID] == nil else { return nil }
+        let token = Token(runID: runID, generation: generation)
+        entries[runID] = Entry(token: token, conversationID: conversationID)
+        return token
+    }
+    func hasOwner(_ runID: UUID) -> Bool { entries[runID] != nil }
+    func isCurrent(_ token: Token) -> Bool { entries[token.runID]?.token == token }
+    func isCancelled(_ runID: UUID) -> Bool { entries[runID]?.cancelled == true }
+    func identities(conversationID: UUID) -> Set<UUID> {
+        Set(entries.values.filter { $0.conversationID == conversationID }.map { $0.token.generation })
+    }
+    func tokens(matching identities: Set<UUID>) -> [Token] {
+        entries.values.compactMap { identities.contains($0.token.generation) ? $0.token : nil }
+    }
+    func mayExecute(_ token: Token) -> Bool {
+        entries[token.runID]?.token == token && entries[token.runID]?.cancelled == false
+    }
+    mutating func cancel(_ runID: UUID) { entries[runID]?.cancelled = true }
+    @discardableResult mutating func finish(_ token: Token) -> Bool {
+        guard entries[token.runID]?.token == token else { return false }
+        entries[token.runID] = nil
+        return true
+    }
+}
+
 /// A run that has been launched without forcing the caller to await the
 /// complete provider/tool loop. Home uses the run ID to navigate as soon
 /// as the durable run row exists; existing callers can still await the
@@ -872,6 +913,122 @@ final class ConversationCenter: ObservableObject {
         try await environment.intelligenceStore.saveCompaction(runID: run.id, record: result.record,
             summary: ContextHistorySnapshot.manualPrefix + summary)
         return FloeL10n.l("remote.conversation_center.context_compacted_about_tokens_the_full", result.record.beforeEstimatedTokens, result.record.afterEstimatedTokens)
+    }
+
+    /// Recoverable history cleanup at the moment the user selects a different
+    /// model, before any undersized-window dispatch commits a new message.
+    /// Compaction runs only when the conversation's current projected history
+    /// does not already fit the INCOMING model's real configured window with
+    /// the same output/image/tool-schema reservations the first dispatch will
+    /// use (``ModelSwitchHistoryPlanner``). Switch time has no measured schema
+    /// receipt for the incoming model, so the planner charges its bounded
+    /// initial catalog/schema reservation and a bounded live-system envelope:
+    /// this is deliberately conservative, not a claim to reproduce the whole
+    /// first request — the real first dispatch still re-checks with actual
+    /// measured schemas through the unchanged in-run path. The summary call reuses the
+    /// existing per-pair ``makeContextEngine`` wiring — preferring the OUTGOING
+    /// model while it is still configured/enabled, because it can read its own
+    /// history at its own window — and commits through the existing
+    /// compaction store, so no second compression system exists.
+    ///
+    /// Only history already owned by the conversation is ever sent: the
+    /// composer draft and any newly submitted input are not inputs to this
+    /// path. Busy/stale/cancelled/failure outcomes leave the original
+    /// history, checkpoints and the user's selection fully intact; answers
+    /// are still generated exclusively by the selected incoming model at
+    /// dispatch, so the displayed model identity is never misleading. When
+    /// this pass is skipped, the existing first-dispatch compaction in
+    /// ``AgentRuntime`` remains the unchanged safety net.
+    func prepareHistoryForIncomingModel(
+        conversationID: UUID,
+        outgoingModelID: UUID?,
+        incomingModelID: UUID,
+        toolsEnabledForNextRun: Bool
+    ) async throws -> ModelSwitchHistoryPreparer.Outcome {
+        // Temporary chat owns no durable history to organize.
+        guard !isTemporaryConversation(conversationID) else { return .noHistory }
+        // Same mutual-exclusion as manual compaction and launches: while this
+        // pass runs, `startRun` refuses with the existing actionable message
+        // and the composer draft survives; while a launch or run owns the
+        // conversation, the pass silently yields (.busy) instead of queueing.
+        guard !compactingConversations.contains(conversationID),
+              launchCount == 0,
+              !activeRuns.values.contains(where: { $0.conversationID == conversationID }) else {
+            return .busy
+        }
+        guard let (incomingProvider, incomingModel) = providerAndModel(modelID: incomingModelID) else {
+            throw FloeError.validationFailed("The selected model is no longer configured")
+        }
+        // Take the lock before the first await (the manual path's exact
+        // ordering): a second switch or manual compaction interleaving at an
+        // await must observe this pass as holding the conversation.
+        compactingConversations.insert(conversationID)
+        defer { compactingConversations.remove(conversationID) }
+        guard let anchorRun = try await environment.runStore.runs(conversationID: conversationID).first else {
+            return .noHistory
+        }
+        let assembler = ConversationHistoryAssembler(store: environment.conversationStore,
+            compactionStore: environment.intelligenceStore)
+        let history = try await assembler.build(conversationID: conversationID)
+        // Recheck the outgoing pair at the moment its provider could receive
+        // history. If it no longer resolves (disabled/removed), fall back to
+        // the incoming model's own engine — the same pair the answers will
+        // use — never to an unrelated model.
+        let engine: any ContextEngine
+        if let outgoingModelID, outgoingModelID != incomingModel.id,
+           let outgoing = providerAndModel(modelID: outgoingModelID) {
+            engine = makeContextEngine(provider: outgoing.0, model: outgoing.1)
+        } else {
+            engine = makeContextEngine(provider: incomingProvider, model: incomingModel)
+        }
+        let conversationStore = environment.conversationStore
+        let intelligenceStore = environment.intelligenceStore
+        // Honest reservations for a model switch: no measured schema receipt
+        // exists for the incoming model (per-run `lastProviderSchemaTokenEstimate`
+        // starts from zero and compaction snapshots are not persisted), so
+        // `measuredToolSchemaTokens` is 0 and the planner derives the bounded
+        // initial catalog/schema reservation for this window. The live system
+        // envelope (personalization) is bounded at the same scale the runtime
+        // already reserves for fixed prompt content. Neither claim replaces
+        // the first dispatch's own sizing: it re-measures real schemas and
+        // re-checks history through the unchanged in-run path.
+        let reservation = ModelSwitchHistoryPlanner.Reservation(
+            toolsEnabledForNextRun: toolsEnabledForNextRun,
+            measuredToolSchemaTokens: 0,
+            boundedSchemaReserveTokens: nil,
+            systemContextTokenEstimate: incomingProvider.kind == .local
+                // Local prompt composition already charges the fixed
+                // contract/schema envelope inside its own curated budget
+                // (ConversationRunService compactForLocal sizing); charging
+                // it again here would double-count, so local keeps 0.
+                ? 0
+                : CompactionSummarizerBudget.promptAllowanceTokens
+        )
+        return try await ModelSwitchHistoryPreparer().prepare(
+            incomingProviderKind: incomingProvider.kind,
+            incomingModel: incomingModel,
+            history: history,
+            reservation: reservation,
+            engine: engine,
+            loadFreshHistory: {
+                try await ConversationHistoryAssembler(store: conversationStore,
+                    compactionStore: intelligenceStore)
+                    .build(conversationID: conversationID)
+            },
+            ownershipIsValid: {
+                await MainActor.run {
+                    self.providerAndModel(modelID: incomingModelID) != nil
+                        && !self.isClearingHistory
+                        && !self.deletingConversationIDs.contains(conversationID)
+                        && !self.isTemporaryConversation(conversationID)
+                        && self.launchCount == 0
+                        && !self.activeRuns.values.contains(where: { $0.conversationID == conversationID })
+                }
+            },
+            commit: { record, summary in
+                try await intelligenceStore.saveCompaction(runID: anchorRun.id, record: record, summary: summary)
+            }
+        )
     }
 
     private func consumeManualCompaction(conversationID: UUID) -> Bool {
@@ -1131,12 +1288,14 @@ final class ConversationCenter: ObservableObject {
     /// Provider-loop tasks retained so destructive actions can cancel and
     /// await them before cascading database rows.
     private var runTasks: [UUID: Task<Result<Void, Error>, Never>] = [:]
+    private var runInvocationOwnership = ConversationRunInvocationOwnership()
     /// One quiescent continuation evaluator per Goal. A stale completed run
     /// may observe evidence, but cannot race a newer Goal revision or launch
     /// a second cycle after the reservation has changed.
     private var goalContinuationReservations: [UUID: GoalContinuationReservation] = [:]
     /// Snapshot polling tasks keyed by run ID.
     private var snapshotTasks: [UUID: Task<Void, Never>] = [:]
+    private var snapshotTrackingOwners: [UUID: UUID] = [:]
     private var sessionRevisions: [UUID: Int] = [:]
     private var sessionReconciliationTasks: [UUID: Task<Void, Never>] = [:]
     private var sessionContinuations: [UUID: [UUID: AsyncStream<ConversationSessionSnapshot>.Continuation]] = [:]
@@ -1149,6 +1308,7 @@ final class ConversationCenter: ObservableObject {
     /// Launch/delete coordination. A delete first closes the conversation to
     /// new launches, then waits for any transaction already in progress.
     private var launchCount = 0
+    private var launchPreparations = DocumentAssistantPreparationOwnership()
     private var launchWaiters: [CheckedContinuation<Void, Never>] = []
     private var launchFence = LaunchEpochFence()
 
@@ -4249,6 +4409,24 @@ final class ConversationCenter: ObservableObject {
                 expectedAttempt: authoring?.attempt?.token
             )
         }
+        let experienceGuidance: String?
+        if isTemporary || runSurface != .ordinary
+            || !configuration.toolsEnabled || !model.capabilities.contains(.tools) {
+            experienceGuidance = nil
+        } else {
+            let currentDescriptors = availableDescriptors.filter {
+                allowedToolNames?.contains($0.name) ?? true
+            }
+            let activated = ExecutionExperienceActivation.toolNames(
+                query: memoryQuery, descriptors: currentDescriptors,
+                explicitlyActivated: Set(skills.relatedSkillIDsByTool.keys)
+            )
+            experienceGuidance = try? await environment.executionExperienceService.guidance(
+                workspaceID: canonicalWorkspaceID, isTemporary: false,
+                availableToolNames: Set(currentDescriptors.map(\.name)),
+                activatedToolNames: activated
+            )
+        }
         // Bind browser-data consent to this actual run's immutable endpoint,
         // never to a different conversation currently visible in Settings.
         let browserRecipient = Self.browserRecipientIdentity(for: provider)
@@ -4306,6 +4484,7 @@ final class ConversationCenter: ObservableObject {
                     skills.instructions,
                     authoringInstructions,
                     studioContext,
+                    experienceGuidance,
                     latexContext,
                     notesContext,
                     runSurface == .ordinary || isTemporary
@@ -4801,6 +4980,8 @@ final class ConversationCenter: ObservableObject {
         if launchIsTemporary, !attachments.isEmpty {
             throw FloeError.validationFailed("Temporary chat only accepts text")
         }
+        let preparationID = beginLaunch(conversationID: conversationID)
+        defer { finishLaunch(preparationID) }
         // A durable run parked waiting on required background work is NOT
         // finished. A send while it waits resumes the SAME run with the new
         // message instead of creating a second run; this holds regardless of
@@ -4812,13 +4993,14 @@ final class ConversationCenter: ObservableObject {
             }
             FloeLogger(category: .app).info(
                 "startRunResumesAwaitingDependency conversation=\(conversationID.uuidString) run=\(waiting.id.uuidString)")
-            return try await resumeRunWithInput(waiting, content: goal, attachments: attachments)
+            guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
+            return try await resumeRunWithInput(waiting, content: goal, attachments: attachments,
+                                                preparationID: preparationID)
         }
         let launchToken = launchFence.issue(scope: conversationID)
 
-        beginLaunch()
-        defer { finishLaunch() }
         await launchTestHooks.beforeCapture?()
+        guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         // Capture before any durable message/checkpoint is written. The user
         // still sees a secure card and canonical recovery state receives
         // a reusable credential reference. TEMPORARY conversations
@@ -4835,6 +5017,7 @@ final class ConversationCenter: ObservableObject {
         // A launch whose conversation was deleted/ended while this send was
         // suspended before the launch store must fail closed instead of
         // re-routing into the durable launch path.
+        guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         guard launchFence.isValid(launchToken) else {
             throw FloeError.validationFailed("Conversation ended during launch")
         }
@@ -4858,6 +5041,10 @@ final class ConversationCenter: ObservableObject {
             providerProfile: provider,
             modelProfile: model
         ))
+        guard launchPreparations.mayExecute(preparationID) else {
+            try? await runStore(for: conversationID).updateRunState(id: runID, state: "cancelled", endedAt: Date())
+            throw CancellationError()
+        }
         guard launchFence.isValid(launchToken) else { throw CancellationError() }
         do {
             try modelInputProjection(for: runID, conversationID: conversationID).register(id: prepared.userMessage.id,
@@ -4934,6 +5121,7 @@ final class ConversationCenter: ObservableObject {
         return startDeferredTaskService(
             prepared: prepared,
             launchToken: launchToken,
+            preparationID: preparationID,
             isTemporaryAtLaunch: launchIsTemporary,
             goal: trimmed,
             provider: provider,
@@ -4992,8 +5180,8 @@ final class ConversationCenter: ObservableObject {
         }
         let launchToken = launchFence.issue()
 
-        beginLaunch()
-        defer { finishLaunch() }
+        let preparationID = beginLaunch(conversationID: newConversationID)
+        defer { finishLaunch(preparationID) }
         try await captureIngressSecrets(
             ingress.captures,
             owner: workspaceID.map(CredentialOwner.workspace) ?? .vault
@@ -5018,6 +5206,11 @@ final class ConversationCenter: ObservableObject {
             providerProfile: provider,
             modelProfile: model
         ))
+        launchPreparations.bind(preparationID, conversationID: prepared.conversation.id)
+        guard launchPreparations.mayExecute(preparationID) else {
+            try? await runStore(for: prepared.conversation.id).updateRunState(id: runID, state: "cancelled", endedAt: Date())
+            throw CancellationError()
+        }
         do {
             try modelInputProjection(for: runID, conversationID: prepared.conversation.id).register(id: prepared.userMessage.id,
                 safe: trimmed, live: goal.trimmingCharacters(in: .whitespacesAndNewlines), captures: ingress.captures)
@@ -5121,6 +5314,7 @@ final class ConversationCenter: ObservableObject {
         let run = startDeferredTaskService(
             prepared: prepared,
             launchToken: launchToken,
+            preparationID: preparationID,
             // startTask always creates a durable conversation: never temporary.
             isTemporaryAtLaunch: false,
             goal: trimmed,
@@ -5840,7 +6034,8 @@ final class ConversationCenter: ObservableObject {
     private func resumeRunWithInput(
         _ record: RunRecord,
         content: String,
-        attachments: [AttachmentRef]
+        attachments: [AttachmentRef],
+        preparationID: UUID
     ) async throws -> StartedConversationRun {
         let resolvedPair: (ProviderProfile, ModelProfile)
         if let modelID = record.modelID, let resolved = providerAndModel(modelID: modelID) {
@@ -5850,6 +6045,7 @@ final class ConversationCenter: ObservableObject {
         }
         let ingress = SecretIngressScanner.scan(content)
         try await captureIngressSecrets(ingress.captures, owner: .conversation(record.conversationID))
+        guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         let safeContent = ingress.sanitizedText
         let messageID = UUID()
         try modelInputProjection(for: record.id, conversationID: record.conversationID).register(id: messageID, safe: safeContent, live: content, captures: ingress.captures)
@@ -5868,6 +6064,7 @@ final class ConversationCenter: ObservableObject {
             provider: resolvedPair.0,
             model: resolvedPair.1,
             startOrigin: .explicitUserAction,
+            preparationID: preparationID,
             resumption: RuntimeSteerInput(
                 id: messageID,
                 content: safeContent,
@@ -5899,8 +6096,11 @@ final class ConversationCenter: ObservableObject {
             if let record = try? await runStore(for: input.conversationID).run(id: expectedRunID),
                await isAwaitingDependency(runID: expectedRunID, conversationID: input.conversationID) {
                 do {
+                    let preparationID = beginLaunch(conversationID: input.conversationID)
+                    defer { finishLaunch(preparationID) }
                     let started = try await resumeRunWithInput(
-                        record, content: input.content, attachments: input.attachments)
+                        record, content: input.content, attachments: input.attachments,
+                        preparationID: preparationID)
                     try await store.markConsumed(id: inputID, runID: started.runID)
                     FloeLogger(category: .app).info(
                         "steerTargetAwaitingDependencyResumed conversation=\(input.conversationID.uuidString) run=\(started.runID.uuidString) input=\(input.id.uuidString)")
@@ -5981,8 +6181,11 @@ final class ConversationCenter: ObservableObject {
             // resumes in place with this message instead of a new run.
             if let waiting = await awaitingDependencyRun(conversationID: conversationID) {
                 do {
+                    let preparationID = beginLaunch(conversationID: conversationID)
+                    defer { finishLaunch(preparationID) }
                     let started = try await resumeRunWithInput(
-                        waiting, content: input.content, attachments: input.attachments)
+                        waiting, content: input.content, attachments: input.attachments,
+                        preparationID: preparationID)
                     try await inputStore.markConsumed(id: input.id, runID: started.runID)
                 } catch {
                     try? await inputStore.restoreQueued(id: input.id)
@@ -6036,6 +6239,9 @@ final class ConversationCenter: ObservableObject {
         startOrigin: ContinuedProcessingStartOrigin
     ) -> StartedConversationRun {
         let runID = service.runID
+        let invocation: ConversationRunInvocationOwnership.Token
+        do { invocation = try claimRunInvocation(runID, conversationID: service.conversationID) }
+        catch { return StartedConversationRun(runID: runID, result: Task { .failure(error) }) }
         environment.browserCenter.recordOwnerRun(conversationID: service.conversationID, runID: runID)
         runServices[runID] = service
         registerPreparingRun(
@@ -6051,6 +6257,7 @@ final class ConversationCenter: ObservableObject {
             guard let self else {
                 return .failure(FloeError.internalError("Conversation center was released"))
             }
+            defer { self.finishRunInvocation(invocation) }
             return await self.performPreparedService(
                 service,
                 goal: goal,
@@ -6169,6 +6376,7 @@ final class ConversationCenter: ObservableObject {
     private func startDeferredTaskService(
         prepared: PreparedRun,
         launchToken: LaunchEpochFence.Token,
+        preparationID: UUID,
         isTemporaryAtLaunch: Bool,
         goal: String,
         provider: ProviderProfile,
@@ -6183,6 +6391,10 @@ final class ConversationCenter: ObservableObject {
     ) -> StartedConversationRun {
         let runID = prepared.run.id
         let conversationID = prepared.conversation.id
+        let invocation: ConversationRunInvocationOwnership.Token
+        do { invocation = try claimRunInvocation(runID, conversationID: conversationID, generation: preparationID) }
+        catch { return StartedConversationRun(runID: runID, result: Task { .failure(error) }) }
+        if !launchPreparations.mayExecute(preparationID) { runInvocationOwnership.cancel(runID) }
         // Tombstone at the registration boundary: if the session was
         // destroyed (or the conversation deleted) while this launch was
         // suspended in the pre-deferred pipeline, the scoped fence is
@@ -6190,12 +6402,12 @@ final class ConversationCenter: ObservableObject {
         // content-bearing BRC record for a dead identity — fail the launch
         // closed instead, through the routed store (a no-op for a session
         // that is already discarded).
-        guard launchFence.isValid(launchToken) else {
-            let error = FloeError.validationFailed(
-                "Conversation ended during launch"
-            )
+        guard launchFence.isValid(launchToken), runInvocationOwnership.mayExecute(invocation) else {
+            let error: Error = runInvocationOwnership.mayExecute(invocation)
+                ? FloeError.validationFailed("Conversation ended during launch") : CancellationError()
             let result = Task<Result<Void, Error>, Never> { [weak self] in
                 guard let self else { return .failure(error) }
+                defer { self.finishRunInvocation(invocation) }
                 await self.finishDeferredLaunchFailure(
                     runID: runID,
                     conversationID: conversationID,
@@ -6218,6 +6430,7 @@ final class ConversationCenter: ObservableObject {
             guard let self else {
                 return .failure(FloeError.internalError("Conversation center was released"))
             }
+            defer { self.finishRunInvocation(invocation) }
             await self.launchTestHooks.deferredTaskBody?()
             // The launch identity was frozen when startRun accepted the
             // launch; NEVER re-derive it from the live session here (an
@@ -6225,6 +6438,7 @@ final class ConversationCenter: ObservableObject {
             // the ordinary ceiling or re-enable durable effects).
             let isTemporary = isTemporaryAtLaunch
             guard !Task.isCancelled,
+                  self.runInvocationOwnership.mayExecute(invocation),
                   self.launchFence.isValid(launchToken),
                   !self.isClearingHistory,
                   !self.deletingConversationIDs.contains(conversationID) else {
@@ -6342,6 +6556,7 @@ final class ConversationCenter: ObservableObject {
                 }
             }
             guard !Task.isCancelled,
+                  self.runInvocationOwnership.mayExecute(invocation),
                   self.launchFence.isValid(launchToken),
                   !self.isClearingHistory,
                   !self.deletingConversationIDs.contains(conversationID) else {
@@ -6406,6 +6621,7 @@ final class ConversationCenter: ObservableObject {
             // closed through the existing failure path instead of assigning
             // and starting the main run.
             guard !Task.isCancelled,
+                  self.runInvocationOwnership.mayExecute(invocation),
                   self.launchFence.isValid(launchToken),
                   !self.isClearingHistory,
                   !self.deletingConversationIDs.contains(conversationID) else {
@@ -6452,10 +6668,10 @@ final class ConversationCenter: ObservableObject {
         conversationID: UUID,
         error: Error
     ) async {
+        let cancelled = error is CancellationError || Task.isCancelled || runInvocationOwnership.isCancelled(runID)
         activeRuns[runID] = nil
         clearModelInputProjection(runID)
         runServices[runID] = nil
-        runTasks[runID] = nil
         // Route through the run's own frozen authority: a destroyed session's
         // closed ephemeral store fails closed, and a kept session's forwarded
         // store mirrors to the durable row. Never the global current-session
@@ -6463,26 +6679,29 @@ final class ConversationCenter: ObservableObject {
         let runStore = runStoreForTerminalRun(runID: runID, conversationID: conversationID)
         try? await runStore.updateRunState(
             id: runID,
-            state: "failed",
+            state: cancelled ? "cancelled" : "failed",
             endedAt: Date()
         )
-        try? await runStore.recordError(RunErrorRecord(
-            runID: runID,
-            kind: "launch",
-            message: error.localizedDescription,
-            recoverable: true
-        ))
+        if !cancelled {
+            try? await runStore.recordError(RunErrorRecord(
+                runID: runID,
+                kind: "launch",
+                message: error.localizedDescription,
+                recoverable: true
+            ))
+        }
         clearFrozenTemporaryRun(runID: runID)
         await automaticReasoningEffortCoordinator.cancelAndForget(runID: runID)
         // A failed launch's frozen chat decision is dead too; forget it so a
         // reused run identity can never resurrect a stale preference.
         await chatReasoningCoordinator.cancelAndForget(runID: runID)
         publishSession(conversationID)
-        environment.backgroundRunCoordinator.didFinish(
-            runID: runID,
-            succeeded: false,
-            message: error.localizedDescription
-        )
+        if cancelled {
+            environment.backgroundRunCoordinator.didCancel(runID: runID, message: nil)
+        } else {
+            environment.backgroundRunCoordinator.didFinish(
+                runID: runID, succeeded: false, message: error.localizedDescription)
+        }
         await environment.subagentRunnerRegistry.remove(runID: runID)
     }
 
@@ -6623,17 +6842,38 @@ final class ConversationCenter: ObservableObject {
             }
         } catch {
             await persistServiceFailure(service, error: error, stage: "performPreparedService")
-            terminalState = "failed"
-            outcome = .failure(error)
+            let settled = await service.snapshot()
+            // startPrepared may throw after the runtime has already committed
+            // its answer or checkpoint. Preserve that settled result exactly
+            // as persistServiceFailure does; cleanup must not announce failure.
+            terminalState = settled.isTerminal ? settled.stateName : "failed"
+            outcome = TaskRunConclusion.from(state: terminalState)?.invocationSettledNormally == true
+                ? .success(()) : .failure(error)
+        }
+        if terminalState == "completed", case .success = outcome,
+           runSurface == .ordinary,
+           !hasFrozenTemporaryRunAuthority(runID: runID, conversationID: service.conversationID) {
+            let completed = await service.snapshot()
+            do {
+                _ = try await environment.executionExperienceService.recordCompletedRun(
+                    runID: runID, conversationID: service.conversationID,
+                    stateName: completed.stateName, outcomes: completed.recentToolOutcomes,
+                    isTemporary: false
+                )
+            } catch {
+                FloeLogger(category: .persistence).warning("executionExperienceCaptureFailed run=\(runID.uuidString)")
+            }
         }
         clearFrozenTemporaryRun(runID: runID)
         switch (terminalState, outcome) {
-        case ("checkpointed", _):
+        case ("checkpointed", _), ("interrupted", _):
             environment.backgroundRunCoordinator.didSuspend(
                 runID: runID,
                 message: (await service.snapshot()).checkpointReason
                     ?? FloeL10n.l("remote.conversation_center.task_saved_waiting_for_you_to")
             )
+        case ("cancelled", _), ("canceled", _), ("aborted", _):
+            environment.backgroundRunCoordinator.didCancel(runID: runID, message: nil)
         case (_, .success):
             environment.backgroundRunCoordinator.didFinish(
                 runID: runID, succeeded: true, message: nil
@@ -6643,7 +6883,6 @@ final class ConversationCenter: ObservableObject {
                 runID: runID, succeeded: false, message: error.localizedDescription
             )
         }
-        runTasks[runID] = nil
         await environment.designEntryState.refresh(
             conversationID: service.conversationID, environment: environment)
         if terminalState == "completed" {
@@ -7114,6 +7353,7 @@ final class ConversationCenter: ObservableObject {
 
     /// Cancels a live run. The runtime owns the terminal transition.
     func cancel(runID: UUID) async {
+        runInvocationOwnership.cancel(runID)
         // An explicit cancel releases this run's persistent local-device input
         // ownership immediately. If it was the only Bridge user the native
         // client is fenced, so a dispatched mutation is reported unknown and
@@ -7656,8 +7896,11 @@ final class ConversationCenter: ObservableObject {
     /// provider and model in the same conversation.
     func retry(
         runID: UUID,
-        startOrigin: ContinuedProcessingStartOrigin
+        startOrigin: ContinuedProcessingStartOrigin,
+        conversationID expectedConversationID: UUID? = nil
     ) async throws -> StartedConversationRun {
+        let preparationID = beginLaunch(conversationID: expectedConversationID)
+        defer { finishLaunch(preparationID) }
         // The run lives in the session store while its conversation is
         // temporary; consult both, session first.
         var record: RunRecord?
@@ -7670,6 +7913,11 @@ final class ConversationCenter: ObservableObject {
         guard let record else {
             throw FloeError.notFound("run \(runID.uuidString)")
         }
+        if let expectedConversationID, record.conversationID != expectedConversationID {
+            throw FloeError.validationFailed("The run belongs to another conversation")
+        }
+        launchPreparations.bind(preparationID, conversationID: record.conversationID)
+        guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         // Continue must not bypass the dependency wait: a run parked on
         // required background work is not finished, and resuming it here
         // would start a provider turn without the awaited result. A user
@@ -7693,7 +7941,8 @@ final class ConversationCenter: ObservableObject {
             record,
             provider: provider,
             model: model,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            preparationID: preparationID
         )
     }
 
@@ -7706,7 +7955,61 @@ final class ConversationCenter: ObservableObject {
 
     func hasLiveOwner(runID: UUID?) -> Bool {
         guard let runID else { return false }
-        return runTasks[runID] != nil || runServices[runID] != nil || activeRuns[runID] != nil
+        return runInvocationOwnership.hasOwner(runID) || runTasks[runID] != nil || runServices[runID] != nil || activeRuns[runID] != nil
+    }
+
+    /// Called only after the native Notes/Studio store resolves this document's
+    /// existing assistant binding. No history query or new conversation is
+    /// needed to decide whether its in-process work is still owned.
+    func documentAssistantWork(documentID: UUID, conversationID: UUID, title: String) -> DocumentAssistantLeaveSnapshot {
+        .init(documentID: documentID, conversationID: conversationID, title: title,
+              invocationIDs: runInvocationOwnership.identities(conversationID: conversationID),
+              preparationIDs: launchPreparations.identities(conversationID: conversationID))
+    }
+
+    func documentAssistantWorkIsOutstanding(_ snapshot: DocumentAssistantLeaveSnapshot) -> Bool {
+        let identities = snapshot.invocationIDs.union(snapshot.preparationIDs)
+        return !runInvocationOwnership.identities(conversationID: snapshot.conversationID).isDisjoint(with: identities)
+            || launchPreparations.hasOutstanding(snapshot.preparationIDs)
+    }
+
+    /// Freeze/cancel the exact invocation generations that were visible when
+    /// navigation began. A new turn of the same durable run, another document,
+    /// or an unrelated preparation never inherits this stop request.
+    func requestStopDocumentAssistantWork(_ snapshot: DocumentAssistantLeaveSnapshot) {
+        let preparations = launchPreparations.identities(conversationID: snapshot.conversationID)
+            .intersection(snapshot.preparationIDs)
+        launchPreparations.cancel(preparations)
+        let identities = snapshot.invocationIDs.union(snapshot.preparationIDs)
+            .intersection(runInvocationOwnership.identities(conversationID: snapshot.conversationID))
+        for invocation in runInvocationOwnership.tokens(matching: identities) {
+            runInvocationOwnership.cancel(invocation.runID)
+            environment.iosBridgeIntegration.cancelRun(runID: invocation.runID)
+            modelInputProjections[invocation.runID]?.close()
+            runTasks[invocation.runID]?.cancel()
+            let service = runServices[invocation.runID]
+            Task { @MainActor [weak self, service] in
+                guard let self, self.runInvocationOwnership.isCurrent(invocation) else { return }
+                if let service { await service.cancel() }
+                guard self.runInvocationOwnership.isCurrent(invocation) else { return }
+                await self.automaticReasoningEffortCoordinator.cancelPending(runID: invocation.runID)
+            }
+        }
+    }
+
+    private func claimRunInvocation(_ runID: UUID, conversationID: UUID? = nil,
+                                    generation: UUID = UUID()) throws -> ConversationRunInvocationOwnership.Token {
+        guard runTasks[runID] == nil,
+              let invocation = runInvocationOwnership.claim(runID, conversationID: conversationID, generation: generation) else {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "任务仍在收尾，请稍后继续。", "The task is still finishing. Try again shortly."))
+        }
+        return invocation
+    }
+
+    private func finishRunInvocation(_ invocation: ConversationRunInvocationOwnership.Token) {
+        guard runInvocationOwnership.finish(invocation) else { return }
+        runTasks[invocation.runID] = nil
     }
 
     private func resumeExistingRun(
@@ -7714,220 +8017,252 @@ final class ConversationCenter: ObservableObject {
         provider: ProviderProfile,
         model: ModelProfile,
         startOrigin: ContinuedProcessingStartOrigin,
+        preparationID inheritedPreparationID: UUID? = nil,
         /// Optional single resumption turn (dependency completion or a user
         /// message composed while the run waited). Injected into the resumed
         /// runtime at the exact checkpoint boundary so the SAME run continues
         /// with it; nil keeps the historical plain resume.
         resumption: RuntimeSteerInput? = nil
     ) async throws -> StartedConversationRun {
+        try Task.checkCancellation()
         let isTemporary = isTemporaryConversation(record.conversationID)
         let routedRunStore = self.runStore(for: record.conversationID)
         let routedConversationStore = self.conversationStore(for: record.conversationID)
         guard !compactingConversations.contains(record.conversationID) else {
             throw FloeError.validationFailed(FloeL10n.l("remote.conversation_center.the_context_is_compacting_continue_the"))
         }
-        beginLaunch()
-        defer { finishLaunch() }
-        if runTasks[record.id] != nil {
-            throw FloeError.validationFailed("This task is already resuming")
-        }
-        // A checkpoint accelerates exact replay but is not the only durable
-        // authority. Older builds could leave a truncated or incompatible
-        // JSON file after suspension. Fall back to the persisted conversation
-        // so an original stalled task cannot fail on every Continue tap.
-        let checkpoint: AgentCheckpoint?
-        let checkpointWasUnreadable: Bool
+        // Reserve synchronously before checkpoint/history/provider awaits.
+        // An in-flight old invocation retains its reservation until cleanup
+        // finishes; duplicate Continue returns promptly rather than joining it.
+        if let inheritedPreparationID,
+           !launchPreparations.mayExecute(inheritedPreparationID) { throw CancellationError() }
+        let workID = inheritedPreparationID ?? UUID()
+        let invocation = try claimRunInvocation(record.id, conversationID: record.conversationID, generation: workID)
+        var taskRegistered = false
+        var localModelRetained = false
+        var preparedService: ConversationRunService?
+        var preparingStateWritten = false
+        let usesResidentLocalModel = provider.kind == .local
+            && model.remoteModelID != AppleFoundationModelIdentity.remoteModelID
+        if inheritedPreparationID == nil { beginLaunch(conversationID: record.conversationID, id: workID) }
+        defer { if inheritedPreparationID == nil { finishLaunch(workID) } }
         do {
-            // Temporary runs never write checkpoint files; the load simply
-            // misses and the durable-conversation fallback below serves.
-            let loaded = isTemporary ? nil : try await environment.checkpointStore.load(runID: record.id)
-            if let loaded,
-               (loaded.runID != record.id || loaded.conversationID != record.conversationID) {
+            // A checkpoint accelerates exact replay but is not the only durable
+            // authority. Older builds could leave a truncated or incompatible
+            // JSON file after suspension. Fall back to the persisted conversation
+            // so an original stalled task cannot fail on every Continue tap.
+            let checkpoint: AgentCheckpoint?
+            let checkpointWasUnreadable: Bool
+            do {
+                // Temporary runs never write checkpoint files; the load simply
+                // misses and the durable-conversation fallback below serves.
+                let loaded = isTemporary ? nil : try await environment.checkpointStore.load(runID: record.id)
+                if let loaded,
+                   (loaded.runID != record.id || loaded.conversationID != record.conversationID) {
+                    FloeLogger(category: .runtime).warning(
+                        "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=identityMismatch format=\(loaded.formatVersion)"
+                    )
+                    checkpoint = nil
+                    checkpointWasUnreadable = true
+                } else {
+                    checkpoint = loaded
+                    checkpointWasUnreadable = false
+                }
+            } catch {
+                let nsError = error as NSError
                 FloeLogger(category: .runtime).warning(
-                    "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=identityMismatch format=\(loaded.formatVersion)"
+                    "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=loadFailed domain=\(nsError.domain) code=\(nsError.code)"
                 )
                 checkpoint = nil
                 checkpointWasUnreadable = true
-            } else {
-                checkpoint = loaded
-                checkpointWasUnreadable = false
             }
-        } catch {
-            let nsError = error as NSError
-            FloeLogger(category: .runtime).warning(
-                "runResumeCheckpointIgnored run=\(record.id.uuidString) reason=loadFailed domain=\(nsError.domain) code=\(nsError.code)"
-            )
-            checkpoint = nil
-            checkpointWasUnreadable = true
-        }
-        let restoredConversationMode: ConversationMode
-        do {
-            restoredConversationMode = try RunConversationModeResolver.resolve(
-                persistedRunMode: record.conversationMode,
-                checkpointMode: checkpoint?.conversationMode,
-                checkpointWasUnreadable: checkpointWasUnreadable
-            )
-        } catch {
-            let message = error.localizedDescription
-            try? await routedRunStore.recordError(RunErrorRecord(
-                runID: record.id,
-                kind: "recoveryMode",
-                message: message,
-                recoverable: true
-            ))
-            try? await routedRunStore.updateRunState(
-                id: record.id,
-                state: "failed",
-                endedAt: Date()
-            )
-            publishSession(record.conversationID)
-            throw FloeError.validationFailed(message)
-        }
-        let assembled = try await ConversationHistoryAssembler(
-            store: routedConversationStore,
-            compactionStore: isTemporaryConversation(record.conversationID) ? nil : environment.intelligenceStore
-        ).build(conversationID: record.conversationID)
-        let current = assembled.last(where: { $0.role == "user" })
-        let history = current.map { item in assembled.filter { $0.id != item.id } } ?? assembled
-        // A persisted `.chat` run resumes as `.agent` by the historical
-        // mapping (chat never carried a durable fast-chat decision before
-        // this lane). But an ordinary fast chat run records a frozen
-        // `chatReasoning` `.status` event at launch; if that marker exists
-        // this IS a fast-chat run and must resume with `.chat` semantics
-        // (brief envelope, fast reasoning reuse, chat ceiling) rather than
-        // silently degrading to the full task agent. Task-mode runs never
-        // carry the marker, so this only re-routes genuine fast chats.
-        var mode: AgentExecutionMode = switch restoredConversationMode {
-        case .plan: .plan
-        case .goal: .goal
-        case .chat: .agent
-        }
-        if restoredConversationMode == .chat,
-           await Self.hasFrozenChatReasoning(runID: record.id, runStore: routedRunStore) {
-            mode = .chat
-        }
-        FloeLogger(category: .runtime).info(
-            "runResumePrepared run=\(record.id.uuidString) conversation=\(record.conversationID.uuidString) originalState=\(record.state) providerKind=\(String(describing: provider.kind)) checkpoint=\(checkpoint == nil ? "fallback" : "loaded") checkpointFormat=\(checkpoint?.formatVersion ?? 0) checkpointMessages=\(checkpoint?.messages.count ?? 0) durableMessages=\(assembled.count) pendingCalls=\(checkpoint?.pendingToolCalls.count ?? 0) pendingResults=\(checkpoint?.pendingToolResults.count ?? 0)"
-        )
-        let usesResidentLocalModel = provider.kind == .local
-            && model.remoteModelID != AppleFoundationModelIdentity.remoteModelID
-        if usesResidentLocalModel {
-            await environment.localModelRuntime.retainForTask(
-                taskID: record.id,
-                modelID: model.remoteModelID
-            )
-        }
-        let resumedImages = checkpoint == nil ? (current?.images ?? []) : []
-        // A resumed run may be recovering from a VLM allocation failure. Do
-        // not feed the same large projector input back into the model; derive
-        // bounded evidence through a distinct auxiliary model or Apple OCR.
-        let resumedVisual = await visualEvidence(
-            images: resumedImages,
-            userRequest: record.goal,
-            primaryModel: model,
-            preferPrimaryVision: false
-        )
-        let historicalConversation = try? await routedConversationStore
-            .conversation(id: record.conversationID)
-        let runSurface: AgentRunSurface = CanvasAgentIdentity.isCanvasConversation(
-            historicalConversation
-        ) ? .canvas : .ordinary
-        let service: ConversationRunService
-        do {
-            service = try await runService(
-                for: record.conversationID,
-                provider: provider,
-                model: model,
-                runID: record.id,
-                executionMode: mode,
-                runSurface: runSurface,
-                workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
-                memoryQuery: record.goal,
-                conversationHistory: history + resumedVisual.context,
-                currentUserImages: resumedVisual.images,
-                // Resume/retry is the SAME round: reuse the frozen abstract
-                // choice (re-clamped for a re-selected model) and never submit a
-                // second auxiliary request, even when the round started manual/
-                // unsupported or the model changed inside the original run.
-                automaticReasoningEffortIngress: .continuation
-            )
-        } catch {
-            await finishDeferredLaunchFailure(
-                runID: record.id, conversationID: record.conversationID, error: error
+            let restoredConversationMode: ConversationMode
+            do {
+                restoredConversationMode = try RunConversationModeResolver.resolve(
+                    persistedRunMode: record.conversationMode,
+                    checkpointMode: checkpoint?.conversationMode,
+                    checkpointWasUnreadable: checkpointWasUnreadable
+                )
+            } catch {
+                let message = error.localizedDescription
+                try? await routedRunStore.recordError(RunErrorRecord(
+                    runID: record.id,
+                    kind: "recoveryMode",
+                    message: message,
+                    recoverable: true
+                ))
+                try? await routedRunStore.updateRunState(
+                    id: record.id,
+                    state: "failed",
+                    endedAt: Date()
+                )
+                publishSession(record.conversationID)
+                throw FloeError.validationFailed(message)
+            }
+            let assembled = try await ConversationHistoryAssembler(
+                store: routedConversationStore,
+                compactionStore: isTemporaryConversation(record.conversationID) ? nil : environment.intelligenceStore
+            ).build(conversationID: record.conversationID)
+            let current = assembled.last(where: { $0.role == "user" })
+            let history = current.map { item in assembled.filter { $0.id != item.id } } ?? assembled
+            // A persisted `.chat` run resumes as `.agent` by the historical
+            // mapping (chat never carried a durable fast-chat decision before
+            // this lane). But an ordinary fast chat run records a frozen
+            // `chatReasoning` `.status` event at launch; if that marker exists
+            // this IS a fast-chat run and must resume with `.chat` semantics
+            // (brief envelope, fast reasoning reuse, chat ceiling) rather than
+            // silently degrading to the full task agent. Task-mode runs never
+            // carry the marker, so this only re-routes genuine fast chats.
+            var mode: AgentExecutionMode = switch restoredConversationMode {
+            case .plan: .plan
+            case .goal: .goal
+            case .chat: .agent
+            }
+            if restoredConversationMode == .chat,
+               await Self.hasFrozenChatReasoning(runID: record.id, runStore: routedRunStore) {
+                mode = .chat
+            }
+            FloeLogger(category: .runtime).info(
+                "runResumePrepared run=\(record.id.uuidString) conversation=\(record.conversationID.uuidString) originalState=\(record.state) providerKind=\(String(describing: provider.kind)) checkpoint=\(checkpoint == nil ? "fallback" : "loaded") checkpointFormat=\(checkpoint?.formatVersion ?? 0) checkpointMessages=\(checkpoint?.messages.count ?? 0) durableMessages=\(assembled.count) pendingCalls=\(checkpoint?.pendingToolCalls.count ?? 0) pendingResults=\(checkpoint?.pendingToolResults.count ?? 0)"
             )
             if usesResidentLocalModel {
-                await environment.localModelRuntime.releaseForTask(
-                    taskID: record.id, reason: "resumeFailed"
+                await environment.localModelRuntime.retainForTask(
+                    taskID: record.id,
+                    modelID: model.remoteModelID
                 )
+                localModelRetained = true
+            }
+            let resumedImages = checkpoint == nil ? (current?.images ?? []) : []
+            // A resumed run may be recovering from a VLM allocation failure. Do
+            // not feed the same large projector input back into the model; derive
+            // bounded evidence through a distinct auxiliary model or Apple OCR.
+            let resumedVisual = await visualEvidence(
+                images: resumedImages,
+                userRequest: record.goal,
+                primaryModel: model,
+                preferPrimaryVision: false
+            )
+            let historicalConversation = try? await routedConversationStore
+                .conversation(id: record.conversationID)
+            let runSurface: AgentRunSurface = CanvasAgentIdentity.isCanvasConversation(
+                historicalConversation
+            ) ? .canvas : .ordinary
+            let service: ConversationRunService
+            do {
+                service = try await runService(
+                    for: record.conversationID,
+                    provider: provider,
+                    model: model,
+                    runID: record.id,
+                    executionMode: mode,
+                    runSurface: runSurface,
+                    workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
+                    memoryQuery: record.goal,
+                    conversationHistory: history + resumedVisual.context,
+                    currentUserImages: resumedVisual.images,
+                    // Resume/retry is the SAME round: reuse the frozen abstract
+                    // choice (re-clamped for a re-selected model) and never submit a
+                    // second auxiliary request, even when the round started manual/
+                    // unsupported or the model changed inside the original run.
+                    automaticReasoningEffortIngress: .continuation
+                )
+            } catch {
+                if error is CancellationError {
+                    // No resumed runtime has started. Keep the parked original,
+                    // instead of relabelling user cancellation as task failure.
+                    await environment.subagentRunnerRegistry.remove(runID: record.id)
+                } else {
+                    await finishDeferredLaunchFailure(
+                        runID: record.id, conversationID: record.conversationID, error: error
+                    )
+                }
+                throw error
+            }
+            preparedService = service
+            try Task.checkCancellation()
+            guard runInvocationOwnership.mayExecute(invocation), !isClearingHistory,
+                  !deletingConversationIDs.contains(record.conversationID) else { throw CancellationError() }
+            try await routedRunStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
+            preparingStateWritten = true
+            _ = try? await routedRunStore.appendEvent(
+                runID: record.id,
+                kind: .status,
+                payloadJSON: #"{"state":"preparing","resumed":true}"#
+            )
+            try Task.checkCancellation()
+            guard runInvocationOwnership.mayExecute(invocation), !isClearingHistory,
+                  !deletingConversationIDs.contains(record.conversationID) else { throw CancellationError() }
+            runServices[record.id] = service
+            registerPreparingRun(
+                runID: record.id,
+                conversationID: record.conversationID,
+                goal: record.goal,
+                conversationMode: restoredConversationMode.rawValue,
+                startOrigin: startOrigin,
+                isTemporary: isTemporaryConversation(record.conversationID)
+            )
+            track(service)
+            publishSession(record.conversationID)
+            let task = Task<Result<Void, Error>, Never> { [weak self, service] in
+                guard let self else {
+                    return .failure(FloeError.internalError("Conversation center was released"))
+                }
+                defer { self.finishRunInvocation(invocation) }
+                do {
+                    if let checkpoint {
+                        try await service.resumePrepared(from: checkpoint, resumption: resumption)
+                    } else {
+                        // No checkpoint to replay (legacy/temporary fallback): the
+                        // resumption's own content becomes the resumed goal so the
+                        // same run continues with the new input.
+                        try await service.startPrepared(goal: resumption?.content ?? record.goal)
+                    }
+                    return await self.finishResumedService(
+                        service,
+                        localModelID: usesResidentLocalModel ? model.remoteModelID : nil
+                    )
+                } catch {
+                    await self.persistServiceFailure(service, error: error, stage: "resume")
+                    return await self.finishResumedService(service,
+                        localModelID: usesResidentLocalModel ? model.remoteModelID : nil, invocationError: error)
+                }
+            }
+            runTasks[record.id] = task
+            taskRegistered = true
+            return StartedConversationRun(runID: record.id, result: task)
+        } catch {
+            // The reservation remains held throughout every asynchronous
+            // release. No newer same-run invocation can be erased by cleanup.
+            if !taskRegistered {
+                if error is CancellationError, preparingStateWritten,
+                   !isClearingHistory, !deletingConversationIDs.contains(record.conversationID) {
+                    do {
+                        try await routedRunStore.updateRunState(
+                            id: record.id, state: record.state, endedAt: record.endedAt)
+                    } catch {
+                        FloeLogger(category: .runtime).warning(
+                            "runResumeStateRestoreFailed run=\(record.id.uuidString) code=\((error as NSError).code)")
+                    }
+                }
+                if localModelRetained {
+                    await environment.localModelRuntime.releaseForTask(
+                        taskID: record.id, reason: "resumePreparationEnded")
+                }
+                if preparedService != nil {
+                    await environment.subagentRunnerRegistry.remove(runID: record.id)
+                }
+                finishRunInvocation(invocation)
             }
             throw error
         }
-        try await routedRunStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
-        _ = try? await routedRunStore.appendEvent(
-            runID: record.id,
-            kind: .status,
-            payloadJSON: #"{"state":"preparing","resumed":true}"#
-        )
-        runServices[record.id] = service
-        registerPreparingRun(
-            runID: record.id,
-            conversationID: record.conversationID,
-            goal: record.goal,
-            conversationMode: restoredConversationMode.rawValue,
-            startOrigin: startOrigin,
-            isTemporary: isTemporaryConversation(record.conversationID)
-        )
-        track(service)
-        publishSession(record.conversationID)
-        let task = Task<Result<Void, Error>, Never> { [weak self, service] in
-            guard let self else {
-                return .failure(FloeError.internalError("Conversation center was released"))
-            }
-            do {
-                if let checkpoint {
-                    try await service.resumePrepared(from: checkpoint, resumption: resumption)
-                } else {
-                    // No checkpoint to replay (legacy/temporary fallback): the
-                    // resumption's own content becomes the resumed goal so the
-                    // same run continues with the new input.
-                    try await service.startPrepared(goal: resumption?.content ?? record.goal)
-                }
-                return await self.finishResumedService(
-                    service,
-                    localModelID: usesResidentLocalModel ? model.remoteModelID : nil
-                )
-            } catch {
-                await self.persistServiceFailure(service, error: error, stage: "resume")
-                self.runTasks[record.id] = nil
-                self.runServices[record.id] = nil
-                self.snapshotTasks[record.id]?.cancel()
-                self.snapshotTasks[record.id] = nil
-                self.environment.backgroundRunCoordinator.didFinish(
-                    runID: record.id,
-                    succeeded: false,
-                    message: error.localizedDescription
-                )
-                if usesResidentLocalModel {
-                    await self.environment.localModelRuntime.releaseForTask(
-                        taskID: record.id,
-                        reason: "resumeFailed"
-                    )
-                }
-                await self.environment.subagentRunnerRegistry.remove(runID: record.id)
-                self.publishSession(record.conversationID)
-                return .failure(error)
-            }
-        }
-        runTasks[record.id] = task
-        return StartedConversationRun(runID: record.id, result: task)
     }
 
     private func finishResumedService(
         _ service: ConversationRunService,
-        localModelID: String?
+        localModelID: String?,
+        invocationError: Error? = nil
     ) async -> Result<Void, Error> {
         let snapshot = await service.snapshot()
-        runTasks[service.runID] = nil
         // The resumed invocation no longer owns execution, even if a terminal
         // stream notification raced the observer. Releasing the service here
         // keeps `hasLiveOwner` from disabling Continue on a parked run.
@@ -7935,8 +8270,9 @@ final class ConversationCenter: ObservableObject {
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
-        let succeeded = snapshot.stateName == "completed"
-        let suspended = snapshot.stateName == "checkpointed"
+        let conclusion = TaskRunConclusion.from(state: snapshot.stateName) ?? .failed
+        let succeeded = conclusion == .completed
+        let suspended = conclusion == .checkpointed
         FloeLogger(category: .runtime).info(
             "runResumeFinished run=\(service.runID.uuidString) state=\(snapshot.stateName) terminal=\(snapshot.isTerminal) succeeded=\(succeeded)"
         )
@@ -7945,11 +8281,13 @@ final class ConversationCenter: ObservableObject {
                 runID: service.runID,
                 message: snapshot.checkpointReason ?? FloeL10n.l("remote.conversation_center.task_saved_waiting_for_you_to")
             )
+        } else if conclusion == .cancelled {
+            environment.backgroundRunCoordinator.didCancel(runID: service.runID, message: nil)
         } else {
             environment.backgroundRunCoordinator.didFinish(
                 runID: service.runID,
                 succeeded: succeeded,
-                message: succeeded ? nil : "Run ended in \(snapshot.stateName)"
+                message: succeeded ? nil : invocationError?.localizedDescription ?? "Run ended in \(snapshot.stateName)"
             )
         }
         if localModelID != nil {
@@ -7968,7 +8306,7 @@ final class ConversationCenter: ObservableObject {
         publishSession(service.conversationID)
         return (succeeded || suspended)
             ? .success(())
-            : .failure(FloeError.internalError("Run ended in \(snapshot.stateName)"))
+            : .failure(invocationError ?? FloeError.internalError("Run ended in \(snapshot.stateName)"))
     }
 
     /// Starts the follow-up run of a conversation with a different model.
@@ -8807,7 +9145,15 @@ final class ConversationCenter: ObservableObject {
     private func track(_ service: ConversationRunService) {
         let runID = service.runID
         snapshotTasks[runID]?.cancel()
+        let trackingOwner = UUID()
+        snapshotTrackingOwners[runID] = trackingOwner
         snapshotTasks[runID] = Task { [weak self, weak service] in
+            defer {
+                if self?.snapshotTrackingOwners[runID] == trackingOwner {
+                    self?.snapshotTasks[runID] = nil
+                    self?.snapshotTrackingOwners[runID] = nil
+                }
+            }
             guard let service else { return }
             let stream = service.events()
             var checklistCalls: Set<String> = []
@@ -8820,34 +9166,41 @@ final class ConversationCenter: ObservableObject {
                 // in flight. A late snapshot must not re-materialize live
                 // ownership for a run the center already removed: re-check
                 // the cancellation before registering anything.
-                if !Task.isCancelled {
+                if !Task.isCancelled, self.runServices[runID] === service,
+                   self.snapshotTrackingOwners[runID] == trackingOwner {
                     self.apply(snapshot)
                     await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
                     self.publishSession(snapshot.conversationID)
                 }
             }
             trackLoop: for await event in stream {
-                guard !Task.isCancelled, let self else { break }
+                guard !Task.isCancelled, let self, self.runServices[runID] === service,
+                      self.snapshotTrackingOwners[runID] == trackingOwner else { break }
                 switch event {
                 case .toolLifecycle(let lifecycle):
+                    let snapshot = await service.snapshot()
+                    guard !Task.isCancelled, self.runServices[runID] === service else { break trackLoop }
                     checklistChanged = false
                     switch lifecycle {
                     case .requested(let call), .started(let call):
                         if call.toolName == "checklist.updatePlan" { checklistCalls.insert(call.id) }
                         toolNamesByCallID[call.id] = call.toolName
-                        self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: call.toolName, outcome: .started)
+                        if TaskRunConclusion.isRuntimeActivity(state: snapshot.stateName), !snapshot.isTerminal {
+                            self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: call.toolName, outcome: .started)
+                        }
                     case .finished(let result):
                         let toolName = toolNamesByCallID.removeValue(forKey: result.callID) ?? "tool"
                         checklistChanged = checklistCalls.remove(result.callID) != nil && result.status == .ok
-                        self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: toolName, outcome: .finished(failed: result.status == .failed))
+                        if !snapshot.isTerminal {
+                            self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: toolName, outcome: .finished(failed: result.status == .failed))
+                        }
                     }
-                    let snapshot = await service.snapshot()
-                    guard !Task.isCancelled else { break trackLoop }
                     self.apply(snapshot)
                     if checklistChanged {
                         await self.refreshChecklistSurface(runID: runID, conversationID: snapshot.conversationID)
                     }
                     self.publishSession(snapshot.conversationID)
+                    if snapshot.isTerminal { break trackLoop }
                 case .approvalResolved(let callID):
                     self.retireApprovalOnReceipt(runID: runID, callID: callID)
                 case .stateChanged, .approvalRequested,
@@ -8856,24 +9209,32 @@ final class ConversationCenter: ObservableObject {
                      .contextCompacted, .planChanged, .goalChanged,
                      .childRunChanged, .userInputConsumed, .terminal:
                     let snapshot = await service.snapshot()
-                    guard !Task.isCancelled else { break trackLoop }
+                    guard !Task.isCancelled, self.runServices[runID] === service else { break trackLoop }
                     self.apply(snapshot)
                     self.sweepResolvedApprovals(service: service, snapshot: snapshot)
                     self.publishSession(snapshot.conversationID)
                     if snapshot.isTerminal { break }
                     await self.environment.browserCenter.recoverHandoff(conversationID: snapshot.conversationID, runID: runID)
                 case .answerDelta(let text):
-                    self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID, characters: text.text.count)
+                    await self.receiveCurrentRuntimeActivity(service, characters: text.text.count)
                 case .reasoningDelta:
                     // Reasoning tokens are model work but not user-visible
                     // output; the surface speed tracks answer text only.
-                    self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID)
+                    await self.receiveCurrentRuntimeActivity(service)
                 case .usageChanged(let usage):
-                    self.environment.backgroundRunCoordinator.didReceiveActivity(runID: runID, tokensPerSecond: usage.tokensPerSecond)
+                    await self.receiveCurrentRuntimeActivity(service, tokensPerSecond: usage.tokensPerSecond)
                 }
             }
-            self?.snapshotTasks[runID] = nil
         }
+    }
+
+    private func receiveCurrentRuntimeActivity(_ service: ConversationRunService, characters: Int = 0,
+                                               tokensPerSecond: Double? = nil) async {
+        let snapshot = await service.snapshot()
+        guard !Task.isCancelled, runServices[service.runID] === service, !snapshot.isTerminal,
+              TaskRunConclusion.isRuntimeActivity(state: snapshot.stateName) else { return }
+        environment.backgroundRunCoordinator.didReceiveActivity(runID: service.runID,
+            characters: characters, tokensPerSecond: tokensPerSecond)
     }
 
     private func refreshChecklistSurface(runID: UUID, conversationID: UUID) async {
@@ -8924,15 +9285,22 @@ final class ConversationCenter: ObservableObject {
         case "checkpointed": (snapshot.checkpointReason ?? FloeL10n.l("remote.conversation_center.task_paused"), 70)
         default: (FloeL10n.l("platform.background_run_coordinator.running"), 20)
         }
-        environment.backgroundRunCoordinator.didReceiveActivity(
-            runID: snapshot.runID, at: snapshot.liveness.lastProgressAt
-        )
-        environment.backgroundRunCoordinator.didUpdateProgress(
-            runID: snapshot.runID,
-            stage: progress.stage,
-            progress: progress.value,
-            isGenerating: ["streamingModel", "preparingToolCall"].contains(snapshot.stateName)
-        )
+        if snapshot.stateName == "completed" {
+            // Completion is visible immediately; title generation and other
+            // optional post-processing must not keep a finished task running.
+            environment.backgroundRunCoordinator.didFinish(runID: snapshot.runID, succeeded: true, message: nil)
+        } else if TaskRunConclusion.from(state: snapshot.stateName) == .checkpointed {
+            environment.backgroundRunCoordinator.didSuspend(runID: snapshot.runID, message: progress.stage)
+        } else if !snapshot.isTerminal {
+            let isActivity = TaskRunConclusion.isRuntimeActivity(state: snapshot.stateName)
+            if isActivity {
+                environment.backgroundRunCoordinator.didReceiveActivity(runID: snapshot.runID, at: snapshot.liveness.lastProgressAt)
+            }
+            environment.backgroundRunCoordinator.didUpdateProgress(runID: snapshot.runID,
+                stage: progress.stage, progress: progress.value,
+                isGenerating: ["streamingModel", "preparingToolCall"].contains(snapshot.stateName),
+                isRuntimeActivity: isActivity)
+        }
         let blockingQuestion = snapshot.pendingUserQuestion.flatMap {
             $0.pendingBlockingQuestionIDs.isEmpty ? nil : $0.requestID
         }
@@ -9002,11 +9370,13 @@ final class ConversationCenter: ObservableObject {
         throw FloeError.invalidConfiguration("No provider and model configured")
     }
 
-    private func beginLaunch() {
+    @discardableResult private func beginLaunch(conversationID: UUID?, id: UUID = UUID()) -> UUID {
         launchCount += 1
+        return launchPreparations.begin(conversationID: conversationID, id: id)
     }
 
-    private func finishLaunch() {
+    private func finishLaunch(_ id: UUID) {
+        launchPreparations.finish(id)
         launchCount = max(0, launchCount - 1)
         guard launchCount == 0 else { return }
         let waiters = launchWaiters

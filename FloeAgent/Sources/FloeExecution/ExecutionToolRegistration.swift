@@ -99,6 +99,7 @@ public func registerExecutionTools(
     ToolCatalog.register(OCRTool.self)
     ToolCatalog.register(BarcodeScanTool.self)
     ToolCatalog.register(PresentationArtifactTool.self)
+    ToolCatalog.register(PresentationChartContractTool.self)
     ToolCatalog.register(NativeDataAnalysisTool.self)
     // Runtime runners.
     if let sshCommandService {
@@ -187,6 +188,7 @@ public func registerExecutionTools(
     registry.register(OCRTool())
     registry.register(BarcodeScanTool())
     registry.register(PresentationArtifactTool())
+    registry.register(PresentationChartContractTool())
     registry.register(NativeDataAnalysisTool())
     if let linuxPreparation {
         ToolCatalog.register(PrepareLinuxEnvironmentTool.self)

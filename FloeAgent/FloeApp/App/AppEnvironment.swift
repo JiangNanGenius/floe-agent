@@ -109,6 +109,7 @@ final class AppEnvironment: ObservableObject {
     let intelligenceStore: SQLiteIntelligenceStore
     let personalizationStore: SQLitePersonalizationStore
     let personalizationService: PersonalizationService
+    let executionExperienceService: ExecutionExperienceService
     let memoryCandidatePipeline: MemoryCandidatePipeline
     let skillStore: SQLiteSkillStore
     /// One generic Skill configuration store/service for the whole app. The
@@ -124,6 +125,10 @@ final class AppEnvironment: ObservableObject {
     var nativeMailOAuthRefreshGeneration = UUID()
     let configurationStore: ModelConfigurationStore
     let configurationSync: ConfigSyncEngine
+    /// RQ37: one live subscription to the config-sync engine's inbound-apply
+    /// fan-out (remote records applied, durable deferred replays, resolved
+    /// credential waits). Owned by the environment, not by any view.
+    private var configurationApplyObserver: Task<Void, Never>?
     let credentialStore: CredentialStore
     let credentialVault: CredentialVaultService
     let remoteSessionRegistry: any RemoteSessionRegistry
@@ -575,6 +580,23 @@ final class AppEnvironment: ObservableObject {
     var sharedDocumentsCenter: SharedDocumentsCenter { .shared }
     var workspaceCenter: WorkspaceCenter { _workspaceCenter }
     var sourceControlCenter: SourceControlCenter { _sourceControlCenter }
+
+    private lazy var _gitRemoteCredentials = GitRemoteCredentialResolver(
+        vault: credentialVault, credentials: credentialStore, hosts: remoteHostStore)
+    var gitRemoteCredentials: GitRemoteCredentialResolver { _gitRemoteCredentials }
+    private var _gitHubCollaborationService: GitHubCollaborationService?
+    func gitHubCollaborationService() throws -> GitHubCollaborationService {
+        if let existing = _gitHubCollaborationService { return existing }
+        guard let supportRoot = DocumentIntakeCenter.applicationSupportRoot() else {
+            throw PersonalContentError.storageUnavailable
+        }
+        let journal = supportRoot
+            .appendingPathComponent("GitHubCollaboration", isDirectory: true)
+            .appendingPathComponent("delivery.json", isDirectory: false)
+        let service = try GitHubCollaborationService(client: sourceControlCenter.github.collaborationClient(), journalURL: journal)
+        _gitHubCollaborationService = service
+        return service
+    }
     var githubTransportMirrors: GitHubTransportMirrorPolicyStore { _githubTransportMirrors }
     /// Lazily created on first access; ConversationCenter reads
     /// `defaultAgentMode` through it without a construction cycle.
@@ -874,6 +896,10 @@ final class AppEnvironment: ObservableObject {
         self.intelligenceStore = intelligenceStore
         let personalizationStore = SQLitePersonalizationStore(database: database)
         self.personalizationStore = personalizationStore
+        self.executionExperienceService = ExecutionExperienceService(
+            database: database, runs: runStore, conversations: conversationStore,
+            workspaces: SQLiteWorkspaceStore(database: database)
+        )
         self.personalizationService = PersonalizationService(
             documents: personalizationStore,
             memories: intelligenceStore
@@ -1716,9 +1742,59 @@ final class AppEnvironment: ObservableObject {
             rootProvider: WorkspaceCenter.toolRootProvider,
             compressedArchiveHandler: localPythonService.map(ArchiveCompressedBridge.makeHandler)
         )
+        registerWorkspaceImportOutputTool(conversations: conversationStore, runs: runStore)
         // Native local Git and GitHub repository tools. Credentials are read
         // from the dedicated device-local Keychain store at execution time.
-        registerGitTools(rootProvider: WorkspaceCenter.toolRootProvider)
+        let gitEnvironment = registerGitTools(
+            rootProvider: WorkspaceCenter.toolRootProvider,
+            remoteExecutor: { [weak self] endpoint, context, operation in
+                guard let self else { throw CancellationError() }
+                try context.cancellation.throwIfCancelled()
+                guard !context.publicWebOnly, !context.temporaryReadOnly,
+                      let root = context.workspaceRootURL else { throw FloeError.unauthorized }
+                let workspaceID: UUID?
+                if let conversationID = context.conversationID {
+                    workspaceID = try await SQLiteWorkspaceStore(database: self.database).workspaceID(conversationID: conversationID)
+                } else { workspaceID = nil }
+                let resolver = await self.gitRemoteCredentials
+                do {
+                    return try await resolver.withAuthentication(endpoint: endpoint,
+                        scope: .init(workspaceRoot: root, workspaceID: workspaceID, conversationID: context.conversationID),
+                        authorize: { try context.cancellation.throwIfCancelled(); try Task.checkCancellation() },
+                        operation: operation)
+                } catch let error as GitCredentialConfigurationError {
+                    // No POST retry or host-key auto-trust. Runtime pauses at the
+                    // existing user-action boundary, with the same task/run retained.
+                    return ToolExecutionOutput(digesting: error.localizedDescription + " "
+                        + (FloeL10n.isChinese ? "请打开此项目的源码管理 → 远端与连接，完成配置后继续。" : "Open this project's Source Control → Remotes and Connections, configure it, then continue."),
+                        requiresUserAction: true)
+                }
+            }, projectImporter: { [weak self] directory, name, context in
+                guard let self else { throw CancellationError() }
+                try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
+                guard !context.temporaryReadOnly, let root = context.workspaceRootURL,
+                      directory.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(root.standardizedFileURL.resolvingSymlinksInPath().path + "/") else { throw FloeError.unauthorized }
+                // The exact native clone has already atomically published this path.
+                // Registration is idempotent and does not retarget the current task/UI.
+                let workspace = try await self.workspaceCenter.ensureWorkspaceRecord(forDirectory: directory, name: name)
+                return workspace.id
+            })
+        ToolRunnerRegistry.shared.register(GitHubReadLinkTool(
+            environment: gitEnvironment,
+            associationProjectID: { [weak self] context in
+                guard let self else { throw CancellationError() }
+                return try await GitHubSourceProjectBinding.projectID(context: context, environment: self)
+            }
+        ))
+        do {
+            registerGitHubCollaborationTools(environment: .init(
+                service: try gitHubCollaborationService(),
+                client: sourceControlCenter.github.collaborationClient()))
+        } catch {
+            // A persistent delivery journal must be usable before discovery;
+            // never substitute a second or ephemeral mutation service.
+            FloeLogger(category: .tools).error("githubCollaborationRegistrationFailed")
+        }
         // Document tools (OOXML spreadsheet reading).
         registerDocumentTools(rootProvider: WorkspaceCenter.toolRootProvider)
         // Device-global, digest-addressed font resources for document/PDF
@@ -1731,6 +1807,7 @@ final class AppEnvironment: ObservableObject {
         // Native canvas inspection and mutation tools. Canvas runs are scoped
         // back to their durable hidden assistant conversation at execution.
         registerCanvasAgentTools(environment: self)
+        MediaV2ProviderAdapter.install(environment: self)
         registerStudioAgentTools(environment: self)
         registerChemistryAgentTools(environment: self)
         registerChemistryEnvironmentTool(environment: self)
@@ -2067,6 +2144,8 @@ final class AppEnvironment: ObservableObject {
             )
             return try Data(floeContentsOf: temporary)
         }
+        MediaV2StemLocalBridge.install(MediaV2StemLocalInstaller.handlers(store: mediaModelStore))
+        Task { await MediaV2StemLocalBridge.refresh() }
         NotesToolRegistration.register()
         ToolCatalog.register(AudioTranscribeTool.self)
         ToolRunnerRegistry.shared.register(AudioTranscribeTool(assistant: assistantAudioService))
@@ -2518,6 +2597,8 @@ final class AppEnvironment: ObservableObject {
         return (python, ssh, interactiveShell)
     }
 
+    deinit { configurationApplyObserver?.cancel() }
+
     /// Builds the production environment against the on-disk database,
     /// migrating to the current schema. Returns a value whose
     /// `persistenceReady` reflects whether migration succeeded.
@@ -2968,6 +3049,23 @@ final class AppEnvironment: ObservableObject {
                 // Local setup remains fully usable when iCloud is unavailable.
             }
             #endif
+            // RQ37 (job-d005ef9f9b2f4548): inbound CloudKit applies, durable
+            // deferred replays, conflict-recovered records and late-resolved
+            // credential waits fan out through the engine's single observation
+            // seam. This one service-owned subscription reloads the shared
+            // provider/model/default state immediately — scheduled coalesced
+            // syncs never pass through a settings manual sync, and the reload
+            // is not raced behind fetchChanges anymore.
+            if configurationApplyObserver == nil {
+                let sync = configurationSync
+                configurationApplyObserver = Task { @MainActor [weak self] in
+                    let changes = await sync.remoteConfigurationChanges
+                    for await _ in changes {
+                        guard !Task.isCancelled, let self else { return }
+                        await self.conversationCenter.reload()
+                    }
+                }
+            }
             if isEphemeral {
                 persistenceReady = false
                 if bootstrapError == nil {

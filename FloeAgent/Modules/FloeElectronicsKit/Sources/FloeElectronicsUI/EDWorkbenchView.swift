@@ -104,6 +104,7 @@ public struct EDWorkbenchView: View {
     @Bindable var session: EDWorkbenchSession
     let onAssistant: (() -> Void)?
     let onExportPreview: ((EDAExchangeFile, UInt64) -> Void)?
+    let onLibraryUpdates: (() -> Void)?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var tab = EDWorkspaceTab.schematic
     @State private var panel: EDWorkbenchPanel?
@@ -123,6 +124,11 @@ public struct EDWorkbenchView: View {
     @State private var wireWidth = 0.25
     @State private var holeDiameter = 3.2
     @State private var netID = ""
+    @State private var libraryPlacement: EDALibraryPlacementSelection?
+    @State private var replacementPlan: EDALibraryReplacementPlan?
+    @State private var pendingReplacement: EDALibraryReplacementPlan?
+    @State private var pendingLibraryUpdates = false
+    @State private var pendingLibraryChooser = false
     @State private var placementAngle = 0.0
     @State private var placementFlipped = false
     @State private var showGrid = true
@@ -137,8 +143,8 @@ public struct EDWorkbenchView: View {
     @State private var showingBackAnnotation = false
 
     public init(session: EDWorkbenchSession, onAssistant: (() -> Void)? = nil,
-                onExportPreview: ((EDAExchangeFile, UInt64) -> Void)? = nil) {
-        self.session = session; self.onAssistant = onAssistant; self.onExportPreview = onExportPreview
+                onExportPreview: ((EDAExchangeFile, UInt64) -> Void)? = nil, onLibraryUpdates: (() -> Void)? = nil) {
+        self.session = session; self.onAssistant = onAssistant; self.onExportPreview = onExportPreview; self.onLibraryUpdates = onLibraryUpdates
     }
     private var compactPanels: Bool { sizeClass == .compact || viewportWidth < 1_000 }
     private var currentBoard: EDABoard? { session.project.boards.first { $0.id == boardID } ?? session.project.boards.first }
@@ -168,7 +174,16 @@ public struct EDWorkbenchView: View {
         default: tab.title
         }
     }
+    private var selectedComponentID: UUID? {
+        guard session.selection.objectIDs.count == 1, let object = session.selection.objectIDs.first else { return nil }
+        switch session.selection.context {
+        case .schematic(let id): return session.project.sheets.first { $0.id == id }?.symbols.first { $0.id == object }?.componentID
+        case .board(let id): return session.project.boards.first { $0.id == id }?.footprints.first { $0.id == object }?.componentID
+        default: return nil
+        }
+    }
     private var partName: String {
+        if let libraryPlacement { return libraryPlacement.snapshot.part.name }
         if tab == .board { return session.project.footprints.first { $0.id == footprintID }?.name ?? edText("选择封装", "Choose footprint") }
         return session.project.symbols.first { $0.id == symbolID }?.name ?? edText("选择元件", "Choose part")
     }
@@ -199,15 +214,27 @@ public struct EDWorkbenchView: View {
                 if let onAssistant { Button(action: onAssistant) { Label(edText("助手", "Assistant"), systemImage: "sparkles") } }
             }
         }
-        .sheet(item: $panel) { item in
+        .sheet(item: $panel, onDismiss: {
+            if let pending = pendingReplacement, !session.isClosed, pending.projectID == session.project.id, pending.sourceRevision == session.revision { replacementPlan = pending }
+            pendingReplacement = nil
+            if pendingLibraryUpdates { pendingLibraryUpdates = false; onLibraryUpdates?() }
+            if pendingLibraryChooser { pendingLibraryChooser = false; panel = .parts }
+        }) { item in
             NavigationStack {
                 panelContent(item)
                     .navigationTitle(item == .parts ? edText("放置元件", "Place part") : item == .navigator ? edText("项目", "Project") : edText("属性", "Properties"))
                     .edInlineNavigationTitle()
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button(item == .properties || item == .boardSettings ? edText("关闭", "Close") : edText("完成", "Done")) { panel = nil } } }
             }
-            .presentationDetents([.medium, .large])
+            .presentationDetents(item == .parts ? [.large] : [.medium, .large])
             .presentationBackground(.background)
+        }
+        .sheet(isPresented: Binding(get: { replacementPlan != nil }, set: { if !$0 { replacementPlan = nil } })) {
+            if let plan = replacementPlan {
+                EDLibraryReplacementReview(plan: plan) { accepted in
+                    Task { do { try await session.replaceLibrary(plan, acceptedDifferences: accepted) } catch { session.report(error) } }
+                }
+            }
         }
         .sheet(item: $crossProbeRequest) { request in
             EDCrossProbePicker(request: request, busy: locatingComponent,
@@ -224,7 +251,7 @@ public struct EDWorkbenchView: View {
             Button(edText("重新载入", "Reload"), role: .destructive) { Task { do { try await session.refresh(discardChanges: true) } catch { session.report(error) } } }
         }
         .onChange(of: tab) { _, _ in
-            tool = .select; libraryTool = .select; placementAngle = 0; placementFlipped = false
+            tool = .select; libraryTool = .select; libraryPlacement = nil; placementAngle = 0; placementFlipped = false
             if let token=focusNavigationToken,let request=session.focusRequest,request.token==token,request.context==context{
                 session.selection = .init(context:request.context,objectIDs:request.objectIDs)
             }else{session.selection = .none}
@@ -277,11 +304,11 @@ public struct EDWorkbenchView: View {
                                            onCancel: { tool = .select; libraryTool = .select }, onProperties: showProperties,
                                            onWireToolRequested: { tool = .wire }, graphicStroke: graphicStroke,
                                            graphicLayer: tab == .footprints ? EDAGraphicLayers.standardAssignments.first { $0.layerID == graphicLayerID } : nil,
-                                           arcClockwise: arcClockwise)
+                                           arcClockwise: arcClockwise, libraryPlacement: libraryPlacement)
                         } else { ContentUnavailableView(edText("选择图页或库项目", "Select a sheet or library item"), systemImage: "square.dashed") }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     if !compactPanels && inspectorVisible {
-                        Divider(); EDAInspector(session: session, context: context).frame(width: 270)
+                        Divider(); EDAInspector(session: session, context: context, onReplaceLibrary: libraryReplacementAction).frame(width: 270)
                     }
                 }
             }
@@ -437,6 +464,14 @@ public struct EDWorkbenchView: View {
             if session.busy || session.isRouting || session.isFilling { ProgressView().controlSize(.small) }
         }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 5)
     }
+    private func showLibraryReplacement() {
+        guard selectedComponentID != nil else { return }
+        if panel != nil { pendingLibraryChooser = true; panel = nil } else { panel = .parts }
+    }
+    private var libraryReplacementAction: (() -> Void)? {
+        guard session.library != nil else { return nil }
+        return { showLibraryReplacement() }
+    }
     private func showProperties() {
         if compactPanels { panel = .properties } else { inspectorVisible.toggle() }
     }
@@ -444,11 +479,18 @@ public struct EDWorkbenchView: View {
         switch item {
         case .navigator: navigator
         case .parts:
-            EDPartChooser(project: session.project, footprints: tab == .board) { id in
+            EDPartChooser(project: session.project, footprints: tab == .board, library: session.library, choose: { id in
+                libraryPlacement = nil
                 if tab == .board { footprintID = id } else { symbolID = id }
                 tool = .place; placementAngle = 0; placementFlipped = false; panel = nil
-            }
-        case .properties: EDAInspector(session: session, context: context)
+            }, chooseLibrary: { choice in
+                libraryPlacement = choice
+                tool = .place; placementAngle = 0; placementFlipped = false; panel = nil
+            }, replaceLibrary: selectedComponentID.map { component in { snapshot in
+                do { pendingReplacement = try EDALibraryProject.planReplacement(snapshot, componentID: component, project: session.project); panel = nil }
+                catch { session.report(error) }
+            } }, onUpdates: onLibraryUpdates.map { _ in { pendingLibraryUpdates = true; panel = nil } })
+        case .properties: EDAInspector(session: session, context: context, onReplaceLibrary: libraryReplacementAction)
         case .boardSettings:
             if let board = currentBoard { EDBoardProperties(session: session, value: board).id(board.id) }
         }

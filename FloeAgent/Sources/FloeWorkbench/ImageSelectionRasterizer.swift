@@ -17,11 +17,11 @@ public enum ImageSelectionRasterizer {
     /// empty, non-inverted selection (caller keeps the layer untouched).
     public static func maskImage(for selection: ImageSelection, canvas: CGSize) -> CIImage? {
         guard canvas.width >= 1, canvas.height >= 1 else { return nil }
-        if selection.shapes.isEmpty {
+        if selection.shapes.isEmpty && selection.bitmap == nil {
             guard selection.inverted else { return nil }
             return fullMask(canvas: canvas, inverted: selection.inverted)
         }
-        guard let union = unionImage(selection.shapes, canvas: canvas) else { return nil }
+        guard let union = unionImage(selection.shapes, bitmap: selection.bitmap, canvas: canvas) else { return nil }
         var mask = selection.inverted ? invert(union, canvas: canvas) : union
         if selection.feather > 0.0001 {
             let radius = CGFloat(max(0, min(selection.feather, 0.5))) * min(canvas.width, canvas.height)
@@ -60,7 +60,7 @@ public enum ImageSelectionRasterizer {
         }
     }
 
-    private static func unionImage(_ shapes: [ImageSelectionShape], canvas: CGSize) -> CIImage? {
+    private static func unionImage(_ shapes: [ImageSelectionShape], bitmap: ImageSelectionBitmap?, canvas: CGSize) -> CIImage? {
         let width = Int(canvas.width.rounded())
         let height = Int(canvas.height.rounded())
         guard width > 0, height > 0,
@@ -71,6 +71,7 @@ public enum ImageSelectionRasterizer {
             return nil
         }
         let full = CGRect(x: 0, y: 0, width: width, height: height)
+        if let bitmap, let image = bitmap.cgImage { context.draw(image, in: full) }
         for shape in shapes {
             guard let path = path(for: shape, canvas: canvas) else { continue }
             switch shape.operation {

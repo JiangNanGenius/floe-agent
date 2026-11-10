@@ -14,9 +14,11 @@ struct MediaV2Workspace: View {
     var onSaveToSource: ((ImageExportOptions) async throws -> Void)? = nil
     var onMakeVariant: ((ImageExportOptions) async throws -> Void)? = nil
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.editorCanvasOwnsTextInput) private var ownsTextInput
     @State private var importing = false
     @State private var importingCaptions = false
-    @State private var panel = "properties"
+    @State private var objectsVisible = true
+    @State private var inspectorVisible = true
     @State private var compactPanel: String?
     @State private var audio: NativeCreativeAudioSession?
     @State private var text = ""
@@ -24,38 +26,30 @@ struct MediaV2Workspace: View {
     @State private var property = "scale"
     @State private var paintColor: Color = .teal
     @State private var showingDiagnostic = false
+    @State private var showingProviderSettings = false
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 1050
             VStack(spacing: 0) {
-                toolbar
+                toolbar(wide: wide)
                 Divider()
                 toolCategories
                 Divider()
                 HStack(alignment: .top, spacing: 0) {
                     toolRail
-                    if wide { objectPanel.frame(width: 190); Divider() }
+                    if wide && objectsVisible { objectPanel.frame(width: 190); Divider() }
                     VStack(spacing: 0) {
                         MediaV2Preview(session: session)
                         previewControls
                         if session.project.kind == .video { Divider(); MediaV2Timeline(session: session).frame(height: max(190, min(260, geometry.size.height * 0.32))) }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if wide { Divider(); propertiesPanel.frame(width: 280) }
+                    if wide && inspectorVisible { Divider(); propertiesPanel.frame(width: 280) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).clipped()
-                if !wide {
-                    Divider()
-                    HStack {
-                        Button { compactPanel = "objects" } label: { Label(session.project.kind == .video ? WorkbenchText.t("素材/轨道", "Assets/Tracks") : WorkbenchText.t("图层/素材", "Layers/Assets"), systemImage: "square.3.layers.3d") }
-                        Spacer()
-                        Button { compactPanel = "properties" } label: { Label(WorkbenchText.t("属性", "Properties"), systemImage: "slider.horizontal.3") }
-                        Spacer()
-                        Button { onAssistant?() } label: { Label(WorkbenchText.t("助手", "Assistant"), systemImage: "sparkles") }
-                    }.font(.callout).padding(.horizontal, 14).frame(minHeight: 44)
-                }
                 Divider()
                 status
             }.frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped()
         }
+        .ignoresSafeArea(.keyboard, edges: ownsTextInput ? [] : .bottom)
         .background(Color(uiColor: .systemBackground))
         .fileImporter(isPresented: $importing, allowedContentTypes: importContentTypes) { result in
             switch result {
@@ -84,20 +78,26 @@ struct MediaV2Workspace: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { showingDiagnostic = false } } }
             }.presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showingProviderSettings) { MediaV2ProviderConfigurationView() }
+        .fullScreenCover(item:$session.compoundEditorRoute) { route in
+            MediaV2CompoundEditor(rootSession:session,route:route,onAssistant:onAssistant)
+        }
         .onDisappear { session.stopPlayback() }
         .onChange(of: session.tool) { _, tool in
             number = tool == "image.text" ? 72 : tool.contains("exposure") ? 0 : tool.contains("speed") ? 1 : tool.contains("white-balance") ? 6500 : tool.contains("opacity") || tool.contains("hsl") ? 1 : tool.contains("pip") ? 0.4 : 12
             if let layer = session.selectedLayer, case .text(let content) = layer.content { text = content.text }
         }
     }
-    private var toolbar: some View {
+    private func toolbar(wide: Bool) -> some View {
         HStack(spacing: 4) {
-            Text(session.project.name).font(.headline).lineLimit(1)
-            Spacer(minLength: 4)
-            Text(session.saving ? WorkbenchText.t("正在保存…", "Saving…") : WorkbenchText.t("已保存", "Saved") + " · r\(session.document.revision)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            MusicIconButton("sidebar.left", WorkbenchText.t("图层与素材", "Layers and assets")) {
+                if wide { objectsVisible.toggle() } else { compactPanel = "objects" }
+            }
+            Divider().frame(height: 22).padding(.horizontal, 4)
             MusicIconButton("arrow.uturn.backward", WorkbenchText.t("撤销", "Undo")) { session.undo() }.disabled(!session.canUndo)
-            MusicIconButton("arrow.uturn.forward", WorkbenchText.t("重做", "Redo")) {}.disabled(true)
+            MusicIconButton("arrow.uturn.forward", WorkbenchText.t("重做", "Redo")) { session.redo() }.disabled(!session.canRedo)
             Menu {
+                if !wide { Button(WorkbenchText.t("导入素材", "Import media"), systemImage: "square.and.arrow.down") { beginImport() } }
                 if session.project.kind == .image {
                     Button(WorkbenchText.t("绘画图层", "Drawing layer"), systemImage: "paintbrush") { session.addLayer(.strokes(.init()), name: WorkbenchText.t("绘图", "Drawing")) }
                     Button(WorkbenchText.t("文字", "Text"), systemImage: "character.cursor.ibeam") { run("image.text") }
@@ -109,7 +109,8 @@ struct MediaV2Workspace: View {
                     Button(WorkbenchText.t("字幕", "Caption")) { run("video.caption") }
                 }
             } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
-            MusicIconButton("square.and.arrow.down", WorkbenchText.t("导入素材", "Import media")) { beginImport() }
+            Divider().frame(height: 22).padding(.horizontal, 4)
+            if wide { MusicIconButton("square.and.arrow.down", WorkbenchText.t("导入素材", "Import media")) { beginImport() } }
             Menu {
                 Button(session.project.kind == .image ? WorkbenchText.t("导出 PNG", "Export PNG") : WorkbenchText.t("导出 MP4", "Export MP4")) { session.export() }
                 Button(WorkbenchText.t("完整工程包", "Complete original")) { exchange(.original) }
@@ -120,8 +121,18 @@ struct MediaV2Workspace: View {
                     if let onSaveToSource { Button(WorkbenchText.t("更新来源", "Update source")) { Task { do { try await onSaveToSource(.init(format: .png)) } catch { session.diagnostic = error.localizedDescription } } } }
                     if let onMakeVariant { Button(WorkbenchText.t("另存一版", "Make variant")) { Task { do { try await onMakeVariant(.init(format: .png)) } catch { session.diagnostic = error.localizedDescription } } } }
                 } else { Button("OpenTimelineIO (.otio)") { exchange(.otio) } }
-            } label: { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }.disabled(session.rendering)
-            MusicIconButton("sparkles", WorkbenchText.t("作品助手", "Work assistant")) { onAssistant?() }.disabled(onAssistant == nil)
+            } label: {
+                if wide { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
+                else { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }
+            }.accessibilityLabel(WorkbenchText.t("导出", "Export")).disabled(session.rendering)
+            Spacer(minLength: 8)
+            if wide {
+                Text(session.saving ? WorkbenchText.t("正在保存…", "Saving…") : WorkbenchText.t("已保存", "Saved"))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            MusicIconButton("sidebar.right", WorkbenchText.t("属性", "Properties")) {
+                if wide { inspectorVisible.toggle() } else { compactPanel = "properties" }
+            }
         }.padding(.horizontal, 10).background(Color(uiColor: .secondarySystemBackground))
     }
     private var toolCategories: some View {
@@ -130,12 +141,19 @@ struct MediaV2Workspace: View {
                 ForEach(categories, id: \.self) { category in
                     Menu {
                         ForEach(session.applicableTools.filter { $0.category == category }) { tool in
-                            Button { session.tool = tool.id; panel = "properties" } label: {
+                            Button { session.tool = tool.id; inspectorVisible = true } label: {
                                 Text(tool.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en"))
                                 if session.tool == tool.id { Image(systemName: "checkmark") }
                             }
                         }
-                    } label: { Text(categoryTitle(category)).font(.callout).frame(minHeight: 44).padding(.horizontal, 8) }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(categoryTitle(category)).font(.callout)
+                            Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                        }.foregroundStyle(.primary).frame(minHeight: 44).padding(.horizontal, 10)
+                            .background(session.applicableTools.first(where: { $0.id == session.tool })?.category == category ? Color.primary.opacity(0.07) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 6))
+                    }
                 }
             }.padding(.horizontal, 6)
         }.accessibilityIdentifier("media.v2.toolbox")
@@ -258,20 +276,20 @@ struct MediaV2Workspace: View {
     }
     private var propertiesPanel: some View {
         VStack(spacing: 0) {
-            Picker(WorkbenchText.t("检查器", "Inspector"), selection: $panel) { Text(WorkbenchText.t("属性", "Properties")).tag("properties"); Text(WorkbenchText.t("助手", "Assistant")).tag("ai") }.pickerStyle(.segmented).padding(8)
+            HStack {
+                Text(WorkbenchText.t("属性", "Properties")).font(.subheadline.weight(.semibold))
+                Spacer()
+                Button { inspectorVisible = false; compactPanel = nil } label: {
+                    Image(systemName: "xmark").frame(width: 44, height: 44)
+                }.buttonStyle(.plain).accessibilityLabel(WorkbenchText.t("收起属性", "Hide properties"))
+            }.padding(.leading, 14)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if panel == "ai" {
-                        Label(WorkbenchText.t("作品助手", "Work assistant"), systemImage: "sparkles").font(.headline)
-                        Text(WorkbenchText.t("用当前工程的图层、选区和时间线继续编辑。", "Continue editing this project's layers, selection and timeline.")).font(.callout).foregroundStyle(.secondary)
-                        Button(WorkbenchText.t("打开作品助手", "Open work assistant")) { onAssistant?() }.frame(minHeight: 44).disabled(onAssistant == nil)
-                    } else {
-                        toolProperties
-                        Divider()
-                        if let layer = session.selectedLayer { layerProperties(layer) }
-                        if let selected = session.selectedClip { clipProperties(track: selected.track, clip: selected.clip) }
-                    }
+                    toolProperties
+                    Divider()
+                    if let layer = session.selectedLayer { layerProperties(layer) }
+                    if let selected = session.selectedClip { clipProperties(track: selected.track, clip: selected.clip) }
                     if let file = session.exportedFile {
                         Divider()
                         ShareLink(item: file) { Label(WorkbenchText.t("分享已导出文件", "Share exported file"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
@@ -284,8 +302,46 @@ struct MediaV2Workspace: View {
     @ViewBuilder private var toolProperties: some View {
         let descriptor = session.applicableTools.first { $0.id == session.tool }
         Text(descriptor?.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en") ?? WorkbenchText.t("移动", "Move")).font(.headline)
-        if session.project.kind == .image, ["image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect", "image.layer-mask", "image.vector-mask", "image.clip-mask"].contains(session.tool) {
+        if ["image.remove","image.content-fill"].contains(session.tool) {
+            MediaV2ContentFillInspector(session:session,onImport:{beginImport()})
+        } else if ["image.boolean","image.path-text","image.outline"].contains(session.tool) {
+            MediaV2VectorTextInspector(session:session)
+        } else if ["image.resize","image.canvas-size"].contains(session.tool) {
+            MediaV2CanvasInspector(session:session)
+        } else if ["image.inpaint","image.outpaint","video.transcribe","video.translate","video.voice-separate"].contains(session.tool) {
+            MediaV2ProviderInspector(session:session,onImport:{beginImport()},onImportCaptions:{beginImport(captions:true)},onConfigure:{showingProviderSettings=true})
+        } else if session.tool == "video.hdr" {
+            MediaV2HDRInspector(session:session)
+        } else if session.tool == "video.color-match" {
+            MediaV2ColorMatchInspector(session:session,onImport:{beginImport()})
+        } else if ["video.tracking","video.stabilize"].contains(session.tool) {
+            MediaV2VideoMotionInspector(session:session,onImport:{beginImport()})
+        } else if ["video.video-curves","video.wheels","video.video-hsl","video.video-lut"].contains(session.tool) {
+            MediaV2VideoColorInspector(session: session, onImport: { beginImport() })
+        } else if ["video.chroma","video.video-blend"].contains(session.tool) {
+            MediaV2CompositeInspector(session:session, onImport: { beginImport() })
+        } else if MediaV2Session.nativePaintTools.contains(session.tool) {
+            MediaV2PaintEffectsInspector(session:session)
+        } else if session.tool == "video.scopes" {
+            MediaV2ScopesInspector(session:session)
+        } else if MediaV2Session.audioDerivationToolIDs.contains(session.tool) {
+            MediaV2AudioDerivationInspector(session: session)
+        } else if ["video.eq", "video.compressor"].contains(session.tool) {
+            MediaV2AudioEffectsInspector(session:session)
+        } else if MediaV2Session.extendedAnimationTools.contains(session.tool) {
+            MediaV2AnimationInspector(session:session)
+        } else if ["video.reverse", "video.freeze"].contains(session.tool) {
+            MediaV2PlaybackInspector(session: session)
+        } else if MediaV2Session.extendedColorTools.contains(session.tool) {
+            MediaV2ColorInspector(session:session)
+        } else if MediaV2Session.imageWarpToolIDs.contains(session.tool) {
+            MediaV2ImageWarpInspector(session: session)
+        } else if MediaV2Session.extendedImageTools.contains(session.tool) {
+            MediaV2NativeSelectionInspector(session:session)
+        } else if session.project.kind == .image, ["image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect", "image.layer-mask", "image.vector-mask", "image.clip-mask"].contains(session.tool) {
             MediaV2SelectionInspector(session: session)
+        } else if session.tool == "video.nest" {
+            MediaV2CompoundInspector(session:session)
         } else if session.tool == "image.crop" {
             if let layer = session.selectedLayer, layer.contentKind == .raster { MediaV2CropInspector(session: session, layer: layer).id(layer.id) }
             else { Text(WorkbenchText.t("请选择图片图层。", "Select an image layer.")).font(.caption).foregroundStyle(.secondary) }
@@ -299,13 +355,13 @@ struct MediaV2Workspace: View {
         } else if session.tool == "image.merge-layer" {
             Text(WorkbenchText.t("多选至少两个连续的同级图层。", "Select at least two adjacent sibling layers.")).font(.caption).foregroundStyle(.secondary)
             Button(WorkbenchText.t("合并所选图层", "Merge selected layers")) { run("image.merge-layer") }.frame(minHeight: 44).disabled(session.selectedLayerSet.count < 2)
-        } else if session.project.kind == .video, ["video.keyframes", "video.easing", "video.video-transform", "video.pip"].contains(session.tool) {
+        } else if session.project.kind == .video, ["video.graph", "video.keyframes", "video.easing", "video.video-transform", "video.pip"].contains(session.tool) {
             if let selected = session.selectedClip, selected.track.kind == .visual { MediaV2KeyframeInspector(session: session, clip: selected.clip).id(selected.clip.id) }
             else { Text(WorkbenchText.t("请选择视频或图片片段。", "Select a video or image clip.")).font(.caption).foregroundStyle(.secondary) }
         } else if session.project.kind == .video, ["video.video-mask", "video.video-feather"].contains(session.tool) {
             if let selected = session.selectedClip, selected.track.kind == .visual { MediaV2VideoMaskInspector(session: session, clip: selected.clip).id(selected.clip.id) }
             else { Text(WorkbenchText.t("请选择视频或图片片段。", "Select a video or image clip.")).font(.caption).foregroundStyle(.secondary) }
-        } else if session.project.kind == .video, ["video.caption", "video.caption-time", "video.srt"].contains(session.tool) || session.selectedClip?.track.kind == .caption {
+        } else if session.project.kind == .video, ["video.caption", "video.caption-time", "video.caption-style", "video.srt"].contains(session.tool) || session.selectedClip?.track.kind == .caption {
             MediaV2CaptionInspector(session: session, onImport: { beginImport(captions: true) })
             Divider()
             MediaV2CaptionStyleInspector(session: session)
@@ -343,7 +399,7 @@ struct MediaV2Workspace: View {
     private func layerProperties(_ layer: MediaPreparedLayer) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             MediaV2LayerInspector(session: session, layer: layer).id(layer.id)
-            if layer.contentKind == .text, session.tool != "image.text" { Divider(); MediaV2TextInspector(session: session, layer: layer).id(layer.id) }
+            if layer.contentKind == .text, !["image.text","image.path-text","image.outline"].contains(session.tool) { Divider(); MediaV2TextInspector(session: session, layer: layer).id(layer.id) }
         }
     }
     private func clipProperties(track: MediaPreparedTrack, clip: MediaPreparedClip) -> some View {
@@ -385,6 +441,7 @@ struct MediaV2Workspace: View {
             if session.rendering { ProgressView(value: session.exportProgress).frame(width: 70); Button(WorkbenchText.t("取消", "Cancel")) { session.cancelExport() } }
             Text("\(session.document.canvas?.width ?? 0) × \(session.document.canvas?.height ?? 0)")
         }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 10).frame(minHeight: session.diagnostic == nil ? 28 : 44)
+            .accessibilityIdentifier("media.v2.status")
     }
     private func run(_ tool: String) {
         var input = MediaV2ToolInput(); input.text = ["image.text", "video.caption"].contains(tool) && !text.isEmpty ? text : nil
@@ -433,7 +490,7 @@ private struct MediaV2CaptionStyleInspector: View {
             Toggle(WorkbenchText.t("保持在安全区域", "Keep in safe area"), isOn: Binding(get: { style.respectsSafeArea ?? true }, set: { style.respectsSafeArea = $0 })).frame(minHeight: 44)
             Button(WorkbenchText.t("应用字幕样式", "Apply caption style")) {
                 var input = MediaV2ToolInput(); input.captionStyle = style; input.expectedRevision = session.document.revision
-                Task { do { _ = try await session.performTool("video.caption", input: input) } catch { session.diagnostic = error.localizedDescription } }
+                Task { do { _ = try await session.performTool("video.caption-style", input: input) } catch { session.diagnostic = error.localizedDescription } }
             }.frame(minHeight: 44)
         }.disabled(session.saving)
             .onAppear { style = session.document.trackGraph.captionStyle ?? CaptionStyle() }

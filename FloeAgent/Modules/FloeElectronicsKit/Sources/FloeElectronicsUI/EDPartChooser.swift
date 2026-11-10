@@ -6,6 +6,29 @@ import FloeElectronicsCore
 struct EDPartChooser: View {
     let project: EDAProject
     let footprints: Bool
+    var library: EDLibraryController? = nil
+    let choose: (UUID) -> Void
+    var chooseLibrary: ((EDALibraryPlacementSelection) -> Void)? = nil
+    var replaceLibrary: ((EDALibrarySnapshot) -> Void)? = nil
+    var onUpdates: (() -> Void)? = nil
+    @State private var collection = 0
+    var body: some View {
+        VStack(spacing: 0) {
+            if library != nil {
+                Picker(edText("元件来源", "Part source"), selection: $collection) {
+                    Text(edText("元件库", "Libraries")).tag(0); Text(edText("当前项目", "This project")).tag(1)
+                }.pickerStyle(.segmented).padding(12)
+            }
+            if collection == 0, let library, let chooseLibrary {
+                EDLibraryChooser(project: project, footprints: footprints, library: library, choose: chooseLibrary, replace: replaceLibrary, onUpdates: onUpdates)
+            } else { EDProjectPartChooser(project: project, footprints: footprints, choose: choose) }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct EDProjectPartChooser: View {
+    let project: EDAProject
+    let footprints: Bool
     let choose: (UUID) -> Void
     @State private var query = ""
     private var items: [(id: UUID, name: String, detail: String)] {

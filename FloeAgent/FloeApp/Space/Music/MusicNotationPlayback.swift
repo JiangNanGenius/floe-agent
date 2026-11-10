@@ -19,7 +19,7 @@ nonisolated enum MusicNotationPerformance {
         let tempo = try MusicTempoMap(ticksPerQuarter: ppq, sampleRate: parent.tempoMap.sampleRate,
             segments: [MusicTempoSegment(startTick: .init(0), bpm: 120, beatsPerBar: 4, beatUnit: 4)])
         let length = max(1, Int64((duration * factor).rounded(.up)))
-        var groups: [String: (name: String, program: Int, percussion: Bool, notes: [MusicMIDINote])] = [:]
+        var groups: [String: (name: String, preset: Int, notes: [MusicMIDINote])] = [:]
         for event in performance["events"].array {
             guard let start = event["start"].number, let duration = event["duration"].number,
                   let pitch = event["pitch"].number, let velocity = event["velocity"].number,
@@ -32,20 +32,27 @@ nonisolated enum MusicNotationPerformance {
             let percussion = event["percussion"].bool ?? false, programValue = event["program"].number ?? 0
             guard programValue.isFinite, programValue.rounded() == programValue, (0...127).contains(programValue) else { throw HeavyEditorError.invalidDocument }
             let program = Int(programValue)
-            let key = (event["part"].string ?? "score") + ":\(program):\(percussion)"
+            let preset: Int
+            if let selected = event["nativePreset"].number {
+                guard selected.isFinite, selected.rounded() == selected, selected >= 0, selected <= 4096,
+                      MusicPresetCatalog.preset(index: Int(selected)) != nil else { throw HeavyEditorError.invalidDocument }
+                preset = Int(selected)
+            } else { preset = presetIndex(program: program, percussion: percussion) }
+            let part = event["part"].string ?? "score"
+            let key = part + ":\(preset):\(percussion)"
             let tick = Int64((start * factor).rounded())
             guard tick < length else { continue }
             let ticks = min(length - tick, max(1, Int64((duration * factor).rounded())))
             let note = try MusicMIDINote(pitch: Int(pitch), startTick: .init(tick), durationTicks: ticks,
                 velocity: max(1, min(127, Int((velocity * volume).rounded()))), channel: percussion ? 9 : 0)
-            if groups[key] == nil { groups[key] = (event["part"].string ?? "Score", program, percussion, []) }
+            if groups[key] == nil { groups[key] = (part, preset, []) }
             groups[key]?.notes.append(note)
         }
-        if groups.isEmpty { groups["silence"] = ("Score", 0, false, []) }
+        if groups.isEmpty { groups["silence"] = ("Score", 0, []) }
         var tracks: [FloeMusicCore.MusicTrack] = []
         for key in groups.keys.sorted() {
             guard let group = groups[key] else { continue }
-            let trackID = MusicTrackID(), preset = presetIndex(program: group.program, percussion: group.percussion)
+            let trackID = MusicTrackID(), preset = group.preset
             let clip = try MusicClip(name: group.name, trackID: trackID, offset: .init(0),
                 body: .midi(.init(durationTicks: length, notes: group.notes)))
             tracks.append(try MusicTrack(id: trackID, name: group.name, kind: .midi, clips: [clip],
@@ -53,7 +60,7 @@ nonisolated enum MusicNotationPerformance {
         }
         return try MusicDocument(id: parent.id, name: parent.name, revision: parent.revision, tempoMap: tempo, tracks: tracks)
     }
-    private static func presetIndex(program: Int, percussion: Bool) -> Int {
+    static func presetIndex(program: Int, percussion: Bool) -> Int {
         if percussion { return MusicPresetCatalog.electronicDrumKitIndex }
         let category: MusicPresetCategory
         switch program {

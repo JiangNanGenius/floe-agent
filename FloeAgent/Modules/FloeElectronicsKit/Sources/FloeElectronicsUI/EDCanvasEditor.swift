@@ -22,6 +22,7 @@ struct EDCanvasEditor:View {
     var graphicStroke:Double=0.2
     var graphicLayer:EDAGraphicLayerAssignment?=nil
     var arcClockwise=false
+    var libraryPlacement:EDALibraryPlacementSelection?=nil
     @State private var bounds:CGRect?
     @State private var center:EDAPoint?
     @State private var zoom=1.0
@@ -91,7 +92,13 @@ struct EDCanvasEditor:View {
                         if let graphic=draft.preview(toward:pointer,clockwise:arcClockwise,width:graphicStroke){EDAPlot.drawPreview(graphic,projection:projection,in:&canvas)}
                         if let center=draft.points.first,let pointer{EDAPlot.drawPolylinePreview([center,pointer],projection:projection,in:&canvas)}
                     }
-                    if tool == .place,!isLibraryContext{EDAPlot.drawPlacement(project:session.project,context:context,definitionID:placementDefinitionID,position:pointer ?? projection.center,angle:placementAngle,flipped:placementFlipped,projection:projection,in:&canvas)}
+                    if tool == .place,!isLibraryContext{
+                        if let libraryPlacement {
+                            let part=libraryPlacement.snapshot.part
+                            var preview=EDAProject(title:part.name);preview.symbols=part.symbol.map{[$0]} ?? [];preview.footprints=part.footprint.map{[$0]} ?? []
+                            EDAPlot.drawPlacement(project:preview,context:context,definitionID:isBoard ? part.footprint?.id:part.symbol?.id,position:pointer ?? projection.center,angle:placementAngle,flipped:placementFlipped,projection:projection,unit:libraryPlacement.unit,in:&canvas)
+                        }else{EDAPlot.drawPlacement(project:session.project,context:context,definitionID:placementDefinitionID,position:pointer ?? projection.center,angle:placementAngle,flipped:placementFlipped,projection:projection,in:&canvas)}
+                    }
                     if let draft=pendingBusUnfold,let tip=anchor ?? pointer{EDAPlot.drawPolylinePreview([draft.busPosition,tip],projection:projection,in:&canvas)}
                     if let anchor,let pointer{
                         let points=wirePoints(from:anchor,to:connectionPoint(pointer,tolerance:Self.hitTolerance(for:projection)))
@@ -128,10 +135,13 @@ struct EDCanvasEditor:View {
             .onAppear{restoreViewport();applyFocus(size:geometry.size)}
             .onChange(of:context){_,_ in resetGesture();restoreViewport();applyFocus(size:geometry.size)}
             .onChange(of:mode){_,newMode in if customPadDrawing != nil,case .footprint(.select)=newMode{return};if pendingBusUnfold != nil,case .schematic(.wire)=newMode{return};resetGesture()}.onChange(of:layer){_,_ in anchor=nil}
+            .onChange(of:libraryPlacement){_,_ in resetGesture()}
             .onChange(of:session.fingerDrawingEnabled){_,_ in resetGesture()}
             .onDisappear{resetGesture()}
             .onChange(of:session.focusRequest){_,_ in applyFocus(size:geometry.size)}
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("electronics.canvas")
     }
     private var placementDefinitionID:UUID?{if case .board=context{return footprintID};return symbolID}
     private var drawingInstruction:String{
@@ -295,14 +305,23 @@ struct EDCanvasEditor:View {
         case .select:select(raw,tolerance:tolerance)
         case .erase:if let id=nearest(raw,tolerance:tolerance){session.selection = .init(context:context,objectIDs:[id]);editSelection(.delete)}
         case .place:
-            switch context {
-            case .schematic(let sheet):guard let definition=session.project.symbols.first(where:{$0.id==symbolID}) else{return}
-                let footprint=session.project.footprints.first(where:{$0.name == (definition.referencePrefix=="U" ? "DIP-8":definition.referencePrefix=="Q" ? "SOT-23":definition.referencePrefix=="J" ? "Header 1x02":"0603")})
-                let component=EDAComponent(symbolID:definition.id,footprintID:footprint?.id,reference:EDABuiltinLibrary.nextReference(definition.referencePrefix,in:session.project),value:definition.name)
-                apply([.putComponent(component),.placeSymbol(sheet:sheet,.init(componentID:component.id,position:p,angle:placementAngle,mirrored:placementFlipped))])
-            case .board(let board):guard let definition=session.project.footprints.first(where:{$0.id==footprintID}) else{return};apply([.putFootprint(board:board,.init(definitionID:definition.id,reference:nextFootprintReference(board),position:p,angle:placementAngle,side:placementFlipped ? "B.Cu":"F.Cu"))])
-            default:break
-            }
+            if let libraryPlacement { placeLibrary(libraryPlacement,at:p);return }
+            do {
+                switch context {
+                case .schematic(let sheet):
+                    guard let definition=session.project.symbols.first(where:{$0.id==symbolID})else{return}
+                    if let snapshot=try EDALibraryProject.boundSnapshot(symbolID:definition.id,in:session.project){placeLibrary(.init(snapshot:snapshot),at:p);return}
+                    // A legacy independent symbol has no declared footprint.
+                    // Its reference prefix cannot establish an electrical map.
+                    let component=EDAComponent(symbolID:definition.id,reference:EDABuiltinLibrary.nextReference(definition.referencePrefix,in:session.project),value:definition.name)
+                    apply([.putComponent(component),.placeSymbol(sheet:sheet,.init(componentID:component.id,position:p,angle:placementAngle,mirrored:placementFlipped))])
+                case .board(let board):
+                    guard let definition=session.project.footprints.first(where:{$0.id==footprintID})else{return}
+                    if let snapshot=try EDALibraryProject.boundSnapshot(footprintID:definition.id,in:session.project){placeLibrary(.init(snapshot:snapshot),at:p);return}
+                    apply([.putFootprint(board:board,.init(definitionID:definition.id,reference:nextFootprintReference(board),position:p,angle:placementAngle,side:placementFlipped ? "B.Cu":"F.Cu"))])
+                default:break
+                }
+            }catch{session.report(error)}
         case .wire:
             if case .board(let board) = context {
                 do {
@@ -607,6 +626,13 @@ struct EDCanvasEditor:View {
                 if generation==gestureGeneration{pendingBusUnfold=nil;anchor=endpoint;draftRevision=plan.revision<UInt64.max ? plan.revision+1:plan.revision}
             }catch{session.report(error)}
         }
+    }
+    private func placeLibrary(_ choice:EDALibraryPlacementSelection,at position:EDAPoint){
+        guard editingEnabled else{return};let expected=session.revision,angle=placementAngle,flipped=placementFlipped
+        committing=true;ownedEdit=Task{defer{committing=false;ownedEdit=nil};do{
+            try Task.checkCancellation()
+            _ = try await session.placeLibrary(choice,context:context,position:position,angle:angle,mirrored:flipped,expectedRevision:expected)
+        }catch{session.report(error)}}
     }
     private func apply(_ edits:[EDAEdit],expectedRevision:UInt64?=nil,onSuccess:(()->Void)?=nil){
         guard !edits.isEmpty,editingEnabled else{return};let expected=expectedRevision ?? draftRevision ?? session.revision

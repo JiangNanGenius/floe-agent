@@ -85,7 +85,8 @@ public struct ElectronicKeyboardPanel: View {
                 keybed
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, configuration.showsToneControls ? 12 : 10)
         .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("floe.music.keyboard.panel")
@@ -240,11 +241,21 @@ public struct ElectronicKeyboardPanel: View {
                 flatTop: true,
                 alignment: .bottom
             )
+            .overlay {
+                if pitch.note(in: .C).accidental == .natural {
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color.black.opacity(0.24), lineWidth: 1)
+                        .padding(.trailing, 0.5)
+                        .allowsHitTesting(false)
+                }
+            }
             .accessibilityLabel(pitch.note(in: .C).description)
             .accessibilityIdentifier("floe.music.keyboard.key.\(pitch.intValue)")
         }
         // Reset the upstream model whenever the key range or the controller
         // identity changes, so no stale touch state survives the swap.
         .id("\(configuration.lowestNote)-\(configuration.keyCount)-\(ObjectIdentifier(controller))")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("floe.music.keyboard.keybed")
     }
 }

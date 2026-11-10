@@ -5879,6 +5879,7 @@ private struct CanvasSceneMigrationNoticeSheet: View {
 
 struct WorkspaceCanvasView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.documentAssistantLeaveIntent) private var documentAssistantLeaveIntent
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.cadWorkbenchTransientlyCovered) private var nativeEditorCovered
     /// DEBUG fixture only: when present, the canvas selects this node and
@@ -6090,7 +6091,7 @@ struct WorkspaceCanvasView: View {
             Text(store.saveError ?? "")
         }
         .alert("workspace.workspace_canvas_view.the_canvas_was_deleted_on_another", isPresented: $store.wasDeletedRemotely) {
-            Button("workspace.workspace_canvas_view.back_to_creative") { dismiss() }
+            Button("workspace.workspace_canvas_view.back_to_creative") { Task { await leaveCanvas() } }
         } message: {
             Text("workspace.workspace_canvas_view.the_cloud_deletion_was_confirmed_this")
         }
@@ -6563,6 +6564,13 @@ struct WorkspaceCanvasView: View {
         }
     }
 
+    @MainActor private func leaveCanvas() async {
+        if let documentAssistantLeaveIntent,
+           !(await documentAssistantLeaveIntent.authorize()) { return }
+        guard !Task.isCancelled else { return }
+        dismiss()
+    }
+
     private func requestDeletion(_ document: FloeCanvasDocument) {
         guard !isDeletingCanvas else { return }
         pendingCanvasDeletion = CanvasDeletionRequest(
@@ -6885,7 +6893,7 @@ struct WorkspaceCanvasView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("workspace.workspace_canvas_view.done") { dismiss() }
+                    Button("workspace.workspace_canvas_view.done") { Task { await leaveCanvas() } }
                         .accessibilityIdentifier("space.editor.done")
                 }
                 ToolbarItem(placement: .topBarTrailing) {

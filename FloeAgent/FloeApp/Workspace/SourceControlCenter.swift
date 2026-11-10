@@ -1,9 +1,12 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import SwiftUI
+import Combine
 import FloeCore
 import FloeGit
 import FloeSkills
+import FloePersistence
+import FloeSSH
 
 /// Pure workspace-identity decision used by both the pinned source-control
 /// pane (rendering/lock) and the mutation guard inside `perform(pinnedRoot:)`.
@@ -286,6 +289,12 @@ enum SkillHubPublicTransport {
 
 @MainActor
 final class SourceControlCenter: ObservableObject {
+    @Published private(set) var historyEntries: [GitCommitSummary] = []
+    @Published private(set) var historyNextOffset: Int?
+    @Published private(set) var historyBusy = false
+    private var historyRequestID: UUID?
+    private var historyHeadOID: String?
+    private var historyWorkspaceRoot: URL?
     @Published private(set) var snapshot = GitRepositorySnapshot(isRepository: false)
     /// The discovered Git repository root (an ancestor of the workspace root
     /// when the workspace is nested inside a repository or a worktree). All
@@ -297,16 +306,28 @@ final class SourceControlCenter: ObservableObject {
     @Published private(set) var deviceAuthorization: GitHubDeviceAuthorization?
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
+    @Published private(set) var transferProgress: GitRemoteProgress?
+    @Published private(set) var remoteDescriptors: [GitRemoteDescriptor] = []
+    @Published var selectedRemoteName = "origin"
+    @Published private(set) var activeTrustID: String?
+    @Published private(set) var lastCloneRecovery: URL?
+    private var repositoryWorkspaceRoot: URL?
+    private var workspaceObserver: AnyCancellable?
+    private var operationLease: SourceControlOperationLease?
+    private var operationTask: Task<Void, Error>?
+    private var progressTask: Task<Void, Never>?
+    var credentialResolver: GitRemoteCredentialResolver { environment.gitRemoteCredentials }
 
-    private unowned let environment: AppEnvironment
+
+    unowned let environment: AppEnvironment
     /// The workspace that owns this source-control surface. Settings file
     /// browsing uses an isolated WorkspaceCenter, while chat uses the global
     /// center; resolving Git against a different center falsely locks a valid
     /// pinned IDE and could otherwise target the wrong repository.
     private unowned let workspaceCenter: WorkspaceCenter
-    private let git = LocalGitService()
-    private let github = GitHubService()
-    private let credentials = GitHubCredentialStore()
+    let git = LocalGitService.shared
+    let github = GitHubService()
+    let credentials = GitHubCredentialStore()
     private var deviceLoginTask: Task<Void, Never>?
     /// NotificationCenter's opaque token is non-Sendable. Its wrapper owns
     /// removal on deallocation without reading actor state from `deinit`.
@@ -321,6 +342,16 @@ final class SourceControlCenter: ObservableObject {
         self.environment = environment
         self.workspaceCenter = workspaceCenter ?? environment.workspaceCenter
         observeRepositoryChanges()
+        workspaceObserver = self.workspaceCenter.$currentWorkspace.map { $0?.id }.removeDuplicates().dropFirst().sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.cancelOperation()
+                self.refreshGeneration &+= 1
+                self.snapshot = .init(isRepository: false); self.repositoryRoot = nil
+                self.repositoryWorkspaceRoot = nil; self.remoteDescriptors = []
+                await self.refreshRepository()
+            }
+        }
     }
 
     /// Every host-side Git mutation (agent `git.*` tools, guest-triggered
@@ -396,8 +427,11 @@ final class SourceControlCenter: ObservableObject {
     /// pinned files read from `raw.githubusercontent.com` at that exact
     /// commit. Credentialed, private, external and other-ref requests keep
     /// the original API behavior below.
-    func skillRepositoryData(owner: String, repository: String, ref: String, path: String?, usesConnectorCredential: Bool = true) async throws -> Data {
+    func skillRepositoryData(owner: String, repository: String, ref: String, path: String?, usesConnectorCredential: Bool = true,
+        verifiedPackage: CuratedSkillHub.PackageDownloadAuthorization? = nil) async throws -> Data {
         try Task.checkCancellation()
+        let byteBudget = try SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository,
+            ref: ref, path: path, verifiedPackage: verifiedPackage)
         switch SkillHubPublicTransport.action(owner: owner, repository: repository, ref: ref, path: path,
                                               usesConnectorCredential: usesConnectorCredential) {
         case .localCommitResolution(let data):
@@ -413,7 +447,7 @@ final class SourceControlCenter: ObservableObject {
         case .pinnedFile(let url):
             return try await fetchPublicHubBounded(
                 url: url, accept: nil, policyStore: environment.githubTransportMirrors,
-                maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: path),
+                maximumBytes: byteBudget,
                 diagnostic: "GitHub skill source unavailable for the public curated Hub pinned file")
         case .rejected(let reason):
             throw FloeError.validationFailed(reason)
@@ -436,7 +470,7 @@ final class SourceControlCenter: ObservableObject {
         if usesConnectorCredential, let token = try credentials.token() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return try await fetchBounded(
             request: request,
-            maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: path),
+            maximumBytes: byteBudget,
             diagnostic: "GitHub skill source unavailable. Check the repository, ref, path and connector access")
     }
 
@@ -519,33 +553,59 @@ final class SourceControlCenter: ObservableObject {
         pinnedRoot: URL?,
         _ operation: @escaping @MainActor () async throws -> Void
     ) async {
-        if !SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: pinnedRoot) {
-            errorMessage = SecretRedactor.redact(IDELanguageRunText.t(
-                "工作区已切换，已阻止对原仓库的操作。请重新打开该工作区的 IDE。",
-                "The workspace switched; the operation on the previous repository was blocked. Reopen the IDE for that workspace."
-            ))
+        guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: pinnedRoot) else {
+            errorMessage = IDELanguageRunText.t("工作区已切换，请重新打开源码管理。", "The workspace switched. Reopen source control.")
             return
         }
-        guard !isBusy else { return }
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            try await operation()
-            // A switch during the await means the success belongs to A; do
-            // not clear B's error state, and let B refresh its own snapshot.
-            guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: pinnedRoot) else {
-                await refreshRepository()
-                return
+        guard !isBusy, operationTask == nil else { return }
+        if snapshot.isRepository && repositoryWorkspaceRoot?.standardizedFileURL != currentWorkspaceRoot?.standardizedFileURL {
+            await refreshRepository(); return
+        }
+        let lease = SourceControlOperationLease(workspaceRoot: currentWorkspaceRoot,
+            repositoryRoot: repositoryWorkspaceRoot == currentWorkspaceRoot ? repositoryRoot : nil, workspaceID: workspaceCenter.currentWorkspace?.id)
+        operationLease = lease; isBusy = true; transferProgress = nil
+        // Admission and identity are installed before the first await.
+        let worker = Task { @MainActor in try lease.check(); try await operation() }
+        operationTask = worker
+        progressTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let value = lease.takeProgress(), self?.operationLease?.id == lease.id {
+                    self?.transferProgress = value
+                }
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
+        }
+        defer {
+            // Keep the security scope until the actual native worker unwinds.
+            if operationLease?.id == lease.id {
+                progressTask?.cancel(); progressTask = nil
+                operationTask = nil; operationLease = nil; transferProgress = nil; isBusy = false
+            }
+        }
+        do {
+            try await withTaskCancellationHandler { try await worker.value } onCancel: { lease.cancel(); worker.cancel() }
+            guard lease.matches(root: currentWorkspaceRoot, workspaceID: workspaceCenter.currentWorkspace?.id) else { return }
             errorMessage = nil
         } catch {
-            // A's failure must not surface in B's pane after a switch.
-            guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: pinnedRoot) else {
-                await refreshRepository()
-                return
-            }
+            guard lease.matches(root: currentWorkspaceRoot, workspaceID: workspaceCenter.currentWorkspace?.id) else { return }
+            if error is CancellationError || (error as? GitRemoteFailure) == .cancelled { return }
+            if let recovery = error as? GitCloneRecoveryError { lastCloneRecovery = recovery.recoveryDirectory }
             errorMessage = SecretRedactor.redact(error.localizedDescription)
         }
+    }
+    func cancelOperation() {
+        operationLease?.cancel(); operationTask?.cancel()
+    }
+    private func checkOperationOrigin(_ lease: SourceControlOperationLease) throws {
+        try lease.check()
+        guard lease.matches(root: currentWorkspaceRoot, workspaceID: workspaceCenter.currentWorkspace?.id) else {
+            lease.cancel(); throw CancellationError()
+        }
+    }
+    private func currentLease() throws -> SourceControlOperationLease {
+        if let operationLease { try checkOperationOrigin(operationLease); return operationLease }
+        return SourceControlOperationLease(workspaceRoot: currentWorkspaceRoot, repositoryRoot: repositoryWorkspaceRoot == currentWorkspaceRoot ? repositoryRoot : nil,
+            workspaceID: workspaceCenter.currentWorkspace?.id)
     }
 
     /// Exact-identity check used both by the pinned pane's rendering and by
@@ -677,7 +737,15 @@ final class SourceControlCenter: ObservableObject {
             guard isCurrentRefresh(generation, root: root) else { return }
             snapshot = updated
             repositoryRoot = updated.repositoryRoot
+            repositoryWorkspaceRoot = root
+            let remotes = updated.isRepository ? try await git.remotes(at: updated.repositoryRoot ?? root) : []
+            guard isCurrentRefresh(generation, root: root) else { return }
+            remoteDescriptors = remotes
+            if !remotes.contains(where: { $0.name == selectedRemoteName }) {
+                selectedRemoteName = (try? await git.upstreamRemote(at: updated.repositoryRoot ?? root)) ?? remotes.first?.name ?? "origin"
+            }
             errorMessage = nil
+            if historyWorkspaceRoot != root || historyHeadOID != updated.headOID { await loadHistory(reset: true) }
         } catch {
             guard isCurrentRefresh(generation, root: root) else { return }
             errorMessage = SecretRedactor.redact(error.localizedDescription)
@@ -710,15 +778,15 @@ final class SourceControlCenter: ObservableObject {
         }
         snapshot = updated
         repositoryRoot = updated.repositoryRoot
+        repositoryWorkspaceRoot = workspaceRoot
+        if historyWorkspaceRoot != workspaceRoot || historyHeadOID != updated.headOID { await loadHistory(reset: true) }
     }
 
     /// Local init stands alone: no GitHub sign-in is required and no remote
     /// identity is consulted. The author identity is configured per commit —
     /// the connected GitHub identity when present, otherwise a local default.
     func initializeRepository() async throws {
-        guard let wsRoot = workspaceCenter.currentRootURL else {
-            throw FloeError.notFound("workspace")
-        }
+        let wsRoot = try requiredWorkspaceRoot()
         let initialized = try await git.initialize(at: wsRoot)
         guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: wsRoot) else {
             await refreshRepository()
@@ -726,6 +794,7 @@ final class SourceControlCenter: ObservableObject {
         }
         snapshot = initialized
         repositoryRoot = snapshot.repositoryRoot
+        repositoryWorkspaceRoot = wsRoot
     }
 
     func stageAll() async throws {
@@ -778,17 +847,7 @@ final class SourceControlCenter: ObservableObject {
     }
 
     /// Fetches then merges the upstream (ordinary pull with merge fallback).
-    func pullMerge() async throws -> GitMergeOutcome {
-        let wsRoot = try requiredWorkspaceRoot()
-        let root = try workspaceRoot()
-        let identity = try await gitIdentity()
-        let outcome = try await git.pullMerge(
-            at: root, token: try credentials.token(),
-            authorName: identity.name, authorEmail: identity.email
-        )
-        try await republishAfterMutation(workspaceRoot: wsRoot)
-        return outcome
-    }
+    func pullMerge() async throws -> GitMergeOutcome { try await pull(merge: true) }
 
     func resolveConflict(path: String, content: String) async throws -> GitMergeOutcome {
         let wsRoot = try requiredWorkspaceRoot()
@@ -835,35 +894,56 @@ final class SourceControlCenter: ObservableObject {
         let wsRoot = try requiredWorkspaceRoot()
         let root = try workspaceRoot()
         let identity = try await gitIdentity()
-        _ = try await git.commit(
-            at: root, message: message,
-            authorName: identity.name, authorEmail: identity.email
-        )
+        guard let revision = snapshot.indexRevision else { throw FloeError.validationFailed(IDELanguageRunText.t("请先刷新暂存内容。", "Refresh the staged changes first.")) }
+        let paths = snapshot.changes.filter(\.staged).flatMap { [$0.path] + ($0.oldPath.map { [$0] } ?? []) }
+        _ = try await git.commitChecked(at: root, paths: Array(Set(paths)), expectedIndexRevision: revision,
+            expectedHeadOID: snapshot.headOID, message: message, authorName: identity.name, authorEmail: identity.email)
         try await republishAfterMutation(workspaceRoot: wsRoot)
     }
 
+    private func decideGitHostKey(_ challenge: HostKeyChallenge) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        activeTrustID = challenge.id
+        defer { if activeTrustID == challenge.id { activeTrustID = nil } }
+        return await environment.remoteSessionCenter.decideToolboxHostKey(challenge)
+    }
+    private func remoteOperation<Result: Sendable>(pushing: Bool = false,
+        _ body: @escaping @Sendable (URL, String, GitRemoteAuthentication, SourceControlOperationLease) async throws -> Result
+    ) async throws -> Result {
+        let lease = try currentLease(), root = try workspaceRoot(), name = selectedRemoteName
+        let endpoint = try await git.remoteEndpoint(at: root, name: name, pushing: pushing)
+        try checkOperationOrigin(lease)
+        guard let workspaceRoot = lease.workspaceRoot else { throw FloeError.notFound("workspace") }
+        let scope = GitCredentialScope(workspaceRoot: workspaceRoot, workspaceID: lease.workspaceID, conversationID: nil)
+        return try await credentialResolver.withAuthentication(endpoint: endpoint, scope: scope,
+            authorize: { @Sendable [weak self] in
+                try lease.check()
+                try await MainActor.run { guard let self else { throw CancellationError() }; try self.checkOperationOrigin(lease) }
+            }, trust: { [weak self] challenge in guard let self else { return false }; return await self.decideGitHostKey(challenge) },
+            operation: { authentication in try await body(root, name, authentication, lease) })
+    }
     func fetch() async throws {
-        let wsRoot = try requiredWorkspaceRoot()
-        let root = try workspaceRoot()
-        try await git.fetch(at: root, token: try credentials.token())
-        try await republishAfterMutation(workspaceRoot: wsRoot)
-    }
-
-    func pull() async throws {
-        let wsRoot = try requiredWorkspaceRoot()
-        let root = try workspaceRoot()
-        try await git.pullFastForward(at: root, token: try credentials.token())
-        try await republishAfterMutation(workspaceRoot: wsRoot)
-    }
-
-    func push() async throws {
-        let wsRoot = try requiredWorkspaceRoot()
-        let root = try workspaceRoot()
-        guard let token = try credentials.token() else {
-            throw FloeError.invalidConfiguration("Connect GitHub before pushing")
+        let origin = try requiredWorkspaceRoot(), service = git
+        try await remoteOperation { root, name, authentication, lease in
+            try await service.fetch(at: root, remoteName: name, authentication: authentication, progress: { lease.report($0) })
         }
-        try await git.push(at: root, token: token)
-        try await republishAfterMutation(workspaceRoot: wsRoot)
+        try await republishAfterMutation(workspaceRoot: origin)
+    }
+    func pull() async throws { _ = try await pull(merge: false) }
+    private func pull(merge: Bool) async throws -> GitMergeOutcome {
+        let origin = try requiredWorkspaceRoot(), service = git, identity = try await gitIdentity()
+        let result = try await remoteOperation { root, name, authentication, lease in
+            try await service.pull(at: root, remoteName: name, authentication: authentication, merge: merge,
+                authorName: identity.name, authorEmail: identity.email, progress: { lease.report($0) })
+        }
+        try await republishAfterMutation(workspaceRoot: origin); return result
+    }
+    func push() async throws {
+        let origin = try requiredWorkspaceRoot(), service = git
+        try await remoteOperation(pushing: true) { root, name, authentication, lease in
+            try await service.push(at: root, remoteName: name, authentication: authentication, progress: { lease.report($0) })
+        }
+        try await republishAfterMutation(workspaceRoot: origin)
     }
 
     func createBranch(name: String) async throws {
@@ -885,17 +965,121 @@ final class SourceControlCenter: ObservableObject {
     }
 
     func clone(_ repository: GitHubRepository, destinationName: String? = nil) async throws {
-        let root = try workspaceRoot()
-        let name = destinationName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let folder = (name?.isEmpty == false ? name : nil) ?? repository.name
-        guard folder.range(of: #"^[A-Za-z0-9_.-]{1,120}$"#, options: .regularExpression) != nil else {
-            throw FloeError.validationFailed("Clone folder name is invalid")
+        _ = try await clone(address: repository.cloneURL.absoluteString, folder: destinationName ?? repository.name, openProject: true)
+    }
+    @discardableResult
+    func clone(address: String, folder: String, openProject: Bool) async throws -> UUID {
+        let endpoint = try GitRemoteEndpoint(address), lease = try currentLease()
+        let root = try requiredWorkspaceRoot()
+        let name = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 120, name != ".", name != "..", !name.contains("/"), !name.contains("\\"), !name.contains("\0") else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("请输入一个有效的文件夹名称。", "Enter a valid folder name."))
         }
-        try await git.clone(
-            from: repository.cloneURL,
-            to: root.appendingPathComponent(folder, isDirectory: true),
-            token: try credentials.token()
-        )
+        let destination = root.appendingPathComponent(name, isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("此文件夹已存在，请更换名称。", "This folder already exists. Choose another name."))
+        }
+        let scope = GitCredentialScope(workspaceRoot: root, workspaceID: lease.workspaceID, conversationID: nil)
+        let service = git
+        _ = try await credentialResolver.withAuthentication(endpoint: endpoint, scope: scope,
+            authorize: { @Sendable [weak self] in
+                try lease.check()
+                try await MainActor.run { guard let self else { throw CancellationError() }; try self.checkOperationOrigin(lease) }
+            }, trust: { [weak self] challenge in guard let self else { return false }; return await self.decideGitHostKey(challenge) }, operation: { authentication in
+                try await service.clone(to: destination, authentication: authentication, progress: { lease.report($0) })
+            })
+        try checkOperationOrigin(lease)
+        // Register the actual finished directory through the existing bookmark
+        // store. Never copy the repository or switch a task's live workspace.
+        let project = try await workspaceCenter.ensureWorkspaceRecord(forDirectory: destination, name: name)
+        try checkOperationOrigin(lease)
+        if openProject { try await workspaceCenter.openWorkspace(id: project.id) }
+        return project.id
+    }
+    func loadHistory(reset: Bool = false) async {
+        guard (reset || !historyBusy), let origin = currentWorkspaceRoot else { return }
+        let expected = reset ? nil : historyHeadOID, offset = reset ? 0 : historyNextOffset
+        guard reset || offset != nil else { return }
+        let requestID = UUID(); historyRequestID = requestID; historyBusy = true
+        if reset { historyEntries = []; historyNextOffset = nil }
+        defer { if historyRequestID == requestID { historyBusy = false; historyRequestID = nil } }
+        do {
+            let page = try await git.history(at: workspaceRoot(), offset: offset ?? 0, limit: 20, expectedHeadOID: expected)
+            guard historyRequestID == requestID, currentWorkspaceRoot == origin, snapshot.headOID == page.headOID else { return }
+            if reset { historyEntries = page.items } else { historyEntries.append(contentsOf: page.items) }
+            historyHeadOID = page.headOID; historyNextOffset = page.nextOffset; historyWorkspaceRoot = origin
+        } catch {
+            if historyRequestID == requestID, currentWorkspaceRoot == origin { errorMessage = SecretRedactor.redact(error.localizedDescription) }
+        }
+    }
+    func checkoutRemote(remote: String, branch: String, localName: String) async throws {
+        let origin = try requiredWorkspaceRoot()
+        _ = try await git.checkoutRemote(at: workspaceRoot(), remote: remote, remoteBranch: branch, localBranch: localName)
+        try await republishAfterMutation(workspaceRoot: origin)
+    }
+    func commitDetails(oid: String) async throws -> GitCommitDetails { try await git.commitDetails(at: workspaceRoot(), oid: oid) }
+    func remoteBranches() async throws -> [String] { try await git.remoteBranches(at: workspaceRoot(), remote: selectedRemoteName) }
+    func collaborationTaskID(candidate: UUID?, workspaceID: UUID?) async throws -> UUID? {
+        guard let candidate, let workspaceID,
+              !environment.conversationCenter.isTemporaryConversation(candidate) else { return nil }
+        let bound = try await SQLiteWorkspaceStore(database: environment.database).workspaceID(conversationID: candidate)
+        return bound == workspaceID ? candidate : nil
+    }
+    func workOnIssue(_ url: URL, workspaceID: UUID?, originRoot: URL) async throws -> UUID {
+        let link = try GitHubLinkParser.parse(url.absoluteString)
+        guard link.kind == .issue || link.kind == .pullRequest, let workspaceID,
+              workspaceCenter.currentWorkspace?.id == workspaceID,
+              SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: originRoot) else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("请在原项目中打开此问题。", "Open this issue in its original project."))
+        }
+        let conversations = environment.conversationCenter
+        guard let (provider, model) = conversations.providerAndModel(modelID: nil) else {
+            throw FloeError.invalidConfiguration(IDELanguageRunText.t("请先选择一个可用的助手模型。", "Choose an available assistant model first."))
+        }
+        let title = link.repository.fullName + " #" + String(link.number ?? 0)
+        let record = try await conversations.createConversation(title: title)
+        let bound = try await workspaceCenter.ensureReviewConversationWorkspace(conversationID: record.id, workspaceID: workspaceID, title: title)
+        guard workspaceCenter.currentWorkspace?.id == workspaceID,
+              SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: originRoot) else { throw CancellationError() }
+        let goal = IDELanguageRunText.t("请研究并处理这个问题：", "Investigate and work on this issue: ") + link.url.absoluteString
+            + IDELanguageRunText.t("。先读取当前项目的相关源码，保留现有改动，说明处理结果并引用原问题。", ". Read the relevant project source first, preserve existing changes, and report the result with a link to the original issue.")
+        _ = try await conversations.startRun(goal: goal, in: record.id, provider: provider, model: model,
+            workspaceID: bound, startOrigin: .explicitUserAction)
+        return record.id
+    }
+    func credentialScope(conversationID: UUID? = nil) throws -> GitCredentialScope {
+        let lease = try currentLease()
+        guard let root = lease.workspaceRoot else { throw FloeError.notFound("workspace") }
+        return .init(workspaceRoot: root, workspaceID: lease.workspaceID, conversationID: conversationID)
+    }
+    func conflictSnapshot(path: String) async throws -> GitConflictSnapshot {
+        try await git.conflict(at: workspaceRoot(), path: path)
+    }
+    func resolveConflict(expected: GitConflictSnapshot, content: String?) async throws -> GitMergeOutcome {
+        let origin = try requiredWorkspaceRoot(), root = try workspaceRoot(), identity = try await gitIdentity()
+        let result = try await git.resolveConflict(at: root, expected: expected, content: content,
+            authorName: identity.name, authorEmail: identity.email)
+        try await republishAfterMutation(workspaceRoot: origin); return result
+    }
+    func recoveries() async throws -> [GitRecoveryRecord] { try await git.recoveries(at: workspaceRoot()) }
+    func restoreRecovery(id: String, path: String, layer: GitRecoveryLayer) async throws {
+        let origin = try requiredWorkspaceRoot()
+        try await git.restoreRecovery(at: workspaceRoot(), id: id, path: path, layer: layer)
+        try await republishAfterMutation(workspaceRoot: origin)
+    }
+    func configureRemote(name: String, fetch: String, push: String?) async throws {
+        let origin = try requiredWorkspaceRoot(), root = try workspaceRoot()
+        let fetchEndpoint = try GitRemoteEndpoint(fetch)
+        let pushEndpoint = try push.flatMap { $0.isEmpty ? nil : try GitRemoteEndpoint($0) }
+        try await git.setRemote(at: root, name: name, fetch: fetchEndpoint, push: pushEndpoint)
+        selectedRemoteName = name; try await republishAfterMutation(workspaceRoot: origin)
+        await refreshRepository()
+    }
+    func setUpstream(remoteBranch: String) async throws {
+        guard let branch = snapshot.branch else { throw FloeError.notFound("branch") }
+        let origin = try requiredWorkspaceRoot()
+        try await git.setUpstream(at: workspaceRoot(), branch: branch, remote: selectedRemoteName, remoteBranch: remoteBranch)
+        try await republishAfterMutation(workspaceRoot: origin)
     }
 
     func createGitHubRepository(name: String, isPrivate: Bool, description: String?) async throws {
@@ -911,7 +1095,8 @@ final class SourceControlCenter: ObservableObject {
     /// The workspace root itself (not the discovered repository root above
     /// it): the identity a pinned pane compares against after an await.
     private func requiredWorkspaceRoot() throws -> URL {
-        guard let root = workspaceCenter.currentRootURL else {
+        let lease = try currentLease()
+        guard let root = lease.workspaceRoot else {
             throw FloeError.notFound("workspace")
         }
         return root
@@ -922,10 +1107,9 @@ final class SourceControlCenter: ObservableObject {
     /// repository; before the first refresh (or when not a repository) this is
     /// the workspace root itself.
     private func workspaceRoot() throws -> URL {
-        guard let root = workspaceCenter.currentRootURL else {
-            throw FloeError.notFound("workspace")
-        }
-        return repositoryRoot ?? root
+        let lease = try currentLease()
+        guard let root = lease.workspaceRoot else { throw FloeError.notFound("workspace") }
+        return lease.repositoryRoot ?? root
     }
 
     /// Commit identity: the connected GitHub account when one exists, else a
@@ -937,12 +1121,7 @@ final class SourceControlCenter: ObservableObject {
 
     private func gitIdentity() async throws -> (name: String, email: String) {
         if let account { return (account.name ?? account.login, "\(account.login)@users.noreply.github.com") }
-        guard let token = try credentials.token() else {
-            return Self.localGitIdentity
-        }
-        let loaded = try await github.account(token: token)
-        account = loaded
-        return (loaded.name ?? loaded.login, "\(loaded.login)@users.noreply.github.com")
+        return Self.localGitIdentity
     }
 }
 #endif

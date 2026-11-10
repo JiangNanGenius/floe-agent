@@ -62,12 +62,53 @@ public actor ConfigSyncEngine {
     private let remoteHostStore: RemoteHostStore?
     private var credentialStore: CredentialStore?
 
+    // MARK: - Inbound-apply observation seam
+
+    /// One increment per REAL inbound mutation of this device's observable
+    /// configuration: an applied remote provider/model/preference/host/
+    /// credential record, a durable deferred-replay write, or a resolved
+    /// credential wait (a late Keychain secret makes configured credentials
+    /// usable again). A pending-queue enqueue, an outbound acknowledgment or
+    /// a rejected-but-unapplied remote record never signals through here —
+    /// local writes already reload their own callers synchronously.
+    ///
+    /// This closes the concrete completion gap: scheduled/coalesced
+    /// synchronization, conflict recovery, deferred replay and late-secret
+    /// resolution previously left NO notification for live consumers, so the
+    /// running provider/model/default state (ConversationCenter's published
+    /// configuration) stayed stale until the next manual sync or foreground
+    /// scene. The engine-owned stream is a projection fan-out only — never a
+    /// second sync queue, never durable state, never a second engine. The
+    /// App-side owner (Root's minimal hook) subscribes once and reloads the
+    /// shared configuration/model/default state on each element.
+    ///
+    /// The stream carries the monotonic applied-change count with
+    /// newest-only buffering, so a briefly suspended owner never replays an
+    /// old backlog: it just learns that the newest applied-change number is
+    /// N. Exactly ONE production owner subscribes — AppEnvironment's
+    /// configuration reload — and this seam exists for that single owner;
+    /// it is not a general multi-subscriber broadcast surface.
+    public var remoteConfigurationChanges: AsyncStream<UInt64> { remoteConfigurationStream }
+    private let remoteConfigurationStream: AsyncStream<UInt64>
+    private let remoteConfigurationSignal: AsyncStream<UInt64>.Continuation
+    private(set) var remoteConfigurationAppliedCount: UInt64 = 0
+
+    /// The production inbound-apply fan-out owner is AppEnvironment. Tests
+    /// assert the same counter/seam; nothing else may claim this signal.
+    private func signalRemoteConfigurationApplied() {
+        remoteConfigurationAppliedCount &+= 1
+        remoteConfigurationSignal.yield(remoteConfigurationAppliedCount)
+    }
+
     public init(
         configurationStore: ModelConfigurationStore? = nil,
         metadataStore: ConfigSyncMetadataStore? = nil,
         remoteHostStore: RemoteHostStore? = nil,
         credentialStore: CredentialStore? = nil
     ) {
+        let (stream, signal) = AsyncStream<UInt64>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        self.remoteConfigurationStream = stream
+        self.remoteConfigurationSignal = signal
         self.configurationStore = configurationStore
         self.metadataStore = metadataStore
         self.remoteHostStore = remoteHostStore
@@ -185,6 +226,9 @@ public actor ConfigSyncEngine {
             #if canImport(CloudKit)
             scheduledSync?.cancel()
             scheduledSync = nil
+            // An explicitly disabled engine never keeps a pending automatic
+            // retry alive; re-enabling starts fresh from real failures.
+            clearTransientRetryChain()
             #endif
         }
     }
@@ -231,6 +275,151 @@ public actor ConfigSyncEngine {
     /// derived from the previous cycle's inputs.
     private var statusEpoch = 0
     private var secretArrivalMonitorGeneration = 0
+
+    // MARK: - Bounded transient-failure retry
+
+    /// Concrete retry gap: a transient CloudKit failure (network unavailable,
+    /// rate limit, service down, zone busy) previously published `.error`
+    /// and owned NO further attempt. Durable pending metadata stayed queued
+    /// until the next local write, a manual settings sync or a foreground
+    /// scene — exactly the user-visible "configuration sync failed" with no
+    /// automatic recovery. This engine-owned chain retries the EXISTING
+    /// serialized `synchronize()` path: first wait 15 seconds (the retry the
+    /// reported symptom expected), an effective finite CloudKit `retryAfter`
+    /// hint is honoured as the server's own wait when supplied (it may
+    /// exceed the local cap), otherwise the LOCAL backoff doubles up to
+    /// 300 seconds, with a bounded attempt budget. After exhaustion the
+    /// honest error remains and the ordinary manual/next-write/foreground
+    /// routes still own recovery; a
+    /// transient failure is never faked as success and pending metadata is
+    /// never dropped. Pause, disable, account change, cancellation and any
+    /// non-transient or successful transition fence/retire late due-ticks
+    /// through the generation + cycle checks below.
+    static let initialTransientRetryDelay: TimeInterval = 15
+    static let maximumTransientRetryDelay: TimeInterval = 300
+    static let maximumTransientRetryAttempts = 6
+    private var transientRetryTask: Task<Void, Never>?
+    /// Cycle token (arrival-monitor pattern): only the due-tick created by
+    /// the CURRENTLY armed wait may run; direct test drives and stale
+    /// detached timers both pass through the token check.
+    private(set) var transientRetryCycle: UInt64 = 0
+    private(set) var transientRetryAttemptsUsed = 0
+    private(set) var transientRetryDelaySeconds: TimeInterval = 0
+    private(set) var transientRetryRuns = 0
+    /// Deterministic seam for the due attempt's work. Production leaves this
+    /// nil and the retry executes the real serialized `synchronize()`. Tests
+    /// inject scripted transient outcomes without a CloudKit account.
+    var transientRetryRunner: (@Sendable () async throws -> Void)?
+
+    func replaceTransientRetryRunnerForTesting(
+        _ runner: (@Sendable () async throws -> Void)?
+    ) {
+        transientRetryRunner = runner
+    }
+
+    /// One bounded transient-retry wait. An EFFECTIVE CloudKit hint (finite
+    /// and positive) is honoured as the server's own minimum wait — a longer
+    /// hint may exceed the local cap, because retrying before the server
+    /// asked would re-offend the rate limiter. Only the LOCAL exponential
+    /// backoff is capped at 300 seconds. Missing or invalid hints (NaN,
+    /// infinity, zero, negative) never become a wait: they fall back to the
+    /// local cadence (15 seconds first, then doubling to the cap).
+    static func transientRetryDelay(
+        afterPrevious previous: TimeInterval,
+        serverRetryAfter: TimeInterval?
+    ) -> TimeInterval {
+        if let hint = serverRetryAfter, hint.isFinite, hint > 0 {
+            return hint
+        }
+        guard previous > 0 else { return initialTransientRetryDelay }
+        return min(previous * 2, maximumTransientRetryDelay)
+    }
+
+    private func armTransientRetry(for failure: ConfigSyncFailure) {
+        guard failure.reason == .temporarilyUnavailable else {
+            clearTransientRetryChain()
+            return
+        }
+        guard synchronizationEnabled, transientRetryTask == nil,
+              transientRetryAttemptsUsed < Self.maximumTransientRetryAttempts else { return }
+        transientRetryAttemptsUsed += 1
+        let delay = Self.transientRetryDelay(
+            afterPrevious: transientRetryDelaySeconds,
+            serverRetryAfter: failure.retryAfter
+        )
+        transientRetryDelaySeconds = delay
+        transientRetryCycle &+= 1
+        let cycle = transientRetryCycle
+        let generation = configurationLifecycle
+        transientRetryTask = Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await self?.executeTransientRetryTick(attempt: cycle, generation: generation)
+        }
+    }
+
+    /// Cancels the armed wait without touching durable pending metadata, the
+    /// SQLite queue or the published lifecycle state — the fence the user
+    /// decisions require for disabled/paused/account-changed transitions.
+    private func clearTransientRetryChain() {
+        transientRetryTask?.cancel()
+        transientRetryTask = nil
+        transientRetryCycle &+= 1
+        transientRetryAttemptsUsed = 0
+        transientRetryDelaySeconds = 0
+    }
+
+    /// One due transient-retry tick. The handle is retired BEFORE the await
+    /// so a failure republished by this very attempt can arm the next bounded
+    /// wait through the ordinary publish path. Ownership is revalidated on
+    /// BOTH sides of the transport await: the pre-checks reject a tick whose
+    /// cycle or lifecycle already moved, and after the awaits a
+    /// generation change (pause, disable, account switch that happened while
+    /// this attempt was suspended) makes the tick abandon WITHOUT touching
+    /// the new lifecycle's chain — no cancel, no budget reset, no extra
+    /// wait. A task handle that exists after the await is legitimately this
+    /// attempt's own next wait (the failure published by the suspended
+    /// `synchronize()`/runner armed it through the ordinary path, which
+    /// advances the cycle); leaving it alone is required so the stale tick
+    /// never swallows a newer owner of the same lifecycle either.
+    func executeTransientRetryTick(attempt cycle: UInt64, generation: UInt64) async {
+        guard cycle == transientRetryCycle else { return }
+        transientRetryTask = nil
+        guard synchronizationEnabled, configurationLifecycle == generation else { return }
+        guard case .error = status, lastFailure?.reason == .temporarilyUnavailable else {
+            clearTransientRetryChain()
+            return
+        }
+        transientRetryRuns += 1
+        if let transientRetryRunner {
+            try? await transientRetryRunner()
+        } else {
+            try? await synchronize()
+        }
+        // Post-await ownership revalidation. The suspended transport ran
+        // against the lifecycle that existed when this tick started; if any
+        // transition moved the generation while it was suspended, the new
+        // lifecycle owns the chain now and this callback must leave it
+        // untouched.
+        guard configurationLifecycle == generation else { return }
+        if transientRetryTask != nil {
+            // This same lifecycle already armed the next bounded wait —
+            // normally this attempt's own published transient failure. The
+            // tick is done; a second arm here would double-wait.
+            return
+        }
+        if case .error = status, let failure = lastFailure,
+           failure.reason == .temporarilyUnavailable {
+            // Still the same transient failure with no armed successor (for
+            // example an injected transport that failed without publishing
+            // through the real path): arm the next bounded wait here.
+            armTransientRetry(for: failure)
+        } else {
+            // Same lifecycle and the transient failure is genuinely gone;
+            // retire the chain (idempotent — any real publish already did).
+            clearTransientRetryChain()
+        }
+    }
 
     private func startSecretArrivalMonitor() {
         guard secretArrivalMonitor == nil else { return }
@@ -284,6 +473,13 @@ public actor ConfigSyncEngine {
                 guard case .waitingForSecret = status else { return false }
                 if fresh == .waitingForSecret { return true }
                 status = fresh
+                // The wait resolved through the honest per-account
+                // re-computation: secrets that arrived late make configured
+                // credentials usable again, so consumers must re-read now.
+                // An error conclusion is not a configuration change — only
+                // the non-error promotion fans the reload out.
+                clearTransientRetryChain()
+                if case .error = fresh {} else { signalRemoteConfigurationApplied() }
                 return false
             }
             // The lifecycle moved while credentials were being computed. If
@@ -415,6 +611,7 @@ public actor ConfigSyncEngine {
         configurationLifecycle &+= 1
         configurationAttempt?.task.cancel()
         configurationPendingHandoff = nil
+        clearTransientRetryChain()
     }
     func configurationAccountDidChange() {
         invalidateConfigurationPreparation()
@@ -429,12 +626,22 @@ public actor ConfigSyncEngine {
         if ConfigSyncFailure.isCancellation(error) { lastFailure = nil; status = .paused; return }
         let failure = ConfigSyncFailure(error: error, phase: phase)
         lastFailure = failure; status = .error(failure.reason.rawValue)
+        // Transient failures (offline, rate limit, service unavailable,
+        // zone busy) own a bounded automatic retry of the existing
+        // serialized sync path; every other reason stops the chain so a
+        // sign-in/validation problem is never retried as if transient.
+        armTransientRetry(for: failure)
     }
     private func publishConfigurationStatus(_ value: SyncStatus, generation: UInt64, completed: Bool = false) {
         guard synchronizationEnabled, configurationLifecycle == generation else { return }
         if completed { lastSyncAt = Date() }
         if case .error = value { lastFailure = .init(reason: .synchronizationFailed, phase: .synchronization) }
-        else { lastFailure = nil }
+        else {
+            lastFailure = nil
+            // Any successful/queued transition retires the automatic retry
+            // chain; the next transient failure re-arms from scratch.
+            clearTransientRetryChain()
+        }
         status = value
     }
 
@@ -458,7 +665,11 @@ public actor ConfigSyncEngine {
         // Finish every throwing/suspending preparation BEFORE publishing a
         // runner. A failed SQLite/deferred read cannot leave a half-configured
         // CKSyncEngine behind or consume/remove its durable pending queue.
-        try await retryDeferredRecords()
+        if try await retryDeferredRecords() {
+            // A durable deferred payload just became this device's real
+            // configuration: the same inbound-apply fan-out as a fetch batch.
+            signalRemoteConfigurationApplied()
+        }
         try requireCurrentConfiguration(generation)
         try await withConfigurationPendingHandoff(generation: generation,
             readPending: { try await metadataStore.pending(limit: 10_000) }
@@ -874,6 +1085,48 @@ public actor ConfigSyncEngine {
         syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
     }
 
+    /// Production inbound-apply epilogue for one fetched batch, extracted so
+    /// the exact dependency order, honest partial-failure status and durable
+    /// deferred replay are deterministically testable without a CloudKit
+    /// account (same seam philosophy as `applyRemote`/`batchCompletionStatus`).
+    /// `handleEvent(.fetchedRecordZoneChanges)` runs THIS code with the real
+    /// batch contents. Returns TRUE when the batch applied at least one real
+    /// configuration change (per-record fan-out signalling already happened
+    /// inside `applyRemote`/`applyRemoteDeletion`; this return also reports
+    /// durable replays so the batch epilogue can fan them out too).
+    func finishFetchBatch(
+        modifications: [(recordType: String, record: CKRecord)],
+        deletions: [(recordType: String, recordID: CKRecord.ID)],
+        generation: UInt64
+    ) async throws -> Bool {
+        // CloudKit does not promise dependency order. Providers must
+        // exist before their models, and models before preferences
+        // whose foreign keys select them.
+        let sorted = modifications.sorted {
+            Self.applyPriority(for: $0.recordType) < Self.applyPriority(for: $1.recordType)
+        }
+        var applied = false
+        for modification in sorted {
+            applied = (try await applyRemote(modification.record)) || applied
+        }
+        for deletion in deletions {
+            applied = (try await applyRemoteDeletion(
+                recordID: deletion.recordID, recordType: deletion.recordType
+            )) || applied
+        }
+        if try await retryDeferredRecords() {
+            // A durable deferred payload just became this device's
+            // configuration outside any single record's apply path.
+            signalRemoteConfigurationApplied()
+            applied = true
+        }
+        // Preserve an honest partial-failure status for the batch:
+        // a rejected record must never be masked by .synced.
+        let completion = await batchCompletionStatus()
+        publishConfigurationStatus(completion, generation: generation, completed: true)
+        return applied
+    }
+
     fileprivate func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
         let generation = configurationLifecycle
         do {
@@ -893,24 +1146,15 @@ public actor ConfigSyncEngine {
                 configurationAccountDidChange()
 
             case .fetchedRecordZoneChanges(let changes):
-                // CloudKit does not promise dependency order. Providers must
-                // exist before their models, and models before preferences
-                // whose foreign keys select them.
-                let modifications = changes.modifications.sorted {
-                    Self.applyPriority(for: $0.record.recordType)
-                        < Self.applyPriority(for: $1.record.recordType)
-                }
-                for modification in modifications {
-                    try await applyRemote(modification.record)
-                }
-                for deletion in changes.deletions {
-                    try await applyRemoteDeletion(recordID: deletion.recordID, recordType: deletion.recordType)
-                }
-                try await retryDeferredRecords()
-                // Preserve an honest partial-failure status for the batch:
-                // a rejected record must never be masked by .synced.
-                let completion = await batchCompletionStatus()
-                publishConfigurationStatus(completion, generation: generation, completed: true)
+                _ = try await finishFetchBatch(
+                    modifications: changes.modifications.map {
+                        (recordType: $0.record.recordType, record: $0.record)
+                    },
+                    deletions: changes.deletions.map {
+                        (recordType: $0.recordType, recordID: $0.recordID)
+                    },
+                    generation: generation
+                )
 
             case .sentRecordZoneChanges(let sent):
                 for record in sent.savedRecords { try await acknowledge(record) }
@@ -1053,14 +1297,21 @@ public actor ConfigSyncEngine {
 
     /// Applies one fetched remote record. Internal (not private) so the exact
     /// batch/status pipeline is directly testable without a CloudKit account;
-    /// the production delegate calls it with the real CKRecord.
-    func applyRemote(_ record: CKRecord) async throws {
+    /// the production delegate calls it with the real CKRecord. Returns TRUE
+    /// only when this device's observable configuration actually changed
+    /// (a store write or a durable deferred replay); a deferred, rejected or
+    /// guard-skipped record returns FALSE and must not fan a reload out.
+    @discardableResult
+    func applyRemote(_ record: CKRecord) async throws -> Bool {
+        var didStore = false
+        var replayed = false
+        defer { if didStore || replayed { signalRemoteConfigurationApplied() } }
         guard let type = ConfigSyncRecordType(rawValue: record.recordType),
               let payload = record.encryptedValues["payload"] as? Data,
               let timestampsData = record.encryptedValues["fieldTimestamps"] as? Data,
               let metadataStore,
               let configurationStore
-        else { return }
+        else { return false }
 
         let remoteTimestamps = try JSONDecoder.floe.decode([String: Date].self, from: timestampsData)
         let existing = try await metadataStore.metadata(recordType: type.rawValue, recordID: record.recordID.recordName)
@@ -1091,11 +1342,12 @@ public actor ConfigSyncEngine {
                 )
                 rejectedRemoteRecordIDs.insert(record.recordID.recordName)
                 status = .error(Self.rejectedRemoteMessage)
-                return
+                return false
             }
-            guard provider.kind != .local else { return }
+            guard provider.kind != .local else { return false }
             try await configurationStore.saveProvider(provider)
-            try await retryDeferredRecords()
+            didStore = true
+            replayed = (try await retryDeferredRecords()) || replayed
         case .modelProfile:
             let model: ModelProfile
             do {
@@ -1113,19 +1365,20 @@ public actor ConfigSyncEngine {
                 )
                 rejectedRemoteRecordIDs.insert(record.recordID.recordName)
                 status = .error(Self.rejectedRemoteMessage)
-                return
+                return false
             }
-            guard model.providerID != ProviderProfile.onDeviceProviderID else { return }
+            guard model.providerID != ProviderProfile.onDeviceProviderID else { return false }
             guard try await configurationStore.provider(id: model.providerID) != nil else {
                 try await saveDeferredRemoteRecord(
                     record: record, type: type, payload: try Self.encode(model),
                     localTimestamps: localTimestamps, remoteTimestamps: remoteTimestamps,
                     existing: existing
                 )
-                return
+                return false
             }
             try await configurationStore.saveModel(model)
-            try await retryDeferredPreferences()
+            didStore = true
+            replayed = (try await retryDeferredPreferences()) || replayed
         case .preference:
             let remote = Self.withoutDeviceLocalModels(
                 try JSONDecoder.floe.decode(ModelSelectionPreferences.self, from: mergedPayload)
@@ -1138,21 +1391,24 @@ public actor ConfigSyncEngine {
                     localTimestamps: localTimestamps, remoteTimestamps: remoteTimestamps,
                     existing: existing
                 )
-                return
+                return false
             }
             try await configurationStore.savePreferences(restored)
+            didStore = true
         case .remoteHostProfile:
-            guard let remoteHostStore else { return }
+            guard let remoteHostStore else { return false }
             try await remoteHostStore.saveHost(
                 try JSONDecoder.floe.decode(RemoteHostStore.StoredHost.self, from: mergedPayload)
             )
+            didStore = true
         case .credentialDescriptor:
-            guard let credentialStore else { return }
+            guard let credentialStore else { return false }
             let descriptor = try JSONDecoder.floe.decode(CredentialRecord.self, from: mergedPayload)
             guard descriptor.owner == .vault, descriptor.synchronizable else {
                 throw FloeError.storageCorrupted("Cloud credential descriptor exceeded vault scope")
             }
             try await credentialStore.save(descriptor)
+            didStore = true
         }
 
         var mergedTimestamps = localTimestamps
@@ -1187,6 +1443,7 @@ public actor ConfigSyncEngine {
         if retainsLocalChanges {
             syncEngine?.state.add(pendingRecordZoneChanges: [.saveRecord(record.recordID)])
         }
+        return didStore || replayed
     }
 
     private func saveDeferredRemoteRecord(
@@ -1224,13 +1481,20 @@ public actor ConfigSyncEngine {
     /// Replays dependency-sensitive CloudKit records from durable metadata.
     /// Internal visibility keeps the replay contract directly testable without
     /// exposing a product API or requiring a live iCloud account in CI.
-    func retryDeferredRecords() async throws {
-        try await retryDeferredModels()
-        try await retryDeferredPreferences()
+    /// Returns TRUE when a durable deferred payload actually became this
+    /// device's configuration; a payload still waiting on its dependency
+    /// returns FALSE (it remains durable, never silently dropped).
+    @discardableResult
+    func retryDeferredRecords() async throws -> Bool {
+        var applied = try await retryDeferredModels()
+        applied = (try await retryDeferredPreferences()) || applied
+        return applied
     }
 
-    private func retryDeferredModels() async throws {
-        guard let metadataStore, let configurationStore else { return }
+    @discardableResult
+    private func retryDeferredModels() async throws -> Bool {
+        guard let metadataStore, let configurationStore else { return false }
+        var applied = false
         for metadata in try await metadataStore.deferred(recordType: ConfigSyncRecordType.modelProfile.rawValue) {
             guard let payload = metadata.deferredRemotePayload else { continue }
             let remote = try Self.validatedRemoteModel(payload)
@@ -1249,28 +1513,32 @@ public actor ConfigSyncEngine {
             guard model.providerID != ProviderProfile.onDeviceProviderID,
                   try await configurationStore.provider(id: model.providerID) != nil else { continue }
             try await configurationStore.saveModel(model)
-            var applied = metadata
-            applied.deferredRemotePayload = nil
-            try await metadataStore.save(applied)
+            applied = true
+            var appliedMetadata = metadata
+            appliedMetadata.deferredRemotePayload = nil
+            try await metadataStore.save(appliedMetadata)
         }
+        return applied
     }
 
-    private func retryDeferredPreferences() async throws {
+    @discardableResult
+    private func retryDeferredPreferences() async throws -> Bool {
         guard let metadataStore, let configurationStore,
               var metadata = try await metadataStore.metadata(
                 recordType: ConfigSyncRecordType.preference.rawValue,
                 recordID: "default"
               ),
-              let payload = metadata.deferredRemotePayload else { return }
+              let payload = metadata.deferredRemotePayload else { return false }
         let remote = Self.withoutDeviceLocalModels(
             try JSONDecoder.floe.decode(ModelSelectionPreferences.self, from: payload)
         )
         let local = try await configurationStore.preferences()
         let restored = Self.restoringDeviceLocalModels(remote, from: local)
-        guard try await missingModelIDs(in: restored).isEmpty else { return }
+        guard try await missingModelIDs(in: restored).isEmpty else { return false }
         try await configurationStore.savePreferences(restored)
         metadata.deferredRemotePayload = nil
         try await metadataStore.save(metadata)
+        return true
     }
 
     private func missingModelIDs(in preferences: ModelSelectionPreferences) async throws -> Set<UUID> {
@@ -1360,32 +1628,43 @@ public actor ConfigSyncEngine {
         return value
     }
 
-    private func applyRemoteDeletion(recordID: CKRecord.ID, recordType: String) async throws {
+    /// Applies one fetched remote tombstone. Returns TRUE when this device's
+    /// observable configuration actually changed; a deletion of an
+    /// unknown-type record only tombstones metadata and returns FALSE.
+    @discardableResult
+    private func applyRemoteDeletion(recordID: CKRecord.ID, recordType: String) async throws -> Bool {
         guard let type = ConfigSyncRecordType(rawValue: recordType),
               let configurationStore,
               let metadataStore
-        else { return }
+        else { return false }
+        var didStore = false
+        defer { if didStore { signalRemoteConfigurationApplied() } }
         switch type {
         case .providerProfile:
             if let uuid = UUID(uuidString: recordID.recordName) {
                 try await configurationStore.deleteProvider(id: uuid)
+                didStore = true
             }
         case .modelProfile:
             if let uuid = UUID(uuidString: recordID.recordName) {
                 try await configurationStore.deleteModel(id: uuid)
+                didStore = true
             }
         case .preference:
             let local = try await configurationStore.preferences()
             try await configurationStore.savePreferences(
                 Self.restoringDeviceLocalModels(ModelSelectionPreferences(), from: local)
             )
+            didStore = true
         case .remoteHostProfile:
-            if let uuid = UUID(uuidString: recordID.recordName) {
-                try await remoteHostStore?.deleteHost(id: uuid)
+            if let uuid = UUID(uuidString: recordID.recordName), let remoteHostStore {
+                try await remoteHostStore.deleteHost(id: uuid)
+                didStore = true
             }
         case .credentialDescriptor:
-            if let uuid = UUID(uuidString: recordID.recordName) {
-                try await credentialStore?.delete(id: uuid)
+            if let uuid = UUID(uuidString: recordID.recordName), let credentialStore {
+                try await credentialStore.delete(id: uuid)
+                didStore = true
             }
         }
         let now = Date()
@@ -1396,6 +1675,7 @@ public actor ConfigSyncEngine {
             deletedAt: now,
             updatedAt: now
         ))
+        return didStore
     }
 
     private func acknowledge(_ record: CKRecord) async throws {

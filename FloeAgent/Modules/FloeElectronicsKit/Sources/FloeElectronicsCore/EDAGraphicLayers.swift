@@ -30,6 +30,11 @@ public enum EDAGraphicLayers {
             result.append(.init(layerID: side + ".Mask", kind: .mask))
             result.append(.init(layerID: side + ".Paste", kind: .paste))
         }
+        // Nonphysical library annotations retain their original IDs. They
+        // are never renamed to F.Fab or included in a requested Fab layer.
+        for layer in ["Cmts.User", "Dwgs.User", "User.Drawings", "User.Comments"] {
+            result.append(.init(layerID: layer, kind: .fabrication))
+        }
         return result
     }
     public static func validateLayout(graphics: [EDAGraphic], layers: [EDAGraphicLayerAssignment?]?) throws {

@@ -31,7 +31,7 @@ enum PersonalContentError: Error, LocalizedError {
     case invalidProject, storageUnavailable, deleted, restoreParentFirst
     var errorDescription: String? {
         switch self {
-        case .deleted: IDELanguageRunText.t("这份文件已移到最近删除，请先恢复。", "This item is in Recently Deleted. Restore it first.")
+        case .deleted: IDELanguageRunText.t("这份文件已移到回收站，请先恢复。", "This item is in Trash. Restore it first.")
         case .restoreParentFirst: IDELanguageRunText.t("请先恢复上层文件夹。", "Restore the containing folder first.")
         case .invalidName: IDELanguageRunText.t("请输入有效名称。", "Enter a valid name.")
         case .outsideLibrary: IDELanguageRunText.t("这个位置不属于当前文件库。", "This location is outside this library.")

@@ -25,12 +25,18 @@ public struct PreparedVideoLayerEvaluation: Sendable, Hashable {
     public let mask: PreparedVideoMask?
     public let clipLocalTime: PreparedVideoTime
     public let sourceRange: PreparedVideoTimeRange?
+    public let chromaKey: MediaVideoChromaKey?
+    public let blendMode: MediaVideoBlendMode?
+    public let videoGrade: MediaVideoGrade?
+    public let videoTracking: MediaVideoTracking?
+    public let stabilization: MediaVideoStabilization?
 
     public init(clipID: UUID, trackID: UUID, content: PreparedVideoVisualContent,
                 zIndex: Int, sourceTime: PreparedVideoTime?, opacity: Double,
                 transform: PreparedVideoTransform, mask: PreparedVideoMask?,
                 clipLocalTime: PreparedVideoTime,
-                sourceRange: PreparedVideoTimeRange?) {
+                sourceRange: PreparedVideoTimeRange?,chromaKey:MediaVideoChromaKey? = nil,blendMode:MediaVideoBlendMode? = nil,videoGrade:MediaVideoGrade? = nil,
+                videoTracking:MediaVideoTracking? = nil,stabilization:MediaVideoStabilization? = nil) {
         self.clipID = clipID
         self.trackID = trackID
         self.content = content
@@ -41,6 +47,8 @@ public struct PreparedVideoLayerEvaluation: Sendable, Hashable {
         self.mask = mask
         self.clipLocalTime = clipLocalTime
         self.sourceRange = sourceRange
+        self.chromaKey = chromaKey;self.blendMode = blendMode;self.videoGrade = videoGrade
+        self.videoTracking = videoTracking; self.stabilization = stabilization
     }
 }
 
@@ -111,7 +119,7 @@ public enum PreparedVideoFrameEvaluator {
                     clipID: clip.id, trackID: track.id, content: clip.content,
                     zIndex: zIndex, sourceTime: sourceTime, opacity: opacity,
                     transform: animated.transform, mask: clip.mask,
-                    clipLocalTime: local, sourceRange: clip.sourceRange))
+                    clipLocalTime: local, sourceRange: clip.sourceRange,chromaKey:clip.chromaKey,blendMode:clip.blendMode,videoGrade:clip.videoGrade,videoTracking:clip.videoTracking,stabilization:clip.stabilization))
                 zIndex += 1
             }
         }

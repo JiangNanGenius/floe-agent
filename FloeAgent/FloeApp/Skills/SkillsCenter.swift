@@ -47,6 +47,8 @@ final class SkillsCenter: ObservableObject {
     @Published private(set) var curatedCatalogError: String?
     @Published private(set) var isRefreshingCuratedCatalog = false
     private var lastCuratedCatalogCheck: Date?
+    /// Diagnostic only. A failed capability feed never supplies entries or budgets.
+    private(set) var curatedCapabilityProjectionFailure: String?
     private var pendingCuratedUpgradeReceipt: CuratedSkillHub.Receipt?
     private var pendingReviewChoiceKey: String?
     private var busyHubReadRuns: Set<UUID> = []
@@ -102,27 +104,47 @@ final class SkillsCenter: ObservableObject {
 
     private func loadCuratedPublication(
         ref: String = "main",
-        layout: CuratedSkillCatalogLayout = .full
+        layout: CuratedSkillCatalogLayout? = nil
     ) async throws -> CuratedSkillHub.Publication {
         let connector = environment.sourceControlCenter
-        return try await Self.loadCuratedPublication(
-            channel: .ios, mode: .production, ref: ref, layout: layout,
-            resolve: { source in
-                let bytes = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
-                    ref: source.ref, path: nil, usesConnectorCredential: false)
-                struct Commit: Decodable { let sha: String }
-                return try JSONDecoder().decode(Commit.self, from: bytes).sha
-            },
-            fetch: { source, commit, path in
-                try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
-                    ref: commit, path: path, usesConnectorCredential: false)
-            },
-            store: { snapshot in
-                // Persist the exact verified bytes. The store runs on the
-                // loader's nonisolated context, so multi-megabyte bounded
-                // writes never block the main actor.
-                await Self.persistCuratedPublicationSnapshot(snapshot, channel: .ios)
-            })
+        let resolve: GitHubSkillDownload.ResolveCommit = { source in
+            let bytes = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                ref: source.ref, path: nil, usesConnectorCredential: false)
+            struct Commit: Decodable { let sha: String }
+            return try JSONDecoder().decode(Commit.self, from: bytes).sha
+        }
+        let fetch: GitHubSkillDownload.FetchFile = { source, commit, path in
+            try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                ref: commit, path: path, usesConnectorCredential: false)
+        }
+        let store: @Sendable (CuratedPublicationSnapshot) async -> Void = { snapshot in
+            await Self.persistCuratedPublicationSnapshot(snapshot, channel: .ios)
+        }
+        if let layout {
+            // Task read pins and historical receipts retain their exact layout.
+            return try await Self.loadCuratedPublication(channel: .ios, mode: .production, ref: ref,
+                layout: layout, resolve: resolve, fetch: fetch, store: store)
+        }
+        // The standard projection remains independently signed and readable by
+        // old clients. The optional capability projection uses the SAME Y.
+        let standard = try await Self.loadCuratedPublication(channel: .ios, mode: .production, ref: ref,
+            layout: .full, resolve: resolve, fetch: fetch, store: store)
+        do {
+            let commit = standard.publicationCommit
+            let expanded = try await Self.loadCuratedPublication(channel: .ios, mode: .production, ref: ref,
+                layout: .largeSourceV1, requiredProjectionIDs: Set(standard.feed.entries.map(\.id)),
+                resolve: { _ in commit }, fetch: fetch, store: store)
+            try Task.checkCancellation()
+            curatedCapabilityProjectionFailure = nil
+            return expanded
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            try Task.checkCancellation()
+            // No bytes from this failed projection are used. Retain only the
+            // standard projection that independently verified at this same Y.
+            curatedCapabilityProjectionFailure = error.localizedDescription
+            return standard
+        }
     }
 
     // MARK: - Curated catalog last-authenticated snapshot
@@ -182,6 +204,7 @@ final class SkillsCenter: ObservableObject {
         mode: CuratedSkillTrustMode,
         ref: String = "main",
         layout: CuratedSkillCatalogLayout = .legacy,
+        requiredProjectionIDs: Set<String> = [],
         resolve: GitHubSkillDownload.ResolveCommit,
         fetch: GitHubSkillDownload.FetchFile,
         store: (@Sendable (CuratedPublicationSnapshot) async -> Void)? = nil
@@ -191,6 +214,7 @@ final class SkillsCenter: ObservableObject {
         do {
             let publication = try await CuratedSkillHub.loadPublication(
                 channel: channel, mode: mode, ref: ref, layout: layout,
+                requiredProjectionIDs: requiredProjectionIDs,
                 resolve: { source in
                     let commit = try await resolve(source)
                     await tee.noteResolvedCommit(commit)
@@ -591,7 +615,7 @@ final class SkillsCenter: ObservableObject {
             throw SkillUpgradeError.localConflict
         }
         let actual = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(row.id),
-            expectedDigest: row.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: row))
+            expectedDigest: row.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: row), resourceAuthorization: try Self.resourceAuthorization(for: row))
         return try SkillHubInstallReceipt(status: status, skillID: row.id, version: row.version,
             contentDigest: actual.package.canonicalSHA256, packageSHA256: proof.packageSHA256,
             catalogDigest: proof.catalogSHA256, reviewDigest: proof.reviewSHA256,
@@ -679,7 +703,9 @@ final class SkillsCenter: ObservableObject {
         let publication = try await Self.resolveHubInstallPublication(
             requestPublicationCommit: request.publicationCommit,
             pin: readPin, ownerID: ownerID, runID: context.runID,
-            load: { ref, layout in try await self.loadCuratedPublication(ref: ref, layout: layout) })
+            load: { ref, layout in
+                try await self.loadCuratedPublication(ref: ref, layout: readPin == nil ? nil : layout)
+            })
         try context.cancellation.throwIfCancelled()
         let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
         defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
@@ -693,7 +719,7 @@ final class SkillsCenter: ObservableObject {
         let candidate: SkillUpgradeCandidate?
         if let current {
             let previous = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(current.id),
-                expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current))
+                expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current), resourceAuthorization: try Self.resourceAuthorization(for: current))
             candidate = try staged.upgradeCandidate(installed: previous)
         } else { candidate = nil }
         guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(publication.source.path)") else {
@@ -825,6 +851,9 @@ final class SkillsCenter: ObservableObject {
             fetch: { source, commit, path in
                 try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
                     ref: commit, path: path, usesConnectorCredential: false)
+            }, fetchPackage: { source, commit, path, authorization in
+                try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                    ref: commit, path: path, usesConnectorCredential: false, verifiedPackage: authorization)
             })
     }
 
@@ -860,6 +889,13 @@ final class SkillsCenter: ObservableObject {
     }
 
     // MARK: - Official catalog direct download (human Get, service-owned job)
+
+    private static func resourceAuthorization(for skill: PersistedSkill) throws -> SkillPackageResourceAuthorization? {
+        guard let receipt = curatedReceipt(for: skill), let authorization = try receipt.resourceAuthorization() else { return nil }
+        guard authorization.skillID == skill.id, authorization.version == skill.version,
+              authorization.contentDigest == skill.rewrittenDigest else { throw SkillUpgradeError.localConflict }
+        return authorization
+    }
 
     /// Live and terminal hub download jobs keyed by catalog id. The center
     /// owns the Task, so closing the panel or navigating away never stops a
@@ -984,7 +1020,7 @@ final class SkillsCenter: ObservableObject {
         let candidate: SkillUpgradeCandidate?
         if let current {
             let previous = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(current.id),
-                expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current))
+                expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current), resourceAuthorization: try Self.resourceAuthorization(for: current))
             candidate = try staged.upgradeCandidate(installed: previous)
         } else { candidate = nil }
         // Pure consent gate on the verified delta: a fresh Get installs
@@ -1317,6 +1353,8 @@ final class SkillsCenter: ObservableObject {
         /// Floe sidecar manifest for the new package when the upstream source
         /// has no `floe.json` (traditional skills). Optional for back-compat.
         var newManifestJSON: String?
+        /// Optional for old journals; remains the exact verified new receipt.
+        var newCuratedReceipt: CuratedSkillHub.Receipt? = nil
         var source: GitHubSkillSource
         var commit: String
         var phase: String
@@ -1358,7 +1396,7 @@ final class SkillsCenter: ObservableObject {
               self.upgradeStagingLease == nil else { throw SkillUpgradeError.localConflict }
         self.upgradeIsUpToDate = false
         self.pendingCuratedUpgradeReceipt = nil
-        let current = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill))
+        let current = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill), resourceAuthorization: try Self.resourceAuthorization(for: skill))
         // Owned, leased scratch: the staging tree can survive across the
         // user's review window and must never be reclaimed mid-upgrade.
         // The path is reserved (not pre-created): the staging routines
@@ -1414,7 +1452,7 @@ final class SkillsCenter: ObservableObject {
         guard DomainSkillLibrary.all.first(where: { $0.id == candidate.snapshot.package.manifest.id })?.exposed != false else {
             throw FloeError.validationFailed("System guides update only with the app")
         }
-        _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256, manifestOverride: candidate.snapshot.package.manifest)
+        _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256, manifestOverride: candidate.snapshot.package.manifest, resourceAuthorization: candidate.snapshot.resourceAuthorization)
         try await requireCompatibility(candidate.snapshot.package)
         pendingUpgrade = candidate
         upgradeStagingRoot = staging
@@ -1481,14 +1519,15 @@ final class SkillsCenter: ObservableObject {
         defer { self.packageMutationInProgress = false }
         guard let current = try await self.environment.skillStore.all().first(where: { $0.id == candidate.snapshot.package.manifest.id }),
               current.rewrittenDigest == candidate.expectedInstalledDigest else { throw SkillUpgradeError.localConflict }
-        let currentSnapshot = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current))
-        _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256, manifestOverride: candidate.snapshot.package.manifest)
+        let currentSnapshot = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current), resourceAuthorization: try Self.resourceAuthorization(for: current))
+        _ = try SkillContentSnapshot(root: staging, expectedDigest: candidate.snapshot.package.canonicalSHA256, manifestOverride: candidate.snapshot.package.manifest, resourceAuthorization: candidate.snapshot.resourceAuthorization)
         let history = self.installationRoot.appendingPathComponent(".upgrade-history/\(UUID().uuidString)")
         try Self.writeSnapshot(currentSnapshot, at: history.appendingPathComponent("previous"), manifest: Self.sidecarManifest(for: current))
         let grants = try await self.environment.skillStore.allowedCapabilities(skillID: current.id)
         let permissions = try await self.environment.skillStore.permissions(skillID: current.id)
         var journal = UpgradeJournal(oldSkill: current, oldGrants: grants.sorted(), oldPermissions: permissions, newDigest: candidate.snapshot.package.canonicalSHA256,
             newManifestJSON: String(data: (try? JSONEncoder().encode(candidate.snapshot.package.manifest)) ?? Data(), encoding: .utf8),
+            newCuratedReceipt: self.pendingCuratedUpgradeReceipt,
             source: candidate.source, commit: candidate.commit, phase: "prepared", createdAt: Date())
         try self.writeJournal(journal, at: history)
         let sourceKind = candidate.source.path.lowercased().hasSuffix(".md") || candidate.source.path.lowercased().hasSuffix(".json") ? "blob" : "tree"
@@ -1498,7 +1537,7 @@ final class SkillsCenter: ObservableObject {
                 sourceDigest: candidate.snapshot.package.canonicalSHA256, rewriteModelID: "github-reviewed-\(candidate.commit)",
                 initialStatus: current.status, replaceExisting: true, callerHoldsMutationLock: true, verifiedUpgrade: candidate,
                 curatedReceipt: self.pendingCuratedUpgradeReceipt)
-            _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
+            _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON), resourceAuthorization: try journal.newCuratedReceipt?.resourceAuthorization())
             journal.phase = "complete"
             try self.writeJournal(journal, at: history)
             // An update replaces the immutable package + descriptor pair: the
@@ -1529,14 +1568,14 @@ final class SkillsCenter: ObservableObject {
         guard let (path, journal) = journals.first, skill.rewrittenDigest == journal.newDigest,
               let current = try await self.environment.skillStore.all().first(where: { $0.id == skill.id }), current.rewrittenDigest == journal.newDigest
         else { throw SkillUpgradeError.localConflict }
-        _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
+        _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON), resourceAuthorization: try journal.newCuratedReceipt?.resourceAuthorization())
         try await self.restoreUpgrade(journal, at: path)
         // Rollback restores the previous immutable package + descriptor
         // pair; the ownership record re-persists from those exact bytes.
         // Dependencies the current environments cannot satisfy after the
         // rollback are reported honestly per requirement at the next
         // invocation — nothing is removed automatically.
-        if let restored = try? SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill)),
+        if let restored = try? SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill), resourceAuthorization: try Self.resourceAuthorization(for: journal.oldSkill)),
            restored.files[SkillDependency.packagePath] != nil {
             _ = await self.dependencyPreparation?.declareInstalledPackage(skillID: skill.id)
         }
@@ -1560,7 +1599,8 @@ final class SkillsCenter: ObservableObject {
         }
         // Traditional snapshots have no packaged floe.json; the sidecar is
         // supplied so verification checks bytes, not synthesized metadata.
-        let written = try SkillPackageValidator().validate(packageAt: root, manifestOverride: manifest)
+        let written = try (snapshot.resourceAuthorization?.validator ?? SkillPackageValidator()).validate(packageAt: root, manifestOverride: manifest)
+        try snapshot.resourceAuthorization?.requireIdentity(written)
         guard written.canonicalSHA256 == snapshot.package.canonicalSHA256 else {
             throw SkillValidationError.digestMismatch
         }
@@ -1579,7 +1619,7 @@ final class SkillsCenter: ObservableObject {
     }
 
     private func restoreUpgrade(_ journal: UpgradeJournal, at path: URL) async throws {
-        let previous = try SkillContentSnapshot(root: path.appendingPathComponent("previous"), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill))
+        let previous = try SkillContentSnapshot(root: path.appendingPathComponent("previous"), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill), resourceAuthorization: try Self.resourceAuthorization(for: journal.oldSkill))
         var restoring = journal; restoring.phase = "rollingBack"
         try writeJournal(restoring, at: path)
         let destination = installationRoot.appendingPathComponent(journal.oldSkill.id)
@@ -1605,7 +1645,7 @@ final class SkillsCenter: ObservableObject {
             }
             let row = try await environment.skillStore.all().first { $0.id == journal.oldSkill.id }
             if journal.phase == "prepared", row?.rewrittenDigest == journal.newDigest,
-               (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(journal.oldSkill.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))) != nil {
+               (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(journal.oldSkill.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON), resourceAuthorization: try journal.newCuratedReceipt?.resourceAuthorization())) != nil {
                 var completed = journal; completed.phase = "complete"
                 try writeJournal(completed, at: path)
             } else { try await restoreUpgrade(journal, at: path) }
@@ -1634,15 +1674,27 @@ final class SkillsCenter: ObservableObject {
     @Published private(set) var builtinSeedFailures: [String: String] = [:]
 
     private func snapshot(for skill: PersistedSkill, runID: UUID?) throws -> SkillContentSnapshot {
-        guard let runID else { return try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill)) }
+        guard let runID else { return try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill), resourceAuthorization: try Self.resourceAuthorization(for: skill)) }
         let root = installationRoot.appendingPathComponent(".run-snapshots/\(runID.uuidString)/\(skill.id)")
         let digestURL = root.appendingPathComponent("digest")
+        let receiptURL = root.appendingPathComponent("resource-receipt.json")
         if FileManager.default.fileExists(atPath: digestURL.path) {
             let digest = try String(contentsOf: digestURL, encoding: .utf8)
-            return try SkillContentSnapshot(root: root.appendingPathComponent("package"), expectedDigest: digest, manifestOverride: Self.sidecarManifest(for: skill))
+            let authorization: SkillPackageResourceAuthorization?
+            if FileManager.default.fileExists(atPath: receiptURL.path) {
+                let data = try readHubCacheBytes(receiptURL, limit: 1_048_576)
+                authorization = try JSONDecoder().decode(CuratedSkillHub.Receipt.self, from: data).resourceAuthorization()
+            } else {
+                authorization = digest == skill.rewrittenDigest ? try Self.resourceAuthorization(for: skill) : nil
+            }
+            return try SkillContentSnapshot(root: root.appendingPathComponent("package"), expectedDigest: digest,
+                manifestOverride: Self.sidecarManifest(for: skill), resourceAuthorization: authorization)
         }
-        let snapshot = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill))
+        let snapshot = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill), resourceAuthorization: try Self.resourceAuthorization(for: skill))
         try Self.writeSnapshot(snapshot, at: root.appendingPathComponent("package"), manifest: Self.sidecarManifest(for: skill))
+        if snapshot.resourceAuthorization != nil, let receipt = Self.curatedReceipt(for: skill) {
+            try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
+        }
         try Data(snapshot.package.canonicalSHA256.utf8).write(to: digestURL, options: .atomic)
         return snapshot
     }
@@ -2723,7 +2775,8 @@ final class SkillsCenter: ObservableObject {
             _ = try SkillContentSnapshot(
                 root: installationRoot.appendingPathComponent(current.id),
                 expectedDigest: current.rewrittenDigest,
-                manifestOverride: Self.sidecarManifest(for: current)
+                manifestOverride: Self.sidecarManifest(for: current),
+                resourceAuthorization: try Self.resourceAuthorization(for: current)
             )
             previousDigest = current.rewrittenDigest
             previousStatus = current.status
@@ -3863,9 +3916,10 @@ final class SkillsCenter: ObservableObject {
     /// so the upstream canonical digest and version are preserved.
     private static func prepareCanonicalPackage(
         at url: URL,
-        override: SkillManifest?
+        override: SkillManifest?,
+        resourceAuthorization: SkillPackageResourceAuthorization? = nil
     ) throws -> (package: ValidatedSkillPackage, override: SkillManifest?) {
-        let validator = SkillPackageValidator()
+        let validator = resourceAuthorization?.validator ?? SkillPackageValidator()
         if let override {
             return (try validator.validate(packageAt: url, manifestOverride: override), override)
         }
@@ -3894,8 +3948,10 @@ final class SkillsCenter: ObservableObject {
         guard callerHoldsMutationLock || !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
         packageMutationInProgress = true
         defer { if !callerHoldsMutationLock { packageMutationInProgress = false } }
-        let prepared = try Self.prepareCanonicalPackage(at: url, override: manifestOverride)
+        let resourceAuthorization = try curatedReceipt?.resourceAuthorization()
+        let prepared = try Self.prepareCanonicalPackage(at: url, override: manifestOverride, resourceAuthorization: resourceAuthorization)
         let package = prepared.package
+        try resourceAuthorization?.requireIdentity(package)
         var officialPublicationCandidate: OfficialSkillPublicationRecord?
         if let receipt = curatedReceipt {
             guard receipt.feedStatus == .production,
@@ -4028,7 +4084,7 @@ final class SkillsCenter: ObservableObject {
         _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
             .installRewrittenPackage(
                 at: url, provenance: provenance, replaceExisting: replaceExisting,
-                manifestOverride: prepared.override
+                manifestOverride: prepared.override, resourceAuthorization: resourceAuthorization
             )
     }
 

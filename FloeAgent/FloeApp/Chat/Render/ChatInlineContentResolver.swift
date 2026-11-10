@@ -66,7 +66,7 @@ enum ChatInlineContentResolver {
             let page = try await runs.events(runID: run.id, afterSequence: sequence, limit: 100)
             guard !page.isEmpty else { break }
             for event in page where event.kind == .toolResult && event.runID == run.id {
-                guard let payload = payload(event), payload["status"] == "ok",
+                guard let payload = payload(event), payload["status"] == "ok", payload["outcomeUnknown"] != "true",
                       let callID = payload["id"], !callID.isEmpty,
                       let tool = payload["tool"], !tool.isEmpty else { continue }
                 let candidate: ResolvedChatInlineContent?
@@ -113,7 +113,7 @@ private struct ChatContentListTool: AgentTool {
         var cursor: String?; var limit: Int?
     }
     static let name = "chat.content.list"
-    static let toolDescription = "List this task's saved inline content. Returns directly copyable inlineMarkdown for native chart/table/image/web cards, bounded synthesized-audio players, verified output-file preview cards and message attachments. Audio/video/PDF/Office/3D files use the existing preview entry unless a native producer returned an inline card. With no arguments, page through ALL task-owned runs then message attachments. Continue with nextCursor until hasMore=false, including empty pages. Optional runID/afterSequence selects events from one known run; nextCursor also resumes within a multi-item event. limit is returned items (1...64), eventLimit is scanned records (1...100). Cursors locate only this task's actual stored records and grant no permissions. No file paths/external URLs accepted. " + ChatContentReference.modelInstructions
+    static let toolDescription = "List this task's saved inline content. Returns directly copyable inlineMarkdown for native chart/table/image/web cards, saved native file diffs, bounded synthesized-audio players, verified output-file preview cards and message attachments. Audio/video/PDF/Office/3D files use the existing preview entry unless a native producer returned an inline card. With no arguments, page through ALL task-owned runs then message attachments. Continue with nextCursor until hasMore=false, including empty pages. Optional runID/afterSequence selects events from one known run; nextCursor also resumes within a multi-item event. limit is returned items (1...64), eventLimit is scanned records (1...100). Cursors locate only this task's actual stored records and grant no permissions. No file paths/external URLs accepted. " + ChatContentReference.modelInstructions
     static let parametersJSON = #"{"type":"object","properties":{"runID":{"type":"string","format":"uuid"},"afterSequence":{"type":"integer","minimum":0},"eventLimit":{"type":"integer","minimum":1,"maximum":100},"cursor":{"type":"string","maxLength":8192},"limit":{"type":"integer","minimum":1,"maximum":64}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false

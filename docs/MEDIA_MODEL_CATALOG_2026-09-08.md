@@ -1,5 +1,9 @@
 # 图像与视频模型核对 — 2026-09-08
 
+> 历史参考 / Historical reference · 2026-11-10 标记。2026-09-08 的媒体模型与参数核对快照，不作为滚动维护的服务商目录或当前 API 保证。用户配置与实际服务商响应按现行[使用手册](USER_GUIDE.zh-CN.md)处理。
+> Media model/API snapshot from 2026-09-08, not a rolling provider catalog or a guarantee of current API behavior. Follow the current configuration flow and actual provider responses.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 本轮按官方 API 正文核对模型标识和参数，预设版本升级为 3。旧预设继续保留，用户自行配置的模型 ID 不会被覆盖。

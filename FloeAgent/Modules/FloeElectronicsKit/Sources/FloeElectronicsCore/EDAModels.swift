@@ -64,10 +64,18 @@ public struct EDASymbolDefinition: Codable, Hashable, Identifiable, Sendable {
     public var pins: [EDAPin]
     public var graphics: [EDAGraphic]
     public var fields: [String: String]
+    /// Nil preserves older definitions. KiCad unit 0 artwork is shared; other
+    /// artwork belongs only to its matching logical unit, never every gate.
+    public var graphicUnits: [Int]?
     public init(id: UUID = UUID(), name: String, referencePrefix: String = "U",
-                pins: [EDAPin] = [], graphics: [EDAGraphic] = [], fields: [String: String] = [:]) {
+                pins: [EDAPin] = [], graphics: [EDAGraphic] = [], fields: [String: String] = [:], graphicUnits: [Int]? = nil) {
         self.id = id; self.name = name; self.referencePrefix = referencePrefix
         self.pins = pins; self.graphics = graphics; self.fields = fields
+        self.graphicUnits = graphicUnits
+    }
+    public func graphics(forUnit unit: Int) -> [EDAGraphic] {
+        guard let graphicUnits, graphicUnits.count == graphics.count else { return graphics }
+        return graphics.indices.filter { graphicUnits[$0] == 0 || graphicUnits[$0] == unit }.map { graphics[$0] }
     }
 }
 
@@ -199,15 +207,20 @@ public struct EDAPad: Codable, Hashable, Identifiable, Sendable {
     public var shape: EDAPadShape
     /// Polygon-only local mm vertices, implicitly closed; nil for older shapes.
     public var polygon: [EDAPoint]?
+    /// Explicit mm radius for new round-rectangle pads. Nil preserves the
+    /// historical unspecified-radius failure instead of inventing a shape.
+    public var roundRectangleRadius: Double?
     public var drill: Double?
     /// Nil means plating has not been specified. Never infer it from copper layers.
     public var drillPlated: Bool?
     public var layers: [String]
     public init(id: UUID = UUID(), number: String, position: EDAPoint, size: EDAPoint = .init(1.5, 1.5),
                 angle: Double = 0, shape: EDAPadShape = .circle, drill: Double? = nil,
-                layers: [String] = ["F.Cu"], drillPlated: Bool? = nil, polygon: [EDAPoint]? = nil) {
+                layers: [String] = ["F.Cu"], drillPlated: Bool? = nil, polygon: [EDAPoint]? = nil,
+                roundRectangleRadius: Double? = nil) {
         self.id = id; self.number = number; self.position = position; self.size = size
         self.angle = angle; self.shape = shape; self.polygon = polygon; self.drill = drill; self.layers = layers; self.drillPlated = drillPlated
+        self.roundRectangleRadius = roundRectangleRadius
     }
 }
 

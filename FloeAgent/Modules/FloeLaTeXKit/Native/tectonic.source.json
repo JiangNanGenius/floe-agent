@@ -2,9 +2,14 @@
   "upstream": "https://github.com/tectonic-typesetting/tectonic",
   "tag": "tectonic@0.17.0",
   "commit": "8c0126a9653239a2e6e0a5274af9b8510f643030",
-  "licensing": "MIT umbrella; retain per-component licenses",
+  "licensing": "Per-component notices retained; production selects TECkitCPL1.0/FreeTypeFTL/GraphiteMPL2.0, never a blanketMIT determination",
+  "archiveURL": "https://codeload.github.com/tectonic-typesetting/tectonic/tar.gz/8c0126a9653239a2e6e0a5274af9b8510f643030",
+  "archiveSHA256": "980f2862937cc084eae921ade500c0390c9ae196e973636e0e1b13f5c9479f01",
   "patches": [
-    "patches/apple-and-embedded.patch"
+    "patches/production-xdv.patch"
   ],
-  "patchSHA256": "e2a6a7203da8af036f3efaf1b7a4464130cb8f7533a4591efa574fba3f30bc48"
+  "patchSHA256": "f5e56ccad8f9d1d2c1e700c2611dcb63976a62c4902ed515b8f9a4e5ba0e843d",
+  "productionSourceManifestSHA256": "311ac9432f67ddbb3a6fac07f2a0287bba43e0575f9ce208e12925587e1c45ab",
+  "productionLocalSourcesSHA256": "98c350f80c606c1eabfcc707712e45d195b4fb21a7e23c66ecf8375009ae18c1",
+  "nativeXDVProduct": "FloeTeXNativeXDV; XeTeX/BibTeX to real XDV/display list; Apple PDF renderer"
 }

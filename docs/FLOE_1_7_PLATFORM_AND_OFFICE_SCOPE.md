@@ -1,5 +1,9 @@
 # Floe 1.7 平台与 Office 范围补充
 
+> 历史参考 / Historical reference · 2026-11-10 标记。早期 1.7 平台与 Office 需求补充，“开发中”只记录原轮次，不作为当前总体完成状态。现行入口见[使用手册](USER_GUIDE.zh-CN.md)、[App 接入](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md)及[渠道状态](CURRENT_STATUS.md)。
+> Earlier 1.7 requirements. The development status belongs to that round; use current guides, integration records and channel snapshots for later state.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 状态：开发中；本文件是实施要求，不是验证或发布结论。

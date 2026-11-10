@@ -12,6 +12,35 @@ import FloeLaTeXCore
 import FloeLaTeXEngine
 import FloeLaTeXHostAdapter
 
+/// Constructed only by the compiled native LaTeX controller, never decoded
+/// from a tool argument or an imported document.
+struct LaTeXNativeUIIntent:Sendable {
+    let runID:UUID;let conversationID:UUID;let projectID:UUID;let owner:LaTeXOwner
+    let revision:Int64;let requestID:String;let operation:String
+}
+
+/// Persisted provenance for an App-owned native operation with no command
+/// environment. It supplements, rather than replaces, the real original/CAS
+/// and single-use runtime-authority checks.
+struct LaTeXAppleNativeRunProof:Codable,Sendable {
+    let activity:String;let version:Int;let backend:String;let targetTool:String
+    let runID:UUID;let conversationID:UUID;let projectID:UUID;let owner:LaTeXOwner
+    let revision:Int64;let operation:String
+    init(runID:UUID,conversationID:UUID,projectID:UUID,owner:LaTeXOwner,revision:Int64,operation:String) {
+        activity="latexNativeService";version=2;backend="nativeApple";targetTool="latex.typeset"
+        self.runID=runID;self.conversationID=conversationID;self.projectID=projectID;self.owner=owner
+        self.revision=revision;self.operation=operation
+    }
+    static func read(_ events:[RunEventRecord],runID:UUID,taskID:UUID)->Self? {
+        let values=events.filter{$0.kind == .status && $0.runID==runID}.compactMap {
+            try? JSONDecoder().decode(Self.self,from:Data($0.payloadJSON.utf8))
+        }.filter{$0.activity=="latexNativeService" && $0.version==2 && $0.backend=="nativeApple"
+            && $0.targetTool=="latex.typeset" && $0.runID==runID && $0.conversationID==taskID
+            && ["start","prepare"].contains($0.operation)}
+        return values.count==1 ? values[0]:nil
+    }
+}
+
 /// A native Typeset event owns a saved run and real execution leases. The
 /// editor may disappear while this service finishes the same original.
 @MainActor @Observable final class LaTeXNativeRuntime {
@@ -20,6 +49,7 @@ import FloeLaTeXHostAdapter
         let kind:Kind
         var cancelling=false
         var waitingRecovery=false
+        var preparationProgress:LaTeXPreparationProgress?
     }
     struct Failure:Equatable {let id:UUID;let message:String;let occurredAt=Date()}
     private(set) var operations=[UUID:Operation]()
@@ -28,7 +58,6 @@ import FloeLaTeXHostAdapter
     private struct Owner {
         let runID:UUID
         let root:WorkspaceCenter.TaskRootLease?
-        let layers:ToolEnvironmentLease
         let project:LaTeXHostProject
         let cancellation:CancellationToken
     }
@@ -42,9 +71,16 @@ import FloeLaTeXHostAdapter
         guard case .build(let record)=try await perform(store,revision:revision,configuration:configuration,action:"start",installProfile:nil) else {throw PersonalContentError.changedDocument}
         return record
     }
-    func prepare(_ store:LaTeXProjectStore,revision:Int64,installProfile:String?) async throws -> [LaTeXEngineCapability] {
-        guard case .prepared(let values)=try await perform(store,revision:revision,configuration:.init(),action:"prepare",installProfile:installProfile) else {throw PersonalContentError.changedDocument}
+    func prepare(_ store:LaTeXProjectStore,revision:Int64,installProfile:String?=nil) async throws -> [LaTeXEngineCapability] {
+        guard installProfile==nil else {throw LaTeXError.invalidOperation("Prepare this project's dependencies without an installation profile.")}
+        guard case .prepared(let values)=try await perform(store,revision:revision,configuration:.init(),action:"prepare",installProfile:nil) else {throw PersonalContentError.changedDocument}
         return values
+    }
+    func updatePreparationProgress(projectID:UUID,context:ToolContext,progress:LaTeXPreparationProgress) {
+        guard let owner=owners[projectID],owner.runID==context.runID,!owner.cancellation.isCancelled,
+              var operation=operations[projectID],!operation.cancelling,!operation.waitingRecovery,
+              progress.sequence>(operation.preparationProgress?.sequence ?? 0) else {return}
+        operation.preparationProgress=progress;operations[projectID]=operation
     }
     func cancel(projectID:UUID) {
         preparing[projectID]?.cancel();owners[projectID]?.cancellation.cancel()
@@ -85,38 +121,33 @@ import FloeLaTeXHostAdapter
         guard let conversation=try await app.conversationStore.conversation(id:taskID),[.ordinary,.notes].contains(conversation.purpose) else {throw PersonalContentError.changedDocument}
         let runID=UUID()
         var root:WorkspaceCenter.TaskRootLease?
-        var layers:ToolEnvironmentLease?
         var persisted=false
         do {
-            let pin:TaskExecutionBinding,workspaceRoot:URL
+            let workspaceRoot:URL
             if conversation.purpose == .notes {
                 workspaceRoot=try NotesRepository.assistantWorkspace(conversationID:taskID)
-                pin=try await app.taskExecutionEnvironments.resolveNotesBinding(conversationID:taskID,runID:runID,root:workspaceRoot)
             } else {
                 let workspace=try await SQLiteWorkspaceStore(database:app.database).ensureWorkspace(conversationID:taskID,title:manifest.title)
                 let acquired=try await app.workspaceCenter.acquireTaskRoot(workspace,conversationID:taskID)
                 root=acquired;workspaceRoot=acquired.url
-                pin=try await app.taskExecutionEnvironments.resolveBinding(conversationID:taskID,runID:runID,root:workspaceRoot,workspace:workspace)
             }
             try cancellation.throwIfCancelled();try Task.checkCancellation()
-            try await app.runStore.saveRun(.init(id:runID,conversationID:taskID,state:"preparing",goal:IDELanguageRunText.t("排版论文","Typeset document"),startedAt:Date(),executionBinding:pin))
+            try await app.runStore.saveRun(.init(id:runID,conversationID:taskID,state:"preparing",goal:IDELanguageRunText.t("排版论文","Typeset document"),startedAt:Date(),executionBinding:nil))
             persisted=true
             _ = try await app.runStore.appendEvent(runID:runID,kind:.status,
-                payloadJSON:try LaTeXNativeRunMetadata(runID:runID,conversationID:taskID,projectID:id,
-                    environmentID:pin.target.environmentID,
-                    operation:action=="prepare" ? .preparation:.typesetting).payloadJSON())
+                payloadJSON:String(decoding:try JSONEncoder().encode(LaTeXAppleNativeRunProof(runID:runID,
+                    conversationID:taskID,projectID:id,owner:original.owner,revision:revision,operation:action)),as:UTF8.self))
             var stores=composition.typedServiceStorePaths
             stores[TypedMutationContract.nativeStudioLibraryStoreKey]=try PersonalContentLibrary.applicationRoot().path
-            let base=ToolContext(runID:runID,scope:pin.target.remoteHostID.map(ToolScope.host) ?? .local,
+            var base=ToolContext(runID:runID,scope:.local,
                 workspaceRootURL:workspaceRoot,serviceStorePaths:stores,cancellation:cancellation,
-                environmentID:pin.target.environmentID,executionBindingGeneration:pin.generation,
                 conversationID:taskID,clientSessionID:"latex.native."+runID.uuidString.lowercased())
-            let acquired=try await ToolEnvironmentRouting.shared.acquire(base)
-            layers=acquired
-            guard acquired.context.environment?.id==pin.target.environmentID else {throw PersonalContentError.changedDocument}
-            let access=try await composition.acquire(id,context:acquired.context,editing:true)
-            owners[id]=Owner(runID:runID,root:root,layers:acquired,project:access,cancellation:cancellation)
-            let output=try await invoke(original:original,revision:revision,configuration:configuration,action:action,installProfile:installProfile,purpose:conversation.purpose,context:acquired.context)
+            base.executionToolName="latex.typeset"
+            // Native document work acquires only the original's usage lease.
+            // It never resolves/boots a Linux target or acquires shell layers.
+            let access=try await composition.acquire(id,context:base,editing:true)
+            owners[id]=Owner(runID:runID,root:root,project:access,cancellation:cancellation)
+            let output=try await invoke(original:original,revision:revision,configuration:configuration,action:action,installProfile:installProfile,purpose:conversation.purpose,context:base)
             if action=="prepare" {
                 if output.outcomeUnknown {
                     struct Unknown:Decodable {let message:String;let messages:[String]}
@@ -162,9 +193,9 @@ import FloeLaTeXHostAdapter
             } else {
                 if persisted {
                     do {try await app.runStore.updateRunState(id:runID,state:cancelled ? "cancelled":"failed",endedAt:Date())}
-                    catch {if let layers {await layers.finish()};root?.release();throw error}
+                    catch {root?.release();throw error}
                 }
-                if let layers {await layers.finish()};root?.release()
+                root?.release()
             }
             if cancelled {throw CancellationError()}
             throw error
@@ -174,12 +205,13 @@ import FloeLaTeXHostAdapter
         let app=try composition.app(),host=try await composition.host(),name="latex.typeset",requestID=UUID().uuidString.lowercased()
         guard let runner=host.registry.runner(named:name),let taskID=base.conversationID else {throw PersonalContentError.storageUnavailable}
         let policy=try await SQLiteWorkspaceStore(database:app.database).taskPolicy(conversationID:taskID)
-        var allowed=LaTeXHostTools.names.union(["exec.shell"])
+        var allowed=LaTeXHostTools.names
         if let ceiling=policy.allowedToolNames {allowed.formIntersection(ceiling)}
         if purpose == .notes {allowed.formIntersection(NotesAssistantToolCatalog.toolNames)}
-        guard allowed.contains(name),allowed.contains("exec.shell") else {throw NativeWorkbenchApprovalError.readOnly}
-        struct Arguments:Encodable {let projectID:UUID;let action:String;let expectedRevision:Int64;let offline:Bool;let wait:Bool;let timeoutSeconds:Int;let installProfile:String?}
-        let data=try LaTeXDigest.encode(Arguments(projectID:original.id,action:operation,expectedRevision:revision,offline:configuration.offline,wait:true,timeoutSeconds:configuration.timeoutSeconds,installProfile:installProfile))
+        guard allowed.contains(name) else {throw NativeWorkbenchApprovalError.readOnly}
+        struct Arguments:Encodable {let projectID:UUID;let action:String;let expectedRevision:Int64;let offline:Bool;let wait:Bool;let timeoutSeconds:Int}
+        guard installProfile==nil else {throw LaTeXError.invalidOperation("Prepare this project's dependencies without an installation profile.")}
+        let data=try LaTeXDigest.encode(Arguments(projectID:original.id,action:operation,expectedRevision:revision,offline:configuration.offline,wait:true,timeoutSeconds:configuration.timeoutSeconds))
         try runner.validateArguments(data)
         var context=base
         context.allowedToolNames=allowed;context.frozenEffectiveCatalogNames=allowed
@@ -190,7 +222,9 @@ import FloeLaTeXHostAdapter
         let action=ProposedAction(toolCall:call,riskLabels:Set(runner.descriptor.riskLabels.map(\.rawValue)),userGoal:"Typeset the selected LaTeX original",hostAndPathScope:call.scope)
         let grant=try await app.conversationCenter.recordNativeWorkbenchApproval(action,context:context,descriptor:runner.descriptor,
             projectID:original.id,requestID:requestID,payloadDigest:digest,allowedToolNames:LaTeXHostTools.names,
-            requiredPurpose:purpose,validateOriginal:{[composition] in
+            requiredPurpose:purpose,
+            nativeLaTeXIntent:.init(runID:context.runID,conversationID:taskID,projectID:original.id,
+                owner:original.owner,revision:revision,requestID:requestID,operation:operation),validateOriginal:{[composition] in
                 let current=try await composition.authorizeOriginal(original.id,context:validationContext,editing:true)
                 guard current.owner==original.owner,current.root==original.root,
                       try await LaTeXProjectStore(root:current.root).manifest().revision==revision else {throw PersonalContentError.changedDocument}
@@ -205,7 +239,7 @@ import FloeLaTeXHostAdapter
         let binding=context.runtimeAuthorityBinding(toolName:name,operation:"apply",canonicalTarget:target,baseRevision:baseRevision,payloadDigest:digest)
         context.runtimeAuthority=await RuntimeAuthorityStore.shared.issue(.init(runID:context.runID,taskID:taskID,
             environmentBinding:binding.environmentBinding,canonicalTarget:target,toolName:name,operation:"apply",operationID:requestID,
-            idempotencyKey:call.idempotencyKey,baseRevision:baseRevision,payloadDigest:digest,approvalGrantID:grant.id),ttl:installProfile==nil ? 900:3600)
+            idempotencyKey:call.idempotencyKey,baseRevision:baseRevision,payloadDigest:digest,approvalGrantID:grant.id),ttl:3600)
         try context.cancellation.throwIfCancelled();try Task.checkCancellation()
         return try await runner.run(data,context)
     }
@@ -215,7 +249,7 @@ import FloeLaTeXHostAdapter
         try await app.runStore.updateRunState(id:runID,state:state,endedAt:Date())
         owners.removeValue(forKey:id)
         owner.cancellation.cancel();_ = await RuntimeAuthorityStore.shared.revoke(runID:runID)
-        await owner.layers.finish();owner.root?.release()
+        owner.root?.release()
     }
 }
 #endif

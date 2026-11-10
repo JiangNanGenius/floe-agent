@@ -536,17 +536,19 @@ extension ConversationCenter {
     /// it. The fallback is limited to the same billing channel.
     func agentImageRouteCandidates(
         operation: RemoteImageOperation, modelID: UUID?, selection: ImageGenerationSelection,
-        count: Int, referenceCount: Int, routing: ImageGenerationRouting = .agent
+        count: Int, referenceCount: Int, routing: ImageGenerationRouting = .agent,
+        acceptsRoute: (@MainActor @Sendable (ProviderProfile, ModelProfile) -> Bool)? = nil
     ) throws -> [(ProviderProfile, ModelProfile)] {
         let initial = try resolveAgentImageRoute(
             operation: operation, modelID: modelID, selection: selection,
-            count: count, referenceCount: referenceCount, routing: routing)
+            count: count, referenceCount: referenceCount, routing: routing, acceptsRoute: acceptsRoute)
         let explicitSelection = modelID != nil
         let automatic = routing == .agent
             && modelPreferences.autonomousImageRouting == true
         guard routing == .agent, !explicitSelection, automatic else { return [initial] }
         guard let fallback = agentImageRoutes(operation: operation).first(where: { candidate in
-            guard candidate.1.id != initial.1.id else { return false }
+            guard candidate.1.id != initial.1.id,
+                  acceptsRoute?(candidate.0, candidate.1) ?? true else { return false }
             guard ImageRouteFallbackPolicy.allowsFallback(
                 explicitSelection: explicitSelection,
                 autonomous: automatic,
@@ -563,12 +565,19 @@ extension ConversationCenter {
     func performAgentImage(
         operation: RemoteImageOperation, prompt: String, sourceImages: [Data], modelID: UUID?,
         selection: ImageGenerationSelection, count: Int,
-        routing: ImageGenerationRouting = .agent
+        routing: ImageGenerationRouting = .agent,
+        mask: Data? = nil,
+        requestTransform: AgentImageRequestTransform? = nil,
+        authorizeBeforeRequest: (@MainActor @Sendable () async throws -> Void)? = nil
     ) async throws -> (RemoteImageResult, ProviderProfile, ModelProfile) {
+        try Task.checkCancellation()
         let explicitSelection = modelID != nil
-        let candidates = try agentImageRouteCandidates(
+        let candidates: [(ProviderProfile, ModelProfile)]
+        do { candidates = try agentImageRouteCandidates(
             operation: operation, modelID: modelID, selection: selection,
-            count: count, referenceCount: sourceImages.count, routing: routing)
+            count: count, referenceCount: sourceImages.count, routing: routing,
+            acceptsRoute: requestTransform?.acceptsRoute)
+        } catch { try Task.checkCancellation(); throw error }
         let requestedRoute = candidates[0]
         var actualRoute = requestedRoute
         var outcome: ImageGenerationBatchOutcome?
@@ -576,12 +585,17 @@ extension ConversationCenter {
         var fallbackUsed = false
         var fallbackReason = ""
         var cancelled = false
+        var actualSelection: ImageGenerationSelection?
+        var requestMetadata: [String: String] = [:]
 
         outer: for (index, route) in candidates.enumerated() {
             actualRoute = route
-            let effective = ImageGenerationPresetResolver.applyingDefaults(
-                selection, provider: route.0, model: route.1, operation: operation)
             do {
+                let prepared = try await requestTransform?.prepare(route.0, route.1)
+                let effective = prepared?.selection ?? ImageGenerationPresetResolver.applyingDefaults(
+                    selection, provider: route.0, model: route.1, operation: operation)
+                actualSelection = effective
+                requestMetadata = prepared?.metadata ?? [:]
                 let contract = ImageGenerationPresetResolver.parameterContract(
                     provider: route.0, model: route.1, operation: operation)
                 let plan = try ImageGenerationBatchPlan(
@@ -594,13 +608,15 @@ extension ConversationCenter {
                 let credentials = resolveCredentials(for: provider)
                 outcome = try await ImageGenerationBatchRunner.run(plan: plan) { requestCount in
                     try Task.checkCancellation()
+                    try await authorizeBeforeRequest?()
                     let result = try await adapter.perform(RemoteImageRequest(
-                        operation: operation, prompt: prompt, sourceImages: sourceImages,
-                        selection: effective, count: requestCount,
+                        operation: operation, prompt: prompt, sourceImages: prepared?.sourceImages ?? sourceImages,
+                        mask: prepared?.mask ?? mask, selection: effective, count: requestCount,
                         modelRemoteID: modelRemoteID),
                         provider: provider, credentials: credentials)
+                    let images = try await prepared?.restoreImages(result.images) ?? result.images
                     return ImageGenerationBatchResponse(
-                        images: result.images,
+                        images: images,
                         revisedPrompt: result.revisedPrompt,
                         metadata: result.metadata)
                 }
@@ -631,7 +647,7 @@ extension ConversationCenter {
 
         let actualContract = ImageGenerationPresetResolver.parameterContract(
             provider: actualRoute.0, model: actualRoute.1, operation: operation)
-        let effective = ImageGenerationPresetResolver.applyingDefaults(
+        let effective = actualSelection ?? ImageGenerationPresetResolver.applyingDefaults(
             selection, provider: actualRoute.0, model: actualRoute.1, operation: operation)
         var metadata: [String: String] = [
             "requestedModel": requestedRoute.1.remoteModelID,
@@ -666,6 +682,7 @@ extension ConversationCenter {
             metadata["failure"] = String(failure.prefix(400))
         }
         metadata["parameters"] = String(decoding: try JSONEncoder().encode(effective), as: UTF8.self)
+        for (key, value) in requestMetadata where key.hasPrefix("editGeometry.") { metadata[key] = value }
         return (RemoteImageResult(
                     images: outcome.images,
                     revisedPrompt: outcome.revisedPrompt,
@@ -691,14 +708,15 @@ extension ConversationCenter {
     func resolveAgentImageRoute(
         operation: RemoteImageOperation, modelID: UUID?, selection: ImageGenerationSelection,
         count: Int, referenceCount: Int = 0,
-        routing: ImageGenerationRouting = .agent
+        routing: ImageGenerationRouting = .agent,
+        acceptsRoute: (@MainActor @Sendable (ProviderProfile, ModelProfile) -> Bool)? = nil
     ) throws -> (ProviderProfile, ModelProfile) {
         let automatic = modelPreferences.autonomousImageRouting == true
         let preferred = auxiliaryProviderAndModel(for: operation)?.1.id
         if routing == .agent, !automatic, let modelID, modelID != preferred {
             throw FloeError.validationFailed("Autonomous image routing is disabled. Use the preferred model from image.models.")
         }
-        let routes = agentImageRoutes(operation: operation)
+        let routes = agentImageRoutes(operation: operation).filter { acceptsRoute?($0.0, $0.1) ?? true }
         let selectedID: UUID?
         switch routing {
         case .agent:
@@ -748,23 +766,37 @@ struct RemoteImageModelsTool: AgentTool {
             let operation: RemoteImageOperation = args.operation == "edit" ? .edit : .generate
             let preferred = conversation.auxiliaryProviderAndModel(for: operation)?.1.id
             let routes = conversation.agentImageRoutes(operation: operation)
-            let offset = min(args.offset ?? 0, routes.count)
-            let end = min(offset + (args.limit ?? 25), routes.count)
-            let entries = try routes[offset..<end].enumerated().map { index, route -> [String: Any] in
+            var entries = try routes.enumerated().map { index, route -> [String: Any] in
                 let contract = ImageGenerationPresetResolver.parameterContract(provider: route.0, model: route.1, operation: operation)
                 let parameters = try JSONSerialization.jsonObject(with: JSONEncoder().encode(contract))
                 return ["model": route.1.remoteModelID,
                         "modelID": route.1.id.uuidString, "remoteModelID": route.1.remoteModelID,
                         "modelName": route.1.displayName, "providerID": route.0.id.uuidString,
                         "providerName": route.0.displayName ?? route.0.kind.rawValue, "providerKind": route.0.kind.rawValue,
-                        "preferred": route.1.id == preferred, "priority": offset + index + 1,
+                        "preferred": route.1.id == preferred, "priority": index + 1,
                         "selectable": conversation.modelPreferences.autonomousImageRouting == true || route.1.id == preferred,
                         "parameters": parameters]
             }
+            if operation == .generate, AppleImagePlaygroundModelIdentity.automaticRoutingEnabled(),
+               center.environment.appleImagePlaygroundService.isAvailable,
+               conversation.imageModels.contains(where: { $0.id == AppleImagePlaygroundModelIdentity.profileID }) {
+                entries.append(["model": AppleImagePlaygroundModelIdentity.remoteModelID,
+                    "modelID": AppleImagePlaygroundModelIdentity.profileID.uuidString,
+                    "remoteModelID": AppleImagePlaygroundModelIdentity.remoteModelID,
+                    "modelName": "Image Playground", "providerName": "Apple", "providerKind": "system",
+                    "preferred": preferred == AppleImagePlaygroundModelIdentity.profileID,
+                    "priority": entries.count + 1, "selectable": true, "requiresForeground": true,
+                    "requiresUserSelection": true,
+                    "parameters": ["count": [1], "size": "optional WIDTHxHEIGHT, closest system size",
+                        "quality": NSNull(), "resolution": NSNull(), "aspectRatio": NSNull()]])
+            }
+            let offset = min(args.offset ?? 0, entries.count)
+            let end = min(offset + (args.limit ?? 25), entries.count)
             let output: [String: Any] = [
                 "autonomyEnabled": conversation.modelPreferences.autonomousImageRouting == true,
-                "operation": operation.rawValue, "total": routes.count, "models": entries,
-                "nextOffset": end < routes.count ? end as Any : NSNull(),
+                "operation": operation.rawValue, "total": entries.count, "models": Array(entries[offset..<end]),
+                "nextOffset": end < entries.count ? end as Any : NSNull(),
+                "nativePolicy": "Prefer a configured cloud image model for automatic requests. Image Playground is a system-sheet route requiring the owning foreground task and the user's selection. The automatic toggle controls its model participation; an explicit request can still use image.playground when that toggle is off. No automatic native fallback after a cloud request has started or failed.",
                 "fallbackPolicy": "These are the only usable image routes. Pass a public candidate (`model`, its remote model ID, or `modelName`) to image.generate; the internal modelID is the legacy alternative and must never be requested from the user. `model` and `modelID` are a mutually exclusive one-of: pass at most one. An explicit `model`, `modelName` or legacy modelID is exact: a 401/404/429 is returned and never silently remapped. Only when modelID is omitted in autonomous mode is the first compatible route selected before networking, and only then may a definite HTTP 401/404/429 try one fallback on the same billing channel. No fallback after cancellation, timeout, policy refusal, server error or unknown result. Count is the number of requested candidates (1-4): models with a native batch use it in one request, while single-image models receive separate bounded requests and report partial failures. Never automatically submit a second generation to work around this policy."]
             return String(decoding: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), as: UTF8.self)
         }
@@ -841,8 +873,12 @@ struct RemoteImageGenerateTool: AgentTool {
     ) async throws -> ([AttachmentRef], ImageGenerationBatchReport)
     private let resolveURL: @MainActor @Sendable (AttachmentRef) throws -> URL
     private let resolvePublicModel: @MainActor @Sendable (String) throws -> UUID
+    private let nativeGeneration: @MainActor @Sendable (Arguments, ToolContext) async throws -> ToolExecutionOutput?
 
     init(center: FilesCenter) {
+        self.nativeGeneration = { args, context in
+            try await AppleImagePlaygroundModelRoute.generateIfSelected(args, context: context, center: center)
+        }
         self.generate = { args, modelID, count in
             try await center.performRemoteImageResult(
                 operation: .generate,
@@ -882,6 +918,7 @@ struct RemoteImageGenerateTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         var args = args
         args.prompt = args.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let native = try await nativeGeneration(args, context) { return native }
         // Resolve a public selection name before any provider contact so a
         // one-of violation or unknown candidate fails closed at validation.
         if let model = args.model {

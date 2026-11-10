@@ -5,8 +5,8 @@ import FloePersistence
 
 @MainActor final class ToolboxBrowserOwner {
     private weak var environment: AppEnvironment?
+    let center = BrowserSessionCenter(durableHandoffs: false, taskHandoffsEnabled: false)
     private var conversationID: UUID?
-    private var previousVisibleID: UUID?
     private var pending: Task<UUID, Error>?
     init(environment: AppEnvironment) { self.environment = environment }
     func owner() async throws -> UUID {
@@ -26,15 +26,13 @@ import FloePersistence
         _ = try await SQLiteWorkspaceStore(database: environment.database).ensureWorkspace(conversationID: id,
             title: IDELanguageRunText.t("工具箱浏览器", "Toolbox browser"))
         try await environment.conversationStore.setArchived(id: id, archived: true)
-        await environment.conversationCenter.authoringConversationBecameVisible(id)
         conversationID = id
-        if environment.browserCenter.conversationID != id { previousVisibleID = environment.browserCenter.conversationID }
         return id
     }
     func leave() {
-        if let environment, environment.browserCenter.conversationID == conversationID {
-            environment.browserCenter.bind(to: previousVisibleID)
-        }
+        // Keep the service-owned tabs/downloads for reopening, without
+        // changing the browser currently owned by any assistant task.
+        center.bind(to: nil)
     }
 }
 #endif

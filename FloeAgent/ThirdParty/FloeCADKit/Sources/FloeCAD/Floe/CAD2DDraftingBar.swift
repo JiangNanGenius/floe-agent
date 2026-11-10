@@ -9,52 +9,101 @@ struct CAD2DDraftingBar: View {
     @Bindable private var settings = CADPreferences.shared
     @State private var showSketches = false
     @State private var showCurve = false
+    @State private var availableWidth: CGFloat = 0
     private var model: EditorViewModel { document.viewModel() }
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                Button { document.activate2DWorkspace() } label: { Label(text("平面", "Plan"), systemImage: "square.grid.3x3").frame(minHeight: 44) }
-                Divider().frame(height: 22)
-                Menu {
-                    draw(text("直线", "Line"), .line)
-                    draw(text("矩形", "Rectangle"), .rect)
-                    draw(text("圆", "Circle"), .circle)
-                    draw(text("圆弧", "Arc"), .arc)
-                    draw(text("椭圆", "Ellipse"), .ellipse)
-                    draw(text("多边形", "Polygon"), .polygon)
-                    Button(text("拟合曲线", "Fit spline")) { ensureSketch(); showCurve = true }
-                    draw(text("文字", "Text"), .text)
-                } label: { Label(text("绘制", "Draw"), systemImage: "pencil.tip").frame(minHeight: 44) }.disabled(document.isReadOnly)
-                Menu {
-                    Button(text("修剪", "Trim")) { edit(.trim) }
-                    Button(text("延伸", "Extend")) { edit(.extend) }
-                    Button(text("偏移", "Offset")) { ensureSketch(); model.startSketch(tool: .offset) }
-                    Button(text("移动/旋转", "Move/Rotate")) { ensureSketch(); model.deselectSketchTool(); model.sketchCopyOnDrag = false; model.sketchTransformActive = true }
-                    Button(text("复制", "Copy")) { ensureSketch(); model.deselectSketchTool(); model.sketchTransformActive = true; model.sketchCopyOnDrag = true }
-                } label: { Label(text("修改", "Modify"), systemImage: "scissors").frame(minHeight: 44) }.disabled(document.isReadOnly)
-                Button { model.beginDimensionForSelection() } label: { Label(text("尺寸", "Dimension"), systemImage: "ruler").frame(minHeight: 44) }.disabled(document.isReadOnly || !model.canDimensionSelection)
-                Button { showSketches = true } label: { Label(text("草图", "Sketches"), systemImage: "square.3.layers.3d").frame(minHeight: 44) }
-                Menu {
-                    Toggle(text("网格捕捉", "Grid snap"), isOn: $settings.snapToGrid)
-                    Toggle(text("端点/圆心捕捉", "Sketch point snap"), isOn: $settings.snapToSketchGuidepoints)
-                    Toggle(text("参考线", "Guide lines"), isOn: $settings.snapToSketchGuidelines)
-                    Toggle(text("捕捉提示", "Snap hints"), isOn: $settings.showSnapHints)
-                } label: { Label(text("捕捉", "Snap"), systemImage: "scope").frame(minHeight: 44) }
-                Menu {
-                    ForEach(DisplayUnit.allCases, id: \.self) { unit in Button(unit.symbol) { settings.unit = unit } }
-                } label: { Text(settings.unit.symbol).font(.callout.monospacedDigit()).frame(minWidth: 44, minHeight: 44) }
-                Button { model.fitView() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 44, height: 44) }.accessibilityLabel(text("适应图纸", "Fit drawing"))
-            }.font(.callout).buttonStyle(.borderless).padding(.horizontal, 10)
+            toolbarGroups
         }
-        .background(Color(uiColor: .secondarySystemBackground))
-        .overlay(alignment: .bottom) { Divider() }
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
+        .background(.bar)
         .sheet(isPresented: $showSketches) { sketchSheet }
         .sheet(isPresented: $showCurve) { CAD2DFitSplineSheet(document: document) }
         .accessibilityIdentifier("CAD2DDraftingBar")
     }
+    private var toolbarGroups: some View {
+        HStack(spacing: 12) {
+            CAD2DToolbarGroup {
+                Button { document.activate2DWorkspace() } label: {
+                    Label(text("平面", "Plan"), systemImage: "square.grid.3x3")
+                        .padding(.horizontal, 10).frame(minHeight: 44)
+                }
+                Button { showSketches = true } label: {
+                    Label(text("草图", "Sketches"), systemImage: "square.3.layers.3d")
+                        .padding(.horizontal, 10).frame(minHeight: 44)
+                }
+            }
+            Divider().frame(height: 28)
+            CAD2DToolbarGroup(emphasized: true) {
+                drawMenu
+                modifyMenu
+                Button { model.beginDimensionForSelection() } label: {
+                    Label(text("尺寸", "Dimension"), systemImage: "ruler")
+                        .padding(.horizontal, 10).frame(minHeight: 44)
+                }.disabled(document.isReadOnly || !model.canDimensionSelection)
+            }
+            Spacer(minLength: 12)
+            CAD2DToolbarGroup {
+                snapMenu
+                Menu {
+                    Picker(text("图纸单位", "Drawing units"), selection: $settings.unit) {
+                        ForEach(DisplayUnit.allCases, id: \.self) { unit in Text(unit.symbol).tag(unit) }
+                    }
+                } label: {
+                    HStack(spacing: 5) { Text(settings.unit.symbol).monospacedDigit(); Image(systemName: "chevron.down").font(.caption2) }
+                        .padding(.horizontal, 8).frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel(text("图纸单位", "Drawing units"))
+                Button { model.fitView() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 44, height: 44) }
+                    .accessibilityLabel(text("适应图纸", "Fit drawing"))
+            }
+        }.font(.callout).buttonStyle(.borderless).foregroundStyle(.primary).lineLimit(1)
+            .frame(minWidth: max(0, availableWidth - 24), alignment: .leading)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+    }
+    private var drawMenu: some View {
+        Menu {
+            draw(text("直线", "Line"), .line)
+            draw(text("矩形", "Rectangle"), .rect)
+            draw(text("圆", "Circle"), .circle)
+            draw(text("圆弧", "Arc"), .arc)
+            draw(text("椭圆", "Ellipse"), .ellipse)
+            draw(text("多边形", "Polygon"), .polygon)
+            Button(text("拟合曲线", "Fit spline")) { ensureSketch(); showCurve = true }
+            draw(text("文字", "Text"), .text)
+        } label: { menuLabel(text("绘制", "Draw"), icon: "pencil.tip") }.disabled(document.isReadOnly)
+    }
+    private var modifyMenu: some View {
+        Menu {
+            Button(text("修剪", "Trim")) { edit(.trim) }
+            Button(text("延伸", "Extend")) { edit(.extend) }
+            Button(text("偏移", "Offset")) { ensureSketch(); model.startSketch(tool: .offset) }
+            Button(text("移动/旋转", "Move/Rotate")) { ensureSketch(); model.deselectSketchTool(); model.sketchCopyOnDrag = false; model.sketchTransformActive = true }
+            Button(text("复制", "Copy")) { ensureSketch(); model.deselectSketchTool(); model.sketchTransformActive = true; model.sketchCopyOnDrag = true }
+        } label: { menuLabel(text("修改", "Modify"), icon: "scissors") }.disabled(document.isReadOnly)
+    }
+    private var snapMenu: some View {
+        Menu {
+            Toggle(text("网格捕捉", "Grid snap"), isOn: $settings.snapToGrid)
+            Toggle(text("端点/圆心捕捉", "Sketch point snap"), isOn: $settings.snapToSketchGuidepoints)
+            Toggle(text("参考线", "Guide lines"), isOn: $settings.snapToSketchGuidelines)
+            Toggle(text("捕捉提示", "Snap hints"), isOn: $settings.showSnapHints)
+        } label: { menuLabel(text("捕捉", "Snap"), icon: "scope") }
+    }
+    private func menuLabel(_ title: String, icon: String) -> some View {
+        HStack(spacing: 5) { Label(title, systemImage: icon); Image(systemName: "chevron.down").font(.caption2) }
+            .padding(.horizontal, 10).frame(minHeight: 44)
+    }
     private func ensureSketch() { if model.activeSketch == nil { document.activate2DWorkspace() } }
     private func draw(_ title: String, _ tool: SketchTool) -> some View {
-        Button(title) { ensureSketch(); model.startSketch(tool: tool) }.disabled(document.isReadOnly)
+        Button { ensureSketch(); model.startSketch(tool: tool) } label: {
+            HStack {
+                Text(title)
+                if case .sketching(_, let current) = model.mode, current == tool {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }.disabled(document.isReadOnly)
     }
     private func edit(_ kind: SketchCurveEditKind) {
         ensureSketch(); model.sketchCurveEditKind = kind; model.startSketch(tool: .trim)
@@ -83,6 +132,26 @@ struct CAD2DDraftingBar: View {
         }.presentationDetents([.medium, .large])
     }
     private func text(_ zh: String, _ en: String) -> String { CAD2DDraftingText.text(zh, en) }
+}
+
+private struct CAD2DToolbarGroup<Content: View>: View {
+    var emphasized = false
+    let content: Content
+    init(emphasized: Bool = false, @ViewBuilder content: () -> Content) {
+        self.emphasized = emphasized
+        self.content = content()
+    }
+    var body: some View {
+        controls.background {
+            if emphasized {
+                RoundedRectangle(cornerRadius: 10).fill(Color(uiColor: .secondarySystemFill))
+            }
+        }
+    }
+    private var controls: some View {
+        HStack(spacing: 0) { content }.padding(.horizontal, 5)
+            .fixedSize(horizontal: true, vertical: false)
+    }
 }
 
 private struct CAD2DFitSplineSheet: View {

@@ -106,7 +106,7 @@ public enum MusicEditJSONCodec {
         let operation = try string(required(fields, "op", path), path: path + ".op")
         switch operation {
         case "midi.clip.update":
-            try keys(fields, allowed: ["op", "clipID", "name", "durationTicks", "notesMode", "notes"], path: path)
+            try keys(fields, allowed: ["op", "clipID", "name", "durationTicks", "notesMode", "notes", "controllerPoints", "controllerPointsMode", "programChanges", "programChangesMode"], path: path)
             let rawID = try identifier(required(fields, "clipID", path), path: path + ".clipID")
             guard var clip = document.tracks.lazy.flatMap(\.clips).first(where: { $0.id.rawValue == rawID }) else {
                 throw failure("unknown_id", path + ".clipID", "The clip does not exist in this document.", "an actual clipID from studio.read")
@@ -114,7 +114,7 @@ public enum MusicEditJSONCodec {
             guard case .midi(let previous) = clip.body else {
                 throw failure("invalid_value", path + ".clipID", "The selected clip is not MIDI.", "the ID of a MIDI clip")
             }
-            guard fields["name"] != nil || fields["durationTicks"] != nil || fields["notes"] != nil else {
+            guard fields["name"] != nil || fields["durationTicks"] != nil || fields["notes"] != nil || fields["controllerPoints"] != nil || fields["programChanges"] != nil else {
                 throw failure("missing_field", path, "The update contains no editable values.", "name, durationTicks or notes")
             }
             if let name = fields["name"] { clip.name = try string(name, path: path + ".name") }
@@ -131,11 +131,26 @@ public enum MusicEditJSONCodec {
                 throw failure("invalid_value", path + ".notesMode", "A note mode requires a notes array.", "notesMode together with notes")
             }
             try noteBounds(notes, duration: duration, path: path + ".durationTicks")
+            var controllers = previous.controllerPoints, programs = previous.programChanges
+            if let incoming = fields["controllerPoints"] {
+                if try replacingEvents(fields, key: "controllerPoints", path: path) { controllers = [] }
+                for point in try readControllers(incoming, duration: duration, path: path + ".controllerPoints") {
+                    controllers.removeAll { $0.controller == point.controller && $0.channel == point.channel && $0.tick == point.tick }; controllers.append(point)
+                }
+                controllers.sort { ($0.controller, $0.channel, $0.tick.value) < ($1.controller, $1.channel, $1.tick.value) }
+            } else if fields["controllerPointsMode"] != nil { throw failure("missing_field", path + ".controllerPoints", "A mode requires events.", "controllerPoints") }
+            if let incoming = fields["programChanges"] {
+                if try replacingEvents(fields, key: "programChanges", path: path) { programs = [] }
+                for program in try readPrograms(incoming, duration: duration, path: path + ".programChanges") {
+                    programs.removeAll { $0.channel == program.channel && $0.tick == program.tick }; programs.append(program)
+                }
+                programs.sort { ($0.channel, $0.tick.value) < ($1.channel, $1.tick.value) }
+            } else if fields["programChangesMode"] != nil { throw failure("missing_field", path + ".programChanges", "A mode requires events.", "programChanges") }
             clip.body = .midi(try MusicMIDIClipPayload(durationTicks: duration, notes: notes,
-                                                    controllerPoints: previous.controllerPoints))
+                                                    controllerPoints: controllers, programChanges: programs))
             return [.updateClip(clip)]
         case "midi.clip.insert":
-            try keys(fields, allowed: ["op", "trackID", "name", "durationTicks", "notes", "offsetSamples"], path: path)
+            try keys(fields, allowed: ["op", "trackID", "name", "durationTicks", "notes", "offsetSamples", "controllerPoints", "programChanges"], path: path)
             let rawID = try identifier(required(fields, "trackID", path), path: path + ".trackID")
             guard let track = document.tracks.first(where: { $0.id.rawValue == rawID }), track.kind == .midi else {
                 throw failure("unknown_id", path + ".trackID", "An existing MIDI track was not found.", "an actual MIDI trackID from studio.read")
@@ -148,7 +163,9 @@ public enum MusicEditJSONCodec {
             }
             let notes = try readNotes(required(fields, "notes", path), duration: duration, existing: [],
                                       path: path + ".notes", count: &noteCount)
-            let payload = try MusicMIDIClipPayload(durationTicks: duration, notes: notes)
+            let controllers = try fields["controllerPoints"].map { try readControllers($0, duration: duration, path: path + ".controllerPoints") } ?? []
+            let programs = try fields["programChanges"].map { try readPrograms($0, duration: duration, path: path + ".programChanges") } ?? []
+            let payload = try MusicMIDIClipPayload(durationTicks: duration, notes: notes, controllerPoints: controllers, programChanges: programs)
             return [.insertClip(try MusicClip(name: name, trackID: track.id,
                                               offset: .init(offset), body: .midi(payload)))]
         case "midi.clip.quantize":
@@ -285,6 +302,39 @@ public enum MusicEditJSONCodec {
         }) else {
             throw failure("invalid_value", path, "The new clip length would exclude retained notes.", "a duration that contains all retained notes, or explicit notesMode replace")
         }
+    }
+
+    private static func replacingEvents(_ fields: [String: MusicJSONNode], key: String, path: String) throws -> Bool {
+        let mode = try string(required(fields, key + "Mode", path), path: path + "." + key + "Mode")
+        guard mode == "merge" || mode == "replace" else { throw failure("invalid_value", path + "." + key + "Mode", "Unknown event mode.", "merge or replace") }
+        return mode == "replace"
+    }
+
+    private static func readControllers(_ node: MusicJSONNode, duration: Int64, path: String) throws -> [MusicMIDIControllerPoint] {
+        guard case .array(let values) = node, values.count <= MusicMIDIClipPayload.maxControllerPoints else { throw failure("invalid_value", path, "Invalid controller array.", "at most 50000 controller points") }
+        return try values.enumerated().map { index, value in
+            let key = path + "[\(index)]", fields = try object(value, path: key)
+            try keys(fields, allowed: ["controller", "channel", "tick", "value"], path: key)
+            let controller = try ranged(required(fields, "controller", key), range: 0...128, path: key + ".controller")
+            let channel = try fields["channel"].map { try ranged($0, range: 0...15, path: key + ".channel") } ?? 0
+            let tick = try integer(required(fields, "tick", key), path: key + ".tick")
+            guard tick >= 0, tick <= duration else { throw failure("invalid_value", key + ".tick", "Controller is outside the clip.", "tick within clip") }
+            let raw = try ranged(required(fields, "value", key), range: 0...(controller == 128 ? 16383 : 127), path: key + ".value")
+            return try MusicMIDIControllerPoint(controller: controller, tick: .init(tick), value: raw, channel: channel)
+        }.sorted { ($0.controller, $0.channel, $0.tick.value) < ($1.controller, $1.channel, $1.tick.value) }
+    }
+
+    private static func readPrograms(_ node: MusicJSONNode, duration: Int64, path: String) throws -> [MusicMIDIProgramChange] {
+        guard case .array(let values) = node, values.count <= MusicMIDIClipPayload.maxControllerPoints else { throw failure("invalid_value", path, "Invalid program array.", "at most 50000 program changes") }
+        return try values.enumerated().map { index, value in
+            let key = path + "[\(index)]", fields = try object(value, path: key)
+            try keys(fields, allowed: ["channel", "tick", "program"], path: key)
+            let channel = try ranged(required(fields, "channel", key), range: 0...15, path: key + ".channel")
+            let program = try ranged(required(fields, "program", key), range: 0...127, path: key + ".program")
+            let tick = try integer(required(fields, "tick", key), path: key + ".tick")
+            guard tick >= 0, tick <= duration else { throw failure("invalid_value", key + ".tick", "Program is outside the clip.", "tick within clip") }
+            return try MusicMIDIProgramChange(tick: .init(tick), channel: channel, program: program)
+        }.sorted { ($0.channel, $0.tick.value) < ($1.channel, $1.tick.value) }
     }
 
     private static func auditNotes(_ operation: MusicEditOp, path: String, count: inout Int) throws {

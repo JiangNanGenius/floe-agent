@@ -24,6 +24,8 @@ public func registerImageTools(
     registry.register(ImageProcessTool(rootProvider: rootProvider), compatibilityOnly: true)
     ToolCatalog.register(QRCodeGenerateTool.self)
     registry.register(QRCodeGenerateTool(rootProvider: rootProvider))
+    ToolCatalog.register(SVGRenderTool.self)
+    registry.register(SVGRenderTool(rootProvider: rootProvider))
     return rootProvider
 }
 #endif

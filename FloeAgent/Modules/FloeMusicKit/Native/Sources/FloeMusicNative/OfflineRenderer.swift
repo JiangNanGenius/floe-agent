@@ -156,8 +156,10 @@ public actor MusicOfflineRenderer {
                                                      trackID: track.id, token: "", note: nil, controller: point, priority: 2))
                     }
                 }
-                events.append(MusicSynthEvent(sample: contentEnd, trackID: track.id, token: "", note: nil,
-                                             controller: try MusicMIDIControllerPoint(controller: 64, tick: MusicTick(0), value: 0), priority: 3))
+                for channel in 0..<16 {
+                    events.append(MusicSynthEvent(sample: contentEnd, trackID: track.id, token: "", note: nil,
+                                                 controller: try MusicMIDIControllerPoint(controller: 64, tick: MusicTick(0), value: 0, channel: channel), priority: 3))
+                }
             }
             let effect = try effects(track.effects, input: runtime.mixer, engine: engine, format: format)
             let output = fader(input: effect, strip: track.strip, engine: engine, format: format, retained: &faders)
@@ -198,9 +200,9 @@ public actor MusicOfflineRenderer {
                 if let bank = tracks[event.trackID]?.synth {
                     if let point = event.controller {
                         switch point.controller {
-                        case 64: bank.sustain(point.value >= 64)
-                        case 1: bank.setModulation(Float(point.value) / 127)
-                        default: bank.pitchBend(Float(point.value - 8192) / (point.value >= 8192 ? 8191 : 8192))
+                        case 64: bank.sustain(point.value >= 64, channel: point.channel)
+                        case 1: bank.setModulation(Float(point.value) / 127, channel: point.channel)
+                        default: bank.pitchBend(Float(point.value - 8192) / (point.value >= 8192 ? 8191 : 8192), channel: point.channel)
                         }
                     } else if let note = event.note { bank.noteOn(token: event.token, note: note.pitch, velocity: note.velocity, channel: note.channel) }
                     else { bank.noteOff(token: event.token) }

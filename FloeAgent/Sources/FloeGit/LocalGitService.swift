@@ -7,6 +7,7 @@ import libgit2
 /// directly for authenticated network operations so credentials are supplied
 /// through callbacks and never persisted in `.git/config` or a remote URL.
 public actor LocalGitService {
+    public static let shared = LocalGitService()
     /// Posted after every successful local mutation (init, stage, unstage,
     /// discard, commit, branch switch/create, merge, pull, abort, clone) with
     /// `GitRepositoryChange.rootKey` set to the URL the operation ran at.
@@ -16,7 +17,7 @@ public actor LocalGitService {
     /// becomes visible immediately. The notification says "something in this
     /// tree changed"; it never claims which files, and readers still take a
     /// fresh snapshot.
-    private func postRepositoryDidChange(at root: URL) {
+    func postRepositoryDidChange(at root: URL) {
         NotificationCenter.default.post(
             name: .floeGitRepositoryDidChange,
             object: nil,
@@ -129,7 +130,7 @@ public actor LocalGitService {
                 branch = try symbolicHeadBranchName(at: repositoryRoot)
             }
             let branches = (try? repository.branch.list(.local).map(\.name).sorted()) ?? []
-            let changes = try repository.status().compactMap(Self.change(from:))
+            let changes = try repository.status().flatMap(Self.changes(from:))
                 .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
             let commits: [GitCommitSummary]
             if repository.isEmpty || repository.isHEADUnborn {
@@ -150,10 +151,11 @@ public actor LocalGitService {
                 branch: branch,
                 detachedHEAD: repository.isHEADDetached,
                 branches: branches,
-                remoteURL: repository.remote["origin"]?.url.absoluteString,
+                remoteURL: (try? remoteEndpoint(at: repositoryRoot))?.transportURL,
                 changes: changes,
                 recentCommits: commits,
-                repositoryRoot: repositoryRoot
+                repositoryRoot: repositoryRoot,
+                indexRevision: try indexRevision(at: repositoryRoot), headOID: try headRevision(at: repositoryRoot)
             )
         }
     }
@@ -294,7 +296,6 @@ public actor LocalGitService {
         guard !safe.isEmpty else { throw FloeError.validationFailed("At least one path is required") }
 
         // Capture every byte this call is about to remove, before any reset.
-        let recoveryFolder = Self.recoveryFolder(at: root)
         let stagedTargets: [String]
         if includeStaged {
             let repository = try Repository.open(at: root)
@@ -303,13 +304,11 @@ public actor LocalGitService {
         } else {
             stagedTargets = []
         }
-        var recovered = try writeRecoveryCopy(paths: safe, at: root, folder: recoveryFolder)
-        if !stagedTargets.isEmpty {
-            recovered = (try writeIndexRecovery(paths: stagedTargets, at: root, folder: recoveryFolder)) || recovered
-            // Reset the index entries to HEAD first; a staged addition then
-            // falls back to "untracked" and a staged deletion to "tracked".
-            try unstage(paths: stagedTargets, at: root)
+        guard !(try snapshot(at: root).changes.contains { $0.kind == .conflicted && safe.contains($0.path) }) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese ? "请先解决冲突或中止合并。" : "Resolve the conflict or abort the merge first.")
         }
+        let recovery = try captureRecovery(paths: safe, at: root, includeIndex: includeStaged)
+        if !stagedTargets.isEmpty { try unstage(paths: stagedTargets, at: root) }
 
         // Re-open: the reset above changed the index on disk.
         let repository = try Repository.open(at: root)
@@ -331,10 +330,11 @@ public actor LocalGitService {
             guard url.path.hasPrefix(rootPrefix) else {
                 throw FloeError.validationFailed("Git path must stay inside the workspace")
             }
-            try? FileManager.default.removeItem(at: url)
+            try FileManager.default.removeItem(at: url)
         }
         postRepositoryDidChange(at: root)
-        return GitDiscardOutcome(discardedPaths: safe, recoveryPath: recovered ? recoveryFolder.path : nil)
+        _ = try finishRecovery(recovery, at: root)
+        return GitDiscardOutcome(discardedPaths: safe, recoveryPath: try recoveryBase(root).appendingPathComponent(recovery.id).path, recoveryID: recovery.id)
     }
 
     @discardableResult
@@ -425,76 +425,118 @@ public actor LocalGitService {
         postRepositoryDidChange(at: root)
     }
 
-    public func clone(from remoteURL: URL, to destination: URL, token: String?) throws {
-        try Self.validateRemote(remoteURL)
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw FloeError.validationFailed("Clone destination already exists")
-        }
-        try withRuntime {
-            var options = git_clone_options()
-            try Self.check(git_clone_options_init(&options, UInt32(GIT_CLONE_OPTIONS_VERSION)), operation: "initialize clone")
-            let payload = CredentialPayload(token: token)
-            try Self.withPayload(payload) { pointer in
-                options.fetch_opts.callbacks.credentials = Self.credentialsCallback
-                options.fetch_opts.callbacks.payload = pointer
-                var repository: OpaquePointer?
-                let result = git_clone(&repository, remoteURL.absoluteString, destination.path, &options)
-                git_repository_free(repository)
-                if result < 0 {
-                    try? FileManager.default.removeItem(at: destination)
-                }
-                try Self.check(result, operation: "clone repository")
-            }
-        }
-        postRepositoryDidChange(at: destination)
+    public func clone(from remoteURL: URL, to destination: URL, token: String?) async throws {
+        let endpoint = try GitRemoteEndpoint(remoteURL.absoluteString)
+        _ = try await clone(to: destination, authentication: Self.legacyAuthentication(endpoint: endpoint, token: token))
     }
 
-    public func fetch(at root: URL, token: String?) throws {
-        try authenticatedRemoteOperation(at: root, token: token, operation: "fetch") { remote, callbacks in
-            var options = git_fetch_options()
-            try Self.check(git_fetch_options_init(&options, UInt32(GIT_FETCH_OPTIONS_VERSION)), operation: "initialize fetch")
-            options.callbacks = callbacks
-            try Self.check(git_remote_fetch(remote, nil, &options, nil), operation: "fetch")
+    public func fetch(at root: URL, token: String?) async throws {
+        let endpoint = try remoteEndpoint(at: root)
+        try await fetch(at: root, authentication: Self.legacyAuthentication(endpoint: endpoint, token: token))
+    }
+
+    public func push(at root: URL, token: String?) async throws {
+        let endpoint = try remoteEndpoint(at: root, pushing: true)
+        try await push(at: root, authentication: Self.legacyAuthentication(endpoint: endpoint, token: token))
+    }
+
+    /// The caller resolves host-bound material through the existing App
+    /// credential/host store. A remote URL edit between resolution and use
+    /// fails before any credential is submitted.
+    public func remoteEndpoint(at root: URL, name: String = "origin", pushing: Bool = false) throws -> GitRemoteEndpoint {
+        try GitNativeRemoteDriver.runtime {
+            try GitNativeRemoteDriver.validRemoteName(name)
+            return try GitNativeRemoteDriver.repository(root) { try GitNativeRemoteDriver.endpoint($0, name: name, pushing: pushing) }
+        }
+    }
+
+    public func remotes(at root: URL) throws -> [GitRemoteDescriptor] {
+        try GitNativeRemoteDriver.runtime {
+            try GitNativeRemoteDriver.repository(root) { repository in
+                var names = git_strarray(); defer { git_strarray_dispose(&names) }
+                try GitNativeRemoteDriver.check(git_remote_list(&names, repository))
+                guard let strings = names.strings else { return [] }
+                return try (0..<names.count).compactMap { index in
+                    guard let string = strings[index] else { return nil }
+                    let name = String(cString: string)
+                    return try GitRemoteDescriptor(name: name,
+                        fetch: GitNativeRemoteDriver.endpoint(repository, name: name, pushing: false),
+                        push: GitNativeRemoteDriver.endpoint(repository, name: name, pushing: true))
+                }
+            }
+        }
+    }
+
+    public func setRemote(at root: URL, name: String, fetch: GitRemoteEndpoint, push: GitRemoteEndpoint? = nil) throws {
+        try GitNativeRemoteDriver.runtime {
+            try GitNativeRemoteDriver.validRemoteName(name)
+            try GitNativeRemoteDriver.repository(root) { repository in
+                var existing: OpaquePointer?
+                let lookup = git_remote_lookup(&existing, repository, name)
+                defer { git_remote_free(existing) }
+                if lookup == GIT_ENOTFOUND.rawValue {
+                    try GitNativeRemoteDriver.check(git_remote_create(&existing, repository, name, fetch.transportURL))
+                } else { try GitNativeRemoteDriver.check(lookup); try GitNativeRemoteDriver.check(git_remote_set_url(repository, name, fetch.transportURL)) }
+                let pushResult = git_remote_set_pushurl(repository, name, push?.transportURL)
+                if !(push == nil && pushResult == GIT_ENOTFOUND.rawValue) {
+                    try GitNativeRemoteDriver.check(pushResult)
+                }
+            }
         }
         postRepositoryDidChange(at: root)
     }
 
-    public func push(at root: URL, token: String?) throws {
-        try authenticatedRemoteOperation(at: root, token: token, operation: "push") { remote, callbacks in
-            let repository = git_remote_owner(remote)
-            guard let repository else { throw FloeError.internalError("Git remote has no repository") }
-            var head: OpaquePointer?
-            try Self.check(git_repository_head(&head, repository), operation: "resolve current branch")
-            guard let head, let rawName = git_reference_name(head) else {
-                git_reference_free(head)
-                throw FloeError.validationFailed("Git HEAD is detached")
-            }
-            defer { git_reference_free(head) }
-            let name = String(cString: rawName)
-            let refspec = "\(name):\(name)"
-            var options = git_push_options()
-            try Self.check(git_push_options_init(&options, UInt32(GIT_PUSH_OPTIONS_VERSION)), operation: "initialize push")
-            options.callbacks = callbacks
-            try refspec.withCString { rawRefspec in
-                var mutable: UnsafeMutablePointer<CChar>? = UnsafeMutablePointer(mutating: rawRefspec)
-                try withUnsafeMutablePointer(to: &mutable) { strings in
-                    var values = git_strarray(strings: strings, count: 1)
-                    try Self.check(git_remote_push(remote, &values, &options), operation: "push")
-                }
-            }
-        }
+    @discardableResult
+    public func clone(to destination: URL, authentication: GitRemoteAuthentication,
+                      progress: (@Sendable (GitRemoteProgress) -> Void)? = nil) async throws -> GitCloneReceipt {
+        let context = GitNativeRemoteContext(authentication: authentication, progress: progress)
+        let receipt = try await withTaskCancellationHandler {
+            try GitNativeRemoteDriver.clone(to: destination, context: context)
+        } onCancel: { context.cancel() }
+        postRepositoryDidChange(at: destination); return receipt
+    }
+
+    public func fetch(at root: URL, remoteName: String = "origin", authentication: GitRemoteAuthentication,
+                      progress: (@Sendable (GitRemoteProgress) -> Void)? = nil) async throws {
+        let context = GitNativeRemoteContext(authentication: authentication, progress: progress)
+        try await withTaskCancellationHandler {
+            try GitNativeRemoteDriver.fetch(root, name: remoteName, context: context)
+        } onCancel: { context.cancel() }
         postRepositoryDidChange(at: root)
+    }
+
+    public func push(at root: URL, remoteName: String = "origin", destinationBranch: String? = nil,
+                     authentication: GitRemoteAuthentication,
+                     progress: (@Sendable (GitRemoteProgress) -> Void)? = nil) async throws {
+        let context = GitNativeRemoteContext(authentication: authentication, progress: progress)
+        try await withTaskCancellationHandler {
+            try GitNativeRemoteDriver.push(root, name: remoteName, destinationBranch: destinationBranch, context: context)
+        } onCancel: { context.cancel() }
+        postRepositoryDidChange(at: root)
+    }
+
+    /// Compatibility for existing callers: the saved GitHub token is never
+    /// offered to an unrelated generic HTTPS/SSH host. New callers choose an
+    /// approved credential for their actual endpoint instead.
+    private static func legacyAuthentication(endpoint: GitRemoteEndpoint, token: String?) throws -> GitRemoteAuthentication {
+        if endpoint.transport == .https, endpoint.host == "github.com", endpoint.port == 443, let token, !token.isEmpty {
+            return try .https(for: endpoint, username: "x-access-token", password: Data(token.utf8))
+        }
+        return .anonymous(for: endpoint)
     }
 
     /// Fetches then performs a fast-forward-only update. Dirty workspaces and
     /// diverged histories are left untouched and surfaced to the caller.
-    public func pullFastForward(at root: URL, token: String?) throws {
+    public func pullFastForward(at root: URL, token: String?) async throws {
         let before = try Repository.open(at: root)
         guard try before.status().isEmpty else {
             throw FloeError.validationFailed("Commit workspace changes before pulling")
         }
-        try fetch(at: root, token: token)
+        try await fetch(at: root, token: token)
         let repository = try Repository.open(at: root)
+        guard try repository.status().isEmpty else {
+            throw FloeError.validationFailed("Workspace changed during fetch; commit or restore changes before pulling")
+        }
         let current = try repository.branch.current
         guard let upstream = current.upstream as? Branch,
               let upstreamCommit = upstream.target as? Commit,
@@ -518,7 +560,6 @@ public actor LocalGitService {
     /// and rebase are deliberately not implemented.
     @discardableResult
     public func mergeRef(at root: URL, refName: String, authorName: String, authorEmail: String) throws -> GitMergeOutcome {
-        try configureIfMissing(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
         let outcome = try withRawRepository(at: root) { repository in
             var reference: OpaquePointer?
             try Self.check(git_reference_lookup(&reference, repository, refName), operation: "resolve merge target")
@@ -571,6 +612,7 @@ public actor LocalGitService {
                 git_reference_free(updated)
                 return GitMergeOutcome(result: .fastForward, message: FloeL10n.l("git.local_git_service.fast_forward_merged"))
             }
+            try configureIfMissing(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
             var mergeOptions = git_merge_options()
             try Self.check(
                 git_merge_options_init(&mergeOptions, UInt32(GIT_MERGE_OPTIONS_VERSION)),
@@ -605,8 +647,8 @@ public actor LocalGitService {
     /// the ordinary pull with a merge fallback; it never rewrites local
     /// commits (no rebase, no force).
     @discardableResult
-    public func pullMerge(at root: URL, token: String?, authorName: String, authorEmail: String) throws -> GitMergeOutcome {
-        try fetch(at: root, token: token)
+    public func pullMerge(at root: URL, token: String?, authorName: String, authorEmail: String) async throws -> GitMergeOutcome {
+        try await fetch(at: root, token: token)
         let repository = try Repository.open(at: root)
         let branch = try repository.branch.current
         guard let upstreamName = branch.upstream?.name else {
@@ -627,20 +669,27 @@ public actor LocalGitService {
     /// Stages one resolved conflict. When no unmerged entries remain, the
     /// pending merge commit is created from the recorded MERGE_MSG.
     @discardableResult
-    public func resolveConflict(at root: URL, path: String, content: String, authorName: String, authorEmail: String) throws -> GitMergeOutcome {
+    public func resolveConflict(at root: URL, path: String, content: String?, authorName: String, authorEmail: String) throws -> GitMergeOutcome {
         let safe = try Self.validRelativePath(path)
         try configureIfMissing(Repository.open(at: root), authorName: authorName, authorEmail: authorEmail)
-        return try withRawRepository(at: root) { repository in
+        let outcome = try withRawRepository(at: root) { repository in
             let url = root.appendingPathComponent(safe).standardizedFileURL
             guard url.path.hasPrefix(root.standardizedFileURL.path + "/") else {
                 throw FloeError.validationFailed("Git path must stay inside the workspace")
             }
-            try Data(content.utf8).write(to: url, options: .atomic)
             var index: OpaquePointer?
             try Self.check(git_repository_index(&index, repository), operation: "open index")
             guard let index else { throw FloeError.internalError("Git index is unavailable") }
             defer { git_index_free(index) }
-            try Self.check(git_index_add_bypath(index, safe), operation: "stage resolved path")
+            if let content {
+                try Data(content.utf8).write(to: url, options: .atomic)
+                try Self.check(git_index_add_bypath(index, safe), operation: "stage resolved path")
+            } else {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                try Self.check(git_index_conflict_remove(index, safe), operation: "resolve deleted conflict")
+                let removed = git_index_remove_bypath(index, safe)
+                if removed != GIT_ENOTFOUND.rawValue { try Self.check(removed, operation: "stage resolved deletion") }
+            }
             try Self.check(git_index_write(index), operation: "write index")
             let remaining = try Self.conflictedPaths(raw: repository)
             guard remaining.isEmpty else {
@@ -657,21 +706,39 @@ public actor LocalGitService {
             return GitMergeOutcome(result: .merged, message: FloeL10n.l("git.local_git_service.conflicts_resolved_merge_complete"))
         }
         postRepositoryDidChange(at: root)
+        return outcome
     }
 
     /// Returns the repository to its pre-merge state. Local commits are kept
     /// (hard reset to HEAD, never to a remote).
     public func abortMerge(at root: URL) throws {
+        let before = try snapshot(at: root)
+        guard try isMerging(at: root) else { throw FloeError.validationFailed("No merge is in progress") }
+        let paths = Array(Set(before.changes.map(\.path))).sorted()
+        var recovery: GitRecoveryRecord?
         try withRawRepository(at: root) { repository in
-            try Self.check(git_repository_state_cleanup(repository), operation: "clean merge state")
             var oid = git_oid()
             try Self.check(git_reference_name_to_id(&oid, repository, "HEAD"), operation: "resolve HEAD")
             var object: OpaquePointer?
             try Self.check(git_object_lookup(&object, repository, &oid, GIT_OBJECT_COMMIT), operation: "lookup HEAD commit")
             guard let object else { throw FloeError.internalError("Git HEAD commit is unavailable") }
             defer { git_object_free(object) }
+            let saved = try captureRecovery(paths: paths, at: root, includeIndex: true, kind: "abortMerge", allowConflicts: true)
+            recovery = saved
+            if let rawDirectory = git_repository_path(repository) {
+                let directory = URL(fileURLWithPath: String(cString: rawDirectory), isDirectory: true)
+                let destination = try recoveryBase(root).appendingPathComponent(saved.id)
+                for name in ["index", "MERGE_HEAD", "MERGE_MSG", "ORIG_HEAD"] {
+                    let source = directory.appendingPathComponent(name)
+                    if FileManager.default.fileExists(atPath: source.path) {
+                        try FileManager.default.copyItem(at: source, to: destination.appendingPathComponent("git-" + name + ".raw"))
+                    }
+                }
+            }
             try Self.check(git_reset(repository, object, GIT_RESET_HARD, nil), operation: "abort merge")
+            try Self.check(git_repository_state_cleanup(repository), operation: "clean merge state")
         }
+        if let recovery { _ = try finishRecovery(recovery, at: root) }
         postRepositoryDidChange(at: root)
     }
 
@@ -788,7 +855,7 @@ public actor LocalGitService {
     /// regular files inside the workspace are copied; the copy lives under
     /// `.git/floe-recovery/<timestamp>-<uuid>/` so it is inspectable and can be
     /// restored manually. Returns false when nothing existed to copy.
-    private func writeRecoveryCopy(paths: [String], at root: URL, folder: URL) throws -> Bool {
+    func writeRecoveryCopy(paths: [String], at root: URL, folder: URL) throws -> Bool {
         let rootPrefix = root.standardizedFileURL.path + "/"
         var copied = false
         for path in paths {
@@ -809,7 +876,7 @@ public actor LocalGitService {
     /// about to be reset. They are stored beside the working-tree copy as
     /// `<path>.staged` so a partially staged file never loses the version the
     /// user had staged. Returns false when no index blob was found.
-    private func writeIndexRecovery(paths: [String], at root: URL, folder: URL) throws -> Bool {
+    func writeIndexRecovery(paths: [String], at root: URL, folder: URL) throws -> Bool {
         try withRawRepository(at: root) { raw in
             var index: OpaquePointer?
             try Self.check(git_repository_index(&index, raw), operation: "open index for recovery")
@@ -822,8 +889,12 @@ public actor LocalGitService {
                 var blob: OpaquePointer?
                 guard git_blob_lookup(&blob, raw, &oid) >= 0, let blob else { continue }
                 defer { git_blob_free(blob) }
-                guard let content = git_blob_rawcontent(blob) else { continue }
-                let data = Data(bytes: content, count: Int(git_blob_rawsize(blob)))
+                let size = Int(git_blob_rawsize(blob))
+                let data: Data
+                if size == 0 { data = Data() }
+                else if let content = git_blob_rawcontent(blob) {
+                    data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: content), count: size, deallocator: .none)
+                } else { throw FloeError.storageCorrupted("Staged Git blob is unavailable") }
                 let destination = folder.appendingPathComponent(path + ".staged")
                 try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: destination, options: .atomic)
@@ -861,36 +932,6 @@ public actor LocalGitService {
             throw FloeError.validationFailed("Git author name or email is invalid")
         }
         return (name, email)
-    }
-
-    private func authenticatedRemoteOperation(
-        at root: URL,
-        token: String?,
-        operation: String,
-        body: (OpaquePointer, git_remote_callbacks) throws -> Void
-    ) throws {
-        try withRuntime {
-            try withRawRepository(at: root) { repository in
-                var remote: OpaquePointer?
-                try Self.check(git_remote_lookup(&remote, repository, "origin"), operation: "resolve origin")
-                guard let remote else { throw FloeError.validationFailed("Git origin remote is missing") }
-                defer { git_remote_free(remote) }
-                if let rawURL = git_remote_url(remote), let url = URL(string: String(cString: rawURL)) {
-                    try Self.validateRemote(url)
-                }
-                let payload = CredentialPayload(token: token)
-                try Self.withPayload(payload) { pointer in
-                    var callbacks = git_remote_callbacks()
-                    try Self.check(
-                        git_remote_init_callbacks(&callbacks, UInt32(GIT_REMOTE_CALLBACKS_VERSION)),
-                        operation: "initialize \(operation) authentication"
-                    )
-                    callbacks.credentials = Self.credentialsCallback
-                    callbacks.payload = pointer
-                    try body(remote, callbacks)
-                }
-            }
-        }
     }
 
     private func withRawRepository<T>(at root: URL, _ body: (OpaquePointer) throws -> T) throws -> T {
@@ -944,41 +985,36 @@ public actor LocalGitService {
         return .other
     }
 
-    private static func change(from entry: SwiftGitX.StatusEntry) -> GitFileChange? {
-        let delta = entry.workingTree ?? entry.index
-        guard let delta else { return nil }
-        let statuses = entry.status
-        let kind: GitChangeKind
-        if statuses.contains(where: { if case .conflicted = $0 { true } else { false } }) { kind = .conflicted }
-        else if statuses.contains(where: { if case .workingTreeNew = $0 { true } else { false } }) { kind = .untracked }
-        else if statuses.contains(where: {
-            if case .indexNew = $0 { true } else { false }
-        }) { kind = .added }
-        else if statuses.contains(where: {
-            if case .workingTreeDeleted = $0 { true } else if case .indexDeleted = $0 { true } else { false }
-        }) { kind = .deleted }
-        else if statuses.contains(where: {
-            if case .workingTreeRenamed = $0 { true } else if case .indexRenamed = $0 { true } else { false }
-        }) { kind = .renamed }
-        else if statuses.contains(where: {
-            if case .workingTreeTypeChange = $0 { true } else if case .indexTypeChange = $0 { true } else { false }
-        }) { kind = .typeChanged }
-        else { kind = .modified }
-        let staged = statuses.contains {
-            switch $0 {
-            case .indexNew, .indexModified, .indexDeleted, .indexRenamed, .indexTypeChange: true
-            default: false
-            }
+    private static func changes(from entry: SwiftGitX.StatusEntry) -> [GitFileChange] {
+        if entry.status.contains(where: { if case .conflicted = $0 { true } else { false } }) {
+            guard let delta = entry.workingTree ?? entry.index else { return [] }
+            return [.init(path: delta.newFile.path.isEmpty ? delta.oldFile.path : delta.newFile.path, kind: .conflicted, staged: false)]
         }
-        let path = kind == .deleted ? delta.oldFile.path : delta.newFile.path
-        let oldPath = kind == .renamed ? delta.oldFile.path : nil
-        return GitFileChange(path: path, oldPath: oldPath, kind: kind, staged: staged)
+        return [false, true].compactMap { staged in
+            guard let delta = staged ? entry.index : entry.workingTree else { return nil }
+            let kind: GitChangeKind
+            if staged {
+                if entry.status.contains(where: { if case .indexNew = $0 { true } else { false } }) { kind = .added }
+                else if entry.status.contains(where: { if case .indexDeleted = $0 { true } else { false } }) { kind = .deleted }
+                else if entry.status.contains(where: { if case .indexRenamed = $0 { true } else { false } }) { kind = .renamed }
+                else if entry.status.contains(where: { if case .indexTypeChange = $0 { true } else { false } }) { kind = .typeChanged }
+                else { kind = .modified }
+            } else {
+                if entry.status.contains(where: { if case .workingTreeNew = $0 { true } else { false } }) { kind = .untracked }
+                else if entry.status.contains(where: { if case .workingTreeDeleted = $0 { true } else { false } }) { kind = .deleted }
+                else if entry.status.contains(where: { if case .workingTreeRenamed = $0 { true } else { false } }) { kind = .renamed }
+                else if entry.status.contains(where: { if case .workingTreeTypeChange = $0 { true } else { false } }) { kind = .typeChanged }
+                else { kind = .modified }
+            }
+            return .init(path: kind == .deleted ? delta.oldFile.path : delta.newFile.path,
+                         oldPath: kind == .renamed ? delta.oldFile.path : nil, kind: kind, staged: staged)
+        }
     }
 
     private static func validRelativePath(_ path: String) throws -> String {
         let value = path.replacingOccurrences(of: "\\", with: "/")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, !value.hasPrefix("/"), !value.split(separator: "/").contains(".."),
+        guard !value.isEmpty, !value.contains("\0"), !value.hasPrefix("/"), !value.split(separator: "/").contains(".."),
               !value.hasPrefix(".git/") && value != ".git" else {
             throw FloeError.validationFailed("Git path must stay inside the workspace")
         }
@@ -994,16 +1030,6 @@ public actor LocalGitService {
         return value
     }
 
-    private static func validateRemote(_ url: URL) throws {
-        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
-              host == "github.com" || host.hasSuffix(".github.com") else {
-            throw FloeError.validationFailed(FloeL10n.l("git.local_git_service.currently_only_https_connections_to_github"))
-        }
-        guard url.user == nil, url.password == nil else {
-            throw FloeError.validationFailed(FloeL10n.l("git.local_git_service.the_repository_url_cannot_contain_an"))
-        }
-    }
-
     private static func check(_ code: Int32, operation: String) throws {
         guard code >= 0 else {
             let raw: String
@@ -1016,24 +1042,4 @@ public actor LocalGitService {
         }
     }
 
-    private final class CredentialPayload: @unchecked Sendable {
-        let token: String?
-        init(token: String?) { self.token = token }
-    }
-
-    private static func withPayload<T>(_ payload: CredentialPayload, _ body: (UnsafeMutableRawPointer) throws -> T) throws -> T {
-        let retained = Unmanaged.passRetained(payload)
-        defer { retained.release() }
-        return try body(retained.toOpaque())
-    }
-
-    private static let credentialsCallback: git_credential_acquire_cb = { output, _, _, allowed, rawPayload in
-        guard let output, let rawPayload else { return GIT_EUSER.rawValue }
-        let payload = Unmanaged<CredentialPayload>.fromOpaque(rawPayload).takeUnretainedValue()
-        guard let token = payload.token, !token.isEmpty,
-              allowed & GIT_CREDENTIAL_USERPASS_PLAINTEXT.rawValue != 0 else {
-            return GIT_PASSTHROUGH.rawValue
-        }
-        return git_credential_userpass_plaintext_new(output, "x-access-token", token)
-    }
 }

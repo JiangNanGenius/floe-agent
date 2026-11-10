@@ -17,6 +17,7 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
     var ports = ""
     var recordType: UInt16 = 1
     var serviceType = ""
+    var lanConfiguration: LANWorkbenchConfiguration?
     var interval: Double = 1
     var useTLS = false
     var serial = SerialAssistantConfiguration()
@@ -41,10 +42,17 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
                 value.ports = parsed.map(String.init).joined(separator: ", ")
             }
         case .lan:
-            let service = request.serviceType.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard service.utf8.count <= 128, !service.isEmpty,
-                  service.utf8.allSatisfy({ allowedHostByte($0) || $0 == 95 }) else { return nil }
-            value.serviceType = service
+            if let configuration = request.lanConfiguration {
+                guard configuration.isValid else { return nil }
+                value.lanConfiguration = configuration
+                // Keep a valid legacy hint; older versions never auto-run a saved row.
+                value.serviceType = configuration.requestedTypes[0]
+            } else {
+                let service = request.serviceType.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard service.utf8.count <= 128, !service.isEmpty,
+                      service.utf8.allSatisfy({ allowedHostByte($0) || $0 == 95 }) else { return nil }
+                value.serviceType = service
+            }
         default: return nil
         }
         return value
@@ -105,9 +113,19 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
         model.target = target; model.ports = ports
         model.recordType = DNSRecordType(rawValue: recordType) ?? .a
         model.serviceType = serviceType
+        if model.tool == .lan {
+            model.lanConfiguration = lanConfiguration ?? LANWorkbenchConfiguration(preset:.custom,customTypes:[serviceType],browseSeconds:3)
+        }
     }
     var label: String {
-        if tool == .lan { return serviceType }
+        if tool == .lan {
+            let zh = Locale(identifier:"zh-Hans"), en = Locale(identifier:"en")
+            if let lanConfiguration { return IDELanguageRunText.t(lanConfiguration.summary(in:zh),lanConfiguration.summary(in:en)) }
+            if LANDiscoveryScope.declaredBonjourTypes.contains(serviceType) {
+                return IDELanguageRunText.t(LANWorkbenchConfiguration.serviceTitle(serviceType,in:zh),LANWorkbenchConfiguration.serviceTitle(serviceType,in:en))
+            }
+            return IDELanguageRunText.t(LANWorkbenchConfiguration.title(.custom,in:zh),LANWorkbenchConfiguration.title(.custom,in:en))
+        }
         if tool == .serialAssistant {
             let transport = serial.connection.rawValue.uppercased()
             if serial.connection == .usb {
@@ -127,7 +145,7 @@ nonisolated struct ToolboxHistoryConfiguration: Codable, Equatable, Sendable {
         if tool == .roaming { return Self.roaming(target: target, interval: interval) == self }
         if let setup = connectionSetup() { return Self.connection(tool: tool, setup: setup) == self }
         let request = DiagnosticRequestSnapshot(id: UUID(), tool: tool, target: target, ports: ports,
-            recordType: DNSRecordType(rawValue: recordType) ?? .a, serviceType: serviceType)
+            recordType: DNSRecordType(rawValue: recordType) ?? .a, serviceType: serviceType,lanConfiguration:lanConfiguration)
         return Self.diagnostic(request) == self
     }
     private static func host(_ text: String) -> String? {

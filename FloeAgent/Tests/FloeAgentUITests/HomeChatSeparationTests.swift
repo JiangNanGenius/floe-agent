@@ -87,13 +87,18 @@ struct HomeChatSeparationTests {
 
     @Test("Deleted conversation selection reconciles to a fresh draft")
     @MainActor
-    func deletionReconcilesSelection() {
+    func deletionReconcilesSelection() async throws {
         let router = AppRouter()
         let kept = UUID()
         router.openConversation(UUID())
         router.showInspector(.workspaceFiles)
 
-        router.reconcileConversations([kept])
+        router.reconcileConversations([kept], verifyExists: { id in id == kept })
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while router.isValidatingConversation {
+            try #require(ContinuousClock.now < deadline, "The authoritative deletion check did not settle")
+            try await Task.sleep(for: .milliseconds(1))
+        }
 
         #expect(router.workbenchSelection == .newTask(workspaceID: nil))
         #expect(router.workbenchPath.isEmpty)

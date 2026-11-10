@@ -42,9 +42,9 @@ public enum PreparedVideoPlanDiffer {
         }
         guard previous.timeScale == next.timeScale,
               previous.frameRate == next.frameRate,
-              previous.canvas == next.canvas else {
+              previous.canvas == next.canvas,previous.colorProfile == next.colorProfile else {
             return PreparedVideoPlanDiff(affectedRanges: [], requiresFullInvalidation: true,
-                                         reasons: ["canvas, frame rate or timescale changed"])
+                                         reasons: ["canvas, color profile, frame rate or timescale changed"])
         }
         guard previous.visualTracks.map(\.id) == next.visualTracks.map(\.id) else {
             return PreparedVideoPlanDiff(affectedRanges: [], requiresFullInvalidation: true,

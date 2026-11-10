@@ -37,7 +37,11 @@ struct NoteElementInspector: View {
                 if let source = draft.source {
                     Section("skills.review.source") {
                         Label(draft.isAIGenerated ? "notes.note_element_inspector.ai_generated_summary" : "notes.note_element_inspector.cited_content", systemImage: "quote.opening")
-                        Text(FloeL10n.l("notes.note_element_inspector.cited_version", source.revision)).font(.caption).foregroundStyle(.secondary)
+                        if source.space == .conversation {
+                            Text(IDELanguageRunText.t("来自聊天回答", "From a chat answer")).font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text(FloeL10n.l("notes.note_element_inspector.cited_version", source.revision)).font(.caption).foregroundStyle(.secondary)
+                        }
                         if source.space == .notes, let openSource {
                             Button("notes.note_element_inspector.open_the_current_page_of_the") { openSource(source) }
                         }

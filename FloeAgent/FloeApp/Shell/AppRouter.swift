@@ -105,6 +105,9 @@ final class AppRouter: ObservableObject {
     /// so a slow background suspension cannot finish after a newer foreground
     /// reconciliation and leave the shared owners paused.
     private var remoteScenePhaseTask: Task<Void, Never>?
+    private var conversationRouteAvailability = ConversationRouteAvailability()
+    private var conversationAvailabilityTask: Task<Void, Never>?
+    @Published private(set) var isValidatingConversation = false
 
     // MARK: - Selection
 
@@ -123,6 +126,10 @@ final class AppRouter: ObservableObject {
     @Published var workbenchSelection: WorkbenchSelection = .newTask(workspaceID: nil) {
         didSet {
             guard oldValue != workbenchSelection else { return }
+            conversationRouteAvailability.selectionChanged(to: selectedConversationID)
+            conversationAvailabilityTask?.cancel()
+            conversationAvailabilityTask = nil
+            isValidatingConversation = false
             // Switching the selected conversation in the sidebar must never
             // leave the right-hand inspector pinned to the previous task's
             // workspace (stale file tree / preview for a conversation the
@@ -477,13 +484,33 @@ final class AppRouter: ObservableObject {
         selection = .home
     }
 
-    /// Repairs selections after deletion, history clear or cross-scene DB
-    /// changes. A missing parent can never leave an enabled composer behind.
-    func reconcileConversations(_ availableIDs: Set<UUID>) {
-        guard case .conversation(let id) = workbenchSelection,
-              !availableIDs.contains(id) else { return }
-        startNewTask()
-        hideInspector()
+    /// A filtered sidebar list cannot prove deletion. Keep the current surface
+    /// while an exact store lookup checks a missing ID; only confirmed absence
+    /// repairs selection. A failed lookup is not a navigation instruction.
+    func reconcileConversations(_ listedIDs: Set<UUID>,
+        verifyExists: @escaping @MainActor (UUID) async throws -> Bool) {
+        conversationRouteAvailability.selectionChanged(to: selectedConversationID)
+        let request = conversationRouteAvailability.beginCheck(listedIDs: listedIDs)
+        conversationAvailabilityTask?.cancel()
+        conversationAvailabilityTask = nil
+        guard let request else { isValidatingConversation = false; return }
+        isValidatingConversation = true
+        conversationAvailabilityTask = Task { @MainActor [weak self] in
+            let evidence: ConversationRouteAvailability.Evidence
+            do { evidence = try await verifyExists(request.conversationID) ? .present : .missing }
+            catch {
+                if !Task.isCancelled { FloeLogger(category: .app).warning("conversationExistenceCheckUnavailable") }
+                evidence = .unavailable
+            }
+            guard !Task.isCancelled, let self else { return }
+            let decision = self.conversationRouteAvailability.resolve(request, evidence: evidence)
+            guard decision != .ignoreObsolete else { return }
+            self.conversationAvailabilityTask = nil
+            self.isValidatingConversation = false
+            if case .removeSelected(let id) = decision, self.selectedConversationID == id {
+                self.startNewTask()
+            }
+        }
     }
 
     private func setWorkbenchPath(_ path: [UUID]) {

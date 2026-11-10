@@ -104,16 +104,28 @@ public enum MusicWorkbenchEditing {
         var points = payload.controllerPoints.filter { $0.tick.value >= lower && $0.tick.value < upper }
         // Restore each controller's last value at the new clip start.
         if lower > 0 {
-            for controller in Set(payload.controllerPoints.map(\.controller)) {
-                if !points.contains(where: { $0.controller == controller && $0.tick.value == lower }),
-                   var previous = payload.controllerPoints.last(where: { $0.controller == controller && $0.tick.value < lower }) {
+            for key in Set(payload.controllerPoints.map { $0.controller * 16 + $0.channel }) {
+                let controller = key / 16, channel = key % 16
+                if !points.contains(where: { $0.controller == controller && $0.channel == channel && $0.tick.value == lower }),
+                   var previous = payload.controllerPoints.last(where: { $0.controller == controller && $0.channel == channel && $0.tick.value < lower }) {
                     previous.tick = MusicTick(lower)
                     points.append(previous)
                 }
             }
         }
         points = points.map { point in var copy = point; copy.tick = MusicTick(point.tick.value - lower); return copy }
-        points.sort { ($0.controller, $0.tick.value) < ($1.controller, $1.tick.value) }
-        return try MusicMIDIClipPayload(durationTicks: upper - lower, notes: notes, controllerPoints: points)
+        points.sort { ($0.controller, $0.channel, $0.tick.value) < ($1.controller, $1.channel, $1.tick.value) }
+        var programs = payload.programChanges.filter { $0.tick.value >= lower && $0.tick.value < upper }
+        if lower > 0 {
+            for channel in Set(payload.programChanges.map(\.channel)) {
+                if !programs.contains(where: { $0.channel == channel && $0.tick.value == lower }),
+                   var previous = payload.programChanges.last(where: { $0.channel == channel && $0.tick.value < lower }) {
+                    previous.tick = .init(lower); programs.append(previous)
+                }
+            }
+        }
+        programs = programs.map { var copy = $0; copy.tick = .init(copy.tick.value - lower); return copy }
+        programs.sort { ($0.channel, $0.tick.value) < ($1.channel, $1.tick.value) }
+        return try MusicMIDIClipPayload(durationTicks: upper - lower, notes: notes, controllerPoints: points, programChanges: programs)
     }
 }

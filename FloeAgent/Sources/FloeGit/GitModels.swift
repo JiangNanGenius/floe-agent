@@ -5,7 +5,7 @@ public enum GitChangeKind: String, Codable, Sendable, CaseIterable {
 }
 
 public struct GitFileChange: Identifiable, Codable, Sendable, Hashable {
-    public var id: String { path }
+    public var id: String { (staged ? "index:" : "worktree:") + path }
     public let path: String
     public let oldPath: String?
     public let kind: GitChangeKind
@@ -48,6 +48,8 @@ public struct GitRepositorySnapshot: Codable, Sendable, Hashable {
     /// root when the workspace lives inside a repository (or a worktree); nil
     /// for a non-repository. Change paths are always relative to this root.
     public let repositoryRoot: URL?
+    public let indexRevision: String?
+    public let headOID: String?
 
     public init(
         isRepository: Bool,
@@ -57,7 +59,8 @@ public struct GitRepositorySnapshot: Codable, Sendable, Hashable {
         remoteURL: String? = nil,
         changes: [GitFileChange] = [],
         recentCommits: [GitCommitSummary] = [],
-        repositoryRoot: URL? = nil
+        repositoryRoot: URL? = nil,
+        indexRevision: String? = nil, headOID: String? = nil
     ) {
         self.isRepository = isRepository
         self.branch = branch
@@ -67,6 +70,7 @@ public struct GitRepositorySnapshot: Codable, Sendable, Hashable {
         self.changes = changes
         self.recentCommits = recentCommits
         self.repositoryRoot = repositoryRoot
+        self.indexRevision = indexRevision; self.headOID = headOID
     }
 }
 
@@ -97,10 +101,12 @@ public struct GitMergeOutcome: Codable, Sendable, Hashable {
 public struct GitDiscardOutcome: Codable, Sendable, Hashable {
     public let discardedPaths: [String]
     public let recoveryPath: String?
+    public let recoveryID: String?
 
-    public init(discardedPaths: [String], recoveryPath: String?) {
+    public init(discardedPaths: [String], recoveryPath: String?, recoveryID: String? = nil) {
         self.discardedPaths = discardedPaths
         self.recoveryPath = recoveryPath
+        self.recoveryID = recoveryID
     }
 }
 

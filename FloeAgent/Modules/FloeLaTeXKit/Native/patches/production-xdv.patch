@@ -1,0 +1,1781 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -87,7 +87,7 @@
+ tectonic_docmodel = { path = "crates/docmodel", version = ">=0.2.0,<1", optional = true }
+ tectonic_engine_bibtex = { path = "crates/engine_bibtex", version = ">=0.1.0,<1" }
+ tectonic_engine_spx2html = { path = "crates/engine_spx2html", version = ">=0.3.0,<1" }
+-tectonic_engine_xdvipdfmx = { path = "crates/engine_xdvipdfmx", version = ">=0.3.0,<1" }
++tectonic_engine_xdvipdfmx = { path = "crates/engine_xdvipdfmx", version = ">=0.3.0,<1", optional = true }
+ tectonic_engine_xetex = { path = "crates/engine_xetex", version = ">=0.4.0,<1" }
+ tectonic_errors = { path = "crates/errors", version = ">=0.1.0,<1" }
+ tectonic_geturl = { path = "crates/geturl", version = ">=0.3.0,<1", default-features = false }
+@@ -114,7 +114,9 @@
+ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ 
+ [features]
+-default = ["geturl-reqwest", "serialization"]
++default = ["geturl-reqwest", "serialization", "pdf-backend"]
++# The embedded Apple XDV product deliberately omits this optional GPL backend.
++pdf-backend = ["dep:tectonic_engine_xdvipdfmx"]
+ 
+ # The main motivation for this feature was to be able to compile without
+ # proc-macros (via serde-derive), for statically-linked targets which can't use
+--- a/crates/bridge_core/src/lib.rs
++++ b/crates/bridge_core/src/lib.rs
+@@ -1397,7 +1397,11 @@
+ }
+ 
+ impl FileFormat {
+-    fn extensions(&self) -> &[&str] {
++    /// Ordered suffixes used after an exact input name is unavailable.
++    ///
++    /// Resource consumers must use this same order to resolve extensionless
++    /// names recorded by an engine; the suffix does not select a different font.
++    pub fn extensions(&self) -> &[&str] {
+         match *self {
+             FileFormat::Afm => &["afm"],
+             FileFormat::Bib => &["bib"],
+--- a/crates/bridge_harfbuzz/Cargo.toml
++++ b/crates/bridge_harfbuzz/Cargo.toml
+@@ -31,7 +31,7 @@
+ tectonic_dep_support = { path = "../dep_support", version = ">=0.1.0,<1" }
+ tectonic_cfg_support = { path = "../cfg_support", version = ">=0.1.5,<1" }
+ 
+-[target.'cfg(target_os = "macos")'.dependencies]
++[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+ tectonic_mac_core = { path = "../mac_core", version = ">=0.1.0,<1" }
+ 
+ [features]
+--- a/crates/bridge_harfbuzz/build.rs
++++ b/crates/bridge_harfbuzz/build.rs
+@@ -42,7 +42,7 @@
+         let mut sep = "cargo:include-path=";
+ 
+         let is_macos_external =
+-            target_cfg!(target_os = "macos") && env::var("CARGO_FEATURE_EXTERNAL_HARFBUZZ").is_ok();
++            (target_cfg!(target_os = "macos") || target_cfg!(target_os = "ios")) && env::var("CARGO_FEATURE_EXTERNAL_HARFBUZZ").is_ok();
+ 
+         dep.foreach_include_path(|p| {
+             // HACK: On macOS, the default brew harfbuzz for some reason points into the harfbuzz
+--- a/crates/bridge_harfbuzz/src/lib.rs
++++ b/crates/bridge_harfbuzz/src/lib.rs
+@@ -37,7 +37,7 @@
+     #[allow(unused_imports)]
+     use tectonic_bridge_freetype2 as clippyrenamehack1;
+     #[allow(unused_imports)]
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     use tectonic_mac_core as clippyrenamehack2;
+ }
+ 
+--- a/crates/bundles/src/cache.rs
++++ b/crates/bundles/src/cache.rs
+@@ -449,4 +449,201 @@
+     fn all_files(&self) -> Vec<String> {
+         self.bundle.all_files()
+     }
++
++    fn disable_prefetch(&mut self) {
++        // Leave disk metadata and cached blobs intact. This instance neither
++        // replays nor extends another document's learned resource set.
++        self.prefetch_supported = false;
++        self.touched.clear();
++    }
+ }
++
++#[cfg(test)]
++mod demand_only_tests {
++    use super::*;
++    use crate::itar::{ItarFileIndex, ItarFileInfo};
++    use std::{
++        io::Cursor,
++        sync::{Arc, Mutex},
++        time::{SystemTime, UNIX_EPOCH},
++    };
++    use tectonic_status_base::NoopStatusBackend;
++
++    const LOCATION: &str = "mock://native-demand-only";
++    const INDEX: &[u8] = b"old.sty 0 3\ncurrent.sty 3 7\n";
++    type Calls = Arc<Mutex<Vec<String>>>;
++
++    struct MockBackend {
++        index: ItarFileIndex,
++        calls: Calls,
++    }
++
++    fn body(name: &str) -> Vec<u8> {
++        match name {
++            "old.sty" => b"old".to_vec(),
++            "current.sty" => b"current".to_vec(),
++            _ => panic!("The mock must never fetch an unindexed resource"),
++        }
++    }
++
++    impl IoProvider for MockBackend {}
++
++    impl Bundle for MockBackend {
++        fn get_digest(&mut self) -> Result<DigestData> {
++            Ok(DigestData::zeros())
++        }
++
++        fn all_files(&self) -> Vec<String> {
++            vec!["old.sty".into(), "current.sty".into()]
++        }
++    }
++
++    impl CachableBundle<'_, ItarFileIndex> for MockBackend {
++        fn supports_batch_open(&self) -> bool {
++            true
++        }
++
++        fn get_location(&mut self) -> String {
++            LOCATION.into()
++        }
++
++        fn initialize_index(&mut self, source: &mut dyn Read) -> Result<()> {
++            self.index.initialize(source)
++        }
++
++        fn get_index_reader(&mut self) -> Result<Box<dyn Read>> {
++            Ok(Box::new(Cursor::new(INDEX)))
++        }
++
++        fn index(&mut self) -> &mut ItarFileIndex {
++            &mut self.index
++        }
++
++        fn search(&mut self, name: &str) -> Option<ItarFileInfo> {
++            self.index.search(name)
++        }
++
++        fn open_fileinfo(
++            &mut self,
++            info: &ItarFileInfo,
++            _status: &mut dyn StatusBackend,
++        ) -> OpenResult<InputHandle> {
++            self.calls
++                .lock()
++                .unwrap()
++                .push(format!("single:{}", info.name()));
++            OpenResult::Ok(InputHandle::new_read_only(
++                info.name(),
++                Cursor::new(body(info.name())),
++                InputOrigin::Other,
++            ))
++        }
++
++        fn batch_open(
++            &mut self,
++            infos: &[ItarFileInfo],
++            _status: &mut dyn StatusBackend,
++        ) -> Vec<OpenResult<Vec<u8>>> {
++            infos
++                .iter()
++                .map(|info| {
++                    self.calls
++                        .lock()
++                        .unwrap()
++                        .push(format!("batch:{}", info.name()));
++                    OpenResult::Ok(body(info.name()))
++                })
++                .collect()
++        }
++    }
++
++    fn fixture() -> (
++        BundleCache<'static, ItarFileIndex>,
++        Calls,
++        PathBuf,
++        PathBuf,
++        PathBuf,
++    ) {
++        // Root may set TMPDIR to its private evidence directory. Retain this
++        // isolated fixture for inspection rather than deleting cache evidence.
++        let stamp = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap()
++            .as_nanos();
++        let root = std::env::temp_dir().join(format!("floe-demand-only-{}-{stamp}", process::id()));
++        fs::create_dir_all(root.join("data")).unwrap();
++        let manifest = root.join(format!("data/{}.prefetch", app_dirs::sanitize(LOCATION)));
++        fs::write(&manifest, b"old.sty\n").unwrap();
++        let calls = Calls::default();
++        let mut index = ItarFileIndex::default();
++        index.initialize(&mut Cursor::new(INDEX)).unwrap();
++        let backend = MockBackend {
++            index,
++            calls: calls.clone(),
++        };
++        let mut cache = BundleCache::new(Box::new(backend), false, Some(root)).unwrap();
++        assert!(cache.prefetch_supported);
++        assert_eq!(cache.touched, HashSet::from(["old.sty".into()]));
++        let old_info = cache.bundle.search("old.sty").unwrap();
++        let current_info = cache.bundle.search("current.sty").unwrap();
++        let old = cache.get_file_path(&old_info);
++        let current = cache.get_file_path(&current_info);
++        assert!(!old.exists() && !current.exists());
++        (cache, calls, manifest, old, current)
++    }
++
++    fn read_current(bundle: &mut dyn Bundle) {
++        let mut status = NoopStatusBackend::default();
++        let mut handle = match bundle.input_open_name("current.sty", &mut status) {
++            OpenResult::Ok(handle) => handle,
++            _ => panic!("The current input must remain downloadable"),
++        };
++        let mut bytes = Vec::new();
++        handle.read_to_end(&mut bytes).unwrap();
++        assert_eq!(bytes, b"current");
++    }
++
++    #[test]
++    fn demand_only_native_miss_then_hit_never_replays_old_manifest() {
++        let (cache, calls, manifest, old, current) = fixture();
++        // Exercise Box<dyn Bundle> forwarding, exactly as native open_bundle.
++        let mut bundle: Box<dyn Bundle> = Box::new(cache);
++        bundle.disable_prefetch();
++        read_current(&mut bundle);
++        assert_eq!(*calls.lock().unwrap(), ["single:current.sty"]);
++        assert_eq!(fs::read(&current).unwrap(), b"current");
++        assert!(
++            !old.exists(),
++            "Another document's missing blob must remain absent"
++        );
++        read_current(&mut bundle);
++        assert_eq!(
++            *calls.lock().unwrap(),
++            ["single:current.sty"],
++            "A cache hit must not fetch again"
++        );
++        assert_eq!(
++            fs::read(&manifest).unwrap(),
++            b"old.sty\n",
++            "Disabling prefetch must preserve the existing disk manifest"
++        );
++        assert!(matches!(
++            bundle.input_open_name("missing.sty", &mut NoopStatusBackend::default()),
++            OpenResult::NotAvailable
++        ));
++        assert_eq!(*calls.lock().unwrap(), ["single:current.sty"]);
++    }
++
++    #[test]
++    fn demand_only_opt_in_preserves_default_learned_prefetch() {
++        let (mut cache, calls, manifest, old, current) = fixture();
++        read_current(&mut cache);
++        assert_eq!(
++            *calls.lock().unwrap(),
++            ["batch:old.sty", "single:current.sty"]
++        );
++        assert_eq!(fs::read(&old).unwrap(), b"old");
++        assert_eq!(fs::read(&current).unwrap(), b"current");
++        assert_eq!(fs::read(&manifest).unwrap(), b"old.sty\ncurrent.sty\n");
++    }
++}
+--- a/crates/bundles/src/lib.rs
++++ b/crates/bundles/src/lib.rs
+@@ -107,6 +107,12 @@
+     /// Iterate over all file paths in this bundle.
+     /// This is used for the `bundle search` command
+     fn all_files(&self) -> Vec<String>;
++
++    /// Disable speculative fetching of previously observed resources.
++    ///
++    /// Current input requests may still fetch cache misses. Bundles without
++    /// prefetching need no change; existing callers retain their default policy.
++    fn disable_prefetch(&mut self) {}
+ }
+ 
+ impl<B: Bundle + ?Sized> Bundle for Box<B> {
+@@ -116,6 +122,10 @@
+ 
+     fn all_files(&self) -> Vec<String> {
+         (**self).all_files()
++    }
++
++    fn disable_prefetch(&mut self) {
++        (**self).disable_prefetch();
+     }
+ }
+ 
+--- a/crates/cfg_support/src/lib.rs
++++ b/crates/cfg_support/src/lib.rs
+@@ -127,11 +127,11 @@
+ /// Supported syntaxes:
+ ///
+ /// ```notest
+-/// target_cfg!(target_os = "macos");
+-/// target_cfg!(not(target_os = "macos"));
+-/// target_cfg!(any(target_os = "macos", target_endian = "big"));
+-/// target_cfg!(all(target_os = "macos", target_endian = "big"));
+-/// target_cfg!(all(target_os = "macos", not(target_endian = "big")));
++/// target_cfg!(any(target_os = "macos", target_os = "ios"));
++/// target_cfg!(not(any(target_os = "macos", target_os = "ios")));
++/// target_cfg!(any(any(target_os = "macos", target_os = "ios"), target_endian = "big"));
++/// target_cfg!(all(any(target_os = "macos", target_os = "ios"), target_endian = "big"));
++/// target_cfg!(all(any(target_os = "macos", target_os = "ios"), not(target_endian = "big")));
+ /// ```
+ // Here we go with some exciting macro fun!
+ //
+--- a/crates/engine_xetex/Cargo.toml
++++ b/crates/engine_xetex/Cargo.toml
+@@ -29,7 +29,6 @@
+ tectonic_bridge_harfbuzz = { path = "../bridge_harfbuzz", version = ">=0.2.0,<1" }
+ tectonic_bridge_icu = { path = "../bridge_icu", version = ">=0.2.2,<1" }
+ tectonic_errors = { path = "../errors", version = ">=0.1.0,<1" }
+-tectonic_pdf_io = { path = "../pdf_io", version = ">=0.3.0,<1" }
+ tectonic_xetex_layout = { path = "../xetex_layout", version = ">=0.2.1,<1" }
+ 
+ [build-dependencies]
+@@ -51,5 +50,4 @@
+ tectonic_bridge_icu = "thiscommit:2023-09-17:6uIZ4lA"
+ tectonic_cfg_support = "9d5feb40c7ac6958ee3c50604af9271eb2db2b20"
+ tectonic_errors = "317ae79ceaa2593fb56090e37bf1f5cc24213dd9"
+-tectonic_pdf_io = "9a8b975e76c7a27f140d0974ec3442f2347e18ad"
+ tectonic_xetex_layout = "7e63f1b55da1b75c159dd7138c08f3e6c4e43e9c"
+--- a/crates/engine_xetex/build.rs
++++ b/crates/engine_xetex/build.rs
+@@ -13,7 +13,6 @@
+     // Include paths exported by our internal dependencies.
+ 
+     let xetex_layout_include_path = env::var("DEP_TECTONIC_XETEX_LAYOUT_INCLUDE_PATH").unwrap();
+-    let pdfio_include_path = env::var("DEP_TECTONIC_PDF_IO_INCLUDE_PATH").unwrap();
+     let core_include_dir = env::var("DEP_TECTONIC_BRIDGE_CORE_INCLUDE").unwrap();
+     let flate_include_dir = env::var("DEP_TECTONIC_BRIDGE_FLATE_INCLUDE").unwrap();
+     let graphite2_include_path = env::var("DEP_GRAPHITE2_INCLUDE_PATH").unwrap();
+@@ -69,11 +68,6 @@
+         cxx_cfg.include(item);
+     }
+ 
+-    for item in pdfio_include_path.split(';') {
+-        c_cfg.include(item);
+-        cxx_cfg.include(item);
+-    }
+-
+     for item in harfbuzz_include_path.split(';') {
+         c_cfg.include(item);
+         cxx_cfg.include(item);
+@@ -108,7 +102,7 @@
+ 
+     // Platform-specific adjustments:
+ 
+-    let is_mac_os = target_cfg!(target_os = "macos");
++    let is_mac_os = (target_cfg!(target_os = "macos") || target_cfg!(target_os = "ios"));
+ 
+     if is_mac_os {
+         c_cfg.define("XETEX_MAC", Some("1"));
+--- a/crates/engine_xetex/src/lib.rs
++++ b/crates/engine_xetex/src/lib.rs
+@@ -252,9 +252,6 @@
+ /// them.
+ mod linkage {
+     #[allow(unused_imports)]
+-    use tectonic_pdf_io as clipyrenamehack1;
+-
+-    #[allow(unused_imports)]
+     use tectonic_xetex_layout as clipyrenamehack2;
+ 
+     #[allow(unused_imports)]
+--- a/crates/engine_xetex/xetex/xetex-ini.c
++++ b/crates/engine_xetex/xetex/xetex-ini.c
+@@ -13,7 +13,6 @@
+ #include "xetex-core.h"
+ #include "xetex-xetexd.h"
+ #include "xetex-synctex.h"
+-#include "dpx-pdfobj.h" /* pdf_files_{init,close} */
+ #include "xetex_bindings.h" /* FORMAT_SERIAL */
+ 
+ /* All the following variables are declared in xetex-xetexd.h */
+@@ -3470,7 +3469,6 @@
+         it would result in a segfault.
+     */
+ 
+-    pdf_files_close();
+     free(TEX_format_default);
+     free(font_used);
+     deinitialize_shipout_variables();
+@@ -3867,7 +3865,6 @@
+     if (semantic_pagination_enabled)
+         INTPAR(xetex_generate_actual_text) = 1;
+ 
+-    pdf_files_init();
+     synctex_init_command();
+     start_input(input_file_name);
+     history = HISTORY_SPOTLESS;
+--- a/crates/engine_xetex/xetex/xetex-macos.c
++++ b/crates/engine_xetex/xetex/xetex-macos.c
+@@ -41,7 +41,12 @@
+ #include "teckit-c-Engine.h"
+ #include "xetex-ext.h"
+ 
+-#include <ApplicationServices/ApplicationServices.h>
++#include <CoreText/CoreText.h>
++
++/* Preserve the historical fixed-point constant without importing Carbon. */
++#ifndef fract1
++#define fract1 ((int32_t)0x40000000L)
++#endif
+ 
+ 
+ static inline double
+--- a/crates/engine_xetex/xetex/xetex-pic.c
++++ b/crates/engine_xetex/xetex/xetex-pic.c
+@@ -39,13 +39,13 @@
+ #include "xetex-core.h"
+ #include "xetex-xetexd.h"
+ #include "xetex-ext.h"
+-#include "dpx-dpxutil.h"
+-#include "dpx-pdfdoc.h"
+-#include "dpx-pdfdraw.h"
+-#include "dpx-pdfobj.h"
+-#include "dpx-pngimage.h"
+-#include "dpx-jpegimage.h"
+-#include "dpx-bmpimage.h"
++#include <stdint.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <math.h>
++/* Real CoreGraphics/ImageIO metadata, through the existing TeX IoProvider. */
++extern int32_t floe_tex_measure_image(const char *, const uint8_t *, size_t,
++                                    int32_t, int32_t, double[4], int32_t *);
+ 
+ 
+ /* load_picture() needs some helper types and functions */
+@@ -72,144 +72,58 @@
+ } real_rect;
+ 
+ 
++static int
++apple_image_rect(rust_input_handle_t handle, int page, int box, real_rect *bounds, int *pages)
++{
++    size_t length = ttstub_input_get_size(handle);
++    if (length == 0 || length > 64U * 1024U * 1024U) return -1;
++    uint8_t *bytes = malloc(length);
++    if (!bytes) return -1;
++    ttstub_input_seek(handle, 0, SEEK_SET);
++    ssize_t read = ttstub_input_read(handle, (char *)bytes, length);
++    double rect[4] = {0, 0, 0, 0}; int32_t count = 0;
++    int code = read == (ssize_t)length
++        ? floe_tex_measure_image(name_of_file, bytes, length, page, box, rect, &count) : -1;
++    free(bytes);
++    if (code != 0 || count < 1 || !isfinite(rect[0]) || !isfinite(rect[1])
++        || !isfinite(rect[2]) || !isfinite(rect[3]) || rect[2] <= 0 || rect[3] <= 0
++        || rect[2] > 1000000 || rect[3] > 1000000) return -1;
++    if (bounds) {
++        bounds->x = rect[0] * 72.27 / 72.0;
++        bounds->y = rect[1] * 72.27 / 72.0;
++        bounds->wd = rect[2] * 72.27 / 72.0;
++        bounds->ht = rect[3] * 72.27 / 72.0;
++    }
++    if (pages) *pages = count;
++    return 0;
++}
++
+ int
+-count_pdf_file_pages (void)
+-{
+-    int pages;
+-    rust_input_handle_t handle;
+-    pdf_file *pf;
+-
+-    handle = ttstub_input_open (name_of_file, TTBC_FILE_FORMAT_PICT, 0);
+-    if (handle == INVALID_HANDLE)
+-        return 0;
+-
+-    if ((pf = pdf_open(name_of_file, handle)) == NULL) {
+-        /* TODO: issue warning */
+-        ttstub_input_close(handle);
+-        return 0;
+-    }
+-
+-    pages = pdf_doc_get_page_count(pf);
+-    pdf_close(pf);
++count_pdf_file_pages(void)
++{
++    rust_input_handle_t handle = ttstub_input_open(name_of_file, TTBC_FILE_FORMAT_PICT, 0);
++    if (handle == INVALID_HANDLE) return 0;
++    int count = 0;
++    int code = apple_image_rect(handle, 1, pdfbox_crop, NULL, &count);
+     ttstub_input_close(handle);
+-    return pages;
+-}
+-
++    return code == 0 ? count : 0;
++}
+ 
+ static int
+-pdf_get_rect (char *filename, rust_input_handle_t handle, int page_num, int pdf_box, real_rect* box)
+-{
+-    int pages, dpx_options;
+-    pdf_file *pf;
+-    pdf_obj *page;
+-    pdf_rect bbox;
+-    pdf_tmatrix matrix;
+-    pdf_coord p1, p2, p3, p4;
+-
+-    if ((pf = pdf_open(filename, handle)) == NULL) {
+-        /* TODO: issue warning */
+-        return -1;
+-    }
+-
+-    pages = pdf_doc_get_page_count(pf);
+-
+-    if (page_num > pages)
+-        page_num = pages;
+-    if (page_num < 0)
+-        page_num = pages + 1 + page_num;
+-    if (page_num < 1)
+-        page_num = 1;
+-
+-    /* OMG, magic numbers specifying page bound types do not agree between
+-     * xdvipdfmx code (dpx-pdfdoc.c:pdf_doc_get_page) and XeTeX/Apple's
+-     * pdfbox_* definitions (xetex-ext.h). */
+-
+-    switch (pdf_box) {
+-    case pdfbox_media:
+-        dpx_options = 2;
+-        break;
+-    case pdfbox_bleed:
+-        dpx_options = 5;
+-        break;
+-    case pdfbox_trim:
+-        dpx_options = 4;
+-        break;
+-    case pdfbox_art:
+-        dpx_options = 3;
+-        break;
+-    case pdfbox_crop:
+-    default:
+-        dpx_options = 1;
+-        break;
+-    }
+-
+-    page = pdf_doc_get_page(pf, page_num, dpx_options, &bbox, &matrix, NULL);
+-    pdf_close(pf);
+-
+-    if (page == NULL) {
+-        /* TODO: issue warning */
+-        return -1;
+-    }
+-
+-    pdf_release_obj(page);
+-
+-    /* Image's attribute "bbox" here is affected by /Rotate entry of included
+-     * PDF page.
+-     */
+-    p1.x = bbox.llx;
+-    p1.y = bbox.lly;
+-    pdf_dev_transform(&p1, &matrix);
+-
+-    p2.x = bbox.urx;
+-    p2.y = bbox.lly;
+-    pdf_dev_transform(&p2, &matrix);
+-
+-    p3.x = bbox.urx;
+-    p3.y = bbox.ury;
+-    pdf_dev_transform(&p3, &matrix);
+-
+-    p4.x = bbox.llx;
+-    p4.y = bbox.ury;
+-    pdf_dev_transform(&p4, &matrix);
+-
+-    bbox.llx = min4(p1.x, p2.x, p3.x, p4.x);
+-    bbox.lly = min4(p1.y, p2.y, p3.y, p4.y);
+-    bbox.urx = max4(p1.x, p2.x, p3.x, p4.x);
+-    bbox.ury = max4(p1.y, p2.y, p3.y, p4.y);
+-
+-    box->x = 72.27 / 72 * bbox.llx;
+-    box->y = 72.27 / 72 * bbox.lly;
+-    box->wd = 72.27 / 72 * (bbox.urx - bbox.llx);
+-    box->ht = 72.27 / 72 * (bbox.ury - bbox.lly);
+-
+-    return 0;
+-}
+-
+-
+-/* Tectonic customization: use double-precision (see call site for explanation) */
++pdf_get_rect(char *filename, rust_input_handle_t handle, int page_num, int pdf_box, real_rect *box)
++{
++    (void) filename;
++    return apple_image_rect(handle, page_num, pdf_box, box, NULL);
++}
++
+ static int
+-get_image_size_in_inches (rust_input_handle_t handle, double *width, double *height)
+-{
+-    int err = 1;
+-    unsigned int width_pix, height_pix;
+-    double xdensity, ydensity;
+-
+-    if (check_for_jpeg(handle))
+-        err = jpeg_get_bbox(handle, &width_pix, &height_pix, &xdensity, &ydensity);
+-    else if (check_for_bmp(handle))
+-        err = bmp_get_bbox(handle, &width_pix, &height_pix, &xdensity, &ydensity);
+-    else if (check_for_png(handle))
+-        err = png_get_bbox(handle, &width_pix, &height_pix, &xdensity, &ydensity);
+-
+-    if (err) {
+-        *width = -1;
+-        *height = -1;
+-        return err;
+-    }
+-
+-    /* xdvipdfmx defines density = 72 / dpi, so ... */
+-    *width = width_pix * xdensity / 72;
+-    *height = height_pix * ydensity / 72;
++get_image_size_in_inches(rust_input_handle_t handle, double *width, double *height)
++{
++    real_rect bounds;
++    int code = apple_image_rect(handle, 0, 0, &bounds, NULL);
++    if (code) { *width = *height = -1; return code; }
++    *width = bounds.wd / 72.27;
++    *height = bounds.ht / 72.27;
+     return 0;
+ }
+ 
+--- a/crates/engine_xetex/xetex/xetex-xetex0.c
++++ b/crates/engine_xetex/xetex/xetex-xetex0.c
+@@ -5155,6 +5155,8 @@
+ void
+ get_next(void)
+ {
++    extern int floe_tex_checkpoint(void);
++    if (floe_tex_checkpoint()) _tt_abort("Typesetting cancelled or document time limit reached");
+     int32_t k;
+     int32_t t;
+     unsigned char /*max_char_code */ cat;
+--- a/crates/engine_xetex/xetex/xetex-xetexd.h
++++ b/crates/engine_xetex/xetex/xetex-xetexd.h
+@@ -24,7 +24,7 @@
+ /* include this here to avoid conflict between clang's emmintrin.h and
+  * texmfmem.h. Should be removed once a fixed clang is widely available
+  * http://llvm.org/bugs/show_bug.cgi?id=14964 */
+-#include <ApplicationServices/ApplicationServices.h>
++#include <CoreText/CoreText.h>
+ #endif
+ 
+ #define odd(x) ((x) & 1)
+--- a/crates/geturl/src/reqwest.rs
++++ b/crates/geturl/src/reqwest.rs
+@@ -3,28 +3,62 @@
+ 
+ //! A URL-get backend based on the `reqwest` crate.
+ 
++#[path = "resource_budget.rs"]
++mod resource_budget;
+ use reqwest::{
+-    blocking::{Client, Response},
++    blocking::{Client, Response as HttpResponse},
+     header::{HeaderMap, RANGE},
+     redirect::Policy,
+     StatusCode, Url,
+ };
++use resource_budget::Ticket;
++pub use resource_budget::{ResourceMetrics, ResourceScope};
++use std::{
++    io::{self, Read},
++    time::Duration,
++};
+ use tectonic_errors::{anyhow::bail, Result};
+ 
+ use crate::{GetUrlBackend, RangeReader};
+ 
+ const MAX_HTTP_REDIRECTS_ALLOWED: usize = 10;
++
++/// A real response body, bounded and cancellable at each read/dispatch boundary.
++#[derive(Debug)]
++pub struct ResourceResponse {
++    inner: HttpResponse,
++    ticket: Ticket,
++}
++impl Read for ResourceResponse {
++    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
++        self.ticket.check()?;
++        let result = self.inner.read(buffer);
++        if let Ok(count) = &result {
++            self.ticket.received(*count);
++        }
++        self.ticket.check()?;
++        result
++    }
++}
+ 
+ /// URL-get backend implemented using the `reqwest` crate.
+ #[derive(Debug, Default)]
+ pub struct ReqwestBackend {}
+ 
+ impl GetUrlBackend for ReqwestBackend {
+-    type Response = Response;
++    type Response = ResourceResponse;
+     type RangeReader = ReqwestRangeReader;
+ 
+-    fn get_url(&mut self, url: &str) -> Result<Response> {
+-        let res = Client::new().get(url).send()?;
++    fn get_url(&mut self, url: &str) -> Result<ResourceResponse> {
++        let client = Client::builder()
++            .https_only(true)
++            .connect_timeout(Duration::from_secs(5))
++            .timeout(Duration::from_secs(60))
++            .build()?;
++        let ticket = Ticket::begin()?;
++        ticket.dispatch();
++        let res = client.get(url).timeout(ticket.timeout()).send()?;
++        ticket.check()?;
+         if !res.status().is_success() {
+             bail!(
+                 "unexpected HTTP response code {} for URL {}",
+@@ -32,7 +66,7 @@
+                 url
+             );
+         }
+-        Ok(res)
++        Ok(ResourceResponse { inner: res, ticket })
+     }
+ 
+     fn resolve_url(&mut self, url: &str) -> Result<String> {
+@@ -75,11 +109,16 @@
+             }
+         });
+ 
+-        let res = Client::builder()
++        let client = Client::builder()
++            .https_only(true)
++            .connect_timeout(Duration::from_secs(5))
++            .timeout(Duration::from_secs(60))
+             .redirect(redirect_policy)
+-            .build()?
+-            .head(url)
+-            .send()?;
++            .build()?;
++        let ticket = Ticket::begin()?;
++        ticket.dispatch();
++        let res = client.head(url).timeout(ticket.timeout()).send()?;
++        ticket.check()?;
+ 
+         if !(res.status().is_success()
+             || res.status() == StatusCode::FOUND
+@@ -114,22 +153,40 @@
+     fn new(url: &str) -> ReqwestRangeReader {
+         ReqwestRangeReader {
+             url: url.to_owned(),
+-            client: Client::new(),
++            client: Client::builder()
++                .https_only(true)
++                .connect_timeout(Duration::from_secs(5))
++                .timeout(Duration::from_secs(60))
++                .build()
++                .expect("fixed resource HTTP configuration"),
+         }
+     }
+ }
+ 
+ impl RangeReader for ReqwestRangeReader {
+-    type Response = Response;
+-
+-    fn read_range(&mut self, offset: u64, length: usize) -> Result<Response> {
+-        let end_inclusive = offset + length as u64 - 1;
++    type Response = ResourceResponse;
++
++    fn read_range(&mut self, offset: u64, length: usize) -> Result<ResourceResponse> {
++        if length == 0 {
++            bail!("Empty resource range request")
++        }
++        let end_inclusive = offset
++            .checked_add(length as u64 - 1)
++            .ok_or_else(|| tectonic_errors::Error::msg("Resource range overflow"))?;
+         let header_val = format!("bytes={offset}-{end_inclusive}").parse()?;
+ 
+         let mut headers = HeaderMap::new();
+         headers.insert(RANGE, header_val);
+ 
+-        let res = self.client.get(&self.url).headers(headers).send()?;
++        let ticket = Ticket::begin()?;
++        ticket.dispatch();
++        let res = self
++            .client
++            .get(&self.url)
++            .headers(headers)
++            .timeout(ticket.timeout())
++            .send()?;
++        ticket.check()?;
+ 
+         if res.status() != StatusCode::PARTIAL_CONTENT {
+             bail!(
+@@ -139,6 +196,6 @@
+             );
+         }
+ 
+-        Ok(res)
+-    }
+-}
++        Ok(ResourceResponse { inner: res, ticket })
++    }
++}
+--- /dev/null
++++ b/crates/geturl/src/resource_budget.rs
+@@ -0,0 +1,205 @@
++// Copyright 2026 the Floe Project. Licensed under the MIT License.
++//! One bounded native preparation operation, shared with scoped prefetch workers.
++use std::{
++    collections::BTreeMap,
++    io,
++    sync::{Arc, Mutex, OnceLock},
++    time::{Duration, Instant},
++};
++use tectonic_errors::{prelude::*, Result};
++
++#[derive(Default, Debug)]
++struct Ledger {
++    completed_ms: u64,
++    received_bytes: u64,
++    requests: u64,
++    active: BTreeMap<u64, Instant>,
++}
++#[derive(Debug)]
++struct Budget {
++    request_ms: u64,
++    total_ms: u64,
++    cancelled: fn() -> bool,
++    started: fn(),
++    ledger: Mutex<Ledger>,
++}
++static CURRENT: OnceLock<Mutex<Option<Arc<Budget>>>> = OnceLock::new();
++fn current() -> &'static Mutex<Option<Arc<Budget>>> {
++    CURRENT.get_or_init(|| Mutex::new(None))
++}
++fn elapsed(start: Instant) -> u64 {
++    start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
++}
++fn spent(ledger: &Ledger) -> u64 {
++    ledger
++        .active
++        .values()
++        .fold(ledger.completed_ms, |sum, start| {
++            sum.saturating_add(elapsed(*start))
++        })
++}
++impl Budget {
++    fn check(&self) -> io::Result<u64> {
++        if (self.cancelled)() {
++            return Err(io::Error::new(
++                io::ErrorKind::ConnectionAborted,
++                "Native resource request cancelled",
++            ));
++        }
++        let ledger = self
++            .ledger
++            .lock()
++            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Resource budget unavailable"))?;
++        let remaining = self.total_ms.saturating_sub(spent(&ledger));
++        if remaining == 0 {
++            return Err(io::Error::new(
++                io::ErrorKind::TimedOut,
++                "Native cumulative resource budget exhausted",
++            ));
++        }
++        Ok(remaining)
++    }
++}
++
++/// Observed resource-download counters for the current native operation.
++#[derive(Clone, Debug)]
++pub struct ResourceMetrics {
++    /// Maximum duration allowed for an individual HTTP resource request.
++    pub request_timeout_seconds: u64,
++    /// Cumulative duration allowed across all scoped HTTP resource requests.
++    pub total_timeout_seconds: u64,
++    /// Number of resource requests started by this operation.
++    pub request_count: u64,
++    /// Number of response-body bytes actually received by this operation.
++    pub received_bytes: u64,
++    /// Elapsed milliseconds charged to this operation's resource budget.
++    pub elapsed_milliseconds: u64,
++}
++/// The caller serializes native TeX jobs and keeps this guard alive until all
++/// scoped resource workers/response readers have joined. No environment policy.
++pub struct ResourceScope {
++    budget: Arc<Budget>,
++}
++impl ResourceScope {
++    /// Install the operation's bounded request budget and cancellation hooks.
++    ///
++    /// The caller must serialize native operations and retain the guard until
++    /// every scoped request and response reader has joined.
++    pub fn install(
++        request_seconds: u64,
++        total_seconds: u64,
++        cancelled: fn() -> bool,
++        started: fn(),
++    ) -> Result<Self> {
++        let request = request_seconds.clamp(1, 120);
++        let total = total_seconds.clamp(request, 1200);
++        let budget = Arc::new(Budget {
++            request_ms: request * 1000,
++            total_ms: total * 1000,
++            cancelled,
++            started,
++            ledger: Mutex::new(Ledger::default()),
++        });
++        let mut slot = current()
++            .lock()
++            .map_err(|_| tectonic_errors::Error::msg("Resource scope unavailable"))?;
++        if slot.is_some() {
++            bail!("Another native resource operation still owns the HTTP budget")
++        }
++        *slot = Some(budget.clone());
++        Ok(Self { budget })
++    }
++    /// Snapshot the actual counters charged to this resource scope.
++    pub fn metrics(&self) -> ResourceMetrics {
++        let ledger = self.budget.ledger.lock().unwrap_or_else(|e| e.into_inner());
++        ResourceMetrics {
++            request_timeout_seconds: self.budget.request_ms / 1000,
++            total_timeout_seconds: self.budget.total_ms / 1000,
++            request_count: ledger.requests,
++            received_bytes: ledger.received_bytes,
++            elapsed_milliseconds: spent(&ledger),
++        }
++    }
++}
++impl Drop for ResourceScope {
++    fn drop(&mut self) {
++        let mut slot = current().lock().unwrap_or_else(|e| e.into_inner());
++        if slot
++            .as_ref()
++            .map(|b| Arc::ptr_eq(b, &self.budget))
++            .unwrap_or(false)
++        {
++            *slot = None;
++        }
++    }
++}
++
++#[derive(Debug)]
++pub(super) struct Ticket {
++    budget: Option<Arc<Budget>>,
++    id: u64,
++    timeout: Duration,
++}
++impl Ticket {
++    pub fn begin() -> io::Result<Self> {
++        let budget = current()
++            .lock()
++            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Resource scope unavailable"))?
++            .clone();
++        if let Some(budget) = budget {
++            let remaining = budget.check()?;
++            let mut ledger = budget
++                .ledger
++                .lock()
++                .map_err(|_| io::Error::new(io::ErrorKind::Other, "Resource ledger unavailable"))?;
++            ledger.requests = ledger.requests.checked_add(1).ok_or_else(|| {
++                io::Error::new(io::ErrorKind::Other, "Resource request counter overflow")
++            })?;
++            let id = ledger.requests;
++            ledger.active.insert(id, Instant::now());
++            drop(ledger);
++            let timeout = Duration::from_millis(remaining.min(budget.request_ms).max(1));
++            Ok(Self {
++                budget: Some(budget),
++                id,
++                timeout,
++            })
++        } else {
++            Ok(Self {
++                budget: None,
++                id: 0,
++                timeout: Duration::from_secs(60),
++            })
++        }
++    }
++    pub fn timeout(&self) -> Duration {
++        self.timeout
++    }
++    pub fn dispatch(&self) {
++        if let Some(budget) = &self.budget {
++            (budget.started)();
++        }
++    }
++    pub fn check(&self) -> io::Result<()> {
++        if let Some(budget) = &self.budget {
++            budget.check()?;
++        }
++        Ok(())
++    }
++    pub fn received(&self, count: usize) {
++        if let Some(budget) = &self.budget {
++            let mut ledger = budget.ledger.lock().unwrap_or_else(|e| e.into_inner());
++            ledger.received_bytes = ledger.received_bytes.saturating_add(count as u64);
++        }
++    }
++}
++impl Drop for Ticket {
++    fn drop(&mut self) {
++        if let Some(budget) = &self.budget {
++            let mut ledger = budget.ledger.lock().unwrap_or_else(|e| e.into_inner());
++            if let Some(start) = ledger.active.remove(&self.id) {
++                ledger.completed_ms = ledger.completed_ms.saturating_add(elapsed(start));
++            }
++        }
++    }
++}
+--- a/crates/io_base/src/filesystem.rs
++++ b/crates/io_base/src/filesystem.rs
+@@ -115,8 +115,27 @@
+             return Err(TectonicIoError::PathForbidden(path.to_owned()).into());
+         }
+ 
+-        let mut combined = PathBuf::from(&self.root);
+-        combined.push(path);
++        // Floe: every document read is confined, including absolute probes and symlinks.
++        let root = self.root.canonicalize()?;
++        let joined = root.join(path);
++        let mut combined = PathBuf::new();
++        for component in joined.components() {
++            match component {
++                std::path::Component::ParentDir => { combined.pop(); }
++                std::path::Component::CurDir => {}
++                other => combined.push(other.as_os_str()),
++            }
++        }
++        if !combined.starts_with(&root) {
++            return Err(TectonicIoError::PathForbidden(path.to_owned()).into());
++        }
++        let mut ancestor = combined.as_path();
++        while !ancestor.exists() {
++            ancestor = ancestor.parent().ok_or_else(|| std::io::Error::other("Invalid document path"))?;
++        }
++        if !ancestor.canonicalize()?.starts_with(&root) {
++            return Err(TectonicIoError::PathForbidden(path.to_owned()).into());
++        }
+         Ok(combined)
+     }
+ }
+--- a/crates/mac_core/build.rs
++++ b/crates/mac_core/build.rs
+@@ -3,13 +3,13 @@
+ use tectonic_cfg_support::target_cfg;
+ 
+ fn main() {
+-    let is_mac_os = target_cfg!(target_os = "macos");
++    let is_mac_os = (target_cfg!(target_os = "macos") || target_cfg!(target_os = "ios"));
+ 
+     if is_mac_os {
+         println!("cargo:rustc-link-lib=framework=Foundation");
+         println!("cargo:rustc-link-lib=framework=CoreFoundation");
+         println!("cargo:rustc-link-lib=framework=CoreGraphics");
+         println!("cargo:rustc-link-lib=framework=CoreText");
+-        println!("cargo:rustc-link-lib=framework=AppKit");
++        if target_cfg!(target_os = "macos") { println!("cargo:rustc-link-lib=framework=AppKit"); }
+     }
+ }
+--- a/crates/mac_core/src/lib.rs
++++ b/crates/mac_core/src/lib.rs
+@@ -3,7 +3,7 @@
+ //! This currently includes only Foundation and CoreText, as those are the libraries needed by
+ //! Tectonic.
+ 
+-#![cfg(target_os = "macos")]
++#![cfg(any(target_os = "macos", target_os = "ios"))]
+ 
+ use std::mem::ManuallyDrop;
+ use std::ptr::NonNull;
+--- a/crates/xdv/src/lib.rs
++++ b/crates/xdv/src/lib.rs
+@@ -137,6 +137,34 @@
+     #[allow(unused)]
+     fn handle_special(&mut self, x: i32, y: i32, contents: &[u8]) -> Result<(), Self::Error> {
+         Ok(())
++    }
++
++    /// Define a traditional TeX font. Scale/design are DVI scaled points.
++    #[allow(unused)]
++    fn handle_define_font(
++        &mut self,
++        name: &str,
++        area: &str,
++        font_num: i32,
++        checksum: u32,
++        scale: u32,
++        design: u32,
++    ) -> Result<(), Self::Error> {
++        Ok(())
++    }
++
++    /// Draw one traditional character at the physical DVI baseline. Return the
++    /// exact TFM advance in scaled points. PUT consumes the glyph but ignores
++    /// its returned advance. Existing consumers retain their char-run events.
++    #[allow(unused)]
++    fn handle_character(
++        &mut self,
++        font_num: i32,
++        character: i32,
++        x: i32,
++        y: i32,
++    ) -> Result<i32, Self::Error> {
++        Ok(0)
+     }
+ 
+     /// Handle a sequence of characters without intervening commands
+@@ -540,6 +568,10 @@
+                     self.do_set_char(oc, &mut cursor)
+                 }
+ 
++                oc if oc >= Opcode::PutChar1 as u8 && oc <= Opcode::PutChar4 as u8 => {
++                    self.do_put_char(oc, &mut cursor)
++                }
++
+                 oc if oc == Opcode::SetGlyphs as u8 => self.do_set_glyphs(oc, &mut cursor),
+ 
+                 oc if oc == Opcode::SetTextAndGlyphs as u8 => {
+@@ -605,7 +637,7 @@
+ 
+         cursor.assert_u32(25_400_000)?; // dimensions unit numerator
+         cursor.assert_u32(473_628_672)?; // dimensions unit denominator
+-        cursor.get_u32()?; // 'mag' factor
++        cursor.assert_u32(1000)?; // non-default magnification needs an explicit transform
+         let n_comment = cursor.get_u8()?;
+         self.events
+             .handle_header(self.filetype, cursor.get_slice(n_comment as usize)?)?;
+@@ -623,26 +655,29 @@
+             return Err(XdvError::IllegalOpcode(opcode, cursor.global_offset()).into_internal());
+         }
+ 
+-        let _font_num = cursor.get_compact_i32_smpos(opcode - Opcode::DefineFont1 as u8)?;
+-        let _checksum = cursor.get_u32()?;
+-        let _scale_factor = cursor.get_u32()?;
+-        let _design_size = cursor.get_u32()?;
++        let font_num = cursor.get_compact_i32_smpos(opcode - Opcode::DefineFont1 as u8)?;
++        let checksum = cursor.get_u32()?;
++        let scale_factor = cursor.get_u32()?;
++        let design_size = cursor.get_u32()?;
+         let area_len = cursor.get_u8()?;
+         let name_len = cursor.get_u8()?;
+ 
+-        // TODO: figure out what to do with these. In Tectonic's context,
+-        // non-"native" font definitions are a bad sign, since they correspond
+-        // to fonts that we wouldn't be able to express in HTML. But note that
+-        // this crate should support generic XDV decoding, not necessarily
+-        // targeting HTML, as best it can.
+-
+-        use std::str::from_utf8;
+-        let _area_str = from_utf8(cursor.get_slice(area_len as usize)?)
+-            .unwrap()
++        let offset = cursor.global_offset();
++        let area = std::str::from_utf8(cursor.get_slice(area_len as usize)?)
++            .map_err(|_| XdvError::FromUTF8(offset).into_internal())?
+             .to_owned();
+-        let _name_str = from_utf8(cursor.get_slice(name_len as usize)?)
+-            .unwrap()
++        let offset = cursor.global_offset();
++        let name = std::str::from_utf8(cursor.get_slice(name_len as usize)?)
++            .map_err(|_| XdvError::FromUTF8(offset).into_internal())?
+             .to_owned();
++        self.events.handle_define_font(
++            &name,
++            &area,
++            font_num,
++            checksum,
++            scale_factor,
++            design_size,
++        )?;
+         Ok(())
+     }
+ 
+@@ -658,6 +693,9 @@
+         let font_num = cursor.get_i32()?;
+         let size = cursor.get_i32()?; // fixed-point
+         let flags = cursor.get_u16()?;
++        if flags & !0x7200 != 0 {
++            return Err(XdvError::Malformed(cursor.global_offset()).into_internal());
++        }
+ 
+         let name_len = cursor.get_u8()?;
+         let offset = cursor.global_offset();
+@@ -748,6 +786,9 @@
+             return Err(XdvError::IllegalOpcode(opcode, cursor.global_offset()).into_internal());
+         }
+ 
++        if self.stack.len() >= 4096 {
++            return Err(XdvError::Malformed(cursor.global_offset()).into_internal());
++        }
+         let dup = self.stack.last().unwrap().clone();
+         self.stack.push(dup);
+         Ok(())
+@@ -933,6 +974,7 @@
+         }
+ 
+         let char_num = opcode - Opcode::SetCharNumber0 as u8;
++        self.physical_character(i32::from(char_num), true, cursor.global_offset())?;
+         self.cur_char_run.push(i32::from(char_num));
+         Ok(())
+     }
+@@ -944,7 +986,35 @@
+         }
+ 
+         let char_num = cursor.get_compact_i32_smpos(opcode - Opcode::SetChar1 as u8)?;
++        self.physical_character(char_num, true, cursor.global_offset())?;
+         self.cur_char_run.push(char_num);
++        Ok(())
++    }
++
++    fn do_put_char(&mut self, opcode: u8, cursor: &mut Cursor<T>) -> InternalResult<(), T::Error> {
++        if self.state != ParserState::InPage {
++            return Err(XdvError::IllegalOpcode(opcode, cursor.global_offset()).into_internal());
++        }
++        let character = cursor.get_compact_i32_smpos(opcode - Opcode::PutChar1 as u8)?;
++        self.physical_character(character, false, cursor.global_offset())
++    }
++
++    fn physical_character(
++        &mut self,
++        character: i32,
++        advance: bool,
++        offset: u64,
++    ) -> InternalResult<(), T::Error> {
++        let state = self.stack.last_mut().unwrap();
++        let width = self
++            .events
++            .handle_character(self.cur_font_num, character, state.h, state.v)?;
++        if advance {
++            state.h = state
++                .h
++                .checked_add(width)
++                .ok_or_else(|| XdvError::Malformed(offset).into_internal())?;
++        }
+         Ok(())
+     }
+ 
+@@ -1072,7 +1142,7 @@
+         cursor.get_u32()?; // last_bop
+         cursor.assert_u32(25_400_000)?; // dimensions unit numerator
+         cursor.assert_u32(473_628_672)?; // dimensions unit denominator
+-        cursor.get_u32()?; // 'mag' factor
++        cursor.assert_u32(1000)?; // non-default magnification needs an explicit transform
+         cursor.get_u32()?; // largest height+depth of tallest page
+         cursor.get_u32()?; // largest width of widest page
+         cursor.get_u16()?; // maximum stack depth
+@@ -1357,6 +1427,8 @@
+     SetChar1 = 128,
+     SetChar4 = 131,
+     SetRule = 132,
++    PutChar1 = 133,
++    PutChar4 = 136,
+     PutRule = 137,
+     Noop = 138,
+     BeginningOfPage = 139,
+--- a/crates/xetex_layout/Cargo.toml
++++ b/crates/xetex_layout/Cargo.toml
+@@ -34,10 +34,10 @@
+ cc = "^1.0.66"
+ tectonic_cfg_support = { path = "../cfg_support", version = ">=0.1.3,<1" }
+ 
+-[target.'cfg(not(target_os = "macos"))'.dependencies]
++[target.'cfg(not(any(target_os = "macos", target_os = "ios")))'.dependencies]
+ tectonic_bridge_fontconfig = { path = "../bridge_fontconfig", version = ">=0.1.0,<1" }
+ 
+-[target.'cfg(target_os = "macos")'.dependencies]
++[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+ tectonic_mac_core = { path = "../mac_core", version = ">=0.1.3,<1" }
+ 
+ [features]
+--- a/crates/xetex_layout/layout/tectonic_xetex_layout.h
++++ b/crates/xetex_layout/layout/tectonic_xetex_layout.h
+@@ -8,7 +8,7 @@
+ #include "harfbuzz/hb.h"
+ #include "harfbuzz/hb-ft.h"
+ #ifdef XETEX_MAC
+-#include <ApplicationServices/ApplicationServices.h>
++#include <CoreText/CoreText.h>
+ #else
+ #include <fontconfig/fontconfig.h>
+ #endif
+--- a/crates/xetex_layout/src/c_api.rs
++++ b/crates/xetex_layout/src/c_api.rs
+@@ -2,7 +2,7 @@
+ use crate::font::Font;
+ use std::collections::BTreeMap;
+ use std::sync::Mutex;
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ use tectonic_bridge_fontconfig as fc;
+ 
+ mod engine;
+@@ -26,10 +26,10 @@
+     pub y_max: f32,
+ }
+ 
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ pub type Fixed = i32;
+ /// cbindgen:ignore
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub type Fixed = u32;
+ pub type OTTag = u32;
+ pub type GlyphID = u16;
+@@ -37,15 +37,15 @@
+ pub type XeTeXFont = *mut Font;
+ /// cbindgen:ignore
+ pub type XeTeXLayoutEngine = *mut LayoutEngine;
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ pub(crate) type RawPlatformFontRef = *mut fc::sys::FcPattern;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub(crate) type RawPlatformFontRef = tectonic_mac_core::sys::CTFontDescriptorRef;
+ /// cbindgen:ignore
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ pub(crate) type PlatformFontRef = fc::Pattern;
+ /// cbindgen:ignore
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub(crate) type PlatformFontRef = tectonic_mac_core::CTFontDescriptor;
+ 
+ /// key is combined value representing `(font_id, glyph)`
+--- a/crates/xetex_layout/src/c_api/font.rs
++++ b/crates/xetex_layout/src/c_api/font.rs
+@@ -5,7 +5,7 @@
+ use std::ptr;
+ use tectonic_bridge_freetype2 as ft;
+ use tectonic_bridge_harfbuzz as hb;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ use tectonic_mac_core::{sys::CTFontRef, CTFont, CoreType};
+ 
+ #[no_mangle]
+@@ -213,7 +213,7 @@
+     rval as libc::c_uint
+ }
+ 
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ #[no_mangle]
+ pub unsafe extern "C" fn getFileNameFromCTFont(
+     ct_font: CTFontRef,
+--- a/crates/xetex_layout/src/c_api/manager.rs
++++ b/crates/xetex_layout/src/c_api/manager.rs
+@@ -36,14 +36,14 @@
+         Some(slice::from_raw_parts_mut(var.cast(), len))
+     };
+ 
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     return FontManager::with_font_manager(|mgr| {
+         use tectonic_mac_core::CoreType;
+         mgr.find_font(name, var, size)
+             .map(tectonic_mac_core::CTFontDescriptor::into_type_ref)
+             .unwrap_or(ptr::null_mut())
+     });
+-    #[cfg(not(target_os = "macos"))]
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+     FontManager::with_font_manager(|mgr| {
+         mgr.find_font(name, var, size)
+             .map(|pat| pat.as_ref().as_ptr())
+--- a/crates/xetex_layout/src/font.rs
++++ b/crates/xetex_layout/src/font.rs
+@@ -4,14 +4,13 @@
+ use crate::utils::fix_to_d;
+ use std::ffi::{CStr, CString};
+ use std::path::Path;
+-use std::str::FromStr;
+ use std::sync::{Arc, Mutex, OnceLock};
+ use tectonic_bridge_core::{CoreBridgeState, FileFormat};
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ use tectonic_bridge_fontconfig as fc;
+ use tectonic_bridge_freetype2 as ft;
+ use tectonic_bridge_harfbuzz as hb;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ use tectonic_mac_core::{
+     CFArray, CFDictionary, CFType, CFUrl, CTFont, CTFontDescriptor, FontAttribute, FontNameKey,
+ };
+@@ -147,7 +146,7 @@
+ 
+ enum FontKind {
+     FtFont,
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     Mac(CTFontDescriptor, Option<CTFont>),
+ }
+ 
+@@ -175,7 +174,7 @@
+ }
+ 
+ impl Font {
+-    #[cfg(not(target_os = "macos"))]
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+     pub(crate) fn new(font: PlatformFontRef, point_size: f32) -> Result<Font, ()> {
+         let path = font
+             .as_ref()
+@@ -187,7 +186,7 @@
+         Font::new_path_index(path, index as usize, point_size)
+     }
+ 
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     pub(crate) fn new(descriptor: PlatformFontRef, point_size: f32) -> Result<Font, ()> {
+         let mut out = Font {
+             units_per_em: 0,
+@@ -235,7 +234,7 @@
+     }
+ 
+     fn initialize_ft(&mut self, pathname: &str, index: usize) -> Result<(), ()> {
+-        CoreBridgeState::with_global_state(|engine| {
++        let resolved_name = CoreBridgeState::with_global_state(|engine| {
+             let handle = engine
+                 .input_open(pathname, FileFormat::OpenType, false)
+                 .or_else(|| engine.input_open(pathname, FileFormat::TrueType, false))
+@@ -244,6 +243,9 @@
+                 return Err(());
+             };
+ 
++            // Preserve the exact resource that CoreBridge opened (including an
++            // added font suffix), not the unresolved request passed by TeX.
++            let resolved_name = engine.get_input(handle).name().to_owned();
+             let sz = engine.input_get_size(handle);
+             let mut backing_data = vec![0; sz];
+             engine
+@@ -281,10 +283,10 @@
+                     engine.input_close(afm_handle);
+                 }
+             }
+-            Ok(())
++            Ok(resolved_name)
+         })?;
+ 
+-        self.filename = CString::from_str(pathname).unwrap();
++        self.filename = CString::new(resolved_name).map_err(|_| ())?;
+         self.index = index as u32;
+         let upe = { self.ft_face().units_per_em() };
+         self.units_per_em = upe;
+@@ -347,7 +349,7 @@
+         Ok(())
+     }
+ 
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     fn initialize_mac(&mut self) -> Result<(), ()> {
+         let FontKind::Mac(descriptor, font_ref) = &mut self.kind else {
+             return Err(());
+@@ -556,7 +558,7 @@
+     }
+ }
+ 
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ pub(crate) fn get_file_name_from_ct_font(ct_font: &CTFont, index: &mut u32) -> Option<CString> {
+     let url = ct_font
+         .attr(FontAttribute::URL)
+--- a/crates/xetex_layout/src/manager.rs
++++ b/crates/xetex_layout/src/manager.rs
+@@ -10,9 +10,9 @@
+ use std::ffi::{CStr, CString};
+ use tectonic_bridge_freetype2 as ft;
+ 
+-#[cfg(not(target_os = "macos"))]
++#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+ mod fc;
+-#[cfg(target_os = "macos")]
++#[cfg(any(target_os = "macos", target_os = "ios"))]
+ mod mac;
+ 
+ thread_local! {
+@@ -313,11 +313,11 @@
+     fn init_font_manager() {
+         let backend: Box<dyn FontManagerBackend>;
+ 
+-        #[cfg(target_os = "macos")]
++        #[cfg(any(target_os = "macos", target_os = "ios"))]
+         {
+             backend = Box::new(mac::MacBackend::new());
+         }
+-        #[cfg(not(target_os = "macos"))]
++        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+         {
+             backend = Box::new(fc::FcBackend::new());
+         }
+@@ -778,7 +778,7 @@
+         }
+     }
+ 
+-    #[cfg_attr(target_os = "macos", allow(unused))]
++    #[cfg_attr(any(target_os = "macos", target_os = "ios"), allow(unused))]
+     fn prepend_to_list<T: Into<CString> + AsRef<CStr>>(list: &mut Vec<CString>, str: T) {
+         *list = list.drain(..).filter(|s| **s != *str.as_ref()).collect();
+         list.insert(0, str.into());
+--- a/crates/xetex_layout/src/utils.rs
++++ b/crates/xetex_layout/src/utils.rs
+@@ -10,13 +10,13 @@
+ }
+ 
+ pub fn raw_to_rs(font: RawPlatformFontRef) -> Option<PlatformFontRef> {
+-    #[cfg(target_os = "macos")]
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
+     let out = {
+         use tectonic_mac_core::CoreType;
+         // SAFETY: Pointer must be from us, and is thus a borrowed ref
+         NonNull::new(font.cast_mut()).map(|ptr| unsafe { PlatformFontRef::new_borrowed(ptr) })
+     };
+-    #[cfg(not(target_os = "macos"))]
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+     // SAFETY: Pointer must be from us, and is thus a borrowed ref
+     let out = { unsafe { NonNull::new(font).map(|p| PlatformFontRef::from_raw_borrowed(p)) } };
+     out
+--- a/src/driver.rs
++++ b/src/driver.rs
+@@ -24,8 +24,10 @@
+     status::StatusBackend,
+     tt_error, tt_note, tt_warning,
+     unstable_opts::UnstableOptions,
+-    BibtexEngine, Spx2HtmlEngine, TexEngine, TexOutcome, XdvipdfmxEngine,
++    BibtexEngine, Spx2HtmlEngine, TexEngine, TexOutcome,
+ };
++#[cfg(feature = "pdf-backend")]
++use crate::engines::XdvipdfmxEngine;
+ use anyhow::Context;
+ use byte_unit::{Byte, UnitType};
+ use quick_xml::{events::Event, NsReader};
+@@ -41,6 +43,7 @@
+     time::{Duration, SystemTime},
+ };
+ use tectonic_bridge_core::{CoreBridgeLauncher, DriverHooks, SecuritySettings, SystemRequestError};
++use tectonic_errors::prelude::bail;
+ use tectonic_bundles::Bundle;
+ use tectonic_engine_spx2html::AssetSpecification;
+ use tectonic_errors::{Error, Result};
+@@ -277,150 +280,8 @@
+         tool: &ExternalToolPass,
+         status: &mut dyn StatusBackend,
+     ) -> Result<()> {
+-        status.note_highlighted("Running external tool ", &tool.argv[0], " ...");
+-
+-        // Process the command arguments. Filenames appearing in the arguments
+-        // are treated as "requirements" that will be placed in the tool's
+-        // working directory.
+-
+-        let mut cmd = Command::new(&tool.argv[0]);
+-        let mut read_files = tool.extra_requires.clone();
+-
+-        {
+-            let mem_files = &*self.mem.files.borrow();
+-
+-            for arg in &tool.argv[1..] {
+-                cmd.arg(arg);
+-
+-                if mem_files.contains_key(arg) {
+-                    read_files.insert(arg.to_owned());
+-                }
+-            }
+-        }
+-
+-        // Now that we're validated, write those files to disk so that the tool
+-        // can actually use them.
+-
+-        let tempdir = tempfile::Builder::new()
+-            .tempdir()
+-            .context("can't create temporary directory for external tool")?;
+-
+-        {
+-            for name in &read_files {
+-                // If a relative parent is found in the file to open, this fn
+-                // does not properly handle that. Thus, throw an error.
+-                if name.contains("../") {
+-                    return Err(Error::msg(format!(
+-                        "relative parent paths are not supported for the \
+-                        external tool. Got path `{}`.",
+-                        name,
+-                    )));
+-                }
+-
+-                let mut ih = ctry!(
+-                    self.input_open_name(name, status).must_exist();
+-                    "can't open path `{}`", name
+-                );
+-
+-                // If the input path is absolute, we don't need to create a
+-                // version in the tempdir, and in fact the current
+-                // implementation below will blow away the input file. However,
+-                // we do want to try to open the input so that it gets
+-                // registered with the I/O tracking system.
+-
+-                let path = Path::new(name);
+-                if path.is_absolute() {
+-                    continue;
+-                }
+-
+-                let tool_path = tempdir.path().join(name);
+-                let tool_parent = tool_path.parent().unwrap();
+-
+-                if tool_parent != tempdir.path() {
+-                    ctry!(
+-                        std::fs::create_dir_all(tool_parent);
+-                        "failed to create sub directory `{}`", tool_parent.display()
+-                    );
+-                }
+-                let mut f = ctry!(
+-                    File::create(&tool_path);
+-                    "failed to create file `{}`", tool_path.display()
+-                );
+-                ctry!(
+-                    std::io::copy(&mut ih, &mut f);
+-                    "failed to write file `{}`", tool_path.display()
+-                );
+-            }
+-        }
+-
+-        // Now we can actually run the command.
+-
+-        let output = cmd.current_dir(tempdir.path()).output()?;
+-
+-        if let Some(0) = output.status.code() {
+-        } else {
+-            tt_error!(
+-                status,
+-                "the external tool exited with an error code; its stdout was:\n"
+-            );
+-            status.dump_error_logs(&output.stdout[..]);
+-            tt_error!(status, "its stderr was:\n");
+-            status.dump_error_logs(&output.stderr[..]);
+-
+-            return if let Some(n) = output.status.code() {
+-                Err(Error::msg(format!(
+-                    "the external tool exited with error code {}",
+-                    n
+-                )))
+-            } else {
+-                Err(Error::msg("the external tool was terminated by a signal"))
+-            };
+-        }
+-
+-        // Search for any files that the tool created, and import them into the
+-        // memory layer.
+-
+-        for entry in std::fs::read_dir(tempdir.path())? {
+-            let entry = entry?;
+-
+-            if !entry.file_type()?.is_file() {
+-                continue;
+-            }
+-
+-            if let Some(basename) = entry.file_name().to_str() {
+-                if !self.mem.files.borrow().contains_key(basename) {
+-                    let path = entry.path();
+-                    let mut data = Vec::new();
+-
+-                    let mut f = ctry!(
+-                        File::open(&path);
+-                        "failed to open tool-created file `{}`", path.display()
+-                    );
+-                    ctry!(
+-                        f.read_to_end(&mut data);
+-                        "failed to read tool-created file `{}`", path.display()
+-                    );
+-
+-                    self.mem.create_entry(basename, data);
+-                    self.events.insert(
+-                        basename.to_owned(),
+-                        FileSummary::new(AccessPattern::Written, InputOrigin::NotInput),
+-                    );
+-                }
+-            }
+-        }
+-
+-        // Mark the input files as having been read, and we're done.
+-
+-        for name in &read_files {
+-            let summ = self.events.get_mut(name).unwrap();
+-            summ.access_pattern = match summ.access_pattern {
+-                AccessPattern::Written => AccessPattern::WrittenThenRead,
+-                c => c, // identity mapping makes sense for remaining options
+-            };
+-        }
+-
+-        Ok(())
++        let _ = status;
++        bail!("The document requires a separately authorized bibliography service: {}", tool.argv.first().map(String::as_str).unwrap_or("unknown"));
+     }
+ 
+     // Get the names of all intermediate files which are generated from
+@@ -1135,7 +996,7 @@
+                     }
+                 };
+ 
+-                filesystem_root.clone_from(&parent);
++                if filesystem_root.as_os_str().is_empty() { filesystem_root.clone_from(&parent); }
+                 let pio: Box<dyn IoProvider> = Box::new(FilesystemPrimaryInputIo::new(&p));
+                 (pio, Some(p), parent)
+             }
+@@ -1641,7 +1502,12 @@
+                 continue;
+             }
+ 
+-            let real_path = root.join(name);
++            // Floe: output names come from the document, not from host authority.
++            let relative = std::path::Path::new(name);
++            if relative.is_absolute() || relative.components().any(|p| matches!(p, std::path::Component::ParentDir)) {
++                bail!("Output path is outside this build");
++            }
++            let real_path = root.join(relative);
+             let byte_len = Byte::from_u128(file.data.len() as u128).unwrap();
+             status.note_highlighted(
+                 "Writing ",
+@@ -1963,6 +1829,12 @@
+         Ok(0)
+     }
+ 
++    #[cfg(not(feature = "pdf-backend"))]
++    fn xdvipdfmx_pass(&mut self, _status: &mut dyn StatusBackend) -> Result<i32> {
++        Err(Error::msg("This native build emits XDV; its PDF is rendered by the Apple backend"))
++    }
++
++    #[cfg(feature = "pdf-backend")]
+     fn xdvipdfmx_pass(&mut self, status: &mut dyn StatusBackend) -> Result<i32> {
+         {
+             status.note_highlighted("Running ", "xdvipdfmx", " ...");
+--- a/src/engines/mod.rs
++++ b/src/engines/mod.rs
+@@ -12,8 +12,12 @@
+ pub mod bibtex;
+ pub mod spx2html;
+ pub mod tex;
++#[cfg(feature = "pdf-backend")]
+ pub mod xdvipdfmx;
+ 
+ pub use self::{
+-    bibtex::BibtexEngine, spx2html::Spx2HtmlEngine, tex::TexEngine, xdvipdfmx::XdvipdfmxEngine,
++    bibtex::BibtexEngine, spx2html::Spx2HtmlEngine, tex::TexEngine,
+ };
++
++#[cfg(feature = "pdf-backend")]
++pub use self::xdvipdfmx::XdvipdfmxEngine;
+--- a/src/io/memory.rs
++++ b/src/io/memory.rs
+@@ -97,6 +97,15 @@
+ 
+ impl Write for MemoryIoItem {
+     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        let end = self.state.position().checked_add(buf.len() as u64)
++            .ok_or_else(|| io::Error::other("Document output limit reached"))?;
++        if end > 64 * 1024 * 1024 {
++            return Err(io::Error::other("Document output file limit reached"));
++        }
++        let stored: usize = self.files.borrow().values().map(|f| f.data.len()).sum();
++        if stored.saturating_add(end as usize) > 256 * 1024 * 1024 {
++            return Err(io::Error::other("Document output memory limit reached"));
++        }
+         self.was_modified = true;
+         self.state.write(buf)
+     }
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -96,6 +96,7 @@
+ pub use crate::engines::bibtex::BibtexEngine;
+ pub use crate::engines::spx2html::Spx2HtmlEngine;
+ pub use crate::engines::tex::{TexEngine, TexOutcome};
++#[cfg(feature = "pdf-backend")]
+ pub use crate::engines::xdvipdfmx::XdvipdfmxEngine;
+ pub use crate::errors::Error;
+ pub use tectonic_errors::Result;

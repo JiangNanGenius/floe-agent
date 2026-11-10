@@ -3,39 +3,57 @@ import Foundation
 import FloeLaTeXCore
 import FloeLaTeXParsing
 
-/// Hosts may supply a fully resolved Linux environment using the existing exec.shell/jobs transport.
-/// Capability discovery comes from that environment; no host interpreter fallback is used.
+/// Native document engines are independent of a task's command environment.
+/// Legacy callers may still supply an environment engine, but it is never an
+/// implicit fallback for this native route.
 public struct LaTeXEngineRouter: LaTeXEngineRunning {
     public let native: any LaTeXEngineRunning
-    public let environment: (any LaTeXEngineRunning)?
-    public init(native: any LaTeXEngineRunning = LaTeXUnconfiguredEngine(),environment: (any LaTeXEngineRunning)? = nil) {self.native=native;self.environment=environment}
-    public func capabilities() async -> [LaTeXEngineCapability] {
-        let local=await native.capabilities()
-        let extra=await environment?.capabilities() ?? []
-        return local+extra
-    }
-    public func run(_ request:LaTeXEngineRequest,progress:@escaping @Sendable (String)->Void) async throws -> LaTeXEngineOutput {
-        var needsBiber=false
-        for file in request.snapshot.manifest.files where file.kind == .source || file.kind == .style {
-            guard let source=try? String(contentsOf:LaTeXPath.child(file.path,root:request.snapshot.sourceRoot),encoding:.utf8) else {continue}
-            let index=LaTeXParser.parse(source)
-            if index.packages.contains("biblatex"),!index.commands.contains(where:{$0.name=="usepackage" && $0.arguments.contains(where:{$0.optional && $0.value.replacingOccurrences(of:" ",with:"").contains("backend=bibtex")})}) {needsBiber=true;break}
+    public init(native: any LaTeXEngineRunning = LaTeXUnconfiguredEngine()) {self.native=native}
+    @available(*,deprecated,message:"Native document typesetting does not fall back to a command environment.")
+    public init(native: any LaTeXEngineRunning = LaTeXUnconfiguredEngine(), environment: (any LaTeXEngineRunning)?) {self.native=native}
+    public func capabilities() async -> [LaTeXEngineCapability] { await native.capabilities() }
+    public func run(_ request: LaTeXEngineRequest, progress: @escaping @Sendable (String) -> Void) async throws -> LaTeXEngineOutput {
+        try LaTeXNativeDocumentSupport.validate(request.snapshot)
+        guard await native.capabilities().contains(where: { $0.engine == request.snapshot.manifest.engine && $0.environmentID == nil }) else {
+            throw LaTeXError.unavailable("此版本未包含所选的原生排版引擎。 / The selected native typesetting engine is unavailable in this build.")
         }
-        if !needsBiber,await native.capabilities().contains(where: { $0.engine == request.snapshot.manifest.engine }) { return try await native.run(request,progress:progress) }
-        guard let environment,await environment.capabilities().contains(where: { $0.engine == request.snapshot.manifest.engine }) else {
-            throw LaTeXError.unavailable(needsBiber ? "This document requires Biber. Prepare Biber in the task's resolved Linux environment, then typeset again.":"The selected engine is unavailable in the current environment.")
-        }
-        if needsBiber,!(await environment.capabilities()).contains(where:{$0.engine==request.snapshot.manifest.engine && $0.bibliography.contains(where:{$0.lowercased()=="biber"})}) {throw LaTeXError.unavailable("Biber is unavailable in the selected environment.")}
-        return try await environment.run(request,progress:progress)
+        return try await native.run(request, progress: progress)
     }
 }
 
-/// Production defaults advertise only configured capabilities. The GPL-bearing
-/// Tectonic native experiment lives in a separate, explicit qualification package.
-public struct LaTeXUnconfiguredEngine:LaTeXEngineRunning {
+public enum LaTeXNativeDocumentSupport {
+    public static func validate(_ snapshot: LaTeXProjectSnapshot,cancelled:@Sendable ()->Bool = {Task.isCancelled}) throws {
+        guard snapshot.manifest.engine == .xeLaTeX else {
+            throw LaTeXError.unavailable("当前原生排版支持 XeLaTeX。请为此原件选择 XeLaTeX。 / Native typesetting currently supports XeLaTeX. Select XeLaTeX for this document.")
+        }
+        for file in snapshot.manifest.files where file.kind == .source || file.kind == .style {
+            if cancelled() {throw CancellationError()}
+            let source = try String(contentsOf: LaTeXPath.child(file.path, root: snapshot.sourceRoot), encoding: .utf8)
+            let index = LaTeXParser.parse(source)
+            let biblatex=index.commands.filter { command in
+                ["usepackage","RequirePackage","RequirePackageWithOptions"].contains(command.name)
+                && command.arguments.contains { argument in
+                    !argument.optional && argument.value.split(separator:",").contains {
+                        $0.trimmingCharacters(in:.whitespacesAndNewlines)=="biblatex"
+                    }
+                }
+            }
+            if biblatex.contains(where:{ command in
+                let backends=command.arguments.filter(\.optional).flatMap {
+                    $0.value.split(separator:",").map {$0.filter{!$0.isWhitespace}.lowercased()}
+                }.filter {$0.hasPrefix("backend=")}
+                return backends != ["backend=bibtex"]
+            }) {
+                throw LaTeXError.unavailable("当前原生文献处理仅支持 BibTeX，尚不支持 Biber 等其他后端。请为此原件选择 BibTeX。 / Native bibliography processing currently supports BibTeX only. Biber and other backends are unavailable; select BibTeX for this document.")
+            }
+        }
+    }
+}
+
+public struct LaTeXUnconfiguredEngine: LaTeXEngineRunning {
     public init() {}
-    public func capabilities() async -> [LaTeXEngineCapability] {[]}
-    public func run(_ request:LaTeXEngineRequest,progress:@escaping @Sendable (String)->Void) async throws -> LaTeXEngineOutput {
-        throw LaTeXError.unavailable("Prepare the LaTeX toolchain in this task's resolved local Linux environment before typesetting.")
+    public func capabilities() async -> [LaTeXEngineCapability] { [] }
+    public func run(_ request: LaTeXEngineRequest, progress: @escaping @Sendable (String) -> Void) async throws -> LaTeXEngineOutput {
+        throw LaTeXError.unavailable("此版本未包含可用的原生排版引擎。 / This build does not include an available native typesetting engine.")
     }
 }

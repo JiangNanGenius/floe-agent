@@ -45894,10 +45894,16 @@ northing meters` + mgrsString;
     return result;
   }
 
+  // FloeAgent/Modules/FloeGISKit/Web/readiness.js
+  var gisEditTools = /* @__PURE__ */ new Set(["Point", "LineString", "Polygon", "modify", "translate"]);
+  function gisEditNotice(tool, layer) {
+    return gisEditTools.has(tool) ? layer ? layer.kind !== "vector" ? t3("\u5F53\u524D\u56FE\u5C42\u4E0D\u662F\u77E2\u91CF\u56FE\u5C42\uFF0C\u65E0\u6CD5\u7F16\u8F91\u51E0\u4F55\u3002", "The selected layer is not a vector layer.") : layer.locked ? t3("\u5F53\u524D\u56FE\u5C42\u5DF2\u9501\u5B9A\uFF0C\u89E3\u9501\u540E\u624D\u80FD\u7F16\u8F91\u3002", "This layer is locked. Unlock it to edit.") : null : t3("\u9009\u62E9\u4E00\u4E2A\u77E2\u91CF\u56FE\u5C42\u540E\u518D\u7ED8\u5236\u6216\u7F16\u8F91\u3002", "Choose a vector layer to draw or edit.") : null;
+  }
+
   // FloeAgent/Modules/FloeGISKit/Web/native.js
   var GIS_TABLE_PAGE_SIZE = 25;
   function gisUI(e2) {
-    return e2.gisUI ??= { mode: "map", tool: "select", multiselect: !1, snapping: !0, fingerDrawing: !1, page: 0, filter: "", sort: "", sortDescending: !1, onlySelected: !1, columns: null, terrainFactor: 1, vertexAction: null, drawing: !1 };
+    return e2.gisUI ??= { mode: "map", tool: "select", multiselect: !1, snapping: !0, fingerDrawing: !1, page: 0, filter: "", sort: "", sortDescending: !1, onlySelected: !1, columns: null, terrainFactor: 1, vertexAction: null, drawing: !1, notice: null, editError: null };
   }
   var textValue = (value, type) => type === "json" || typeof value == "object" ? JSON.stringify(value ?? null) : String(value ?? "");
   function cell(name, type, value, limit) {
@@ -45920,14 +45926,14 @@ northing meters` + mgrsString;
     return { layerID: layer.id, fields, columns, rows: features.slice(start2, start2 + GIS_TABLE_PAGE_SIZE).map((f3) => ({ id: String(f3.id), rawID: f3.id, selected: ids.has(String(f3.id)), cells: columns.map((field2) => cell(field2.name, field2.type, f3.properties[field2.name], 256)) })), total: layer.data.features.length, filteredCount: features.length, page, pageSize: GIS_TABLE_PAGE_SIZE, pageCount, filter: ui.filter, sort: ui.sort, sortDescending: ui.sortDescending, onlySelected: ui.onlySelected };
   }
   function gisNativeSnapshot(e2) {
-    let ui = gisUI(e2), layers = e2.state.layers.map((l4, index2) => ({ id: l4.id, name: l4.name, kind: l4.kind, group: l4.group ?? "", index: index2, visible: l4.visible !== !1, locked: !!l4.locked, opacity: l4.opacity ?? 1, crs: l4.crs, count: l4.kind === "vector" ? l4.data.features.length : l4.kind === "tiles" ? l4.tileCount : void 0, width: l4.width, height: l4.height, bandCount: l4.bands?.length })), source = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), summary = layers.find((l4) => l4.id === source?.id), selectedIDs = new Set((e2.selection?.features ?? []).map(String)), selected = source?.kind === "vector" ? source.data.features.filter((f3) => selectedIDs.has(String(f3.id))) : [], fields = source?.kind === "vector" ? inferFields(source.data.features, source.fields) : [], groups = [...new Set(layers.map((l4) => l4.group))].map((name) => {
+    let ui = gisUI(e2), layers = e2.state.layers.map((l4, index2) => ({ id: l4.id, name: l4.name, kind: l4.kind, group: l4.group ?? "", index: index2, visible: l4.visible !== !1, locked: !!l4.locked, opacity: l4.opacity ?? 1, crs: l4.crs, count: l4.kind === "vector" ? l4.data.features.length : l4.kind === "tiles" ? l4.tileCount : void 0, width: l4.width, height: l4.height, bandCount: l4.bands?.length })), source = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), summary = layers.find((l4) => l4.id === source?.id), selectedIDs = new Set((e2.selection?.features ?? []).map(String)), selected = source?.kind === "vector" ? source.data.features.filter((f3) => selectedIDs.has(String(f3.id))) : [], fields = source?.kind === "vector" ? inferFields(source.data.features, source.fields) : [], notice = ui.editError ?? gisEditNotice(ui.tool, source), groups = [...new Set(layers.map((l4) => l4.group))].map((name) => {
       let members = layers.filter((l4) => l4.group === name);
       return { id: name, name, visible: members.some((l4) => l4.visible), locked: members.every((l4) => l4.locked), layerIDs: members.map((l4) => l4.id) };
     }), table = gisTable(e2), legend = source ? legendEntries(source) : [], terrain = e2.state.layers.find((l4) => l4.id === source?.id && l4.kind === "raster") ?? e2.state.layers.find((l4) => l4.kind === "raster");
     return {
       kind: "gis",
       crs: e2.state.crs,
-      ui: { ...clone2(ui), page: table.page },
+      ui: { ...clone2(ui), page: table.page, notice },
       layers,
       groups,
       selectedLayer: source ? { ...summary, style: styleSnapshot(source.style), fields, legend: legend.slice(0, 20), legendCount: legend.length } : null,
@@ -45948,7 +45954,7 @@ northing meters` + mgrsString;
       return gisUI(e2).mode = a3.mode, gisUI(e2).drawing = !1, gisUI(e2).vertexAction = null, redraw("full"), { mode: a3.mode };
     }), add5("tool", t3("\u9009\u62E9\u5730\u56FE\u5DE5\u5177", "Choose map tool"), [field("tool", t3("\u5DE5\u5177", "Tool"), "select", { options: ["select", "Point", "LineString", "Polygon", "modify", "translate"] })], (a3) => {
       if (!["select", "Point", "LineString", "Polygon", "modify", "translate"].includes(a3.tool)) throw new Error("Unknown map tool");
-      return gisUI(e2).tool = a3.tool, gisUI(e2).vertexAction = null, gisUI(e2).drawing = !1, redraw("full"), { tool: a3.tool };
+      return gisUI(e2).tool = a3.tool, gisUI(e2).editError = null, gisUI(e2).vertexAction = null, gisUI(e2).drawing = !1, redraw("full"), { tool: a3.tool };
     }), add5("options", t3("\u5730\u56FE\u9009\u9879", "Map options"), [field("multiselect", t3("\u591A\u9009", "Multi-select"), "checkbox"), field("snapping", t3("\u6355\u6349", "Snap"), "checkbox"), field("fingerDrawing", t3("\u624B\u6307\u7ED8\u56FE", "Draw with finger"), "checkbox")], (a3) => {
       let ui = gisUI(e2);
       for (let key2 of ["multiselect", "snapping", "fingerDrawing"]) if (key2 in a3) {
@@ -45958,7 +45964,7 @@ northing meters` + mgrsString;
       return redraw("full"), { multiselect: ui.multiselect, snapping: ui.snapping, fingerDrawing: ui.fingerDrawing };
     }), add5("selectLayer", t3("\u9009\u62E9\u56FE\u5C42", "Select layer"), [layerField()], (a3) => {
       let layer = getLayer(e2, a3.layer);
-      return e2.selection = { layer: layer.id, features: [] }, gisUI(e2).page = 0, gisUI(e2).columns = null, gisUI(e2).filter = "", gisUI(e2).sort = "", redraw("full"), { layerID: layer.id };
+      return e2.selection = { layer: layer.id, features: [] }, gisUI(e2).editError = null, gisUI(e2).page = 0, gisUI(e2).columns = null, gisUI(e2).filter = "", gisUI(e2).sort = "", redraw("full"), { layerID: layer.id };
     }), add5("selection", t3("\u9009\u62E9\u5730\u56FE\u8981\u7D20", "Select map features"), [layerField(), field("features", t3("\u8981\u7D20\u7F16\u53F7", "Feature IDs"), "json")], (a3) => {
       if (!Array.isArray(a3.features)) throw new Error("Feature IDs must be an array");
       let previous = e2.selection?.layer, layer = getLayer(e2, a3.layer, "vector"), wanted = new Set(a3.features.map(String));
@@ -107167,6 +107173,20 @@ void main() {
       }
       this.captureView();
     }
+    // A rejected edit command must never stay invisible: name the failure, clear
+    // the transient drawing flag and rebuild the map from the unchanged document
+    // so the canvas and the saved work agree again. The message stays in the
+    // native status bar until the next successful edit or tool change.
+    async editFailure(error2) {
+      let e2 = this.e, message = error2?.message ?? String(error2);
+      this.drawing = !1, e2.nativeChrome && e2.perform("gis.ui.drawing", { active: !1 }).catch(() => {
+      }), await this.render().catch(() => {
+      }), gisUI(e2).editError = message, e2.status(message, !0), e2.notifyPresentation?.();
+    }
+    editCommitted() {
+      let e2 = this.e;
+      gisUI(e2).editError && (gisUI(e2).editError = null, e2.notifyPresentation?.());
+    }
     captureView() {
       if (!this.map?.getSize()?.every((v5) => v5 > 0)) return;
       let view2 = this.map.getView(), projection2 = view2.getProjection().getCode();
@@ -107326,7 +107346,9 @@ void main() {
         return;
       }
       this.resources = resources, this.sources = sources, this.olLayers = olLayers;
-      let current = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), source = current?.kind === "vector" ? sources.get(current.id) : null, input = gisInputPolicy({ fingerDrawing: () => this.fingerDrawing, editing: () => !!(source && current && !current.locked && this.tool !== "select") }), saved = e2.liveView ?? e2.state.view, view2 = new View_default({ ...gis2DViewOptions, projection: projection2, center: transformPosition(saved.center ?? [0, 20], "EPSG:4326", projection2), zoom: saved.zoom ?? 2 }), map = this.map = new Map_default2({ target: surface, layers, view: view2, controls: [], interactions: gisNavigationInteractions(input) });
+      let current = e2.state.layers.find((l4) => l4.id === e2.selection?.layer), source = current?.kind === "vector" ? sources.get(current.id) : null, input = gisInputPolicy({ fingerDrawing: () => this.fingerDrawing, editing: () => !!(source && current && !current.locked && this.tool !== "select") }), notice = gisEditNotice(this.tool, current);
+      gisUI(e2).notice = notice, notice && !e2.nativeChrome && e2.status(notice, !0);
+      let saved = e2.liveView ?? e2.state.view, view2 = new View_default({ ...gis2DViewOptions, projection: projection2, center: transformPosition(saved.center ?? [0, 20], "EPSG:4326", projection2), zoom: saved.zoom ?? 2 }), map = this.map = new Map_default2({ target: surface, layers, view: view2, controls: [], interactions: gisNavigationInteractions(input) });
       this.mapState = e2.state;
       let grid = gisGraticule();
       grid.setMap(map), this.resources.push(() => grid.setMap(null));
@@ -107361,8 +107383,7 @@ void main() {
           this.chooseSelection({ layer, features: ids });
         } else this.multiselect || e2.state.layers.find((l4) => l4.id === e2.selection?.layer)?.kind === "vector" && this.chooseSelection({ layer: e2.selection?.layer, features: [] });
       }), source && current && !current.locked) {
-        let toChange = (features) => features.map((f3) => ({ layer: current.id, feature: f3.getId(), geometry: format.writeGeometryObject(f3.getGeometry()) })).map((c5) => ({ ...c5, geometry: transformGeometry(c5.geometry, projection2, current.crs) })), commit = (features) => e2.perform("feature.geometries", { changes: toChange(features) }).catch(() => {
-        });
+        let toChange = (features) => features.map((f3) => ({ layer: current.id, feature: f3.getId(), geometry: format.writeGeometryObject(f3.getGeometry()) })).map((c5) => ({ ...c5, geometry: transformGeometry(c5.geometry, projection2, current.crs) })), commit = (features) => e2.perform("feature.geometries", { changes: toChange(features) }).then(() => this.editCommitted()).catch((error2) => this.editFailure(error2));
         if (["Point", "LineString", "Polygon"].includes(this.tool)) {
           let draw = this.draw = new Draw_default({ type: this.tool, wrapX: !1, ...gisDrawConditions(input) }), guard = guardGISEditInteraction(draw, input, { draw: !0 }), drawing = (active) => {
             this.drawing = active, e2.nativeChrome && e2.perform("gis.ui.drawing", { active }).catch(() => {
@@ -107371,8 +107392,7 @@ void main() {
           draw.on("drawstart", () => drawing(!0)), draw.on("drawabort", () => drawing(!1)), draw.on("drawend", (event) => {
             if (drawing(!1), !guard.canCommit()) return;
             let geometry = transformGeometry(format.writeGeometryObject(event.feature.getGeometry()), projection2, current.crs);
-            e2.perform("feature.add", { layer: current.id, geometry: geometry.type, coordinates: geometry.coordinates, properties: {} }).catch(() => {
-            });
+            e2.perform("feature.add", { layer: current.id, geometry: geometry.type, coordinates: geometry.coordinates, properties: {} }).then(() => this.editCommitted()).catch((error2) => this.editFailure(error2));
           }), map.addInteraction(draw), this.tool !== "Point" && button("finish", t3("\u5B8C\u6210\u7ED8\u5236", "Finish drawing"), () => draw.finishDrawing()), button("abort", t3("\u53D6\u6D88\u7ED8\u5236", "Cancel drawing"), () => draw.abortDrawing());
         } else if (this.tool === "modify") {
           let ids = new Set((e2.selection?.features ?? []).map(String)), features = source.getFeatures().filter((f3) => !ids.size || ids.has(String(f3.getId()))), modify = this.modify = new Modify_default({ features: new Collection_default(features), pixelTolerance: 14, ...gisModifyConditions(input) }), guard = guardGISEditInteraction(modify, input, { start: "modifystart", end: "modifyend" });

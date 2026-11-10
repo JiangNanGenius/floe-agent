@@ -1,6 +1,6 @@
-<!-- docs-updated: 2026-11-08 -->
+<!-- docs-updated: 2026-11-10 -->
 
-> This guide primarily describes iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). The App Store release is 1.7.74; sections about Space and specialist workbenches need the newer-feature installer ([GitHub Releases](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.5), unsigned — sign it yourself) or a TestFlight build. See [release and installation status](CURRENT_STATUS.md) and the [workspace guide](WORKSPACES_GUIDE.md) for what each build includes. Android is a separate public alpha: it uses your cloud model configuration, does not provide local-model inference, and its capabilities follow the [selected release notes](https://www.floe-agent.com/en/releases?platform=android).
+> This guide primarily describes iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). App Store, GitHub/Feather and TestFlight versions are tracked with verification dates in [channel status](CURRENT_STATUS.md). GitHub IPAs require your own signing; TestFlight availability follows your group. See the [workspace guide](WORKSPACES_GUIDE.md) for build-specific features. Android is a separate public alpha using your cloud model configuration, without local-model inference; follow its [selected release notes](https://www.floe-agent.com/en/releases?platform=android).
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
@@ -9,7 +9,7 @@
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
-This guide documents the published builds identified above. Check Settings for your installed version and [release and installation status](CURRENT_STATUS.md) for availability in each channel.
+This guide describes workflows; use the workspace guide and selected release notes for build-specific limits. Check Settings for your installed version and [release and installation status](CURRENT_STATUS.md) for availability in each channel.
 
 ## Contents
 

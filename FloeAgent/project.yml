@@ -49,6 +49,8 @@ packages:
     path: Modules/FloeMeetings
   FloeInteractiveContent:
     path: Modules/FloeInteractiveContent
+  FloeNativeCharts:
+    path: Modules/FloeNativeCharts
   FloeManufacturingKit:
     path: Modules/FloeManufacturingKit
   FloeSimulationKit:
@@ -292,19 +294,29 @@ targets:
         NSHealthShareUsageDescription: Floe reads the Health data you request after you authorize access.
         NSHealthUpdateUsageDescription: Floe only reads the Health data you authorize; it does not save or modify Health data.
         NFCReaderUsageDescription: Floe reads a nearby NFC tag when you request a scan.
-        NSLocalNetworkUsageDescription: Floe scans your local network only when you ask the agent to discover nearby services and devices.
+        NSLocalNetworkUsageDescription: Floe discovers nearby devices only when you start a local-network check or ask the assistant to do so.
         NSBluetoothAlwaysUsageDescription: Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.
         NSContactsUsageDescription: Floe reads the contacts you ask it to find.
         NSAlarmKitUsageDescription: Floe schedules the alarms and timers you create in the app.
         NSSupportsLiveActivities: true
         NSAppleMusicUsageDescription: Floe finds and plays items from your media library when you request them.
         NSBonjourServices:
+          - _airplay._tcp
+          - _afpovertcp._tcp
+          - _googlecast._tcp
+          - _hap._tcp
           - _home-assistant._tcp
           - _http._tcp
-          - _printer._tcp
+          - _https._tcp
           - _ipp._tcp
-          - _airplay._tcp
+          - _ipps._tcp
+          - _printer._tcp
           - _raop._tcp
+          - _rfb._tcp
+          - _sftp-ssh._tcp
+          - _smb._tcp
+          - _uscan._tcp
+          - _workstation._tcp
         BGTaskSchedulerPermittedIdentifiers:
           - org.floeagent.ios.refresh
           - org.floeagent.ios.processing
@@ -350,6 +362,8 @@ targets:
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
+      - package: ZIPFoundation
+        product: ZIPFoundation
       - package: SwiftCrypto
         product: Crypto
         embed: true
@@ -387,6 +401,10 @@ targets:
         product: FloeInteractiveContentCore
       - package: FloeInteractiveContent
         product: FloeInteractiveContentWebKit
+      - package: FloeNativeCharts
+        product: FloeNativeChartsCore
+      - package: FloeNativeCharts
+        product: FloeNativeChartsUI
       - package: FloeManufacturingKit
         product: FloeManufacturingUI
       - package: FloeManufacturingKit
@@ -608,8 +626,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.6"
-        CURRENT_PROJECT_VERSION: "326"
+        MARKETING_VERSION: "1.9.0"
+        CURRENT_PROJECT_VERSION: "327"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -692,8 +710,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.6"
-        CURRENT_PROJECT_VERSION: "326"
+        MARKETING_VERSION: "1.9.0"
+        CURRENT_PROJECT_VERSION: "327"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -743,8 +761,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.6"
-        CURRENT_PROJECT_VERSION: "326"
+        MARKETING_VERSION: "1.9.0"
+        CURRENT_PROJECT_VERSION: "327"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -787,8 +805,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.6"
-        CURRENT_PROJECT_VERSION: "326"
+        MARKETING_VERSION: "1.9.0"
+        CURRENT_PROJECT_VERSION: "327"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -840,8 +858,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.6"
-        CURRENT_PROJECT_VERSION: "326"
+        MARKETING_VERSION: "1.9.0"
+        CURRENT_PROJECT_VERSION: "327"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1172,6 +1190,11 @@ targets:
       - path: Tests/FloeAppTests/OfficeSymbolBulletTests.swift
       - path: Tests/FloeAppTests/OfficeExplicitTargetAppTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
+      - path: Tests/FloeAppTests/GitHubCollaborationUIStateTests.swift
+      - path: Tests/FloeAppTests/GitHubCollaborationNativeUIHostTests.swift
+      - path: Tests/FloeAppTests/NextRoundGitCredentialTests.swift
+      - path: Tests/FloeAppTests/NextRoundGitCollaborationToolTests.swift
+      - path: Tests/FloeAppTests/NextRoundGitHubSourceCardTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
       - path: Tests/FloeAppTests/ComposerLaunchHandoffTests.swift
@@ -1478,6 +1501,29 @@ targets:
       - path: Tests/FloeSkillsTests/SkillBulkUpdatePlanTests.swift
       - path: Tests/FloeToolsTests/MCPRemoteToolSourceTests.swift
       - path: Tests/FloeImagesTests/QRCodeGenerateToolTests.swift
+      - path: Tests/FloeImagesTests/SVGDocumentTests.swift
+      - path: Tests/FloeImagesTests/SVGRenderToolTests.swift
+      - path: Tests/FloeAppTests/SVGChatRenderingTests.swift
+      - path: Tests/FloeAppTests/NextRoundElectronicsContentTests.swift
+      - path: Tests/FloeAppTests/NextRoundMediaProviderGeometryTests.swift
+      - path: Tests/FloeAppTests/MediaCanvasSessionTests.swift
+      - path: Tests/FloeAppTests/MediaOutpaintSessionTests.swift
+      - path: Tests/FloeAppTests/MediaVectorToolSessionTests.swift
+      - path: Tests/FloeAppTests/MediaContentFillSessionTests.swift
+      - path: Tests/FloeAppTests/MediaVideoMotionSessionTests.swift
+      - path: Tests/FloeAppTests/MediaImageWarpAppTests.swift
+      - path: Tests/FloeAppTests/MediaColorMatchSessionTests.swift
+      - path: Tests/FloeAppTests/MediaHDRSessionTests.swift
+      - path: Tests/FloeAppTests/MediaCompoundSessionTests.swift
+      - path: Tests/FloeAppTests/MediaVoiceSeparationBoundaryTests.swift
+      - path: Tests/FloeAppTests/MusicScoreFirstOpenTests.swift
+      - path: Tests/FloeAppTests/MusicNotationPerformanceTests.swift
+      - path: Tests/FloeAppTests/MusicScoreJianpuAppTests.swift
+      - path: Tests/FloeAppTests/PreparedVideoAlphaHDRBoundaryTests.swift
+      - path: Tests/FloeAppTests/ToolboxLANWorkbenchTests.swift
+      - path: Tests/FloeAppTests/ToolboxLANHistoryTests.swift
+      - path: Tests/FloeAppTests/ChildNativeAuthoringParityTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ModelSwitchHistoryPreparerTests.swift
       - path: Tests/FloeAgentRuntimeTests/RunOutputTransportTests.swift
       # Owned staged-export V2 (art-native source integration 2026-10-28):
       # the browser.exportFile contract/service/transaction suite is App-host
@@ -1731,6 +1777,35 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeSkillsTests/CuratedSkillHubTests.swift
+      - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
+      - path: Tests/FloeSkillsTests/Fixtures/CuratedSkillHub
+        type: folder
+        buildPhase: resources
+      - path: Tests/FloeAppTests/SVGChatRenderingTests.swift
+      - path: Tests/FloeAppTests/NextRoundElectronicsContentTests.swift
+      - path: Tests/FloeAppTests/NextRoundMediaProviderGeometryTests.swift
+      - path: Tests/FloeAppTests/MediaCanvasSessionTests.swift
+      - path: Tests/FloeAppTests/MediaOutpaintSessionTests.swift
+      - path: Tests/FloeAppTests/MediaVectorToolSessionTests.swift
+      - path: Tests/FloeAppTests/MediaContentFillSessionTests.swift
+      - path: Tests/FloeAppTests/MediaVideoMotionSessionTests.swift
+      - path: Tests/FloeAppTests/MediaImageWarpAppTests.swift
+      - path: Tests/FloeAppTests/MediaColorMatchSessionTests.swift
+      - path: Tests/FloeAppTests/MediaHDRSessionTests.swift
+      - path: Tests/FloeAppTests/MediaCompoundSessionTests.swift
+      - path: Tests/FloeAppTests/MediaVoiceSeparationBoundaryTests.swift
+      - path: Tests/FloeAppTests/MusicScoreFirstOpenTests.swift
+      - path: Tests/FloeAppTests/MusicNotationPerformanceTests.swift
+      - path: Tests/FloeAppTests/MusicScoreJianpuAppTests.swift
+      - path: Tests/FloeAppTests/OwnedSimulatorPersonalContentCleanupTests.swift
+      - path: Tests/FloeAppTests/OwnedSimulatorLaTeXTaskEnvironmentCleanupTests.swift
+      - path: Tests/FloeAppTests/GitHubCollaborationUIStateTests.swift
+      - path: Tests/FloeAppTests/NextRoundGitCredentialTests.swift
+      - path: Tests/FloeAppTests/NextRoundGitCollaborationToolTests.swift
+      - path: Tests/FloeAppTests/NextRoundGitHubSourceCardTests.swift
+      - path: Tests/FloeAppTests/ChildNativeAuthoringParityTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ModelSwitchHistoryPreparerTests.swift
       - path: Tests/FloeAppTests/NativeExternalOAuthConnectionTests.swift
       - path: Tests/FloeAppTests/NativeMailOAuthConsumerTests.swift
       - path: Tests/FloeAppTests/LibraryPermanentDeletionTests.swift
@@ -1746,6 +1821,34 @@ targets:
       - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/SimulationTet4Modal06Tests.swift
       - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/SimulationThermoelastic07Tests.swift
       - path: Tests/FloeAppTests/ConfigSyncRecoveryTests.swift
+      - path: Tests/FloeAppTests/NextRoundStorageSuspensionTests.swift
+      - path: Tests/FloeAppTests/NextRoundChatNoteTests.swift
+      - path: Tests/FloeAppTests/NextRoundMindMapSearchTests.swift
+      - path: Tests/FloeAppTests/NextRoundTaskStatusTests.swift
+      - path: Tests/FloeAppTests/NextRoundTrashTests.swift
+      - path: Tests/FloeAppTests/NextRoundOfficeSearchTests.swift
+      - path: Tests/FloeAppTests/NextRoundChartArtifactTests.swift
+      - path: Tests/FloeCoreTests/AppleImagePlaygroundModelPolicyTests.swift
+      - path: Tests/FloeAppTests/NextRoundDocumentAssistantLeaveTests.swift
+      - path: Tests/FloeAppTests/NextRoundBrowserModeTests.swift
+      - path: Tests/FloeAppTests/MusicTimelineSurfaceGeometryTests.swift
+      - path: Tests/FloeAppTests/MusicWorkbenchPanelLayoutTests.swift
+      - path: Tests/FloeAppTests/MusicDJStorageTests.swift
+      - path: Tests/FloeAppTests/NextRoundLaTeXPreparationTests.swift
+      - path: Tests/FloeAppTests/NextRoundStudioPolicyTests.swift
+      - path: Tests/FloeAppTests/MediaToolInputGuideTests.swift
+      - path: Tests/FloeAppTests/NextRoundToolboxUtilityTests.swift
+      - path: Tests/FloeAppTests/NextRoundEditorInputOwnershipTests.swift
+      - path: Tests/FloeAppTests/NextRoundNativeFileDiffTests.swift
+      - path: Tests/FloeAppTests/NextRoundFileChangeEvidenceTests.swift
+      - path: Tests/FloeAppTests/NativeFileDiffLayoutHostTests.swift
+      - path: Tests/FloeAppTests/PreparedVideoAlphaHDRBoundaryTests.swift
+      - path: Tests/FloeAppTests/GitHubCollaborationNativeUIHostTests.swift
+      - path: Tests/FloeAppTests/NextRoundImportOutputTests.swift
+      - path: Tests/FloeAppTests/MediaProviderAuthorityBoundaryTests.swift
+      - path: Tests/FloeAppTests/NextRoundMeetingTranscriptTests.swift
+      - path: Tests/FloeAppTests/NextRoundConversationRouteTests.swift
+      - path: Tests/FloeAgentRuntimeTests/PhoneSensitiveInputSanitizerTests.swift
       - path: Tests/FloeAppTests/LinuxGuestImageWebsiteFallbackTests.swift
       - path: Tests/FloeSkillsTests/GitHubTransportMirrorTransferWaitTests.swift
       - path: Modules/FloeSimulationKit/Tests/FloeSimulationIntegrationTests/TransientHeat05Tests.swift
@@ -1799,9 +1902,12 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/InlineContentPagePolicyTests.swift
       - path: Tests/FloeAppTests/AppQualificationEnvironment.swift
       - path: Tests/FloeAppTests/LaTeXAppIntegrationTests.swift
+      - path: Tests/FloeAppTests/LaTeXFreshAPTAppIntegrationTests.swift
+      - path: Tests/FloeAppTests/LaTeXApplePDFRendererAppTests.swift
       - path: Tests/FloeAppTests/AppleImagePlaygroundTests.swift
       - path: Tests/FloeAppTests/ElectronicsAppIntegrationTests.swift
       - path: Tests/FloeAppTests/GISProductionOriginalTests.swift
+      - path: Tests/FloeAppTests/MapEditorAppClosureTests.swift
       - path: Tests/FloeAppTests/MusicNotationAIContractTests.swift
       - path: Tests/FloeAppTests/FontDesignAIAppContractTests.swift
       - path: Tests/FloeWorkspaceTests/WorkspacePathGuardTests.swift
@@ -1810,6 +1916,8 @@ targets:
       - path: Tests/FloeAppTests/ToolboxUSBAppIntegrationTests.swift
       - path: Tests/FloeAppTests/ToolboxUSBTransportTests.swift
       - path: Tests/FloeAppTests/ToolboxHistoryAndSerialTests.swift
+      - path: Tests/FloeAppTests/ToolboxLANWorkbenchTests.swift
+      - path: Tests/FloeAppTests/ToolboxLANHistoryTests.swift
       - path: Tests/FloeAppTests/ToolboxNativeNetworkObservationTests.swift
       - path: Tests/FloeAppTests/BiologyHostIntegrationTests.swift
       - path: Tests/FloeAppTests/StudioNativeSelectionContractTests.swift
@@ -1913,6 +2021,12 @@ targets:
       - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
       - path: Tests/FloeAppTests/CadNativeObservationTests.swift
     dependencies:
+      - package: ZIPFoundation
+        product: ZIPFoundation
+      - package: FloeAgentPackages
+        product: FloeImages
+      - package: FloeAgentPackages
+        product: FloeMarkdown
       - target: FloeAgent
       - package: FloeAgentPackages
         product: FloeSync

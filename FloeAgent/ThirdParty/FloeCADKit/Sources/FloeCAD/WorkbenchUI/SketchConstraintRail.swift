@@ -5,6 +5,7 @@ import SwiftUI
 struct SketchConstraintRail: View {
     @Bindable var viewModel: EditorViewModel
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var isCollapsed = false
 
     private struct Action: Identifiable {
         var title: String
@@ -33,6 +34,13 @@ struct SketchConstraintRail: View {
     var body: some View {
         if sizeClass == .compact {
             compactMenu
+        } else if isCollapsed {
+            Button { isCollapsed = false } label: {
+                Image(systemName: "sidebar.right").frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+            .accessibilityLabel(FloeCADStrings.text("cad.ui.constraint.showPanel", "Show constraints"))
+            .accessibilityIdentifier("ConstraintRailExpand")
         } else {
             ViewThatFits(in: .vertical) {
                 expandedRail
@@ -46,11 +54,11 @@ struct SketchConstraintRail: View {
             HStack {
                 Text(FloeCADStrings.text("cad.ui.items.constraints", "Constraints")).font(.caption.weight(.semibold))
                 Spacer()
-                Button { viewModel.showConstraintSettings = true } label: {
-                    Image(systemName: "gearshape").frame(width: 44, height: 44)
+                Button { isCollapsed = true } label: {
+                    Image(systemName: "sidebar.right").frame(width: 44, height: 44)
                 }
-                .accessibilityLabel(FloeCADStrings.text("cad.ui.constraint.settings", "Constraint Settings"))
-                .accessibilityIdentifier("ConstraintRailSettings")
+                .accessibilityLabel(FloeCADStrings.text("cad.ui.constraint.hidePanel", "Hide constraints"))
+                .accessibilityIdentifier("ConstraintRailCollapse")
             }
             ForEach(common) { action in
                 Button { perform(action) } label: {
@@ -79,6 +87,11 @@ struct SketchConstraintRail: View {
             Divider()
             Menu {
                 ForEach(more) { menuAction($0) }
+                Divider()
+                Button(FloeCADStrings.text("cad.ui.constraint.settings", "Constraint Settings"), systemImage: "gearshape") {
+                    viewModel.showConstraintSettings = true
+                }
+                .accessibilityIdentifier("ConstraintRailSettings")
             } label: {
                 Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis").frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)

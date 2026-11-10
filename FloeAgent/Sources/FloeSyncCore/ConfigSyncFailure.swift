@@ -15,8 +15,18 @@ public struct ConfigSyncFailure: Sendable, Hashable {
     public let phase: Phase
     public let errorDomain: String?
     public let errorCode: Int?
-    public init(reason: Reason, phase: Phase) {
+    /// CloudKit's server-provided retry hint in seconds when the error
+    /// carried a VALID one (finite and positive; `CKErrorRetryAfterKey`).
+    /// A bounded numeric delay only — never a record id, account, URL or
+    /// payload. NaN, infinity and non-positive values never reach this
+    /// field: they are treated as absent and the engine falls back to its
+    /// local bounded backoff. The sync engine consumes the hint for its
+    /// transient retry as the server's own wait (it may exceed the local
+    /// cap); user copy never renders raw protocol values or counts.
+    public let retryAfter: TimeInterval?
+    public init(reason: Reason, phase: Phase, retryAfter: TimeInterval? = nil) {
         self.reason = reason; self.phase = phase; errorDomain = nil; errorCode = nil
+        self.retryAfter = retryAfter
     }
     public init(error: Error, phase: Phase) {
         self.phase = phase
@@ -24,17 +34,23 @@ public struct ConfigSyncFailure: Sendable, Hashable {
         let safeDomains = ["CKErrorDomain", NSURLErrorDomain, NSCocoaErrorDomain, "FloeCore.FloeError"]
         errorDomain = safeDomains.contains(ns.domain) ? ns.domain : "other"
         errorCode = ns.code
+        var retryHint: TimeInterval?
         #if canImport(CloudKit)
+        if let hint = ns.userInfo[CKErrorRetryAfterKey] as? NSNumber,
+           hint.doubleValue > 0, hint.doubleValue.isFinite {
+            retryHint = hint.doubleValue
+        }
         if ns.domain == CKErrorDomain, ns.code == CKError.Code.notAuthenticated.rawValue {
-            reason = .signInRequired; return
+            reason = .signInRequired; self.retryAfter = retryHint; return
         }
         if ns.domain == CKErrorDomain,
            [CKError.Code.networkUnavailable, .networkFailure, .serviceUnavailable, .requestRateLimited, .zoneBusy].map(\.rawValue).contains(ns.code) {
-            reason = .temporarilyUnavailable; return
+            reason = .temporarilyUnavailable; self.retryAfter = retryHint; return
         }
         #endif
         if ns.domain == NSURLErrorDomain { reason = .temporarilyUnavailable }
         else { reason = phase == .configuration ? .configurationUnavailable : .synchronizationFailed }
+        self.retryAfter = retryHint
     }
     public func message(chinese: Bool) -> String {
         switch reason {

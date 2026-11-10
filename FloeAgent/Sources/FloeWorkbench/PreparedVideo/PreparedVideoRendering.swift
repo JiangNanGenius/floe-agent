@@ -92,13 +92,45 @@ public actor PreparedVideoFrameRenderer {
     private let limits: Limits
     private let ciContext: CIContext
     private let colorSpace: CGColorSpace
+    private var managedContexts: [MediaVideoColorProfile: CIContext] = [:]
     private struct AssetCacheKey: Hashable {
         var planID: PreparedVideoPlanID
         var asset: PreparedVideoAsset
+        var profile: MediaVideoColorProfile? = nil
     }
     private var videoAssets: [AssetCacheKey: AVURLAsset] = [:]
     private var imageCache: [AssetCacheKey: CGImage] = [:]
+    private var chromaCubes: [MediaVideoChromaKey:Data] = [:]
+    private var secondaryCubes: [MediaHSLSecondary:Data] = [:]
+    private var matchCubes: [MediaVideoColorMatch:Data] = [:]
     private let maximumCachedImagePixels = 16_777_216
+    private struct MotionSignature: Hashable { let size: Int64; let modified: Date; let fileNumber: UInt64 }
+    private var verifiedMotion: [AssetCacheKey: (signature: MotionSignature, hash: String)] = [:]
+    private func motionSignature(_ url: URL) throws -> MotionSignature {
+        let a = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard a[.type] as? FileAttributeType == .typeRegular, let size = a[.size] as? NSNumber,
+              let modified = a[.modificationDate] as? Date, let number = a[.systemFileNumber] as? NSNumber else {
+            throw PreparedVideoError.renderFailed("motion source is unavailable")
+        }
+        return .init(size: size.int64Value, modified: modified, fileNumber: number.uint64Value)
+    }
+    private func verifiedMotionSource(asset: PreparedVideoAsset, planID: PreparedVideoPlanID,
+                                      bindings: [MediaVideoMotionSource], colorMatch: MediaVideoColorMatch?, cancellation: PreparedVideoCancellation) async throws -> MotionSignature {
+        let signature = try motionSignature(asset.url), key = AssetCacheKey(planID: planID, asset: asset)
+        let hash: String
+        if let cached = verifiedMotion[key], cached.signature == signature { hash = cached.hash }
+        else {
+            hash = try await MediaVideoMotionService.shared.contentHash(asset.url, cancellation: cancellation)
+            guard try motionSignature(asset.url) == signature else { throw PreparedVideoError.assetUnreadable(asset.id) }
+            if verifiedMotion.count >= 64 { verifiedMotion.removeAll(keepingCapacity: true) }
+            verifiedMotion[key] = (signature,hash)
+        }
+        guard bindings.allSatisfy({ $0.assetID == asset.id && $0.contentHash == hash }),
+              colorMatch.map({ $0.target.assetID == asset.id && $0.target.contentHash == hash }) ?? true else {
+            throw PreparedVideoError.assetUnreadable(asset.id)
+        }
+        return signature
+    }
 
     public init(limits: Limits = Limits()) {
         self.limits = limits
@@ -117,6 +149,7 @@ public actor PreparedVideoFrameRenderer {
                             frameIndex: Int64,
                             settings: PreparedVideoOutputSettings,
                             cancellation: PreparedVideoCancellation = .none) async throws -> PreparedVideoFrame {
+        let settings = settings.resolvingColorProfile(plan.colorProfile)
         try validate(plan: plan, settings: settings)
         try cancellation.check()
         let evaluation = try PreparedVideoFrameEvaluator.evaluate(plan: plan, frameIndex: frameIndex)
@@ -131,6 +164,7 @@ public actor PreparedVideoFrameRenderer {
                             at time: PreparedVideoTime,
                             settings: PreparedVideoOutputSettings,
                             cancellation: PreparedVideoCancellation = .none) async throws -> PreparedVideoFrame {
+        let settings = settings.resolvingColorProfile(plan.colorProfile)
         try validate(plan: plan, settings: settings)
         try cancellation.check()
         let evaluation = try PreparedVideoFrameEvaluator.evaluate(plan: plan, at: time)
@@ -189,13 +223,46 @@ public actor PreparedVideoFrameRenderer {
                                                 scaleX: scaleX, scaleY: scaleY,
                                                 cancellation: cancellation)
             var image = prepared.image
+            if let stabilization = layer.stabilization, let time = layer.sourceTime {
+                image = try stabilization.apply(to: image, sourceSeconds: time.seconds)
+            }
+            if let key = layer.chromaKey {
+                let cube:Data
+                if let cached = chromaCubes[key] { cube = cached }
+                else { cube = try key.cubeData();if chromaCubes.count>=4 { chromaCubes.removeAll(keepingCapacity:true) };chromaCubes[key] = cube }
+                image = image.applyingFilter("CIColorCube",parameters:["inputCubeDimension":32,"inputCubeData":cube])
+            }
+            if let grade = layer.videoGrade {
+                var secondaryCube: Data?
+                if let secondary = grade.secondary {
+                    let cube: Data
+                    if let cached = secondaryCubes[secondary] { cube = cached }
+                    else {
+                        cube = try secondary.cubeData()
+                        if secondaryCubes.count >= 4 { secondaryCubes.removeAll(keepingCapacity: true) }
+                        secondaryCubes[secondary] = cube
+                    }
+                    secondaryCube = cube
+                }
+                var matchCube: Data?
+                if let match = grade.colorMatch {
+                    if let cached = matchCubes[match] { matchCube = cached }
+                    else {
+                        let cube = try match.cubeData()
+                        if matchCubes.count >= 4 { matchCubes.removeAll(keepingCapacity: true) }
+                        matchCubes[match] = cube;matchCube = cube
+                    }
+                }
+                image = try grade.apply(to: image,secondaryCube: secondaryCube,matchCube: matchCube)
+            }
             if let mask = layer.mask {
                 image = try apply(mask: mask, to: image, cancellation: cancellation)
             }
             image = transform(image: image, layer: layer, imageSize: prepared.size,
                               outputRect: outputRect, scaleX: scaleX, scaleY: scaleY)
             image = apply(opacity: layer.opacity, to: image)
-            canvas = image.composited(over: canvas)
+            if let filter = layer.blendMode?.filterName { canvas = image.applyingFilter(filter,parameters:[kCIInputBackgroundImageKey:canvas]).cropped(to:outputRect) }
+            else { canvas = image.composited(over: canvas) }
         }
 
         for caption in evaluation.captions {
@@ -205,9 +272,19 @@ public actor PreparedVideoFrameRenderer {
         }
 
         try cancellation.check()
-        guard let cgImage = ciContext.createCGImage(canvas, from: outputRect,
-                                                    format: .RGBA8,
-                                                    colorSpace: colorSpace) else {
+        let outputSpace = try settings.colorProfile?.colorSpace() ?? colorSpace
+        let context: CIContext
+        if let profile = settings.colorProfile {
+            if let cached = managedContexts[profile] { context = cached }
+            else {
+                let working = profile.isHDR ? CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020)! : outputSpace
+                let created = CIContext(options: [.workingColorSpace:working,.outputColorSpace:outputSpace,.cacheIntermediates:false])
+                managedContexts[profile] = created;context = created
+            }
+        } else { context = ciContext }
+        guard let cgImage = context.createCGImage(canvas, from: outputRect,
+                                                    format: settings.colorProfile?.isHDR == true ? .RGBAh : .RGBA8,
+                                                    colorSpace: outputSpace) else {
             throw PreparedVideoError.renderFailed("Core Image could not produce the output frame")
         }
         try cancellation.check()
@@ -236,8 +313,19 @@ public actor PreparedVideoFrameRenderer {
             guard let sourceTime = layer.sourceTime else {
                 throw PreparedVideoError.invalidPlan("media layer has no source time")
             }
+            let bindings = [layer.videoTracking?.source,layer.stabilization?.source].compactMap({ $0 })
+            let match = layer.videoGrade?.colorMatch
+            let signature = bindings.isEmpty && match == nil ? nil : try await verifiedMotionSource(asset: asset, planID: plan.id, bindings: bindings, colorMatch: match, cancellation: cancellation)
             let media = try await mediaImage(asset: asset, planID: plan.id, sourceTime: sourceTime,
-                                             cancellation: cancellation)
+                                             cancellation: cancellation,profile: settings.colorProfile)
+            if let signature {
+                guard try motionSignature(asset.url) == signature else { throw PreparedVideoError.assetUnreadable(asset.id) }
+                for binding in bindings {
+                    guard abs(media.1.width / media.1.height - Double(binding.width) / Double(binding.height)) <= 2 / media.1.height else {
+                        throw PreparedVideoError.assetUnreadable(asset.id)
+                    }
+                }
+            }
             return PreparedLayerImage(image: media.0, size: media.1, alreadyFitted: false)
         case .text(let text):
             let raster = try rasterize(text: text, scale: scaleX,
@@ -259,9 +347,9 @@ public actor PreparedVideoFrameRenderer {
     private func mediaImage(asset: PreparedVideoAsset,
                             planID: PreparedVideoPlanID,
                             sourceTime: PreparedVideoTime,
-                            cancellation: PreparedVideoCancellation) async throws -> (CIImage, CGSize) {
+                            cancellation: PreparedVideoCancellation,profile: MediaVideoColorProfile?) async throws -> (CIImage, CGSize) {
         let url = asset.url
-        let cacheKey = AssetCacheKey(planID: planID, asset: asset)
+        let cacheKey = AssetCacheKey(planID: planID, asset: asset,profile: profile)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               !isDirectory.boolValue else {
@@ -282,6 +370,7 @@ public actor PreparedVideoFrameRenderer {
             // AVAssetImageGenerator across actor reentrancy.
             let generator = AVAssetImageGenerator(asset: urlAsset)
             generator.appliesPreferredTrackTransform = true
+            generator.dynamicRangePolicy = profile?.isHDR == true ? .matchSource : .forceSDR
             generator.requestedTimeToleranceBefore = .zero
             generator.requestedTimeToleranceAfter = .zero
             do {
@@ -313,7 +402,9 @@ public actor PreparedVideoFrameRenderer {
                   width > 0, height > 0,
                   width <= limits.maximumAssetDimension, height <= limits.maximumAssetDimension,
                   width <= limits.maximumOutputPixels / height,
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, profile?.isHDR == true ?
+                    [kCGImageSourceShouldAllowFloat:true,kCGImageSourceDecodeRequest:kCGImageSourceDecodeToHDR] as CFDictionary :
+                    (profile == .rec709 ? [kCGImageSourceDecodeRequest:kCGImageSourceDecodeToSDR] as CFDictionary : nil)) else {
                 throw PreparedVideoError.assetUnreadable(asset.id)
             }
             guard image.width > 0, image.height > 0,

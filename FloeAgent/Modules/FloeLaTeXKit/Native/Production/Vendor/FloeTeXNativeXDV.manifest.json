@@ -1,0 +1,238 @@
+{
+  "schemaVersion": 2,
+  "product": "FloeTeXNativeXDV",
+  "output": "real XeTeX/BibTeX XDV + bounded display list; Apple renderer required for PDF",
+  "forbiddenPDFCargoAndObjectAuditPassed": true,
+  "licensing": {
+    "selectedBranches": {
+      "schemaVersion": 1,
+      "product": "FloeTeXNativeXDV",
+      "scope": "Selection for actual XDV-only native closure; old PDF sources/artifacts retained separately and forbidden in new Cargo/object graph",
+      "components": [
+        {
+          "component": "TECkit",
+          "selectedLicense": "CPL-1.0",
+          "notices": [
+            {
+              "file": "licenses/teckit-LICENSING-2.5.4.txt",
+              "sha256": "e6cd37f625b98a1453ec8e0cc527bf6768c0eb0d357fb9073a8790a163b489e2"
+            },
+            {
+              "file": "licenses/CPL-1.0.txt",
+              "sha256": "9698f2ba346a875a47a9cc6bb602e3d126758774dde1f575b4f3369dc3f2574f"
+            }
+          ]
+        },
+        {
+          "component": "FreeType",
+          "selectedLicense": "FTL",
+          "notices": [
+            {
+              "file": "licenses/freetype-LICENSE.TXT",
+              "sha256": "bd36c8b474855fa294c2ec5c184544478ef3720aad37d65a6296a4f264fd2d3b"
+            },
+            {
+              "file": "licenses/freetype-FTL.TXT",
+              "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f"
+            }
+          ]
+        },
+        {
+          "component": "Graphite2",
+          "selectedLicense": "MPL-2.0",
+          "notices": [
+            {
+              "file": "licenses/graphite2-COPYING",
+              "sha256": "2c272829ff23f182c8bf7ea12fedea69b0ae148663123ed5240c117cb129c9c1"
+            },
+            {
+              "file": "licenses/graphite2-LICENSE",
+              "sha256": "cab46cd45adbfea4b1d0f14b033c70062c73074fa0b56532c2f351576ddf455e"
+            },
+            {
+              "file": "licenses/MPL-2.0.txt",
+              "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+            }
+          ]
+        },
+        {
+          "component": "HarfBuzz",
+          "selectedLicense": "MIT",
+          "notices": [
+            {
+              "file": "licenses/harfbuzz-COPYING",
+              "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+            }
+          ]
+        },
+        {
+          "component": "ICU",
+          "selectedLicense": "Unicode-3.0",
+          "notices": [
+            {
+              "file": "licenses/icu-LICENSE",
+              "sha256": "e09827667e0bb3c808b2a463548ba814a5e6249b67353234d70c8dfc2bcc417d"
+            }
+          ]
+        },
+        {
+          "component": "libpng",
+          "selectedLicense": "libpng-2.0",
+          "notices": [
+            {
+              "file": "licenses/libpng-LICENSE",
+              "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526"
+            }
+          ]
+        }
+      ],
+      "TECkit": {
+        "versionInActualEngineSource": "2.5.4",
+        "sourcePin": {
+          "upstream": "https://github.com/tectonic-typesetting/tectonic",
+          "tag": "tectonic@0.17.0",
+          "commit": "8c0126a9653239a2e6e0a5274af9b8510f643030",
+          "licensing": "MIT umbrella; retain per-component licenses",
+          "patches": [
+            "patches/apple-and-embedded.patch"
+          ],
+          "patchSHA256": "e2a6a7203da8af036f3efaf1b7a4464130cb8f7533a4591efa574fba3f30bc48"
+        },
+        "exactVendoredSource": [
+          {
+            "path": "tectonic/crates/engine_xetex/xetex/teckit-Common.h",
+            "bytes": 3872,
+            "sha256": "bbc9079b26e121b009b596c29d7b9f0cca9e2370ac7a0e3bc3cc6b072d63ae38"
+          },
+          {
+            "path": "tectonic/crates/engine_xetex/xetex/teckit-Compiler.h",
+            "bytes": 2710,
+            "sha256": "9ed9cdfc3cd6781164b02eeb410f48fec40d3a8b3e87e39d1ccf00243366dac6"
+          },
+          {
+            "path": "tectonic/crates/engine_xetex/xetex/teckit-Engine.cpp",
+            "bytes": 57272,
+            "sha256": "707befff4b320ea0bba1fb548798de39a28f9899717fc325939baa962b39f8b3"
+          },
+          {
+            "path": "tectonic/crates/engine_xetex/xetex/teckit-Format.h",
+            "bytes": 7802,
+            "sha256": "5d62b9d21f0352eccd030956ebd8e7a88eea47dfac6a239049293cd3c54bf7aa"
+          },
+          {
+            "path": "tectonic/crates/engine_xetex/xetex/teckit-NormalizationData.c",
+            "bytes": 305074,
+            "sha256": "fe6d43c6c6d3be3dbedb9537e8ed1593cfc843b2a9c52fa5fa30f6d6dbb448a6"
+          },
+          {
+            "path": "tectonic/crates/engine_xetex/xetex/teckit-c-Engine.h",
+            "bytes": 7444,
+            "sha256": "89f239df5a46b9a1d1062b323d85f0176bd550a25dbd2c86ec5285866567deaf"
+          },
+          {
+            "path": "tectonic/crates/engine_xetex/xetex/teckit-cxx-Engine.h",
+            "bytes": 4682,
+            "sha256": "2773012c442c658ce097cfa1301a415c1bdb9bd0c5c06e5f0da783b0d6b16991"
+          }
+        ],
+        "licensingBasis": "Actual source headers offer Common Public License OR LGPL. Original TECkit2.5.4 LICENSING.txt offers CPL0.5 or any later version; this product selects CPL1.0. Preserve SIL and Tectonic modifications/source notices.",
+        "originalLicensingURL": "https://raw.githubusercontent.com/silnrsi/teckit/2.5.4/license/LICENSING.txt",
+        "completeSelectedLicense": "licenses/CPL-1.0.txt",
+        "sourceAvailability": "Matching immutable Floe source includes Native/tectonic/crates/engine_xetex/xetex/teckit*; retain source, headers and local patches under selected CPL terms."
+      },
+      "tectonic": "MIT applies to Tectonic original Rust components only; retain XeTeX/SIL MIT notices, SyncTeX notice, public-domain TeX notices and TECkit CPL separately. Cargo MIT labels are not evidence that every embedded C/C++ component is MIT.",
+      "nativeSourcePolicy": "Floe Apple C shims and Rust bridge MPL2.0; preserve per-file notices. Runtime TeX/font data retains its own original licenses; no font substitution or binary reuse."
+    },
+    "noticesSHA256": "67737bee53c536890e7fb4aa5493aa8fb4030903d303f566d60e73bcdcc79c51",
+    "noticeReceiptSHA256": "51a15bb238e1e72eb8f94e8f74da1eb1faca43ec285e2b8facf865730a2781ad"
+  },
+  "engine": {
+    "upstream": "https://github.com/tectonic-typesetting/tectonic",
+    "tag": "tectonic@0.17.0",
+    "commit": "8c0126a9653239a2e6e0a5274af9b8510f643030",
+    "licensing": "Per-component notices retained; production selects TECkitCPL1.0/FreeTypeFTL/GraphiteMPL2.0, never a blanketMIT determination",
+    "archiveURL": "https://codeload.github.com/tectonic-typesetting/tectonic/tar.gz/8c0126a9653239a2e6e0a5274af9b8510f643030",
+    "archiveSHA256": "980f2862937cc084eae921ade500c0390c9ae196e973636e0e1b13f5c9479f01",
+    "patches": [
+      "patches/production-xdv.patch"
+    ],
+    "patchSHA256": "f5e56ccad8f9d1d2c1e700c2611dcb63976a62c4902ed515b8f9a4e5ba0e843d",
+    "productionSourceManifestSHA256": "311ac9432f67ddbb3a6fac07f2a0287bba43e0575f9ce208e12925587e1c45ab",
+    "productionLocalSourcesSHA256": "98c350f80c606c1eabfcc707712e45d195b4fb21a7e23c66ecf8375009ae18c1",
+    "nativeXDVProduct": "FloeTeXNativeXDV; XeTeX/BibTeX to real XDV/display list; Apple PDF renderer"
+  },
+  "dependencies": {
+    "schemaVersion": 1,
+    "source": "upstream source archives and published Homebrew recipe checksums observed 2026-11-08",
+    "dependencies": [
+      {
+        "name": "freetype",
+        "version": "2.15.0",
+        "url": "https://downloads.sourceforge.net/project/freetype/freetype2/2.15.0/freetype-2.15.0.tar.xz",
+        "sha256": "93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5",
+        "license": "FTL"
+      },
+      {
+        "name": "harfbuzz",
+        "version": "15.1.0",
+        "url": "https://github.com/harfbuzz/harfbuzz/releases/download/15.1.0/harfbuzz-15.1.0.tar.xz",
+        "sha256": "0fc7c565443a5f4be7da65ac5ee5bd737d9b158dc908708b7689a0a5796b0c8d",
+        "license": "MIT"
+      },
+      {
+        "name": "graphite2",
+        "version": "1.3.15",
+        "url": "https://github.com/silnrsi/graphite/releases/download/1.3.15/graphite2-1.3.15.tgz",
+        "sha256": "c6bc8b4252724665297f7cad0c55897285c673f9b8e6db3522ace833593fe0b1",
+        "license": "MIT OR MPL-2.0 OR LGPL-2.1-or-later OR GPL-2.0-or-later"
+      },
+      {
+        "name": "icu",
+        "version": "79.1",
+        "url": "https://github.com/unicode-org/icu/releases/download/release-79.1/icu4c-79.1-sources.tgz",
+        "sha256": "06fa63ecb521048f8082f12ad988f6b678d90cbd88aafce24cbc94902b191d99",
+        "license": "Unicode-3.0"
+      },
+      {
+        "name": "libpng",
+        "version": "1.6.59",
+        "url": "https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.xz",
+        "sha256": "d80dd2a38a37f803cb9b6ac7b14bd6e74ddc3b654780a8380bdf93523fdb4389",
+        "license": "libpng-2.0"
+      }
+    ]
+  },
+  "toolchain": "Xcode 27.2\nBuild version 27B52",
+  "minimumOS": "26.0",
+  "symbolAudits": {
+    "device": {
+      "tool": "llvm-nm",
+      "version": "llvm-nm, compatible with GNU nm\nLLVM (http://llvm.org/):\n  LLVM version 22.1.8-rust-1.98.1-stable\n  Optimized build.",
+      "definedGlobalSymbolsOnly": true,
+      "archiveSHA256": "4a02b6b9b467dd26eb4bb429dc64f9eed9853ea9676b332d906ae1f3d107df50",
+      "requiredNativeExportsVerified": true,
+      "forbiddenPDFExportsAbsent": true
+    },
+    "simulator": {
+      "tool": "llvm-nm",
+      "version": "llvm-nm, compatible with GNU nm\nLLVM (http://llvm.org/):\n  LLVM version 22.1.8-rust-1.98.1-stable\n  Optimized build.",
+      "definedGlobalSymbolsOnly": true,
+      "archiveSHA256": "078f618f02700b275a224b195f3e6c3245f21a9e1561b375cfc30bbef54d3386",
+      "requiredNativeExportsVerified": true,
+      "forbiddenPDFExportsAbsent": true
+    }
+  },
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+  "files": {
+    "Info.plist": "3af74508e1417abbd19b8e03f7f49a227bf0a492b77f39a4bdf4519565e04922",
+    "ios-arm64/Headers/FloeTeXAppleMetadata.h": "b27f11bf3dd07df255945627cc2259dce10d38533b34c518c21d0fc6d64ee7cb",
+    "ios-arm64/Headers/FloeTeXLegacyOutline.h": "4ff9000b1b671a407aca1ba3faa12b274e959b7f611d3ddba576b05e0d7ebe44",
+    "ios-arm64/Headers/FloeTeXNative.h": "63241efbf3648607e52240c5ca4f51961370eb47b0b1a42766c79d2d7808565c",
+    "ios-arm64/libFloeTeXNativeXDV.a": "4a02b6b9b467dd26eb4bb429dc64f9eed9853ea9676b332d906ae1f3d107df50",
+    "ios-arm64-simulator/Headers/FloeTeXAppleMetadata.h": "b27f11bf3dd07df255945627cc2259dce10d38533b34c518c21d0fc6d64ee7cb",
+    "ios-arm64-simulator/Headers/FloeTeXLegacyOutline.h": "4ff9000b1b671a407aca1ba3faa12b274e959b7f611d3ddba576b05e0d7ebe44",
+    "ios-arm64-simulator/Headers/FloeTeXNative.h": "63241efbf3648607e52240c5ca4f51961370eb47b0b1a42766c79d2d7808565c",
+    "ios-arm64-simulator/libFloeTeXNativeXDV.a": "078f618f02700b275a224b195f3e6c3245f21a9e1561b375cfc30bbef54d3386"
+  }
+}

@@ -76,6 +76,9 @@ private struct ScorePanelSnapshot {
     var currentPart: ScorePartRow? { parts.first { $0.id == partID } ?? parts.first }
     var currentIndex: Int { Int(value["current"]["index"].scoreNumber(1)) }
     var staves: Int { max(1, min(16, Int(value["current"]["staves"].scoreNumber(1)))) }
+    var staffDetails: EditorJSON { value["current"]["staffDetails"] }
+    var staffSign: String { staffDetails["clef"].scoreText("G") }
+    var stringCount: Int { max(1, min(12, Int(staffDetails["lines"].scoreNumber(6)))) }
     var input: EditorJSON { value["input"] }
     var inputType: String { input["type"].scoreText("quarter") }
     var inputDots: Int { Int(input["dots"].scoreNumber()) }
@@ -87,6 +90,9 @@ private struct ScorePanelSnapshot {
     var keyboardVisible: Bool { value["view"]["keyboardVisible"] != .bool(false) }
     var viewPart: String { value["view"]["part"].scoreText() }
     var concert: Bool { value["view"]["concert"].scoreFlag }
+    var notation: String { value["view"]["notation"].scoreText("staff") }
+    var numbered: EditorJSON { value["numberedInput"] }
+    var numberAlter: Int { Int(input["numberAlter"].scoreNumber()) }
     var continuous: Bool { value["layout"]["continuous"].scoreFlag }
     var zoom: Double { value["layout"]["zoom"].scoreNumber(1) }
     var loop: Bool { value["playback"]["loop"].scoreFlag }
@@ -114,6 +120,8 @@ private struct ScorePanelSnapshot {
                        _ key: String, _ value: EditorJSON) {
         let layout = snapshot.value["layout"]
         var arguments: [String: EditorJSON] = [
+            "scope": .string(snapshot.viewPart.isEmpty ? "score" : "part"),
+            "part": .string(snapshot.viewPart.isEmpty ? snapshot.partID : snapshot.viewPart),
             "paper": .string(layout["paper"].scoreText("A4_P")),
             "continuous": .bool(snapshot.continuous), "zoom": .number(snapshot.zoom),
             "condenseRests": .bool(layout["condenseRests"].scoreFlag),
@@ -143,7 +151,7 @@ private struct ScorePanelSnapshot {
         arguments[key] = value
         controller.runCommand("score.playback.mix", arguments: .object(arguments))
     }
-    static func enter(_ controller: HeavyEditorController, _ snapshot: ScorePanelSnapshot, pitch: Int? = nil, rest: Bool? = nil) {
+    static func enter(_ controller: HeavyEditorController, _ snapshot: ScorePanelSnapshot, pitch: Int? = nil, spelledPitch: String? = nil, rest: Bool? = nil) {
         var arguments: [String: EditorJSON] = [
             "type": .string(snapshot.inputType), "dots": .number(Double(snapshot.inputDots)),
             "voice": .number(Double(snapshot.inputVoice)), "staff": .number(Double(snapshot.inputStaff)),
@@ -151,8 +159,14 @@ private struct ScorePanelSnapshot {
         ]
         if !snapshot.partID.isEmpty { arguments["part"] = .string(snapshot.partID) }
         if !snapshot.measureID.isEmpty { arguments["measure"] = .string(snapshot.measureID) }
-        if let pitch { arguments["pitch"] = .string(pitchName(pitch)) }
-        controller.runCommand("score.edit.insert", arguments: .object(arguments))
+        if let spelledPitch { arguments["pitch"] = .string(spelledPitch) }
+        else if let pitch { arguments["pitch"] = .string(pitchName(pitch)) }
+        if snapshot.staffSign == "TAB", rest != true, !snapshot.isRestInput {
+            controller.runCommand("score.edit.tabInsert", arguments: .object(arguments))
+        } else if snapshot.staffSign == "percussion", rest != true, !snapshot.isRestInput {
+            arguments["drum"] = .number(Double(pitch ?? 38))
+            controller.runCommand("score.edit.percussionInsert", arguments: .object(arguments))
+        } else { controller.runCommand("score.edit.insert", arguments: .object(arguments)) }
     }
     static func pitchName(_ pitch: Int) -> String {
         let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -293,7 +307,7 @@ private struct ScorePanelSnapshot {
                 Button(EditorText.t("新建模板", "New from template"), systemImage: "doc.badge.plus") { controller.showCommand("score.project.template") }
                 Button(EditorText.t("标题与作者", "Title & credits"), systemImage: "textformat") { controller.showCommand("score.project.metadata") }
                 Button(EditorText.t("导出乐谱", "Export score"), systemImage: "square.and.arrow.up") { controller.showCommand("score.export") }
-                Button(EditorText.t("导出全部分谱", "Export linked parts"), systemImage: "doc.on.doc") { controller.showCommand("score.parts.export") }
+                Button(EditorText.t("导出全部分谱", "Export linked parts"), systemImage: "doc.on.doc") { controller.showCommand("score.parts.export", preset: .object(["format": .string("pdf")])) }
             }
         }.listStyle(.sidebar)
         .accessibilityIdentifier("score.native.outline")
@@ -306,6 +320,19 @@ private struct ScorePanelSnapshot {
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 12) {
+                    Picker(EditorText.t("记谱", "Notation"), selection: Binding(get: { snapshot.notation }, set: { value in
+                        controller.runCommand("score.view.notation", arguments: .object(["notation": .string(value)]))
+                    })) {
+                        Text(EditorText.t("五线谱", "Staff")).tag("staff")
+                        Text(EditorText.t("简谱", "Numbered")).tag("jianpu")
+                    }.pickerStyle(.segmented).frame(width: 178)
+                        .accessibilityIdentifier("score.native.notation")
+                    if snapshot.notation == "jianpu", !snapshot.value["notationWarnings"].array.isEmpty {
+                        Label(EditorText.t("完整记号请查看五线谱", "View the staff score for all marks"), systemImage: "info.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("score.native.numberedWarning")
+                    }
+
                 Picker(EditorText.t("时值", "Duration"), selection: Binding(get: { snapshot.inputType }, set: { ScorePanelActions.input(controller, "type", .string($0)) })) {
                     ForEach(ScorePanelActions.durationTypes, id: \.self) { type in Text(ScorePanelActions.durationName(type)).tag(type) }
                 }.pickerStyle(.menu).fixedSize()
@@ -530,9 +557,54 @@ private struct ScorePanelSnapshot {
             ScoreNativeTransport(controller: controller)
             if snapshot.keyboardVisible {
                 Divider()
-                ScoreNativePiano(controller: controller)
+                if snapshot.staffSign == "percussion" { ScoreNativeDrumEntry(controller: controller) }
+                else if snapshot.notation == "jianpu", snapshot.numbered["supported"].scoreFlag { ScoreNativeNumberedEntry(controller: controller) }
+                else if snapshot.staffSign == "TAB" { ScoreNativeTabEntry(controller: controller) }
+                else { ScoreNativePiano(controller: controller) }
             }
         }.accessibilityIdentifier("score.native.playback")
+    }
+}
+
+@MainActor private struct ScoreNativeTabEntry: View {
+    let controller: HeavyEditorController
+    @State private var string = 1
+    @State private var fret = 0
+    private var snapshot: ScorePanelSnapshot { ScorePanelSnapshot(value: controller.presentation) }
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                Picker(EditorText.t("弦", "String"), selection: $string) { ForEach(1...snapshot.stringCount, id: \.self) { Text("\($0)").tag($0) } }
+                    .accessibilityIdentifier("score.native.tab.string")
+                Stepper(EditorText.t("品位", "Fret") + " · \(fret)", value: $fret, in: 0...36).frame(minWidth: 150, minHeight: 44)
+                    .accessibilityIdentifier("score.native.tab.fret")
+                Button(EditorText.t("输入音符", "Enter note"), systemImage: "plus") {
+                    var arguments: [String: EditorJSON] = ["part":.string(snapshot.partID),"measure":.string(snapshot.measureID),"staff":.number(Double(snapshot.inputStaff)),"voice":.number(Double(snapshot.inputVoice)),"type":.string(snapshot.inputType),"dots":.number(Double(snapshot.inputDots)),"mode":.string(snapshot.entryMode),"string":.number(Double(string)),"fret":.number(Double(fret))]
+                    arguments["rest"] = .bool(false)
+                    controller.runCommand("score.edit.tabInsert", arguments: .object(arguments))
+                }.frame(minHeight: 44).accessibilityIdentifier("score.native.tab.enter")
+                Button(EditorText.t("调弦与变调夹", "Tuning & capo")) {
+                    let pitches = snapshot.staffDetails["tuning"].array.compactMap { $0.number }.map { ScorePanelActions.pitchName(Int($0)) }.joined(separator: " ")
+                    controller.showCommand("score.parts.tuning", preset: .object(["part":.string(snapshot.partID),"measure":.string(snapshot.measureID),"staff":.number(Double(snapshot.inputStaff)),"tuning":.string(pitches),"capo":snapshot.staffDetails["capo"]]))
+                }.frame(minHeight: 44)
+            }.padding(.horizontal, 10)
+        }.accessibilityIdentifier("score.native.tab.entry")
+            .onChange(of: snapshot.stringCount) { _, count in string = min(string, count) }
+    }
+}
+@MainActor private struct ScoreNativeDrumEntry: View {
+    let controller: HeavyEditorController
+    private var snapshot: ScorePanelSnapshot { ScorePanelSnapshot(value: controller.presentation) }
+    private var drums: [(Int,String)] { [(36,EditorText.t("底鼓","Kick")),(38,EditorText.t("军鼓","Snare")),(42,EditorText.t("闭镲","Closed hat")),(46,EditorText.t("开镲","Open hat")),(45,EditorText.t("低嗵","Low tom")),(48,EditorText.t("高嗵","High tom")),(49,EditorText.t("吊镲","Crash")),(51,EditorText.t("叮叮镲","Ride"))] }
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(drums, id: \.0) { pitch, title in
+                    Button(title) { controller.runCommand("score.edit.percussionInsert", arguments: .object(["part":.string(snapshot.partID),"measure":.string(snapshot.measureID),"staff":.number(Double(snapshot.inputStaff)),"voice":.number(Double(snapshot.inputVoice)),"type":.string(snapshot.inputType),"dots":.number(Double(snapshot.inputDots)),"mode":.string(snapshot.entryMode),"drum":.number(Double(pitch))])) }
+                        .buttonStyle(.bordered).frame(minWidth: 56, minHeight: 44).accessibilityIdentifier("score.native.drum.\(pitch)")
+                }
+            }.padding(.horizontal, 10)
+        }.accessibilityIdentifier("score.native.drum.entry")
     }
 }
 
@@ -579,6 +651,45 @@ private struct ScorePanelSnapshot {
     private static func time(_ seconds: Double) -> String {
         let seconds = max(0, Int(seconds))
         return "\(seconds / 60):" + String(format: "%02d", seconds % 60)
+    }
+}
+
+@MainActor private struct ScoreNativeNumberedEntry: View {
+    let controller: HeavyEditorController
+    private var snapshot: ScorePanelSnapshot { ScorePanelSnapshot(value: controller.presentation) }
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                Text(snapshot.numbered["key"].scoreText()).font(.subheadline.weight(.semibold))
+                Picker(EditorText.t("主音八度", "Tonic octave"), selection: Binding(get: { snapshot.inputOctave }, set: {
+                    ScorePanelActions.input(controller, "octave", .number(Double($0)))
+                })) {
+                    ForEach(0...8, id: \.self) { Text(String($0)).tag($0) }
+                }.frame(width: 105)
+                Picker(EditorText.t("升降", "Accidental"), selection: Binding(get: { snapshot.numberAlter }, set: {
+                    ScorePanelActions.input(controller, "numberAlter", .number(Double($0)))
+                })) {
+                    Text("♭").tag(-1); Text(EditorText.t("本调", "Key")).tag(0); Text("♯").tag(1)
+                }.pickerStyle(.segmented).frame(width: 132)
+                Button { ScorePanelActions.enter(controller, snapshot, rest: true) } label: {
+                    Text("0").font(.title3.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                }.buttonStyle(.bordered).accessibilityLabel(EditorText.t("输入休止符", "Enter rest"))
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 6) {
+                ForEach(Array(snapshot.numbered["keys"].array.enumerated()), id: \.offset) { _, key in
+                    let degree = Int(key["degree"].scoreNumber())
+                    Button { ScorePanelActions.enter(controller, snapshot, spelledPitch: key["pitch"].scoreText(), rest: false) } label: {
+                        VStack(spacing: 1) {
+                            Text(String(degree)).font(.title3.weight(.semibold))
+                            Text(key["pitch"].scoreText()).font(.caption2).foregroundStyle(.secondary)
+                        }.frame(minWidth: 44, maxWidth: .infinity, minHeight: 48)
+                    }.accessibilityLabel(EditorText.t("输入 \(degree)，\(key["pitch"].scoreText())", "Enter \(degree), \(key["pitch"].scoreText())"))
+                        .accessibilityIdentifier("score.native.number." + String(degree))
+                }
+            }.buttonStyle(.bordered)
+        }.padding(.horizontal, 12).padding(.vertical, 8)
+            .accessibilityIdentifier("score.native.numberedInput")
     }
 }
 

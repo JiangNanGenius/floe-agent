@@ -26,14 +26,12 @@ struct ProviderListView: View {
     @State private var showsCatalogUpdatePrompt = false
     @State private var updatedCatalogProviders: [ProviderProfile] = []
     @ObservedObject private var catalogOwner: ContentUpdateCenter
+    @ObservedObject private var conversationCenter: ConversationCenter
 
-    /// Optional validated catalog plus refresh closure. Both stay nil for
-    /// call sites that only support manual provider setup. When present the
-    /// catalog search lives inside the editor's provider-field section; there
-    /// is deliberately no independent catalog page or top-level route.
+    /// Every entry point reads the same validated, installed or bundled catalog.
     private let initialCatalog: ProviderCatalogIndex?
     private var catalog: ProviderCatalogIndex? {
-        initialCatalog == nil ? nil : catalogOwner.providerCatalogIndex() ?? initialCatalog
+        catalogOwner.providerCatalogIndex() ?? initialCatalog
     }
     private let onRefreshCatalog: (() async -> Void)?
 
@@ -45,7 +43,10 @@ struct ProviderListView: View {
         _viewModel = StateObject(wrappedValue: ProviderListViewModel(center: center))
         self.initialCatalog = catalog
         _catalogOwner = ObservedObject(wrappedValue: center.environment.contentUpdateCenter)
-        self.onRefreshCatalog = onRefreshCatalog
+        _conversationCenter = ObservedObject(wrappedValue: center)
+        self.onRefreshCatalog = onRefreshCatalog ?? {
+            await center.environment.contentUpdateCenter.refreshProviderCatalog()
+        }
     }
 
     var body: some View {
@@ -89,6 +90,8 @@ struct ProviderListView: View {
             refreshCapabilityProposals()
         }
         .onChange(of: catalogOwner.installStates) { _, _ in refreshCapabilityProposals() }
+        .onChange(of: conversationCenter.configuredProviders) { _, _ in refreshCapabilityProposals() }
+        .onChange(of: conversationCenter.configuredModelsByProvider) { _, _ in refreshCapabilityProposals() }
         .alert(IDELanguageRunText.t("模型数据有更新", "Model updates available"), isPresented: $showsCatalogUpdatePrompt) {
             Button(IDELanguageRunText.t("查看更新", "Review updates")) {
                 if !capabilityProposals.isEmpty { showsCapabilityReview = true }
@@ -96,12 +99,17 @@ struct ProviderListView: View {
             }
             Button("providers.capability_migration.not_now", role: .cancel) {}
         } message: {
-            Text(IDELanguageRunText.t("是否查看并更新已添加模型的信息？", "Review and update information for your saved models?"))
+            // State what is actually affected before asking to review:
+            // pending per-model metadata rows and changed provider catalogs.
+            Text(catalogUpdatePromptMessage)
         }
         .confirmationDialog("providers.provider_list_view.add_model_provider", isPresented: $showsProviderTypePicker) {
             Button("providers.provider_list_view.chat_model_provider") { presentedEditor = .new(.conversation) }
+                .accessibilityIdentifier("providers.add.conversation")
             Button("providers.provider_list_view.image_generation_editing_provider") { presentedEditor = .new(.image) }
+                .accessibilityIdentifier("providers.add.image")
             Button("providers.provider_list_view.video_generation_provider") { presentedEditor = .new(.video) }
+                .accessibilityIdentifier("providers.add.video")
             Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
         } message: {
             Text("providers.provider_list_view.choose_a_use_first_then_configure")
@@ -272,13 +280,11 @@ struct ProviderListView: View {
     private func refreshCapabilityProposals() {
         capabilityProposals = viewModel.capabilityProposals(catalog: catalog)
         updatedCatalogProviders = viewModel.center.configuredProviders.filter { provider in
-            guard let signature = catalogSignature(provider) else { return false }
-            let key = "providers.catalog.reviewed." + provider.id.uuidString
-            guard let previous = UserDefaults.standard.string(forKey: key) else {
-                UserDefaults.standard.set(signature, forKey: key)
-                return false
-            }
-            return previous != signature
+            // A legacy installation has no reviewed identity. Do not silently
+            // acknowledge its first bundled update or acknowledge on Cancel.
+            ProviderCatalogReviewService.isUnreviewed(
+                providerID: provider.id,
+                signature: catalogSignature(provider))
         }
         if capabilityProposals.isEmpty, !isApplyingCapabilityUpdates {
             showsCapabilityReview = false
@@ -287,29 +293,44 @@ struct ProviderListView: View {
               !isApplyingCapabilityUpdates else { return }
         let metadataIdentity = capabilityProposals.map {
             "\($0.id):\($0.addedCapabilities.rawValue):\($0.proposedContextTokens ?? 0)"
-        }.joined(separator: "\n")
-        let directoryIdentity = updatedCatalogProviders.compactMap { catalogSignature($0) }.joined(separator: "\n")
-        let identity = FloeDigest.sha256Hex(Data((metadataIdentity + directoryIdentity).utf8))
-        let key = "providers.catalog.lastPresentedUpdate"
-        if UserDefaults.standard.string(forKey: key) != identity {
-            UserDefaults.standard.set(identity, forKey: key)
+        }
+        let identity = ProviderCatalogReviewService.updateIdentity(
+            metadata: metadataIdentity,
+            catalogSignatures: updatedCatalogProviders.compactMap { catalogSignature($0) })
+        // Same pending content presents at most once; a deferred batch stays
+        // re-viewable through the persistent sections above.
+        if ProviderCatalogReviewService.shouldPresentPrompt(identity: identity) {
             showsCatalogUpdatePrompt = true
         }
     }
 
+    /// The prompt names the affected scope in ordinary words: how many saved
+    /// models have reviewed metadata changes and how many provider catalogs
+    /// changed since the last acknowledged save.
+    private var catalogUpdatePromptMessage: String {
+        var parts: [String] = []
+        if !capabilityProposals.isEmpty {
+            parts.append(IDELanguageRunText.t(
+                "\(capabilityProposals.count) 个已保存模型有可审阅的资料更新",
+                "\(capabilityProposals.count) saved models have metadata updates to review"))
+        }
+        if !updatedCatalogProviders.isEmpty {
+            parts.append(IDELanguageRunText.t(
+                "\(updatedCatalogProviders.count) 个供应商目录自上次保存审阅后有变化",
+                "\(updatedCatalogProviders.count) provider catalogs changed since your last saved review"))
+        }
+        parts.append(IDELanguageRunText.t(
+            "是否查看并更新已添加模型的信息",
+            "Review and update information for your saved models"))
+        return parts.joined(separator: FloeL10n.isChinese ? "。" : ". ") + (FloeL10n.isChinese ? "？" : "?")
+    }
+
     private func catalogSignature(_ provider: ProviderProfile) -> String? {
         guard let preset = provider.presetID, let entry = catalog?.entry(presetID: preset) else { return nil }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(entry) else { return nil }
-        return FloeDigest.sha256Hex(data)
+        return ProviderCatalogReviewStore.signature(entry)
     }
 
     private func reviewCatalog(_ provider: ProviderProfile) {
-        if let signature = catalogSignature(provider) {
-            UserDefaults.standard.set(signature, forKey: "providers.catalog.reviewed." + provider.id.uuidString)
-        }
-        updatedCatalogProviders.removeAll { $0.id == provider.id }
         let models = viewModel.center.configuredModelsByProvider[provider.id] ?? []
         let role: ProviderServiceRole = models.contains(where: \.supportsChatAgentSurface) || models.isEmpty
             ? .conversation : models.contains(where: \.supportsImageGenerationSurface) ? .image : .video

@@ -35,19 +35,22 @@ enum WorkspaceTextEdit {
                 throw WorkspaceToolError.invalidArguments("Remote server has no revision token; exact edits require conditional writes")
             }
             _ = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: entityTag)
-            return WorkspaceToolSupport.output("edited=\(path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) network=true")
+            // The acknowledged conditional write binds these complete bytes to the original token.
+            let baseline = WorkspaceFileChangeEvidence.remoteBaseline(bytes: bytes, before: metadata, after: metadata)
+            let artifacts = try WorkspaceFileChangeEvidence.artifacts(original: baseline, modified: updated,
+                path: path, runID: context.runID)
+            return WorkspaceToolSupport.output("edited=\(path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) network=true", artifacts: artifacts)
         }
         let original = try service.readFileForEditing(path, cancellation: context.cancellation).text
         let digest = WorkspaceFileService.sha256Hex(of: Data(original.utf8))
         try check(expectedSHA256, actual: digest)
         let updated = try transform(original)
         let outcome = try service.writeFile(path, content: updated, expectedSHA256: digest, cancellation: context.cancellation)
-        let artifact = try WorkspaceToolSupport.changeArtifact(
-            diff: service.diff(original: original, modified: updated, label: path), runID: context.runID
-        )
+        let artifacts = try WorkspaceFileChangeEvidence.artifacts(original: original, modified: updated,
+            path: path, runID: context.runID)
         return WorkspaceToolSupport.output(
             "edited=\(path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            artifacts: artifact.map { [$0] } ?? []
+            artifacts: artifacts
         )
     }
 

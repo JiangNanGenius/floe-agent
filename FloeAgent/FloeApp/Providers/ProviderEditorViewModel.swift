@@ -209,7 +209,10 @@ final class ProviderEditorViewModel: ObservableObject {
     let serviceRole: ProviderServiceRole
     /// Optional validated catalog. Enables embedded catalog search and the
     /// optional multi-service offers; nil keeps the manual-only editor.
-    let catalog: ProviderCatalogIndex?
+    private(set) var catalog: ProviderCatalogIndex?
+    /// Refresh discovery metadata only. Saved models and in-progress choices
+    /// are changed exclusively by the editor's existing explicit actions.
+    func updateCatalog(_ index: ProviderCatalogIndex?) { catalog = index }
     private let secretStore = KeychainSecretStore()
     private let adapterFactory = ProviderAdapterFactory()
     private let promptStore: ProviderServiceOfferPromptStore
@@ -987,6 +990,16 @@ final class ProviderEditorViewModel: ObservableObject {
         return issues
     }
 
+    /// RQ05: drops the inline findings for one field after the user edits
+    /// that field, so a corrected value never keeps showing the old message.
+    /// Findings for other fields stay visible until the next Save re-runs
+    /// the complete preflight. No validation state is invented here: this
+    /// only removes stale presentation of findings Save already produced.
+    func invalidateFieldIssues(matching field: ProviderConfigurationField) {
+        guard fieldIssues.contains(where: { $0.field == field }) else { return }
+        fieldIssues.removeAll { $0.field == field }
+    }
+
     /// Builds a ProviderProfile from the editable fields. Never embeds the
     /// API key — only a SecretReference to its Keychain account. Connection
     /// test and model discovery use this; Save uses `makeSaveRequest()` so its
@@ -1295,6 +1308,9 @@ final class ProviderEditorViewModel: ObservableObject {
 
     func updateModel(_ model: ModelProfile) {
         guard let index = candidateModels.firstIndex(where: { $0.id == model.id }) else { return }
+        // The user just corrected a model row: drop stale model findings;
+        // the next Save re-validates every row completely.
+        invalidateFieldIssues(matching: .model)
         let previous = candidateModels[index]
         // A user-edited auto-staged row is now user content: a later
         // supplier change must never replace it.

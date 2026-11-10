@@ -109,6 +109,7 @@ struct ThreadDetailView: View {
     @State private var threadViewportFrame: CGRect = .zero
     @State private var earlierActivityScrollDemand: UInt64 = 0
     @State private var structuredExport: TaskExportFile?
+    @State private var answerForNotes: String?
     @State private var exporting = false
     @State private var showsChecklist = false
     @State private var consumedInputID: UUID?
@@ -128,6 +129,12 @@ struct ThreadDetailView: View {
     private let documentAssistant: Bool
     private let ownsNavigationTitle: Bool
     private let onInputConsumed: (UUID) -> Void
+
+    private var saveAnswerToNotes: ((String) -> Void)? {
+        if let onSaveToNotes { return onSaveToNotes }
+        guard !viewModel.isTemporary, !documentAssistant else { return nil }
+        return { answerForNotes = $0 }
+    }
 
     init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, documentAssistant: Bool = false, ownsNavigationTitle: Bool = true, onSaveToNotes: ((String) -> Void)? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
         self.composerInput = composerInput
@@ -240,6 +247,16 @@ struct ThreadDetailView: View {
             .environment(\.composerHeightBudget, proxy.size.height)
             .environment(\.chatInlineContentScope, ChatInlineContentScope(
                 conversationID: viewModel.conversationID, isTemporary: viewModel.isTemporary))
+            .environment(\.gitHubSourceReturn, GitHubSourceReturnAction(conversationID: viewModel.conversationID) { runID in
+                // Capture this canonical host; Notes stays inside its own
+                // editor instead of opening its private assistant as Chat.
+                Task { @MainActor in
+                    await viewModel.selectRun(runID)
+                    if !embedded && !documentAssistant {
+                        router.openConversation(viewModel.conversationID, runID: runID)
+                    }
+                }
+            })
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.compactionStatus)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: viewModel.canContinue)
             .modifier(ThreadNavigationTitle(title: viewModel.taskTitle.isEmpty ? String(localized: "thread.title") : viewModel.taskTitle, enabled: ownsNavigationTitle))
@@ -338,6 +355,11 @@ struct ThreadDetailView: View {
 
             .sheet(item: $structuredExport) { file in
                 TaskExportShareSheet(url: file.url, lease: file.lease)
+            }
+            .sheet(isPresented: Binding(get: { answerForNotes != nil }, set: { if !$0 { answerForNotes = nil } })) {
+                if let answerForNotes {
+                    SaveChatAnswerToNotesSheet(text: answerForNotes, conversationID: viewModel.conversationID)
+                }
             }
             .sheet(item: $scheduleDetail, onDismiss: {
                 Task { await viewModel.loadLinkedSchedules() }
@@ -786,7 +808,7 @@ struct ThreadDetailView: View {
                     text: visibleSearchText,
                     ranges: searchRanges)
             } else if let persisted {
-                MessageBubble(message: persisted, displayedText: text, onSaveToNotes: onSaveToNotes,
+                MessageBubble(message: persisted, displayedText: text, onSaveToNotes: saveAnswerToNotes,
                     onContinueInteractive: { value in viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + value },
                     onOpenAttachment: { item in
                         selectedAttachment = ChatAttachmentOpenRequest(conversationID: persisted.conversationID,
@@ -796,7 +818,7 @@ struct ThreadDetailView: View {
                       let source = viewModel.events.first(where: { $0.id == sourceID && $0.kind == .assistantText }) {
                 InteractiveAnswerView(message: .init(id: sourceID, conversationID: viewModel.conversationID,
                     role: "assistant", content: text, createdAt: source.createdAt, runID: source.runID),
-                    onContinue: { value in viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + value }, onSaveToNotes: onSaveToNotes)
+                    onContinue: { value in viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + value }, onSaveToNotes: saveAnswerToNotes)
             } else {
                 AssistantMessageView(
                     text: text, isStreaming: false,
@@ -806,7 +828,7 @@ struct ThreadDetailView: View {
                     // Per-message playback ownership (primary SpeechService API):
                     // the timeline id IS the durable message id when persisted.
                     speechOwnerID: UUID(uuidString: idSuffix),
-                    onSaveToNotes: onSaveToNotes
+                    onSaveToNotes: saveAnswerToNotes
                 )
             }
 
@@ -1404,6 +1426,13 @@ struct ThreadDetailView: View {
             },
             onContinuousVoice: threadContinuousVoiceAction,
             onManualCompact: { viewModel.requestManualCompaction() },
+            onModelApplied: { previous, incoming in
+                // Recoverable history cleanup BEFORE the smaller-context
+                // model's first dispatch. Silent when the history already
+                // fits; surfaces only real outcomes on the existing status
+                // line. Never blocks or reverses the user's model choice.
+                viewModel.handleModelSwitchForHistory(previousModelID: previous, incoming: incoming)
+            },
             onPermissions: { showingPermissionsSheet = true },
             approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
             contextID: viewModel.conversationID,

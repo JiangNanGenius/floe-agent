@@ -51,7 +51,7 @@ public enum PreparedVideoCapabilities {
         if !metalAvailable {
             notes.append("No Metal device is available; Core Image may fall back to CPU.")
         }
-        notes.append("Vision tracking/matte adapters are not implemented in this component.")
+        notes.append("Sampled source object tracking and translation stabilization are implemented; person matte processing is not implemented.")
         return PreparedVideoCapabilityReport(
             platform: platformName,
             isSimulator: isSimulator,
@@ -61,7 +61,7 @@ public enum PreparedVideoCapabilities {
             hardwareHEVCDecodeAvailable: hardwareDecode,
             visionTrackingAPIAvailable: visionTrackingAvailable,
             visionPersonSegmentationAPIAvailable: visionSegmentationAvailable,
-            visionTrackingAdapterImplemented: false,
+            visionTrackingAdapterImplemented: visionTrackingAvailable,
             visionMattePipelineImplemented: false,
             offlineAudioMixerImplemented: true,
             notes: notes)

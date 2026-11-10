@@ -3,6 +3,8 @@
 import Foundation
 import Testing
 import UIKit
+import SwiftUI
+import FloeCore
 @testable import FloeApp
 
 @Suite("Library editor input handoff")
@@ -96,4 +98,101 @@ import UIKit
         #expect(!state.owns(next) && state.claim(input()) == nil)
     }
 }
+
+/// Only the owner/presentation/retry boundary; engine rendering is verified by
+/// the separate real App Word workflow. Every original here has an isolated
+/// existing PersonalContentService root and a generated exact record UUID.
+#if DEBUG
+@Suite("Personal Office owner lifecycle", .serialized)
+@MainActor struct PersonalOfficeOwnerLifecycleTests {
+    private func fixture() async throws -> (root: URL, owner: PersonalOfficeDocument) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("office326-owner-" + UUID().uuidString, isDirectory: true)
+        let service = PersonalContentService(root: root)
+        let record = try await service.createDocument(format: .word, title: "QA Office owner", id: UUID())
+        let location = try await service.library().resolve(record.id)
+        let original = try await service.originalFile(record.id)
+        let owner = try await PersonalOfficeDocument.open(record: record, directory: location.url,
+                                                         url: original, contentService: service)
+        let receipt: [String: String] = ["recordID": record.id.uuidString, "original": original.path,
+            "sha256": try FloeDigest.sha256Hex(ofFileAt: original), "purpose": "isolated-owner-lifecycle-fixture"]
+        print("FLOE_QA_OFFICE_OWNER_FIXTURE|" + String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: .sortedKeys), as: UTF8.self))
+        return (root, owner)
+    }
+
+    @Test("A temporary full-screen cover retains the owner; true close invalidates the old open")
+    func temporaryCoverAndTrueClose() async throws {
+        let environment = try await appQualificationEnvironment()
+        let fixture = try await fixture(), owner = fixture.owner
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousKey = scene.windows.first(where: \.isKeyWindow)
+        let host = UIHostingController(rootView: PersonalOfficeDocumentView(document: owner,
+            onClose: {}, onAssistant: {}, presentationIsActive: true, onRetryOpen: {})
+            .environmentObject(environment))
+        let window = UIWindow(windowScene: scene); window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previousKey?.makeKey() }
+        do {
+            let deadline = Date().addingTimeInterval(5)
+            while owner.session.phase == .idle, Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
+            #expect(owner.session.phase != .idle)
+            let cover = UIViewController(); cover.modalPresentationStyle = .fullScreen
+            host.present(cover, animated: false)
+            try await Task.sleep(for: .milliseconds(250))
+            #expect(host.presentedViewController === cover)
+            #expect(await owner.start(environment: environment))
+            do { try PersonalOfficeDocument.requireClosedForFileAction(projectID: owner.record.id); Issue.record("Covered editor lost its file-action ownership") }
+            catch { #expect(error is PersonalFileActionError) }
+            cover.dismiss(animated: false)
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(await owner.start(environment: environment))
+            #expect(await owner.close())
+            #expect(owner.session.phase == .idle && owner.session.controller == nil)
+            #expect(!(await owner.start(environment: environment)), "A closed owner cannot mount again")
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(owner.session.phase == .idle && owner.session.controller == nil,
+                    "The cancelled generation cannot mount or publish a late ready")
+            try PersonalOfficeDocument.requireClosedForFileAction(projectID: owner.record.id)
+            try FileManager.default.removeItem(at: fixture.root)
+        } catch {
+            _ = await owner.close()
+            throw error
+        }
+    }
+
+    @Test("A pre-mount recovery resolves the same original into a fresh owner and remains retryable after failure")
+    func retryResolvesSameOriginal() async throws {
+        let environment = try await appQualificationEnvironment()
+        let fixture = try await fixture(), owner = fixture.owner
+        let original = owner.url, digest = try FloeDigest.sha256Hex(ofFileAt: original)
+        let held = fixture.root.appendingPathComponent("held-original.docx")
+        var replacement: PersonalOfficeDocument?
+        do {
+            try FileManager.default.moveItem(at: original, to: held)
+            #expect(await owner.start(environment: environment))
+            #expect(owner.session.phase == .failed && owner.session.controller == nil)
+            #expect(await owner.session.recoverFailedSession())
+            #expect(owner.session.phase == .idle)
+            do {
+                _ = try await owner.replacement()
+                Issue.record("Missing original must never manufacture a successful reopen")
+            } catch { owner.session.reportOpenFailure(error) }
+            #expect(owner.session.phase == .failed && owner.session.canRecoverFailedSession)
+            try FileManager.default.moveItem(at: held, to: original)
+            let next = try await owner.replacement(); replacement = next
+            #expect(next !== owner && next.record.id == owner.record.id)
+            #expect(next.directory == owner.directory && next.url == original)
+            #expect(try FloeDigest.sha256Hex(ofFileAt: next.url) == digest)
+            #expect(owner.session.phase == .idle && owner.session.controller == nil)
+            #expect(await next.close())
+            try FileManager.default.removeItem(at: fixture.root)
+        } catch {
+            if FileManager.default.fileExists(atPath: held.path) { try? FileManager.default.moveItem(at: held, to: original) }
+            if let replacement { _ = await replacement.close() }
+            _ = await owner.close()
+            throw error
+        }
+    }
+}
+#endif
 #endif

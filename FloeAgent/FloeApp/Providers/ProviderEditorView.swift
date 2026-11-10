@@ -17,13 +17,18 @@ import FloeProviders
 struct ProviderEditorView: View {
     @StateObject private var viewModel: ProviderEditorViewModel
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var isEndpointFocused: Bool
     @State private var showModelPicker = false
     @State private var editingModel: ModelProfile?
     @State private var showsCatalogPicker = false
     /// Distinct-connection offer opened as its own visible editor (different
     /// endpoint/auth): never merged into this provider's connection.
     @State private var separateOfferRoute: SeparateOfferRoute?
-    private let catalog: ProviderCatalogIndex?
+    @ObservedObject private var catalogOwner: ContentUpdateCenter
+    private let initialCatalog: ProviderCatalogIndex?
+    private var catalog: ProviderCatalogIndex? {
+        catalogOwner.providerCatalogIndex() ?? initialCatalog
+    }
     private let onRefreshCatalog: (() async -> Void)?
 
     init(
@@ -42,13 +47,16 @@ struct ProviderEditorView: View {
                 existing: existing,
                 initialRole: initialRole,
                 catalogEntry: initialCatalogEntry,
-                catalog: catalog,
+                catalog: catalog ?? center.environment.contentUpdateCenter.providerCatalogIndex(),
                 serviceOfferEndpointOverride: serviceOfferEndpointOverride,
                 serviceOfferSeedModels: serviceOfferSeedModels
             )
         )
-        self.catalog = catalog
-        self.onRefreshCatalog = onRefreshCatalog
+        _catalogOwner = ObservedObject(wrappedValue: center.environment.contentUpdateCenter)
+        self.initialCatalog = catalog
+        self.onRefreshCatalog = onRefreshCatalog ?? {
+            await center.environment.contentUpdateCenter.refreshProviderCatalog()
+        }
     }
 
     var body: some View {
@@ -149,6 +157,13 @@ struct ProviderEditorView: View {
             Text(viewModel.saveErrorMessage ?? "")
         }
         .task { await viewModel.load() }
+        .onChange(of: catalogOwner.installStates) { _, _ in viewModel.updateCatalog(catalog) }
+        // RQ05: a corrected value never keeps showing the old finding; the
+        // next Save re-validates the whole form anyway.
+        .onChange(of: viewModel.displayName) { _, _ in viewModel.invalidateFieldIssues(matching: .displayName) }
+        .onChange(of: viewModel.baseURLString) { _, _ in viewModel.invalidateFieldIssues(matching: .baseURL) }
+        .onChange(of: viewModel.nonSecretHeadersText) { _, _ in viewModel.invalidateFieldIssues(matching: .nonSecretHeader) }
+        .onChange(of: viewModel.allowsPlainHTTP) { _, _ in viewModel.invalidateFieldIssues(matching: .plainHTTP) }
         .sheet(isPresented: $showModelPicker) {
             ModelPickerView(viewModel: viewModel)
         }
@@ -208,6 +223,7 @@ struct ProviderEditorView: View {
             TextField("providers.display_name", text: $viewModel.displayName)
                 .textInputAutocapitalization(.words)
                 .accessibilityIdentifier("providers.display_name")
+            fieldIssuesText(.displayName)
             // ONE unified supplier field: tapping the field itself opens the
             // searchable selector where the built-in presets and the verified
             // catalog entries live together (plus an explicit manual/custom
@@ -426,9 +442,12 @@ struct ProviderEditorView: View {
     private var endpointSection: some View {
         Section {
             TextField("providers.base_url", text: $viewModel.baseURLString)
+                .focused($isEndpointFocused)
+                .accessibilityIdentifier("providers.base_url")
                 .textInputAutocapitalization(.never)
                 .keyboardType(.URL)
                 .font(FloeTheme.Typography.evidence)
+            fieldIssuesText(.baseURL)
             // Native first-party media endpoints have no documented custom
             // header contract in this app, so their forms stay compact;
             // chat/gateway endpoints and any provider that already carries
@@ -439,9 +458,11 @@ struct ProviderEditorView: View {
                     .lineLimit(2...5)
                     .textInputAutocapitalization(.never)
                     .font(FloeTheme.Typography.evidence)
+                fieldIssuesText(.nonSecretHeader)
             }
             if viewModel.selectedPreset.defaultBaseURL.scheme == "http" {
                 Toggle("providers.allow_plain_http", isOn: $viewModel.allowsPlainHTTP)
+                fieldIssuesText(.plainHTTP)
             }
         } header: {
             Text("providers.endpoint")
@@ -603,6 +624,7 @@ struct ProviderEditorView: View {
                     modelRow(model)
                 }
             }
+            fieldIssuesText(.model)
             Button("providers.manage_models") { showModelPicker = true }
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("providers.manage_models")
@@ -697,11 +719,46 @@ struct ProviderEditorView: View {
         }
     }
 
+    // MARK: - Field-level validation findings (RQ05)
+
+    /// Inline findings for one editable field, rendered directly below that
+    /// field so a rejected save points at what must be corrected instead of
+    /// only at a bottom-of-form message. Bundle-level findings (`.form`)
+    /// keep the existing section + alert. Messages never echo the rejected
+    /// raw input; `presentableMessage` uses the catalog/bilingual text.
+    @ViewBuilder
+    private func fieldIssuesText(_ field: ProviderConfigurationField) -> some View {
+        let issues = viewModel.fieldIssues.filter { $0.field == field }
+        if !issues.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(issues) { issue in
+                    Label(
+                        ProviderEditorViewModel.presentableMessage(for: issue),
+                        systemImage: "exclamationmark.circle.fill"
+                    )
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(FloeTheme.destructive)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("providers.validation.field.\(field.rawValue)")
+        }
+    }
+
     // MARK: - Save
 
     private func save() {
+        // A rejected save must leave the field's correction visible instead
+        // of restoring the keyboard over the inline validation message.
+        isEndpointFocused = false
+        // Bind the acknowledgement to the metadata the user actually saw,
+        // before an asynchronous save or catalog refresh can change it.
+        let reviewedEntry = viewModel.catalogPresetID.flatMap { catalog?.entry(presetID: $0) }
         Task {
             if await viewModel.save() {
+                if let reviewedEntry {
+                    ProviderCatalogReviewStore.recordSaved(providerID: viewModel.providerID, entry: reviewedEntry)
+                }
                 // A local commit whose CloudKit enqueue failed stays on this
                 // sheet with the explicit pending banner + retry instead of
                 // dismissing as an unqualified success.

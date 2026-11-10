@@ -128,12 +128,18 @@ actor SkillWorkspaceResourceStager {
               !environmentID.isEmpty, let workspaceRootURL = context.workspaceRootURL else {
             return .unavailable(reason: SkillStageReason.noBoundEnvironment)
         }
+        let effectiveLimits: SkillValidationLimits
+        if let authorization = snapshot.resourceAuthorization {
+            do { try authorization.requireIdentity(snapshot.package) }
+            catch { return .unavailable(reason: SkillStageReason.packageRejected) }
+            effectiveLimits = authorization.profile.validationLimits
+        } else { effectiveLimits = limits }
         guard let bundle = Self.stagingBundle(
             manifestID: snapshot.package.manifest.id,
             digest: snapshot.package.canonicalSHA256,
             declaredFiles: snapshot.package.files,
             bytes: snapshot.files,
-            limits: limits
+            limits: effectiveLimits
         ) else {
             return .unavailable(reason: SkillStageReason.packageRejected)
         }

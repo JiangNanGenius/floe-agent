@@ -48,7 +48,7 @@ enum EDCanvasInteraction {
                 for pin in definition.pins where pin.unit == 0 || pin.unit == placement.unit {
                     consider(max(0, local.distance(to: pin.position) - 0.2), placement.id)
                 }
-                for graphic in definition.graphics { consider(graphicDistance(local, graphic), placement.id, 4) }
+                for graphic in definition.graphics(forUnit: placement.unit) { consider(graphicDistance(local, graphic), placement.id, 4) }
             }
             for wire in sheet.wires { consider(lineDistance(point, wire.points), wire.id, 3) }
             for bus in sheet.buses {

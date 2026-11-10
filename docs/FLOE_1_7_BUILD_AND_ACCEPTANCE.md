@@ -1,5 +1,32 @@
 # Floe 1.7 构建与验收 / Build and acceptance
 
+## 现行使用入口 / Current procedure · 2026-11-10
+
+构建策略以 [AGENTS.md](../AGENTS.md) 为准；常规操作见[工程指南](../FloeAgent/README.md)与[本地验证](FLOE_LOCAL_QUALIFICATION.zh-CN.md) / [English](FLOE_LOCAL_QUALIFICATION.md)。本文下方保留早期 1.7 构建记录，其中旧候选号、Xcode-beta 路径、TinyEMU、多模拟器及云端双 SDK 门槛不作为现行默认操作。
+
+Use AGENTS.md, the engineering guide and local qualification for current work. Earlier records below retain their original versions and toolchains; they do not define today's default build route.
+
+1. 检查实际 `main`、工作区 diff、活动 worktree 与相关任务占用，保留其他修改。版本／构建号读取 `FloeAgent/project.yml`，工具链按当前 AGENTS.md 核对。 / Inspect the checkout and ownership; read versions and toolchain requirements from their authorities.
+2. 按改动选择相关编译和行为检查。文档改动检查内容、引用和现有文档检查；Swift 6 并发修复需要对象／SIL 或完整 App 编译。 / Match checks to impact; documentation alone does not require an App build.
+3. 编译、测试和归档默认本地执行；CI 补充独立检查，不等待无关完整云端矩阵。缓存放内置 SSD，按 checkout／工具链／目标隔离，重型构建从 6 jobs 开始。 / Prefer local execution and measured resource use; CI is supplementary.
+4. 实际模拟器运行仅复用固定 iPad：由 [`select_test_simulator.py --canonical`](../FloeAgent/scripts/select_test_simulator.py) 解析，使用其 `--with-lock` 包装器；传入 `-parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1`。不新建、克隆、抹除或重置设备，不使用用户的实体 iPhone。结束后释放本任务占用并关闭不再使用的运行实例，保留其他任务现场。 / Use the canonical existing iPad and serialized wrapper; preserve its data and other owners.
+5. 完成后记录源码、工具链、目标、命令、结果和限制。构建成功即导出必要产物与符号，再清理已确认无用的本次生成物；测试、App 界面、设备效果及交付各自记录。 / Export artifacts and evidence before task-owned cleanup; report each acceptance state separately.
+
+运行前通过 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` 选择已安装完整 Xcode，不改变全局选择。本地 Python／Node 和模型代码经共享 ARM64 Linux 的既有执行入口运行，见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)。 / Select full Xcode per command. App-side model code uses the shared ARM64 Linux execution path.
+
+## 交付与恢复 / Delivery & recovery
+
+发布不是构建检查的自动后续动作，范围以用户当前授权和 AGENTS.md 为准。冻结前准备双语发布说明、对应 TestFlight 文案、版本与匹配的生成工程，并对确切本地标签运行只读预检。设备产物成功后立即保存来源与摘要；上传重试复用同一产物。 / Distribution follows the current authorized scope. Freeze matching copy and metadata, preflight the exact tag and retain source-bound artifacts before upload.
+
+Apple 处理、未过期、Floe QA 可用、publictest1 审核、GitHub unsigned IPA 和 Feather 分别读回；GitHub 走现有 unsigned producer、Actions attestation、严格发布核验及 awaited Feather 路径。安装状态见 [CURRENT_STATUS](CURRENT_STATUS.md)，逐版记录见[发布档案](releases/README.md)，公开资产修复约束见[发布恢复说明](releases/repairs/FLOE_GITHUB_RELEASE_ASSETS_20261018.md)。 / Independently read back each channel; reuse the existing attested publication and awaited-feed workflow.
+
+## 历史构建与验收记录 / Historical build & acceptance records
+
+以下正文保留原始结论、失败与当时要求；其中“本轮”“当前”均限于对应日期。后续通过不能覆盖此前失败，旧完整矩阵也不自动成为每次修改的门槛。 / Original outcomes and requirements remain scoped to their dates. Later success does not erase earlier failures or make an old matrix mandatory for every edit.
+
+<details>
+<summary>展开早期 1.7 构建与恢复记录 / Earlier 1.7 build and recovery records</summary>
+
 ## Current build policy / 当前构建策略 · 2026-10-09
 
 Use the actual checkout, installed SDK and `project.yml`. Local focused tests and App builds are preferred when resources permit; cloud CI provides independent checks and release workflows. Use an internal-SSD cache isolated by checkout/toolchain/target, start heavy compilation at six jobs, and preserve artifacts and original failures before cleanup. Swift 6 concurrency changes require SIL/object or full App compilation, not typecheck alone.
@@ -125,3 +152,5 @@ Apple 校验前运行 `prepare_app_store_bundle.py`：按摘要移除 pnpm 非 i
 8. 保存必要证据后清理任务所属临时传输草稿、分片与完成的构建缓存；后续证据可单独追加，不改旧标签或换包。
 
 279 的标签与产物保留为历史内测；其公共发布前置文案未在标签内冻结，因此不绕过门禁补发。下一构建按上述顺序交付，现有发布验证和来源绑定规则保持不变。
+
+</details>

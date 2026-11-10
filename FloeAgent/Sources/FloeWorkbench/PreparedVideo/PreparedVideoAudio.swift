@@ -233,7 +233,7 @@ public actor PreparedVideoAudioMixer {
         let engine = AVAudioEngine()
         var players: [AVAudioPlayerNode] = []
         var scheduled: [(player: AVAudioPlayerNode, buffer: AVAudioPCMBuffer, startFrame: Int)] = []
-        var effects: [AVAudioUnit] = []
+        var effectChains: [[AVAudioUnit]] = []
         var hasClips = false
         var scheduledCount = 0
         var scheduledBytes = 0
@@ -279,7 +279,7 @@ public actor PreparedVideoAudioMixer {
             configure(eq: eq, bands: track.eqBands)
             engine.attach(trackMixer)
             engine.attach(eq)
-            effects.append(eq)
+            var trackEffects: [AVAudioUnit] = [eq]
             engine.connect(trackMixer, to: eq, format: format)
             var lastNode: AVAudioNode = eq
             if let dynamics = track.dynamics {
@@ -291,11 +291,37 @@ public actor PreparedVideoAudioMixer {
                     componentFlagsMask: 0))
                 configure(dynamics: dynamicsNode, settings: dynamics)
                 engine.attach(dynamicsNode)
-                effects.append(dynamicsNode)
+                trackEffects.append(dynamicsNode)
                 engine.connect(lastNode, to: dynamicsNode, format: format)
                 lastNode = dynamicsNode
             }
+            if let limiter = track.limiter {
+                let node = AVAudioUnitEffect(audioComponentDescription:.init(componentType:kAudioUnitType_Effect,
+                    componentSubType:kAudioUnitSubType_PeakLimiter,componentManufacturer:kAudioUnitManufacturer_Apple,
+                    componentFlags:0,componentFlagsMask:0))
+                guard let parameters = node.auAudioUnit.parameterTree,
+                      let attack = parameters.parameter(withAddress:AUParameterAddress(kLimiterParam_AttackTime)),
+                      let decay = parameters.parameter(withAddress:AUParameterAddress(kLimiterParam_DecayTime)),
+                      let preGain = parameters.parameter(withAddress:AUParameterAddress(kLimiterParam_PreGain)) else {
+                    throw PreparedVideoError.audioFailure("native peak limiter is unavailable")
+                }
+                attack.value = Float(limiter.attackTime);decay.value = Float(limiter.decayTime)
+                // Boost into the native 0 dB limiter and lower its output by
+                // the same amount. Quiet samples keep gain; peaks obey this
+                // clip's ceiling before other tracks/master gain are mixed.
+                preGain.value = Float(-limiter.ceilingDB)
+                let attenuation = AVAudioMixerNode()
+                engine.attach(node);engine.attach(attenuation);trackEffects.append(node)
+                engine.connect(lastNode,to:node,format:format);engine.connect(node,to:attenuation,format:format)
+                lastNode = attenuation
+            }
+            effectChains.append(trackEffects)
             engine.connect(lastNode, to: engine.mainMixerNode, format: format)
+            // Connecting a mixer resets its output bus gain. Apply this only
+            // after the final graph connection, just like trackMixer below.
+            if let limiter = track.limiter,let attenuation = lastNode as? AVAudioMixerNode {
+                attenuation.outputVolume = Float(pow(10,limiter.ceilingDB/20))
+            }
             trackMixer.outputVolume = Float(track.volume)
 
             for (_, buffer, startFrame) in clipsToSchedule {
@@ -308,10 +334,9 @@ public actor PreparedVideoAudioMixer {
         }
         engine.mainMixerNode.outputVolume = Float(plan.audio.masterVolume)
 
-        var latencySeconds = 0.0
-        for unit in effects {
-            latencySeconds += max(0, unit.auAudioUnit.latency)
-        }
+        // Parallel tracks share time zero; only the longest processing path
+        // determines graph latency. Summing all tracks would shift the mix.
+        let latencySeconds = effectChains.map { chain in chain.reduce(0.0) { $0 + max(0,$1.auAudioUnit.latency) } }.max() ?? 0
         let latencyFrames = min(requestedFrames, max(0, Int((latencySeconds * sampleRate).rounded())))
         guard requestedFrames + tailFrames + latencyFrames <= limits.maximumRenderFrames else {
             throw PreparedVideoError.audioFailure("the graph latency plus window exceeds the render bound")
@@ -333,7 +358,7 @@ public actor PreparedVideoAudioMixer {
         }
         return PreparedGraph(engine: engine, format: format,
                              latencyFrames: latencyFrames, hasClips: hasClips,
-                             players: players, effectUnits: effects)
+                             players: players, effectUnits: effectChains.flatMap { $0 })
     }
 
     private func configure(eq: AVAudioUnitEQ, bands: [PreparedVideoEQBand]) {
@@ -397,10 +422,15 @@ public actor PreparedVideoAudioMixer {
               fileFormat.channelCount > 0, fileFormat.channelCount <= 8, file.length > 0 else {
             throw PreparedVideoError.assetUnreadable(asset.id)
         }
-        let sourceStart = clip.sourceRange.start.seconds
-            + (overlap.start.seconds - clip.timelineRange.start.seconds)
+        let rate = clip.speed ?? 1
+        let local = overlap.start.seconds - clip.timelineRange.start.seconds
+        let sourceHigh = clip.sourceRange.endSeconds - local * rate
+        let sourceStart = clip.isReversed == true
+            ? max(clip.sourceRange.start.seconds, sourceHigh - overlap.duration.seconds * rate - 2 / sampleRate)
+            : clip.sourceRange.start.seconds + local * rate
         let sourceStartFrame = AVAudioFramePosition((sourceStart * fileFormat.sampleRate).rounded())
-        let sourceFrameCount = AVAudioFrameCount(max(1, Int((overlap.duration.seconds * fileFormat.sampleRate).rounded())))
+        let sourceSpan = clip.isReversed == true ? sourceHigh - sourceStart : overlap.duration.seconds * rate
+        let sourceFrameCount = AVAudioFrameCount(max(1, Int(ceil(sourceSpan * fileFormat.sampleRate)) + (rate == 1 ? 0 : 2)))
         guard sourceStartFrame >= 0, sourceStartFrame < file.length else {
             throw PreparedVideoError.audioFailure("audio source range starts outside the file")
         }
@@ -426,7 +456,7 @@ public actor PreparedVideoAudioMixer {
         }
         try cancellation.check()
 
-        let converted: AVAudioPCMBuffer
+        var converted: AVAudioPCMBuffer
         if fileFormat.sampleRate == sampleRate && fileFormat.channelCount == format.channelCount {
             converted = input
         } else {
@@ -456,6 +486,31 @@ public actor PreparedVideoAudioMixer {
                 throw PreparedVideoError.audioFailure("audio conversion produced no frames")
             }
             converted = output
+        }
+
+        if rate != 1 || clip.isReversed == true {
+            // Deterministic source-rate resampling: preview and export use the
+            // same source positions and exact output frame count. Pitch follows
+            // speed; this does not claim a pitch-preserving time-stretch.
+            guard let samples = converted.floatChannelData,
+                  let retimed = AVAudioPCMBuffer(pcmFormat:format, frameCapacity:AVAudioFrameCount(outputFrames)),
+                  let destination = retimed.floatChannelData else {
+                throw PreparedVideoError.audioFailure("could not allocate retimed audio")
+            }
+            let count = Int(converted.frameLength)
+            retimed.frameLength = AVAudioFrameCount(outputFrames)
+            for frame in 0..<outputFrames {
+                if frame % 4096 == 0 { try cancellation.check() }
+                let rawPosition = clip.isReversed == true
+                    ? (sourceHigh - Double(sourceStartFrame) / fileFormat.sampleRate) * sampleRate - 1 - Double(frame) * rate
+                    : Double(frame) * rate
+                let position = max(0, min(Double(count-1), rawPosition))
+                let left = min(count-1, Int(position)), right = min(count-1,left+1), fraction = Float(position-Double(left))
+                for channel in 0..<Int(format.channelCount) {
+                    destination[channel][frame] = samples[channel][left] * (1-fraction) + samples[channel][right] * fraction
+                }
+            }
+            converted = retimed
         }
 
         // Clip gain/fade envelope is applied at output-timeline positions.

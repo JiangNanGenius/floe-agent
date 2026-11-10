@@ -142,19 +142,71 @@ public struct LaTeXWorkbench:View {
     private var buildStatus:String {
         if let operation {return operation.status}
         if session.preparingTypeset {return session.t("正在准备排版…","Preparing typesetting…")}
+        if session.error != nil {return session.t("排版遇到问题，查看详情","Typesetting failed · View details")}
         guard let build=session.build else {return session.t("尚未排版","Ready to typeset")}
         return switch build.state {case .queued,.preparing:session.t("正在准备…","Preparing…");case .compiling:session.t("正在排版…","Typesetting…");case .succeeded:session.pdfIsCurrent ? session.t("PDF 已更新","PDF is up to date"):session.t("PDF 等待更新","PDF needs updating");case .failed:session.t("排版遇到问题，查看详情","Typesetting failed · View details");case .cancelled:session.t("排版已停止","Typesetting stopped");case .interrupted:session.t("排版已中断","Typesetting interrupted")}
     }
     private var preview:some View {
         VStack(spacing:0) {
             if let url=session.pdfURL {
+                HStack {
+                    Text(buildStatus).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength:8)
+                    if session.isBuilding || operation != nil {stopPreviewButton}
+                    else if !session.pdfIsCurrent {typesetPreviewButton}
+                    if previewHasError && !session.isBuilding && operation == nil {
+                        Button(session.t("查看问题","View issues")) {showingPreview=false;panel = .builds}
+                    }
+                    if session.pdfIsCurrent {
+                        Button {share = .init(url:url)}label:{Image(systemName:"square.and.arrow.up")}
+                            .accessibilityLabel(session.t("导出 PDF","Export PDF"))
+                    }
+                }.padding(10).background(.bar)
                 if !session.pdfIsCurrent {Text(session.t("显示上次成功排版的版本","Showing the last successful PDF")).font(.caption).foregroundStyle(.secondary).padding(8)}
                 pdfRenderer(.init(url:url,location:session.pdfLocation,onSource:{page,x,y in
                     session.reversePDF(page:page,x:x,y:y)
                     if sizeClass != .regular {showingPreview=false}
                 }))
-            }else {ContentUnavailableView(session.t("论文预览","Document preview"),systemImage:"doc.richtext",description:Text(session.t("点击“排版”生成 PDF。","Choose Typeset to generate the PDF.")))}
+            }else {
+                ContentUnavailableView {
+                    if session.isBuilding || operation != nil {ProgressView().padding(.bottom,8)}
+                    Label(previewTitle,systemImage:previewHasError ? "exclamationmark.triangle":"doc.richtext")
+                } description:{
+                    Text(session.isBuilding || operation != nil
+                        ? buildStatus
+                        : previewHasError
+                            ? session.t("查看问题后可以重新排版。","Review the issue, then try typesetting again.")
+                            : session.t("排版后即可在这里查看 PDF。","Typeset your document to view its PDF here."))
+                } actions:{
+                    if session.isBuilding || operation != nil {stopPreviewButton}
+                    else {
+                        typesetPreviewButton.buttonStyle(.borderedProminent)
+                        if previewHasError {
+                            Button(session.t("查看问题","View issues")) {showingPreview=false;panel = .builds}
+                                .accessibilityIdentifier("latex.preview.issues")
+                        }
+                    }
+                }
+            }
         }
+        .accessibilityIdentifier("latex.preview")
+    }
+    private var previewHasError:Bool {session.error != nil || session.build?.state == .failed}
+    private var previewTitle:String {
+        if session.isBuilding || operation != nil {return session.t("正在生成 PDF","Generating PDF")}
+        if previewHasError {return session.t("暂未生成 PDF","PDF could not be generated")}
+        if session.build?.state == .cancelled || session.build?.state == .interrupted {return session.t("排版已停止","Typesetting stopped")}
+        return session.t("论文预览","Document preview")
+    }
+    private var typesetPreviewButton:some View {
+        Button {endEditing();Task {await session.compile()}}label:{
+            Label(session.t("排版","Typeset"),systemImage:"play.fill")
+        }.accessibilityIdentifier("latex.preview.compile")
+    }
+    private var stopPreviewButton:some View {
+        Button {if let operation {operation.stop()}else {session.stop()}}label:{
+            Label(operation?.stopLabel ?? session.t("停止排版","Stop typesetting"),systemImage:"stop.fill")
+        }.accessibilityIdentifier("latex.preview.stop")
     }
     private func setPreview(_ visible:Bool) {
         if visible,sizeClass == .regular,availableWidth<1_050 {panel=nil}

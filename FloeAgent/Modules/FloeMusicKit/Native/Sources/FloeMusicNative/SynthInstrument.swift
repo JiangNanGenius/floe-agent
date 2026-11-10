@@ -257,6 +257,9 @@ final class MusicSynthBank {
     private var pedal = false
     private var bend: Float = 0
     private var modulation: Float = 0
+    private var channelPedals: [Int: Bool] = [:]
+    private var channelBends: [Int: Float] = [:]
+    private var channelModulations: [Int: Float] = [:]
     private var order = 0
 
     init(engine: AVAudioEngine, format: AVAudioFormat, parameters: [String: Double] = [:], preset: Int = 0) throws {
@@ -279,7 +282,7 @@ final class MusicSynthBank {
         let eligible = voices.filter { $0.family == family }
         guard let voice = eligible.first(where: { $0.token == token })
             ?? eligible.first(where: { $0.token == nil })
-            ?? eligible.filter({ !$0.held && !pedal }).min(by: { $0.order < $1.order })
+            ?? eligible.filter({ !$0.held && !(channelPedals[$0.channel] ?? pedal) }).min(by: { $0.order < $1.order })
             ?? eligible.min(by: { $0.order < $1.order }) else { return }
         if family == .hat && [42, 44].contains(note) {
             for ringing in eligible where ringing !== voice { ringing.envelope.closeGate() }
@@ -287,7 +290,7 @@ final class MusicSynthBank {
         voice.envelope.closeGate()
         order += 1
         voice.token = token; voice.note = note; voice.channel = channel; voice.held = true; voice.order = order
-        voice.start(velocity: velocity, bend: bend, modulation: modulation)
+        voice.start(velocity: velocity, bend: channelBends[channel] ?? bend, modulation: channelModulations[channel] ?? modulation)
     }
 
     func noteOff(token: String) {
@@ -295,28 +298,35 @@ final class MusicSynthBank {
         voice.held = false
         // Percussion reaches zero through its own decay even for a very
         // short MIDI hit. Stop/allOff always terminates it immediately.
-        if !pedal && !voice.patch.oneShot { voice.envelope.closeGate() }
+        if !(channelPedals[voice.channel] ?? pedal) && !voice.patch.oneShot { voice.envelope.closeGate() }
     }
 
-    func sustain(_ enabled: Bool) {
-        pedal = enabled
+    func sustain(_ enabled: Bool, channel: Int? = nil) {
+        if let channel { channelPedals[channel] = enabled } else { pedal = enabled; channelPedals = [:] }
         if !enabled {
-            for voice in voices where !voice.held && !voice.patch.oneShot { voice.envelope.closeGate() }
+            for voice in voices where !voice.held && !voice.patch.oneShot && (channel == nil || voice.channel == channel) { voice.envelope.closeGate() }
         }
     }
 
-    func pitchBend(_ value: Float) {
-        bend = value.isFinite ? min(1, max(-1, value)) : 0
-        for voice in voices where voice.token != nil { voice.updatePitch(bend: bend, modulation: modulation) }
+    func pitchBend(_ value: Float, channel: Int? = nil) {
+        let amount = value.isFinite ? min(1, max(-1, value)) : 0
+        if let channel { channelBends[channel] = amount } else { bend = amount; channelBends = [:] }
+        for voice in voices where voice.token != nil && (channel == nil || voice.channel == channel) {
+            voice.updatePitch(bend: channelBends[voice.channel] ?? bend, modulation: channelModulations[voice.channel] ?? modulation)
+        }
     }
 
-    func setModulation(_ value: Float) {
-        modulation = value.isFinite ? min(1, max(0, value)) : 0
-        for voice in voices where voice.token != nil { voice.updatePitch(bend: bend, modulation: modulation) }
+    func setModulation(_ value: Float, channel: Int? = nil) {
+        let amount = value.isFinite ? min(1, max(0, value)) : 0
+        if let channel { channelModulations[channel] = amount } else { modulation = amount; channelModulations = [:] }
+        for voice in voices where voice.token != nil && (channel == nil || voice.channel == channel) {
+            voice.updatePitch(bend: channelBends[voice.channel] ?? bend, modulation: channelModulations[voice.channel] ?? modulation)
+        }
     }
 
     func allOff() {
         pedal = false; bend = 0; modulation = 0; order = 0
+        channelPedals = [:]; channelBends = [:]; channelModulations = [:]
         for voice in voices { voice.stop() }
     }
 

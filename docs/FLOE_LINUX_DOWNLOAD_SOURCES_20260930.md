@@ -1,5 +1,9 @@
 # Linux download source qualification / Linux 下载源核验
 
+> 历史参考 / Historical reference · 2026-11-10 标记。Build 239／TinyEMU 路线的下载源核验，固定来源与当时结论保留。现行共享 ARM64 运行环境见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)，不按此旧列表选择当前默认镜像。
+> Download-source qualification for build 239 and TinyEMU. Preserve its pinned provenance; use the current ARM64 architecture for current runtime selection.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 This change ships in Build239, immutable source `e03ce0e71f189e261f84e8f8a1cc1cbbaad0cbea`, tag `v1.7.0-beta.98`.

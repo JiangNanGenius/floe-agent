@@ -709,17 +709,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "floe_tex_native"
+name = "floe_tex_native_xdv"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "serde",
  "serde_json",
  "tectonic",
  "tectonic_bridge_core",
+ "tectonic_bridge_freetype2",
  "tectonic_bundles",
  "tectonic_engine_xetex",
  "tectonic_errors",
+ "tectonic_geturl",
  "tectonic_status_base",
+ "tectonic_xdv",
 ]
 
 [[package]]
@@ -3000,7 +3004,6 @@ dependencies = [
  "tectonic_bundles",
  "tectonic_engine_bibtex",
  "tectonic_engine_spx2html",
- "tectonic_engine_xdvipdfmx",
  "tectonic_engine_xetex",
  "tectonic_errors",
  "tectonic_geturl",
@@ -3158,17 +3161,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tectonic_engine_xdvipdfmx"
-version = "0.4.4"
-dependencies = [
- "cc",
- "libc",
- "tectonic_bridge_core",
- "tectonic_errors",
- "tectonic_pdf_io",
-]
-
-[[package]]
 name = "tectonic_engine_xetex"
 version = "0.5.3"
 dependencies = [
@@ -3182,7 +3174,6 @@ dependencies = [
  "tectonic_bridge_icu",
  "tectonic_cfg_support",
  "tectonic_errors",
- "tectonic_pdf_io",
  "tectonic_xetex_layout",
 ]
 
@@ -3221,17 +3212,6 @@ name = "tectonic_mac_core"
 version = "0.1.3"
 dependencies = [
  "libc",
- "tectonic_cfg_support",
-]
-
-[[package]]
-name = "tectonic_pdf_io"
-version = "0.5.3"
-dependencies = [
- "cc",
- "tectonic_bridge_core",
- "tectonic_bridge_flate",
- "tectonic_bridge_png",
  "tectonic_cfg_support",
 ]
 

@@ -1,11 +1,11 @@
-<!-- docs-updated: 2026-11-08 -->
+<!-- docs-updated: 2026-11-10 -->
 # From installation to your first result
 
 This guide focuses on iOS / iPadOS and calls out Android differences. Check the selected release for its actual capabilities.
 
 ## Choose an installation channel
 
-Open the [release centre](https://www.floe-agent.com/en/releases) and choose Floe Agent, Mac Bridge or iOS Bridge. The Floe Agent App Store listing is live (1.7.74, iOS/iPadOS 26+); update through the store. GitHub iOS IPAs require your own signing and carry newer features — the current newer-feature build is 1.8.5 (325). [Apply on the website](https://www.floe-agent.com/en#beta) for TestFlight access; applying does not guarantee immediate eligibility.
+Open the [release centre](https://www.floe-agent.com/en/releases) and choose Floe Agent, Mac Bridge or iOS Bridge. Floe Agent is available on the App Store for iOS/iPadOS 26+; update through the store. GitHub iOS IPAs require your own signing and may carry newer features. Check [channel versions and verification dates](CURRENT_STATUS.md) before choosing an installer. [Apply on the website](https://www.floe-agent.com/en#beta) for TestFlight access; applying does not guarantee immediate eligibility.
 
 On Android, download the signed APK for the selected public alpha. A complete current APK does not require installing every intermediate version. A delta needs its exact stated base. If Android reports a different signer, preserve your data rather than uninstalling just to proceed.
 
@@ -44,7 +44,7 @@ On Android, download the signed APK for the selected public alpha. A complete cu
 
 ## Try a work in Space (newer builds)
 
-**Prepare:** the 1.8.5 newer-feature build (GitHub, signed by you) or a TestFlight build. Space is not in the App Store 1.7.74 release.
+**Prepare:** an installer that includes Space; see the [workspace guide](WORKSPACES_GUIDE.md) for the required build and [channel status](CURRENT_STATUS.md) for availability. GitHub IPAs need your own signing.
 
 1. Open **Space** from the sidebar and switch to Files. Tap **New** and create a drawing or a document; name it.
 2. Edit the work, then close it and reopen it from Continue working to confirm it saved.

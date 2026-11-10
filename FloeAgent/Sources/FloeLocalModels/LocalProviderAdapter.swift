@@ -4,6 +4,10 @@ import FloeCore
 import FloeModels
 import FloeProviders
 import FloeLocalModelCatalog
+#if canImport(UIKit) && canImport(ImagePlayground)
+import UIKit
+import ImagePlayground
+#endif
 
 public struct LocalRuntimeCompletion: Sendable, Equatable {
     public var text: String
@@ -2386,6 +2390,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
             reasoningEffort: appleReasoning,
             isEnabled: false
         ))
+        #if canImport(UIKit) && canImport(ImagePlayground)
+        let imageAvailable = await MainActor.run { ImagePlaygroundViewController.isAvailable }
+        models.append(AppleImagePlaygroundModelIdentity.profile(providerID: provider.id,
+            available: imageAvailable, supportsEditing: false))
+        #endif
         for entry in CuratedLocalModelCatalog.entries {
             guard await store.installedModelURL(id: entry.id) != nil else { continue }
             let mappedBytes = await store.installedWeightBytes(id: entry.id) ?? 0

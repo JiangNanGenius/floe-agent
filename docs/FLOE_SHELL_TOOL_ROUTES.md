@@ -1,5 +1,9 @@
 # Shell 工具路由与运行时版本展示 / Shell Tool Routes and Runtime Version Display
 
+> 历史参考 / Historical reference · 2026-11-10 标记。本文是 2026-09-19 的工具路由与运行时展示记录，不能据此重新开放旧语言执行工具或沿用当时宿主配置。现行入口和无宿主回退边界见[执行架构](ARCHITECTURE_LOCAL_SHELL.md)。
+> Tool-routing and runtime-display snapshot from 2026-09-19. It does not restore legacy language tools or host settings; use the current execution architecture.
+> [历史文档索引 / Historical index](history/README.md)
+
 > 文档导航更新 / Documentation navigation updated 2026-10-05: [当前状态 / Current status](CURRENT_STATUS.md) · [中文手册](USER_GUIDE.zh-CN.md) · [English manual](USER_GUIDE.md)。本文带日期的候选、测试与交付结论保留原始适用范围，不视为当前发布状态。Dated evidence below remains scoped to its original source.
 
 日期 / Dated: 2026-09-19 · 状态 / Status: 源码已实现并通过轻量校验；主 App 编译与真机复验留给冻结源码后的云端构建与测试者

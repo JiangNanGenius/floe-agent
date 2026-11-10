@@ -17,6 +17,7 @@ struct GeneralSettingsView: View {
     @AppStorage(ComposerHardwareReturnBehavior.defaultsKey)
     private var hardwareReturnBehavior = ComposerHardwareReturnBehavior.newline.rawValue
     @AppStorage(VoiceRecognitionPreferences.methodKey) private var voiceMethod = VoiceRecognitionPreferences.Method.automatic.rawValue
+    @AppStorage(PersonalLibraryDeletionPreferences.trashEnabledKey) private var trashEnabled = true
     @EnvironmentObject private var speechSettings: TTSSettingsService
     /// Scene foldable capability snapshot. A plain environment value with an
     /// unknown default: isolated hosts never crash, and ordinary devices
@@ -83,6 +84,32 @@ struct GeneralSettingsView: View {
                 Text("settings.general_settings_view.the_queue_starts_a_new_turn")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle(IDELanguageRunText.t("使用回收站", "Use Trash"), isOn: $trashEnabled)
+                    .accessibilityIdentifier("settings.general.trashEnabled")
+            } header: {
+                Text(IDELanguageRunText.t("文件", "Files"))
+            } footer: {
+                Text(IDELanguageRunText.t("关闭后，在文件列表删除的内容将永久移除。回收站已有内容仍可恢复或清理。",
+                    "When off, deleting from the file list removes items permanently. Existing items in Trash can still be restored or removed."))
+            }
+
+            Section {
+                Picker(IDELanguageRunText.t("离开文档时", "When leaving a document"), selection: Binding(
+                    get: { center.documentAssistantLeavePolicy },
+                    set: { center.setDocumentAssistantLeavePolicy($0) }
+                )) {
+                    Text(IDELanguageRunText.t("每次询问", "Ask each time")).tag(DocumentAssistantLeavePolicy.ask)
+                    Text(IDELanguageRunText.t("继续运行", "Continue running")).tag(DocumentAssistantLeavePolicy.continueInBackground)
+                    Text(IDELanguageRunText.t("停止当前任务", "Stop current work")).tag(DocumentAssistantLeavePolicy.stopCurrentWork)
+                }.accessibilityIdentifier("settings.general.documentAssistantLeave")
+            } header: {
+                Text(IDELanguageRunText.t("文档助手", "Document assistant"))
+            } footer: {
+                Text(IDELanguageRunText.t("仅在助手运行时生效。切换标签或收起助手时继续运行。",
+                    "Applies while an assistant is running. Switching tabs or hiding the assistant keeps it running."))
             }
 
             Section("settings.general_settings_view.answer_quality") {

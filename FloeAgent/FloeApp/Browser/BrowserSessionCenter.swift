@@ -58,6 +58,9 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     var ownerReleaseHook: ((UUID) -> Void)?
 
     private let durableHandoffs: Bool
+    /// User-opened browsers share the browser engine, never a task's control
+    /// handoff or its pending notification.
+    let taskHandoffsEnabled: Bool
     private let artifactDirectory: URL
     private let sessionConfiguration: BrowserTaskSessionConfiguration
     private let settings: BrowserSettingsService
@@ -100,10 +103,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
 
     init(
         durableHandoffs: Bool = true,
+        taskHandoffsEnabled: Bool = true,
         settings: BrowserSettingsService? = nil
     ) {
         let settings = settings ?? BrowserSettingsService.shared
         self.durableHandoffs = durableHandoffs
+        self.taskHandoffsEnabled = taskHandoffsEnabled
         self.settings = settings
         self.lastAdvancedBrowserFeaturesEnabled = settings.advancedBrowserFeaturesEnabled
         let support = (try? FileManager.default.url(
@@ -144,7 +149,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             Self.didRunArtifactSweep = true
             cleanupArtifacts()
         }
-        if durableHandoffs, let data = try? Data(contentsOf: handoffURL),
+        if taskHandoffsEnabled, durableHandoffs, let data = try? Data(contentsOf: handoffURL),
            let saved = try? JSONDecoder().decode([Handoff].self, from: data) {
             handoffs = Dictionary(saved.map { ($0.conversationID, $0) }, uniquingKeysWith: { _, latest in latest })
         }
@@ -372,6 +377,9 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         runID: UUID? = nil,
         in conversationID: UUID
     ) throws {
+        guard taskHandoffsEnabled else {
+            throw FloeError.validationFailed("This browser is already operated by the user")
+        }
         // Handoff is not a way to conjure a browser for a task that has none:
         // the task must already own a session with a navigated page. This also
         // keeps a forged/absent owner from opening a panel.
@@ -566,6 +574,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         runID: UUID?,
         reason: String?
     ) {
+        guard taskHandoffsEnabled else { return }
         let owner = session.conversationID
         // Only the owner's CURRENT, unreleased session may initiate user
         // control. A session from an older generation (released, then
@@ -610,7 +619,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     }
 
     func returnToAgent(continueTask: Bool = false) async {
-        guard !returningControl, let event = handoff, let deliverHandoff else { return }
+        guard taskHandoffsEnabled, !returningControl, let event = handoff, let deliverHandoff else { return }
         guard deliveringHandoffs.insert(event.id).inserted else { return }
         returningControl = true
         handoffError = nil
@@ -660,7 +669,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     /// recovery. Targets the exact recorded task/run and never rebinds or
     /// restarts another task.
     func recoverHandoff(conversationID: UUID, runID: UUID) async {
-        guard let event = handoffs[conversationID], event.returning, event.runID == runID,
+        guard taskHandoffsEnabled, let event = handoffs[conversationID], event.returning, event.runID == runID,
               let deliverHandoff, deliveringHandoffs.insert(event.id).inserted else { return }
         defer { deliveringHandoffs.remove(event.id) }
         do {

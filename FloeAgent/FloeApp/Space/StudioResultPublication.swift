@@ -93,10 +93,11 @@ nonisolated struct StudioFrameInput: Decodable, Sendable {
     let expectedRevision: Int64
     let seconds: Double?
     let maximumPixelSize: Int?
+    var sourceClipID: UUID? = nil
     static func decode(_ json: String?) throws -> Self {
         guard let data = json?.data(using: .utf8), var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["expectedRevision", "seconds", "maximumPixelSize"]) else {
-            throw FloeError.validationFailed("inspectFrame requires {expectedRevision,seconds?,maximumPixelSize?}; no host paths")
+              Set(object.keys).isSubset(of: ["expectedRevision", "seconds", "maximumPixelSize", "sourceClipID"]) else {
+            throw FloeError.validationFailed("inspectFrame requires {expectedRevision,seconds?,maximumPixelSize?,sourceClipID?}; no host paths")
         }
         if let revision = object["expectedRevision"] as? String {
             guard revision.range(of: "^(0|[1-9][0-9]*)$", options: .regularExpression) != nil,
@@ -115,7 +116,13 @@ nonisolated struct StudioFrameInput: Decodable, Sendable {
         let projectID: UUID; let revision: Int64; let sourceSHA256: String
         let requestedSeconds: Double; let width: Int; let height: Int
         let artifact: ToolArtifactReference
-        let semantics = "Actual composed native image/frame near the requested timeline time. Not a UI screenshot or playback claim. Only a vision-capable model may inspect its pixels."
+        var sourceClipID: UUID? = nil
+        var sourceAssetID: UUID? = nil
+        var sourceSeconds: Double? = nil
+        var actualSourceFrameSeconds: Double? = nil
+        var sourceAssetSHA256: String? = nil
+        var coordinateSpace: String? = nil
+        var semantics = "Actual composed native image/frame near the requested timeline time. Not a UI screenshot or playback claim. Only a vision-capable model may inspect its pixels."
     }
     static func inspect(record: PersonalContentRecord, directory: URL, input: StudioFrameInput, context: ToolContext,
                         validateProject: @escaping @MainActor @Sendable () async throws -> Void) async throws -> ToolExecutionOutput {
@@ -123,6 +130,10 @@ nonisolated struct StudioFrameInput: Decodable, Sendable {
         try context.cancellation.throwIfCancelled(); try await validateProject()
         let project = try await StudioAudioObservation.mediaDocument(id: record.id, directory: directory)
         guard let document = project.prepared, document.revision == input.expectedRevision else { throw PersonalContentError.changedDocument }
+        if input.sourceClipID != nil {
+            return try await inspectSource(record: record, directory: directory, project: project, input: input,
+                context: context, validateProject: validateProject)
+        }
         let seconds = input.seconds ?? 0
         if project.kind == .image {
             guard seconds == 0 else { throw FloeError.validationFailed("A still image has no timeline") }
@@ -158,6 +169,53 @@ nonisolated struct StudioFrameInput: Decodable, Sendable {
         try await validate()
         var output = try StudioToolOutput.make(Receipt(projectID: record.id, revision: document.revision,
             sourceSHA256: sourceHash, requestedSeconds: seconds, width: width, height: height, artifact: artifact))
+        output.artifacts = [artifact]
+        return output
+    }
+    private static func inspectSource(record: PersonalContentRecord, directory: URL, project: MediaProject,
+                                      input: StudioFrameInput, context: ToolContext,
+                                      validateProject: @escaping @MainActor @Sendable () async throws -> Void) async throws -> ToolExecutionOutput {
+        guard record.kind == .video, project.kind == .video, let document = project.prepared, let clipID = input.sourceClipID,
+              let selected = document.trackGraph.clip(id: clipID), selected.track.kind == .visual,
+              let assetID = selected.clip.assetID, let asset = document.asset(assetID), asset.kind == .video else {
+            throw FloeError.validationFailed("Use an actual video source clip ID from this original")
+        }
+        let seconds = input.seconds ?? selected.clip.sourceRange.startSeconds
+        guard seconds >= selected.clip.sourceRange.startSeconds, seconds < selected.clip.sourceRange.endSeconds else {
+            throw FloeError.validationFailed("Choose source seconds inside this clip's actual sourceRange")
+        }
+        let root = directory.appendingPathComponent("Media").resolvingSymlinksInPath().standardizedFileURL
+        let source = (asset.relativePath.hasPrefix("/") ? URL(fileURLWithPath: asset.relativePath) : root.appendingPathComponent(asset.relativePath))
+            .resolvingSymlinksInPath().standardizedFileURL
+        guard source.path.hasPrefix(root.path + "/"),
+              try source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw PersonalContentError.missingDocument }
+        let projectHash = StudioToolOutput.hash(try StudioToolOutput.data(project)), token = context.cancellation
+        let validate: @MainActor @Sendable () async throws -> Void = {
+            try token.throwIfCancelled(); try Task.checkCancellation(); try await validateProject()
+            let current = try await StudioAudioObservation.mediaDocument(id: record.id, directory: directory)
+            guard StudioToolOutput.hash(try StudioToolOutput.data(current)) == projectHash else { throw PersonalContentError.changedDocument }
+        }
+        try await validate()
+        let cancellation = PreparedVideoCancellation(external: { token.isCancelled })
+        let worker = Task { try await MediaVideoMotionService.shared.inspectSource(url: source,sourceSeconds: seconds,
+            maximumPixelSize: input.maximumPixelSize ?? 960,expectedContentHash: asset.contentHash,cancellation: cancellation) }
+        let frame = try await withTaskCancellationHandler { try await worker.value } onCancel: { cancellation.cancel();worker.cancel() }
+        try await validate()
+        guard try await MediaVideoMotionService.shared.contentHash(source,cancellation: cancellation) == frame.contentHash else {
+            throw PersonalContentError.changedDocument
+        }
+        try await validate()
+        let artifact = try await StudioResultPublication.imageArtifact(frame.pngData,context: context)
+        try await validate()
+        guard try await MediaVideoMotionService.shared.contentHash(source,cancellation: cancellation) == frame.contentHash else {
+            throw PersonalContentError.changedDocument
+        }
+        try await validate()
+        var output = try StudioToolOutput.make(Receipt(projectID: record.id,revision: document.revision,sourceSHA256: projectHash,
+            requestedSeconds: seconds,width: frame.width,height: frame.height,artifact: artifact,sourceClipID: clipID,
+            sourceAssetID: assetID,sourceSeconds: seconds,actualSourceFrameSeconds: frame.actualSeconds,
+            sourceAssetSHA256: frame.contentHash,coordinateSpace: "normalizedTopLeftOrientedSource",
+            semantics: "Actual oriented SOURCE frame before clip rotation, masks, grading, stabilization and timeline placement. Preferred-track orientation is applied exactly as in native Vision analysis; Vision receives this upright image. Normalized coordinates use top-left (0,0), bottom-right (1,1). No composed-frame or UI screenshot claim. Only a vision-capable model may inspect pixels."))
         output.artifacts = [artifact]
         return output
     }

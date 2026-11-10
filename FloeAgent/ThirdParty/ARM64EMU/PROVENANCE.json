@@ -10,6 +10,12 @@
     "Sources": "MPL-2.0"
   },
   "productionTranslationUnits": [
+    "Bridge/boot_entropy.c",
+    "Bridge/console_channel.c",
+    "Bridge/no_native_jit.c",
+    "Bridge/ownership.c",
+    "Bridge/parallel_runtime.c",
+    "Bridge/runtime.c",
     "Source/src/cpu.c",
     "Source/src/decode.c",
     "Source/src/devices/fwcfg.c",
@@ -18,28 +24,22 @@
     "Source/src/devices/pl031.c",
     "Source/src/devices/psci.c",
     "Source/src/devices/timer.c",
+    "Source/src/devices/virtio_9p.c",
     "Source/src/devices/virtio_blk.c",
     "Source/src/devices/virtio_console.c",
+    "Source/src/devices/virtio_net.c",
     "Source/src/exception.c",
     "Source/src/exec_fpsimd.c",
     "Source/src/fdt/fdt.c",
     "Source/src/jit/predecode.c",
     "Source/src/memory.c",
-    "Source/src/mmu.c",
-    "Source/src/platform.c",
-    "Source/src/sysreg.c",
     "Source/src/memory_sync.c",
-    "Bridge/boot_entropy.c",
-    "Bridge/console_channel.c",
-    "Bridge/no_native_jit.c",
-    "Bridge/ownership.c",
-    "Bridge/runtime.c",
-    "Bridge/parallel_runtime.c",
-    "Source/src/devices/virtio_net.c",
-    "Source/src/devices/virtio_9p.c",
+    "Source/src/mmu.c",
     "Source/src/net/usernet_core.c",
-    "Source/src/net/usernet_udp.c",
-    "Source/src/net/usernet_tcp.c"
+    "Source/src/net/usernet_host.c",
+    "Source/src/net/usernet_poll.c",
+    "Source/src/platform.c",
+    "Source/src/sysreg.c"
   ],
   "capabilities": {
     "nativeJIT": false,
@@ -86,6 +86,10 @@
       "sha256": "faf0dcf0128745fc724eb8b4df1cfcb6e1da8a9e5f12112b10402734723f37a0"
     },
     {
+      "path": "Bridge/net_wait.h",
+      "sha256": "0f7437fa60a9f9c3286beedfb25d4db7031948a177afdc0afd687f18d7eb13e0"
+    },
+    {
       "path": "Bridge/no_native_jit.c",
       "sha256": "557a91a8836cd599aaad33880e0ee028933f0e049ae1112283b1b5c1252fb347"
     },
@@ -95,7 +99,7 @@
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "925f89b067cb97dc82f3f49893f9b88a6ff96d78ca1848f6974378333604bde0"
+      "sha256": "1e663eddcd05b21f3c01c12bbe9bdf09c5068e358fba1146b87cfca24a4c37e0"
     },
     {
       "path": "Bridge/parallel_runtime.h",
@@ -103,7 +107,11 @@
     },
     {
       "path": "Bridge/runtime.c",
-      "sha256": "6414ffd37f46bcf597224de99a1fd31a959ee24f2cfbdd455190190ea6ccdba6"
+      "sha256": "4df0ddc675e7029385210443cf5796eea144b367a0364646f8ede5bb78399d41"
+    },
+    {
+      "path": "PrivacyInfo.xcprivacy",
+      "sha256": "604b8badc38d2603eb9ea79aeb9058d416f4be8c7d569a0eb158b6b211c30151"
     },
     {
       "path": "Source/LICENSE",
@@ -136,6 +144,10 @@
     {
       "path": "Source/src/decode.c",
       "sha256": "17eb87d00a48215f51a632797a94309c0cc014c43a7ffd5266e3706cb434f7b9"
+    },
+    {
+      "path": "Source/src/devices.h",
+      "sha256": "421d787a05d40c7c4565f8e19f6da982f160ef5776f1cb75bfcc169024765be6"
     },
     {
       "path": "Source/src/devices/fwcfg.c",
@@ -183,11 +195,15 @@
     },
     {
       "path": "Source/src/devices/virtio_net.c",
-      "sha256": "4f07265f95f8a68b8bddcd0c1d0b49282088fb3f2f0e2ea1228a59766a3eb993"
+      "sha256": "46468e22c43f23490632522aa66cdfd942f834d95883f38818c2d67e62dd47c3"
     },
     {
-      "path": "Source/src/devices.h",
-      "sha256": "421d787a05d40c7c4565f8e19f6da982f160ef5776f1cb75bfcc169024765be6"
+      "path": "Source/src/devices/virtio_net_offload.c",
+      "sha256": "6afed6da1885e5c25fe0921ee7d421a9ff83f354dc0317eb7f20a095945137ad"
+    },
+    {
+      "path": "Source/src/devices/virtio_net_offload.h",
+      "sha256": "ac259fd4dbc3d5b1b8c51454db4d657d6199daedcea145c3227d9a88424ee364"
     },
     {
       "path": "Source/src/esr.h",
@@ -255,23 +271,27 @@
     },
     {
       "path": "Source/src/net/usernet.h",
-      "sha256": "ba1d0b458fd75a2d2831cb86699aa3d511db5019caa69b0399ca4994605019cc"
+      "sha256": "a9ea3204b67cf4fb25b12a9f0bcd53a3eb0a05fe912071ce293e9df5640c5484"
     },
     {
       "path": "Source/src/net/usernet_core.c",
-      "sha256": "7c2c6450fa1c17e7d818dd79f6c116f1e07d50e30486bdcc4985e0ba2f6026ed"
+      "sha256": "cde781fc341e25cc609507263125961fe2380f869d3128df8581890540ab26da"
+    },
+    {
+      "path": "Source/src/net/usernet_host.c",
+      "sha256": "c9a9dcbcebfd5a663c78934330feee7de1a534dd0fde44c7bb422deb127724e3"
+    },
+    {
+      "path": "Source/src/net/usernet_host.h",
+      "sha256": "b9092ed378f2353e07f11213f01a312be9170e002f5c9f42318ce0f62fce6d8a"
+    },
+    {
+      "path": "Source/src/net/usernet_poll.c",
+      "sha256": "27f7a346554fa1bbeb9a8c48ea756462cc2117fef8626dbf40a8618724bd826c"
     },
     {
       "path": "Source/src/net/usernet_priv.h",
-      "sha256": "a40e4aa67b64ec57e3ecd5378d6a09f136e5e22c0615db726a803075c63c3ee7"
-    },
-    {
-      "path": "Source/src/net/usernet_tcp.c",
-      "sha256": "2db484c6d377186b9e214db20f0032bdb6839fe29ce8889a0efd6b469d7fe8d4"
-    },
-    {
-      "path": "Source/src/net/usernet_udp.c",
-      "sha256": "ac60e8c52b593d47b1e139b022642f9bf8c0ef51ddd6a8d922db3183d6395b42"
+      "sha256": "9122095c3c2bf7a7d359e66c3454e27a18d93cda51ab136467a8d1cc48f55132"
     },
     {
       "path": "Source/src/parallel_iface.h",
@@ -410,20 +430,20 @@
       "sha256": "f182d3f25f4c640049f98fb59ac2313654fe7d6ba8e63338ca9c2086faf712bc"
     },
     {
-      "path": "Sources/28_usernet_udp.c",
-      "sha256": "6d19eb5a978ab1256a075f9201486355df72e8ff21b06147ace71f8f3eb825ff"
+      "path": "Sources/28_usernet_poll.c",
+      "sha256": "1302355110fb0fab41bdcd8529aa9e53888f0af2b10edc947d88b5456fe6a175"
     },
     {
-      "path": "Sources/29_usernet_tcp.c",
-      "sha256": "582c4caf256211936b4018516d158516b4c54763df90a49c15a368b8dc8ad1b1"
-    },
-    {
-      "path": "include/floe_arm64emu.h",
-      "sha256": "d711f810ecedd7f851fd7c79575fcd783b5704d2c2edb862d0e85d6985fdf607"
+      "path": "Sources/29_usernet_host.c",
+      "sha256": "52623ce7821d4bb7da5b25d9f27c036d3cd44b85de8a481d8cff6493d170a5fe"
     },
     {
       "path": "Tools/generate_crc32_tables.py",
       "sha256": "6253ac38922b9e120ea6567ab180dcfde3ab59c95419edd253e71a4b6565938a"
+    },
+    {
+      "path": "include/floe_arm64emu.h",
+      "sha256": "d711f810ecedd7f851fd7c79575fcd783b5704d2c2edb862d0e85d6985fdf607"
     }
   ],
   "patches": [
@@ -496,5 +516,13 @@
     "A9 changes only predecode.c,memory_sync.c/h,mmu.c/h; no new JIT or RO-cache mode.",
     "Worker/RPC progress explicitly wakes the readiness pipe; retaining only pthread condition signaling delayed actual guest boot.",
     "Compiler/component/guest and production App evidence are distinct; no general speed claim."
-  ]
+  ],
+  "networkIntegration": {
+    "backend": "libslirp 4.9.7 via Vendor/FloeSlirp; ordinary Ethernet seam",
+    "publicFloeABI": 2,
+    "guestIPv6": "Internal UserNetConfig, no public layout change",
+    "wait": "Typed read/write/error interests with deadlines and owned duplicates",
+    "offload": "Negotiated TX checksum/TSO4/TSO6 and RX checksum; RX GSO selected by build profile",
+    "qualification": "Component and actual Linux/Node qualification recorded separately; full App and physical M1 results belong to integration evidence."
+  }
 }

@@ -132,6 +132,7 @@ public actor MediaProjectStore {
             throw FloeError.validationFailed("Project document exceeds \(limits.maximumDocumentBytes) bytes")
         }
         var project = try decoder.decode(MediaProject.self, from: data)
+        if project.prepared?.schemaVersion == MediaPreparedCompounds.schemaVersion { try MediaPreparedIntegrity.validateEnvelope(project) }
         project.recoveryWarnings = MigrationSupport.recoveryWarnings(for: project)
         return project
     }
@@ -175,6 +176,9 @@ public actor MediaProjectStore {
             // the fork identity/revision and start with an empty journal; the
             // parent's edit groups must not be undoable against the child.
             prepared.id = fork.id
+            for ti in prepared.trackGraph.tracks.indices { for ci in prepared.trackGraph.tracks[ti].clips.indices {
+                if var compound=prepared.trackGraph.tracks[ti].clips[ci].compound { compound.source.id=fork.id;compound.needsRender=true;prepared.trackGraph.tracks[ti].clips[ci].compound=compound }
+            } }
             prepared.name = fork.name
             prepared.kind = fork.kind
             prepared.revision = fork.revision
@@ -213,7 +217,8 @@ public actor MediaProjectStore {
                     "Prepared project conflict: refusing to drop prepared v2 content")
             }
             if project.prepared != nil
-                && !MediaPreparedIntegrity.v1ProjectionEqual(project, onDisk) {
+                && !MediaPreparedIntegrity.v1ProjectionEqual(project, onDisk)
+                && !MediaPreparedIntegrity.allowsPreparedCanvasTransition(project, from:onDisk) {
                 throw FloeError.validationFailed(
                     "Prepared project conflict: v1 content changed without a prepared-document transaction")
             }

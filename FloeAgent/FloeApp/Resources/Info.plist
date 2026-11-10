@@ -119,12 +119,22 @@
 	<string>Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.</string>
 	<key>NSBonjourServices</key>
 	<array>
+		<string>_airplay._tcp</string>
+		<string>_afpovertcp._tcp</string>
+		<string>_googlecast._tcp</string>
+		<string>_hap._tcp</string>
 		<string>_home-assistant._tcp</string>
 		<string>_http._tcp</string>
-		<string>_printer._tcp</string>
+		<string>_https._tcp</string>
 		<string>_ipp._tcp</string>
-		<string>_airplay._tcp</string>
+		<string>_ipps._tcp</string>
+		<string>_printer._tcp</string>
 		<string>_raop._tcp</string>
+		<string>_rfb._tcp</string>
+		<string>_sftp-ssh._tcp</string>
+		<string>_smb._tcp</string>
+		<string>_uscan._tcp</string>
+		<string>_workstation._tcp</string>
 	</array>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Floe accesses calendars only when you ask the agent to read or edit events.</string>
@@ -141,7 +151,7 @@
 	<key>NSHomeKitUsageDescription</key>
 	<string>Floe accesses your Home only when you enable Home tools and request an automation action.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Floe scans your local network only when you ask the agent to discover nearby services and devices.</string>
+	<string>Floe discovers nearby devices only when you start a local-network check or ask the assistant to do so.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Floe uses your location for requested weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.</string>
 	<key>NSMicrophoneUsageDescription</key>

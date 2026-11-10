@@ -121,6 +121,7 @@ INVENTORY_REPOSITORY_PATH = "FloeAgent/LICENSES-THIRD-PARTY.md"
 MANIFEST_BUNDLE_PATH = "Licenses/third-party-inventory.json"
 LIBGIT2_COPYING_BUNDLE_PATH = "Licenses/libgit2-COPYING.txt"
 LIBGIT2_EVIDENCE = ".build/checkouts/libgit2/COPYING"
+LOCAL_LIBGIT2_EVIDENCE = "ThirdParty/FloeNativeGit/libgit2/COPYING"
 # Recorded evidence under this prefix comes from a resolved checkout and is
 # expected to be absent in a clean tree; anything else must stay readable.
 CHECKOUT_EVIDENCE_PREFIX = ".build/checkouts/"
@@ -142,6 +143,31 @@ APP_ONLY_NOTICES = {
 # taken from, and the complete notice text is copied into the app bundle at the
 # declared document path (compared byte for byte by --check).
 VENDORED_PACKAGES = (
+    {
+        "identity": "libgit2", "path": "ThirdParty/FloeNativeGit/libgit2", "licenseFile": "COPYING",
+        "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f", "version": "1.9.2",
+        "upstream": "https://github.com/ibrahimcetin/libgit2.git", "license": "GPL-2.0 WITH libgit2 linking exception",
+        "licenseSHA256": "330f7f86a0f7fa88f7763b6ef0aba06dec33bf5b1ea8c304b76e883d73471f95",
+        "note": ("libgit2", "libgit2 is licensed under GPL-2.0 with a linking exception that explicitly permits linking it into this application. The complete GPL-2.0 text ships in this app as Licenses/libgit2-COPYING.txt, and libgit2's source is the pinned repository in the component list."),
+        "existingDocument": True,
+        "document": {
+            "id": "libgit2", "repositoryPath": "FloeApp/Resources/Licenses/libgit2-COPYING.txt",
+            "bundlePath": "Licenses/libgit2-COPYING.txt", "titleKey": "settings.licenses.document.libgit2.title",
+            "titleFallback": "libgit2", "kind": "full_text", "required": True, "section": "engines",
+        },
+    },
+    {
+        "identity": "swiftgitx", "path": "ThirdParty/FloeNativeGit/SwiftGitX",
+        "revision": "fcfb71e3dcbbaa70d120b98b7477ce173074aec3", "version": "0.4.0",
+        "upstream": "https://github.com/ibrahimcetin/SwiftGitX.git", "license": "MIT",
+        "licenseSHA256": "9de5d708c401c993b7a82fbbc4ad5df67958e3c53ac98ed3872026d6a4277f79",
+        "note": ("swiftgitx_native", "SwiftGitX 0.4.0 retains its pinned upstream source and original MIT notice in FloeNativeGit; its native Git transport is provided by the separately declared libgit2 component."),
+        "document": {
+            "id": "swiftgitx", "repositoryPath": "FloeApp/Resources/Licenses/SwiftGitX-LICENSE.txt",
+            "bundlePath": "Licenses/SwiftGitX-LICENSE.txt", "titleKey": "settings.licenses.document.swiftgitx.title",
+            "titleFallback": "SwiftGitX", "kind": "full_text", "required": True, "section": "swift",
+        },
+    },
     {
         "identity": "clipper2", "path": "ThirdParty/Clipper2",
         "revision": "b496b454df168a2280354857c1cd90bd6fa7b4dd", "version": "2.0.1",
@@ -348,8 +374,32 @@ ALLOWED_EXACT = {
     "Apache-2.0 OR BSD-3-Clause",
     "curl license (MIT/X derivative)",
 }
+# The FloeSlirp userspace network stack license string; one reviewed exception
+# entry covers the whole static stack (components declare this exact value).
+FLOESLIRP_STACK_LICENSE = (
+    "BSD-3-Clause + per-file MIT (libslirp); LGPL-2.1-or-later (GLib core); LGPL-2.0 (proxy-libintl stubs); BSD-3-Clause WITH PCRE2-exception (PCRE2) — static libraries linked via the FloeSlirp binaryTarget; pinned source, patches, rebuild and relink instructions recorded"
+)
+
+# The in-app note text for the slirp stack. The settings.licenses.note.slirp
+# catalog values equal this string (asserted by the bilingual alignment test).
+NOTES_SLIRP_TEXT = 'Floe Agent statically links the FloeSlirp userspace network stack for its Linux guest: libslirp 4.9.7 (BSD-3-Clause with 9 per-file MIT sources), the trimmed GLib 2.90.1 core (LGPL-2.1-or-later), PCRE2 10.46 built with JIT disabled (BSD-3-Clause WITH PCRE2-exception) and proxy-libintl 0.5 stubs (LGPL-2.0). The pinned upstream archives, the recorded local patches, the build scripts and every delivered digest are recorded in FloeAgent/Vendor/FloeSlirp/PROVENANCE.json; the full license texts ship under Licenses/ (FloeSlirp-LICENSES.txt, FloeSlirp-GLib-LGPL.txt, FloeSlirp-ProxyLibintl-LGPL.txt) and Licenses/FloeSlirp-SOURCE-OFFER.txt gives the corresponding-source and relink route with the immutable app tag.'
+
 # Explicit, individually reviewed exceptions. Each still prints a notice.
 EXCEPTIONS = {
+    FLOESLIRP_STACK_LICENSE: (
+        "libslirp 4.9.7 (BSD-3-Clause with 9 per-file MIT sources) plus the "
+        "trimmed GLib 2.90.1 core (LGPL-2.1-or-later), PCRE2 10.46 built with "
+        "JIT disabled (BSD-3-Clause WITH PCRE2-exception) and proxy-libintl 0.5 "
+        "stubs (LGPL-2.0) are linked into the app as static archives through the "
+        "FloeSlirpBinary binary target. The complete unmodified upstream release "
+        "archives, the recorded local patches, the build scripts and the "
+        "delivered slice digests are pinned in FloeAgent/Vendor/FloeSlirp/"
+        "PROVENANCE.json and tracked under FloeAgent/Vendor/FloeSlirp/; the app's "
+        "own corresponding source ships with the immutable release tag, and the "
+        "rebuild-and-relink route is bundled as Licenses/FloeSlirp-SOURCE-OFFER.txt "
+        "with the full license texts bundled beside it. This is an engineering "
+        "record, not a legal certification."
+    ),
     "GPL-2.0 WITH libgit2 linking exception": (
         "libgit2's linking exception permits unlimited linking into this "
         "application; the GPL-2.0 text ships in the app bundle"
@@ -496,6 +546,10 @@ NOTES = (
         "source hashes are recorded in ThirdParty/ARM64EMU/PROVENANCE.json.",
     ),
     (
+        "slirp",
+        NOTES_SLIRP_TEXT,
+    ),
+    (
         "office",
         "The native Office engine is Collabora Online (LibreOffice-based) at "
         "commit 27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc, MPL-2.0. Its complete "
@@ -519,6 +573,7 @@ NOTES = (
 
 # (name, version, license, source, section, noteKey)
 STATIC_COMPONENTS = (
+    ('FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)', '0.17.0-cg2', 'MPL-2.0; MIT; CPL-1.0; FTL; Unicode-3.0; libpng-2.0; Apache-2.0 and retained notices', 'https://github.com/tectonic-typesetting/tectonic/tree/8c0126a9653239a2e6e0a5274af9b8510f643030', 'engineering', None),
     (
         "Floe chemistry native libraries (Avogadro / Eigen)",
         "Avogadro a5947518efb84132a44110dbdecab94fc87ce3b8; Eigen 5.0.1 build input",
@@ -550,6 +605,13 @@ STATIC_COMPONENTS = (
         "Floe ARM64 engine (arm64emu-system)", "55c8128 + Floe resident I/O patches",
         "Apache-2.0", "https://github.com/sylirre/arm64emu-system/tree/55c8128cb02d8ba3809f6579f7c6d316537e0546",
         "engines", "settings.licenses.note.arm64",
+    ),
+    (
+        "FloeSlirp userspace network stack (libslirp + GLib core)",
+        "libslirp 4.9.7 (tag ce12dcddf710a71dc0de6450ec95edbadf8e9f66); GLib 2.90.1; PCRE2 10.46 (JIT disabled); proxy-libintl 0.5",
+        FLOESLIRP_STACK_LICENSE,
+        "https://gitlab.com/qemu-project/libslirp",
+        "engines", "settings.licenses.note.slirp",
     ),
     (
         "Floe shared Linux component (Debian 13 ARM64)", "resident-20261105-v1",
@@ -1023,6 +1085,7 @@ STATIC_COMPONENTS = (
 
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
+    ('floe-tex-native-xdv', 'FloeApp/Resources/Licenses/FloeTeXNativeXDV-NOTICES.txt', 'Licenses/FloeTeXNativeXDV-NOTICES.txt', 'settings.licenses.document.floe_tex_native_xdv.title', 'Native typesetting engines and fonts', None, 'MPL-2.0; MIT; CPL-1.0; FTL; Unicode-3.0; libpng-2.0; Apache-2.0 and retained notices', 'notices', True, 'engineering'),
     (
         "chemistry", "FloeApp/Resources/Licenses/Chemistry-NOTICES.txt",
         "Licenses/Chemistry-NOTICES.txt", "settings.licenses.document.chemistry.title",
@@ -1078,6 +1141,30 @@ DOCUMENTS = (
         "arm64-emu", "FloeApp/Resources/Licenses/ARM64EMU-LICENSES.txt",
         "Licenses/ARM64EMU-LICENSES.txt", "settings.licenses.document.arm64.title",
         "Floe ARM64 engine — licenses and notices", None, "Apache-2.0 / MPL-2.0", "full_text", True, "engines",
+    ),
+    (
+        "slirp-stack-licenses", "FloeApp/Resources/Licenses/FloeSlirp-LICENSES.txt",
+        "Licenses/FloeSlirp-LICENSES.txt", "settings.licenses.document.slirp_stack.title",
+        "libslirp + PCRE2 \u2014 licenses and notices", None,
+        "BSD-3-Clause; MIT; BSD-3-Clause WITH PCRE2-exception", "full_text", True, "engines",
+    ),
+    (
+        "slirp-glib-lgpl", "FloeApp/Resources/Licenses/FloeSlirp-GLib-LGPL.txt",
+        "Licenses/FloeSlirp-GLib-LGPL.txt", "settings.licenses.document.slirp_glib.title",
+        "GLib 2.90.1 \u2014 GNU Lesser General Public License 2.1 or later", None,
+        "LGPL-2.1-or-later", "full_text", True, "engines",
+    ),
+    (
+        "slirp-proxy-libintl-lgpl", "FloeApp/Resources/Licenses/FloeSlirp-ProxyLibintl-LGPL.txt",
+        "Licenses/FloeSlirp-ProxyLibintl-LGPL.txt", "settings.licenses.document.slirp_proxy_libintl.title",
+        "proxy-libintl 0.5 \u2014 GNU Library General Public License 2.0", None,
+        "LGPL-2.0", "full_text", True, "engines",
+    ),
+    (
+        "slirp-source-offer", "FloeApp/Resources/Licenses/FloeSlirp-SOURCE-OFFER.txt",
+        "Licenses/FloeSlirp-SOURCE-OFFER.txt", "settings.licenses.document.slirp_source_offer.title",
+        "FloeSlirp \u2014 source availability and relink instructions", None,
+        FLOESLIRP_STACK_LICENSE, "notices", True, "engines",
     ),
     (
         "libgit2",
@@ -1762,12 +1849,13 @@ def resolve_vendored_packages(
         identity = spec["identity"]
         if identity in declared:
             continue
-        relative = f"{spec['path']}/{VENDORED_LICENSE_NAME}"
-        license_path = root / spec["path"] / VENDORED_LICENSE_NAME
+        license_file = spec.get("licenseFile", VENDORED_LICENSE_NAME)
+        relative = f"{spec['path']}/{license_file}"
+        license_path = root / spec["path"] / license_file
         if not license_path.is_file():
             problems.append(
                 f"{identity}: the lock no longer declares this pin and the vendored "
-                f"copy {spec['path']} has no {VENDORED_LICENSE_NAME}; restore the "
+                f"copy {spec['path']} has no {license_file}; restore the "
                 "vendored package (or the pin) before regenerating"
             )
             continue
@@ -1797,21 +1885,22 @@ def resolve_vendored_packages(
                 "evidence": relative,
             }
         )
-        result["documents"].append(
-            {
-                "id": document["id"],
-                "repositoryPath": document["repositoryPath"],
-                "bundlePath": document["bundlePath"],
-                "titleKey": document["titleKey"],
-                "titleFallback": document["titleFallback"],
-                "titleArgument": None,
-                "license": license_name or spec["license"],
-                "kindKey": KINDS[document["kind"]],
-                "required": document["required"],
-                "section": document["section"],
-                "noteKey": note_key,
-            }
-        )
+        if not spec.get("existingDocument", False):
+            result["documents"].append(
+                {
+                    "id": document["id"],
+                    "repositoryPath": document["repositoryPath"],
+                    "bundlePath": document["bundlePath"],
+                    "titleKey": document["titleKey"],
+                    "titleFallback": document["titleFallback"],
+                    "titleArgument": None,
+                    "license": license_name or spec["license"],
+                    "kindKey": KINDS[document["kind"]],
+                    "required": document["required"],
+                    "section": document["section"],
+                    "noteKey": note_key,
+                }
+            )
         result["evidence"].append(
             {
                 "identity": identity,
@@ -2229,6 +2318,7 @@ DOCUMENT_NOTES = {
 # evidence is preferred; upstream fetches are named by the pinned tag so a
 # reviewer can repeat the read.
 STATIC_EVIDENCE = {
+    'FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)': 'Modules/FloeLaTeXKit/Native/tectonic.source.json; patches/production-xdv-{source-manifest,local-sources}.json; licenses/native-xdv-selected-licenses.json; Production/Vendor/FloeTeXNativeXDV.manifest.json and NOTICES.json bind the original source, complete patch, selected license branches and actual Cargo/object closure.',
     "Floe chemistry native libraries (Avogadro / Eigen)": "Modules/FloeChemistryNative/UPSTREAM.json and BUILD_SAVED.json bind the Avogadro source/bridge and all three static slices; retained notices in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt. Eigen 5.0.1 is recorded as the producer's header-only build input, not a new remote SwiftPM pin.",
     "Ketcher / Indigo offline chemistry assets": "Modules/FloeChemistrySketch/UPSTREAM.json binds Ketcher standalone 3.18.0 archive and every bundled asset; LICENSE.Ketcher and retained bundled JavaScript notices are reproduced in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt.",
     "Manifold": "ThirdParty/FloeCADKit/Vendor/Manifold-SOURCE.json (fixed 3.5.4 source and native slices); full Apache-2.0 and source notices in FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
@@ -2248,6 +2338,13 @@ STATIC_EVIDENCE = {
     "Lua WASI runtime": "ThirdParty/LuaWASI/runtime.lock.json license",
     "Ruby WASI runtime": "ThirdParty/RubyWASI/runtime.lock.json runtime.license",
     "RoyalVNCKit (Floe synchronized queue)": "ThirdParty/RoyalVNCKit/FLOE_PATCHES.md and Package.swift pin",
+    "FloeSlirp userspace network stack (libslirp + GLib core)": (
+        "FloeAgent/Vendor/FloeSlirp/PROVENANCE.json (pinned tarballs, patches, build scripts, "
+        "delivered slice digests; license members proven byte-equal to the pinned archives); "
+        "bundled notices FloeApp/Resources/Licenses/FloeSlirp-LICENSES.txt, "
+        "FloeSlirp-GLib-LGPL.txt, FloeSlirp-ProxyLibintl-LGPL.txt and the relink record "
+        "FloeSlirp-SOURCE-OFFER.txt"
+    ),
     "llama.cpp": "FloeAgent/Package.swift LlamaFramework binary target pin",
     "llama-ios-xcframework": "FloeAgent/Package.swift LlamaFramework binary target comment",
     "PDFium": "scripts/bootstrap_pdfium.py pinned bblanchon/pdfium-binaries chromium/8035",
@@ -2742,8 +2839,8 @@ def validate(
     libgit2_record = next(
         (row for row in evidence_document["licenses"] if row["identity"] == "libgit2"), None
     )
-    if libgit2_record and libgit2_record["evidence"] == LIBGIT2_EVIDENCE:
-        source = ROOT / LIBGIT2_EVIDENCE
+    if libgit2_record and libgit2_record["evidence"] in (LIBGIT2_EVIDENCE, LOCAL_LIBGIT2_EVIDENCE):
+        source = ROOT / libgit2_record["evidence"]
         if source.is_file() and sha256_file(source) != libgit2_record["sha256"]:
             problems.append("libgit2 COPYING no longer matches the recorded evidence")
         if libgit2_bytes is not None and hashlib.sha256(libgit2_bytes).hexdigest() != libgit2_record["sha256"]:
@@ -2797,7 +2894,7 @@ def build():
         ),
     }
     libgit2_bytes = None
-    source = ROOT / LIBGIT2_EVIDENCE
+    source = ROOT / (LIBGIT2_EVIDENCE if any(pin["identity"] == "libgit2" for pin in pins) else LOCAL_LIBGIT2_EVIDENCE)
     if source.is_file():
         libgit2_bytes = source.read_bytes()
     validate(
