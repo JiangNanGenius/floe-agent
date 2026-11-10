@@ -203,6 +203,13 @@ internal class AndroidPhoneUnlockDriver(
             if (root.packageName?.toString() != SYSTEM_UI_PACKAGE || !resolved.ownershipTrusted) {
                 trace("CREDENTIAL_WINDOW_UNAVAILABLE"); return false
             }
+            // Some OEM PIN fields accept SET_TEXT without delivering the
+            // native keypad input. Select one channel BEFORE entering anything;
+            // a failed keypad action never falls through to replay the secret.
+            if (secret.isNotEmpty() && secret.all { it in '0'..'9' } && hasNativeKeypad(root)) {
+                trace("KEYPAD_INPUT_SELECTED")
+                return enterUsingKeypad(root, secret)
+            }
             for (id in credentialFieldIds) {
                 val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
                 try {
@@ -227,16 +234,32 @@ internal class AndroidPhoneUnlockDriver(
             if (!secret.all { it in '0'..'9' }) {
                 trace("CREDENTIAL_FIELD_UNAVAILABLE"); return false
             }
-            for (digit in secret) {
-                if (!click(root, listOf("key$digit", "key_$digit"), allowSubmitAncestor = false)) {
-                    trace("KEYPAD_ACTION_UNAVAILABLE"); return false
-                }
-            }
-            trace("KEYPAD_INPUT_DISPATCHED")
-            // Some configured PIN screens submit the final digit themselves.
-            if (locked) clickSubmit(root.windowId)
-            return true
+            return enterUsingKeypad(root, secret)
         } finally { @Suppress("DEPRECATION") root.recycle() }
+    }
+
+    private fun hasNativeKeypad(root: AccessibilityNodeInfo): Boolean = ('0'..'9').all { digit ->
+        val nodes = listOf("key$digit", "key_$digit").flatMap {
+            root.findAccessibilityNodeInfosByViewId("$SYSTEM_UI_PACKAGE:id/$it")
+        }
+        try {
+            nodes.count { node ->
+                node.packageName?.toString() == SYSTEM_UI_PACKAGE && node.windowId == root.windowId &&
+                    node.isVisibleToUser && acceptsNativeClickAction(node.isEnabled, node.isClickable,
+                        node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK })
+            } == 1
+        } finally { nodes.forEach { @Suppress("DEPRECATION") it.recycle() } }
+    }
+
+    private fun enterUsingKeypad(root: AccessibilityNodeInfo, secret: CharArray): Boolean {
+        for (digit in secret) {
+            if (!click(root, listOf("key$digit", "key_$digit"), allowSubmitAncestor = false)) {
+                trace("KEYPAD_ACTION_UNAVAILABLE"); return false
+            }
+        }
+        trace("KEYPAD_INPUT_DISPATCHED")
+        if (locked) clickSubmit(root.windowId)
+        return true
     }
 
     /**
@@ -395,7 +418,7 @@ internal class AndroidPhoneUnlockDriver(
             val nodes = root.findAccessibilityNodeInfosByViewId("com.android.systemui:id/$id")
             try {
                 for (node in nodes) {
-                    if (node.packageName?.toString() != SYSTEM_UI_PACKAGE || !node.isEnabled) continue
+                    if (node.packageName?.toString() != SYSTEM_UI_PACKAGE || !node.isEnabled || !node.isVisibleToUser) continue
                     // Ownership recheck: the acting node must live in the very
                     // window whose root was freshly resolved and validated.
                     if (node.windowId != root.windowId) continue

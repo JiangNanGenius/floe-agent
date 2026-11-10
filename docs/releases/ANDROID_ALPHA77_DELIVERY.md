@@ -27,3 +27,17 @@ Known limits: this is the first launcher/control refinement, not whole-App visua
 发行保持一个Full ARM64安装包及必要校验、更新、对应源码和许可文件；保留iOS Latest，不更改已有公开版本的标签或安装包。
 
 Distribution keeps one Full ARM64 installer and required integrity/update/source/license files. Preserve iOS Latest and existing immutable release tags and bytes.
+
+## 公开交付与三星补记 / Publication and Samsung read-back
+
+[Alpha77/code103](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.77) 已从不可变源码 `5fa8272714d955fdb895e8f70ff3a5ffdcd3a17d` 公开。Full APK 为164,744,855字节，SHA-256：`604b1eef2c1113dd5c36c045396376047d129643739ea5a8732ee7d711a43426`。Full／Play编译、未改native34输入绑定、58项封装校验、API28／29签名、76→77增量重建以及七个公开附件的匿名实际下载字节核对通过；当前及保留的Alpha65更新解析器可发现本版，iOS Latest保持。
+
+Alpha77/code103 is public from the immutable source above. The Full APK is164,744,855 bytes with the recorded SHA-256. Full/Play compilation, unchanged native34 input binding,58 package checks, API28/29 signatures,76→77 delta reconstruction and anonymous download verification of all seven assets passed. Current and retained Alpha65 clients discover this version; iOS Latest remains unchanged.
+
+三星通过App内保存的镜像源完成真实76→77增量更新，正常确认主包／运行组件安装；未使用ADB安装或降级。实际安装的两包字节、原UID、原5任务和2项目保持。新建Ark Plan／ark-code-latest任务真实执行终端命令，生成的文本成果已在内置轻量IDE全屏打开，内容正确。一次含20秒主动等待的命令总用时34.811秒，上一版对应观察为65.887秒；这是单个用例的工具总时长对比，不是分阶段性能基准或全机提速结论。
+
+Samsung completed the actual in-App76→77 mirrored delta update and ordinary coupled installation. Both installed package bytes, original UIDs, five tasks and two projects were retained. A fresh Ark Plan/ark-code-latest task executed the terminal command and its generated text opened correctly in the full-screen native lightweight IDE. One command including an intentional20-second sleep took34.811 seconds versus65.887 seconds in the preceding observation; this is a single end-to-end tool comparison, not a phase-isolated benchmark.
+
+本版新自动解锁用例仍失败：系统接受填写和确认手势后仍保持锁屏，进入人工接续；没有计算器或结束重锁通过声明。首故障及41条完整原记录已保留，未恢复失败任务。临时凭据、权限／自动化开关、目标范围、任务和设备导出均已清理，常亮恢复后休眠；原5任务保留。后续修复使用新的源码和新用例，不能回写本版通过。
+
+The fresh automatic-unlock case still failed: accepted text and confirmation gestures did not release keyguard, and manual continuation was requested. Calculator execution and relocking did not pass. The first failure and41 original export records remain retained; the failed task was not resumed. Temporary credentials, permissions, automation settings, target scope, task and device export were removed, stay-awake restored and the device put to sleep, preserving the original five tasks. A later source fix requires a new case and cannot change this version's outcome.

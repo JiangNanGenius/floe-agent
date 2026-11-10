@@ -491,11 +491,22 @@ fun FloeUnavailableView(
     }
 }
 
-/** Grouped white card section on the settings plane (Cupertino inset-grouped). */
+/**
+ * Grouped white card section on the settings plane (Cupertino inset-grouped).
+ *
+ * [caption] renders through the section's own caption slot BELOW the card,
+ * mirroring the iOS grouped-list footer (18dp leading, 6dp vertical). Use it
+ * for group-level explanations instead of a dedicated card row: every
+ * SectionItem cell carries a library 45dp minimum plus our 48dp interactive
+ * floor, so explanatory text parked in its own cell wastes a full touch row
+ * for two to four glyph lines. The caption is plain reading text — never a
+ * control, never a touch target.
+ */
 @Composable
 fun FloeSettingsSectionCard(
     title: String?,
     modifier: Modifier = Modifier,
+    caption: (@Composable () -> Unit)? = null,
     content: @Composable io.github.robinpcrd.cupertino.section.SectionScope.() -> Unit,
 ) {
     val compact = LocalFloeCompactSettings.current
@@ -506,6 +517,7 @@ fun FloeSettingsSectionCard(
         contentPadding = if (compact) PaddingValues(vertical = 2.dp)
             else io.github.robinpcrd.cupertino.section.CupertinoSectionDefaults.paddingValues(SectionStyle.InsetGrouped, true),
         title = title?.let { t -> { FloeText(t, style = Floe.typography.groupHeader, color = Floe.colors.secondaryLabel) } },
+        caption = caption,
         content = content,
     )
 }

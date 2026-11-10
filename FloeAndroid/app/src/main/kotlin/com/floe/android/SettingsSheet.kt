@@ -889,27 +889,18 @@ private fun GeneralSettingsPage(themeMode: FloeThemeMode, onThemeModeChange: (Fl
             )
         }
         FloeSettingsSectionCard(title = stringResource(R.string.language_section)) {
+            // The explanation rides inside the language cell (row caption)
+            // instead of a second full-height grouped row.
             FloeSectionRow(
                 title = {
-                    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp)) {
-                        FloeText(stringResource(R.string.language), style = Floe.typography.body, color = colors.label)
-                    }
+                    FloeText(stringResource(R.string.language), style = Floe.typography.body, color = colors.label)
                 },
                 trailing = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         FloeText(stringResource(R.string.follow_system), style = Floe.typography.metadata, color = colors.secondaryLabel)
                     }
                 },
-            )
-            FloeSectionRow(
-                title = {
-                    FloeText(
-                        stringResource(R.string.language_caption),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                },
+                caption = stringResource(R.string.language_caption),
             )
         }
     }
@@ -969,18 +960,19 @@ private fun modeDescription(mode: FloeThemeMode): String = stringResource(when (
 private fun ProvidersSettingsPage() {
     val colors = Floe.colors
     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        FloeSettingsSectionCard(title = stringResource(R.string.cloud_model)) {
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.cloud_model),
+            // iOS grouped-list footer: the explanation sits under the card at
+            // reading height instead of occupying a 48dp cell of its own.
+            caption = {
+                FloeText(
+                    stringResource(R.string.providers_caption),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
+                )
+            },
+        ) {
             FloeValueRow(stringResource(R.string.model_status), stringResource(R.string.model_unconfigured))
-            SectionItem(
-                title = {
-                    FloeText(
-                        stringResource(R.string.providers_caption),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                        modifier = Modifier.padding(bottom = 10.dp),
-                    )
-                },
-            )
         }
     }
 }

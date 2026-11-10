@@ -77,6 +77,15 @@ internal fun floeSettingsRowPadding(): PaddingValues =
  * rows: name + status lines beside a switch). The title area is clickable
  * when [onClick] is provided; trailing slots stay independent so the 48dp
  * floor of embedded controls is never swallowed by the row's click.
+ *
+ * [caption] is the row's own non-interactive explanation (the same
+ * title-over-caption language [FloeSwitchRow] already uses): it joins the
+ * leading text block inside this row's existing cell, so a short caption
+ * costs zero extra height (the combined block still fits the 48dp target)
+ * and a long one grows only by its own lines — instead of parking in a
+ * second 48dp row with its own separators. Use it only for text that
+ * belongs to THIS control; group-level explanations go through
+ * [FloeSettingsSectionCard.caption] as an iOS-style footer.
  */
 @Composable
 fun SectionScope.FloeSectionRow(
@@ -88,6 +97,7 @@ fun SectionScope.FloeSectionRow(
     leading: (@Composable () -> Unit)? = null,
     title: @Composable () -> Unit,
     trailing: (@Composable RowScope.() -> Unit)? = null,
+    caption: String? = null,
 ) {
     SectionItem(
         paddingValues = floeSettingsRowPadding(),
@@ -117,7 +127,21 @@ fun SectionScope.FloeSectionRow(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (leading != null) leading()
-                Box(Modifier.weight(1f)) { title() }
+                Box(Modifier.weight(1f)) {
+                    if (caption != null) {
+                        Column {
+                            title()
+                            FloeText(
+                                caption,
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    } else {
+                        title()
+                    }
+                }
                 if (trailing != null) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,

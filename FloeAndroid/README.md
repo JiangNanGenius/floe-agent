@@ -1,12 +1,22 @@
 # Floe for Android
 
-## Current delivery — Android Alpha76 (2026-11-10)
+## Current delivery — Android Alpha77 (2026-11-10)
+
+[Alpha77/code103](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.77) is public from immutable source `5fa8272714d955fdb895e8f70ff3a5ffdcd3a17d`. It includes the first compact Linux launcher/control refinement, bounded durable rootfs materialization, task links from schedule history and update-completion visibility.56 fresh focused cases, retained unchanged phone/native evidence, Full/Play compilation, package/signature and delta checks, all seven anonymous asset downloads and current/legacy update discovery passed. iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA77_DELIVERY.md).
+
+三星已通过App内镜像增量从76升到77，主包／运行组件103的实际字节、原UID、原5任务2项目保持。Ark Plan任务执行终端并生成文本，成果在内置轻量IDE全屏打开正确。新版自动解锁仍在系统确认后保持锁屏，首故障及41条原记录保留，未宣称解锁／重锁通过；自建任务、导出和敏感测试配置已清理。
+
+## Next source batch — settings density and native PIN entry
+
+The independent UI and component lines have both handed off. Existing setting explanations now share their owning control or grouped footer instead of occupying separate full-height rows; interactive targets, callbacks and tablet navigation are retained. A complete trusted native PIN keypad is selected before input when available, with no replay after partial failure.39 focused phone lifecycle/submit regressions and actual phone-module Release compilation passed. Actual Full/Play consumer compilation also passed after one recorded nullable-Compose-lambda correction. The next actual APK follows; this unshipped source does not turn the original77 unlock failure into a pass.
+
+## Previous delivery — Android Alpha76 (2026-11-10)
 
 [Alpha76/code102](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.76) is public from immutable source `806ef4a1f3aa83363503eb2cb4afd6f87be29a8e`. It repairs installed Linux recheck/lane recovery and preserves current startup reasons, and requires actual display/native-window readiness before the single keyguard reveal.93 fresh focused cases plus59 unchanged recovery cases, Full/Play compilation, native34 input reuse,58 package bindings, API28/29 signatures,75→76 host reconstruction and all seven anonymous public asset bytes passed. Current and retained65 update discovery passed, including the post-device notes; iOS Latest is preserved. See the [delivery record](../docs/releases/ANDROID_ALPHA76_DELIVERY.md).
 
 三星已通过公开75→76真实增量更新，主程序／运行组件102的字节及原UID一致，原5条任务、2个项目可见。新建任务终端实际执行命令、读回ARM64输出并重开原会话通过；设置显示“环境已安装／终端任务已可用”。自有任务与标签已清，临时常亮已恢复。三星本版自动解锁已进入凭据界面，但系统确认未完成，原47条记录及清理前故障保留；索尼启动和其余N01–N08仍待后续确认，不将中间版作为整轮完成。
 
-## Subsequent source and device progress
+## Historical source and device progress before Alpha77
 
 Native credential confirmation now has one bounded OEM tap path only when the current trusted native control has no click channel; it re-resolves the input window, clips live bounds and preserves ancestor/sibling refusal. No password contents are read and input is not replayed.18 focused submit/ancestor cases and actual Full compilation passed; this source is not in the immutable76 APK and has no new unlock device pass.
 
