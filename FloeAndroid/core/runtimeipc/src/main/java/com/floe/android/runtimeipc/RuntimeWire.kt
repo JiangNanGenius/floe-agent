@@ -25,6 +25,9 @@ object RuntimeWire {
     // `runtimeWorkspaceCopies.clear` when both land on the same live file.)
     const val PREFLIGHT = "workspace.preflight"
     const val PREFLIGHT_CANCEL = "workspace.preflight.cancel"
+    // Grant-bound additions to an already-live workspace; no process or
+    // command is carried by this internal control.
+    const val SYNC_INPUTS = "workspace.syncInputs"
     // G07.3A additive v1: bounded READ-ONLY live guest file snapshot and the
     // deferred workspace export status. Neither mutates a workspace, exports
     // draft bytes, closes a terminal nor appears in a model tool catalog.
@@ -37,7 +40,7 @@ object RuntimeWire {
     val operations = setOf("status", "request.status", "install.start", "install.cancel", "install.status",
         "environment.list", "shell.start", "shell.poll", "shell.input", "shell.resize", "shell.cancel",
         "stdio.start", "stdio.write", "stdio.poll", "stdio.stdinEof", "service.readiness",
-        CLEANUP, PREFLIGHT, PREFLIGHT_CANCEL, FILES_TREE, FILES_READ, EXPORT_STATUS, STORAGE_INVENTORY, STORAGE_CLEANUP)
+        CLEANUP, PREFLIGHT, PREFLIGHT_CANCEL, SYNC_INPUTS, FILES_TREE, FILES_READ, EXPORT_STATUS, STORAGE_INVENTORY, STORAGE_CLEANUP)
 
     data class Request(val id: String, val operation: String, val payload: JSONObject)
 
