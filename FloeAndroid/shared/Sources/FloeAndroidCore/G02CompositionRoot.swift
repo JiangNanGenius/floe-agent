@@ -572,6 +572,10 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         // retained bytes stay under the task's owned root for ordinary
         // restart/deletion handling.
         C02ToolResultIntegration.uninstall(epoch: epoch)
+        // N07: drop this generation's Skill resource staging binding. The
+        // method is epoch-guarded; staged workspace cache trees stay owned by
+        // the task workspace lifecycle (never age-pruned by retirement).
+        C02SkillResourceStagingIntegration.uninstall(epoch: epoch)
         // C02 guided MCP setup: retire only the exact generation's bridge.
         // A stale epoch is a no-op and can never clear a newer installation.
         C02MCPSetupIntegration.uninstall(epoch: epoch)

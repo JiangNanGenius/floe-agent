@@ -158,6 +158,36 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
                                               kind: path.hasSuffix(".zip") ? .boundedArchive : .document)
     }
 
+    /// Authenticated package fetch: `verifiedPackage` is the non-Codable
+    /// token minted by `CuratedSkillHub.stage` from the signature-verified
+    /// publication entry. The larger budget applies ONLY when every
+    /// retrieval fact (owner, repository, immutable commit Y, exact package
+    /// path, declared size within the signed profile) matches; any mismatch
+    /// fails closed. The ordinary `fetch` budget is never widened for
+    /// unauthenticated callers, and no community/connector route can ever
+    /// carry a curated package authorization.
+    public func fetch(_ source: GitHubSkillSource, commit: String,
+                      path: String,
+                      verifiedPackage: CuratedSkillHub.PackageDownloadAuthorization?) async throws -> Data {
+        guard let verifiedPackage else {
+            return try await fetch(source, commit: commit, path: path)
+        }
+        guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else {
+            throw SkillUpgradeError.invalidCommit
+        }
+        let byteBudget = try verifiedPackage.maximumBytes(
+            owner: source.owner, repository: source.repository, ref: commit, path: path)
+        guard !SkillsRemoteTransportRouting.usesConnectorTransport(for: source) else {
+            throw SkillsDomainRefusal.transportUnavailable
+        }
+        let encodedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        let canonical = AndroidHubMirrorTransport.rawFileURL(owner: source.owner,
+            repository: source.repository, commit: commit.lowercased(), path: path)
+        let url = try Self.validated(url: canonical ?? URL(string:
+            "https://raw.githubusercontent.com/\(source.owner)/\(source.repository)/\(commit.lowercased())/\(encodedPath)")!)
+        return try await downloadBounded(url: url, maxBytes: byteBudget)
+    }
+
     static func communityMaximumBytes(source: GitHubSkillSource, path: String) -> Int {
         path == source.path && source.path.lowercased().hasSuffix(".json") ? 262_144 : 2_097_152
     }
@@ -331,8 +361,14 @@ public enum SkillsRemoteTransportRouting {
         }
         if source.owner == CuratedSkillHub.owner,
            source.repository == CuratedSkillHub.repository {
-            return source.path == CuratedSkillHub.catalogPath(for: .ios)
-                || source.path == CuratedSkillHub.catalogPath(for: .android)
+            // Every fixed catalog layout of both channels is an official
+            // hub source: the legacy projection, the expanded full feed and
+            // the signed large-source capability projection all resolve to
+            // the SAME repository identity and keep the public transport.
+            return CuratedSkillCatalogLayout.allCases.contains {
+                source.path == CuratedSkillHub.catalogPath(for: .ios, layout: $0)
+                    || source.path == CuratedSkillHub.catalogPath(for: .android, layout: $0)
+            }
         }
         return false
     }
@@ -378,6 +414,18 @@ public struct SkillsRemoteTransportRouter: SkillsRemoteTransport {
         try await SkillsRemoteTransportRouting
             .transport(for: source, connector: connector, publicHub: publicHub)
             .fetch(source, commit: commit, path: path)
+    }
+
+    public func fetch(_ source: GitHubSkillSource, commit: String,
+                      path: String,
+                      verifiedPackage: CuratedSkillHub.PackageDownloadAuthorization?) async throws -> Data {
+        // Route by the SAME validated source identity. Curated package
+        // authorizations only exist for official-hub sources, so this lands
+        // on the public transport's authenticated budget path; the connector
+        // transport's default implementation fails closed for them.
+        try await SkillsRemoteTransportRouting
+            .transport(for: source, connector: connector, publicHub: publicHub)
+            .fetch(source, commit: commit, path: path, verifiedPackage: verifiedPackage)
     }
 
     public func fetchFinderEnvelope(url: URL) async throws -> Data {

@@ -56,12 +56,19 @@ internal class PhoneControlSession(
     private var lastWindowChangeAt = 0L
     private var lastContentChangeAt = 0L
     private var suppressUserTouchUntil = 0L
+    private val ownInputEcho = PhoneOwnInputEcho()
     @Volatile var lastUserInteractionAt: Long = SystemClock.elapsedRealtime()
         private set
     @Volatile var lastUserInteractionWallMillis: Long = System.currentTimeMillis()
         private set
     private val unlocker = PhoneControlUnlocker(service, mainHandler,
-        suppressGeneratedEvents = { until -> suppressUserTouchUntil = until },
+        suppressGeneratedEvents = { until ->
+            suppressUserTouchUntil = until
+            // Every unlock-attempt effect (reveal, credential entry, settle)
+            // is our own input; its platform echoes must stay attributable
+            // to the task even when delivery lags past `until`.
+            ownInputEcho.noteOwnInput(SystemClock.uptimeMillis())
+        },
         stateChanged = { PhoneControlRuntime.publish() })
     val automationFinishing: Boolean get() = unlocker.isSettling
     val relockReceipt: PhoneRelockReceipt? get() = unlocker.lastRelockReceipt
@@ -611,6 +618,7 @@ internal class PhoneControlSession(
         }
         val duration = 260L
         suppressUserTouchUntil = SystemClock.elapsedRealtime() + duration + 500
+        ownInputEcho.noteOwnInput(SystemClock.uptimeMillis())
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
             .build()
@@ -1162,9 +1170,21 @@ internal class PhoneControlSession(
         if (closed) return
         val now = SystemClock.elapsedRealtime()
         if (now <= suppressUserTouchUntil) return
+        // Correlate delayed events with the bounded own-input interval.
+        // Events outside it retain the existing user-takeover path.
+        if (eventUptimeMillis != null && ownInputEcho.isOwnEcho(eventUptimeMillis)) {
+            // Closed diagnostic token only: no event text, credential,
+            // coordinates, identity or per-keystroke timing enters the log.
+            runCatching { android.util.Log.i("FloePhoneUnlock", "LATE_OWN_INPUT_ECHO_IGNORED") }
+            return
+        }
         lastUserInteractionAt = now
         val lag = eventUptimeMillis?.let { (SystemClock.uptimeMillis() - it).coerceIn(0, 60_000) } ?: 0
         lastUserInteractionWallMillis = System.currentTimeMillis() - lag
+        if (fence.state().owner != null) {
+            val token = if (lag > 1_500) "OWNED_PHONE_USER_EVENT_LATE" else "OWNED_PHONE_USER_EVENT_FRESH"
+            runCatching { android.util.Log.i("FloePhoneUnlock", token) }
+        }
         unlocker.userInteraction()
         if (fence.state().owner == null && inFlightId == null) return
         traceObservationClear("user_interaction")
@@ -1615,6 +1635,7 @@ internal class PhoneControlSession(
             suppressUserTouchUntil,
             SystemClock.elapsedRealtime() + 600,
         )
+        ownInputEcho.noteOwnInput(SystemClock.uptimeMillis())
     }
 
     private fun keyguardLocked(): Boolean =

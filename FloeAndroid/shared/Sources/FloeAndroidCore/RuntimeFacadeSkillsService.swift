@@ -128,6 +128,18 @@ public protocol SkillsRemoteTransport: Sendable {
     func fetchFinderEnvelope(url: URL) async throws -> Data
 }
 
+public extension SkillsRemoteTransport {
+    /// Authenticated package fetch. The default implementation has NO
+    /// authenticated budget: a non-nil `verifiedPackage` fails closed here,
+    /// and nil keeps the ordinary bounded fetch. Only the public hub
+    /// transport overrides this with the exact signed-budget check.
+    func fetch(_ source: GitHubSkillSource, commit: String, path: String,
+               verifiedPackage: CuratedSkillHub.PackageDownloadAuthorization?) async throws -> Data {
+        if verifiedPackage != nil { throw SkillsDomainRefusal.transportUnavailable }
+        return try await fetch(source, commit: commit, path: path)
+    }
+}
+
 public struct SkillsRemoteTransportUnavailable: SkillsRemoteTransport {
     public init() {}
     public func resolveCommit(_ source: GitHubSkillSource) async throws -> String {
@@ -578,12 +590,21 @@ public actor SkillsDomain {
     /// persisted only after the ORIGINAL staging service commits; the
     /// receipt itself is derived from these artifacts on load.
     private var reviewCuratedEnvelopes: [String: C02CuratedReceiptEnvelope] = [:]
+    /// The exact staged curated receipt per live review. It is the ONLY local
+    /// source of the signed package profile for the commit-time install: it
+    /// revalidates the staged bytes under the signed resource profile and is
+    /// never reconstructed from URLs, manifests or tool arguments.
+    private var reviewCuratedReceipts: [String: CuratedSkillHub.Receipt] = [:]
     /// RAM-only positive cache of cryptographically re-verified curated
     /// receipts, keyed by skill id + installed content digest.
     private var verifiedCuratedAuthorities: [String: CuratedSkillHub.Receipt] = [:]
     private var stagingReceipts: [String: StagedFolder] = [:]
     private var catalogCache: SkillsCatalogCache?
     private var curatedCatalogCache: SkillsCuratedCatalogCache?
+    /// Diagnostic only. A failed capability projection never supplies
+    /// entries or download budgets; the independently verified standard
+    /// projection at the same Y remains the only authority.
+    private(set) var curatedCapabilityProjectionFailure: String?
     private var inflightSkills: Set<String> = []
     private let curatedReceipts: C02CuratedReceiptStore
     private let dependencyPreparation: C02SkillDependencyPreparation
@@ -743,10 +764,15 @@ public actor SkillsDomain {
                   snapshot.package.manifest.id == row.id else { return nil }
             validated = snapshot
         } else {
+            // The re-verified sidecar supplies the signed profile authority
+            // so a large-source installed package re-validates under its own
+            // profile instead of the default standard limits.
             guard let created = try? SkillContentSnapshot(
                 root: packageRoot,
                 expectedDigest: row.rewrittenDigest,
-                manifestOverride: Self.sidecarManifest(for: row)) else { return nil }
+                manifestOverride: Self.sidecarManifest(for: row),
+                resourceAuthorization: curatedReceipts.resourceAuthorization(
+                    skillID: row.id, contentDigest: row.rewrittenDigest)) else { return nil }
             validated = created
         }
         guard let receipt = curatedReceipts.verifiedCurrent(
@@ -985,16 +1011,47 @@ public actor SkillsDomain {
                     "curated": curatedProjection()]
         }
         do {
-            let publication = try await CuratedSkillHub.loadPublication(
+            let resolve: GitHubSkillDownload.ResolveCommit = { [transport] source in
+                try await transport.resolveCommit(source)
+            }
+            let fetch: GitHubSkillDownload.FetchFile = { [transport] source, commit, path in
+                try await transport.fetch(source, commit: commit, path: path)
+            }
+            // The standard full projection remains independently signed and
+            // readable by old clients. The optional capability projection is
+            // a SAME-Y full superset of the standard feed, verified only
+            // when it still carries every standard entry id.
+            let standard = try await CuratedSkillHub.loadPublication(
                 channel: .android,
                 mode: .production,
                 ref: "main",
-                resolve: { [transport] source in
-                    try await transport.resolveCommit(source)
-                },
-                fetch: { [transport] source, commit, path in
-                    try await transport.fetch(source, commit: commit, path: path)
-                })
+                layout: .full,
+                resolve: resolve,
+                fetch: fetch)
+            let publication: CuratedSkillHub.Publication
+            do {
+                let commit = standard.publicationCommit
+                let expanded = try await CuratedSkillHub.loadPublication(
+                    channel: .android,
+                    mode: .production,
+                    ref: "main",
+                    layout: .largeSourceV1,
+                    requiredProjectionIDs: Set(standard.feed.entries.map(\.id)),
+                    resolve: { _ in commit },
+                    fetch: fetch)
+                try Task.checkCancellation()
+                curatedCapabilityProjectionFailure = nil
+                publication = expanded
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                // No bytes from the failed projection are used. Retain only
+                // the standard projection that independently verified at
+                // this same immutable publication Y.
+                curatedCapabilityProjectionFailure = error.localizedDescription
+                publication = standard
+            }
             // `loadPublication` already verifies the exact-bytes Ed25519
             // envelope and strictly decodes the schemaVersion-3 feed. Keep
             // the app version visible only for card compatibility; it is not
@@ -1166,7 +1223,9 @@ public actor SkillsDomain {
                 installedSnapshot = try SkillContentSnapshot(
                     root: Self.packageDirectory(installationRoot: installationRoot, id: skillID),
                     expectedDigest: existing.rewrittenDigest,
-                    manifestOverride: Self.sidecarManifest(for: existing))
+                    manifestOverride: Self.sidecarManifest(for: existing),
+                    resourceAuthorization: curatedReceipts.resourceAuthorization(
+                        skillID: existing.id, contentDigest: existing.rewrittenDigest))
                 effectiveCapabilities = try await store.allowedCapabilities(skillID: skillID)
                 if let manifest = Self.sidecarManifest(for: existing) {
                     effectiveTools = Set(manifest.tools)
@@ -1185,6 +1244,10 @@ public actor SkillsDomain {
                 effectivePythonPackageSpecs: effectiveSpecs,
                 fetch: { [transport] source, commit, path in
                     try await transport.fetch(source, commit: commit, path: path)
+                },
+                fetchPackage: { [transport] source, commit, path, authorization in
+                    try await transport.fetch(source, commit: commit, path: path,
+                                              verifiedPackage: authorization)
                 })
             try requireCompatibility(staged.content.package)
             let token = FacadeCapabilityToken.make(namespace: FacadeCapabilityToken.effectPrefix)
@@ -1192,7 +1255,8 @@ public actor SkillsDomain {
                 let candidate = try staged.upgradeCandidate(installed: installedSnapshot)
                 registerUpgradeReview(token: token, candidate: candidate,
                                       stagingRoot: stagingRoot, binding: binding,
-                                      curatedEnvelope: Self.curatedEnvelope(from: staged))
+                                      curatedEnvelope: Self.curatedEnvelope(from: staged),
+                                      curatedReceipt: staged.receipt)
                 if await autoScriptedUpdatesEnabled(),
                    candidate.addedCapabilities.isEmpty,
                    candidate.addedTools.isEmpty,
@@ -1217,7 +1281,8 @@ public actor SkillsDomain {
                 rewriteModelID: "curated-hub",
                 manifestOverride: nil,
                 binding: binding,
-                curatedEnvelope: Self.curatedEnvelope(from: staged))
+                curatedEnvelope: Self.curatedEnvelope(from: staged),
+                curatedReceipt: staged.receipt)
             return SkillsReviewProjection(
                 token: token, skillID: skillID, version: entry.version,
                 committed: false,
@@ -1720,13 +1785,18 @@ public actor SkillsDomain {
         switch review.kind {
         case .install(let packageDirectory, let canonicalSHA256, let sourceURL,
                       let sourceDigest, let rewriteModelID, let manifestOverride):
+            // The staged curated receipt (never a URL/manifest/tool input) is
+            // the only local authority for the signed resource profile; a
+            // large-source staged package fails closed without it.
+            let stagedAuthorization = try? reviewCuratedReceipts[token]?.resourceAuthorization()
             let record = try await commitInstalledPackage(
                 stagedPackageDirectory: packageDirectory,
                 canonicalSHA256: canonicalSHA256,
                 sourceURL: sourceURL, sourceDigest: sourceDigest,
                 rewriteModelID: rewriteModelID,
                 manifestOverride: manifestOverride,
-                replaceExisting: false, verifiedUpgrade: nil)
+                replaceExisting: false, verifiedUpgrade: nil,
+                resourceAuthorization: stagedAuthorization)
             var curatedReceiptPersisted = true
             if let envelope = reviewCuratedEnvelopes[token] {
                 curatedReceiptPersisted = (try? curatedReceipts.persist(
@@ -2281,7 +2351,9 @@ public actor SkillsDomain {
         let installed = try SkillContentSnapshot(
             root: Self.packageDirectory(installationRoot: installationRoot, id: skillID),
             expectedDigest: row.rewrittenDigest,
-            manifestOverride: Self.sidecarManifest(for: row))
+            manifestOverride: Self.sidecarManifest(for: row),
+            resourceAuthorization: curatedReceipts.resourceAuthorization(
+                skillID: row.id, contentDigest: row.rewrittenDigest))
         let looksCurated = row.rewriteModelID == "curated-hub"
             || (row.sourceURL?.contains("floe-skill-hub") == true)
         let reviewToken = FacadeCapabilityToken.make(namespace: FacadeCapabilityToken.effectPrefix)
@@ -2290,6 +2362,7 @@ public actor SkillsDomain {
         do {
             let candidate: SkillUpgradeCandidate
             var curatedEnvelope: C02CuratedReceiptEnvelope?
+            var curatedReceipt: CuratedSkillHub.Receipt?
             if OfficialSkillHub.skillIDs.contains(skillID) {
                 candidate = try await OfficialSkillHub.stage(
                     id: skillID, appVersion: appVersion, installed: installed,
@@ -2304,8 +2377,12 @@ public actor SkillsDomain {
                     throw CuratedSkillHubFailure.source(
                         "the installed curated skill belongs to another store channel")
                 }
+                // The layout is pinned by the verified receipt: large-source
+                // receipts carry the authenticated capability layout; older
+                // standard receipts follow the standard full projection.
                 let publication = try await CuratedSkillHub.loadPublication(
                     channel: receipt.channel, mode: .production, ref: "main",
+                    layout: receipt.catalogLayout ?? .full,
                     resolve: { [transport] source in
                         try await transport.resolveCommit(source)
                     },
@@ -2322,10 +2399,15 @@ public actor SkillsDomain {
                         (manifest?.pythonPackages ?? []).map { $0.spec.lowercased() }),
                     fetch: { [transport] source, commit, path in
                         try await transport.fetch(source, commit: commit, path: path)
+                    },
+                    fetchPackage: { [transport] source, commit, path, authorization in
+                        try await transport.fetch(source, commit: commit, path: path,
+                                                  verifiedPackage: authorization)
                     })
                 try requireCompatibility(staged.content.package)
                 candidate = try staged.upgradeCandidate(installed: installed)
                 curatedEnvelope = Self.curatedEnvelope(from: staged)
+                curatedReceipt = staged.receipt
             } else if looksCurated {
                 throw ConfigDomainError(
                     code: .needsConfiguration,
@@ -2350,7 +2432,8 @@ public actor SkillsDomain {
             }
             registerUpgradeReview(token: reviewToken, candidate: candidate,
                                   stagingRoot: stagingRoot, binding: binding,
-                                  curatedEnvelope: curatedEnvelope)
+                                  curatedEnvelope: curatedEnvelope,
+                                  curatedReceipt: curatedReceipt)
             return Self.project(candidate: candidate, token: reviewToken)
         } catch {
             cleanup(stagingRoot)
@@ -2417,6 +2500,9 @@ public actor SkillsDomain {
             // installation and post-verification, preserving the digest.
             let derivedManifest = Self.hasFloeJSON(at: stagingRoot.appendingPathComponent("package"))
                 ? nil : candidate.snapshot.package.manifest
+            // The staged curated receipt binds the NEW package's signed
+            // resource profile for the commit-time validation.
+            let stagedAuthorization = try? reviewCuratedReceipts[reviewToken]?.resourceAuthorization()
             let record = try await commitInstalledPackage(
                 stagedPackageDirectory: stagingRoot.appendingPathComponent("package"),
                 canonicalSHA256: candidate.snapshot.package.canonicalSHA256,
@@ -2426,12 +2512,14 @@ public actor SkillsDomain {
                     ? "official-hub" : "github-upgrade",
                 manifestOverride: derivedManifest,
                 initialStatus: current.status,
-                replaceExisting: true, verifiedUpgrade: candidate)
+                replaceExisting: true, verifiedUpgrade: candidate,
+                resourceAuthorization: stagedAuthorization)
             // Post-verify (original :229): snapshot at the NEW digest.
             _ = try SkillContentSnapshot(
                 root: Self.packageDirectory(installationRoot: installationRoot, id: skillID),
                 expectedDigest: record.canonicalSHA256,
-                manifestOverride: derivedManifest)
+                manifestOverride: derivedManifest,
+                resourceAuthorization: stagedAuthorization)
             // A curated upgrade is not dependency-authorized until the new
             // receipt is durably written. If that write fails, the journal
             // restoration below puts the previous version back instead of
@@ -2595,7 +2683,9 @@ public actor SkillsDomain {
                         root: Self.packageDirectory(installationRoot: installationRoot,
                                                     id: current.id),
                         expectedDigest: journal.newDigest,
-                        manifestOverride: Self.sidecarManifest(for: current))) != nil {
+                        manifestOverride: Self.sidecarManifest(for: current),
+                        resourceAuthorization: curatedReceipts.resourceAuthorization(
+                            skillID: current.id, contentDigest: journal.newDigest))) != nil {
                 journal.phase = "complete"
             } else {
                 // Propagate a real restore failure; do not admit commands
@@ -2911,11 +3001,16 @@ public actor SkillsDomain {
                                         initialStatus: String = "enabled",
                                         replaceExisting: Bool,
                                         verifiedUpgrade: SkillUpgradeCandidate?,
-                                        bundledSeed: Bool = false) async throws
+                                        bundledSeed: Bool = false,
+                                        resourceAuthorization: SkillPackageResourceAuthorization? = nil) async throws
         -> SkillInstallationRecord {
-        let package = try validator.validate(packageAt: stagedPackageDirectory,
-                                             requireManifest: manifestOverride == nil,
-                                             manifestOverride: manifestOverride)
+        let package = try (resourceAuthorization?.validator ?? validator).validate(
+            packageAt: stagedPackageDirectory,
+            requireManifest: manifestOverride == nil,
+            manifestOverride: manifestOverride)
+        if let resourceAuthorization {
+            try resourceAuthorization.requireIdentity(package)
+        }
         guard package.canonicalSHA256 == canonicalSHA256 else {
             throw SkillValidationError.digestMismatch
         }
@@ -2990,6 +3085,7 @@ public actor SkillsDomain {
             replaceExisting: replaceExisting,
             manifestOverride: manifestOverride ?? (Self.hasFloeJSON(at: stagedPackageDirectory)
                 ? nil : package.manifest),
+            resourceAuthorization: resourceAuthorization,
             now: now)
     }
 
@@ -3002,7 +3098,8 @@ public actor SkillsDomain {
                                        sourceDigest: String?, rewriteModelID: String,
                                        manifestOverride: SkillManifest?,
                                        binding: FacadeRootGeneration,
-                                       curatedEnvelope: C02CuratedReceiptEnvelope? = nil) {
+                                       curatedEnvelope: C02CuratedReceiptEnvelope? = nil,
+                                       curatedReceipt: CuratedSkillHub.Receipt? = nil) {
         guard reviews.count < SkillsMcpLimits.maximumLiveReviews else {
             cleanup(packageDirectory.deletingLastPathComponent())
             return
@@ -3017,21 +3114,25 @@ public actor SkillsDomain {
                            rewriteModelID: rewriteModelID,
                            manifestOverride: manifestOverride))
         if let curatedEnvelope { reviewCuratedEnvelopes[token] = curatedEnvelope }
+        if let curatedReceipt { reviewCuratedReceipts[token] = curatedReceipt }
     }
 
     private func registerUpgradeReview(token: String, candidate: SkillUpgradeCandidate,
                                        stagingRoot: URL, binding: FacadeRootGeneration,
-                                       curatedEnvelope: C02CuratedReceiptEnvelope? = nil) {
+                                       curatedEnvelope: C02CuratedReceiptEnvelope? = nil,
+                                       curatedReceipt: CuratedSkillHub.Receipt? = nil) {
         guard reviews.count < SkillsMcpLimits.maximumLiveReviews else { return }
         reviews[token] = SkillsReview(
             token: token, skillID: candidate.snapshot.package.manifest.id,
             createdAtEpoch: binding.epoch,
             kind: .upgrade(candidate: candidate, stagingRoot: stagingRoot))
         if let curatedEnvelope { reviewCuratedEnvelopes[token] = curatedEnvelope }
+        if let curatedReceipt { reviewCuratedReceipts[token] = curatedReceipt }
     }
 
     private func retireReview(_ token: String) {
         reviewCuratedEnvelopes.removeValue(forKey: token)
+        reviewCuratedReceipts.removeValue(forKey: token)
         guard let review = reviews.removeValue(forKey: token) else { return }
         switch review.kind {
         case .install(let packageURL, _, _, _, _, _):
@@ -3591,6 +3692,12 @@ public struct SkillsDomainManagingFacade: SkillManaging, Sendable {
     public func read(id: String?, runID: UUID) async throws -> [ManagedSkill] {
         try await domain.readManaged(id: id, runID: runID)
     }
+    /// N07 resource seam: the exact read additionally carries the trusted
+    /// resource context, so the domain can stage the pinned bundle into the
+    /// SAME run's task workspace and report honest staged availability.
+    public func read(id: String?, runID: UUID, resourceContext: SkillResourceContext?) async throws -> [ManagedSkill] {
+        try await domain.readManaged(id: id, runID: runID, resourceContext: resourceContext)
+    }
     public func manage(_ request: SkillManageTool.Arguments) async throws -> String {
         try await domain.manageViaTool(request)
     }
@@ -3609,6 +3716,15 @@ extension SkillsDomain {
     }
 
     func readManaged(id: String?, runID: UUID?) async throws -> [ManagedSkill] {
+        try await readManaged(id: id, runID: runID, resourceContext: nil)
+    }
+
+    /// N07: the exact enabled read of a run with a trusted resource context
+    /// additionally stages the pinned bundle into the SAME run's resolved
+    /// task workspace (cache preparation only; no execution grant) and
+    /// reports structured availability on `ManagedSkill.resources`. A nil
+    /// context preserves the historical read exactly (no staging, no footer).
+    func readManaged(id: String?, runID: UUID?, resourceContext: SkillResourceContext?) async throws -> [ManagedSkill] {
         _ = try requireBinding()
         let rows = try await store.all()
         // Retained epoch check (primary review 2026-11-09): a retired root
@@ -3638,14 +3754,20 @@ extension SkillsDomain {
             var pinnedMarkdown: String?
             var pinnedDigest: String?
             var pinnedVersion: String?
+            /// N07 staged-resources availability for this exact pinned read.
+            var pinnedResources: SkillResourceAvailability?
             if let id, enabled, let runID {
+                let receiptStore = curatedReceipts
                 let snapshot = try runSnapshots.pinnedSnapshot(
                     currentInstallRoot: Self.packageDirectory(installationRoot: installationRoot,
                                                               id: row.id),
                     expectedDigest: row.rewrittenDigest,
                     manifestOverride: Self.sidecarManifest(for: row),
                     runID: runID,
-                    skillID: row.id)
+                    skillID: row.id,
+                    authorizationLookup: { digest in
+                        receiptStore.resourceAuthorization(skillID: id, contentDigest: digest)
+                    })
                 pinnedMarkdown = String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self)
                 pinnedDigest = snapshot.package.canonicalSHA256
                 pinnedVersion = snapshot.package.manifest.version
@@ -3658,6 +3780,42 @@ extension SkillsDomain {
                     required.formUnion(definition.automaticallyLoadedToolNames)
                 }
                 required.formIntersection(registered)
+                // N07: make the SAME pinned bytes available as files to this
+                // run's resolved local Linux task (iOS
+                // SkillWorkspaceResourceStager parity). Staging is internal
+                // cache preparation inside the run's own workspace: it grants
+                // nothing, executes nothing, and every refusal is honest
+                // (temporary/remote/unbound targets never stage silently).
+                if let resourceContext {
+                    let stageOutcome = await Self.resourceStager().stage(
+                        snapshot: snapshot,
+                        runID: runID,
+                        conversationID: resourceContext.conversationID,
+                        context: resourceContext)
+                    switch stageOutcome {
+                    case .staged(let bundle):
+                        pinnedResources = SkillResourceAvailability(
+                            staged: true,
+                            guestRoot: bundle.guestRoot,
+                            pinnedSHA256: bundle.pinnedSHA256,
+                            fileCount: bundle.fileCount,
+                            visibleInGuest: bundle.visibleInGuest,
+                            reason: nil)
+                    case .unavailable(let reason):
+                        pinnedResources = SkillResourceAvailability(
+                            staged: false,
+                            guestRoot: nil,
+                            pinnedSHA256: snapshot.package.canonicalSHA256,
+                            fileCount: snapshot.package.files.count,
+                            visibleInGuest: false,
+                            reason: reason)
+                    }
+                    pinnedMarkdown = (pinnedMarkdown ?? "") + SkillWorkspaceResourceStager.resourceFooter(
+                        id: row.id,
+                        pinnedSHA256: snapshot.package.canonicalSHA256,
+                        declaredFiles: snapshot.package.files,
+                        outcome: stageOutcome)
+                }
             }
             let packageURL = Self.packageDirectory(installationRoot: installationRoot, id: row.id)
             output.append(ManagedSkill(
@@ -3669,11 +3827,33 @@ extension SkillsDomain {
                     .appendingPathComponent("SKILL.md"), fileManager: .default)),
                 requiredToolNames: !enabled || required.isEmpty ? nil : required.sorted(),
                 currentDigest: row.rewrittenDigest,
-                description: descriptionText))
+                description: descriptionText,
+                resources: pinnedResources))
         }
         // Final retained epoch check before returning durable pin effects.
         _ = try requireBinding()
         return output
+    }
+
+    // MARK: Run-pinned resource staging (N07)
+
+    /// The ONE run-resource stager for this domain. Resolution and the guest
+    /// visibility probe ride the installed `C02SkillResourceStagingIntegration`
+    /// runtime (the trusted host binds it once per accepted root generation,
+    /// AFTER the execution-target domain exists); until then — or after its
+    /// retirement — staging reports the honest `stagingTransportUnavailable`
+    /// refusal instead of fabricating support. The stager itself is pure
+    /// FloeSkills (no FloeAndroidCore import): the Core-side target/workspace
+    /// facts arrive through the resolver closures.
+    static func resourceStager() -> SkillWorkspaceResourceStager {
+        SkillWorkspaceResourceStager(
+            resolve: { runID, conversationID in
+                guard let runtime = C02SkillResourceStagingIntegration.current else {
+                    return .unavailable(reason: SkillStageReason.stagingTransportUnavailable)
+                }
+                return await runtime.resolution(runID: runID, conversationID: conversationID)
+            },
+            probeVisibility: C02SkillResourceStagingIntegration.current?.visibilityProber())
     }
 
     // MARK: Per-run pinned snapshot lifecycle (trusted owners only)

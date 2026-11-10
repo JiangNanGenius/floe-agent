@@ -50,6 +50,10 @@ public enum SkillRunSnapshotRelease: String, Sendable, Equatable {
 /// validated read) instead of mixed revisions.
 public struct SkillRunSnapshotStore: Sendable {
 
+    /// Resolve local validation capacity from verified artifacts for this exact
+    /// digest. Existing pins never borrow the current installation's profile.
+    public typealias ResourceAuthorizationLookup = @Sendable (String) -> SkillPackageResourceAuthorization?
+
     /// The SAME canonical Skills installation root that owns the live
     /// packages and `.upgrade-history` (iOS layout parity).
     public let installationRoot: URL
@@ -126,7 +130,8 @@ public struct SkillRunSnapshotStore: Sendable {
         expectedDigest: String,
         manifestOverride: SkillManifest?,
         runID: UUID,
-        skillID: String
+        skillID: String,
+        authorizationLookup: ResourceAuthorizationLookup? = nil
     ) throws -> SkillContentSnapshot {
         try SkillIdentifier.validate(skillID)
         let directory = snapshotDirectory(runID: runID, skillID: skillID)
@@ -136,17 +141,18 @@ public struct SkillRunSnapshotStore: Sendable {
             // for this run. A valid winner is served; a corrupt or unowned
             // entry fails closed (typed refusal) instead of silently
             // adopting the current installation or deleting the entry.
-            return try readPublishedPin(runID: runID, skillID: skillID)
+            return try readPublishedPin(runID: runID, skillID: skillID, authorizationLookup: authorizationLookup)
         }
         // First validated read of this run: pin the CURRENT install.
         let snapshot = try SkillContentSnapshot(
             root: root,
             expectedDigest: expectedDigest,
-            manifestOverride: manifestOverride)
+            manifestOverride: manifestOverride,
+            resourceAuthorization: authorizationLookup?(expectedDigest))
         try publishPin(snapshot: snapshot,
                        manifestOverride: manifestOverride,
-                       runID: runID, skillID: skillID)
-        return try readPublishedPin(runID: runID, skillID: skillID)
+                       runID: runID, skillID: skillID, authorizationLookup: authorizationLookup)
+        return try readPublishedPin(runID: runID, skillID: skillID, authorizationLookup: authorizationLookup)
     }
 
     /// Validate a published pin end to end: every ancestor a plain
@@ -154,7 +160,8 @@ public struct SkillRunSnapshotStore: Sendable {
     /// well-formed, and the package bytes re-verified through the ORIGINAL
     /// gate with the PINNED manifest (recovered from the pin itself, so a
     /// manifest-less package is never reinterpreted with a newer sidecar).
-    private func readPublishedPin(runID: UUID, skillID: String) throws
+    private func readPublishedPin(runID: UUID, skillID: String,
+                                  authorizationLookup: ResourceAuthorizationLookup?) throws
         -> SkillContentSnapshot {
         let fileManager = FileManager.default
         let directory = snapshotDirectory(runID: runID, skillID: skillID)
@@ -190,7 +197,8 @@ public struct SkillRunSnapshotStore: Sendable {
         return try SkillContentSnapshot(
             root: packageDirectory(runID: runID, skillID: skillID),
             expectedDigest: recorded,
-            manifestOverride: pinnedManifest)
+            manifestOverride: pinnedManifest,
+            resourceAuthorization: authorizationLookup?(recorded))
     }
 
     /// Materialize the validated bytes as this run's pin. The WHOLE pin
@@ -201,7 +209,8 @@ public struct SkillRunSnapshotStore: Sendable {
     /// refusal) — an existing directory is NEVER deleted or replaced.
     private func publishPin(snapshot: SkillContentSnapshot,
                             manifestOverride: SkillManifest?,
-                            runID: UUID, skillID: String) throws {
+                            runID: UUID, skillID: String,
+                            authorizationLookup: ResourceAuthorizationLookup?) throws {
         let fileManager = FileManager.default
         let runDirectory = runsRoot.appendingPathComponent(runID.uuidString,
                                                            isDirectory: true)
@@ -215,7 +224,7 @@ public struct SkillRunSnapshotStore: Sendable {
                 // Concurrent first read (or a prior crash-published tree):
                 // never delete or replace. A valid pin wins outright; an
                 // invalid one refuses this read without touching the entry.
-                _ = try readPublishedPin(runID: runID, skillID: skillID)
+                _ = try readPublishedPin(runID: runID, skillID: skillID, authorizationLookup: authorizationLookup)
                 return
             }
             let stagedPackage = stagingDirectory
@@ -252,7 +261,7 @@ public struct SkillRunSnapshotStore: Sendable {
             // marker-owned stays published; anything else is removed (it is
             // exactly the tree this branch just created) and the read fails
             // closed so the run can re-read from a fresh attempt.
-            if let verified = try? readPublishedPin(runID: runID, skillID: skillID) {
+            if let verified = try? readPublishedPin(runID: runID, skillID: skillID, authorizationLookup: authorizationLookup) {
                 _ = verified
             } else {
                 throw SkillValidationError.digestMismatch

@@ -1,8 +1,8 @@
 # Android Alpha79 / code105
 
-已公开，并完成三星真实78→79镜像增量联合安装及原数据核对。35项聚焦和Full生产／公开读回通过；新的解锁／模型操作仍待实际验收。下方保留源码准备快照及其后的交付证据。
+已公开，并完成三星真实78→79镜像增量联合安装及原数据核对。35项聚焦和Full生产／公开读回通过；后续实测已确认自动解锁与页面读取，连续启动计算器误弹使用中确认，整条操作及任务结束重锁未通过。下方保留各阶段证据。
 
-Published and installed on Samsung through the actual78→79 mirror/delta route, with original data retained.35 focused cases, Full production and public read-back passed; new unlock/model behavior remains pending. Source-preparation and later delivery evidence are recorded separately below.
+Published and installed on Samsung through the actual78→79 mirror/delta route, with original data retained.35 focused cases, Full production and public read-back passed. A subsequent case actually unlocked and observed the screen, then incorrectly requested human control confirmation before launching Calculator. The complete action/relock flow has not passed. Evidence below retains each stage separately.
 
 ## 历史：源码准备 / Source-preparation snapshot
 
@@ -37,3 +37,9 @@ Samsung used its saved GH-Proxy mirror and the actual78 client to download/rebui
 本轮已导出8份生产回执，并退役26处用完的打包／原生重复输出及源码／增量暂存，删除窗口外置盘可用空间增加2,605,219,840字节。旧stage不能盲目重放；当前79、必要78回滚、原始故障、实际生产符号和下一原生批次使用的热缓存保留。技能资源与剩余设置精修仅有两个独立源码包，不阻塞本不可变版本，也不代表N01–N08完成。
 
 Eight producer receipts were retained before retiring26 completed duplicate/package/source/delta outputs; external free space rose by2,605,219,840 bytes in that deletion window. Retired staging paths must not be replayed. Current79, required78 rollback, original failures, actual production symbols and warm next-batch caches remain. Two independent source packages cover skill resources and remaining settings; they do not change this immutable release or close N01–N08.
+
+## 后续三星行为 / Subsequent Samsung behavior
+
+新独立用例实际自动解锁，`phone.observe`在2653ms内成功返回受保护Floe页面的导航状态；随后启动已授权计算器时，误触发“用户正在使用手机”的确认。被动观察期间没有人工输入，未进入计算器；普通屏幕超时锁定不计为任务结束重锁。原始41条记录已保存。收尾撤权后才出现的能力撤销回执不作为最初故障；未重试旧任务。临时解锁凭据、权限、控制范围、自建任务及设备导出均已清理，原5条任务保持，三星已恢复休眠。修复进入下一份候选，本版源码和安装字节保持不变。
+
+The fresh case actually unlocked and `phone.observe` returned the protected Floe page's navigation state in2653ms. The next authorized Calculator launch incorrectly requested confirmation that the user was using the phone. There was no human input during passive observation and Calculator was never reached; ordinary idle locking is not task-end relock proof. The41 original records remain saved. Capability revocation appeared only after test cleanup and is not the original fault. The old task was not retried. Temporary credentials, permissions, app scope, test conversations and the device export were removed; the original five task rows remain and Samsung is asleep. The next candidate carries the repair without changing this release's source or bytes.

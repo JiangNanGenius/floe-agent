@@ -86,7 +86,6 @@ import com.floe.android.host.voice.C03VoiceSettingsCard
 import com.floe.android.host.voice.C03VoiceSettingsLinks
 import com.floe.android.host.voice.C03VoiceSettingsPage
 import com.floe.android.host.voice.c03VoiceSettingsTitle
-import io.github.robinpcrd.cupertino.section.SectionItem
 
 private enum class SettingsSubpage(
     val parent: FloeSettingsSection,
@@ -800,20 +799,15 @@ private fun SettingsSectionContent(
 /** Honest placeholder for G02 surfaces before the runtime host is ready. */
 @Composable
 private fun HostPendingPage(messageRes: Int) {
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-        FloeSettingsSectionCard(title = stringResource(R.string.settings)) {
-            SectionItem(
-                title = {
-                    FloeText(
-                        stringResource(messageRes),
-                        style = Floe.typography.metadata,
-                        color = Floe.colors.secondaryLabel,
-                        modifier = Modifier.padding(vertical = 10.dp),
-                    )
-                },
-            )
-        }
-    }
+    // A page-level notice: one intrinsic metadata line instead of a grouped
+    // card wrapping a single minimum-height cell (the card title only
+    // duplicated the sheet toolbar's own title).
+    FloeText(
+        stringResource(messageRes),
+        style = Floe.typography.metadata,
+        color = Floe.colors.secondaryLabel,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+    )
 }
 
 /**

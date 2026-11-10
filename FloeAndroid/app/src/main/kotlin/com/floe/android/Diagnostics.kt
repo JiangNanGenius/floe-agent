@@ -106,7 +106,23 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
             }
             stage = withContext(Dispatchers.IO) { app.linuxTaskExecutionDiagnostic() }
         }
-        FloeSettingsSectionCard(title = stringResource(R.string.diagnostics_local_task_execution)) {
+        val shown = stage
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.diagnostics_local_task_execution),
+            // The closed stage token is a read-only group status: it reads as
+            // the iOS grouped-list footer instead of a minimum-height cell.
+            caption = if (shown != null && shown != "ready") {
+                @Composable {
+                    FloeText(
+                        shown,
+                        style = Floe.typography.metadata,
+                        color = colors.secondaryLabel,
+                    )
+                }
+            } else {
+                null
+            },
+        ) {
             FloeValueRow(
                 title = stringResource(R.string.diagnostics_local_task_execution),
                 value = when (stage) {
@@ -120,17 +136,7 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
                 value = "",
                 onClick = { proofOpen = true },
             )
-            val shown = stage
             if (shown != null && shown != "ready") {
-                SectionItem(
-                    title = {
-                        FloeText(
-                            shown,
-                            style = Floe.typography.metadata,
-                            color = colors.secondaryLabel,
-                        )
-                    },
-                )
                 SectionItem(
                     title = {
                         FloePrimaryAction(
@@ -164,23 +170,24 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
                 )
             }
         }
-        FloeSettingsSectionCard(title = stringResource(R.string.about)) {
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.about),
+            // The foundation note is the group's read-only footer, not a
+            // minimum-height cell below the value rows.
+            caption = {
+                FloeText(
+                    stringResource(R.string.foundation_stage_note),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
+                )
+            },
+        ) {
             FloeValueRow(stringResource(R.string.build_version), BuildConfig.VERSION_NAME)
             FloeValueRow(
                 stringResource(R.string.distribution),
                 stringResource(
                     if (DistributionModules.distribution == Distribution.FULL) R.string.full_distribution else R.string.play_distribution
                 ),
-            )
-            SectionItem(
-                title = {
-                    FloeText(
-                        stringResource(R.string.foundation_stage_note),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                        modifier = Modifier.padding(bottom = 10.dp),
-                    )
-                },
             )
         }
         if (proofOpen) {

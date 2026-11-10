@@ -1274,6 +1274,7 @@ internal class DeviceAccessHost(
         markStoppedOwnerSettled()
         val ended = automatedOwner.get()?.takeUnless { isOwnerRunLive(it) }
         if (ended != null && automatedOwner.compareAndSet(ended, null)) {
+            runCatching { android.util.Log.i("FloePhoneUnlock", "AUTOMATION_RUN_NO_LONGER_LIVE") }
             if (explicitResumeOwner == ended) explicitResumeOwner = null
             if (armedOwner == ended) armedOwner = null
             phoneClient?.finishAutomation(ended)
@@ -2663,6 +2664,8 @@ internal class DeviceAccessHost(
         automatedOwner.set(owner)
         if (!keyguard.isKeyguardLocked && client.userIsActive() &&
             call.presenceApprovedAtMillis < client.lastUserInteractionWallMillis()) {
+            val token = if (armedOwner == owner) "PRESENCE_RECHECK_SAME_TASK" else "INITIAL_PHONE_PRESENCE_REQUIRED"
+            runCatching { android.util.Log.i("FloePhoneUnlock", token) }
             return@withLock PlatformToolOutcome.Failure("phone_presence_required")
         }
         armingOwner = owner

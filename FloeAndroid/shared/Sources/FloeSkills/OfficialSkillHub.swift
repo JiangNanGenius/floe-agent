@@ -146,21 +146,23 @@ public enum OfficialSkillHub {
     /// A fresh root and no symlinks prevent output paths escaping staging.
     /// The shared archive gate owns path/size/checksum bounds; the skill
     /// validator owns the package contract.
-    public static func unpack(_ zip: Data, at root: URL) throws -> SkillContentSnapshot {
+    public static func unpack(_ zip: Data, at root: URL,
+                              resourceAuthorization: SkillPackageResourceAuthorization? = nil) throws -> SkillContentSnapshot {
         let allowedTopLevel: Set<String> = ["SKILL.md", "floe.json", "scripts", "references", "assets", "agents"]
         do {
             let files = try SignedContentArchive.extract(
                 zip, at: root,
-                limits: SignedContentArchiveLimits(
-                    maximumEntries: 128,
-                    maximumFileBytes: 2_097_152,
-                    maximumTotalBytes: 8_388_608
-                ),
+                limits: (resourceAuthorization?.profile ?? .standard).archiveLimits,
                 allowedTopLevel: allowedTopLevel
             )
             guard files["SKILL.md"] != nil, files["floe.json"] != nil else { throw Failure.archive }
-            let package = try SkillPackageValidator().validate(packageAt: root)
-            return try SkillContentSnapshot(root: root, expectedDigest: package.canonicalSHA256)
+            let package = try (resourceAuthorization?.validator ?? SkillPackageValidator()).validate(packageAt: root)
+            if let resourceAuthorization {
+                guard resourceAuthorization.skillID == package.manifest.id,
+                      resourceAuthorization.version == package.manifest.version,
+                      resourceAuthorization.contentDigest == package.canonicalSHA256 else { throw Failure.catalog }
+            }
+            return try SkillContentSnapshot(root: root, expectedDigest: package.canonicalSHA256, resourceAuthorization: resourceAuthorization)
         } catch let failure as Failure {
             try? FileManager.default.removeItem(at: root)
             throw failure

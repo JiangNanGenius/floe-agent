@@ -21,7 +21,8 @@ class ReleaseSelectionTest {
         assets: List<String>,
         draft: Boolean = false,
         body: String = "Release notes",
-    ): String = """{"tag_name":"$tag","draft":$draft,"prerelease":true,"body":"$body","assets":[${assets.joinToString(",")}]}"""
+        prerelease: Boolean = true,
+    ): String = """{"tag_name":"$tag","draft":$draft,"prerelease":$prerelease,"body":"$body","assets":[${assets.joinToString(",")}]}"""
 
     private fun apk(version: String, size: Long = 432_697_008L, url: String = "https://example.test/apk/$version"): String =
         asset("Floe-Android-$version-full-arm64-v8a.apk", size, url)
@@ -51,6 +52,20 @@ class ReleaseSelectionTest {
         )
         assertEquals("android/v0.1.0-alpha.14", selected?.tag)
         assertEquals("0.1.0-alpha.14", selected?.version?.toString())
+    }
+
+    @Test
+    fun olderAlphaCanDiscoverOnePointZeroFullPackageAlongsideIos() {
+        val json = page(
+            release("v1.9.1", listOf(asset("Floe-Agent-1.9.1.ipa", 300_000_000L)), prerelease = false),
+            release("android/v0.1.0-alpha.80", listOf(apk("0.1.0-alpha.80"), sums())),
+            release("android/v1.0.0", listOf(apk("1.0.0"), sums()), prerelease = false),
+        )
+        val selected = select(json, current = "0.1.0-alpha.79")!!
+        assertEquals("android/v1.0.0", selected.tag)
+        assertEquals("Floe-Android-1.0.0-full-arm64-v8a.apk", selected.apk.name)
+        assertEquals(false, selected.intermediate)
+        assertNull(select(json, current = "1.0.0"))
     }
 
     @Test

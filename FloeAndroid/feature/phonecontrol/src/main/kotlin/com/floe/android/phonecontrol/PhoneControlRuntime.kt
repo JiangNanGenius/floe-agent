@@ -100,6 +100,12 @@ internal object PhoneControlRuntime {
         val next = snapshot()
         lastFenceGeneration = next.fenceGeneration
         lastPageGeneration = next.pageGeneration
+        if (next.relockReceipt != mutableStatus.value.relockReceipt) {
+            next.relockReceipt?.let { receipt ->
+                // Actual lifecycle receipt, without owner IDs or screen data.
+                runCatching { android.util.Log.i("FloePhoneUnlock", "RELOCK_RESULT_${receipt.result.name}") }
+            }
+        }
         mutableStatus.value = next
     }
 }

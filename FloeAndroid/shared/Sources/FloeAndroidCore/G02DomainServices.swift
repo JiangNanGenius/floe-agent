@@ -825,6 +825,16 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // previous process; idempotent and scoped to this generation's root.
         _ = await C02ToolResultIntegration.reconcilePendingPurges()
 
+        // N07: bind run-pinned Skill resource staging for this generation.
+        // The resolver reads the REAL execution-target domain created above
+        // (never a first-project/UI/model-path root); the guest-visibility
+        // probe rides the SAME mailbox transport as shell.start. No new
+        // wire surface, no execution grant; an uninstalled/retired binding
+        // answers the honest stagingTransportUnavailable refusal.
+        C02SkillResourceStagingIntegration.install(
+            epoch: epoch,
+            executionTargets: executionTargets.domain)
+
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {

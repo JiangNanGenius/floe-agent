@@ -47,6 +47,9 @@ public enum CuratedSkillSourceCode: String, Codable, Sendable, CaseIterable, Has
     case kDense = "K"
     case superpowers = "S"
     case impeccable = "I"
+    /// An external upstream outside the named collections. The actual
+    /// repository and immutable commit remain mandatory provenance.
+    case other = "O"
 }
 
 public enum CuratedSkillCategory: String, Codable, Sendable, CaseIterable, Hashable {
@@ -260,6 +263,14 @@ public struct CuratedSkillPackageBinding: Sendable, Equatable, Hashable {
     public let sha256: String
     public let contentDigest: String
     public let containsScripts: Bool
+    public let profile: SkillPackageResourceProfile
+
+    public init(path: String, size: Int, sha256: String, contentDigest: String,
+                containsScripts: Bool, profile: SkillPackageResourceProfile = .standard) {
+        self.path = path; self.size = size; self.sha256 = sha256
+        self.contentDigest = contentDigest; self.containsScripts = containsScripts
+        self.profile = profile
+    }
 }
 
 /// Signed review-record binding: digest of the canonical record bytes plus
@@ -651,8 +662,12 @@ enum CuratedSkillEntryDecoder {
             throw CuratedSkillHubFailure.feed("\(path).id is not a SkillIdentifier-grammar identifier")
         }
         let planNumber = try CuratedSkillStrictJSON.integer(object["planNumber"], path: "\(path).planNumber")
-        guard (1...43).contains(planNumber) else {
-            throw CuratedSkillHubFailure.feed("\(path).planNumber must be a 1...43 row")
+        // Plan numbers are unique per feed, not a 43-row limit. The feed-wide
+        // bound is `CuratedSkillHub.maximumEntries`; uniqueness is enforced by
+        // the feed decoder across every entry. Legacy feeds remain valid.
+        guard (1...CuratedSkillHub.maximumEntries).contains(planNumber) else {
+            throw CuratedSkillHubFailure.feed(
+                "\(path).planNumber must be a 1...\(CuratedSkillHub.maximumEntries) row")
         }
         guard let kind = CuratedSkillEntryKind(
             rawValue: try CuratedSkillStrictJSON.string(object["kind"], path: "\(path).kind")) else {
@@ -678,6 +693,9 @@ enum CuratedSkillEntryDecoder {
         let firstParty = try decodeFirstParty(object["firstParty"], path: "\(path).firstParty")
         if upstream != nil && firstParty != nil {
             throw CuratedSkillHubFailure.feed("\(path): upstream and firstParty pins are mutually exclusive")
+        }
+        if source == .other, upstream == nil || firstParty != nil {
+            throw CuratedSkillHubFailure.feed("\(path): source O requires an external upstream pin and no firstParty pin")
         }
         let runtime = try decodeRuntime(object["runtime"], feedChannel: feedChannel, path: "\(path).runtime")
         let version = try CuratedSkillStrictJSON.string(object["version"], path: "\(path).version")
@@ -971,7 +989,7 @@ enum CuratedSkillEntryDecoder {
         let object = try CuratedSkillStrictJSON.object(from: value, path: path)
         try CuratedSkillStrictJSON.exactKeys(object, required: [
             "path", "size", "sha256", "contentDigest", "containsScripts",
-        ], path: path)
+        ], optional: ["profile"], path: path)
         let archivePath = try CuratedSkillStrictJSON.string(object["path"], path: "\(path).path")
         let prefix = feedChannel == .ios ? "" : "\(feedChannel.rawValue)/"
         let expected = "\(prefix)packages/\(id)/\(version)/\(id).zip"
@@ -979,8 +997,16 @@ enum CuratedSkillEntryDecoder {
             throw CuratedSkillHubFailure.feed("\(path).path must be '\(expected)'")
         }
         let size = try CuratedSkillStrictJSON.integer(object["size"], path: "\(path).size")
-        guard (1...8_388_608).contains(size) else {
-            throw CuratedSkillHubFailure.feed("\(path).size must be within 1...8 MiB")
+        let profile: SkillPackageResourceProfile
+        if let raw = object["profile"] {
+            let name = try CuratedSkillStrictJSON.string(raw, path: "\(path).profile")
+            guard let known = SkillPackageResourceProfile(rawValue: name) else {
+                throw CuratedSkillHubFailure.feed("\(path).profile is unsupported")
+            }
+            profile = known
+        } else { profile = .standard }
+        guard (1...profile.maximumBytes).contains(size) else {
+            throw CuratedSkillHubFailure.feed("\(path).size exceeds its signed profile")
         }
         let sha256 = try CuratedSkillStrictJSON.string(object["sha256"], path: "\(path).sha256")
         guard CuratedSkillStrictJSON.isSHA256(sha256) else {
@@ -992,7 +1018,7 @@ enum CuratedSkillEntryDecoder {
         }
         let containsScripts = try CuratedSkillStrictJSON.boolean(object["containsScripts"], path: "\(path).containsScripts")
         return CuratedSkillPackageBinding(path: archivePath, size: size, sha256: sha256,
-                                          contentDigest: contentDigest, containsScripts: containsScripts)
+                                          contentDigest: contentDigest, containsScripts: containsScripts, profile: profile)
     }
 
     private static func decodeReview(_ value: Any?, id: String, version: String,

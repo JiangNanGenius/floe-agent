@@ -667,22 +667,68 @@ object SettingsHostPages {
                     )
                 }
             }
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_memories)) {
-                if (entries.isEmpty()) {
-                    // An unsettled read is NOT "no memories yet": in flight
-                    // shows loading, a settled typed terminal shows
-                    // Unavailable with the Retry below — only a real settled
-                    // empty inventory shows the empty label.
-                    val emptyLabel = when {
-                        memory.searchActive -> R.string.settings_memory_search_empty
-                        state.memoryStatus.loading -> R.string.settings_privacy_loading
-                        state.memoryStatus.error != null -> R.string.unavailable
-                        else -> R.string.settings_memory_empty
+            // Read-only list states ride the iOS grouped-list footer instead
+            // of full-height grouped cells; every line keeps its exact
+            // original predicate.
+            val memoriesCaption: (@Composable () -> Unit)? =
+                if (entries.isEmpty() || state.memoryEditorLoading ||
+                    state.memoryEditorError != null || bulkFailure != null ||
+                    (memory.searchActive && memory.searchChangedCount > 0)
+                ) {
+                    @Composable {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            if (entries.isEmpty()) {
+                                // An unsettled read is NOT "no memories yet":
+                                // in flight shows loading, a settled typed
+                                // terminal shows Unavailable with the Retry
+                                // below — only a real settled empty inventory
+                                // shows the empty label.
+                                val emptyLabel = when {
+                                    memory.searchActive -> R.string.settings_memory_search_empty
+                                    state.memoryStatus.loading -> R.string.settings_privacy_loading
+                                    state.memoryStatus.error != null -> R.string.unavailable
+                                    else -> R.string.settings_memory_empty
+                                }
+                                CaptionText(stringResource(emptyLabel))
+                            }
+                            if (state.memoryEditorLoading) {
+                                CaptionText(stringResource(R.string.settings_memory_opening))
+                            }
+                            state.memoryEditorError?.let {
+                                CaptionText(stringResource(R.string.settings_memory_open_failed))
+                            }
+                            bulkFailure?.let { failure ->
+                                val message = when (failure) {
+                                    is BulkDeleteFailure.Unconfirmed ->
+                                        R.string.settings_memory_bulk_delete_uncertain
+                                    is BulkDeleteFailure.Refused ->
+                                        if (failure.code == "staleRevision") {
+                                            R.string.settings_memory_bulk_delete_changed
+                                        } else {
+                                            R.string.settings_memory_bulk_delete_refused
+                                        }
+                                    is BulkDeleteFailure.Local ->
+                                        R.string.settings_memory_bulk_delete_selection_changed
+                                }
+                                CaptionText(stringResource(message))
+                            }
+                            if (memory.searchActive && memory.searchChangedCount > 0) {
+                                CaptionText(
+                                    stringResource(
+                                        R.string.settings_memory_search_changed,
+                                        memory.searchChangedCount,
+                                    ),
+                                )
+                            }
+                        }
                     }
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(emptyLabel))
-                    })
+                } else {
+                    null
                 }
+            FloeSettingsSectionCard(
+                title = stringResource(R.string.settings_memories),
+                caption = memoriesCaption,
+            ) {
                 entries.forEach { entry ->
                     val selected = entry.id in selectedIDs
                     // Explicit composable type: the selection slot only
@@ -743,16 +789,8 @@ object SettingsHostPages {
                         trailing = selectionMarker,
                     )
                 }
-                if (state.memoryEditorLoading) {
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_memory_opening))
-                    })
-                }
-                state.memoryEditorError?.let {
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_memory_open_failed))
-                    })
-                }
+                // The editor-opening and open-failure states render in the
+                // card caption above (compact intrinsic footer, not cells).
                 editor?.let { snapshot ->
                     // Typed terminal of THIS generation only. The controller
                     // never publishes a save/delete result for a dismissed or
@@ -809,22 +847,9 @@ object SettingsHostPages {
                         )
                     }
                 }
-                bulkFailure?.let { failure ->
-                    val message = when (failure) {
-                        is BulkDeleteFailure.Unconfirmed ->
-                            R.string.settings_memory_bulk_delete_uncertain
-                        is BulkDeleteFailure.Refused ->
-                            if (failure.code == "staleRevision") {
-                                R.string.settings_memory_bulk_delete_changed
-                            } else {
-                                R.string.settings_memory_bulk_delete_refused
-                            }
-                        is BulkDeleteFailure.Local ->
-                            R.string.settings_memory_bulk_delete_selection_changed
-                    }
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(message))
-                    })
+                bulkFailure?.let {
+                    // The failure line itself renders in the card caption
+                    // above; the retry/refresh actions stay real rows.
                     bulkRetryIntent?.let { intent ->
                         FloeActionRow(
                             label = stringResource(R.string.settings_retry),
@@ -872,16 +897,7 @@ object SettingsHostPages {
                     )
                 }
                 if (memory.searchActive) {
-                    if (memory.searchChangedCount > 0) {
-                        FloeSectionRow(title = {
-                            StatusLine(
-                                stringResource(
-                                    R.string.settings_memory_search_changed,
-                                    memory.searchChangedCount,
-                                ),
-                            )
-                        })
-                    }
+                    // The changed-count line renders in the card caption.
                     if (memory.searchHasMore) {
                         FloeActionRow(
                             label = stringResource(R.string.settings_memory_load_more),
@@ -969,17 +985,23 @@ object SettingsHostPages {
                     onClick = { settings.openAddMemory() },
                 )
             }
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_memory_candidates)) {
-                if (memory.candidatesSweepApplied) {
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_candidates_sweep_applied))
-                    })
-                }
-                if (memory.candidates.isEmpty()) {
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_candidates_empty))
-                    })
-                }
+            FloeSettingsSectionCard(
+                title = stringResource(R.string.settings_memory_candidates),
+                caption = if (memory.candidatesSweepApplied || memory.candidates.isEmpty()) {
+                    @Composable {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            if (memory.candidatesSweepApplied) {
+                                CaptionText(stringResource(R.string.settings_candidates_sweep_applied))
+                            }
+                            if (memory.candidates.isEmpty()) {
+                                CaptionText(stringResource(R.string.settings_candidates_empty))
+                            }
+                        }
+                    }
+                } else {
+                    null
+                },
+            ) {
                 memory.candidates.forEach { candidate ->
                     FloeSectionRow(
                         description = candidate.content,
@@ -1022,8 +1044,49 @@ object SettingsHostPages {
                     onClick = { settings.listCandidates() },
                 )
             }
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_memory_organize)) {
-                val organize = memory.organize
+            val organize = memory.organize
+            FloeSettingsSectionCard(
+                title = stringResource(R.string.settings_memory_organize),
+                caption = if (organize != null) {
+                    @Composable {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            CaptionText(
+                                stringResource(
+                                    R.string.settings_organize_scanned,
+                                    organize.scannedCount,
+                                ),
+                            )
+                            // Honest automatic-cleanup outcome from the
+                            // proposal.
+                            organize.autoDelete?.let { autoDelete ->
+                                val autoDeleteLine = when (autoDelete.status) {
+                                    "applied" -> stringResource(
+                                        R.string.settings_organize_auto_deleted,
+                                        organize.autoDeletedCount,
+                                    )
+                                    "staleRejected" ->
+                                        stringResource(R.string.settings_organize_auto_delete_stale)
+                                    else -> stringResource(R.string.settings_organize_auto_delete_none)
+                                }
+                                CaptionText(autoDeleteLine)
+                            }
+                            if (organize.suggestions.isEmpty()) {
+                                CaptionText(stringResource(R.string.settings_organize_empty))
+                            }
+                            if (organize.stale) {
+                                CaptionText(stringResource(R.string.settings_organize_stale))
+                            }
+                            organize.applyError?.let {
+                                // Concise recovery copy; the typed code stays
+                                // diagnostics-only.
+                                CaptionText(stringResource(R.string.settings_organize_apply_failed))
+                            }
+                        }
+                    }
+                } else {
+                    null
+                },
+            ) {
                 if (organize == null) {
                     FloeActionRow(
                         label = stringResource(R.string.settings_organize_start),
@@ -1031,34 +1094,6 @@ object SettingsHostPages {
                     )
                 } else {
                     var confirmSuggestion by remember { mutableStateOf<String?>(null) }
-                    FloeSectionRow(title = {
-                        FloeText(
-                            stringResource(
-                                R.string.settings_organize_scanned,
-                                organize.scannedCount,
-                            ),
-                            style = Floe.typography.metadata,
-                            color = Floe.colors.secondaryLabel,
-                        )
-                    })
-                    // Honest automatic-cleanup outcome from the proposal.
-                    organize.autoDelete?.let { autoDelete ->
-                        val autoDeleteLine = when (autoDelete.status) {
-                            "applied" -> stringResource(
-                                R.string.settings_organize_auto_deleted,
-                                organize.autoDeletedCount,
-                            )
-                            "staleRejected" ->
-                                stringResource(R.string.settings_organize_auto_delete_stale)
-                            else -> stringResource(R.string.settings_organize_auto_delete_none)
-                        }
-                        FloeSectionRow(title = { StatusLine(autoDeleteLine) })
-                    }
-                    if (organize.suggestions.isEmpty()) {
-                        FloeSectionRow(title = {
-                            StatusLine(stringResource(R.string.settings_organize_empty))
-                        })
-                    }
                     organize.suggestions.forEach { suggestion ->
                         val affected = organize.entries.filter {
                             it.id in suggestion.memoryIDs
@@ -1108,18 +1143,8 @@ object SettingsHostPages {
                             },
                         )
                     }
-                    if (organize.stale) {
-                        FloeSectionRow(title = {
-                            StatusLine(stringResource(R.string.settings_organize_stale))
-                        })
-                    }
-                    organize.applyError?.let {
-                        // Concise recovery copy; the typed code stays
-                        // diagnostics-only.
-                        FloeSectionRow(title = {
-                            StatusLine(stringResource(R.string.settings_organize_apply_failed))
-                        })
-                    }
+                    // The stale and apply-failure lines render in the card
+                    // caption above.
                     FloeActionRow(
                         label = stringResource(R.string.settings_organize_cancel),
                         enabled = !organize.applying,
@@ -1470,7 +1495,77 @@ object SettingsHostPages {
                     }
                 })
             }
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_personalization_content)) {
+            val baseConflict = baseMoved || surface.saveError == "staleRevision"
+            // Explicit terminal outcome: the generated text may have been
+            // stored as a DRAFT because the active version/source moved.
+            val generateOutcome = when (surface.lastGenerateOutcome) {
+                "active" -> R.string.settings_personalization_generate_active
+                "storedAsDraft" -> when (surface.lastGenerateDraftReason) {
+                    "sourceChanged" ->
+                        R.string.settings_personalization_generate_draft_source
+                    "both" -> R.string.settings_personalization_generate_draft_both
+                    else ->
+                        R.string.settings_personalization_generate_draft_active
+                }
+                else -> null
+            }
+            // Read-only editor states ride the grouped-list footer; the
+            // Retry/Reload actions they explain stay real rows below.
+            val contentCaption: (@Composable () -> Unit)? =
+                if (surface.contentLoadFailed ||
+                    (!loading && state.personalizationStatus.error != null &&
+                        !surface.contentLoadFailed) ||
+                    baseConflict || surface.saveError != null ||
+                    surface.generateError != null || generateOutcome != null
+                ) {
+                    @Composable {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            if (surface.contentLoadFailed) {
+                                CaptionText(
+                                    stringResource(R.string.settings_personalization_content_failed))
+                            }
+                            if (!loading && state.personalizationStatus.error != null &&
+                                !surface.contentLoadFailed
+                            ) {
+                                // The initial document read settled
+                                // typed-unavailable: say so at the editor —
+                                // not silently "Loading…" — and keep the
+                                // Retry below the fold actionable.
+                                CaptionText(stringResource(R.string.unavailable))
+                            }
+                            if (baseConflict) {
+                                // The active slot moved while this draft was
+                                // unsaved. The user's text and the OLD token
+                                // stay in the field (the writer will refuse
+                                // rather than overwrite); the Reload row
+                                // below is an explicit discard of this draft.
+                                CaptionText(
+                                    stringResource(R.string.settings_personalization_stale))
+                            } else {
+                                surface.saveError?.let {
+                                    // The typed code stays in diagnostics; the
+                                    // draft remains in the field so the user
+                                    // can retry.
+                                    CaptionText(
+                                        stringResource(R.string.settings_personalization_save_failed))
+                                }
+                            }
+                            surface.generateError?.let { error ->
+                                CaptionText(
+                                    stringResource(R.string.settings_action_failed, error))
+                            }
+                            generateOutcome?.let { message ->
+                                CaptionText(stringResource(message))
+                            }
+                        }
+                    }
+                } else {
+                    null
+                }
+            FloeSettingsSectionCard(
+                title = stringResource(R.string.settings_personalization_content),
+                caption = contentCaption,
+            ) {
                 if (surface.contentLoading) {
                     Row(
                         Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -1483,24 +1578,10 @@ object SettingsHostPages {
                     }
                 }
                 if (surface.contentLoadFailed) {
-                    FloeSectionRow(title = {
-                        StatusLine(
-                            stringResource(R.string.settings_personalization_content_failed))
-                    })
                     FloeActionRow(
                         label = stringResource(R.string.settings_retry),
                         onClick = { settings.refreshPersonalization(surface.kind) },
                     )
-                }
-                if (!loading && state.personalizationStatus.error != null &&
-                    !surface.contentLoadFailed
-                ) {
-                    // The initial document read settled typed-unavailable:
-                    // say so at the editor — not silently "Loading…" — and
-                    // keep the Retry below the fold actionable.
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.unavailable))
-                    })
                 }
                 androidx.compose.foundation.layout.Box(
                     Modifier
@@ -1583,16 +1664,9 @@ object SettingsHostPages {
                         StatusLine(stringResource(R.string.settings_personalization_generating))
                     }
                 }
-                val baseConflict = baseMoved || surface.saveError == "staleRevision"
                 if (baseConflict) {
-                    // The active slot moved while this draft was unsaved.
-                    // Keep the user's text and the OLD token (the writer
-                    // will refuse rather than overwrite); reload is an
-                    // explicit discard of this draft.
-                    FloeSectionRow(title = {
-                        StatusLine(
-                            stringResource(R.string.settings_personalization_stale))
-                    })
+                    // The stale line renders in the card caption above; the
+                    // explicit discard of this draft stays a real row.
                     FloeActionRow(
                         label = stringResource(R.string.settings_personalization_reload),
                         onClick = {
@@ -1604,119 +1678,104 @@ object SettingsHostPages {
                             settings.refreshPersonalization(surface.kind)
                         },
                     )
-                } else {
-                    surface.saveError?.let {
-                        // The typed code stays in diagnostics; the draft
-                        // remains in the field so the user can retry.
-                        FloeSectionRow(title = {
-                            StatusLine(
-                                stringResource(R.string.settings_personalization_save_failed))
-                        })
-                    }
-                }
-                surface.generateError?.let { error ->
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_action_failed, error))
-                    })
-                }
-                // Explicit terminal outcome: the generated text may have been
-                // stored as a DRAFT because the active version/source moved.
-                val generateOutcome = when (surface.lastGenerateOutcome) {
-                    "active" -> R.string.settings_personalization_generate_active
-                    "storedAsDraft" -> when (surface.lastGenerateDraftReason) {
-                        "sourceChanged" ->
-                            R.string.settings_personalization_generate_draft_source
-                        "both" -> R.string.settings_personalization_generate_draft_both
-                        else ->
-                            R.string.settings_personalization_generate_draft_active
-                    }
-                    else -> null
-                }
-                generateOutcome?.let { message ->
-                    FloeSectionRow(title = { StatusLine(stringResource(message)) })
                 }
             }
-            FloeSettingsSectionCard(
-                title = stringResource(R.string.settings_personalization_history),
-            ) {
-                if (surface.revisions.isEmpty() && !surface.revisionsLoadingMore) {
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_personalization_revision_empty))
-                    })
-                }
-                if (surface.revisionReadInFlight && surface.openRevision == null) {
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(
-                            R.string.settings_personalization_revision_loading))
-                    })
-                }
-                surface.revisions.forEach { meta ->
-                    FloeSectionRow(
-                        title = {
-                            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    FloeText(
-                                        stringResource(
-                                            R.string.settings_personalization_revision,
-                                            meta.revision,
-                                        ),
-                                        style = Floe.typography.body,
-                                        color = Floe.colors.label,
-                                    )
-                                    if (meta.isActive) {
-                                        Spacer(Modifier.height(0.dp))
+            if (surface.revisions.isNotEmpty() || surface.revisionsNextCursor != null) {
+                FloeSettingsSectionCard(
+                    title = stringResource(R.string.settings_personalization_history),
+                    caption = if (surface.rollbackError != null) {
+                        @Composable {
+                            // Concise recovery copy; the typed code stays
+                            // diagnostics-only.
+                            CaptionText(
+                                stringResource(R.string.settings_personalization_rollback_failed))
+                        }
+                    } else {
+                        null
+                    },
+                ) {
+                    surface.revisions.forEach { meta ->
+                        FloeSectionRow(
+                            title = {
+                                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
                                         FloeText(
-                                            " · " + stringResource(
-                                                R.string.settings_personalization_revision_active),
-                                            style = Floe.typography.metadata,
-                                            color = Floe.colors.accent,
+                                            stringResource(
+                                                R.string.settings_personalization_revision,
+                                                meta.revision,
+                                            ),
+                                            style = Floe.typography.body,
+                                            color = Floe.colors.label,
                                         )
+                                        if (meta.isActive) {
+                                            Spacer(Modifier.height(0.dp))
+                                            FloeText(
+                                                " · " + stringResource(
+                                                    R.string.settings_personalization_revision_active),
+                                                style = Floe.typography.metadata,
+                                                color = Floe.colors.accent,
+                                            )
+                                        }
                                     }
+                                    FloeText(
+                                        "${meta.source} · ${meta.createdAt}",
+                                        style = Floe.typography.metadata,
+                                        color = Floe.colors.secondaryLabel,
+                                        maxLines = 1,
+                                    )
                                 }
-                                FloeText(
-                                    "${meta.source} · ${meta.createdAt}",
-                                    style = Floe.typography.metadata,
-                                    color = Floe.colors.secondaryLabel,
-                                    maxLines = 1,
-                                )
-                            }
-                        },
-                        trailing = {
-                            FloeCapsuleAction(
-                                label = stringResource(
-                                    R.string.settings_personalization_revision_view),
-                                enabled = !surface.revisionReadInFlight &&
-                                    !surface.rollingBack,
-                                onClick = {
-                                    settings.readPersonalizationRevision(
-                                        surface.kind, meta.revision)
-                                },
-                            )
-                            if (!meta.isActive) {
+                            },
+                            trailing = {
                                 FloeCapsuleAction(
                                     label = stringResource(
-                                        R.string.settings_personalization_revision_restore),
+                                        R.string.settings_personalization_revision_view),
                                     enabled = !surface.revisionReadInFlight &&
                                         !surface.rollingBack,
-                                    onClick = { confirmRollback = meta.revision },
+                                    onClick = {
+                                        settings.readPersonalizationRevision(
+                                            surface.kind, meta.revision)
+                                    },
                                 )
-                            }
-                        },
-                    )
+                                if (!meta.isActive) {
+                                    FloeCapsuleAction(
+                                        label = stringResource(
+                                            R.string.settings_personalization_revision_restore),
+                                        enabled = !surface.revisionReadInFlight &&
+                                            !surface.rollingBack,
+                                        onClick = { confirmRollback = meta.revision },
+                                    )
+                                }
+                            },
+                        )
+                    }
+                    surface.revisionsNextCursor?.let {
+                        FloeActionRow(
+                            label = stringResource(R.string.settings_personalization_load_more),
+                            enabled = !surface.revisionsLoadingMore,
+                            onClick = { settings.loadMoreRevisions(surface.kind) },
+                        )
+                    }
                 }
-                surface.revisionsNextCursor?.let {
-                    FloeActionRow(
-                        label = stringResource(R.string.settings_personalization_load_more),
-                        enabled = !surface.revisionsLoadingMore,
-                        onClick = { settings.loadMoreRevisions(surface.kind) },
-                    )
-                }
-                surface.rollbackError?.let {
-                    // Concise recovery copy; the typed code stays
-                    // diagnostics-only.
-                    FloeSectionRow(title = {
+            } else {
+                // No revision rows yet: the honest empty/loading states stay
+                // visible as a compact page-level notice — never an empty
+                // card frame, never a 48dp status cell.
+                Column(
+                    Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (!surface.revisionsLoadingMore) {
+                        StatusLine(stringResource(R.string.settings_personalization_revision_empty))
+                    }
+                    if (surface.revisionReadInFlight && surface.openRevision == null) {
+                        StatusLine(stringResource(
+                            R.string.settings_personalization_revision_loading))
+                    }
+                    surface.rollbackError?.let {
+                        // Concise recovery copy; the typed code stays
+                        // diagnostics-only.
                         StatusLine(stringResource(R.string.settings_personalization_rollback_failed))
-                    })
+                    }
                 }
             }
             SettingsStatus(state.personalizationStatus, onRetry = { settings.refreshPersonalization() })
@@ -1854,21 +1913,24 @@ object SettingsHostPages {
                     }
                 })
             }
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_usage_totals)) {
-                val totals = usage.totals
-                if (totals == null) {
-                    // No totals is ambiguous by itself: in flight shows
-                    // loading, a settled typed terminal shows Unavailable
-                    // (Retry below), and ONLY a real settled empty report
-                    // shows "no usage recorded" — never a fabricated zero
-                    // and never a permanent loading label.
-                    val emptyLabel = when {
-                        state.usageStatus.loading -> R.string.settings_privacy_loading
-                        state.usageStatus.error != null -> R.string.unavailable
-                        else -> R.string.settings_usage_empty
-                    }
-                    FloeSectionRow(title = { StatusLine(stringResource(emptyLabel)) })
-                } else {
+            val totals = usage.totals
+            if (totals == null) {
+                // No totals is ambiguous by itself: in flight shows loading,
+                // a settled typed terminal shows Unavailable (Retry below),
+                // and ONLY a real settled empty report shows "no usage
+                // recorded" — never a fabricated zero and never a permanent
+                // loading label. One compact page-level notice replaces the
+                // old card-wrapped 48dp status cell.
+                val emptyLabel = when {
+                    state.usageStatus.loading -> R.string.settings_privacy_loading
+                    state.usageStatus.error != null -> R.string.unavailable
+                    else -> R.string.settings_usage_empty
+                }
+                Column(Modifier.padding(horizontal = 4.dp, vertical = 6.dp)) {
+                    StatusLine(stringResource(emptyLabel))
+                }
+            } else {
+                FloeSettingsSectionCard(title = stringResource(R.string.settings_usage_totals)) {
                     FloeValueRow(
                         stringResource(R.string.settings_usage_input),
                         totals.inputTokens.toString(),
@@ -1972,21 +2034,65 @@ object SettingsHostPages {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_history)) {
-                if (summary == null) {
-                    // A settled unavailable/error state is NOT "still loading":
-                    // show it as unavailable and let the status card below
-                    // offer the real Retry. Only an in-flight read keeps the
-                    // loading label.
-                    FloeSectionRow(title = {
-                        StatusLine(
-                            stringResource(
-                                if (state.privacyStatus.loading) R.string.settings_privacy_loading
-                                else R.string.unavailable,
-                            ),
-                        )
-                    })
-                } else {
+            if (summary == null) {
+                // A settled unavailable/error state is NOT "still loading":
+                // show it as unavailable and let the status card below offer
+                // the real Retry. Only an in-flight read keeps the loading
+                // label. One compact page-level notice replaces the old
+                // card-wrapped 48dp status cell.
+                Column(Modifier.padding(horizontal = 4.dp, vertical = 6.dp)) {
+                    StatusLine(
+                        stringResource(
+                            if (state.privacyStatus.loading) R.string.settings_privacy_loading
+                            else R.string.unavailable,
+                        ),
+                    )
+                }
+            } else {
+                FloeSettingsSectionCard(
+                    title = stringResource(R.string.settings_privacy_history),
+                    caption = if ((summary.remaining == null &&
+                            summary.remainingFailure != null) ||
+                        summary.workspaceRemoved != null
+                    ) {
+                        @Composable {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                if (summary.remaining == null &&
+                                    summary.remainingFailure != null
+                                ) {
+                                    // remaining == null ONLY with a typed
+                                    // remainingFailure from an ACTUAL
+                                    // history-clear report (partial).
+                                    CaptionText(
+                                        stringResource(
+                                            R.string.settings_privacy_recount_unavailable,
+                                            summary.remainingFailure,
+                                        ),
+                                    )
+                                }
+                                if (summary.workspaceRemoved != null) {
+                                    // REAL owned task-folder effects from the
+                                    // accepted native clear lifecycle. "Already
+                                    // absent" is honest bookkeeping (nothing
+                                    // needed removal), and deferred folders
+                                    // keep their typed failure rows above with
+                                    // a durable retry — none of these are
+                                    // invented.
+                                    CaptionText(
+                                        stringResource(
+                                            R.string.settings_privacy_workspace_cleanup,
+                                            summary.workspaceRemoved,
+                                            summary.workspaceAbsent ?: 0,
+                                            summary.workspaceDeferred ?: 0,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                ) {
                     FloeValueRow(
                         stringResource(R.string.settings_privacy_conversations),
                         summary.conversationCount.toString(),
@@ -2003,47 +2109,48 @@ object SettingsHostPages {
                         stringResource(R.string.settings_privacy_active_grants),
                         summary.inMemoryGrantCount.toString(),
                     )
-                    val remaining = summary.remaining
-                    if (remaining != null) {
+                    summary.remaining?.let { remaining ->
                         FloeValueRow(
                             stringResource(R.string.settings_privacy_remaining),
                             remaining.conversationCount.toString(),
                         )
-                    } else if (summary.remainingFailure != null) {
-                        // remaining == null ONLY with a typed remainingFailure
-                        // from an ACTUAL history-clear report (partial).
-                        FloeSectionRow(title = {
-                            StatusLine(
-                                stringResource(
-                                    R.string.settings_privacy_recount_unavailable,
-                                    summary.remainingFailure,
-                                ),
-                            )
-                        })
-                    }
-                    // No report has settled yet: nothing to show — never a
-                    // fabricated "recount unavailable".
-                    if (summary.workspaceRemoved != null) {
-                        // REAL owned task-folder effects from the accepted
-                        // native clear lifecycle. "Already absent" is honest
-                        // bookkeeping (nothing needed removal), and deferred
-                        // folders keep their typed failure rows above with a
-                        // durable retry — none of these are invented.
-                        FloeSectionRow(title = {
-                            StatusLine(
-                                stringResource(
-                                    R.string.settings_privacy_workspace_cleanup,
-                                    summary.workspaceRemoved,
-                                    summary.workspaceAbsent ?: 0,
-                                    summary.workspaceDeferred ?: 0,
-                                ),
-                            )
-                        })
                     }
                 }
             }
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_model_config)) {
-                if (summary != null) {
+            // The card composes only with real rows: a null summary renders
+            // no chrome at all (the loading/unavailable state is the history
+            // notice above and the status card below).
+            if (summary != null) {
+                FloeSettingsSectionCard(
+                    title = stringResource(R.string.settings_privacy_model_config),
+                    caption = if ((summary.modelRemaining == null &&
+                            summary.modelRemainingFailure != null) ||
+                        summary.preferencesFailure != null
+                    ) {
+                        @Composable {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                if (summary.modelRemaining == null &&
+                                    summary.modelRemainingFailure != null
+                                ) {
+                                    CaptionText(
+                                        stringResource(
+                                            R.string.settings_privacy_recount_unavailable,
+                                            summary.modelRemainingFailure,
+                                        ),
+                                    )
+                                }
+                                summary.preferencesFailure?.let { failure ->
+                                    CaptionText(
+                                        stringResource(
+                                            R.string.settings_privacy_prefs_failure, failure),
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                ) {
                     FloeValueRow(
                         stringResource(R.string.settings_privacy_providers),
                         summary.providerCount.toString(),
@@ -2052,34 +2159,33 @@ object SettingsHostPages {
                         stringResource(R.string.settings_privacy_models),
                         summary.modelCount.toString(),
                     )
-                    val modelRemaining = summary.modelRemaining
-                    if (modelRemaining != null) {
+                    summary.modelRemaining?.let { modelRemaining ->
                         FloeValueRow(
                             stringResource(R.string.settings_privacy_remaining),
                             modelRemaining.providerCount.toString(),
                         )
-                    } else if (summary.modelRemainingFailure != null) {
-                        FloeSectionRow(title = {
-                            StatusLine(
-                                stringResource(
-                                    R.string.settings_privacy_recount_unavailable,
-                                    summary.modelRemainingFailure,
-                                ),
-                            )
-                        })
-                    }
-                    summary.preferencesFailure?.let { failure ->
-                        FloeSectionRow(title = {
-                            StatusLine(
-                                stringResource(R.string.settings_privacy_prefs_failure, failure),
-                            )
-                        })
                     }
                 }
             }
             val failures = privacy.historyFailures + privacy.modelConfigFailures
             if (failures.isNotEmpty()) {
-                FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_failures)) {
+                val reportPage = privacy.reportPage
+                FloeSettingsSectionCard(
+                    title = stringResource(R.string.settings_privacy_failures),
+                    caption = if (reportPage != null) {
+                        @Composable {
+                            CaptionText(
+                                stringResource(
+                                    R.string.settings_privacy_report_page,
+                                    reportPage.items.size,
+                                    reportPage.total,
+                                ),
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                ) {
                     failures.take(8).forEach { failure ->
                         FloeSectionRow(
                             description = failure.reason,
@@ -2100,30 +2206,51 @@ object SettingsHostPages {
                             },
                         )
                     }
-                    privacy.reportPage?.let { page ->
-                        FloeSectionRow(title = {
-                            StatusLine(
-                                stringResource(
-                                    R.string.settings_privacy_report_page,
-                                    page.items.size,
-                                    page.total,
-                                ),
-                            )
-                        })
-                        if (!page.done && page.nextCursor != null) {
-                            FloeActionRow(
-                                label = stringResource(R.string.settings_privacy_more),
-                                onClick = {
-                                    settings.readPrivacyReportPage(
-                                        page.handle, page.kind, page.nextCursor, 50,
-                                    ) {}
-                                },
-                            )
-                        }
+                    if (reportPage != null && !reportPage.done &&
+                        reportPage.nextCursor != null
+                    ) {
+                        FloeActionRow(
+                            label = stringResource(R.string.settings_privacy_more),
+                            onClick = {
+                                settings.readPrivacyReportPage(
+                                    reportPage.handle, reportPage.kind,
+                                    reportPage.nextCursor, 50,
+                                ) {}
+                            },
+                        )
                     }
                 }
             }
-            FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_actions)) {
+            FloeSettingsSectionCard(
+                title = stringResource(R.string.settings_privacy_actions),
+                caption = if (busy || clearStatus?.error != null) {
+                    @Composable {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            if (busy) {
+                                CaptionText(stringResource(R.string.settings_privacy_clearing))
+                            }
+                            clearStatus?.error?.let { code ->
+                                CaptionText(
+                                    when (code) {
+                                        "inFlight" ->
+                                            stringResource(R.string.settings_privacy_clear_busy)
+                                        "previewStale", "previewUnavailable", "rootChanged" ->
+                                            stringResource(R.string.settings_privacy_preview_changed)
+                                        "reportUnavailable" ->
+                                            stringResource(R.string.settings_privacy_report_unavailable)
+                                        "confirmationUnavailable", "rootUnavailable", "unavailable" ->
+                                            stringResource(R.string.settings_privacy_confirm_unavailable)
+                                        else ->
+                                            stringResource(R.string.settings_privacy_clear_failed, code)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    null
+                },
+            ) {
                 FloeActionRow(
                     label = stringResource(R.string.settings_privacy_clear_history),
                     enabled = !busy,
@@ -2142,29 +2269,6 @@ object SettingsHostPages {
                             SettingsHostController.PrivacyClearAction.MODEL_CONFIGURATION)
                     },
                 )
-                if (busy) {
-                    FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_privacy_clearing))
-                    })
-                }
-                clearStatus?.error?.let { code ->
-                    FloeSectionRow(title = {
-                        StatusLine(
-                            when (code) {
-                                "inFlight" ->
-                                    stringResource(R.string.settings_privacy_clear_busy)
-                                "previewStale", "previewUnavailable", "rootChanged" ->
-                                    stringResource(R.string.settings_privacy_preview_changed)
-                                "reportUnavailable" ->
-                                    stringResource(R.string.settings_privacy_report_unavailable)
-                                "confirmationUnavailable", "rootUnavailable", "unavailable" ->
-                                    stringResource(R.string.settings_privacy_confirm_unavailable)
-                                else ->
-                                    stringResource(R.string.settings_privacy_clear_failed, code)
-                            },
-                        )
-                    })
-                }
             }
             SettingsStatus(state.privacyStatus, onRetry = { settings.refreshPrivacySummary() })
         }
@@ -2234,6 +2338,20 @@ object SettingsHostPages {
         FloeStatusLine(
             icon = FloeIcons.InfoCircle,
             text = text,
+            color = Floe.colors.secondaryLabel,
+        )
+    }
+
+    /**
+     * One read-only line of a group footer (the iOS grouped-list caption
+     * voice already used by SettingsSheet/DeviceAccess): plain metadata text
+     * at intrinsic height below the card, never a minimum-touch cell.
+     */
+    @Composable
+    private fun CaptionText(text: String) {
+        FloeText(
+            text,
+            style = Floe.typography.metadata,
             color = Floe.colors.secondaryLabel,
         )
     }

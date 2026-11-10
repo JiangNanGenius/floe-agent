@@ -71,8 +71,13 @@ final class C02AndroidHubClientTests: XCTestCase {
     }
 
     func testAndroidCompatibilityVersionIsIndependentOfPrerelease() {
-        XCTAssertEqual(C02AndroidSkillCompatibility.version, "0.1.0")
+        // 0.1.1 is the first client that understands the signed
+        // large-source-v1 package profile (the Taste skill's projected feed
+        // floor). It stays separate from the APK display/OTA prerelease.
+        XCTAssertEqual(C02AndroidSkillCompatibility.version, "0.1.1")
+        XCTAssertNotEqual(C02AndroidSkillCompatibility.version, "0.1.0")
         XCTAssertNotEqual(C02AndroidSkillCompatibility.version, "0.1.0-alpha.22")
+        XCTAssertNotEqual(C02AndroidSkillCompatibility.version, "0.1.1-alpha.1")
         XCTAssertEqual(C02AndroidSkillCompatibility.platform, .android)
     }
 

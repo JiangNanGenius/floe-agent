@@ -34,6 +34,7 @@ public struct SkillInstallationRecord: Codable, Equatable, Sendable {
     public var canonicalSHA256: String
     public var provenance: SkillInstallProvenance
     public var installedAt: Date
+    public var resourceProfile: SkillPackageResourceProfile? = nil
 
     /// This invariant is part of the persistence contract: source packages
     /// are reviewed in a temporary location and are never copied into the
@@ -46,7 +47,8 @@ public struct SkillInstallationRecord: Codable, Equatable, Sendable {
         canonicalPackageURL: URL,
         canonicalSHA256: String,
         provenance: SkillInstallProvenance,
-        installedAt: Date
+        installedAt: Date,
+        resourceProfile: SkillPackageResourceProfile? = nil
     ) {
         self.skillID = skillID
         self.version = version
@@ -54,6 +56,7 @@ public struct SkillInstallationRecord: Codable, Equatable, Sendable {
         self.canonicalSHA256 = canonicalSHA256
         self.provenance = provenance
         self.installedAt = installedAt
+        self.resourceProfile = resourceProfile
     }
 }
 
@@ -89,6 +92,7 @@ public actor SkillInstallStagingService {
         provenance: SkillInstallProvenance,
         replaceExisting: Bool = false,
         manifestOverride: SkillManifest? = nil,
+        resourceAuthorization: SkillPackageResourceAuthorization? = nil,
         now: Date = Date()
     ) async throws -> SkillInstallationRecord {
         guard !rewrittenPackageURL.standardizedFileURL.path.hasPrefix(installationRoot.path + "/") else {
@@ -101,7 +105,13 @@ public actor SkillInstallStagingService {
         else {
             throw SkillInstallError.invalidProvenance
         }
+        if let resourceAuthorization,
+           resourceAuthorization.contentDigest != provenance.expectedRewrittenSHA256 {
+            throw SkillValidationError.digestMismatch
+        }
+        let validator = resourceAuthorization?.validator ?? self.validator
         let package = try validator.validate(packageAt: rewrittenPackageURL, manifestOverride: manifestOverride)
+        try resourceAuthorization?.requireIdentity(package)
         guard package.canonicalSHA256 == provenance.expectedRewrittenSHA256 else {
             throw SkillValidationError.digestMismatch
         }
@@ -133,7 +143,7 @@ public actor SkillInstallStagingService {
                 canonicalPackageURL: destination,
                 canonicalSHA256: package.canonicalSHA256,
                 provenance: provenance,
-                installedAt: now
+                installedAt: now, resourceProfile: resourceAuthorization?.profile
             )
             try await metadataStore?.persist(record)
             if didBackup { try? fileManager.removeItem(at: backup) }

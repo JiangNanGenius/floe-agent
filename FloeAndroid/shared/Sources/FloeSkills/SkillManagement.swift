@@ -17,18 +17,25 @@ public struct ManagedSkill: Codable, Sendable, Equatable {
     public var requiredToolNames: [String]?
     public var nextOffset: Int?
     public var totalCharacters: Int?
-    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil, requiredToolNames: [String]? = nil, currentDigest: String? = nil, description: String? = nil) {
+    /// Structured availability of the pinned bundle's staged task resources.
+    /// Present only on an exact `skill.read` that carried a real run and
+    /// attempted staging; nil on discovery/list/search rows. Never carries a
+    /// host path (SkillWorkspaceResourceStager contract).
+    public var resources: SkillResourceAvailability?
+    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil, requiredToolNames: [String]? = nil, currentDigest: String? = nil, description: String? = nil, resources: SkillResourceAvailability? = nil) {
         self.id = id; self.name = name; self.version = version
         self.description = description
         self.enabled = enabled; self.digest = digest; self.markdown = markdown
         self.requiredToolNames = requiredToolNames
         self.currentDigest = currentDigest
+        self.resources = resources
     }
 
     /// Discovery must not expose instruction bodies even if a manager supplies them.
     var discoveryMetadata: ManagedSkill {
         var row = self
         row.markdown = nil; row.nextOffset = nil; row.totalCharacters = nil
+        row.resources = nil
         row.description = description.map { String($0.prefix(1_024)) }
         return row
     }
@@ -37,11 +44,18 @@ public struct ManagedSkill: Codable, Sendable, Equatable {
 public protocol SkillManaging: Sendable {
     func read(id: String?) async throws -> [ManagedSkill]
     func read(id: String?, runID: UUID) async throws -> [ManagedSkill]
+    /// Exact read with the run's resource-staging context. Managers that can
+    /// stage pinned bundle bytes into the task workspace override this; the
+    /// default preserves the historical read (never stages, never writes).
+    func read(id: String?, runID: UUID, resourceContext: SkillResourceContext?) async throws -> [ManagedSkill]
     func manage(_ request: SkillManageTool.Arguments) async throws -> String
 }
 
 public extension SkillManaging {
     func read(id: String?, runID: UUID) async throws -> [ManagedSkill] { try await read(id: id) }
+    func read(id: String?, runID: UUID, resourceContext: SkillResourceContext?) async throws -> [ManagedSkill] {
+        try await read(id: id, runID: runID)
+    }
 }
 
 /// Metadata discovery does not read/activate instructions or execute scripts.
@@ -118,7 +132,7 @@ public struct SkillReadTool: AgentTool {
         public init(id: String? = nil, offset: Int? = nil, limit: Int? = nil) { self.id = id; self.offset = offset; self.limit = limit }
     }
     public static let name = "skill.read"
-    public static let toolDescription = "List installed skill metadata, or read one exact enabled guide selected for this run. The digest identifies the returned Markdown revision; currentDigest identifies the installed revision. Disabled guides return metadata only. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. Do not combine pages with different digests. Reading loads available tool schemas; it never executes scripts, enables a guide or grants permissions. For skill.manage use currentDigest (or the metadata list digest)."
+    public static let toolDescription = "List installed skill metadata, or read one exact enabled guide selected for this run. The digest identifies the returned Markdown revision; currentDigest identifies the installed revision. Disabled guides return metadata only. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. Do not combine pages with different digests. Exact reads of a run-pinned guide also report `resources`: staged availability of the pinned bundle files inside the task Linux workspace (guestRoot only when staged; visibleInGuest tells whether the guest can already see them). Reading loads available tool schemas; it never executes scripts, enables a guide or grants permissions. For skill.manage use currentDigest (or the metadata list digest)."
     public static let parametersJSON = #"{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
@@ -133,7 +147,18 @@ public struct SkillReadTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args); try context.cancellation.throwIfCancelled()
-        var rows = try await manager.read(id: args.id, runID: context.runID)
+        // The resource context is a data-only slice of the trusted context:
+        // staging decisions (local target, workspace ownership, temporary
+        // refusal, cancellation) belong to the manager/domain; the tool
+        // never writes itself.
+        let resourceContext = SkillResourceContext(
+            runID: context.runID,
+            conversationID: context.conversationID,
+            environmentID: context.environmentID,
+            workspaceRootURL: context.workspaceRootURL,
+            temporaryReadOnly: context.temporaryReadOnly,
+            cancellation: context.cancellation)
+        var rows = try await manager.read(id: args.id, runID: context.runID, resourceContext: resourceContext)
         for index in rows.indices {
             guard let markdown = rows[index].markdown else { continue }
             let total = markdown.count, offset = args.offset ?? 0, limit = args.limit ?? 32_768

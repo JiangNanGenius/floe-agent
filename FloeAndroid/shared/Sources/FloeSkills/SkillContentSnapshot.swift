@@ -5,12 +5,18 @@ import Crypto
 public struct SkillContentSnapshot: Sendable {
     public let package: ValidatedSkillPackage
     public let files: [String: Data]
+    public let resourceAuthorization: SkillPackageResourceAuthorization?
 
-    public init(root: URL, expectedDigest: String, manifestOverride: SkillManifest? = nil) throws {
-        let package = try SkillPackageValidator().validate(
+    public init(root: URL, expectedDigest: String, manifestOverride: SkillManifest? = nil,
+                resourceAuthorization: SkillPackageResourceAuthorization? = nil) throws {
+        if let resourceAuthorization, resourceAuthorization.contentDigest != expectedDigest {
+            throw SkillValidationError.digestMismatch
+        }
+        let package = try (resourceAuthorization?.validator ?? SkillPackageValidator()).validate(
             packageAt: root, manifestOverride: manifestOverride
         )
         guard package.canonicalSHA256 == expectedDigest else { throw SkillValidationError.digestMismatch }
+        try resourceAuthorization?.requireIdentity(package)
         var files: [String: Data] = [:]
         var hasher = SHA256()
         for file in package.files {
@@ -29,5 +35,6 @@ public struct SkillContentSnapshot: Sendable {
         }
         self.package = package
         self.files = files
+        self.resourceAuthorization = resourceAuthorization
     }
 }

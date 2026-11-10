@@ -42,6 +42,14 @@ class FloeVersionTest {
     }
 
     @Test
+    fun onePointZeroOutranksOlderAlphaReleases() {
+        val target = FloeVersion.fromAndroidTag("android/v1.0.0")!!
+        assertEquals("1.0.0", target.toString())
+        assertTrue(FloeVersion.parse("0.1.0-alpha.79")!! < target)
+        assertTrue(FloeVersion.parse("0.99.99-alpha.999999")!! < target)
+    }
+
+    @Test
     fun ignoresBuildMetadataForOrdering() {
         val withMetadata = FloeVersion.parse("0.1.0-alpha.14+linux")!!
         val plain = FloeVersion.parse("0.1.0-alpha.14")!!

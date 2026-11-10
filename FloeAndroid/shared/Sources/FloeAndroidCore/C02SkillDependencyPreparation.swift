@@ -53,9 +53,13 @@ import FloeAndroidShellTools
 /// native display/OTA prerelease (0.1.0-alpha.NN / code N). The trusted host
 /// binds this value through `SkillsHostContextProviding.appVersion()`; this
 /// constant is the documented value used by tests and the integration patch,
-/// not a second source of truth.
+/// not a second source of truth. 0.1.1 is the first client that understands
+/// the signed `large-source-v1` package profile: the author-owned per-channel
+/// minimum override projects the Taste skill's feed floor as 0.1.1, so older
+/// 0.1.0 clients keep refusing the offer through the ordinary
+/// minimumAppVersion gate while the profile wire itself stays fail-closed.
 public enum C02AndroidSkillCompatibility {
-    public static let version = "0.1.0"
+    public static let version = "0.1.1"
     public static let platform = SkillPlatform.android
 }
 
@@ -215,19 +219,28 @@ public struct C02CuratedReceiptStore: Sendable {
     /// Re-verifies the exact signed feed, signed review and the ACTUAL
     /// installed package bytes, then derives a receipt. No persisted receipt
     /// field authorizes this result; a changed/absent/unsigned sidecar is nil.
-    public func verifiedCurrent(skillID: String, contentDigest: String,
-                                packageRoot: URL,
-                                manifestOverride: SkillManifest?) -> CuratedSkillHub.Receipt? {
-        guard let snapshot = try? SkillContentSnapshot(
-            root: packageRoot, expectedDigest: contentDigest,
-            manifestOverride: manifestOverride) else { return nil }
-        return verifiedCurrent(skillID: skillID, contentDigest: contentDigest,
-                               snapshot: snapshot)
+    /// Re-verifies the exact signed feed and review envelopes plus the entry
+    /// digest binding, WITHOUT touching the installed package. This is the
+    /// shared front half of `verifiedCurrent` and `resourceAuthorization`:
+    /// no persisted receipt field authorizes any result; a changed, absent
+    /// or unsigned sidecar is nil.
+    private struct VerifiedEntryContext {
+        let envelope: C02CuratedReceiptEnvelope
+        let verified: CuratedSkillHub.VerifiedFeed
+        let entry: CuratedSkillEntry
+        let binding: CuratedSkillPackageBinding
+        let reviewBinding: CuratedSkillReviewBinding
+        let record: CuratedSkillReviewRecord
     }
 
-    public func verifiedCurrent(skillID: String, contentDigest: String,
-                                snapshot: SkillContentSnapshot) -> CuratedSkillHub.Receipt? {
-        guard let envelope = currentEnvelope(skillID: skillID),
+    private func verifiedEntry(skillID: String, contentDigest: String,
+                               historical: Bool = false) -> VerifiedEntryContext? {
+        // Run pins retain their exact old digest after an upgrade. Only their
+        // signed digest-addressed history may supply capacity; installed-state
+        // receipt checks keep the original current-pointer requirement.
+        let selected = historical ? envelope(skillID: skillID, contentDigest: contentDigest)
+                                  : currentEnvelope(skillID: skillID)
+        guard let envelope = selected,
               envelope.publicationCommit.count == 40,
               envelope.publicationCommit.allSatisfy(\.isHexDigit),
               !envelope.catalogBytes.isEmpty,
@@ -258,49 +271,96 @@ public struct C02CuratedReceiptStore: Sendable {
               (try? SignedContentFeedVerifier.verifyEnvelope(
                 bytes: envelope.reviewBytes,
                 signature: envelope.reviewSignature,
-                trustedKeys: CuratedSkillHub.productionTrustedKeys)) != nil,
-              snapshot.package.manifest.id == entry.id,
-              snapshot.package.manifest.version == entry.version,
+                trustedKeys: CuratedSkillHub.productionTrustedKeys)) != nil else {
+            return nil
+        }
+        return VerifiedEntryContext(envelope: envelope, verified: verified, entry: entry,
+                                    binding: binding, reviewBinding: reviewBinding, record: record)
+    }
+
+    /// Re-derives the local revalidation authority for one exact reviewed
+    /// package from the re-verified sidecar. Standard-profile packages need
+    /// no authorization (the default validator already covers them); a
+    /// `large-source-v1` binding yields the typed authority so the existing
+    /// installed bytes can be re-validated under the signed profile. This
+    /// authority revalidates local bytes only — it can never authorize a
+    /// download.
+    public func resourceAuthorization(skillID: String, contentDigest: String) -> SkillPackageResourceAuthorization? {
+        guard let context = verifiedEntry(skillID: skillID, contentDigest: contentDigest, historical: true),
+              context.binding.profile != .standard else { return nil }
+        return SkillPackageResourceAuthorization(
+            profile: context.binding.profile, skillID: context.entry.id,
+            version: context.entry.version, contentDigest: context.binding.contentDigest)
+    }
+
+    public func verifiedCurrent(skillID: String, contentDigest: String,
+                                packageRoot: URL,
+                                manifestOverride: SkillManifest?) -> CuratedSkillHub.Receipt? {
+        // nil authorization is correct for standard-profile packages (the
+        // default validator already covers them); the re-verified sidecar
+        // supplies the typed authority for large-source packages.
+        let authorization = resourceAuthorization(skillID: skillID, contentDigest: contentDigest)
+        guard let snapshot = try? SkillContentSnapshot(
+            root: packageRoot, expectedDigest: contentDigest,
+            manifestOverride: manifestOverride,
+            resourceAuthorization: authorization) else { return nil }
+        return verifiedCurrent(skillID: skillID, contentDigest: contentDigest,
+                               snapshot: snapshot)
+    }
+
+    public func verifiedCurrent(skillID: String, contentDigest: String,
+                                snapshot: SkillContentSnapshot) -> CuratedSkillHub.Receipt? {
+        guard let context = verifiedEntry(skillID: skillID, contentDigest: contentDigest),
+              snapshot.package.manifest.id == context.entry.id,
+              snapshot.package.manifest.version == context.entry.version,
               snapshot.package.canonicalSHA256 == contentDigest else {
             return nil
         }
         do {
             try CuratedSkillReviewJoin.verify(
-                record: record, against: entry, actual: snapshot.package,
-                archiveSHA256: binding.sha256, feedChannel: verified.feed.channel)
+                record: context.record, against: context.entry, actual: snapshot.package,
+                archiveSHA256: context.binding.sha256, feedChannel: context.verified.feed.channel)
         } catch {
             return nil
         }
+        // The layout is inferred from the signed binding: a non-standard
+        // profile can only exist in the capability projection (the feed
+        // decoder refuses large entries in any other layout). Old standard
+        // receipts keep `nil`, exactly like old persisted metadata.
+        let packageProfile: SkillPackageResourceProfile? =
+            context.binding.profile == .standard ? nil : context.binding.profile
         return CuratedSkillHub.Receipt(
             receiptSchemaVersion: 1,
-            channel: verified.feed.channel,
-            feedStatus: verified.feed.feedStatus,
-            hubRepository: verified.feed.hubRepository,
-            publisher: verified.feed.publisher,
-            feedSignatureKeyID: verified.keyID,
-            auditedSourceCommit: verified.feed.sourceCommit,
-            publicationCommit: envelope.publicationCommit,
-            catalogSHA256: verified.catalogSHA256,
-            catalogByteCount: verified.byteCount,
-            entryID: entry.id,
-            entryVersion: entry.version,
-            packagePath: binding.path,
-            packageSize: binding.size,
-            packageSHA256: binding.sha256,
-            contentDigest: binding.contentDigest,
-            containsScripts: binding.containsScripts,
-            reviewPath: reviewBinding.path,
-            reviewSHA256: reviewBinding.sha256,
-            reviewKeyID: reviewBinding.keyID,
-            reviewStage: record.reviewStage,
-            reviewDecision: record.decision,
-            reviewedAt: record.reviewedAt,
-            reviewer: record.reviewer,
+            channel: context.verified.feed.channel,
+            feedStatus: context.verified.feed.feedStatus,
+            hubRepository: context.verified.feed.hubRepository,
+            publisher: context.verified.feed.publisher,
+            feedSignatureKeyID: context.verified.keyID,
+            auditedSourceCommit: context.verified.feed.sourceCommit,
+            publicationCommit: context.envelope.publicationCommit,
+            catalogSHA256: context.verified.catalogSHA256,
+            catalogByteCount: context.verified.byteCount,
+            entryID: context.entry.id,
+            entryVersion: context.entry.version,
+            packagePath: context.binding.path,
+            packageSize: context.binding.size,
+            packageSHA256: context.binding.sha256,
+            contentDigest: context.binding.contentDigest,
+            containsScripts: context.binding.containsScripts,
+            reviewPath: context.reviewBinding.path,
+            reviewSHA256: context.reviewBinding.sha256,
+            reviewKeyID: context.reviewBinding.keyID,
+            reviewStage: context.record.reviewStage,
+            reviewDecision: context.record.decision,
+            reviewedAt: context.record.reviewedAt,
+            reviewer: context.record.reviewer,
             permissionDelta: CuratedSkillPermissionDelta.from(
                 actualManifest: snapshot.package.manifest,
                 effectiveCapabilities: [],
                 effectiveTools: [],
-                effectivePythonPackageSpecs: []))
+                effectivePythonPackageSpecs: []),
+            catalogLayout: packageProfile == nil ? nil : .largeSourceV1,
+            packageProfile: packageProfile)
     }
 
     /// Rollback restores the pointer for the version the journal is putting
