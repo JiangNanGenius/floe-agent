@@ -1124,7 +1124,7 @@ public enum PlatformToolWorkspaceApkStager {
         data.withUnsafeBytes { raw -> String? in
             guard let base = raw.baseAddress, raw.count > 0 else { return nil }
             return NSString(bytes: base, length: raw.count,
-                            encoding: NSUTF8StringEncoding) as String?
+                            encoding: String.Encoding.utf8.rawValue) as String?
         }
     }
 
