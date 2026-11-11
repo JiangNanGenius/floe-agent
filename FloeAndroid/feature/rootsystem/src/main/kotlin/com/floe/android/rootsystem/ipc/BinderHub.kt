@@ -4,6 +4,7 @@ package com.floe.android.rootsystem.ipc
 import android.os.Binder
 import android.os.Bundle
 import android.os.IBinder
+import com.floe.android.rootsystem.policy.BackendOwnershipPolicy
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -16,6 +17,13 @@ import java.util.concurrent.TimeUnit
  * a binder from an external Shizuku manager, a third-party app or an unexpected
  * UID is never accepted, and a token mismatch is rejected when a token is
  * expected.
+ *
+ * A publication that passes every identity-shape check but carries a known
+ * older Floe wire marker is a stale Floe-owned helper from before an update.
+ * It is quarantined apart from the current owner — never adopted, never able
+ * to replace or clear the current helper — and offered to the stale listener
+ * so the controller can re-verify it through the live describe() and retire it
+ * through the typed stop. Junk, unknown or future markers are refused outright.
  */
 internal object BinderHub {
 
@@ -35,6 +43,15 @@ internal object BinderHub {
     private val published = LinkedHashMap<String, Published>()
     private val expectedTokens = HashMap<String, String>()
     private val listeners = ArrayList<(Published) -> Unit>()
+
+    // Identity-shaped publications that carry a known older Floe wire marker
+    // are never cached as the current helper. They are quarantined here — one
+    // record per mode, death-linked — so the controller can re-verify them
+    // through the live describe() and retire only a verified owned stale
+    // helper through its typed stop. This map can never displace or clear the
+    // current published helper.
+    private val stalePublished = LinkedHashMap<String, Published>()
+    private val staleListeners = ArrayList<(Published) -> Unit>()
 
     fun expectToken(mode: String, token: String) {
         synchronized(gate) { expectedTokens[mode] = token }
@@ -74,7 +91,41 @@ internal object BinderHub {
             return AcceptResult.Rejected("identity")
         }
         if (appVersion <= 0 || signing.length != 64) return AcceptResult.Rejected("metadata")
-        if (protocol != BinderProtocol.VERSION) return AcceptResult.Rejected("protocol")
+        if (protocol != BinderProtocol.VERSION) {
+            // Every identity-shape check above passed (mode, exact mode UID,
+            // caller/server PID agreement, signing shape, version) but the
+            // wire is not this build's. A known older Floe marker means a stale
+            // Floe-owned helper is still running old code: quarantine it for
+            // the controller's typed retirement. The quarantine is not an
+            // adoption — the record never enters the current-owner map and the
+            // token is not consumed here (a stale helper's token was issued by
+            // an older App process and can never match this one). The helper
+            // is re-verified through the live describe() before any stop, and
+            // unknown or future markers stay a bare refusal, never quarantined.
+            if (BackendOwnershipPolicy.isKnownLegacyWire(protocol, BinderProtocol.VERSION)) {
+                val stale = Published(
+                    mode = mode,
+                    token = token,
+                    binder = binder,
+                    serverUid = serverUid,
+                    serverPid = serverPid,
+                    appVersionCode = appVersion,
+                    signingSha256 = signing,
+                    protocolVersion = protocol,
+                    tokenVerified = false,
+                )
+                val replaced = synchronized(gate) { stalePublished.put(mode, stale) }
+                if (replaced?.binder !== stale.binder) {
+                    runCatching {
+                        stale.binder.linkToDeath({
+                            removeStaleIfSame(mode, stale.binder)
+                        }, 0)
+                    }
+                }
+                notifyStale(stale)
+            }
+            return AcceptResult.Rejected("protocol")
+        }
 
         val expected = synchronized(gate) { expectedTokens[mode] }
         val verified = expected != null && constantTimeEquals(expected, token)
@@ -140,6 +191,37 @@ internal object BinderHub {
         synchronized(gate) {
             if (published[mode]?.binder === binder) published.remove(mode)
         }
+    }
+
+    /**
+     * Registers a listener for quarantined stale publications. The listener is
+     * invoked on the provider call thread and must not perform binder calls
+     * synchronously. Returns a remover.
+     */
+    fun addStaleListener(listener: (Published) -> Unit): () -> Unit {
+        synchronized(gate) { staleListeners.add(listener) }
+        return { synchronized(gate) { staleListeners.remove(listener) } }
+    }
+
+    /** Latest quarantined stale publication for [mode], or null when absent or dead. */
+    fun stalePeek(mode: String): Published? = synchronized(gate) {
+        val record = stalePublished[mode] ?: return null
+        if (!record.binder.pingBinder()) {
+            stalePublished.remove(mode)
+            return null
+        }
+        record
+    }
+
+    fun removeStaleIfSame(mode: String, binder: IBinder) {
+        synchronized(gate) {
+            if (stalePublished[mode]?.binder === binder) stalePublished.remove(mode)
+        }
+    }
+
+    private fun notifyStale(record: Published) {
+        val copy = synchronized(gate) { staleListeners.toList() }
+        copy.forEach { runCatching { it(record) } }
     }
 
     private fun notify(record: Published) {

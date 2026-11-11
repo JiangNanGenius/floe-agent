@@ -71,6 +71,11 @@ import io.github.robinpcrd.cupertino.section.SectionScope
  *    notification or handles the code itself; that stays in DeviceAccessHost.
  *  - The page is host-neutral so the same content works in the compact
  *    phone detail page and in the tablet settings detail column.
+ *  - Compact overview (N08): the connection group (embedded ADB) leads the
+ *    page so status and start/stop controls stay reachable on a phone, and
+ *    the folder classes are progressive-disclosure count rows that open
+ *    child sheets instead of permanent switch lists. Every control,
+ *    callback, gate and capability state from the flat layout is preserved.
  */
 enum class DeviceAccessScreenScopeUi { OFF, CURRENT_TASK, UNTIL_STOPPED }
 
@@ -598,6 +603,8 @@ fun DeviceAccessSettingsPage(
     var advancedChooserOpen by remember { mutableStateOf(false) }
     var advancedToolsChooserOpen by remember { mutableStateOf(false) }
     var systemSettingsOpen by remember { mutableStateOf(false) }
+    var sharedFoldersOpen by remember { mutableStateOf(false) }
+    var systemFoldersOpen by remember { mutableStateOf(false) }
     var confirmUnlock by remember { mutableStateOf(false) }
     var unlockDraft by remember { mutableStateOf("") }
     var revealUnlock by remember { mutableStateOf(false) }
@@ -656,6 +663,40 @@ fun DeviceAccessSettingsPage(
         onApply = callbacks.onSystemSettingsApply,
         onRestore = callbacks.onSystemSettingsRestore,
         onDismiss = { systemSettingsOpen = false },
+    )
+    // Progressive-disclosure folder selectors: the page carries one count row
+    // per folder class; the per-folder switches live in these child sheets.
+    // App-data folders are never listed here (explicit Root grants stay on
+    // the page), and a sheet's batch buttons only touch its own class.
+    val sharedRoots = state.targets.fileRoots.filter {
+        it.kind == DeviceAccessFileRootKindUi.SHARED
+    }
+    val systemRoots = state.targets.fileRoots.filter {
+        it.kind == DeviceAccessFileRootKindUi.SYSTEM
+    }
+    DeviceAccessFolderChooserSheet(
+        visible = sharedFoldersOpen,
+        titleRes = R.string.device_access_folders_shared,
+        roots = sharedRoots,
+        selectedIds = state.targets.selectedRootIds,
+        hintRes = R.string.device_access_roots_intro,
+        emptyRes = R.string.device_access_roots_empty,
+        batch = true,
+        enabled = state.busy == DeviceAccessBusyUi.NONE,
+        onSelectionChange = callbacks.onFileRootsChange,
+        onDismiss = { sharedFoldersOpen = false },
+    )
+    DeviceAccessFolderChooserSheet(
+        visible = systemFoldersOpen,
+        titleRes = R.string.device_access_system_roots_section,
+        roots = systemRoots,
+        selectedIds = state.targets.selectedRootIds,
+        hintRes = R.string.device_access_system_roots_hint,
+        emptyRes = R.string.device_access_system_roots_hint,
+        batch = false,
+        enabled = state.busy == DeviceAccessBusyUi.NONE,
+        onSelectionChange = callbacks.onFileRootsChange,
+        onDismiss = { systemFoldersOpen = false },
     )
     val context = LocalContext.current
     var notificationAvailability by remember {
@@ -743,6 +784,310 @@ fun DeviceAccessSettingsPage(
             style = Floe.typography.metadata,
             color = colors.secondaryLabel,
         )
+
+        // --------------------------------------------------- embedded ADB layer
+        // The connection group leads the compact overview: the status row and
+        // the enable/pair/start/stop controls stay reachable without scrolling
+        // past capability prose or folder lists. The card keeps every status
+        // row, control and inline validation; all pure explanations live in
+        // the iOS-style footer below the card, in the same conditions and the
+        // same reading order as the flat layout.
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.device_access_adb_section),
+            caption = {
+                Column {
+                    CaptionText(stringResource(R.string.device_access_adb_intro))
+                    if (!state.pairingSupported) {
+                        CaptionText(
+                            stringResource(R.string.device_access_pairing_unsupported),
+                            Modifier.padding(top = 2.dp),
+                        )
+                        if (state.usbBootstrapExported) {
+                            CaptionText(
+                                stringResource(R.string.device_access_usb_bootstrap_copied),
+                                Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    DeviceAccessPresentation.adbEffectiveUid(state.adb)?.let { uid ->
+                        CaptionText(
+                            stringResource(R.string.device_access_adb_state_uid, uid),
+                            Modifier.padding(top = 2.dp),
+                        )
+                    }
+                    // State-specific guidance, never a fabricated success. While
+                    // the pairing session is open the notification text explains
+                    // the inline path; the manual/split fallback keeps the real
+                    // system action wording.
+                    when (val adb = state.adb) {
+                        is DeviceAccessAdbUi.PairRequired -> if (adb.pairingSessionOpen) {
+                            when (notificationAvailability) {
+                                PairingNotificationPolicy.Availability.AVAILABLE -> CaptionText(
+                                    stringResource(R.string.device_access_adb_pair_open_hint),
+                                    Modifier.padding(top = 2.dp),
+                                )
+                                PairingNotificationPolicy.Availability.UNSUPPORTED -> Unit
+                                else -> CaptionText(
+                                    stringResource(R.string.device_access_pairing_notification_off),
+                                    Modifier.padding(top = 2.dp),
+                                )
+                            }
+                        }
+                        DeviceAccessAdbUi.RestartRequired -> CaptionText(
+                            stringResource(R.string.device_access_adb_restart_hint),
+                            Modifier.padding(top = 2.dp),
+                        )
+                        DeviceAccessAdbUi.Revoked -> CaptionText(
+                            stringResource(R.string.device_access_adb_revoked_hint),
+                            Modifier.padding(top = 2.dp),
+                        )
+                        else -> Unit
+                    }
+                    if (DeviceAccessAdbActionUi.PAIR in adbActions) {
+                        CaptionText(
+                            stringResource(R.string.device_access_adb_pair_hint),
+                            Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+            },
+        ) {
+            FloeValueRow(stringResource(R.string.device_access_status_label), adbStatus)
+            state.error?.takeIf { it.section == DeviceAccessErrorSectionUi.ADB }?.let { error ->
+                DeviceAccessErrorRows(error, showErrorDetails,
+                    onToggleDetails = { showErrorDetails = !showErrorDetails },
+                    onRefresh = callbacks.onRefresh)
+            }
+            if (!state.pairingSupported) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_usb_bootstrap),
+                    onClick = callbacks.onExportUsbBootstrap,
+                    enabled = state.busy == DeviceAccessBusyUi.NONE,
+                )
+            }
+            // Pairing port + code entry: ephemeral RAM-only caller state.
+            if (DeviceAccessPresentation.adbShowsCodeField(state.adb)) {
+                when (state.pairingDiscovery) {
+                    DeviceAccessPairingDiscoveryUi.DISCOVERING ->
+                        FloeSectionRow(title = {
+                            FloeText(
+                                stringResource(R.string.device_access_pairing_port_searching),
+                                style = Floe.typography.metadata,
+                                color = colors.secondaryLabel,
+                            )
+                        })
+                    DeviceAccessPairingDiscoveryUi.FOUND ->
+                        FloeValueRow(
+                            stringResource(R.string.device_access_pairing_port_label),
+                            state.pairingPort,
+                        )
+                    else -> FloeSectionRow(title = {
+                        FloePlainFormField(
+                            label = stringResource(R.string.device_access_pairing_port_label),
+                            value = state.pairingPort,
+                            onValueChange = { raw ->
+                                val digits = raw.filter { it.isDigit() }.take(5)
+                                callbacks.onPairingPortChange(digits)
+                            },
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                            ),
+                            enabled = state.busy == DeviceAccessBusyUi.NONE,
+                        )
+                    })
+                }
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_pairing_port_find),
+                    onClick = callbacks.onDiscoverPairingPort,
+                    enabled = state.busy == DeviceAccessBusyUi.NONE &&
+                        state.pairingDiscovery != DeviceAccessPairingDiscoveryUi.DISCOVERING,
+                )
+                FloeSecureFormField(
+                    label = stringResource(R.string.device_access_adb_code_label),
+                    value = pairingCode,
+                    onValueChange = { onPairingCodeChange(DeviceAccessPairingCode.sanitize(it)) },
+                    revealed = revealPairingCode,
+                    onRevealedChange = { revealPairingCode = it },
+                    revealOnLabel = stringResource(R.string.notes_pdf_unlock_show),
+                    revealOffLabel = stringResource(R.string.notes_pdf_unlock_hide),
+                )
+                FloeSectionRow(title = {
+                    FloeCapsuleButton(
+                        stringResource(R.string.device_access_adb_code_submit),
+                        onClick = {
+                            if (DeviceAccessPairingCode.canSubmit(pairingCode) &&
+                                DeviceAccessPresentation.pairingPortValid(state.pairingPort)
+                            ) {
+                                callbacks.onSubmitPairingCode(pairingCode)
+                                onPairingCodeChange("")
+                            }
+                        },
+                        enabled = DeviceAccessPresentation.adbSubmitEnabled(
+                            pairingCode, state.pairingPort, state.adb, state.busy),
+                    )
+                })
+                // Inline validation stays adjacent to the field while the
+                // partial code is on screen: it is a transient error state,
+                // not a group explanation.
+                if (pairingCode.isNotEmpty() && !DeviceAccessPairingCode.canSubmit(pairingCode)) {
+                    FloeSectionRow(title = {
+                        FloeText(
+                            stringResource(R.string.device_access_adb_code_invalid),
+                            style = Floe.typography.metadata,
+                            color = colors.destructive,
+                        )
+                    })
+                }
+            }
+            when (val adb = state.adb) {
+                is DeviceAccessAdbUi.PairRequired -> if (adb.pairingSessionOpen) {
+                    PairingNotificationAction(
+                        availability = notificationAvailability,
+                        permissionDenied = notificationDeniedHere,
+                        onAllow = allowPairingNotifications,
+                    )
+                }
+                else -> Unit
+            }
+            // One explicit row per action the current state genuinely offers.
+            if (DeviceAccessAdbActionUi.ENABLE in adbActions) {
+                FloeSectionRow(title = {
+                    FloeCapsuleButton(
+                        stringResource(R.string.device_access_adb_enable),
+                        onClick = callbacks.onEnableAdb,
+                    )
+                })
+            }
+            if (DeviceAccessAdbActionUi.PAIR in adbActions) {
+                FloeSectionRow(title = {
+                    FloeCapsuleButton(
+                        stringResource(R.string.device_access_adb_pair),
+                        onClick = pairWithNotification,
+                    )
+                })
+            }
+            if (DeviceAccessAdbActionUi.START in adbActions) {
+                FloeSectionRow(title = {
+                    FloeCapsuleButton(
+                        stringResource(R.string.device_access_adb_start),
+                        onClick = callbacks.onStartAdbService,
+                    )
+                })
+            }
+            if (DeviceAccessAdbActionUi.STOP in adbActions) {
+                FloeSectionRow(title = {
+                    FloeCapsuleButton(
+                        stringResource(R.string.device_access_adb_stop),
+                        onClick = callbacks.onStopAdbService,
+                    )
+                })
+            }
+            if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_adb_cancel_pairing),
+                    onClick = callbacks.onCancelPairing,
+                )
+            }
+            if (DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS in adbActions) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_adb_open_developer_options),
+                    onClick = callbacks.onOpenDeveloperOptions,
+                )
+            }
+            if (DeviceAccessAdbActionUi.FORGET in adbActions) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_adb_forget),
+                    onClick = { confirmForget = true },
+                )
+            }
+        }
+
+        // ---------------------------------------------------------- root layer
+        // Default-off and separate from ADB: the status, the switch (live only
+        // after a real grant) and the check action stay unchanged; the two
+        // explanation paragraphs ride in the card footer instead of a tall
+        // prose row.
+        val rootUid = DeviceAccessPresentation.rootEffectiveUid(state.root)
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.device_access_root_section),
+            caption = {
+                Column {
+                    rootUid?.let { uid ->
+                        CaptionText(stringResource(R.string.device_access_root_uid, uid))
+                    }
+                    CaptionText(stringResource(R.string.device_access_root_intro))
+                    CaptionText(
+                        stringResource(R.string.device_access_root_enable_hint),
+                        Modifier.padding(top = 2.dp),
+                    )
+                }
+            },
+        ) {
+            FloeValueRow(stringResource(R.string.device_access_status_label), rootStatus)
+            FloeSectionRow(
+                title = {
+                    FloeText(
+                        stringResource(R.string.device_access_root_enable),
+                        style = Floe.typography.body,
+                        color = colors.label,
+                    )
+                },
+                trailing = {
+                    val checked = DeviceAccessPresentation.rootSwitchChecked(state.root)
+                    FloeInlineSwitch(
+                        checked = checked,
+                        onCheckedChange = { enabled ->
+                            if (DeviceAccessPresentation.rootSwitchEnabled(state.root)) {
+                                callbacks.onEnableRoot(enabled)
+                            }
+                        },
+                        enabled = DeviceAccessPresentation.rootSwitchEnabled(state.root) &&
+                            state.busy != DeviceAccessBusyUi.ROOT_ENABLE,
+                        description = stringResource(R.string.device_access_root_enable),
+                    )
+                },
+            )
+            if (DeviceAccessPresentation.rootCheckVisible(state.root)) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_root_check),
+                    onClick = { confirmRootCheck = true },
+                    enabled = state.busy != DeviceAccessBusyUi.ROOT_CHECK &&
+                        state.busy != DeviceAccessBusyUi.ROOT_ENABLE,
+                )
+            }
+        }
+
+        // ------------------------------------------------- accessibility layer
+        // The disclosure and the four boundary bullets moved from a dedicated
+        // prose row into the card footer: identical text and conditions, one
+        // less permanent row. The status row and the honest system action stay.
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.device_access_accessibility_section),
+            caption = {
+                Column {
+                    if (state.accessibility == DeviceAccessAccessibilityUi.Restricted) {
+                        CaptionText(
+                            stringResource(R.string.device_access_accessibility_restricted_hint),
+                        )
+                    }
+                    CaptionText(stringResource(R.string.device_access_accessibility_disclosure))
+                    CaptionText(
+                        stringResource(R.string.device_access_boundary_title),
+                        Modifier.padding(top = 2.dp),
+                    )
+                    BoundaryLine(stringResource(R.string.device_access_boundary_nodes))
+                    BoundaryLine(stringResource(R.string.device_access_boundary_secrets))
+                    BoundaryLine(stringResource(R.string.device_access_boundary_actions))
+                    BoundaryLine(stringResource(R.string.device_access_boundary_screenshots))
+                }
+            },
+        ) {
+            FloeValueRow(stringResource(R.string.device_access_status_label), accessibilityStatus)
+            FloeActionRow(
+                label = stringResource(R.string.device_access_open_settings),
+                onClick = callbacks.onOpenAccessibilitySettings,
+            )
+        }
 
         // --------------------------------------------------- active task card
         // Control rows stay in the card; the explanations for this card's
@@ -899,51 +1244,20 @@ fun DeviceAccessSettingsPage(
             })
         }
 
-        // ------------------------------------------------ accessibility layer
+        // ------------------------------------------------------ file ceilings
+        // Progressive disclosure (N08): one count row per folder class opens
+        // the child sheet with the per-folder switches, so the phone overview
+        // no longer carries six permanent shared rows plus six permanent
+        // system rows. The write ceiling stays here as the visible master
+        // switch because it reads the current selection state.
+        val sharedSelected = sharedRoots.count { it.id in state.targets.selectedRootIds }
+        val systemSelected = systemRoots.count { it.id in state.targets.selectedRootIds }
         FloeSettingsSectionCard(
-            title = stringResource(R.string.device_access_accessibility_section),
-            caption = if (state.accessibility == DeviceAccessAccessibilityUi.Restricted) {
-                @Composable { CaptionText(stringResource(R.string.device_access_accessibility_restricted_hint)) }
-            } else {
-                null
-            },
-        ) {
-            FloeValueRow(stringResource(R.string.device_access_status_label), accessibilityStatus)
-            FloeSectionRow(title = {
-                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                    FloeText(
-                        stringResource(R.string.device_access_accessibility_disclosure),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    FloeText(
-                        stringResource(R.string.device_access_boundary_title),
-                        style = Floe.typography.metadata,
-                        color = colors.label,
-                    )
-                    BoundaryLine(stringResource(R.string.device_access_boundary_nodes))
-                    BoundaryLine(stringResource(R.string.device_access_boundary_secrets))
-                    BoundaryLine(stringResource(R.string.device_access_boundary_actions))
-                    BoundaryLine(stringResource(R.string.device_access_boundary_screenshots))
-                }
-            })
-            FloeActionRow(
-                label = stringResource(R.string.device_access_open_settings),
-                onClick = callbacks.onOpenAccessibilitySettings,
-            )
-        }
-
-        // ------------------------------------------------------- file ceilings
-        val shared = state.targets.fileRoots.filter {
-            it.kind == DeviceAccessFileRootKindUi.SHARED
-        }
-        FloeSettingsSectionCard(
-            title = stringResource(R.string.device_access_roots_section),
+            title = stringResource(R.string.device_access_folders_section),
             caption = {
                 Column {
                     CaptionText(stringResource(R.string.device_access_roots_intro))
-                    if (shared.isEmpty()) {
+                    if (sharedRoots.isEmpty()) {
                         CaptionText(
                             stringResource(R.string.device_access_roots_empty),
                             Modifier.padding(top = 2.dp),
@@ -952,41 +1266,24 @@ fun DeviceAccessSettingsPage(
                 }
             },
         ) {
-            shared.forEach { root ->
-                FileRootRow(root, state, callbacks)
-            }
-            if (shared.isNotEmpty()) {
-                // Batch grant: select every preset folder or clear the whole
-                // selection in one gesture. App-data folders are deliberately
-                // excluded; they stay explicit one-at-a-time Root grants.
-                FloeSectionRow(
-                    title = {
-                        FloeText(
-                            stringResource(R.string.device_access_roots_batch),
-                            style = Floe.typography.body,
-                            color = colors.label,
-                        )
-                    },
-                    trailing = {
-                        FloeCapsuleButton(
-                            stringResource(R.string.device_access_select_all),
-                            onClick = {
-                                callbacks.onFileRootsChange(
-                                    DeviceAccessPresentation.allSelectableRootIds(state.targets),
-                                )
-                            },
-                            enabled = state.busy == DeviceAccessBusyUi.NONE,
-                            modifier = Modifier.weight(1f),
-                        )
-                        FloeCapsuleButton(
-                            stringResource(R.string.device_access_clear),
-                            onClick = { callbacks.onFileRootsChange(emptySet()) },
-                            enabled = state.busy == DeviceAccessBusyUi.NONE,
-                            modifier = Modifier.weight(1f),
-                        )
-                    },
-                )
-            }
+            FloeValueRow(
+                title = stringResource(R.string.device_access_folders_shared),
+                value = stringResource(
+                    R.string.device_access_folders_selected_count,
+                    sharedSelected,
+                    sharedRoots.size,
+                ),
+                onClick = { sharedFoldersOpen = true },
+            )
+            FloeValueRow(
+                title = stringResource(R.string.device_access_system_roots_section),
+                value = stringResource(
+                    R.string.device_access_folders_selected_count,
+                    systemSelected,
+                    systemRoots.size,
+                ),
+                onClick = { systemFoldersOpen = true },
+            )
             FloeSectionRow(
                 title = {
                     FloeText(
@@ -1008,25 +1305,10 @@ fun DeviceAccessSettingsPage(
             )
         }
 
-        // Read-only platform inspection trees. Never writable, never remounted.
-        // The hint stays inside this card: the tree rows are host-supplied and
-        // can be empty, and the hint is the card's only guaranteed content —
-        // a caption-only grouped frame would render as an empty sliver.
-        FloeSettingsSectionCard(title = stringResource(R.string.device_access_system_roots_section)) {
-            FloeSectionRow(title = {
-                FloeText(
-                    stringResource(R.string.device_access_system_roots_hint),
-                    style = Floe.typography.metadata,
-                    color = colors.secondaryLabel,
-                )
-            })
-            state.targets.fileRoots
-                .filter { it.kind == DeviceAccessFileRootKindUi.SYSTEM }
-                .forEach { root -> FileRootRow(root, state, callbacks) }
-        }
-
         // Explicit other-app data folders: Root must be the live service; the
         // root service resolves the path and reports OS/SELinux/unlock truth.
+        // These stay permanent rows: each one is an explicit user-typed grant,
+        // not a preset list, and the add field belongs next to them.
         val appDataAvailable = state.targets.appDataRootsAvailable
         FloeSettingsSectionCard(
             title = stringResource(R.string.device_access_app_data_section),
@@ -1305,276 +1587,6 @@ fun DeviceAccessSettingsPage(
                             R.string.device_access_whole_screen_hint
                         },
                     ),
-                )
-            }
-        }
-
-        // --------------------------------------------------- embedded ADB layer
-        // The card keeps every status row, control and inline validation; all
-        // pure explanations move to the iOS-style footer below the card, in
-        // the same conditions and the same reading order.
-        FloeSettingsSectionCard(
-            title = stringResource(R.string.device_access_adb_section),
-            caption = {
-                Column {
-                    CaptionText(stringResource(R.string.device_access_adb_intro))
-                    if (!state.pairingSupported) {
-                        CaptionText(
-                            stringResource(R.string.device_access_pairing_unsupported),
-                            Modifier.padding(top = 2.dp),
-                        )
-                        if (state.usbBootstrapExported) {
-                            CaptionText(
-                                stringResource(R.string.device_access_usb_bootstrap_copied),
-                                Modifier.padding(top = 2.dp),
-                            )
-                        }
-                    }
-                    DeviceAccessPresentation.adbEffectiveUid(state.adb)?.let { uid ->
-                        CaptionText(
-                            stringResource(R.string.device_access_adb_state_uid, uid),
-                            Modifier.padding(top = 2.dp),
-                        )
-                    }
-                    // State-specific guidance, never a fabricated success. While
-                    // the pairing session is open the notification text explains
-                    // the inline path; the manual/split fallback keeps the real
-                    // system action wording.
-                    when (val adb = state.adb) {
-                        is DeviceAccessAdbUi.PairRequired -> if (adb.pairingSessionOpen) {
-                            when (notificationAvailability) {
-                                PairingNotificationPolicy.Availability.AVAILABLE -> CaptionText(
-                                    stringResource(R.string.device_access_adb_pair_open_hint),
-                                    Modifier.padding(top = 2.dp),
-                                )
-                                PairingNotificationPolicy.Availability.UNSUPPORTED -> Unit
-                                else -> CaptionText(
-                                    stringResource(R.string.device_access_pairing_notification_off),
-                                    Modifier.padding(top = 2.dp),
-                                )
-                            }
-                        }
-                        DeviceAccessAdbUi.RestartRequired -> CaptionText(
-                            stringResource(R.string.device_access_adb_restart_hint),
-                            Modifier.padding(top = 2.dp),
-                        )
-                        DeviceAccessAdbUi.Revoked -> CaptionText(
-                            stringResource(R.string.device_access_adb_revoked_hint),
-                            Modifier.padding(top = 2.dp),
-                        )
-                        else -> Unit
-                    }
-                    if (DeviceAccessAdbActionUi.PAIR in adbActions) {
-                        CaptionText(
-                            stringResource(R.string.device_access_adb_pair_hint),
-                            Modifier.padding(top = 2.dp),
-                        )
-                    }
-                }
-            },
-        ) {
-            FloeValueRow(stringResource(R.string.device_access_status_label), adbStatus)
-            state.error?.takeIf { it.section == DeviceAccessErrorSectionUi.ADB }?.let { error ->
-                DeviceAccessErrorRows(error, showErrorDetails,
-                    onToggleDetails = { showErrorDetails = !showErrorDetails },
-                    onRefresh = callbacks.onRefresh)
-            }
-            if (!state.pairingSupported) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_usb_bootstrap),
-                    onClick = callbacks.onExportUsbBootstrap,
-                    enabled = state.busy == DeviceAccessBusyUi.NONE,
-                )
-            }
-            // Pairing port + code entry: ephemeral RAM-only caller state.
-            if (DeviceAccessPresentation.adbShowsCodeField(state.adb)) {
-                when (state.pairingDiscovery) {
-                    DeviceAccessPairingDiscoveryUi.DISCOVERING ->
-                        FloeSectionRow(title = {
-                            FloeText(
-                                stringResource(R.string.device_access_pairing_port_searching),
-                                style = Floe.typography.metadata,
-                                color = colors.secondaryLabel,
-                            )
-                        })
-                    DeviceAccessPairingDiscoveryUi.FOUND ->
-                        FloeValueRow(
-                            stringResource(R.string.device_access_pairing_port_label),
-                            state.pairingPort,
-                        )
-                    else -> FloeSectionRow(title = {
-                        FloePlainFormField(
-                            label = stringResource(R.string.device_access_pairing_port_label),
-                            value = state.pairingPort,
-                            onValueChange = { raw ->
-                                val digits = raw.filter { it.isDigit() }.take(5)
-                                callbacks.onPairingPortChange(digits)
-                            },
-                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
-                            ),
-                            enabled = state.busy == DeviceAccessBusyUi.NONE,
-                        )
-                    })
-                }
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_pairing_port_find),
-                    onClick = callbacks.onDiscoverPairingPort,
-                    enabled = state.busy == DeviceAccessBusyUi.NONE &&
-                        state.pairingDiscovery != DeviceAccessPairingDiscoveryUi.DISCOVERING,
-                )
-                FloeSecureFormField(
-                    label = stringResource(R.string.device_access_adb_code_label),
-                    value = pairingCode,
-                    onValueChange = { onPairingCodeChange(DeviceAccessPairingCode.sanitize(it)) },
-                    revealed = revealPairingCode,
-                    onRevealedChange = { revealPairingCode = it },
-                    revealOnLabel = stringResource(R.string.notes_pdf_unlock_show),
-                    revealOffLabel = stringResource(R.string.notes_pdf_unlock_hide),
-                )
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_code_submit),
-                        onClick = {
-                            if (DeviceAccessPairingCode.canSubmit(pairingCode) &&
-                                DeviceAccessPresentation.pairingPortValid(state.pairingPort)
-                            ) {
-                                callbacks.onSubmitPairingCode(pairingCode)
-                                onPairingCodeChange("")
-                            }
-                        },
-                        enabled = DeviceAccessPresentation.adbSubmitEnabled(
-                            pairingCode, state.pairingPort, state.adb, state.busy),
-                    )
-                })
-                // Inline validation stays adjacent to the field while the
-                // partial code is on screen: it is a transient error state,
-                // not a group explanation.
-                if (pairingCode.isNotEmpty() && !DeviceAccessPairingCode.canSubmit(pairingCode)) {
-                    FloeSectionRow(title = {
-                        FloeText(
-                            stringResource(R.string.device_access_adb_code_invalid),
-                            style = Floe.typography.metadata,
-                            color = colors.destructive,
-                        )
-                    })
-                }
-            }
-            when (val adb = state.adb) {
-                is DeviceAccessAdbUi.PairRequired -> if (adb.pairingSessionOpen) {
-                    PairingNotificationAction(
-                        availability = notificationAvailability,
-                        permissionDenied = notificationDeniedHere,
-                        onAllow = allowPairingNotifications,
-                    )
-                }
-                else -> Unit
-            }
-            // One explicit row per action the current state genuinely offers.
-            if (DeviceAccessAdbActionUi.ENABLE in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_enable),
-                        onClick = callbacks.onEnableAdb,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.PAIR in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_pair),
-                        onClick = pairWithNotification,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.START in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_start),
-                        onClick = callbacks.onStartAdbService,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.STOP in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_stop),
-                        onClick = callbacks.onStopAdbService,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_adb_cancel_pairing),
-                    onClick = callbacks.onCancelPairing,
-                )
-            }
-            if (DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS in adbActions) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_adb_open_developer_options),
-                    onClick = callbacks.onOpenDeveloperOptions,
-                )
-            }
-            if (DeviceAccessAdbActionUi.FORGET in adbActions) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_adb_forget),
-                    onClick = { confirmForget = true },
-                )
-            }
-        }
-
-        // ---------------------------------------------------------- root layer
-        val rootUid = DeviceAccessPresentation.rootEffectiveUid(state.root)
-        FloeSettingsSectionCard(
-            title = stringResource(R.string.device_access_root_section),
-            caption = rootUid?.let { uid ->
-                @Composable { CaptionText(stringResource(R.string.device_access_root_uid, uid)) }
-            },
-        ) {
-            FloeValueRow(stringResource(R.string.device_access_status_label), rootStatus)
-            FloeSectionRow(title = {
-                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                    FloeText(
-                        stringResource(R.string.device_access_root_intro),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                    )
-                    FloeText(
-                        stringResource(R.string.device_access_root_enable_hint),
-                        style = Floe.typography.metadata,
-                        color = colors.secondaryLabel,
-                    )
-                }
-            })
-            FloeSectionRow(
-                title = {
-                    FloeText(
-                        stringResource(R.string.device_access_root_enable),
-                        style = Floe.typography.body,
-                        color = colors.label,
-                    )
-                },
-                trailing = {
-                    val checked = DeviceAccessPresentation.rootSwitchChecked(state.root)
-                    FloeInlineSwitch(
-                        checked = checked,
-                        onCheckedChange = { enabled ->
-                            if (DeviceAccessPresentation.rootSwitchEnabled(state.root)) {
-                                callbacks.onEnableRoot(enabled)
-                            }
-                        },
-                        enabled = DeviceAccessPresentation.rootSwitchEnabled(state.root) &&
-                            state.busy != DeviceAccessBusyUi.ROOT_ENABLE,
-                        description = stringResource(R.string.device_access_root_enable),
-                    )
-                },
-            )
-            if (DeviceAccessPresentation.rootCheckVisible(state.root)) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_root_check),
-                    onClick = { confirmRootCheck = true },
-                    enabled = state.busy != DeviceAccessBusyUi.ROOT_CHECK &&
-                        state.busy != DeviceAccessBusyUi.ROOT_ENABLE,
                 )
             }
         }

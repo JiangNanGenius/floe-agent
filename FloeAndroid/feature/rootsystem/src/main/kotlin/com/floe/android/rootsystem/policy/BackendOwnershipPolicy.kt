@@ -125,6 +125,16 @@ object BackendOwnershipPolicy {
     }
 
     /**
+     * Whether a rejected publication's wire marker identifies a *known older
+     * Floe wire* and nothing else. Only such markers are quarantined for the
+     * typed stale-helper retirement; junk, unknown and future markers stay a
+     * bare refusal, so a mismatched peer can never steer the App toward
+     * stopping an unverifiable process.
+     */
+    fun isKnownLegacyWire(protocol: Int, currentWire: Int): Boolean =
+        protocol >= 1 && protocol < currentWire
+
+    /**
      * Decides whether a published binder may be adopted, replaced through its
      * typed stopServer call, or must be refused.
      *

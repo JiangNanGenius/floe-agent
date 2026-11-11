@@ -380,14 +380,86 @@ class BackendOwnershipPolicyTest {
         )
     }
 
+    // --------------------------------------- stale legacy-wire quarantine
+
+    @Test
+    fun knownLegacyWireMarkersAreQuarantinableForTypedRetirement() {
+        // Only markers this build knows to be older Floe wires may enter the
+        // stale-retirement quarantine.
+        assertTrue(BackendOwnershipPolicy.isKnownLegacyWire(1, 3))
+        assertTrue(BackendOwnershipPolicy.isKnownLegacyWire(2, 3))
+    }
+
+    @Test
+    fun junkUnknownAndFutureWireMarkersAreNeverQuarantined() {
+        assertFalse(BackendOwnershipPolicy.isKnownLegacyWire(-1, 3))
+        assertFalse(BackendOwnershipPolicy.isKnownLegacyWire(0, 3))
+        assertFalse(BackendOwnershipPolicy.isKnownLegacyWire(3, 3))
+        assertFalse(BackendOwnershipPolicy.isKnownLegacyWire(4, 3))
+        assertFalse(BackendOwnershipPolicy.isKnownLegacyWire(99, 3))
+    }
+
+    @Test
+    fun aKnownLegacyWireOnAVerifiedSameVersionHelperIsRetiredThroughReplace() {
+        // The verified device scenario: an older build with the same version
+        // code as the installed update still runs the old wire (protocol 2
+        // against the installed wire 3). Identity is fully proven, so the
+        // helper is replaced through its verified PID — never adopted, never
+        // treated as the healthy service.
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Replace(30630),
+            classify(
+                helper(recordPid = 30630, describedPid = 30630, describedProtocol = 2),
+                expectedWire = 3,
+            ),
+        )
+    }
+
+    @Test
+    fun aKnownLegacyWireWithAMismatchedPeerIsRefusedNeverRetired() {
+        // Unknown or mismatched peers stay refused even when they claim an
+        // older wire: identity failure dominates the wire decision and the
+        // peer is never stopped.
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Refused("signing"),
+            classify(
+                helper(describedSigning = oldSigning, describedProtocol = 2),
+                expectedWire = 3,
+            ),
+        )
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Refused("package"),
+            classify(
+                helper(describedPackage = "moe.shizuku.privileged.api", describedProtocol = 2),
+                expectedWire = 3,
+            ),
+        )
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Refused("uid"),
+            classify(helper(describedUid = 0, describedProtocol = 2), expectedWire = 3),
+        )
+    }
+
+    @Test
+    fun aHealthyCurrentWirePeerIsPreservedNotRetired() {
+        // The live protocol-3 service must never be re-classified as stale:
+        // expected wire plus matching version stays adoptable, and a stale
+        // publication can never displace it.
+        assertEquals(
+            BackendOwnershipPolicy.PublishedVerdict.Current,
+            classify(helper(recordPid = 25207, describedPid = 25207, describedProtocol = 3), expectedWire = 3),
+        )
+    }
+
     private fun classify(
         helper: BackendOwnershipPolicy.PublishedHelper,
         expectedMode: String = "adb",
+        expectedWire: Int = 1,
     ): BackendOwnershipPolicy.PublishedVerdict =
         BackendOwnershipPolicy.classifyPublishedHelper(
             helper = helper,
             expectedMode = expectedMode,
-            expectedProtocol = 1,
+            expectedProtocol = expectedWire,
             hostPackage = hostPackage,
             hostSigning = hostSigning,
             currentVersion = currentVersion,

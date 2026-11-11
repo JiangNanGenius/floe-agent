@@ -2,7 +2,9 @@
 package com.floe.android
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,12 +23,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
-import com.floe.android.design.FloeCapsuleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeInlineSwitch
 import com.floe.android.design.FloeLayout
@@ -77,8 +83,14 @@ data class DeviceAccessSystemSettingsUiState(
  * the device-access settings page: one summary row per key, inline edit
  * controls, a single Apply for the changed rows (at most eight, the typed
  * batch bound) and per-row Restore back to the value captured at open. Global
- * animation scales are labeled device-wide; system keys show the exact current
- * user in the caption.
+ * animation scales are grouped under one "Device-wide" heading and system keys
+ * under "Current user", so the scope reads once per group instead of repeating
+ * as a per-row subtitle.
+ *
+ * N08 density: the row label gets the full remaining width (two lines when a
+ * long label needs them) and every control is the sheet-local compact capsule
+ * ([SheetCapsuleButton]) — same Floe capsule shape, fill and 48dp hit floor as
+ * [com.floe.android.design.FloeCapsuleButton], sized for dense editor rows.
  */
 @Composable
 internal fun DeviceAccessSystemSettingsSheet(
@@ -142,10 +154,10 @@ internal fun DeviceAccessSystemSettingsSheet(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    FloeCapsuleButton(
+                    SheetCapsuleButton(
                         stringResource(R.string.done),
                         onClick = onDismiss,
-                        modifier = Modifier.widthIn(min = 64.dp, max = 96.dp),
+                        modifier = Modifier.widthIn(min = 64.dp, max = 88.dp),
                     )
                 }
                 FloeDivider()
@@ -181,17 +193,39 @@ internal fun DeviceAccessSystemSettingsSheet(
                 )
                 FloeDivider()
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                    state.entries.forEach { entry ->
-                        SettingRow(
-                            entry = entry,
-                            enabled = state.enabled && !state.busy,
-                            draft = drafts[entry.namespace + "/" + entry.key] ?: "",
-                            onDraft = { drafts[entry.namespace + "/" + entry.key] = it },
-                            onRestore = {
-                                appliedOnce = true
-                                onRestore(entry, baselines[entry.namespace + "/" + entry.key])
-                            },
-                        )
+                    val currentUserEntries = state.entries.filter { !it.deviceWide }
+                    val deviceWideEntries = state.entries.filter { it.deviceWide }
+                    if (currentUserEntries.isNotEmpty()) {
+                        ScopeGroupHeader(
+                            stringResource(R.string.device_access_system_settings_current_user))
+                        currentUserEntries.forEach { entry ->
+                            SettingRow(
+                                entry = entry,
+                                enabled = state.enabled && !state.busy,
+                                draft = drafts[entry.namespace + "/" + entry.key] ?: "",
+                                onDraft = { drafts[entry.namespace + "/" + entry.key] = it },
+                                onRestore = {
+                                    appliedOnce = true
+                                    onRestore(entry, baselines[entry.namespace + "/" + entry.key])
+                                },
+                            )
+                        }
+                    }
+                    if (deviceWideEntries.isNotEmpty()) {
+                        ScopeGroupHeader(
+                            stringResource(R.string.device_access_system_settings_device_wide))
+                        deviceWideEntries.forEach { entry ->
+                            SettingRow(
+                                entry = entry,
+                                enabled = state.enabled && !state.busy,
+                                draft = drafts[entry.namespace + "/" + entry.key] ?: "",
+                                onDraft = { drafts[entry.namespace + "/" + entry.key] = it },
+                                onRestore = {
+                                    appliedOnce = true
+                                    onRestore(entry, baselines[entry.namespace + "/" + entry.key])
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -233,13 +267,26 @@ private fun SheetActionRow(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        FloeCapsuleButton(
+        SheetCapsuleButton(
             stringResource(R.string.device_access_system_settings_apply),
             onClick = onApply,
             enabled = applyEnabled,
-            modifier = Modifier.widthIn(min = 72.dp, max = 120.dp),
+            modifier = Modifier.widthIn(min = 64.dp, max = 88.dp),
         )
     }
+}
+
+/** iOS grouped-section heading carrying the scope once per group. */
+@Composable
+private fun ScopeGroupHeader(text: String) {
+    FloeText(
+        text,
+        style = Floe.typography.groupHeader,
+        color = Floe.colors.secondaryLabel,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable
@@ -251,6 +298,7 @@ private fun SettingRow(
     onRestore: () -> Unit,
 ) {
     val label = settingLabelRes(entry.namespace, entry.key)
+    val labelText = stringResource(label)
     val scope = if (entry.deviceWide) {
         stringResource(R.string.device_access_system_settings_device_wide)
     } else {
@@ -261,50 +309,85 @@ private fun SettingRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(Modifier.weight(1f)) {
-            FloeText(
-                stringResource(label),
-                style = Floe.typography.body,
-                color = Floe.colors.label,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            FloeText(
-                scope,
-                style = Floe.typography.metadata,
-                color = Floe.colors.secondaryLabel,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        // The label owns all space the controls do not need, so long labels
+        // wrap to a second line instead of truncating to a few glyphs. The
+        // group header already announces the scope; it stays in this row's
+        // merged semantics for screen readers.
+        FloeText(
+            labelText,
+            style = Floe.typography.body,
+            color = Floe.colors.label,
+            modifier = Modifier.weight(1f).semantics(mergeDescendants = true) {
+                contentDescription = "$labelText · $scope"
+            },
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
         when {
             entry.kind == DeviceAccessSystemSettingKindUi.INT &&
                 entry.minInclusive == 0L && entry.maxInclusive == 1L -> {
                 FloeInlineSwitch(
                     checked = draft == "1",
                     onCheckedChange = { onDraft(if (it) "1" else "0") },
-                    description = stringResource(label),
+                    description = labelText,
                     enabled = enabled,
                 )
             }
-            else -> Stepper(
+            else -> SheetStepper(
                 valueText = draft.ifEmpty { "-" },
                 onStepDown = { onDraft(stepValue(entry, draft, down = true)) },
                 onStepUp = { onDraft(stepValue(entry, draft, down = false)) },
                 enabled = enabled,
             )
         }
-        FloeCapsuleButton(
+        SheetCapsuleButton(
             stringResource(R.string.device_access_system_settings_restore),
             onClick = onRestore,
             enabled = enabled,
-            modifier = Modifier.widthIn(min = 64.dp, max = 96.dp),
+            modifier = Modifier.widthIn(min = 56.dp, max = 76.dp),
+        )
+    }
+}
+
+/**
+ * Sheet-local compact capsule: same shape, fill, typography role and 48dp hit
+ * floor as the shared capsule button, without its baked-in full-width/52dp
+ * chrome, so dense editor rows (Restore, the numeric stepper, Apply, Done)
+ * keep proper targets without oversized visuals. Feature-local on purpose:
+ * the wide shared capsule serves full-width call sites elsewhere.
+ */
+@Composable
+private fun SheetCapsuleButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .heightIn(min = FloeLayout.MinimumTarget)
+            .clip(FloeLayout.SidebarSelectionShape)
+            .background(Floe.colors.fillTertiary)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics {
+                contentDescription = label
+                if (!enabled) disabled()
+            }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        FloeText(
+            label,
+            style = Floe.typography.body,
+            color = if (enabled) Floe.colors.label else Floe.colors.secondaryLabel,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
 @Composable
-private fun Stepper(
+private fun SheetStepper(
     valueText: String,
     onStepDown: () -> Unit,
     onStepUp: () -> Unit,
@@ -314,18 +397,22 @@ private fun Stepper(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        FloeCapsuleButton("−", onClick = onStepDown, enabled = enabled,
-            modifier = Modifier.widthIn(min = 40.dp, max = 48.dp))
+        SheetCapsuleButton(
+            "−", onClick = onStepDown, enabled = enabled,
+            modifier = Modifier.widthIn(min = 44.dp, max = 48.dp),
+        )
         FloeText(
             valueText,
             style = Floe.typography.body,
             color = Floe.colors.label,
-            modifier = Modifier.widthIn(min = 44.dp),
+            modifier = Modifier.widthIn(min = 36.dp, max = 64.dp),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        FloeCapsuleButton("+", onClick = onStepUp, enabled = enabled,
-            modifier = Modifier.widthIn(min = 40.dp, max = 48.dp))
+        SheetCapsuleButton(
+            "+", onClick = onStepUp, enabled = enabled,
+            modifier = Modifier.widthIn(min = 44.dp, max = 48.dp),
+        )
     }
 }
 

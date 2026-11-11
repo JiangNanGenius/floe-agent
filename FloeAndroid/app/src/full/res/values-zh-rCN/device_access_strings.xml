@@ -95,6 +95,9 @@
     <string name="device_access_roots_section">系统访问的共享文件夹</string>
     <string name="device_access_roots_intro">内嵌服务只能访问你选择的文件夹。Floe 数据、凭据和私有应用存储永远不会包含在内。</string>
     <string name="device_access_roots_empty">此设备没有可用的共享存储文件夹；系统文件夹和 Root 访问不受影响。</string>
+    <string name="device_access_folders_section">文件访问</string>
+    <string name="device_access_folders_shared">共享文件夹</string>
+    <string name="device_access_folders_selected_count">已选 %1$d / 共 %2$d</string>
     <string name="device_access_root_downloads">下载</string>
     <string name="device_access_root_documents">文档</string>
     <string name="device_access_root_pictures">图片</string>
@@ -120,10 +123,10 @@
     <string name="device_access_management_section">应用管理</string>
     <string name="device_access_package_management">允许应用管理</string>
     <string name="device_access_package_management_hint">允许已授权的任务通过运行中的系统服务强制停止、安装或卸载普通第三方应用。Floe 自身和系统应用始终被拒绝。</string>
-    <string name="device_access_advanced_master">高级应用状态</string>
+    <string name="device_access_advanced_master">高级系统访问</string>
     <string name="device_access_advanced_categories">允许的操作</string>
     <string name="device_access_advanced_categories_count">已选 %1$d 项</string>
-    <string name="device_access_advanced_master_hint">允许已授权的任务更改所选应用的启用状态，并仅为当前用户移除或恢复预装应用。Floe 自身、系统关键应用以及当前的桌面、输入法或电话应用始终被拒绝。</string>
+    <string name="device_access_advanced_master_hint">允许已授权的任务更改所选应用的启用状态、管理其权限和 AppOps、调整允许的设备设置，并仅为当前用户移除或恢复预装应用。Floe 自身、系统关键应用以及当前的桌面、输入法或电话应用始终被拒绝。</string>
     <string name="device_access_advanced_tool_set_enabled">启用或停用应用</string>
     <string name="device_access_advanced_tool_remove_for_user">为当前用户移除预装应用</string>
     <string name="device_access_advanced_tool_restore">恢复预装应用</string>

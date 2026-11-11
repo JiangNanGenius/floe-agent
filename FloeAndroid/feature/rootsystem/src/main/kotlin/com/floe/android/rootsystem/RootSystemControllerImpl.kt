@@ -78,6 +78,9 @@ internal class RootSystemControllerImpl(
     @Volatile
     private var binderPid: Int = -1
 
+    @Volatile
+    private var staleListenerRemover: (() -> Unit)? = null
+
     private val binderGeneration = AtomicLong(0)
 
     @Volatile
@@ -95,7 +98,12 @@ internal class RootSystemControllerImpl(
     init {
         runtime.notePairingSupported(pairingSupported)
         publish(mutableAdb.value, mutableRoot.value)
+        staleListenerRemover = BinderHub.addStaleListener { onStaleLegacyPublished(it) }
         scope.launch { refresh() }
+        // A stale helper may have republished before this controller existed
+        // (the provider call restarts the App process on update). Sweep the
+        // quarantine once so it is retired without waiting for another Start.
+        scope.launch { sweepQuarantinedLegacy() }
     }
 
     fun snapshot(): RootSystemSnapshot = RootSystemSnapshot(
@@ -1178,6 +1186,8 @@ internal class RootSystemControllerImpl(
 
     fun close() {
         if (!closed.compareAndSet(false, true)) return
+        staleListenerRemover?.invoke()
+        staleListenerRemover = null
         pairing.cancel()
         fenceClient(binderClient)
         clearBinder()
@@ -1289,12 +1299,33 @@ internal class RootSystemControllerImpl(
      * name. A dead publication is simply no service; a live one that cannot
      * prove the exact Floe identity is refused and never killed.
      */
-    private suspend fun inspectPublished(mode: String, waitMillis: Long): InspectedPublished? =
+    private suspend fun inspectPublished(mode: String, waitMillis: Long): InspectedPublished? {
+        val record = (if (waitMillis > 0) BinderHub.await(mode, waitMillis) else BinderHub.peek(mode))
+            ?: return null
+        return inspectRecord(mode, record)
+    }
+
+    /** Inspect the quarantined stale publication for [mode], if one is present. */
+    private suspend fun inspectQuarantined(mode: String): InspectedPublished? {
+        val record = BinderHub.stalePeek(mode) ?: return null
+        return inspectRecord(mode, record, legacyWireOnly = true)
+    }
+
+    /**
+     * Verify a helper record through the live binder. With [legacyWireOnly]
+     * (quarantined publications) a live describe() whose wire marker is not a
+     * known older Floe protocol drops the record from quarantine and is never
+     * inspected for a stop, so an unknown or mismatched peer stays refused.
+     */
+    private suspend fun inspectRecord(
+        mode: String,
+        record: BinderHub.Published,
+        legacyWireOnly: Boolean = false,
+    ): InspectedPublished? =
         withContext(Dispatchers.IO) {
-            val record = (if (waitMillis > 0) BinderHub.await(mode, waitMillis) else BinderHub.peek(mode))
-                ?: return@withContext null
             if (!runCatching { record.binder.pingBinder() }.getOrDefault(false)) {
                 BinderHub.removeIfSame(mode, record.binder)
+                BinderHub.removeStaleIfSame(mode, record.binder)
                 return@withContext null
             }
             val client = FloeBinderClient(record.binder)
@@ -1302,6 +1333,7 @@ internal class RootSystemControllerImpl(
             if (described == null) {
                 if (!runCatching { record.binder.pingBinder() }.getOrDefault(false)) {
                     BinderHub.removeIfSame(mode, record.binder)
+                    BinderHub.removeStaleIfSame(mode, record.binder)
                     return@withContext null
                 }
                 return@withContext InspectedPublished(
@@ -1309,6 +1341,14 @@ internal class RootSystemControllerImpl(
                     client,
                     BackendOwnershipPolicy.PublishedVerdict.Refused("describe"),
                 )
+            }
+            if (legacyWireOnly && !BackendOwnershipPolicy.isKnownLegacyWire(
+                    described.getInt(BinderProtocol.KEY_PROTOCOL, -1),
+                    BinderProtocol.VERSION,
+                )
+            ) {
+                BinderHub.removeStaleIfSame(mode, record.binder)
+                return@withContext null
             }
             val verdict = BackendOwnershipPolicy.classifyPublishedHelper(
                 helper = publishedHelper(record, described),
@@ -1325,7 +1365,11 @@ internal class RootSystemControllerImpl(
         mode: String,
         waitMillis: Long,
     ): PublishedResolution {
-        val inspected = inspectPublished(mode, waitMillis) ?: return PublishedResolution.None
+        // A stale helper never enters the current-owner map, so the healthy
+        // published service still wins; only when no current publication
+        // exists does the quarantined legacy helper get a retirement verdict.
+        val inspected = inspectPublished(mode, waitMillis) ?: inspectQuarantined(mode)
+            ?: return PublishedResolution.None
         return when (val verdict = inspected.verdict) {
             BackendOwnershipPolicy.PublishedVerdict.Current -> PublishedResolution.Current
             is BackendOwnershipPolicy.PublishedVerdict.Refused -> {
@@ -1354,6 +1398,7 @@ internal class RootSystemControllerImpl(
             return@withContext StaleStopResult.StillAlive(pid)
         }
         BinderHub.removeIfSame(mode, inspected.record.binder)
+        BinderHub.removeStaleIfSame(mode, inspected.record.binder)
         if (binderMode == mode && binderPid == pid) {
             clearBinder()
             grants.clear()
@@ -1366,6 +1411,50 @@ internal class RootSystemControllerImpl(
             }
         }
         StaleStopResult.Stopped(pid)
+    }
+
+    /**
+     * A publication carrying a known older Floe wire marker reached the hub
+     * but was never cached as the current owner. Queue a bounded, one-shot
+     * typed retirement under the lifecycle mutex: the healthy current service
+     * and the same-build reconnect are never touched, and an unverifiable
+     * peer is dropped, never killed.
+     */
+    private fun onStaleLegacyPublished(record: BinderHub.Published) {
+        if (closed.get()) return
+        val mode = record.mode
+        scope.launch {
+            lifecycleMutex.withLock {
+                if (!closed.get()) retireQuarantinedLegacy(mode)
+            }
+        }
+    }
+
+    /** Retire helpers quarantined before this controller instance existed. */
+    private suspend fun sweepQuarantinedLegacy() {
+        lifecycleMutex.withLock {
+            if (closed.get()) return@withLock
+            retireQuarantinedLegacy(BinderProtocol.MODE_ADB)
+            retireQuarantinedLegacy(BinderProtocol.MODE_ROOT)
+        }
+    }
+
+    /**
+     * Retire a quarantined legacy-wire helper when — and only when — the live
+     * binder proves the exact Floe identity (mode UID, PID agreement, host
+     * package, signing, version) and answers with a known older wire. The
+     * stop is typed (stopOwnedService with the verified PID) through the
+     * quarantined binder; the current owner, its grants and every user datum
+     * are untouched. Any other outcome simply drops the quarantined record.
+     */
+    private suspend fun retireQuarantinedLegacy(mode: String) {
+        val record = BinderHub.stalePeek(mode) ?: return
+        val inspected = inspectRecord(mode, record, legacyWireOnly = true) ?: return
+        val verdict = inspected.verdict
+        if (verdict is BackendOwnershipPolicy.PublishedVerdict.Replace) {
+            stopPublished(mode, inspected, verdict.pid)
+        }
+        BinderHub.removeStaleIfSame(mode, record.binder)
     }
 
     private fun publishedHelper(
