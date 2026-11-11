@@ -118,7 +118,7 @@ actor BridgeService {
                 }
             } else {
                 guard pairs[clientID]?.key == body.clientKey else { throw BridgeFailure.authentication }
-                if !["ping", "poll", "file.list", "file.read", "permissions", "skill.list", "storage"].contains(body.method) {
+                if !["ping", "poll", "file.list", "file.read", "file.readAbsolute", "permissions", "skill.list", "storage"].contains(body.method) {
                     // Persist mutation admission BEFORE side effects. An interrupted
                     // reply never becomes permission to execute a command twice.
                     let now = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -225,6 +225,10 @@ actor BridgeService {
             let offset = max(0, p["offset"]?.integer ?? 0); try reader.seek(toOffset: UInt64(offset))
             let data = try reader.read(upToCount: BridgeWire.pageBytes) ?? Data()
             return ["data": .string(data.base64EncodedString()), "offset": .integer(offset + Int64(data.count))]
+        case "file.readAbsolute":
+            // Additive read-only method; the workspace-relative contract above
+            // stays guarded and byte-compatible.
+            return try await readAbsoluteFile(p)
         case "file.begin":
             let destination: URL
             let transferRoot: URL

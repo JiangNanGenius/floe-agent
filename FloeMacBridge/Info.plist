@@ -7,8 +7,8 @@
 <key>CFBundleExecutable</key><string>FloeMacBridge</string>
 <key>CFBundleIconFile</key><string>FloeBridge</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.1.3</string>
-<key>CFBundleVersion</key><string>6</string>
+<key>CFBundleShortVersionString</key><string>1.1.4</string>
+<key>CFBundleVersion</key><string>7</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>LSUIElement</key><true/>
 <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>

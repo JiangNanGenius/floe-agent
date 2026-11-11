@@ -113,6 +113,12 @@ public struct BridgeResponse: Codable, Sendable {
 }
 public enum BridgeFailure: Error, LocalizedError, Sendable {
     case authentication, disconnected, pending, remote(String), unsafePath, incompatible, invalidResponse, ambiguous
+    /// The paired companion predates the additive absolute-file read method.
+    case unsupportedAbsoluteRead
+    /// The absolute path is not an ordinary readable file, or changed identity.
+    case unsafeAbsolutePath
+    /// The canonical target matches the workspace secret-file exclusions.
+    case protectedSecretPath
     public var errorDescription: String? {
         switch self {
         case .authentication: "The Mac connection could not be verified. Reconnect in Settings."
@@ -120,6 +126,15 @@ public enum BridgeFailure: Error, LocalizedError, Sendable {
         case .pending: "Confirm this connection in Floe Bridge on this Mac."
         case .remote(let text): text
         case .unsafePath: "This file is outside the selected workspace."
+        case .unsupportedAbsoluteRead: Self.message(
+            "Update Floe Bridge on this Mac to read absolute paths. This companion does not support them.",
+            "请更新此 Mac 上的 Floe Bridge 后再读取绝对路径。当前配套应用不支持该操作。")
+        case .unsafeAbsolutePath: Self.message(
+            "This Mac path is not a readable regular file.",
+            "该 Mac 路径不是可读取的普通文件。")
+        case .protectedSecretPath: Self.message(
+            "This path is protected credential material and cannot be read through the Mac bridge.",
+            "该路径属于受保护的凭据文件，不能通过 Mac 桥读取。")
         case .incompatible: Self.message("Update Floe and Floe Bridge to compatible versions.", "请将 Floe 和 Floe Bridge 更新到兼容的版本。")
         case .invalidResponse: Self.message("The Mac response was incomplete or invalid. Reconnect and inspect the existing task.", "Mac 返回的数据不完整或无效。请重新连接并检查原任务。")
         case .ambiguous: "The connection ended before the result arrived. Reconnect and inspect the existing job; it was not run again."

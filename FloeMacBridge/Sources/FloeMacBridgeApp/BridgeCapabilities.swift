@@ -14,6 +14,7 @@ enum BridgeCapabilityCatalog {
         "terminal", "pty", "files", "mcp", "originalSkills",
         "screenCapture", "accessibility",
         BridgeSensitiveEnvironment.capability,
+        BridgeAbsoluteFileRead.capability,
     ]
 }
 
