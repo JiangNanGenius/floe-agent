@@ -45,6 +45,8 @@ internal fun DeviceAccessAppChooser(
     enabled: Boolean,
     onSelectionChange: (Set<String>) -> Unit,
     onDismiss: () -> Unit,
+    catalogTotal: Int = 0,
+    onCatalogRefresh: () -> Unit = {},
 ) = DeviceAccessAppChooserSheet(
     visible = visible,
     packages = targets.packages,
@@ -53,6 +55,10 @@ internal fun DeviceAccessAppChooser(
     enabled = enabled,
     onSelectionChange = onSelectionChange,
     onDismiss = onDismiss,
+    catalogListed = targets.packages.size,
+    catalogTotal = catalogTotal,
+    catalogLoading = targets.catalogLoading,
+    onCatalogRefresh = onCatalogRefresh,
 )
 
 /**
@@ -74,6 +80,21 @@ internal fun DeviceAccessAppChooserSheet(
     countLabelRes: Int = R.string.device_access_targets_count,
     heightFractionOverride: Float? = null,
     maxSelections: Int = 64,
+    /** Rows actually supplied; less than [catalogTotal] means the sheet is a
+     *  window over a larger catalog and the note below must say so. */
+    catalogListed: Int = 0,
+    /** Total rows the host knows about (pre-window). */
+    catalogTotal: Int = 0,
+    /** The privileged page itself was truncated by the service. */
+    catalogTruncated: Boolean = false,
+    /** Exact-name lookup through the real authorized query; off hides it. */
+    lookupEnabled: Boolean = false,
+    lookupState: DeviceAccessLookupUiState = DeviceAccessLookupUiState.IDLE,
+    lookupQuery: String = "",
+    onLookup: (String) -> Unit = {},
+    catalogLoading: Boolean = false,
+    catalogReadFailed: Boolean = false,
+    onCatalogRefresh: () -> Unit = {},
 ) {
     if (!visible) return
     var query by remember { mutableStateOf("") }
@@ -88,6 +109,11 @@ internal fun DeviceAccessAppChooserSheet(
             it.packageName in selected
         }.thenBy { it.label.lowercase() })
     }
+    val lookupName = query.trim()
+    val lookupPlausible = lookupName.length <= 255 && lookupName.contains('.') &&
+        lookupName.all { it.isLetterOrDigit() || it == '.' || it == '_' || it == '-' }
+    val lookupOffered = lookupEnabled && searchable && matches.isEmpty() &&
+        lookupPlausible
     FloeSettingsContentDensity(compact) {
         FloePageSheet(
             visible = true,
@@ -157,13 +183,83 @@ internal fun DeviceAccessAppChooserSheet(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     )
                 }
+                // Honest windowing: when the host knows of more rows than the
+                // sheet holds (or the service page itself was truncated), say
+                // so and point at the exact-name lookup instead of silently
+                // dropping the rest.
+                if ((catalogTotal > catalogListed || catalogTruncated) && catalogTotal > 0) {
+                    FloeText(
+                        stringResource(R.string.device_access_targets_catalog_note),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
+                }
+                if (catalogLoading) {
+                    FloeText(stringResource(R.string.device_access_permission_ops_loading),
+                        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                }
                 LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
-                    if (matches.isEmpty()) {
+                    if (matches.isEmpty() && !catalogLoading) {
                         item {
-                            FloeText(stringResource(if (packages.isEmpty())
-                                R.string.device_access_targets_empty else R.string.device_access_targets_no_matches),
-                                style = Floe.typography.body, color = Floe.colors.secondaryLabel,
-                                modifier = Modifier.padding(vertical = 16.dp))
+                            Column(Modifier.padding(vertical = 16.dp)) {
+                                when {
+                                    catalogReadFailed -> {
+                                        FloeText(stringResource(R.string.device_access_targets_lookup_failed),
+                                            style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                                        FloeCapsuleButton(stringResource(R.string.device_access_permission_ops_refresh),
+                                            onClick = onCatalogRefresh, enabled = enabled)
+                                    }
+                                    lookupOffered -> {
+                                        FloeCapsuleButton(
+                                            stringResource(
+                                                R.string.device_access_targets_lookup, lookupName),
+                                            onClick = { onLookup(lookupName) },
+                                            enabled = enabled &&
+                                                lookupState != DeviceAccessLookupUiState.RUNNING,
+                                            modifier = Modifier.widthIn(min = 96.dp),
+                                        )
+                                        // Only render the outcome while it
+                                        // belongs to the current query text.
+                                        if (lookupQuery == lookupName) {
+                                            when (lookupState) {
+                                                DeviceAccessLookupUiState.RUNNING -> FloeText(
+                                                    stringResource(R.string.device_access_permission_ops_loading),
+                                                    style = Floe.typography.metadata,
+                                                    color = Floe.colors.secondaryLabel,
+                                                    modifier = Modifier.padding(top = 4.dp),
+                                                )
+                                                DeviceAccessLookupUiState.ERROR -> FloeText(
+                                                    stringResource(R.string.device_access_targets_lookup_failed),
+                                                    style = Floe.typography.metadata,
+                                                    color = Floe.colors.secondaryLabel,
+                                                    modifier = Modifier.padding(top = 4.dp),
+                                                )
+                                                DeviceAccessLookupUiState.MISSING -> FloeText(
+                                                    stringResource(
+                                                        R.string.device_access_targets_lookup_missing,
+                                                        lookupQuery),
+                                                    style = Floe.typography.metadata,
+                                                    color = Floe.colors.secondaryLabel,
+                                                    modifier = Modifier.padding(top = 4.dp),
+                                                )
+                                                else -> Unit
+                                            }
+                                        }
+                                    }
+                                    packages.isEmpty() -> FloeText(
+                                        stringResource(R.string.device_access_targets_empty),
+                                        style = Floe.typography.body,
+                                        color = Floe.colors.secondaryLabel,
+                                    )
+                                    else -> FloeText(
+                                        stringResource(R.string.device_access_targets_no_matches),
+                                        style = Floe.typography.body,
+                                        color = Floe.colors.secondaryLabel,
+                                    )
+                                }
+                            }
                         }
                     }
                     items(matches, key = { it.packageName }) { app ->

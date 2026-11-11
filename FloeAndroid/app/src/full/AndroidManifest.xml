@@ -11,6 +11,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Phone-control target catalog (Full only): the device-access chooser
+         lists installed launchable apps so the user can pick automation
+         targets. Android 11+ package visibility returns nothing for a
+         MAIN/LAUNCHER query without this explicit intent query, which is why
+         the chooser was empty while hundreds of apps were installed. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
     <application>
         <receiver android:name="com.floe.android.host.officecomponent.OfficeComponentInstallReceiver" android:exported="false" />
         <receiver android:name="com.floe.android.host.officecomponent.OfficeComponentStopReceiver" android:exported="false" />

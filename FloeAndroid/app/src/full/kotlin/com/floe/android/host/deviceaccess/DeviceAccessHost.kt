@@ -8,8 +8,10 @@ import com.floe.android.phonecontrol.PhoneRelockResult
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -27,6 +29,7 @@ import com.floe.android.DeviceAccessCallbacks
 import com.floe.android.DeviceAccessErrorSectionUi
 import com.floe.android.DeviceAccessFileRootUi
 import com.floe.android.DeviceAccessFileRootKindUi
+import com.floe.android.DeviceAccessLookupUiState
 import com.floe.android.DeviceAccessPackageUi
 import com.floe.android.DeviceAccessPermissionOpsInspector
 import com.floe.android.DeviceAccessPermissionOpsResult
@@ -269,6 +272,11 @@ internal class DeviceAccessHost(
     private var error: DeviceAccessUiError? = null
     private var installedPackages: List<DeviceAccessPackageUi> = emptyList()
 
+    /** Pre-window launcher rows the ordinary chooser could not show; when
+     *  larger than [installedPackages].size the sheet must say so. */
+    @Volatile
+    private var installedCatalogTotal = 0
+
     /**
      * Eligible targets for the advanced app-state chooser: the privileged
      * current-user query (including disabled and uninstalled-for-user
@@ -278,6 +286,41 @@ internal class DeviceAccessHost(
      */
     @Volatile
     private var advancedSystemPackages: List<DeviceAccessPackageUi> = emptyList()
+
+    /** Last privileged page before windowing/extras merge; the base the
+     *  exact-lookup path re-merges so it never loses hidden rows. */
+    @Volatile
+    private var advancedDiscovered: List<DeviceAccessPackageUi> = emptyList()
+
+    /** Merged advanced rows before the [MAX_LISTED_PACKAGES] window. */
+    @Volatile
+    private var advancedCatalogListed = 0
+
+    /** True when the merged catalog exceeds the window; the sheet then shows
+     *  the honest "not all listed" note instead of a silent drop. */
+    @Volatile
+    private var advancedCatalogWindowed = false
+
+    /** The service page itself hit its 500-row bound; even more packages
+     *  exist than [advancedCatalogListed]. */
+    @Volatile
+    private var advancedCatalogServiceTruncated = false
+
+    /** USER-requested exact-name rows, verified by the service; RAM-only. */
+    private val advancedLookupExtras = ConcurrentHashMap<String, DeviceAccessPackageUi>()
+
+    @Volatile
+    private var advancedLookupState = DeviceAccessLookupUiState.IDLE
+
+    @Volatile
+    private var advancedLookupQuery = ""
+
+    @Volatile
+    private var advancedLookupBusy = false
+
+    @Volatile private var catalogLoading = false
+    @Volatile private var advancedCatalogReadFailed = false
+    private var advancedLookupJob: Job? = null
 
     /** App-local staged-APK store; listing it needs no privilege. */
     private val apkStaging = ApkStagingStore(context)
@@ -371,9 +414,32 @@ internal class DeviceAccessHost(
     @Volatile
     private var closed = false
 
+    /** Coalesced, generation-fenced catalog refresh: install/remove bursts and
+     *  sheet-entry refreshes cancel the previous in-flight refresh so a late
+     *  reply can never overwrite a newer catalog. */
+    private val catalogRefreshLock = Any()
+    private var catalogRefreshJob: Job? = null
+
+    @Volatile
+    private var catalogRefreshGeneration = 0L
+
+    /** Event-driven catalog refresh: real install/remove/replace broadcasts
+     *  only, never a liveness poller. RAM-only receiver, no manifest entry. */
+    private val packageChangeMonitor = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (closed) return
+            if (intent.action == Intent.ACTION_PACKAGE_REMOVED) {
+                intent.data?.schemeSpecificPart?.let(advancedLookupExtras::remove)
+            }
+            scheduleCatalogRefresh()
+        }
+    }
+
     val callbacks: DeviceAccessCallbacks = DeviceAccessCallbacks(
         onOpenAccessibilitySettings = ::openAccessibilitySettings,
         onRefresh = ::refreshFromUser,
+        onTargetsRefresh = ::scheduleCatalogRefresh,
+        onAdvancedTargetLookup = ::lookupAdvancedSystemTarget,
         onArmPhoneControl = ::armVisibleTask,
         onAutomaticControlChange = { enabled ->
             settings = settings.copy(automaticPhoneControl = enabled)
@@ -456,6 +522,7 @@ internal class DeviceAccessHost(
             PhoneControlModule.client(context, PhoneControlAuthority(::authorizePhone))
         }.getOrNull()
         ensureRootController()
+        registerPackageChangeMonitor()
         statusJobs += scope.launch {
             PhoneControlModule.status.collect { status ->
                 val tornDownBefore = phoneServiceTornDown(phoneStatus)
@@ -620,6 +687,9 @@ internal class DeviceAccessHost(
         automationControls.clear()
         closePairingSession()
         PairingNotificationRelay.detach(this)
+        catalogRefreshJob?.cancel()
+        advancedLookupJob?.cancel()
+        runCatching { context.unregisterReceiver(packageChangeMonitor) }
         statusJobs.forEach { it.cancel() }
         statusJobs.clear()
         pump?.forceClose()
@@ -1299,94 +1369,52 @@ internal class DeviceAccessHost(
     }
 
     /**
-     * Discover advanced-group targets through the typed privileged
-     * current-user query so disabled and removed-for-user preinstalled apps
-     * stay selectable for restore/disable; falls back to the ordinary
-     * installed list while no service is alive. Stored selections are merged
-     * in (labelled by package name when currently invisible) and never
-     * silently replaced by the visible subset.
+     * Refresh the advanced catalog through the privileged current-user query
+     * (including disabled and removed-for-user preinstalled apps for
+     * restore/disable) and merge it with the user's exact lookups and the
+     * persisted selection identities; falls back to the ordinary installed
+     * list while no service is alive.
      */
     private suspend fun refreshAdvancedSystemPackages() {
-        val discovered = queryAdvancedSystemTargets()
-        val merged = LinkedHashMap<String, DeviceAccessPackageUi>()
-        for (pkg in discovered) merged[pkg.packageName] = pkg
-        for (name in settings.advancedSystemTargets) {
-            if (merged.putIfAbsent(
-                    name,
-                    DeviceAccessPackageUi(
-                        packageName = name,
-                        label = name,
-                        selected = true,
-                    ),
-                ) != null) {
-                merged[name] = merged.getValue(name).copy(selected = true)
-            }
-        }
-        advancedSystemPackages = merged.values
-            .sortedWith(compareByDescending<DeviceAccessPackageUi> { it.selected }
-                .thenBy { it.label.lowercase() })
-            .take(MAX_LISTED_PACKAGES)
+        scheduleCatalogRefresh()
     }
 
-    private suspend fun queryAdvancedSystemTargets(): List<DeviceAccessPackageUi> {
-        if (!systemServiceAlive()) return installedPackages
-        val epoch = host.nativeRootEpoch()?.takeIf { it > 0 } ?: return installedPackages
-        val claim = OperationClaim(
-            taskId = "appstate-refresh",
-            runId = "appstate-refresh",
-            epoch = epoch,
-            grantId = "readlease:appstate-refresh",
-            requestId = "appstate-refresh-${SystemClock.elapsedRealtimeNanos()}",
-        )
-        val request = GrantRequest(
-            grantId = claim.grantId,
-            taskId = claim.taskId,
-            runId = claim.runId,
-            epoch = epoch,
-            expiresAtMillis = System.currentTimeMillis() + ROOT_GRANT_LIFETIME_MILLIS,
-            scopes = listOf(ScopeRoot(scopeId = "system", path = "/system", writable = false)),
-            operations = setOf(SystemOperation.PACKAGE_QUERY),
-            packageManagementAllowed = false,
-        )
-        val controller = rootController ?: return installedPackages
-        // Same routing as withRootGrant: the deterministic read-only system
-        // anchor scope, so the read lease registers exactly like a tool call.
-        val roots = cachedRoots.ifEmpty { FileRootCatalog.standardRoots() }
-        val routing = when (val decision = FileScopePolicy.decide(
-            roots = roots,
-            selectedIds = settings.fileRootIds,
-            requestedId = null,
-            fileOperation = false,
-            writeOperation = false,
-            appDataUsable = appDataUsable(),
-            globalWrites = settings.fileWritesAllowed,
-        )) {
-            is FileScopePolicy.Decision.Denied -> return installedPackages
-            is FileScopePolicy.Decision.Ok -> decision.routing
-        }
-        val scopedRequest = request.copy(
-            scopes = listOf(
-                ScopeRoot(
-                    scopeId = routing.root.id,
-                    path = routing.root.path,
-                    writable = false,
-                ),
-            ),
-        )
-        when (val registered = controller.registerGrant(scopedRequest)) {
-            is RootResult.Ok -> Unit
-            else -> return installedPackages
-        }
-        try {
-            val result = controller.packageQuery(
+    private class AdvancedCatalogResult(
+        val packages: List<DeviceAccessPackageUi>,
+        val serviceTruncated: Boolean,
+        val failed: Boolean = false,
+    )
+
+    /**
+     * The privileged inventory travels the SAME real UI grant lifecycle as
+     * the user's own settings actions ([withUserActionGrant]: register one
+     * host-issued read-only grant, dispatch, revoke in finally). The old
+     * fabricated "readlease:appstate-refresh" id was never enrolled in the
+     * userActionGrants/rootGrants registries, so RootAuthority denied every
+     * dispatch with grant_unknown and the chooser silently mirrored the
+     * (visibility-empty) launcher list.
+     */
+    private suspend fun collectAdvancedCatalog(
+        fallback: List<DeviceAccessPackageUi> = installedPackages,
+    ): AdvancedCatalogResult {
+        if (!systemServiceAlive()) return AdvancedCatalogResult(fallback, false)
+        val result = withUserActionGrant(
+            operation = SystemOperation.PACKAGE_QUERY,
+            target = null,
+            destructive = false,
+        ) { claim ->
+            rootController?.packageQuery(
                 claim = claim,
                 packageName = null,
                 includeSystem = true,
                 maxEntries = BinderProtocol.MAX_LIST,
                 includeUninstalled = true,
-            )
-            val query = (result as? RootResult.Ok)?.value ?: return installedPackages
-            return query.packages
+            ) ?: RootResult.Unavailable("service_not_alive")
+        }
+        val query = (result as? RootResult.Ok)?.value
+            ?: return AdvancedCatalogResult(fallback, false, failed = true)
+        return AdvancedCatalogResult(
+            packages = query.packages
                 .filterNot { isFloeSelfPackage(it.packageName) }
                 .map { record ->
                     DeviceAccessPackageUi(
@@ -1399,13 +1427,98 @@ internal class DeviceAccessHost(
                         } ?: record.packageName,
                         selected = record.packageName in settings.advancedSystemTargets,
                     )
+                },
+            serviceTruncated = query.truncated,
+        )
+    }
+
+    /**
+     * Merge the discovered page, the verified exact-lookup extras and the
+     * persisted selection identities. A stored selection is never silently
+     * dropped: rows currently invisible still show by package name, and the
+     * pre-window size is published so the sheet can state the window
+     * honestly instead of truncating before search.
+     */
+    private fun mergeAdvancedCatalog(discovered: List<DeviceAccessPackageUi>): List<DeviceAccessPackageUi> {
+        val rows = com.floe.android.mergeDeviceAccessAppCatalog(
+            discovered, advancedLookupExtras.values.toList(), settings.advancedSystemTargets)
+        advancedCatalogListed = rows.size
+        // Keep the whole bounded service page for filtering. LazyColumn only
+        // composes visible rows; cutting here hid exact lookup hits as well.
+        advancedCatalogWindowed = false
+        return rows
+    }
+
+    /**
+     * The user's exact-name lookup from the advanced chooser: one real
+     * PACKAGE_QUERY grant through [withUserActionGrant] resolves the typed
+     * name against the live service (including removed-for-user preinstalled
+     * packages). A found row is merged into the catalog so it is selectable
+     * immediately; a miss is reported truthfully. No guessed rows are ever
+     * shown — only the service's own record.
+     */
+    fun lookupAdvancedSystemTarget(rawName: String) {
+        if (closed || busy != DeviceAccessBusyUi.NONE || advancedLookupBusy) return
+        val name = rawName.trim()
+        advancedLookupQuery = name
+        if (!ADVANCED_LOOKUP_NAME.matches(name) || !systemServiceAlive()) {
+            advancedLookupState = DeviceAccessLookupUiState.ERROR
+            publish()
+            return
+        }
+        val acceptedEpoch = host.nativeRootEpoch()
+        val acceptedController = rootController
+        advancedLookupBusy = true
+        advancedLookupState = DeviceAccessLookupUiState.RUNNING
+        publish()
+        advancedLookupJob = scope.launch(io) {
+            try {
+                val result = withUserActionGrant(
+                    operation = SystemOperation.PACKAGE_QUERY,
+                    target = name,
+                    destructive = false,
+                ) { claim ->
+                    rootController?.packageQuery(
+                        claim = claim, packageName = name, includeSystem = true,
+                        maxEntries = 1, includeUninstalled = true,
+                    ) ?: RootResult.Unavailable("service_not_alive")
                 }
-        } finally {
-            runCatching { controller.revokeGrant(claim.grantId) }
+                if (closed) return@launch
+                if (host.nativeRootEpoch() != acceptedEpoch ||
+                    rootController !== acceptedController) {
+                    advancedLookupState = DeviceAccessLookupUiState.ERROR
+                    return@launch
+                }
+                val query = (result as? RootResult.Ok)?.value
+                val record = query?.packages?.firstOrNull()
+                advancedLookupState = when {
+                    query == null -> DeviceAccessLookupUiState.ERROR
+                    record == null || isFloeSelfPackage(record.packageName) -> DeviceAccessLookupUiState.MISSING
+                    else -> {
+                        advancedLookupExtras[record.packageName] = DeviceAccessPackageUi(
+                            packageName = record.packageName,
+                            label = runCatching {
+                                context.packageManager.getApplicationInfo(record.packageName, 0)
+                                    .loadLabel(context.packageManager).toString()
+                            }.getOrDefault(record.packageName),
+                            selected = record.packageName in settings.advancedSystemTargets,
+                        )
+                        DeviceAccessLookupUiState.FOUND
+                    }
+                }
+                advancedSystemPackages = mergeAdvancedCatalog(advancedDiscovered)
+            } finally {
+                advancedLookupBusy = false
+                if (!closed) publish()
+            }
         }
     }
 
     private suspend fun refreshPackages() {
+        scheduleCatalogRefresh()
+    }
+
+    private suspend fun collectInstalledPackages(): List<DeviceAccessPackageUi> {
         val packages = try {
             val manager = context.packageManager
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -1431,12 +1544,69 @@ internal class DeviceAccessHost(
                     )
                 }
                 .sortedBy { it.label.lowercase() }
-                .take(MAX_LISTED_PACKAGES)
                 .toList()
         } catch (_: Throwable) {
             emptyList()
         }
-        installedPackages = packages
+        return packages
+    }
+
+    private fun registerPackageChangeMonitor() {
+        runCatching {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_ADDED)
+                addAction(Intent.ACTION_PACKAGE_REMOVED)
+                addAction(Intent.ACTION_PACKAGE_REPLACED)
+                addDataScheme("package")
+            }
+            if (Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(
+                    packageChangeMonitor, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                context.registerReceiver(packageChangeMonitor, filter)
+            }
+        }
+    }
+
+    /**
+     * Coalescing catalog refresh used by sheet-entry refreshes and the
+     * install/remove monitor. Cancelling the previous job and checking the
+     * generation before every assignment fences late replies: a refresh
+     * superseded while in flight never publishes or clobbers the newer
+     * catalog.
+     */
+    private fun scheduleCatalogRefresh() {
+        if (closed) return
+        synchronized(catalogRefreshLock) {
+            if (closed) return
+            val generation = ++catalogRefreshGeneration
+            catalogRefreshJob?.cancel()
+            catalogLoading = true
+            catalogRefreshJob = scope.launch(io) {
+                try {
+                    val installed = collectInstalledPackages()
+                    if (closed || generation != catalogRefreshGeneration) return@launch
+                    val advanced = collectAdvancedCatalog(installed)
+                    if (closed || generation != catalogRefreshGeneration) return@launch
+                    installedPackages = installed
+                    installedCatalogTotal = installed.size
+                    advancedDiscovered = advanced.packages
+                    advancedCatalogServiceTruncated = advanced.serviceTruncated
+                    advancedCatalogReadFailed = advanced.failed
+                    advancedSystemPackages = mergeAdvancedCatalog(advanced.packages)
+                } catch (failure: Exception) {
+                    if (closed || generation != catalogRefreshGeneration) return@launch
+                    advancedCatalogReadFailed = true
+                } finally {
+                    if (!closed && generation == catalogRefreshGeneration) {
+                        catalogLoading = false
+                        publish()
+                    }
+                }
+            }
+        }
+        publish()
     }
 
     /**
@@ -1650,6 +1820,15 @@ internal class DeviceAccessHost(
             advancedSystemTargets = advancedSystemPackages.map {
                 it.copy(selected = it.packageName in settings.advancedSystemTargets)
             },
+            installedCatalogTotal = installedCatalogTotal,
+            catalogLoading = catalogLoading,
+            advancedCatalogReadFailed = advancedCatalogReadFailed,
+            advancedCatalogListed = advancedCatalogListed,
+            advancedCatalogWindowed = advancedCatalogWindowed,
+            advancedCatalogServiceTruncated = advancedCatalogServiceTruncated,
+            advancedLookupState = advancedLookupState,
+            advancedLookupQuery = advancedLookupQuery,
+            advancedLookupAvailable = systemServiceAlive(),
             stagedApks = stagedApks.map {
                 com.floe.android.DeviceAccessStagedApkUi(
                     stagedId = it.stagedId,
@@ -5627,6 +5806,8 @@ internal class DeviceAccessHost(
         /** Settled Host outer ceiling for the nine bounded batch mutations. */
         const val HOST_BATCH_OUTER_TIMEOUT_MILLIS = 1_020_000L
         const val MAX_LISTED_PACKAGES = 200
+        /** Exact-name advanced lookup: same shape the service already checks. */
+        val ADVANCED_LOOKUP_NAME = Regex("[A-Za-z0-9._-]{1,255}")
         const val MAX_LIVE_TASK_SCAN = 8
         const val MAX_DIGEST_NODES = 28
         const val MAX_LIST_ROWS = 24

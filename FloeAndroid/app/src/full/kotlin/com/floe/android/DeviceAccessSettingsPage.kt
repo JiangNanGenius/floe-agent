@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,6 +93,24 @@ data class DeviceAccessPackageUi(
     val selected: Boolean,
 )
 
+/** Keep all verified page/lookup rows searchable and preserve saved selections. */
+internal fun mergeDeviceAccessAppCatalog(
+    discovered: List<DeviceAccessPackageUi>,
+    verifiedLookups: List<DeviceAccessPackageUi>,
+    selected: Set<String>,
+): List<DeviceAccessPackageUi> {
+    val rows = LinkedHashMap<String, DeviceAccessPackageUi>()
+    for (row in discovered) rows[row.packageName] = row
+    for (row in verifiedLookups) rows.putIfAbsent(row.packageName, row)
+    for (name in selected) rows.putIfAbsent(name, DeviceAccessPackageUi(name, name, true))
+    return rows.values.map { it.copy(selected = it.packageName in selected) }
+        .sortedWith(compareByDescending<DeviceAccessPackageUi> { it.selected }
+            .thenBy { it.label.lowercase() })
+}
+
+/** Exact-name advanced lookup outcome surfaced inside the target sheet. */
+enum class DeviceAccessLookupUiState { IDLE, RUNNING, FOUND, MISSING, ERROR }
+
 enum class DeviceAccessFileRootKindUi { SHARED, SYSTEM, APP_DATA }
 
 data class DeviceAccessFileRootUi(
@@ -135,6 +154,22 @@ data class DeviceAccessTargetsUi(
     val selectedAdvancedSystemTargets: Set<String> = emptySet(),
     /** Eligible advanced targets incl. disabled/removed preinstalled apps. */
     val advancedSystemTargets: List<DeviceAccessPackageUi> = emptyList(),
+    /** Pre-window launcher rows; larger than packages.size means the sheet is
+     *  a window and must say so instead of truncating silently. */
+    val installedCatalogTotal: Int = 0,
+    val catalogLoading: Boolean = false,
+    val advancedCatalogReadFailed: Boolean = false,
+    /** Merged advanced rows before the sheet window. */
+    val advancedCatalogListed: Int = 0,
+    /** True when the merged advanced catalog exceeds the sheet window. */
+    val advancedCatalogWindowed: Boolean = false,
+    /** The privileged service page itself hit its row bound. */
+    val advancedCatalogServiceTruncated: Boolean = false,
+    /** Exact-name lookup outcome the host verified against the service. */
+    val advancedLookupState: DeviceAccessLookupUiState = DeviceAccessLookupUiState.IDLE,
+    val advancedLookupQuery: String = "",
+    /** True only while the privileged service can actually run a lookup. */
+    val advancedLookupAvailable: Boolean = false,
     val stagedApks: List<DeviceAccessStagedApkUi> = emptyList(),
     val wholeScreenConsent: Boolean = false,
     val windowScreenshotCapable: Boolean = true,
@@ -261,6 +296,12 @@ data class DeviceAccessPresentationState(
 class DeviceAccessCallbacks(
     val onOpenAccessibilitySettings: () -> Unit = {},
     val onRefresh: () -> Unit = {},
+    /** Lightweight catalog re-read when a target sheet opens; the page never
+     *  blocks on it and the host coalesces bursts. */
+    val onTargetsRefresh: () -> Unit = {},
+    /** USER-ONLY: resolves one exact typed package name against the live
+     *  service so targets outside the listed window stay discoverable. */
+    val onAdvancedTargetLookup: (String) -> Unit = { },
     /** USER-ONLY: allows phone control for the exact visible task/run. */
     val onArmPhoneControl: () -> Unit = {},
     val onAutomaticControlChange: (Boolean) -> Unit = {},
@@ -612,12 +653,19 @@ fun DeviceAccessSettingsPage(
     // the user enter the six-digit code while Android's pairing dialog stays
     // in front; when it is unavailable the page says so and keeps the manual
     // (split-screen) path explicit instead of claiming a broken return flow.
+    // Fresh catalog whenever a target sheet opens; the host coalesces these
+    // with the install/remove monitor, so a burst of opens is one refresh.
+    LaunchedEffect(appChooserOpen) { if (appChooserOpen) callbacks.onTargetsRefresh() }
+    LaunchedEffect(advancedChooserOpen) { if (advancedChooserOpen) callbacks.onTargetsRefresh() }
+
     DeviceAccessAppChooser(
         visible = appChooserOpen,
         targets = state.targets,
         enabled = state.busy == DeviceAccessBusyUi.NONE,
         onSelectionChange = callbacks.onAllowedPackagesChange,
         onDismiss = { appChooserOpen = false },
+        catalogTotal = state.targets.installedCatalogTotal,
+        onCatalogRefresh = callbacks.onTargetsRefresh,
     )
     // Compact permission/AppOps inspector over the SELECTED advanced
     // targets; user-initiated reads/changes only, durable ceilings enforced
@@ -637,6 +685,16 @@ fun DeviceAccessSettingsPage(
         enabled = state.busy == DeviceAccessBusyUi.NONE,
         onSelectionChange = callbacks.onAdvancedSystemTargetsChange,
         onDismiss = { advancedChooserOpen = false },
+        catalogListed = state.targets.advancedSystemTargets.size,
+        catalogTotal = state.targets.advancedCatalogListed,
+        catalogTruncated = state.targets.advancedCatalogServiceTruncated,
+        lookupEnabled = state.targets.advancedLookupAvailable,
+        lookupState = state.targets.advancedLookupState,
+        lookupQuery = state.targets.advancedLookupQuery,
+        onLookup = callbacks.onAdvancedTargetLookup,
+        catalogLoading = state.targets.catalogLoading,
+        catalogReadFailed = state.targets.advancedCatalogReadFailed,
+        onCatalogRefresh = callbacks.onTargetsRefresh,
     )
     DeviceAccessAppChooserSheet(
         visible = advancedToolsChooserOpen,

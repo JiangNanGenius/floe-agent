@@ -211,6 +211,9 @@
     <string name="device_access_targets_count">Selected: %1$d</string>
     <string name="device_access_targets_search">Search name or package</string>
     <string name="device_access_targets_no_matches">No matching apps</string>
+    <string name="device_access_targets_catalog_note">Not all apps are listed. Type an exact package name to find one.</string>
+    <string name="device_access_targets_lookup">Find "%1$s"</string>
+    <string name="device_access_targets_lookup_missing">No app named "%1$s"</string>
     <string name="device_access_advanced_tool_permissions_manage">Change app permissions</string>
     <string name="device_access_advanced_tool_appops_manage">Change AppOps modes</string>
     <string name="device_access_permission_ops_open">Inspect permissions &amp; AppOps</string>
@@ -255,4 +258,5 @@
     <string name="device_access_system_settings_read_failed">Could not read %1$d settings. Close and reopen to check again.</string>
     <string name="device_access_system_settings_result">Applied %1$d changes; %2$d failed.</string>
     <string name="device_access_system_settings_failed">Could not apply changes. Check the connection and access settings, then try again.</string>
+    <string name="device_access_targets_lookup_failed">Couldn\'t read apps. Try again.</string>
 </resources>
