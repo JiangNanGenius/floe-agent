@@ -325,9 +325,32 @@ struct GoalLifecycleTests {
             limits: .init(contextTokens: 16_384, maxOutputTokens: 2_048), capabilities: [.text, .tools])
         try await environment.configurationStore.saveProvider(provider)
         try await environment.configurationStore.saveModel(model)
-        let conversationID = UUID(), now = Date()
-        try await environment.conversationStore.saveConversation(.init(id: conversationID,
-            title: "Owned goal controls", createdAt: now, updatedAt: now))
+        let workspaces = SQLiteWorkspaceStore(database: environment.database)
+        let conversationsBefore = try await environment.conversationStore.conversations()
+        let workspacesBefore = try await workspaces.workspaces()
+        // Fail the canonical write inside the real SQLite transaction: no
+        // discoverable half-created conversation may survive a storage error.
+        try await environment.database.writer { db in
+            try db.execute(sql: """
+                CREATE TRIGGER goal_fixture_refuse_workspace BEFORE INSERT ON workspaces
+                BEGIN SELECT RAISE(ABORT, 'owned goal workspace failure'); END;
+                """)
+        }
+        var creationRejected = false
+        do { _ = try await center.createConversation(title: "Owned rejected goal") }
+        catch { creationRejected = true }
+        try await environment.database.writer { db in
+            try db.execute(sql: "DROP TRIGGER goal_fixture_refuse_workspace")
+        }
+        #expect(creationRejected)
+        #expect(try await environment.conversationStore.conversations() == conversationsBefore)
+        #expect(try await workspaces.workspaces() == workspacesBefore)
+        let conversation = try await center.createConversation(title: "Owned goal controls")
+        let conversationID = conversation.id, now = Date()
+        let workspaceID = try #require(try await workspaces.workspaceID(conversationID: conversationID))
+        let canonical = try #require(try await workspaces.workspace(id: workspaceID))
+        #expect(canonical.kind == .privateTask)
+        #expect(canonical.internalRelativePath == "PrivateTasks/\(conversationID.uuidString)")
         let evidence = GoalEvidence(kind: .testResult, reference: "owned-fixture", summary: "Retained prior progress")
         let original = ConversationGoal(conversationID: conversationID, objective: "Continue this same authorized task",
             acceptanceCriteria: [.init(text: "Preserve prior evidence")], steps: [.init(title: "Continue", order: 0)],

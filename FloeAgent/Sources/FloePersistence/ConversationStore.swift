@@ -170,6 +170,8 @@ public struct ConversationMessagePage: Sendable, Hashable {
 /// GRDB serialises writers.
 public protocol ConversationStore: Sendable {
     func saveConversation(_ conversation: ConversationRecord) async throws
+    /// Atomically saves an ordinary conversation with its canonical task workspace.
+    func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws
     func conversations() async throws -> [ConversationRecord]
     func conversations(includeArchived: Bool) async throws -> [ConversationRecord]
     func conversation(id: UUID) async throws -> ConversationRecord?
@@ -218,6 +220,11 @@ public protocol ConversationStore: Sendable {
 }
 
 public extension ConversationStore {
+    /// Non-durable stores must not approximate this with two independent writes.
+    func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws {
+        throw FloeError.storageCorrupted("Atomic conversation/workspace creation is unavailable for this store")
+    }
+
     /// Compatibility for non-SQLite stores; durable SQLite uses one owned row.
     func message(id: UUID, conversationID: UUID) async throws -> PersistedMessage? {
         var cursor: ConversationMessageCursor?
@@ -286,31 +293,46 @@ public actor SQLiteConversationStore: ConversationStore {
 
     public func saveConversation(_ conversation: ConversationRecord) async throws {
         try await database.writer { db in
-            // The FIRST INSERT carries `pinned_at` so a supplied new record
-            // round-trips its public field. The ON CONFLICT update
-            // deliberately NEVER writes `pinned_at`: a save from a
-            // reconstructed record whose pin was not loaded (nil) therefore
-            // cannot erase an existing pin. User-driven pin changes go
-            // through `setPinned`, the only UPDATE that touches the column.
-            try db.execute(
-                sql: """
-                    INSERT INTO conversations (id, title, created_at, updated_at, purpose, visibility, pinned_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        title = excluded.title,
-                        updated_at = excluded.updated_at
-                    """,
-                arguments: [
-                    conversation.id.uuidString,
-                    conversation.title,
-                    PersistenceCodec.encode(conversation.createdAt),
-                    PersistenceCodec.encode(conversation.updatedAt),
-                    conversation.purpose.rawValue,
-                    conversation.visibility.rawValue,
-                    conversation.pinnedAt.map { PersistenceCodec.encode($0) }
-                ]
-            )
+            try Self.writeConversation(conversation, in: db)
         }
+    }
+
+    public func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws {
+        guard conversation.purpose == .ordinary else {
+            throw FloeError.validationFailed("Canonical task creation requires an ordinary conversation")
+        }
+        try await database.writer { db in
+            try Self.writeConversation(conversation, in: db)
+            _ = try SQLiteWorkspaceStore.ensureWorkspace(
+                conversationID: conversation.id, title: conversation.title, db: db)
+        }
+    }
+
+    private static func writeConversation(_ conversation: ConversationRecord, in db: Database) throws {
+        // The FIRST INSERT carries `pinned_at` so a supplied new record
+        // round-trips its public field. The ON CONFLICT update
+        // deliberately NEVER writes `pinned_at`: a save from a
+        // reconstructed record whose pin was not loaded (nil) therefore
+        // cannot erase an existing pin. User-driven pin changes go
+        // through `setPinned`, the only UPDATE that touches the column.
+        try db.execute(
+            sql: """
+                INSERT INTO conversations (id, title, created_at, updated_at, purpose, visibility, pinned_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    updated_at = excluded.updated_at
+                """,
+            arguments: [
+                conversation.id.uuidString,
+                conversation.title,
+                PersistenceCodec.encode(conversation.createdAt),
+                PersistenceCodec.encode(conversation.updatedAt),
+                conversation.purpose.rawValue,
+                conversation.visibility.rawValue,
+                conversation.pinnedAt.map { PersistenceCodec.encode($0) }
+            ]
+        )
     }
 
     public func conversations() async throws -> [ConversationRecord] {

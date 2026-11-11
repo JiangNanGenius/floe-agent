@@ -5782,10 +5782,11 @@ public actor FloeAgentRuntime {
         for call in calls {
             guard let grant = approvedByID[call.id] else { continue }
             let descriptor = executor.descriptor(named: call.toolName)
-            // A real suspension is a main-run barrier even though it does
-            // not mutate external state. The parallel context deliberately
-            // has no trusted wait handle and must never fabricate one.
+            // Suspension and goal creation require the main-run native
+            // handles issued by executeResolved (wait / fixed goal budget).
+            // Their internal-state effects do not make them parallel reads.
             let isParallelSafe = call.toolName != AgentWaitTool.name
+                && call.toolName != TaskCreateGoalTool.name
                 && (descriptor?.isSideEffecting == false
                     || descriptor?.supportsConcurrentBatchDispatch == true)
             if isParallelSafe {

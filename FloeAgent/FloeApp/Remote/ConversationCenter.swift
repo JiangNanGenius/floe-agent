@@ -2123,7 +2123,13 @@ final class ConversationCenter: ObservableObject {
             updatedAt: Date(),
             purpose: purpose
         )
-        try await environment.conversationStore.saveConversation(record)
+        if purpose == .ordinary {
+            // The first send requires this exact durable task root. Never
+            // expose a new ordinary row before canonical ownership commits.
+            try await environment.conversationStore.saveConversationWithCanonicalWorkspace(record)
+        } else {
+            try await environment.conversationStore.saveConversation(record)
+        }
         if purpose == .notes {
             _ = try await environment.workspaceCenter.ensureReviewConversationWorkspace(
                 conversationID: record.id, workspaceID: nil, title: record.title)
