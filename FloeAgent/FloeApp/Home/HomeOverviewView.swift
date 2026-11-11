@@ -611,7 +611,7 @@ struct HomeOverviewView: View {
                 }
             }
             Spacer(minLength: 8)
-            Text(sessionStateLabel(for: snapshot.state))
+            Text(sessionStateLabel(for: snapshot))
                 .font(FloeTheme.Typography.metadata)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
@@ -651,8 +651,11 @@ struct HomeOverviewView: View {
         }
     }
 
-    private func sessionStateLabel(for state: BackgroundWorkSessionState) -> String {
-        switch state {
+    private func sessionStateLabel(for snapshot: BackgroundWorkSessionSnapshot) -> String {
+        if snapshot.showsServiceOnlyActivity {
+            return scheduleText(zh: "服务", en: "Services")
+        }
+        switch snapshot.state {
         case .idle: return scheduleText(zh: "未开始", en: "Not started")
         case .armed: return scheduleText(zh: "待命", en: "Ready")
         case .running: return String(localized: "home.home_overview_view.running")
@@ -692,13 +695,16 @@ struct HomeOverviewView: View {
         if counts.queuedJobs > 0 {
             parts.append(FloeL10n.isChinese ? "排队 \(counts.queuedJobs)" : "queued \(counts.queuedJobs)")
         }
+        if counts.activeServices > 0 {
+            parts.append(FloeL10n.isChinese ? "服务 \(counts.activeServices)" : "services \(counts.activeServices)")
+        }
         if counts.claimedScheduleOccurrences > 0 {
             parts.append(FloeL10n.isChinese ? "排程 \(counts.claimedScheduleOccurrences)" : "schedules \(counts.claimedScheduleOccurrences)")
         }
         if counts.pendingApprovals > 0 {
             parts.append(FloeL10n.isChinese ? "待批准 \(counts.pendingApprovals)" : "approvals \(counts.pendingApprovals)")
         }
-        if snapshot.state == .waiting, let reason = snapshot.waitReason {
+        if !snapshot.showsServiceOnlyActivity, snapshot.state == .waiting, let reason = snapshot.waitReason {
             parts.append(waitReasonText(reason))
         }
         if snapshot.state == .interrupted {

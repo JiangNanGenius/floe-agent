@@ -76,10 +76,13 @@ public struct BackgroundWorkSessionCounts: Codable, Equatable, Sendable {
     public var liveRuns: Int
     /// Runs paused on a pending approval.
     public var pendingApprovals: Int
-    /// Durable background jobs currently running.
+    /// Finite background jobs currently running; managed services are separate.
     public var runningJobs: Int
-    /// Durable background jobs queued but not started.
+    /// Finite background jobs queued but not started.
     public var queuedJobs: Int
+    /// Queued or running managed services retain execution ownership without
+    /// becoming drainable one-shot tasks. Stopping is running until exit proof.
+    public var activeServices: Int
     /// Claimed-or-due schedule occurrences the current pass is executing.
     public var claimedScheduleOccurrences: Int
     /// Enabled schedules that exist (context for `dueWork` waits).
@@ -93,6 +96,7 @@ public struct BackgroundWorkSessionCounts: Codable, Equatable, Sendable {
         pendingApprovals: Int = 0,
         runningJobs: Int = 0,
         queuedJobs: Int = 0,
+        activeServices: Int = 0,
         claimedScheduleOccurrences: Int = 0,
         enabledSchedules: Int = 0,
         heldEnvironmentClaims: Int = 0
@@ -101,16 +105,36 @@ public struct BackgroundWorkSessionCounts: Codable, Equatable, Sendable {
         self.pendingApprovals = max(0, pendingApprovals)
         self.runningJobs = max(0, runningJobs)
         self.queuedJobs = max(0, queuedJobs)
+        self.activeServices = max(0, activeServices)
         self.claimedScheduleOccurrences = max(0, claimedScheduleOccurrences)
         self.enabledSchedules = max(0, enabledSchedules)
         self.heldEnvironmentClaims = max(0, heldEnvironmentClaims)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case liveRuns, pendingApprovals, runningJobs, queuedJobs, activeServices
+        case claimedScheduleOccurrences, enabledSchedules, heldEnvironmentClaims
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            liveRuns: try values.decode(Int.self, forKey: .liveRuns),
+            pendingApprovals: try values.decode(Int.self, forKey: .pendingApprovals),
+            runningJobs: try values.decode(Int.self, forKey: .runningJobs),
+            queuedJobs: try values.decode(Int.self, forKey: .queuedJobs),
+            activeServices: try values.decodeIfPresent(Int.self, forKey: .activeServices) ?? 0,
+            claimedScheduleOccurrences: try values.decode(Int.self, forKey: .claimedScheduleOccurrences),
+            enabledSchedules: try values.decode(Int.self, forKey: .enabledSchedules),
+            heldEnvironmentClaims: try values.decode(Int.self, forKey: .heldEnvironmentClaims))
     }
 
     /// True when a task, a server (durable job / held environment) or
     /// accepted schedule work really owns background execution. This is the
     /// ownership fact the background-location release consults.
     public var hasAcceptedWork: Bool {
-        liveRuns > 0 || runningJobs > 0 || claimedScheduleOccurrences > 0 || heldEnvironmentClaims > 0
+        liveRuns > 0 || runningJobs > 0 || activeServices > 0
+            || claimedScheduleOccurrences > 0 || heldEnvironmentClaims > 0
     }
 
     /// Every admitted work item the session currently tracks. This is the
@@ -248,6 +272,15 @@ public struct BackgroundWorkSessionSnapshot: Codable, Equatable, Sendable {
     /// a wake restore for an older generation) can never overwrite a newer
     /// explicit choice.
     public var generation: UInt64
+
+    /// Neutral presentation for a live session retained only by services.
+    /// Queued and stopping services count too; this never claims readiness
+    /// or changes the finite-work policy, qualification or stored format.
+    public var showsServiceOnlyActivity: Bool {
+        state == .waiting && waitReason == .dueWork
+            && counts.activeServices > 0 && counts.totalAdmitted == 0
+            && counts.pendingApprovals == 0 && counts.enabledSchedules == 0
+    }
 
     public init(
         state: BackgroundWorkSessionState = .idle,

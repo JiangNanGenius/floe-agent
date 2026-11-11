@@ -48,6 +48,11 @@ private actor OwnedLoopCompletion {
     func finish() { finished = true }
 }
 
+private actor OwnedLoopReadiness {
+    private(set) var ids: [UUID] = []
+    func record(_ id: UUID) { ids.append(id) }
+}
+
 @MainActor final class LocalServiceOwnedLoopTests: XCTestCase {
     private enum FixtureError: Error { case timedOut, returnedBeforeTerminal }
 
@@ -68,13 +73,17 @@ private actor OwnedLoopCompletion {
 
     private func begin(controller: OwnedLoopController, handle: LinuxGuestLocalServiceHandle,
         job: BackgroundJob, store: BackgroundJobStore, cancellation: CancellationToken,
-        poll: Duration, retry: Duration) -> (Task<ToolExecutionOutput, any Error>, OwnedLoopCompletion) {
+        poll: Duration, retry: Duration,
+        isReady: @escaping @Sendable () async -> Bool = { false },
+        onServiceReady: (@Sendable (UUID) async -> Void)? = nil
+    ) -> (Task<ToolExecutionOutput, any Error>, OwnedLoopCompletion) {
         let completion = OwnedLoopCompletion()
         let parent = Task {
             do {
                 let result = try await LocalServiceOwnedLoop.run(controller: controller, handle: handle,
                     jobID: job.id, runtime: "shell", cancellation: cancellation, store: store,
-                    previewURL: "http://127.0.0.1:8123/", pollInterval: poll, stopRetryInterval: retry)
+                    previewURL: "http://127.0.0.1:8123/", isReady: isReady,
+                    onServiceReady: onServiceReady, pollInterval: poll, stopRetryInterval: retry)
                 await completion.finish()
                 return result
             } catch {
@@ -106,6 +115,119 @@ private actor OwnedLoopCompletion {
             try await Task.sleep(for: .milliseconds(5))
         }
         throw FixtureError.timedOut
+    }
+
+    func testReadyManagedServiceUsesServiceProgressAndRetainsOwnershipUntilExit() async throws {
+        let (store, job, handle) = try await fixture()
+        let cancellation = CancellationToken(), readiness = OwnedLoopReadiness()
+        let controller = OwnedLoopController(handle: handle,
+            snapshot: .init(state: "running", alive: true, stdout: "ready"))
+        let (parent, completion) = begin(controller: controller, handle: handle, job: job,
+            store: store, cancellation: cancellation, poll: .milliseconds(25), retry: .milliseconds(75),
+            isReady: { true }, onServiceReady: { await readiness.record($0) })
+        do {
+            let progress = try await waitForProgress("ready", store: store, jobID: job.id, completion: completion)
+            let savedReady = try await store.job(id: job.id)
+            let ready = try XCTUnwrap(savedReady)
+            XCTAssertEqual(progress.state, "running")
+            XCTAssertNotNil(progress.previewURL)
+            XCTAssertEqual(ready.state, .running)
+            XCTAssertNil(ready.completedAt, "Readiness is not service completion")
+            XCTAssertEqual(ready.serviceState, .running)
+            XCTAssertNotNil(ready.servicePreviewURL)
+
+            let finite = BackgroundJob(conversationID: job.conversationID, runID: job.runID,
+                kind: .tool, targetTool: "exec.shell", payloadJSON: Data("{}".utf8), state: .cancelled)
+            let queued = BackgroundJob(conversationID: job.conversationID, runID: job.runID,
+                kind: .tool, targetTool: "exec.localService", payloadJSON: Data("{}".utf8))
+            var stopped = ready
+            stopped.id = UUID(); stopped.state = .cancelled
+            try await store.save(finite)
+            try await store.save(queued)
+            try await store.save(stopped)
+            let records = try await store.jobs(conversationID: job.conversationID)
+            let partition = BackgroundJobProgressPartition(records)
+            XCTAssertEqual(partition.tasks.map(\.id), [finite.id])
+            XCTAssertEqual(partition.cancelledTaskCount, 1, "Stopped services cannot inflate cancelled-task counts")
+            XCTAssertEqual(LocalServicePresentation.statusKey(for: stopped), "services.state.cancelled")
+            XCTAssertEqual(stopped.serviceState, .stopped)
+            XCTAssertNil(stopped.servicePreviewURL)
+            XCTAssertEqual(finite.state, .cancelled)
+            XCTAssertNil(finite.serviceState)
+            let counts = BackgroundWorkSessionCounts(runningJobs: partition.runningTaskCount,
+                queuedJobs: partition.queuedTaskCount, activeServices: partition.activeServiceCount)
+            XCTAssertEqual(counts.totalAdmitted, 0)
+            XCTAssertEqual(counts.activeServices, 2, "Queued and running services both retain ownership")
+            XCTAssertTrue(counts.hasAcceptedWork)
+            XCTAssertFalse(BackgroundWorkSessionPolicy.shouldReleaseBackgroundLocation(counts: counts))
+            let serviceDecision = BackgroundWorkSessionPolicy.activeState(for: counts)
+            let serviceSnapshot = BackgroundWorkSessionSnapshot(state: serviceDecision.state,
+                waitReason: serviceDecision.waitReason, counts: counts)
+            XCTAssertTrue(serviceSnapshot.showsServiceOnlyActivity,
+                "Home and qualification must show services, not a nonexistent due schedule")
+            let queuedPartition = BackgroundJobProgressPartition([queued])
+            let queuedOnly = BackgroundWorkSessionCounts(activeServices: queuedPartition.activeServiceCount)
+            XCTAssertTrue(queuedOnly.hasAcceptedWork)
+            XCTAssertEqual(queuedOnly.totalAdmitted, 0)
+            let queuedDecision = BackgroundWorkSessionPolicy.activeState(for: queuedOnly)
+            XCTAssertEqual(queuedDecision.state, .waiting, "Queued services are not proof of execution")
+            XCTAssertTrue(BackgroundWorkSessionSnapshot(state: queuedDecision.state,
+                waitReason: queuedDecision.waitReason, counts: queuedOnly).showsServiceOnlyActivity)
+            var otherWork = serviceSnapshot
+            otherWork.counts.runningJobs = 1
+            XCTAssertFalse(otherWork.showsServiceOnlyActivity)
+            otherWork = serviceSnapshot
+            otherWork.counts.pendingApprovals = 1
+            XCTAssertFalse(otherWork.showsServiceOnlyActivity)
+            otherWork = serviceSnapshot
+            otherWork.counts.enabledSchedules = 1
+            XCTAssertFalse(otherWork.showsServiceOnlyActivity, "Real future schedules retain their due-work explanation")
+            var legacy = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(counts)) as? [String: Any])
+            legacy.removeValue(forKey: "activeServices")
+            let decodedLegacy = try JSONDecoder().decode(BackgroundWorkSessionCounts.self,
+                from: JSONSerialization.data(withJSONObject: legacy))
+            XCTAssertEqual(decodedLegacy.activeServices, 0)
+            var legacySnapshot = try XCTUnwrap(try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(serviceSnapshot)) as? [String: Any])
+            legacySnapshot["counts"] = legacy
+            let restoredLegacy = try JSONDecoder().decode(BackgroundWorkSessionSnapshot.self,
+                from: JSONSerialization.data(withJSONObject: legacySnapshot))
+            XCTAssertEqual(restoredLegacy.waitReason, .dueWork)
+            XCTAssertFalse(restoredLegacy.showsServiceOnlyActivity)
+
+            cancellation.cancel()
+            // Poll a new marker to prove the explicit Stop was processed.
+            await controller.setSnapshot(.init(state: "running", alive: true, stdout: "stopping"))
+            _ = try await waitForProgress("stopping", store: store, jobID: job.id, completion: completion)
+            let unjoined = await completion.finished
+            let savedStopping = try await store.job(id: job.id)
+            let stoppingRecord = try XCTUnwrap(savedStopping)
+            XCTAssertFalse(unjoined, "A stop ACK cannot release a service before process-tree exit")
+            XCTAssertEqual(stoppingRecord.state, .running)
+            XCTAssertEqual(stoppingRecord.serviceState, .stopping)
+            XCTAssertNil(stoppingRecord.servicePreviewURL)
+            let stoppingCounts = BackgroundWorkSessionCounts(
+                activeServices: BackgroundJobProgressPartition([stoppingRecord]).activeServiceCount)
+            let stoppingDecision = BackgroundWorkSessionPolicy.activeState(for: stoppingCounts)
+            XCTAssertTrue(BackgroundWorkSessionSnapshot(state: stoppingDecision.state,
+                waitReason: stoppingDecision.waitReason, counts: stoppingCounts).showsServiceOnlyActivity)
+            XCTAssertTrue(stoppingCounts.hasAcceptedWork, "Neutral presentation cannot release an unjoined service")
+            await controller.setSnapshot(.init(state: "stopped", alive: false, stdout: "confirmed"))
+            try await waitForCompletion(completion)
+            let output = try await parent.value
+            XCTAssertEqual(output.exitStatus, 0)
+            let announcements = await readiness.ids
+            XCTAssertEqual(announcements, [job.id], "Native readiness is announced exactly once")
+            let owned = await controller.recordedCounts()
+            XCTAssertFalse(owned.wrongScope)
+            XCTAssertFalse(owned.cancelledWorker)
+        } catch {
+            cancellation.cancel()
+            await controller.setSnapshot(.init(state: "stopped", alive: false))
+            try await waitForCompletion(completion)
+            _ = try? await parent.value
+            throw error
+        }
     }
 
     func testUnknownAndAliveSnapshotsKeepTheSameRunningJobOwned() async throws {

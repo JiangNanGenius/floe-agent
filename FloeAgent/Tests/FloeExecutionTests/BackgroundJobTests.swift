@@ -166,6 +166,9 @@ struct BackgroundJobTests {
         #expect(requested.summary.contains("\"cancelling\":true"))
         let terminal = try await waitForTerminal(service, id: jobID)
         #expect(terminal.state == .cancelled)
+        #expect(terminal.workKind == .job && terminal.serviceState == nil)
+        #expect(BackgroundJobProgressPartition([terminal]).cancelledTaskCount == 1,
+            "A genuinely cancelled finite job must remain a cancelled task")
     }
 
     @Test("Launch reconciliation marks orphaned jobs interrupted")
@@ -458,7 +461,15 @@ struct BackgroundJobTests {
                 while !(await gate.canExit) { try await Task.sleep(for: .milliseconds(10)) }
                 return ToolExecutionOutput(summary: "stopped", fullOutputSHA256: "stopped")
             })
-        let service = BackgroundJobService(store: store, registry: registry)
+        let dependencies = SQLiteRunDependencyStore(database: db)
+        let service = BackgroundJobService(store: store, registry: registry,
+            registerDependency: { jobID, runID, conversationID, kind in
+                try? await dependencies.register(.init(jobID: jobID, runID: runID,
+                    conversationID: conversationID, kind: kind))
+            },
+            resolveDependency: { jobID, state, note in
+                _ = try? await dependencies.resolve(jobID: jobID, state: state, note: note)
+            })
         let job = try await service.submit(runID: run, toolCallID: "service", targetTool: "exec.localService",
             payloadJSON: Data("{}".utf8), scope: .local, workspaceRootURL: nil, allowedWorkspacePaths: [],
             environmentID: "owner", submissionSource: .nativeService)
@@ -467,12 +478,39 @@ struct BackgroundJobTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(await gate.entered)
+        try await store.updateProgress(id: job.id,
+            data: Data(#"{"state":"running","previewURL":"http://127.0.0.1:8123/"}"#.utf8))
+        await service.resolveServiceReady(id: job.id, note: "Synthetic native HTTP readiness proof")
+        #expect(try await dependencies.record(jobID: job.id)?.state == .resolved)
+        let ready = try #require(try await service.job(id: job.id))
+        #expect(ready.state == .running && ready.completedAt == nil)
+        #expect(ready.serviceState == .running && ready.servicePreviewURL != nil)
+        let readyStatus = try await JobsStatusTool(service: service).execute(.init(jobID: job.id.uuidString),
+            context: .init(runID: run, cancellation: CancellationToken()))
+        let readyJSON = try #require(try JSONSerialization.jsonObject(with: Data(readyStatus.summary.utf8)) as? [String: Any])
+        #expect(readyJSON["state"] as? String == "running" && readyJSON["workKind"] as? String == "service")
+        #expect(readyJSON["serviceState"] as? String == "running")
+        let readyResult = try await JobsResultTool(service: service).execute(.init(jobID: job.id.uuidString),
+            context: .init(runID: run, cancellation: CancellationToken()))
+        #expect(readyResult.summary.contains("Service is ready and keeps running"))
         let cancelled = try await service.cancel(id: job.id)
         #expect(cancelled.state == .running)
+        #expect(cancelled.serviceState == .stopping)
         try await store.updateProgress(id: job.id, data: Data(#"{"state":"stopping"}"#.utf8))
         #expect(try await store.activeJobs().contains(where: { $0.id == job.id }))
         await gate.allowExit()
-        #expect(try await waitForTerminal(service, id: job.id).state == .cancelled)
+        let stopped = try await waitForTerminal(service, id: job.id)
+        #expect(stopped.state == .cancelled && stopped.serviceState == .stopped)
+        #expect(stopped.servicePreviewURL == nil && !stopped.countsTowardTaskProgress)
+        let stoppedStatus = try await JobsStatusTool(service: service).execute(.init(jobID: job.id.uuidString),
+            context: .init(runID: run, cancellation: CancellationToken()))
+        let stoppedJSON = try #require(try JSONSerialization.jsonObject(with: Data(stoppedStatus.summary.utf8)) as? [String: Any])
+        #expect(stoppedJSON["state"] as? String == "cancelled" && stoppedJSON["serviceState"] as? String == "stopped")
+        let stoppedResult = try await JobsResultTool(service: service).execute(.init(jobID: job.id.uuidString),
+            context: .init(runID: run, cancellation: CancellationToken()))
+        #expect(stoppedResult.summary.contains("Managed service is stopped"))
+        #expect(try await dependencies.record(jobID: job.id)?.state == .resolved,
+            "Stopping a ready service cannot rewrite the already-resolved launch dependency")
         // A late progress write after the terminal transition is ignored; the
         // engine's own final progress document stays.
         let terminalProgress = try await store.job(id: job.id)?.progressJSON

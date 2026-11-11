@@ -4061,8 +4061,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         let activeJobs = try await checkedCountsRead("activeJobs") {
             try await jobStore.activeJobs()
         }
-        let runningJobs = activeJobs.filter { $0.state == .running }.count
-        let queuedJobs = activeJobs.filter { $0.state == .queued }.count
+        // Keep all records for lifecycle/Stop. Only finite jobs contribute
+        // to task progress; service ownership retains background eligibility.
+        let jobProgress = BackgroundJobProgressPartition(activeJobs)
         let scheduleStore = SQLiteTaskScheduleStore(database: environment.database)
         let schedules = try await checkedCountsRead("schedules") {
             try await scheduleStore.schedules()
@@ -4077,8 +4078,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         return BackgroundWorkSessionCounts(
             liveRuns: liveRuns,
             pendingApprovals: pendingApprovals,
-            runningJobs: runningJobs,
-            queuedJobs: queuedJobs,
+            runningJobs: jobProgress.runningTaskCount,
+            queuedJobs: jobProgress.queuedTaskCount,
+            activeServices: jobProgress.activeServiceCount,
             claimedScheduleOccurrences: claimedOccurrences,
             enabledSchedules: enabledSchedules,
             heldEnvironmentClaims: linuxBackgroundHold.heldEnvironmentIDs.count
@@ -8940,6 +8942,11 @@ final class BackgroundWorkSessionController: ObservableObject {
 
     private func qualificationStageText() -> String {
         let counts = snapshot.counts
+        if snapshot.showsServiceOnlyActivity {
+            return FloeL10n.isChinese
+                ? "工作会话 · 服务 \(counts.activeServices)"
+                : "Work session · services \(counts.activeServices)"
+        }
         if let reason = snapshot.waitReason, snapshot.state == .waiting {
             switch reason {
             case .approvals:

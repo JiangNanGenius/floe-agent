@@ -29,35 +29,11 @@ struct LocalServicesView: View {
                 ContentUnavailableView("services.empty", systemImage: "server.rack", description: Text("services.start_hint"))
             }
             ForEach(jobs) { job in
-                let invocation = try? JSONDecoder().decode(LocalServiceTool.Arguments.self, from: job.payloadJSON)
-                let progress = job.progressJSON.flatMap { try? JSONDecoder().decode(LocalServiceProgress.self, from: $0) }
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(invocation?.entry ?? "Local service").font(.headline).lineLimit(2)
-                        HStack {
-                            Text(invocation?.runtime == "python" ? "Python" : (invocation?.runtime == "shell" ? "Shell" : "Node.js"))
-                            Spacer()
-                            Text(state(job, progress: progress))
-                        }.font(.subheadline).foregroundStyle(.secondary)
-                        if let owner = environment.conversationCenter.conversations.first(where: { $0.id == job.conversationID }) {
-                            Label(owner.title, systemImage: "bubble.left").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        if let failure = job.lastError, !failure.hasPrefix("Stop requested") { Text(failure).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                    }.padding(.vertical, 4)
-                    if !job.state.isTerminal, progress?.previewURL != nil, progress?.state == "running", scenePhase == .active {
-                        Button("services.preview", systemImage: "safari") { preview = job }
-                    }
-                    if let progress, !progress.stdout.isEmpty || !progress.stderr.isEmpty {
-                        DisclosureGroup("services.logs") {
-                            Text(progress.stdout + (progress.stderr.isEmpty ? "" : "\n" + progress.stderr))
-                                .font(.caption.monospaced()).textSelection(.enabled)
-                            if progress.truncated { Text("services.logs_truncated").font(.caption).foregroundStyle(.secondary) }
-                        }
-                    }
-                    Button(job.state.isTerminal ? "services.restart" : "services.stop",
-                           systemImage: job.state.isTerminal ? "arrow.clockwise" : "stop.circle") {
-                        operate(job)
-                    }.disabled(busy.contains(job.id) || (!job.state.isTerminal && job.lastError?.hasPrefix("Stop requested") == true))
+                    LocalServiceJobRow(job: job,
+                        ownerTitle: environment.conversationCenter.conversations.first(where: { $0.id == job.conversationID })?.title,
+                        isBusy: busy.contains(job.id),
+                        onPreview: { preview = job }, onOperate: { operate(job) })
                 }
             }
         }
@@ -73,12 +49,6 @@ struct LocalServicesView: View {
         .sheet(item: $preview) { job in
             LocalServicePreview(job: job)
         }
-    }
-
-    private func state(_ job: BackgroundJob, progress: LocalServiceProgress?) -> LocalizedStringKey {
-        if !job.state.isTerminal, progress?.state == "stopping" || job.lastError?.hasPrefix("Stop requested") == true { return "services.stopping" }
-        if job.state == .running && progress?.previewURL == nil { return "services.starting" }
-        return LocalizedStringKey("services.state.\(job.state.rawValue)")
     }
 
     @MainActor private func reload() async {
@@ -99,6 +69,70 @@ struct LocalServicesView: View {
                 await reload()
             } catch { self.error = error.localizedDescription }
         }
+    }
+}
+
+/// Shared service semantics in Settings and the task-progress inspector.
+/// Raw job termination remains available in storage/tool details.
+enum LocalServicePresentation {
+    static func statusKey(for job: BackgroundJob) -> String {
+        switch job.serviceState {
+        case .queued: "services.state.queued"
+        case .starting: "services.starting"
+        case .running: "services.state.running"
+        case .stopping: "services.stopping"
+        case .stopped: "services.state.cancelled"
+        case .ended: "services.state.completed"
+        case .failed: "services.state.failed"
+        case .interrupted: "services.state.interrupted"
+        case nil: "services.state.failed"
+        }
+    }
+}
+
+struct LocalServiceJobRow: View {
+    let job: BackgroundJob
+    var ownerTitle: String? = nil
+    var isBusy = false
+    let onPreview: () -> Void
+    let onOperate: () -> Void
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        let invocation = try? JSONDecoder().decode(LocalServiceTool.Arguments.self, from: job.payloadJSON)
+        let progress = job.progressJSON.flatMap { try? JSONDecoder().decode(LocalServiceProgress.self, from: $0) }
+        Group {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(invocation?.entry ?? FloeL10n.l("services.title")).font(.headline).lineLimit(2)
+                HStack {
+                    Text(invocation?.runtime == "python" ? "Python" : (invocation?.runtime == "shell" ? "Shell" : "Node.js"))
+                    Spacer()
+                    Text(LocalizedStringKey(LocalServicePresentation.statusKey(for: job)))
+                }.font(.subheadline).foregroundStyle(.secondary)
+                if let ownerTitle {
+                    Label(ownerTitle, systemImage: "bubble.left").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if (job.state == .failed || job.state == .interrupted), let failure = job.lastError {
+                    Text(failure).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }.padding(.vertical, 4)
+            if job.servicePreviewURL != nil, scenePhase == .active {
+                Button("services.preview", systemImage: "safari", action: onPreview)
+                    .accessibilityIdentifier("services.preview.\(job.id.uuidString)")
+            }
+            if let progress, !progress.stdout.isEmpty || !progress.stderr.isEmpty {
+                DisclosureGroup("services.logs") {
+                    Text(progress.stdout + (progress.stderr.isEmpty ? "" : "\n" + progress.stderr))
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                    if progress.truncated { Text("services.logs_truncated").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            Button(job.state.isTerminal ? "services.restart" : "services.stop",
+                   systemImage: job.state.isTerminal ? "arrow.clockwise" : "stop.circle", action: onOperate)
+                .disabled(isBusy || job.serviceState == .stopping)
+                .accessibilityIdentifier("services.operate.\(job.id.uuidString)")
+        }
+        .accessibilityIdentifier("services.row.\(job.id.uuidString)")
     }
 }
 

@@ -247,6 +247,10 @@ struct TaskProgressInspectorView: View {
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var cancelError: String?
+    @State private var servicePreview: BackgroundJob?
+    @State private var busyServices: Set<UUID> = []
+
+    private var jobProgress: BackgroundJobProgressPartition { .init(jobs) }
 
     var body: some View {
         List {
@@ -274,18 +278,29 @@ struct TaskProgressInspectorView: View {
                     RunProgressRow(run: run)
                 }
             }
-            Section {
-                if jobs.isEmpty && !isLoading {
-                    Text(TaskInspectorText.noBackgroundJobs)
-                        .foregroundStyle(.secondary)
+            if !jobProgress.tasks.isEmpty || jobProgress.services.isEmpty {
+                Section {
+                    if jobProgress.tasks.isEmpty && !isLoading {
+                        Text(TaskInspectorText.noBackgroundJobs)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(jobProgress.tasks) { job in
+                        BackgroundJobInspectorRow(job: job) {
+                            Task { await cancel(job) }
+                        }
+                    }
+                } header: {
+                    Text(TaskInspectorText.backgroundJobs)
                 }
-                ForEach(jobs) { job in
-                    BackgroundJobInspectorRow(job: job) {
-                        Task { await cancel(job) }
+            }
+            if !jobProgress.services.isEmpty {
+                Section("services.title") {
+                    ForEach(jobProgress.services) { job in
+                        LocalServiceJobRow(job: job, isBusy: busyServices.contains(job.id),
+                            onPreview: { servicePreview = job },
+                            onOperate: { Task { await operateService(job) } })
                     }
                 }
-            } header: {
-                Text(TaskInspectorText.backgroundJobs)
             }
         }
         .navigationTitle("chat.thread_detail_view.progress")
@@ -294,6 +309,24 @@ struct TaskProgressInspectorView: View {
             await load()
             await pollWhileActive()
         }
+        .sheet(item: $servicePreview) { job in
+            LocalServicePreview(job: job)
+        }
+    }
+
+    private func operateService(_ job: BackgroundJob) async {
+        guard job.workKind == .service, busyServices.insert(job.id).inserted else { return }
+        defer { busyServices.remove(job.id) }
+        do {
+            guard let service = environment.backgroundJobService else {
+                cancelError = FloeL10n.l("chat.thread_detail_view_model.media_task_status_is_temporarily_unavailable")
+                return
+            }
+            if job.state.isTerminal { _ = try await service.restartLocalService(id: job.id) }
+            else { _ = try await service.cancel(id: job.id) }
+            cancelError = nil
+            await load()
+        } catch { cancelError = error.localizedDescription }
     }
 
     /// Bounded visible-panel polling while a job or run is non-terminal, so

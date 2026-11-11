@@ -37,6 +37,17 @@ public enum BackgroundJobKind: String, Codable, Sendable {
     case download
 }
 
+/// Presentation/observability only. The durable job state remains authoritative
+/// for cancellation, recovery and ownership; a service is never made successful
+/// merely because its finite launch command returned.
+public enum BackgroundJobWorkKind: String, Codable, Sendable {
+    case job, download, service
+}
+
+public enum BackgroundServiceState: String, Codable, Sendable {
+    case queued, starting, running, stopping, stopped, ended, failed, interrupted
+}
+
 /// A durable, model-visible background unit of work. The payload is the exact
 /// arguments JSON of the target tool; secrets must remain credential
 /// references because this table is not a secret store.
@@ -78,6 +89,48 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
     public var createdAt: Date
     public var updatedAt: Date
     public var completedAt: Date?
+
+    /// Only the registered managed-service target carries service ownership.
+    /// A shell command, title or output mentioning a server does not qualify.
+    public var workKind: BackgroundJobWorkKind {
+        if kind == .tool && targetTool == "exec.localService" { return .service }
+        return kind == .download ? .download : .job
+    }
+
+    public var countsTowardTaskProgress: Bool { workKind != .service }
+
+    public var serviceState: BackgroundServiceState? {
+        guard workKind == .service else { return nil }
+        switch state {
+        case .queued: return .queued
+        case .running:
+            let progress = managedServiceProgress
+            if progress?.state == "stopping" || progress?.cancellationRequested == true
+                || lastError?.hasPrefix("Stop requested") == true { return .stopping }
+            return progress?.state == "running" && progress?.previewURL?.isEmpty == false ? .running : .starting
+        case .completed: return .ended
+        case .cancelled: return .stopped
+        case .failed: return .failed
+        case .interrupted: return .interrupted
+        }
+    }
+
+    /// A UI affordance, never a browser authorization. BrowserURLPolicy still
+    /// checks the exact live service owner when the preview opens.
+    public var servicePreviewURL: URL? {
+        guard serviceState == .running, let value = managedServiceProgress?.previewURL else { return nil }
+        return URL(string: value)
+    }
+
+    private struct ManagedServiceProgress: Decodable {
+        var state: String?
+        var previewURL: String?
+        var cancellationRequested: Bool?
+    }
+
+    private var managedServiceProgress: ManagedServiceProgress? {
+        progressJSON.flatMap { try? JSONDecoder().decode(ManagedServiceProgress.self, from: $0) }
+    }
 
     public init(
         id: UUID = UUID(),
@@ -126,6 +179,25 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
         self.updatedAt = updatedAt
         self.completedAt = completedAt
     }
+}
+
+/// Shared finite-task counts and service partition for the actual persisted
+/// records. Lifecycle/Stop callers must continue to use the unfiltered store.
+public struct BackgroundJobProgressPartition: Sendable {
+    public let tasks: [BackgroundJob]
+    public let services: [BackgroundJob]
+
+    public init(_ jobs: [BackgroundJob]) {
+        tasks = jobs.filter(\.countsTowardTaskProgress)
+        services = jobs.filter { !$0.countsTowardTaskProgress }
+    }
+
+    public var runningTaskCount: Int { tasks.filter { $0.state == .running }.count }
+    public var queuedTaskCount: Int { tasks.filter { $0.state == .queued }.count }
+    public var cancelledTaskCount: Int { tasks.filter { $0.state == .cancelled }.count }
+    /// Includes stopping services until the real owner acknowledges exit.
+    public var runningServiceCount: Int { services.filter { $0.state == .running }.count }
+    public var activeServiceCount: Int { services.filter { !$0.state.isTerminal }.count }
 }
 
 public enum BackgroundJobStoreError: Error, Sendable, Equatable {
