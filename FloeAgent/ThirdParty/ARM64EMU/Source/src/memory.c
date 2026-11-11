@@ -110,6 +110,7 @@ void machine_init(Machine *m, u64 ram_size) {
         m->host_error = -6; return;
     }
     if(memory_sync_init(m)){m->host_error=-6;return;}
+    if(machine_regions_init(m)){m->host_error=-6;return;}
     m->ndev = 0;
     m->ncpus=1;
     for(unsigned i=0;i<A64_MAX_CPUS;i++) {
@@ -119,12 +120,26 @@ void machine_init(Machine *m, u64 ram_size) {
     machine_clock_reset(m);
 }
 
+/* ABI version 3 (online memory) initialization: the mapped RAM span is the
+ * full 1 GiB envelope (boot RAM low 256 MiB + virtio-mem managed region
+ * above it). Anonymous pages are lazily backed, so mapping the envelope
+ * commits host memory only for pages the guest actually touches — a virtual
+ * reservation, not eager allocation. The guest-visible boot RAM is reported
+ * separately via m->boot_ram_size (DTB memory node); v1/v2 machine_init
+ * keeps the exact historical single-size mapping. */
+void machine_init_vmem(Machine *m, u64 ram_size) {
+    machine_init(m, 0);            /* maps the default 1 GiB envelope */
+    if (m->host_error) return;
+    m->boot_ram_size = (!ram_size || ram_size > FLOE_BOOT_RAM_MAX) ? FLOE_BOOT_RAM_MAX : ram_size;
+}
+
 void machine_free(Machine *m) {
     /* Only called after the sole run_slice owner is quiescent. OFF does not
      * free caches while a current PD handler can still hold an entry. */
     for(unsigned h=0;h<A64_MAX_CPUS;h++)
         cpu_exec_destroy(h?&m->secondary[h-1]:&m->cpu);
     memory_sync_destroy(m);
+    machine_regions_destroy(m);
     if (m->ram) munmap(m->ram, m->ram_size);
     free(m->flash);
     m->ram = m->flash = NULL; m->ndev = 0;
@@ -273,7 +288,11 @@ static MMIODev *find_dev(Machine *m, u64 pa, u64 length) {
 void *ram_ptr(Machine *m, u64 pa, u64 len) {
     if (m->ram && bus_span(m->ram_base,m->ram_size,pa,len))
         return m->ram + (pa - m->ram_base);
-    return NULL;
+    /* Device-mappable regions (virtio-gpu host-visible aperture, virtio-mem
+     * hotplug region). A sparse hole returns NULL and faults like any other
+     * unmapped PA. Segment publication is release-ordered, so a worker filling
+     * its D-TLB here sees either no segment or a fully initialized one. */
+    return machine_region_host_ptr(m, pa, len);
 }
 
 /* Host is little-endian; guest is little-endian. Direct memcpy preserves order.
@@ -318,6 +337,12 @@ static u64 bus_read(Machine *m, u64 pa, unsigned size) {
         if(!memory_guard_begin(&guard,m,&range,1)){machine_bus_set_status(m,BUS_FAULT);return 0;}
         u64 value=ld_le(m->flash+off,size);memory_guard_end(&guard);return value;
     }
+    u8 *region = machine_region_host_ptr(m, pa, size);
+    if (region) {
+        MemoryRange range={pa,size,false};MemoryGuard guard;
+        if(!memory_guard_begin(&guard,m,&range,1)){machine_bus_set_status(m,BUS_FAULT);return 0;}
+        u64 value=ld_le(region,size);memory_guard_end(&guard);return value;
+    }
     MMIODev *d = find_dev(m, pa, size);
     if (d && d->read) return d->read(d->opaque, pa - d->base, size);
 
@@ -351,6 +376,14 @@ static void bus_write(Machine *m, u64 pa, unsigned size, u64 value) {
         flash_cfi_write(m, pa - m->flash_base, size, value);   /* Intel CFI commands */
         return;
     }
+    u8 *region = machine_region_host_ptr(m, pa, size);
+    if (region) {
+        MemoryRange range={pa,size,true};MemoryGuard guard;
+        if(!memory_guard_begin(&guard,m,&range,1)){machine_bus_set_status(m,BUS_FAULT);return;}
+        machine_store_notify(m,pa,size);
+        st_le(region,size,value);memory_guard_end(&guard);
+        return;
+    }
     MMIODev *d = find_dev(m, pa, size);
     if (d && d->write) { d->write(d->opaque, pa - d->base, size, value); return; }
 
@@ -365,7 +398,8 @@ static void bus_write(Machine *m, u64 pa, unsigned size, u64 value) {
 static u64 scoped_access(Machine *m,CPU *c,u64 pa,unsigned size,bool write,u64 value){
     BusScope prior=bus_scope;bus_scope=(BusScope){m,c,BUS_OK,false};
     MachineBusReply reply={0,BUS_OK,false};
-    bool ram=m->ram&&bus_span(m->ram_base,m->ram_size,pa,size);
+    bool ram=(m->ram&&bus_span(m->ram_base,m->ram_size,pa,size)) ||
+             machine_region_host_ptr(m,pa,size)!=NULL;
     if(c&&!ram&&m->parallel_ops&&m->parallel_ops->bus_access&&
        m->parallel_ops->bus_access(c,pa,size,write,value,&reply)){
         bus_scope.status=reply.status;bus_scope.yield=reply.yield;value=reply.value;
@@ -413,6 +447,15 @@ void phys_write_blk(Machine *m, u64 pa, const void *src, u64 len) {
         memcpy(m->flash + (pa - m->flash_base), s, len);memory_guard_end(&guard);
         return;
     }
+    u8 *region = machine_region_host_ptr(m, pa, len);
+    if (region) {
+        MemoryRange range={pa,len,true};MemoryGuard guard;
+        if(!memory_guard_begin(&guard,m,&range,1)){machine_bus_set_status(m,BUS_FAULT);return;}
+        jit_invalidate_phys_range(pa, len);
+        machine_store_notify(m,pa,len);
+        memcpy(region, s, len);memory_guard_end(&guard);
+        return;
+    }
     bool fault=false;
     for(u64 i=0;i<len;i++){phys_write(m,pa+i,1,s[i]);fault|=machine_bus_status(m)!=BUS_OK;}
     if(fault)machine_bus_set_status(m,BUS_FAULT);
@@ -433,6 +476,13 @@ void phys_read_blk(Machine *m, u64 pa, void *dst, u64 len) {
         MemoryRange range={pa,len,false};MemoryGuard guard;
         if(!memory_guard_begin(&guard,m,&range,1)){machine_bus_set_status(m,BUS_FAULT);return;}
         memcpy(d, m->flash + (pa - m->flash_base), len);memory_guard_end(&guard);
+        return;
+    }
+    u8 *region = machine_region_host_ptr(m, pa, len);
+    if (region) {
+        MemoryRange range={pa,len,false};MemoryGuard guard;
+        if(!memory_guard_begin(&guard,m,&range,1)){machine_bus_set_status(m,BUS_FAULT);return;}
+        memcpy(d, region, len);memory_guard_end(&guard);
         return;
     }
     bool fault=false;

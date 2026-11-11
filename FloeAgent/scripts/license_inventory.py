@@ -614,6 +614,13 @@ STATIC_COMPONENTS = (
         "engines", "settings.licenses.note.slirp",
     ),
     (
+        "FloeGPU (Venus renderer and MoltenVK)",
+        "virglrenderer b6c4d36 + Floe accounting patch; MoltenVK 1.4.2",
+        "MIT; Apache-2.0; embedded dependency notices",
+        "https://github.com/utmapp/virglrenderer/tree/b6c4d36e12409fa92eeef4d40322c75292f10bb9",
+        "engines", None,
+    ),
+    (
         "Floe shared Linux component (Debian 13 ARM64)", "resident-20261105-v1",
         "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1",
         "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.1",
@@ -1141,6 +1148,12 @@ DOCUMENTS = (
         "arm64-emu", "FloeApp/Resources/Licenses/ARM64EMU-LICENSES.txt",
         "Licenses/ARM64EMU-LICENSES.txt", "settings.licenses.document.arm64.title",
         "Floe ARM64 engine — licenses and notices", None, "Apache-2.0 / MPL-2.0", "full_text", True, "engines",
+    ),
+    (
+        "floe-gpu", "FloeApp/Resources/Licenses/FloeGPU-LICENSES.txt",
+        "Licenses/FloeGPU-LICENSES.txt", "settings.licenses.document.gpu.title",
+        "FloeGPU — licenses and notices", None,
+        "MIT; Apache-2.0; BSD notices", "full_text", True, "engines",
     ),
     (
         "slirp-stack-licenses", "FloeApp/Resources/Licenses/FloeSlirp-LICENSES.txt",
@@ -2318,6 +2331,7 @@ DOCUMENT_NOTES = {
 # evidence is preferred; upstream fetches are named by the pinned tag so a
 # reviewer can repeat the read.
 STATIC_EVIDENCE = {
+    "FloeGPU (Venus renderer and MoltenVK)": "Vendor/FloeGPU/PROVENANCE.json binds the renderer commit, Floe patch, official MoltenVK archive, embedded dependency notice revisions and all delivered static archives/headers. Full notices ship in FloeApp/Resources/Licenses/FloeGPU-LICENSES.txt.",
     'FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)': 'Modules/FloeLaTeXKit/Native/tectonic.source.json; patches/production-xdv-{source-manifest,local-sources}.json; licenses/native-xdv-selected-licenses.json; Production/Vendor/FloeTeXNativeXDV.manifest.json and NOTICES.json bind the original source, complete patch, selected license branches and actual Cargo/object closure.',
     "Floe chemistry native libraries (Avogadro / Eigen)": "Modules/FloeChemistryNative/UPSTREAM.json and BUILD_SAVED.json bind the Avogadro source/bridge and all three static slices; retained notices in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt. Eigen 5.0.1 is recorded as the producer's header-only build input, not a new remote SwiftPM pin.",
     "Ketcher / Indigo offline chemistry assets": "Modules/FloeChemistrySketch/UPSTREAM.json binds Ketcher standalone 3.18.0 archive and every bundled asset; LICENSE.Ketcher and retained bundled JavaScript notices are reproduced in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt.",

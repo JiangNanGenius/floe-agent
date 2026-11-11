@@ -6,6 +6,15 @@
 
 #include "types.h"
 #include "machine.h"
+#include "devices/virtio_gpu.h"
+
+/* Fixed high virtio-mmio slots. Slot 0 is virtio-net, then disks, the fixed
+ * MAX_SHARES block and the consoles, in that exact existing order; these two
+ * are reserved at the top so dynamic device growth can never collide with
+ * them. platform_build enforces the ceiling only for the slots actually
+ * enabled, so a machine with neither keeps the historical 31-slot ceiling. */
+#define VIRTIO_MMIO_SLOT_MEM 30
+#define VIRTIO_MMIO_SLOT_GPU 31
 
 /* virt memory map */
 #define GICD_BASE   0x08000000ULL
@@ -137,6 +146,22 @@ void             virtio_9p_get_info(struct VirtIO9P *, int *state,
                                     uint32_t *guest_uid, uint32_t *guest_gid,
                                     int *ro);
 const char      *virtio_9p_slot_tag(struct VirtIO9P *, uint16_t *tag_len);
+
+/* ---- virtio-mem online memory (virtio-mmio slot 30, ABI v3) ---------------
+ * Device 24 managing [FLOE_VMEM_BASE, +FLOE_VMEM_REGION_SIZE) inside the RAM
+ * envelope. Built only for abi_version 3 creates with memory.enabled; the
+ * resize entry points are safe while the machine runs (spec: requested_size
+ * changes are communicated with a config-change interrupt; the guest driver
+ * performs the plug/unplug asynchronously). */
+struct VirtIOMem;
+struct VirtIOMem *virtio_mem_create(Machine *m, GIC *gic, int slot, u64 addr, u64 region_size,
+                                    u64 block_size, u64 requested_size);
+void              virtio_mem_destroy(struct VirtIOMem *);
+void              virtio_mem_reset(struct VirtIOMem *);   /* system reset: unplug all */
+bool              virtio_mem_present(struct VirtIOMem *);
+void              virtio_mem_set_requested(struct VirtIOMem *, u64 requested_size);
+u64               virtio_mem_plugged(struct VirtIOMem *);
+u64               virtio_mem_requested(struct VirtIOMem *);
 
 /* ---- virtio-console (virtio-mmio slot N) ---- */
 /* Non-multiport console (DeviceID 3) advertising VIRTIO_CONSOLE_F_SIZE: the

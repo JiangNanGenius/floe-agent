@@ -109,7 +109,10 @@ void qualification_boot_dtb_release(unsigned char *tree, size_t length) {
 }
 int qualification_place_boot_dtb(Machine *machine, const void *source, size_t length) {
     unsigned char *tree=NULL;
-    int error=qualification_boot_dtb_copy(source,length,machine->ram_base,machine->ram_size,&tree);
+    /* ABI v3 online memory: the DTB memory node reports the guest-visible
+     * boot RAM, not the whole managed envelope. */
+    uint64_t boot_size=machine->boot_ram_size?machine->boot_ram_size:machine->ram_size;
+    int error=qualification_boot_dtb_copy(source,length,machine->ram_base,boot_size,&tree);
     if (error) {
         fprintf(stderr,"[boot-entropy] rejected: input/allocation/entropy error=%d; guest not entered\n",error);
         return error;

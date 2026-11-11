@@ -494,6 +494,10 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
         if(!defer_dma&&!atomic_load_explicit(&s->stop,memory_order_acquire)&&!m->host_error&&!m->system_off&&!m->system_reset){
         if(fwcfg_has_work(m->fwcfg)){fn->fw_service(m->fwcfg,4096);io_work=true;}
         else for(int i=0;i<m->n_blk;i++)if(virtio_blk_has_work(m->blk[i])){fn->blk_service(m->blk[i]);io_work=true;break;}
+        /* Same coordinator ownership and the same defer_dma protection as blk:
+         * guest memory, used ring and IRQ publication happen here, never on a
+         * renderer thread. */
+        if(m->gpu&&fn->gpu_has_work&&fn->gpu_has_work(m->gpu)){fn->gpu_service(m->gpu);io_work=true;}
         }
         pthread_mutex_lock(&p->mutex);
         /* A completed budget/deadline or a new control/fault is not PARKED.
@@ -501,6 +505,29 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
         close_if_requested(p,&result,max_insn);
         if(p->closing)continue;
         if(room<1024){result.reason=FLOE_AE_OUTPUT_FULL;close_run(p);continue;}
+        /* Quiesce window, and it MUST take priority over the io_work continue
+         * above it. Removing guest-visible memory backing (virtio-gpu blob
+         * unmap/unref) invalidates D-TLB host pointers on every hart, and
+         * tlb_flush_machine() fails the machine while parallel_ops is
+         * installed. Meanwhile gpu_has_work() stays true for exactly as long as
+         * the release is pending, so if io_work looped first the coordinator
+         * would service forever and never reach this block.
+         * Sequence: stop granting, let the in-flight tickets retire (the loop
+         * top still services their RPC mailboxes, so no worker starves), remove
+         * parallel_ops at that documented all-worker quiescence point, drain
+         * (TLB/JIT/monitor invalidation + backend page release), restore
+         * parallel_ops, and continue the SAME slice. Being before the park
+         * decision is what lets an all-WFI machine drain instead of parking
+         * with mappings queued forever. */
+        if(m->gpu&&fn->device_quiesce&&fn->device_quiesce(m->gpu)){
+            if(busy(p)){pthread_cond_wait(&p->changed,&p->mutex);continue;}
+            pthread_mutex_unlock(&p->mutex);
+            m->parallel_ops=NULL;
+            if(fn->device_quiesce_drain)fn->device_quiesce_drain(m->gpu);
+            m->parallel_ops=&operations;
+            pthread_mutex_lock(&p->mutex);
+            continue;
+        }
         if(io_work)continue;
         int error=grant(p);if(error){result.error=error;close_run(p);continue;}
         if(!busy(p)){

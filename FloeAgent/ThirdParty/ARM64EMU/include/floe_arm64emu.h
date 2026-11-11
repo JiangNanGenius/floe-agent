@@ -11,8 +11,16 @@ extern "C" {
  * geometry) and per-console channel operations. Version 1 callers keep the
  * exact version-1 contract: create accepts abi_version 1 with the original
  * struct, devices stay disabled, floe_ae_console_* remain the single PL011
- * channel. Nothing about the version-1 layout is reinterpreted. */
-#define FLOE_AE_ABI_VERSION 2u
+ * channel. Nothing about the version-1 layout is reinterpreted.
+ *
+ * ABI version 3 adds the online memory (virtio-mem, device 24) option:
+ * create with abi_version 3 and floe_ae_config_v3 maps a fixed 1 GiB RAM
+ * envelope, boots with <= 256 MiB visible boot RAM and lets the guest driver
+ * plug the managed region up to the configured target; version 2 callers
+ * keep the exact version-2 RAM semantics (single mapping of the requested
+ * size, no memory device). Versions 1 and 2 create layouts are never
+ * reinterpreted. */
+#define FLOE_AE_ABI_VERSION 3u
 #define FLOE_AE_MAX_VCPUS 5u /* engine ceiling; caller chooses device limit before boot */
 /* Eight workspace roots + eight environment roots + one shared cache. */
 #define FLOE_AE_MAX_SHARES 17u
@@ -106,6 +114,45 @@ typedef struct {
     floe_ae_config machine;
     floe_ae_devices_config devices;
 } floe_ae_config_v2;
+
+/* ---- ABI version 3: online memory (virtio-mem) ---------------------------
+ *
+ * Opt-in: version 2 machines are bit-for-bit the old contract. When enabled,
+ * the engine maps a fixed 1 GiB RAM envelope, reports `boot_ram_mib` (at
+ * most 256) as the guest boot RAM, and exposes a virtio-mem device managing
+ * [0x50000000, 0x50000000+region) — a resizable DIMM the guest driver
+ * (virtio_mem.ko) plugs toward `machine.ram_mib - boot_ram_mib`. RAM can
+ * then be adjusted while the machine runs via floe_ae_mem_resize below:
+ * no restart, projects/files/machine identity untouched.
+ */
+typedef struct {
+    uint32_t struct_size;   /* == sizeof(floe_ae_memory_config) */
+    uint32_t enabled;       /* nonzero: build the virtio-mem device */
+    /* Guest boot RAM is fixed at 256 MiB. 0 selects the default
+     * (min(ram_mib, 256)); 256 states the fixed size explicitly. Any other
+     * value is rejected (FLOE_AE_INVALID) rather than silently ignored. */
+    uint32_t boot_ram_mib;
+    uint32_t reserved[5];
+} floe_ae_memory_config;
+
+/* Optional version-3 tail. Short, historical v2+memory version-3 callers keep
+ * GPU disabled. A zeroed tail is also disabled. Only this native host config
+ * may select the app's existing entitled shared-memory namespace. */
+#define FLOE_AE_GPU_DEFAULT_BUDGET_BYTES UINT64_C(1073741824)
+#define FLOE_AE_GPU_MAX_BUDGET_BYTES UINT64_C(2147483648)
+typedef struct {
+    uint32_t struct_size, enabled;
+    uint64_t budget_bytes; /* 0 selects 1 GiB; lazy budget, not eager VRAM */
+    const char *app_group_identifier; /* copied during create; NULL for host fixtures */
+    uint64_t reserved[4];
+} floe_ae_gpu_config;
+
+typedef struct {
+    floe_ae_config_v2 v2;
+    floe_ae_memory_config memory;
+    floe_ae_gpu_config gpu;
+} floe_ae_config_v3;
+#define FLOE_AE_CONFIG_V3_MEMORY_SIZE offsetof(floe_ae_config_v3, gpu)
 
 /* Console channel indices for the channel operations below: channel 0 is the
  * PL011 UART (the legacy floe_ae_console_* target); channels 1..N are the
@@ -226,6 +273,60 @@ typedef struct {
 FLOE_AE_API int floe_ae_share_attach(floe_ae_handle, uint32_t slot, const floe_ae_share_config *);
 FLOE_AE_API int floe_ae_share_detach(floe_ae_handle, uint32_t slot, uint32_t flags);
 FLOE_AE_API int floe_ae_share_get_info(floe_ae_handle, uint32_t slot, floe_ae_share_info *);
+/* ---- ABI version 3 operations: online memory budget -----------------------
+ *
+ * These operate on the virtio-mem device built by an abi_version 3 create.
+ * They are safe WHILE the machine runs (no stop/restart required): the
+ * engine only updates the device's requested_size and raises the
+ * config-change interrupt; the guest driver performs the actual plug/unplug
+ * asynchronously and reports the true plugged size back. Like the live
+ * forward/share operations, both return FLOE_AE_BUSY while a slice or a
+ * readiness wait owns the machine — the caller runs them between slices
+ * (the Swift owner queue does this structurally) and retries.
+ *
+ * Three quantities are deliberately distinct and never conflated:
+ *   - target:    the caller's configured budget (what floe_ae_mem_resize set)
+ *   - plugged:   what the guest driver has actually plugged so far; Linux
+ *                onlining and MemTotal must be observed separately
+ *   - envelope:  the fixed host mapping (floe_ae_stats.ram_bytes)
+ * Decreases with busy pages stay pending: plugged_size remains above target
+ * until the guest can migrate/unuse them — the engine never reboots and
+ * never reports target as plugged. On machines without the device, resize
+ * returns FLOE_AE_UNSUPPORTED and get_info reports present == 0.
+ */
+enum { FLOE_AE_MEM_OK = 0 };
+typedef struct {
+    uint32_t struct_size;        /* == sizeof(floe_ae_mem_info) */
+    uint32_t present;            /* nonzero: the machine carries virtio-mem */
+    uint32_t boot_mib;           /* guest-visible boot RAM */
+    uint32_t target_mib;         /* configured total budget (boot + requested) */
+    uint32_t plugged_mib;        /* actually plugged by the guest so far */
+    uint32_t max_mib;            /* hard ceiling (boot + managed region) */
+    uint64_t requested_bytes;    /* raw device values for diagnostics */
+    uint64_t plugged_bytes;
+    uint64_t region_bytes;
+    uint64_t reserved[3];
+} floe_ae_mem_info;
+/* Set the total memory budget in MiB (256...1024 on the standard ladder).
+ * Raises the config-change interrupt and wakes a parked machine. The guest
+ * applies the change asynchronously; read the real state back with
+ * floe_ae_mem_get_info. */
+FLOE_AE_API int floe_ae_mem_resize(floe_ae_handle, uint32_t target_mib);
+/* Read-only snapshot between slices; returns BUSY during a slice or waiter. */
+FLOE_AE_API int floe_ae_mem_get_info(floe_ae_handle, floe_ae_mem_info *);
+
+/* GPU remains the same device while its budget changes. Active resources are
+ * retained while a lower target waits for release. Physical ledger bytes and
+ * logical resources/aliases are separate; never add them together. */
+typedef struct {
+    uint32_t struct_size, present;
+    uint64_t requested_bytes, effective_bytes, target_bytes;
+    uint64_t host_blob_bytes, host_internal_bytes, logical_resource_bytes;
+    uint64_t mapped_alias_bytes;
+    uint32_t pending, clamped, needs_reset, reserved;
+} floe_ae_gpu_info;
+FLOE_AE_API int floe_ae_gpu_set_budget(floe_ae_handle, uint64_t bytes);
+FLOE_AE_API int floe_ae_gpu_get_info(floe_ae_handle, floe_ae_gpu_info *);
 #ifdef __cplusplus
 }
 #endif

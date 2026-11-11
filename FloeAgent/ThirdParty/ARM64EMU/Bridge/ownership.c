@@ -9,6 +9,10 @@
 #include "embedded_internal.h"
 #include <stdlib.h>
 void ae_machine_destroy(Machine *m) {
+    /* Safety net only: Bridge/runtime.c dispose() destroys the GPU earlier,
+     * after disabling its callbacks and before the wake pipe is closed. */
+    if(m->gpu) { virtio_gpu_destroy(m->gpu);m->gpu=NULL; }
+    if(m->vmem) { virtio_mem_destroy(m->vmem);m->vmem=NULL; }
     for(int i=0;i<m->n_vcon;i++) { virtio_console_destroy(m->vcon[i]);m->vcon[i]=NULL; } m->n_vcon=0;
     for(int i=0;i<m->n_fs;i++)  { virtio_9p_destroy(m->fs[i]);m->fs[i]=NULL; } m->n_fs=0;
     if(m->net) { virtio_net_destroy(m->net);m->net=NULL; }

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "upstreamRepository": "https://github.com/sylirre/arm64emu-system",
   "upstreamCommit": "55c8128cb02d8ba3809f6579f7c6d316537e0546",
-  "checkpoint": "A6 + immutable CRC tables + A9 five-file slot optimization + resident live I/O and project roots",
+  "checkpoint": "A6 + immutable CRC tables + A9 five-file slot optimization + resident live I/O and project roots + ABI3 optional virtio-mem and Venus GPU",
   "checkpointArchiveSHA256": "3bbcbaac69b092757f6fad1a853659904c183ae0948a79e446cfe30ae73b603c",
   "license": {
     "Source": "Apache-2.0",
@@ -39,7 +39,10 @@
     "Source/src/net/usernet_host.c",
     "Source/src/net/usernet_poll.c",
     "Source/src/platform.c",
-    "Source/src/sysreg.c"
+    "Source/src/sysreg.c",
+    "Source/src/devices/virtio_gpu.c",
+    "Source/src/memory_regions.c",
+    "Source/src/devices/virtio_mem.c"
   ],
   "capabilities": {
     "nativeJIT": false,
@@ -57,9 +60,12 @@
     "environmentShareSlots": 8,
     "sharedReadOnlyCacheSlots": 1,
     "hostWorkNotification": true,
-    "projectConsoleGenerationReset": true
+    "projectConsoleGenerationReset": true,
+    "onlineMemory": true,
+    "venusVulkanGPU": true,
+    "liveGPUBudget": true
   },
-  "integrationStatus": "App selects the resident ARM64 factory. Native 30-TU/23-ABI checks passed on macOS/device/simulator; Swift adapter18 and real Linux three-core/reset12 checks passed. Initial full App cutover compiled. Post-retirement App and UI acceptance remain pending.",
+  "integrationStatus": "ABI3 native engine integrated; existing images retain CPU/fixed-RAM behavior. App and updated-image acceptance recorded separately.",
   "files": [
     {
       "path": "Bridge/MPL-2.0.txt",
@@ -67,7 +73,7 @@
     },
     {
       "path": "Bridge/boot_entropy.c",
-      "sha256": "58f62c53deaa5418a28b907bdf28222a663ca066a1cc4c66b291823463e77e5f"
+      "sha256": "b514885830996c57ceedc53e804199ac846f215e3de73ba281360e9d8827e2c8"
     },
     {
       "path": "Bridge/boot_entropy.h",
@@ -79,7 +85,7 @@
     },
     {
       "path": "Bridge/embedded_internal.h",
-      "sha256": "f4691db0a9a76447e25a7604c52fc81e3460fd3d992ed0ea165fb8b2e3d3d62e"
+      "sha256": "be0613c94218db18c6a95bb69c76827e4c3703a6d08bcd048b5de25f9a4cb773"
     },
     {
       "path": "Bridge/host_hooks.h",
@@ -95,19 +101,23 @@
     },
     {
       "path": "Bridge/ownership.c",
-      "sha256": "7bb05e09cb98340793c5be4470dec5a53895c3c2f90d71bb8e478a000165162a"
+      "sha256": "413e70b15486edbea9da71c4bcb221f291244dfa12057723dd04e0e833ea1c72"
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "1e663eddcd05b21f3c01c12bbe9bdf09c5068e358fba1146b87cfca24a4c37e0"
+      "sha256": "70f029760d97f4c4b04c865f60ad9b4693b238f4f5a55595e3e2e3ca8af38be1"
     },
     {
       "path": "Bridge/parallel_runtime.h",
-      "sha256": "7a611568f2ee6d41883cffc16d4c6dc198c908fe5a3ac014f4c9b2178ad9ba86"
+      "sha256": "008a36c3e4b8932314211cfa7d96ca80b3ce8925e1eee0d73b0dc9bd00e7f4cc"
     },
     {
       "path": "Bridge/runtime.c",
-      "sha256": "4df0ddc675e7029385210443cf5796eea144b367a0364646f8ede5bb78399d41"
+      "sha256": "a937c38947f0d8e3d8a8f0cf53d999beb07269f0e9c13e637538a7d4b31bcf8c"
+    },
+    {
+      "path": "Bridge/virtio_gpu_backend.h",
+      "sha256": "c33c4af0cc306eac4924419fd1f0000c307aa7e427655b2178fceffea5542fcc"
     },
     {
       "path": "PrivacyInfo.xcprivacy",
@@ -147,7 +157,7 @@
     },
     {
       "path": "Source/src/devices.h",
-      "sha256": "421d787a05d40c7c4565f8e19f6da982f160ef5776f1cb75bfcc169024765be6"
+      "sha256": "4ffdd1ba7f63815d032eedf02b1ceca4dcd5ae6e00c49fbbc883f2bb53008a06"
     },
     {
       "path": "Source/src/devices/fwcfg.c",
@@ -175,7 +185,7 @@
     },
     {
       "path": "Source/src/devices/virtio_9p.c",
-      "sha256": "d20604adfc3d6ba78497620e3e0ec63e0e27c02966bcdc70998c095c2e112775"
+      "sha256": "c807c6895c8387c6dcc07efec69723bae1f5b9f6cb1d796f52334836a9a7aa8c"
     },
     {
       "path": "Source/src/devices/virtio_9p_port.h",
@@ -192,6 +202,26 @@
     {
       "path": "Source/src/devices/virtio_console.c",
       "sha256": "70ae0dd0c62cfc49d2a911e60d70a29301f705a22e9b0475d70d42d2800f680b"
+    },
+    {
+      "path": "Source/src/devices/virtio_gpu.c",
+      "sha256": "33098772bb84d7b902b5f72867277307ac7077ef0c5ea4cf6dcbde4d73a7abd4"
+    },
+    {
+      "path": "Source/src/devices/virtio_gpu.h",
+      "sha256": "302fbeae6733867249d99ed7065abde9c371172e352107e47c664a2926403c9e"
+    },
+    {
+      "path": "Source/src/devices/virtio_gpu_protocol.h",
+      "sha256": "7924a485daff98ea654afc3b0587b07a491156d61657a1f77bbf182c30eb7450"
+    },
+    {
+      "path": "Source/src/devices/virtio_gpu_shm.h",
+      "sha256": "8691931696ab287d93f40a62cae6f771e7a385cfdc420a5923abd5f01b68a35d"
+    },
+    {
+      "path": "Source/src/devices/virtio_mem.c",
+      "sha256": "83754ff914ab22d09b0182d1d6bd4273ec19157a7646b924f53a8fe0e77ddd53"
     },
     {
       "path": "Source/src/devices/virtio_net.c",
@@ -247,15 +277,23 @@
     },
     {
       "path": "Source/src/machine.h",
-      "sha256": "714a5e9916184a3d51f1e528f01b8edac58d1e7dba22dccc193b75a607a00895"
+      "sha256": "f43bab186cdc32885f431b18c0615ec29e1e983424ab67b3f0069c179bd5252f"
     },
     {
       "path": "Source/src/memory.c",
-      "sha256": "1852ca8ac482b44ad01ad571273c942a3872679a24e6ddadd658850677aad0a8"
+      "sha256": "ed0d15177a6a076b3884a24b68fd6d5bcd43766ee2a733893f3caa3d2117cd74"
+    },
+    {
+      "path": "Source/src/memory_regions.c",
+      "sha256": "531ebc46e0f1c02f5f39b1658a814a555fdb256321c73b75182ece82bf5a8a1c"
+    },
+    {
+      "path": "Source/src/memory_regions.h",
+      "sha256": "002e987a41c7b6d42a1984968fafdf4f80e4efae777a84e12ac3937cbff1c2f6"
     },
     {
       "path": "Source/src/memory_sync.c",
-      "sha256": "39c1afe6abb24c15acd82ec6c0fefe6aaa41c130744d2fa57752a6043c0a8cd5"
+      "sha256": "9b5269b47184b026715831f23e50928f372791dc7a60e58305c7323bda174104"
     },
     {
       "path": "Source/src/memory_sync.h",
@@ -263,7 +301,7 @@
     },
     {
       "path": "Source/src/mmu.c",
-      "sha256": "8fcd0f9e06100a8619f15cbf1bebb1986db54bf458166a1e9fa832d67cd8b3b1"
+      "sha256": "5b7b72678385e14203435289c217113f493e782a6839cc9c78a7fd178bbb16e5"
     },
     {
       "path": "Source/src/mmu.h",
@@ -299,7 +337,7 @@
     },
     {
       "path": "Source/src/platform.c",
-      "sha256": "5c3d9f892389515aeb8677201949308070e8af3e17f6889979453fa4e6d9bd8c"
+      "sha256": "7b776ed92387b920bb14154d539afa37fc92c5fbffb98f116e23ff0799764146"
     },
     {
       "path": "Source/src/sysreg.c",
@@ -438,12 +476,24 @@
       "sha256": "52623ce7821d4bb7da5b25d9f27c036d3cd44b85de8a481d8cff6493d170a5fe"
     },
     {
+      "path": "Sources/30_virtio_gpu.c",
+      "sha256": "fcd99ed6c24657f7931a509e22697e047c4d5cab9b24e6d4db0336bf22975822"
+    },
+    {
+      "path": "Sources/31_memory_regions.c",
+      "sha256": "ebdedbf5e81e87bccc936c54630e92aac4ed47ed6e777317e6fdf74dee59f6b7"
+    },
+    {
+      "path": "Sources/32_virtio_mem.c",
+      "sha256": "ac8c2f8e1347796f24311e4280f35bebc65da5561f1176b100899d9be0df3e18"
+    },
+    {
       "path": "Tools/generate_crc32_tables.py",
       "sha256": "6253ac38922b9e120ea6567ab180dcfde3ab59c95419edd253e71a4b6565938a"
     },
     {
       "path": "include/floe_arm64emu.h",
-      "sha256": "d711f810ecedd7f851fd7c79575fcd783b5704d2c2edb862d0e85d6985fdf607"
+      "sha256": "676163ea865e64568cce3d9d32012e4b2031e05cd4cff56de0f0ed78ca7c8a08"
     }
   ],
   "patches": [
@@ -490,12 +540,163 @@
         }
       ],
       "qualification": "Actual macOS arm64 object/link and eight real Linux syscall guards passed: unlink, rename plus old-name replacement, descendants and directory fd, same-inode no-op, failed rename, symlink node, readonly descriptor and independent mount. Existing generation fences retained. Complete App and physical-device acceptance remain separate."
+    },
+    {
+      "name": "Optional virtio-mem and Venus GPU transport with physical resource budgets",
+      "scope": "ABI3 optional tails, virtio slots30/31, external memory aliases, exact fence completion and memory discard guards; native CPU remains interpreted",
+      "files": [
+        {
+          "path": "Bridge/boot_entropy.c",
+          "baseSHA256": "58f62c53deaa5418a28b907bdf28222a663ca066a1cc4c66b291823463e77e5f",
+          "sha256": "b514885830996c57ceedc53e804199ac846f215e3de73ba281360e9d8827e2c8"
+        },
+        {
+          "path": "Bridge/embedded_internal.h",
+          "baseSHA256": "f4691db0a9a76447e25a7604c52fc81e3460fd3d992ed0ea165fb8b2e3d3d62e",
+          "sha256": "be0613c94218db18c6a95bb69c76827e4c3703a6d08bcd048b5de25f9a4cb773"
+        },
+        {
+          "path": "Bridge/ownership.c",
+          "baseSHA256": "7bb05e09cb98340793c5be4470dec5a53895c3c2f90d71bb8e478a000165162a",
+          "sha256": "413e70b15486edbea9da71c4bcb221f291244dfa12057723dd04e0e833ea1c72"
+        },
+        {
+          "path": "Bridge/parallel_runtime.c",
+          "baseSHA256": "1e663eddcd05b21f3c01c12bbe9bdf09c5068e358fba1146b87cfca24a4c37e0",
+          "sha256": "70f029760d97f4c4b04c865f60ad9b4693b238f4f5a55595e3e2e3ca8af38be1"
+        },
+        {
+          "path": "Bridge/parallel_runtime.h",
+          "baseSHA256": "7a611568f2ee6d41883cffc16d4c6dc198c908fe5a3ac014f4c9b2178ad9ba86",
+          "sha256": "008a36c3e4b8932314211cfa7d96ca80b3ce8925e1eee0d73b0dc9bd00e7f4cc"
+        },
+        {
+          "path": "Bridge/runtime.c",
+          "baseSHA256": "4df0ddc675e7029385210443cf5796eea144b367a0364646f8ede5bb78399d41",
+          "sha256": "a937c38947f0d8e3d8a8f0cf53d999beb07269f0e9c13e637538a7d4b31bcf8c"
+        },
+        {
+          "path": "Bridge/virtio_gpu_backend.h",
+          "baseSHA256": null,
+          "sha256": "51debf15cd01804cfe48eb992d55fcb091de5586eddda503cd358616a78ba6f1"
+        },
+        {
+          "path": "Source/src/devices/virtio_gpu.c",
+          "baseSHA256": null,
+          "sha256": "33098772bb84d7b902b5f72867277307ac7077ef0c5ea4cf6dcbde4d73a7abd4"
+        },
+        {
+          "path": "Source/src/devices/virtio_gpu.h",
+          "baseSHA256": null,
+          "sha256": "302fbeae6733867249d99ed7065abde9c371172e352107e47c664a2926403c9e"
+        },
+        {
+          "path": "Source/src/devices/virtio_gpu_protocol.h",
+          "baseSHA256": null,
+          "sha256": "7924a485daff98ea654afc3b0587b07a491156d61657a1f77bbf182c30eb7450"
+        },
+        {
+          "path": "Source/src/devices/virtio_gpu_shm.h",
+          "baseSHA256": null,
+          "sha256": "8691931696ab287d93f40a62cae6f771e7a385cfdc420a5923abd5f01b68a35d"
+        },
+        {
+          "path": "Source/src/devices/virtio_mem.c",
+          "baseSHA256": null,
+          "sha256": "83754ff914ab22d09b0182d1d6bd4273ec19157a7646b924f53a8fe0e77ddd53"
+        },
+        {
+          "path": "Source/src/devices.h",
+          "baseSHA256": "421d787a05d40c7c4565f8e19f6da982f160ef5776f1cb75bfcc169024765be6",
+          "sha256": "4ffdd1ba7f63815d032eedf02b1ceca4dcd5ae6e00c49fbbc883f2bb53008a06"
+        },
+        {
+          "path": "Source/src/machine.h",
+          "baseSHA256": "714a5e9916184a3d51f1e528f01b8edac58d1e7dba22dccc193b75a607a00895",
+          "sha256": "f43bab186cdc32885f431b18c0615ec29e1e983424ab67b3f0069c179bd5252f"
+        },
+        {
+          "path": "Source/src/memory.c",
+          "baseSHA256": "1852ca8ac482b44ad01ad571273c942a3872679a24e6ddadd658850677aad0a8",
+          "sha256": "ed0d15177a6a076b3884a24b68fd6d5bcd43766ee2a733893f3caa3d2117cd74"
+        },
+        {
+          "path": "Source/src/memory_regions.c",
+          "baseSHA256": null,
+          "sha256": "531ebc46e0f1c02f5f39b1658a814a555fdb256321c73b75182ece82bf5a8a1c"
+        },
+        {
+          "path": "Source/src/memory_regions.h",
+          "baseSHA256": null,
+          "sha256": "002e987a41c7b6d42a1984968fafdf4f80e4efae777a84e12ac3937cbff1c2f6"
+        },
+        {
+          "path": "Source/src/memory_sync.c",
+          "baseSHA256": "39c1afe6abb24c15acd82ec6c0fefe6aaa41c130744d2fa57752a6043c0a8cd5",
+          "sha256": "9b5269b47184b026715831f23e50928f372791dc7a60e58305c7323bda174104"
+        },
+        {
+          "path": "Source/src/mmu.c",
+          "baseSHA256": "8fcd0f9e06100a8619f15cbf1bebb1986db54bf458166a1e9fa832d67cd8b3b1",
+          "sha256": "5b7b72678385e14203435289c217113f493e782a6839cc9c78a7fd178bbb16e5"
+        },
+        {
+          "path": "Source/src/platform.c",
+          "baseSHA256": "5c3d9f892389515aeb8677201949308070e8af3e17f6889979453fa4e6d9bd8c",
+          "sha256": "7b776ed92387b920bb14154d539afa37fc92c5fbffb98f116e23ff0799764146"
+        },
+        {
+          "path": "Sources/30_virtio_gpu.c",
+          "baseSHA256": null,
+          "sha256": "fcd99ed6c24657f7931a509e22697e047c4d5cab9b24e6d4db0336bf22975822"
+        },
+        {
+          "path": "Sources/31_memory_regions.c",
+          "baseSHA256": null,
+          "sha256": "ebdedbf5e81e87bccc936c54630e92aac4ed47ed6e777317e6fdf74dee59f6b7"
+        },
+        {
+          "path": "Sources/32_virtio_mem.c",
+          "baseSHA256": null,
+          "sha256": "ac8c2f8e1347796f24311e4280f35bebc65da5561f1176b100899d9be0df3e18"
+        },
+        {
+          "path": "include/floe_arm64emu.h",
+          "baseSHA256": "d711f810ecedd7f851fd7c79575fcd783b5704d2c2edb862d0e85d6985fdf607",
+          "sha256": "676163ea865e64568cce3d9d32012e4b2031e05cd4cff56de0f0ed78ca7c8a08"
+        }
+      ],
+      "qualification": "Real Linux SMP2 online-memory+Venus compute and graphics passed. 512x512 float32 matmul compared all262144 outputs; quota rejection/recovery passed with synchronous Mesa allocation. Native ASAN/UBSAN/TSAN transport and ASAN ABI1/2/short3 compatibility passed. App/iPad acceptance is separate."
+    },
+    {
+      "name": "Bounded 500KiB 9P messages with lazy request buffers",
+      "scope": "Source/src/devices/virtio_9p.c only; preserve filesystem containment, readonly and generation policy",
+      "files": [
+        {
+          "path": "Source/src/devices/virtio_9p.c",
+          "baseSHA256": "d20604adfc3d6ba78497620e3e0ec63e0e27c02966bcdc70998c095c2e112775",
+          "sha256": "c807c6895c8387c6dcc07efec69723bae1f5b9f6cb1d796f52334836a9a7aa8c"
+        }
+      ],
+      "qualification": "Real Linux paired shared-file read/write probes used actual negotiated512000-byte messages. Final production source compile and updated-project mount acceptance recorded separately; metadata gains are not claimed."
+    },
+    {
+      "name": "Keep native GPU factory symbols external across SwiftPM C targets",
+      "scope": "Bridge/virtio_gpu_backend.h only; explicit external visibility for both constructors and three backend-to-transport callbacks",
+      "files": [
+        {
+          "path": "Bridge/virtio_gpu_backend.h",
+          "baseSHA256": "51debf15cd01804cfe48eb992d55fcb091de5586eddda503cd358616a78ba6f1",
+          "sha256": "c33c4af0cc306eac4924419fd1f0000c307aa7e427655b2178fceffea5542fcc"
+        }
+      ],
+      "qualification": "Actual consumer link exposed hidden constructor first, then three hidden transport callbacks. Both original failures retained. Final link/runtime tests recorded separately."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",
   "componentQualification": {
-    "translationUnits": 30,
-    "abiVersion": 2,
+    "translationUnits": 33,
+    "abiVersion": 3,
     "abiExports": 18,
     "targets": [
       "arm64 iOS26 device",

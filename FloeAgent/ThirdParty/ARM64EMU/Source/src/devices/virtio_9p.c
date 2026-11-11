@@ -75,11 +75,21 @@
 #define QUEUE_NUM_MAX 256
 #define VIRTQ_MAX     512          /* descriptor-chain walk bound */
 
-/* Largest 9P message we support; also the size of the per-device gather/scatter
- * buffers. The negotiated msize (Tversion) is clamped to this. */
-#define P9_MSIZE_MAX  (128 * 1024)
+/* Largest 9P message we support; also the size cap of the per-device
+ * gather/scatter buffers (allocated lazily on first use; see p9_ensure_bufs).
+ * The negotiated msize (Tversion) is clamped to this.
+ *
+ * The bound is the Linux 6.12 virtio-9p transport ceiling, which remains
+ * authoritative: net/9p/trans_virtio.c advertises
+ *     .maxsize = PAGE_SIZE * (VIRTQUEUE_NUM - 3) = 4096 * 125 = 512000
+ * so the guest client can never offer (or accept) more than 512000 bytes.
+ * Matching it exactly lets a guest that mounts with msize=524288 negotiate
+ * 512000 instead of being clamped to 128KiB. A 1MiB msize is guest-impossible:
+ * the client clamps its own offer to 512000 before Tversion. */
+#define P9_MSIZE_MAX  (500 * 1024)
 
 #define TAG_MAX 128
+
 
 /* ---- 9P2000.L message types ---- */
 enum {
@@ -163,7 +173,9 @@ typedef struct VirtIO9P {
     u16 last_avail;
 
     u32 msize;                    /* negotiated in Tversion */
-    u8 *req, *resp;               /* P9_MSIZE_MAX gather/scatter buffers */
+    u8 *req, *resp;               /* P9_MSIZE_MAX gather/scatter buffers,
+                                     lazily allocated on first request so untouched
+                                     share slots reserve nothing */
 
     P9Fid *fids[FID_BUCKETS];
 } VirtIO9P;
@@ -1182,9 +1194,27 @@ static void push_used(VirtIO9P *v, u32 id, u32 len) {
     phys_write(m, v->q_used + 2, 2, (u16)(used_idx + 1));
 }
 
+/* Lazily bound the per-device gather/scatter buffers: every slot exists from
+ * platform build, but only slots the guest actually talks to pay for buffers.
+ * Requests are serviced synchronously on the single machine coordinator, so no
+ * locking is needed. On allocation failure the device requests reset, as for
+ * a bus fault; it never dispatches a request through a missing buffer. */
+static bool p9_ensure_bufs(VirtIO9P *v) {
+    if (v->req && v->resp) return true;
+    if (!v->req)  v->req  = malloc(P9_MSIZE_MAX);
+    if (!v->resp) v->resp = malloc(P9_MSIZE_MAX);
+    if (!v->req || !v->resp) {
+        free(v->req); free(v->resp); v->req = v->resp = NULL;
+        fprintf(stderr, "[virtio-9p] out of memory\n");
+        return false;
+    }
+    return true;
+}
+
 /* Service one request head: gather readable descriptors into the T-message
  * buffer, dispatch, then scatter the R-message across the writable descriptors. */
 static void p9_handle(VirtIO9P *v, u32 head) {
+    if (!p9_ensure_bufs(v)) { v->status |= 64; return; }
     Machine *m = v->m;
     u64 raddr[VIRTQ_MAX]; u32 rlen[VIRTQ_MAX]; u32 n_r = 0;
     u64 waddr[VIRTQ_MAX]; u32 wlen[VIRTQ_MAX]; u32 n_w = 0;
@@ -1430,17 +1460,11 @@ struct VirtIO9P *virtio_9p_create(Machine *m, GIC *gic, const char *root,
     size_t tl = strlen(tag); if (tl > TAG_MAX) tl = TAG_MAX;
     memcpy(v->tag, tag, tl); v->tag_len = (u16)tl;
     v->msize = P9_MSIZE_MAX;
-    v->req  = malloc(P9_MSIZE_MAX);
-    v->resp = malloc(P9_MSIZE_MAX);
-    if (!v->req || !v->resp) {
-        fprintf(stderr, "[virtio-9p] out of memory\n");
-        free(v->req); free(v->resp); free(v);
-        return NULL;
-    }
+    /* req/resp stay NULL here: p9_ensure_bufs allocates on first request. */
 
     if (root && virtio_9p_attach_root(v, root, guest_uid, guest_gid, ro) != 0) {
         fprintf(stderr, "[virtio-9p] cannot pin %s\n", root);
-        free(v->req); free(v->resp); free(v);
+        free(v);
         return NULL;
     }
 

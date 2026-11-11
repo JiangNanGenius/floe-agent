@@ -6,6 +6,7 @@
 #define AE_PD_GUARD_SLOT_PRIVATE 1
 #include "mmu.h"
 #include "machine.h"
+#include "memory_regions.h"
 #include "esr.h"
 #include <string.h>
 #include <stdio.h>
@@ -67,9 +68,8 @@ void tlb_flush_all(CPU *c) {
 }
 
 void mem_store_host_notify(CPU *c,const void *host,unsigned length) {
-    Machine *m=c->m;uintptr_t p=(uintptr_t)host,base=(uintptr_t)m->ram;
-    if(p>=base&&length<=m->ram_size&&p-base<=m->ram_size-length)
-        machine_store_notify(m,m->ram_base+(u64)(p-base),length);
+    Machine *m=c->m;u64 pa;
+    if(memory_host_span(m,host,length,&pa)) machine_store_notify(m,pa,length);
 }
 
 void tlb_flush_page(CPU *c,u64 va) {
@@ -262,7 +262,12 @@ static void dtlb_fill(CPU *c, u64 va, u64 pa) {
     if (g_watch || g_vawatch) return;
     Machine *m = c->m;
     u64 pa_page = pa & ~0xfffULL;
-    if (pa_page < m->ram_base || pa_page - m->ram_base >= m->ram_size) return;
+    bool system_ram=pa_page>=m->ram_base && m->ram_size>=0x1000 &&
+                    pa_page-m->ram_base<=m->ram_size-0x1000;
+    u8 *host_page=system_ram ? m->ram+(pa_page-m->ram_base) :
+                             machine_region_host_ptr(m,pa_page,0x1000);
+    /* Only real ordinary memory pages: never cache flash or MMIO registers. */
+    if(!host_page || ((uintptr_t)host_page&0xfff)) return;
     u64 r = DTLB_R, w = DTLB_W;
     if (c->sctlr[1] & 1) {
         TLBEntry *t = &c->exec.mmu->tlb[tlb_idx(va)];   /* just filled/validated for va */
@@ -270,13 +275,13 @@ static void dtlb_fill(CPU *c, u64 va, u64 pa) {
         r = perm_ok(c, ACC_READ,  t->ap, t->uxn, t->pxn) ? DTLB_R : 0;
         w = perm_ok(c, ACC_WRITE, t->ap, t->uxn, t->pxn) ? DTLB_W : 0;
     }
-    if (g_jit_code_bitmap && w) {
+    if (g_jit_code_bitmap && w && system_ram) {
         u64 pfn = (pa_page - m->ram_base) >> 12;
         if (g_jit_code_bitmap[pfn >> 3] & (1u << (pfn & 7))) w = 0;
     }
     DTlbEnt *de = dtlb_ent(c,va);
     de->tag = dtlb_tag(c, va);
-    de->pte = (u64)(uintptr_t)(m->ram + (pa_page - m->ram_base)) | r | w;
+    de->pte = (u64)(uintptr_t)host_page | r | w;
 }
 
 bool mem_read(CPU *c, u64 va, unsigned size, u64 *out) {

@@ -60,6 +60,13 @@ struct AESession {
     uint32_t share_count;
     NetFwd fwd[FLOE_AE_MAX_NET_FORWARDS];
     uint32_t fwd_count;
+    /* ABI version 3 online memory (validated deep state; device built at
+     * platform_build when enabled). */
+    uint32_t mem_enabled;
+    uint32_t mem_boot_mib;
+    uint32_t gpu_requested;
+    uint64_t gpu_budget_bytes;
+    char *gpu_app_group;
     fenv_t guest_environment[A64_MAX_CPUS];
 };
 extern _Thread_local AESession *ae_current;

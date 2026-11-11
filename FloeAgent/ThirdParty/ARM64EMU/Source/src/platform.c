@@ -8,6 +8,7 @@
 #include "fdt/smp_dtb.h"
 #include "boot_entropy.h"
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <poll.h>
 #include <unistd.h>
@@ -79,10 +80,18 @@ int platform_build(Machine *m) {
      * because find_dev uses first-match dispatch — so a device at slot 2+ shadows
      * the catch-all stub below for its own 0x200 window.
      * Unoccupied slots get empty-transport stubs (DeviceID=0). */
-    if (m->n_drives + MAX_SHARES + m->n_consoles_req > 31) {  /* net=slot0, disks, shares, consoles */
+    /* Fixed high slots are reserved only when their device is enabled, so the
+     * historical 31-slot ceiling is unchanged for a machine with neither. */
+    int first_fixed = 32;
+    if (m->gpu_enabled) first_fixed = VIRTIO_MMIO_SLOT_GPU;         /* 31 */
+    if (m->vmem_wanted && VIRTIO_MMIO_SLOT_MEM < first_fixed)
+        first_fixed = VIRTIO_MMIO_SLOT_MEM;                         /* 30 */
+    int slot_ceiling = first_fixed - 1;
+    if (m->n_drives + MAX_SHARES + m->n_consoles_req > slot_ceiling) {  /* net=slot0, disks, shares, consoles */
         fprintf(stderr, "too many virtio-mmio devices (%d disks + %d share slots + "
-                        "%d consoles > 31 slots)\n",
-                m->n_drives, MAX_SHARES, m->n_consoles_req);
+                        "%d consoles > %d slots; %d reserved for mem/gpu)\n",
+                m->n_drives, MAX_SHARES, m->n_consoles_req, slot_ceiling,
+                32 - first_fixed);
         return -1;
     }
     if (m->net_enabled && !virtio_net_create(m, m->gic)) return -5;
@@ -101,6 +110,36 @@ int platform_build(Machine *m) {
     }
     for (int i = 0; i < m->n_consoles_req; i++)              /* slots after disks + share block */
         if (!virtio_console_create(m, m->gic, 1 + m->n_drives + MAX_SHARES + i)) return -6;
+    /* virtio-gpu on its fixed slot. It MUST be registered before the catch-all
+     * empty-transport stub below, because find_dev dispatches first-match and
+     * the stub covers slots 2..31. */
+    if (m->gpu_enabled) {
+        VirtIOGPUOptions gopts;
+        memset(&gopts, 0, sizeof(gopts));
+        gopts.budget_bytes   = m->gpu_budget_bytes;
+        gopts.scanout_width  = m->gpu_scanout_width;
+        gopts.scanout_height = m->gpu_scanout_height;
+        gopts.wake_fd        = m->gpu_wake_fd ? m->gpu_wake_fd : -1;
+        m->gpu = virtio_gpu_create(m, m->gic, m->gpu_backend,
+                                   VIRTIO_MMIO_SLOT_GPU, &gopts);
+        if (!m->gpu) return -5;
+    }
+    /* Online memory (ABI v3 opt-in): fixed slot 30, GPU is slot 31. The
+     * managed region lives inside the RAM envelope right above the boot RAM,
+     * so CPU access keeps the RAM fast path and no additional bus region
+     * entry is registered by this package; v1/v2 machines never take this
+     * path and keep the exact old layout. */
+    if (m->vmem_wanted) {
+        if (1 + m->n_drives + MAX_SHARES + m->n_consoles_req > FLOE_VMEM_SLOT) {
+            fprintf(stderr, "too many virtio-mmio devices for the reserved memory slot "
+                            "(%d disks + %d share slots + %d consoles > %d slots)\n",
+                    m->n_drives, MAX_SHARES, m->n_consoles_req, FLOE_VMEM_SLOT);
+            return -1;
+        }
+        u64 requested = m->vmem_requested & ~(FLOE_VMEM_BLOCK_SIZE - 1);
+        if (!virtio_mem_create(m, m->gic, FLOE_VMEM_SLOT, FLOE_VMEM_BASE,
+                               FLOE_VMEM_REGION_SIZE, FLOE_VMEM_BLOCK_SIZE, requested)) return -6;
+    }
     if (!m->net_enabled) machine_add_device(m, 0x0a000000, 0x200, virtio_mmio_read, stub_write, m, "virtio-mmio");
     /* The fixed share block always occupies slot 1 when no disk takes it, so
      * no slot-1 stub is needed; the catch-all below only ever serves slots
@@ -129,6 +168,8 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
     if (m->rtc)   pl031_reset(m->rtc);
     if (m->fwcfg) fwcfg_reset(m->fwcfg);
     if (m->net)   virtio_net_reset(m->net);
+    if (m->gpu)   virtio_gpu_reset(m->gpu);   /* cancel fences, release apertures */
+    if (m->vmem)  virtio_mem_reset(m->vmem);         /* spec: unplug all on system reset */
     for (int i = 0; i < m->n_vcon; i++)
         virtio_console_reset(m->vcon[i]);          /* background-polled: quiesce explicitly */
     flash_cfi_reset(m);
@@ -186,7 +227,7 @@ void machine_tick(Machine *m) {
  * no armed timer to reach a deadline. */
 static void check_wake_source(Machine *m, bool timer_armed, bool has_input) {
     if (m->cpu.halted && !timer_armed && !has_input && !m->cpu.irq_line &&
-        !m->uart && !m->n_vcon && !m->net && !m->rtc)
+        !m->uart && !m->n_vcon && !m->net && !m->rtc && !m->gpu)
         m->deadlock = true;
 }
 

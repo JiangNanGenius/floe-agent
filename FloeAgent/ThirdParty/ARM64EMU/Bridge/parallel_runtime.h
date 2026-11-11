@@ -8,6 +8,13 @@ typedef struct AEParallelCallbacks {
     void (*fw_service)(FwCfg *,u32);
     void (*blk_service)(struct VirtIOBlk *);
     void (*fp_sync)(CPU *);
+    /* virtio-gpu: coordinator-side service plus the quiesce protocol. All four
+     * are optional (NULL when no GPU); see virtio_gpu.h for why the quiesce
+     * window exists (D-TLB host pointers + tlb_flush_machine legality). */
+    bool (*gpu_has_work)(struct VirtIOGPU *);
+    void (*gpu_service)(struct VirtIOGPU *);
+    bool (*device_quiesce)(struct VirtIOGPU *);
+    int  (*device_quiesce_drain)(struct VirtIOGPU *);
 } AEParallelCallbacks;
 typedef struct AEParallelResult { u64 instructions,resets,observed_sequence;unsigned reason;int error; } AEParallelResult;
 /* Internal diagnostic, not a public ABI or model tool. Read only at public

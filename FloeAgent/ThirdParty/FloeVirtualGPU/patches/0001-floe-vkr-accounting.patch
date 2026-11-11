@@ -1,0 +1,352 @@
+diff --git a/src/meson.build b/src/meson.build
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -65,6 +65,7 @@
+ ]
+ 
+ venus_sources = [
++   'venus/vkr_accounting.c',
+    'venus/vkr_acceleration_structure.c',
+    'venus/vkr_allocator.c',
+    'venus/vkr_buffer.c',
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -11,11 +11,11 @@
+ 
+ #include "util/anon_file.h"
+ #include "venus-protocol/vn_protocol_renderer_dispatches.h"
+-
+ #define XXH_INLINE_ALL
+ #include "util/xxhash.h"
+ 
+ #include "vkr_acceleration_structure.h"
++#include "vkr_accounting.h"
+ #include "vkr_buffer.h"
+ #include "vkr_command_buffer.h"
+ #include "vkr_context.h"
+@@ -193,6 +193,9 @@
+       munmap(res->u.data, res->size);
+    else if (res->u.fd >= 0)
+       close(res->u.fd);
++   /* Also runs for implicit whole-context destruction. Separate key kind
++    * prevents a device-memory wrapper from colliding with a blob identity. */
++   vkr_accounting_unref(res->accounting_key);
+    free(res);
+ }
+ 
+@@ -235,6 +238,7 @@
+       return false;
+ 
+    res->res_id = res_id;
++   res->accounting_key = 0; /* imported resource metadata starts unowned */
+    res->fd_type = fd_type;
+    res->size = blob_size;
+ 
+@@ -286,7 +290,13 @@
+     * MAP_FIXED which requires page-aligned sizes.
+     */
+    const size_t page_size = getpagesize();
++   if (!page_size || blob_size > UINT64_MAX - page_size + 1)
++      return false;
+    const uint64_t alloc_size = (blob_size + page_size - 1) & ~(page_size - 1);
++   struct vkr_accounting_reservation quota
++      __attribute__((cleanup(vkr_accounting_cancel))) = {0};
++   if (!vkr_accounting_reserve(&quota, alloc_size, false, true))
++      return false;
+ 
+    int fd = os_create_anonymous_file(alloc_size, "vkr-shmem");
+    if (fd < 0)
+@@ -310,6 +320,9 @@
+       .u.fd = fd,
+       .map_info = VIRGL_RENDERER_MAP_CACHE_CACHED,
+    };
++
++   vkr_context_get_resource(ctx, res_id)->accounting_key =
++      vkr_accounting_commit(&quota, 0);
+ 
+    return true;
+ }
+@@ -353,6 +366,12 @@
+       return false;
+    }
+ 
++   if (!vkr_accounting_ref(mem->accounting_key)) {
++      vkr_context_remove_resource(ctx, res_id);
++      close(blob.u.fd);
++      return false;
++   }
++   vkr_context_get_resource(ctx, res_id)->accounting_key = mem->accounting_key;
+    *out_blob = blob;
+ 
+    return true;
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -21,6 +21,7 @@
+  */
+ struct vkr_resource {
+    uint32_t res_id;
++   uint64_t accounting_key; /* retained underlying physical allocation */
+ 
+    enum virgl_resource_fd_type fd_type;
+ 
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -14,6 +14,7 @@
+ #include <unistd.h>
+ 
+ #include "util/anon_file.h"
++#include "vkr_accounting.h"
+ #include "vkr_physical_device.h"
+ 
+ static bool
+@@ -301,6 +302,24 @@
+       return;
+    }
+ 
++   /* Floe quota admission precedes every possible shm/driver allocation.
++    * cleanup releases an uncommitted reservation on every error return. */
++   const uint64_t accounting_page = (uint64_t)getpagesize();
++   if (!accounting_page || alloc_info->allocationSize > UINT64_MAX - accounting_page + 1) {
++      args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      return;
++   }
++   const uint64_t accounting_size =
++      (alloc_info->allocationSize + accounting_page - 1) & ~(accounting_page - 1);
++   const bool accounting_alias = vkr_find_prev_struct(
++      alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA) != NULL;
++   struct vkr_accounting_reservation quota
++      __attribute__((cleanup(vkr_accounting_cancel))) = {0};
++   if (!vkr_accounting_reserve(&quota, accounting_size, accounting_alias, false)) {
++      args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      return;
++   }
++
+    /* translate VkImportMemoryResourceInfoMESA into VkImportMemoryFdInfoKHR in place */
+    VkImportMemoryFdInfoKHR local_import_info = { .fd = -1 };
+    VkImportMemoryResourceInfoMESA *res_info = NULL;
+@@ -308,6 +327,11 @@
+       alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA);
+    if (prev_of_res_info) {
+       res_info = (VkImportMemoryResourceInfoMESA *)prev_of_res_info->pNext;
++      struct vkr_resource *backing = vkr_context_get_resource(ctx, res_info->resourceId);
++      if (!backing || !vkr_accounting_link_parent(&quota, backing->accounting_key)) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
+       if (!vkr_get_fd_info_from_resource_info(ctx, res_info, &local_import_info)) {
+          args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          return;
+@@ -502,6 +526,10 @@
+    mem->shm = shm;
+    mem->allocation_size = alloc_info->allocationSize;
+    mem->memory_type_index = mem_type_index;
++
++   /* The wrapper address is unique across contexts and remains alive until
++    * vkr_device_memory_release, including implicit context/device teardown. */
++   mem->accounting_key = vkr_accounting_commit(&quota, mem_type_index);
+ }
+ 
+ static void
+@@ -619,6 +647,8 @@
+       vkr_gbm_bo_destroy(mem->gbm_bo);
+    if (mem->udmabuf_fd >= 0)
+       close(mem->udmabuf_fd);
++   vkr_accounting_unref(mem->accounting_key);
++   mem->accounting_key = 0;
+ }
+ 
+ bool
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -36,6 +36,7 @@
+    struct vkr_shm *shm;
+ 
+    uint64_t allocation_size;
++   uint64_t accounting_key;
+    uint32_t memory_type_index;
+ 
+    bool exported;
+diff --git a/src/venus/vkr_renderer.c b/src/venus/vkr_renderer.c
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -10,6 +10,7 @@
+ #include "venus_hw.h"
+ 
+ #include "vkr_context.h"
++#include "vkr_accounting.h"
+ 
+ struct vkr_renderer_state {
+    const struct vkr_renderer_callbacks *cbs;
+@@ -226,7 +227,7 @@
+    TRACE_FUNC();
+ 
+    assert(res_id);
+-   assert(fd_type == VIRGL_RESOURCE_FD_DMABUF || fd_type == VIRGL_RESOURCE_FD_OPAQUE);
++   assert(fd_type == VIRGL_RESOURCE_FD_SHM || fd_type == VIRGL_RESOURCE_FD_DMABUF || fd_type == VIRGL_RESOURCE_FD_OPAQUE);
+    assert(fd >= 0);
+    assert(size);
+ 
+@@ -246,3 +247,19 @@
+    if (ctx)
+       vkr_context_destroy_resource(ctx, res_id);
+ }
++
++/* Floe-only accounting metadata for exported/imported fd aliases. The caller
++ * retains once for its fd; each imported renderer resource retains separately. */
++uint64_t vkr_renderer_resource_accounting_key(uint32_t ctx_id,uint32_t res_id) {
++   struct vkr_context *ctx=vkr_renderer_lookup_context(ctx_id);
++   struct vkr_resource *res=ctx?vkr_context_get_resource(ctx,res_id):NULL;
++   return res?res->accounting_key:0;
++}
++bool vkr_renderer_resource_accounting_import(uint32_t ctx_id,uint32_t res_id,uint64_t key) {
++   struct vkr_context *ctx=vkr_renderer_lookup_context(ctx_id);
++   struct vkr_resource *res=ctx?vkr_context_get_resource(ctx,res_id):NULL;
++   if(!res||!key) return false;
++   if(res->accounting_key) return res->accounting_key==key;
++   if(!vkr_accounting_ref(key)) return false;
++   res->accounting_key=key;return true;
++}
+diff --git a/src/venus/vkr_accounting.c b/src/venus/vkr_accounting.c
+new file mode 100644
+--- /dev/null
++++ b/src/venus/vkr_accounting.c
+@@ -0,0 +1,96 @@
++/* Copyright 2026 Floe contributors; SPDX-License-Identifier: MIT */
++#include "vkr_accounting.h"
++#include <stdlib.h>
++#include <pthread.h>
++#include <assert.h>
++#define MAX_ENTRIES 16384u
++struct entry {
++   uint64_t key,size,refs,parent;
++   uint32_t type;
++   bool aliased,blob;
++   struct entry *next;
++};
++static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
++static vkr_accounting_cb memory_cb,blob_cb;
++static vkr_accounting_admit_cb admit_cb;
++static vkr_accounting_cancel_cb cancel_cb;
++static void *memory_user,*blob_user,*admit_user;
++static struct entry *table[1024];
++static uint64_t entry_count,pending_count,next_key;
++void vkr_accounting_set_callback(vkr_accounting_cb cb,void *user) {
++   pthread_mutex_lock(&lock);memory_cb=cb;memory_user=user;pthread_mutex_unlock(&lock);
++}
++void vkr_accounting_set_blob_callback(vkr_accounting_cb cb,void *user) {
++   pthread_mutex_lock(&lock);blob_cb=cb;blob_user=user;pthread_mutex_unlock(&lock);
++}
++void vkr_accounting_set_admission(vkr_accounting_admit_cb admit,vkr_accounting_cancel_cb cancel,void *user) {
++   pthread_mutex_lock(&lock);admit_cb=admit;cancel_cb=cancel;admit_user=user;pthread_mutex_unlock(&lock);
++}
++static struct entry **find(uint64_t key) {
++   struct entry **p=&table[key&1023];
++   while(*p&&(*p)->key!=key) p=&(*p)->next;
++   return p;
++}
++/* Iterative parent release: untrusted import chains cannot consume host stack.
++ * IDs never reuse pointer addresses, even when an exported fd outlives its
++ * original Vulkan object/context. Physical bytes release only at final ref. */
++static void release_locked(uint64_t key) {
++   while(key) {
++      struct entry **p=find(key);struct entry *e=*p;
++      if(!e) return;
++      assert(e->refs);
++      if(--e->refs) return;
++      *p=e->next;entry_count--;
++      vkr_accounting_cb cb=e->blob?blob_cb:memory_cb;
++      if(cb) cb(e->size,e->type,e->aliased,false,key,e->blob?blob_user:memory_user);
++      key=e->parent;free(e);
++   }
++}
++bool vkr_accounting_reserve(struct vkr_accounting_reservation *r,uint64_t size,bool aliased,bool blob) {
++   assert(r&&!r->entry);
++   struct entry *e=calloc(1,sizeof(*e));if(!e) return false;
++   e->size=size;e->aliased=aliased;e->blob=blob;e->refs=1;
++   pthread_mutex_lock(&lock);
++   bool allowed=entry_count+pending_count<MAX_ENTRIES&&next_key<UINT64_MAX;
++   if(allowed&&admit_cb) allowed=admit_cb(size,aliased,blob,admit_user);
++   if(allowed) {pending_count++;e->key=++next_key;}
++   pthread_mutex_unlock(&lock);
++   if(!allowed) {free(e);return false;}
++   r->entry=e;return true;
++}
++bool vkr_accounting_link_parent(struct vkr_accounting_reservation *r,uint64_t parent) {
++   struct entry *e=r->entry;assert(e&&!e->parent);
++   if(!parent) return true;
++   pthread_mutex_lock(&lock);struct entry *p=*find(parent);
++   bool ok=p&&p->refs<UINT64_MAX&&parent<e->key;
++   if(ok) {p->refs++;e->parent=parent;}
++   pthread_mutex_unlock(&lock);return ok;
++}
++void vkr_accounting_cancel(struct vkr_accounting_reservation *r) {
++   struct entry *e=r->entry;if(!e) return;r->entry=NULL;
++   pthread_mutex_lock(&lock);assert(pending_count);pending_count--;
++   if(cancel_cb) cancel_cb(e->size,e->aliased,e->blob,admit_user);
++   release_locked(e->parent);
++   pthread_mutex_unlock(&lock);free(e);
++}
++uint64_t vkr_accounting_commit(struct vkr_accounting_reservation *r,uint32_t type) {
++   struct entry *e=r->entry;assert(e);r->entry=NULL;e->type=type;
++   pthread_mutex_lock(&lock);assert(pending_count);pending_count--;
++   struct entry **head=find(e->key);assert(!*head);*head=e;entry_count++;
++   vkr_accounting_cb cb=e->blob?blob_cb:memory_cb;
++   if(cb) cb(e->size,e->type,e->aliased,true,e->key,e->blob?blob_user:memory_user);
++   pthread_mutex_unlock(&lock);return e->key;
++}
++bool vkr_accounting_ref(uint64_t key) {
++   pthread_mutex_lock(&lock);struct entry *e=*find(key);
++   bool ok=e&&e->refs<UINT64_MAX;if(ok) e->refs++;
++   pthread_mutex_unlock(&lock);return ok;
++}
++void vkr_accounting_unref(uint64_t key) {
++   pthread_mutex_lock(&lock);release_locked(key);pthread_mutex_unlock(&lock);
++}
++void vkr_accounting_report_free(uint64_t key) {vkr_accounting_unref(key);}
++void vkr_accounting_report_blob_free(uint64_t key) {vkr_accounting_unref(key);}
++uint64_t vkr_accounting_entry_count(void) {
++   pthread_mutex_lock(&lock);uint64_t n=entry_count+pending_count;pthread_mutex_unlock(&lock);return n;
++}
+diff --git a/src/venus/vkr_accounting.h b/src/venus/vkr_accounting.h
+new file mode 100644
+--- /dev/null
++++ b/src/venus/vkr_accounting.h
+@@ -0,0 +1,34 @@
++/* Copyright 2026 Floe contributors; SPDX-License-Identifier: MIT */
++#ifndef VKR_ACCOUNTING_H
++#define VKR_ACCOUNTING_H
++#include <stdbool.h>
++#include <stdint.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++/* Callbacks are serialized under the registry mutex; never re-enter this API.
++ * Unregister only after renderer workers have joined. */
++typedef void (*vkr_accounting_cb)(uint64_t size,uint32_t type,bool aliased,bool alloc,uint64_t key,void *user);
++typedef bool (*vkr_accounting_admit_cb)(uint64_t size,bool aliased,bool blob,void *user);
++typedef void (*vkr_accounting_cancel_cb)(uint64_t size,bool aliased,bool blob,void *user);
++void vkr_accounting_set_callback(vkr_accounting_cb cb,void *user);
++void vkr_accounting_set_blob_callback(vkr_accounting_cb cb,void *user);
++void vkr_accounting_set_admission(vkr_accounting_admit_cb admit,vkr_accounting_cancel_cb cancel,void *user);
++/* Reserve bookkeeping and quota BEFORE driver/shm allocation. The cleanup
++ * handler rolls back every early return; commit consumes the reservation. */
++struct vkr_accounting_reservation { void *entry; };
++bool vkr_accounting_reserve(struct vkr_accounting_reservation *r,uint64_t size,bool aliased,bool blob);
++uint64_t vkr_accounting_commit(struct vkr_accounting_reservation *r,uint32_t type);
++bool vkr_accounting_link_parent(struct vkr_accounting_reservation *r,uint64_t parent);
++bool vkr_accounting_ref(uint64_t key);
++void vkr_accounting_unref(uint64_t key);
++uint64_t vkr_renderer_resource_accounting_key(uint32_t ctx,uint32_t resource);
++bool vkr_renderer_resource_accounting_import(uint32_t ctx,uint32_t resource,uint64_t key);
++void vkr_accounting_cancel(struct vkr_accounting_reservation *r);
++void vkr_accounting_report_free(uint64_t key);
++void vkr_accounting_report_blob_free(uint64_t key);
++uint64_t vkr_accounting_entry_count(void);
++#ifdef __cplusplus
++}
++#endif
++#endif

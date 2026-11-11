@@ -23,8 +23,10 @@ def main():
         assert path.is_file() and not path.is_symlink(), relative
         assert hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"], relative
         pinned.add(relative.as_posix())
-    assert len(record["productionTranslationUnits"]) == 30
+    assert len(record["productionTranslationUnits"]) == 33
     assert set(record["productionTranslationUnits"]).issubset(pinned)
+    for source in ("devices/virtio_gpu.c", "devices/virtio_mem.c", "memory_regions.c"):
+        assert "Source/src/" + source in record["productionTranslationUnits"]
     for name in ("Source/LICENSE", "Source/NOTICE", "Bridge/MPL-2.0.txt"):
         assert (root / name).is_file(), name
     package = (root.parents[1] / "Package.swift").read_text()
@@ -45,7 +47,7 @@ def main():
     assert '"FloeTinyEMU"' not in package
     assert not (root.parent / "TinyEMU").exists()
     subprocess.run(["python3", str(root / "Tools/generate_crc32_tables.py"), "--check"], check=True)
-    print("ARM64 provenance, 30 translation units, licenses and App wiring verified")
+    print("ARM64 provenance, 33 translation units, licenses and App wiring verified")
 
 
 if __name__ == "__main__":

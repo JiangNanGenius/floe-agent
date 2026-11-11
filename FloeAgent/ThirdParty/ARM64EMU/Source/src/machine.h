@@ -9,6 +9,7 @@
 #include "cpu.h"
 #include "console.h"
 #include "memory_sync.h"
+#include "memory_regions.h"
 #include <stdatomic.h>
 struct MachineParallelOps;
 struct MachineParallelPollView;
@@ -19,6 +20,22 @@ struct MachineParallelPollView;
 #define FLASH_BANK   0x04000000ULL   /* 64 MB per bank */
 #define RAM_BASE     0x40000000ULL
 #define RAM_SIZE_DEF (1024ULL << 20) /* 1 GB default */
+
+/* Online memory (virtio-mem, device 24) layout inside the RAM envelope.
+ * Boot RAM is the low 256 MiB; the managed hotplug region sits immediately
+ * above it, ending exactly at the historical 1 GiB maximum footprint, so no
+ * existing GPA consumer moves and the future GPU shared aperture (64 GiB)
+ * cannot collide with it. The device registers at virtio-mmio slot 30
+ * (GPU is slot 31); the DTB pre-declares all 32 nodes, so no dts change.
+ * The managed region lies inside the machine's single RAM mapping, so CPU
+ * access keeps using the RAM fast path and no additional bus region entry
+ * is registered here; DMA/GPU address resolution is integrated separately
+ * with the transport owner's memory_regions registry. */
+#define FLOE_BOOT_RAM_MAX     (256ULL << 20)
+#define FLOE_VMEM_BASE        (RAM_BASE + FLOE_BOOT_RAM_MAX)   /* 0x50000000 */
+#define FLOE_VMEM_REGION_SIZE (768ULL << 20)
+#define FLOE_VMEM_BLOCK_SIZE  (2ULL << 20)
+#define FLOE_VMEM_SLOT        30
 
 /* Memory abort reporting from the bus (unmapped access). */
 typedef enum { BUS_OK = 0, BUS_FAULT = 1 } BusStatus;
@@ -58,6 +75,9 @@ struct VirtIOBlk;
 struct VirtIONet;
 struct VirtIO9P;
 struct VirtIOConsole;
+struct VirtIOGPU;
+struct FloeVirtioGPUBackend;
+struct VirtIOMem;
 
 typedef struct NetFwd {
     bool is_udp;
@@ -99,7 +119,19 @@ typedef struct Machine {
     _Atomic int host_error; /* construction/board failure, propagated through C ABI */
 
     u8 *ram;  u64 ram_base, ram_size;
+    /* Guest-visible boot RAM (<= FLOE_BOOT_RAM_MAX); 0 = the whole ram_size
+     * span (v1/v2 behavior). The DTB memory node reports this when set. */
+    u64 boot_ram_size;
+    /* ABI v3 online-memory create: build the virtio-mem managed region and
+     * the slot-30 device. v1/v2 callers never set this: their RAM capacity
+     * and bounds behavior are unchanged. */
+    bool vmem_wanted;
+    u64  vmem_requested;      /* initial requested_size (create config target - boot RAM) */
     u8 *flash; u64 flash_base, flash_size;
+    /* Device-mappable guest-physical regions beyond RAM/flash: the virtio-gpu
+     * host-visible aperture (sparse). Managed RAM already lives inside
+     * the main RAM envelope. Heap table owned by memory_regions.c; NULL until machine_init. */
+    MappedRegion *regions;
     bool flash_writable;          /* simple RAM-backed flash writes (CFI added later) */
 
     /* NOR flash CFI (Intel pflash_cfi01) state, per 64 MB bank. EDK2 keeps its
@@ -130,6 +162,16 @@ typedef struct Machine {
     int    n_fs;
     struct VirtIOConsole *vcon[MAX_CONSOLES];  /* hvc0..hvc(n_vcon-1) */
     int    n_vcon;
+    struct VirtIOGPU *gpu;    /* virtio-gpu on the fixed slot, NULL when off */
+    /* virtio-gpu configuration, consumed by platform_build. The backend is
+     * BORROWED: the Bridge owns its lifetime and must destroy it only after
+     * virtio_gpu_destroy() has drained fences and disabled callbacks. */
+    bool     gpu_enabled;
+    struct FloeVirtioGPUBackend *gpu_backend;
+    uint64_t gpu_budget_bytes;        /* 0 = 1 GiB default; live bytes, not aperture */
+    uint32_t gpu_scanout_width, gpu_scanout_height;   /* 0 = 1280x800 */
+    int      gpu_wake_fd;             /* -1 = none; async fence completions wake it */
+    struct VirtIOMem *vmem;   /* online memory device (owned, NULL until platform_build) */
 
     /* Host console endpoints (console.h): where each console device's bytes
      * actually go. NULL means the process terminal, which is what a plain
@@ -197,6 +239,7 @@ void machine_send_event(Machine *m,CPU *local);
 void machine_store_notify(Machine *m,u64 pa,u64 length);
 
 void machine_init(Machine *m, u64 ram_size);
+void machine_init_vmem(Machine *m, u64 ram_size);   /* ABI v3: envelope + boot RAM split */
 void machine_free(Machine *m);
 
 /* Return the NOR flash CFI command state machine to read-array/ready (reset). */

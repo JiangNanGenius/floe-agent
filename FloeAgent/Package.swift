@@ -135,6 +135,12 @@ let package = Package(
             // through the license inventory (Licenses/FloeSlirp-*.txt).
             path: "Vendor/FloeSlirp/FloeSlirp.xcframework"
         ),
+        .binaryTarget(
+            name: "FloeGPUBinary",
+            // Pinned Venus renderer + MoltenVK; static arm64 slices only.
+            // Source identities, patch and digests: Vendor/FloeGPU/PROVENANCE.json.
+            path: "Vendor/FloeGPU/FloeGPU.xcframework"
+        ),
         // MARK: - Cross-platform targets (buildable on macOS host without iOS SDK)
 
         // Narrow C shim over the SDK's own public `fcntl(F_LOG2PHYS_EXT)`
@@ -197,11 +203,34 @@ let package = Package(
             path: "Sources/FloeLlamaVisionShim",
             publicHeadersPath: "include"
         ),
-        // Staged ARM64 replacement. Not selected by FloeExecution until the
-        // new guest's network/files/project services pass integration.
+        .target(
+            name: "FloeVirtualGPU",
+            dependencies: ["FloeGPUBinary"],
+            path: "ThirdParty/FloeVirtualGPU",
+            exclude: ["README.md", "patches", "LICENSES"],
+            sources: ["src"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("src"),
+                .headerSearchPath("../ARM64EMU/Bridge"),
+                .define("_POSIX_C_SOURCE", to: "200809L"),
+                .define("_DARWIN_C_SOURCE"),
+                .unsafeFlags(["-std=c11", "-O2", "-fvisibility=hidden"])
+            ],
+            linkerSettings: [
+                .linkedLibrary("c++"), .linkedLibrary("objc"), .linkedLibrary("m"),
+                .linkedFramework("Metal"), .linkedFramework("IOSurface"),
+                .linkedFramework("QuartzCore"), .linkedFramework("CoreGraphics"),
+                .linkedFramework("Foundation"), .linkedFramework("CoreFoundation"),
+                .linkedFramework("AppKit", .when(platforms: [.macOS])),
+                .linkedFramework("IOKit", .when(platforms: [.macOS]))
+            ]
+        ),
+        // Resident ARM64 interpreter. GPU and online-memory devices are
+        // enabled only for guest images declaring the corresponding drivers.
         .target(
             name: "FloeARM64Engine",
-            dependencies: ["FloeSlirpBinary"],
+            dependencies: ["FloeSlirpBinary", "FloeVirtualGPU"],
             path: "ThirdParty/ARM64EMU",
             exclude: ["Source", "Bridge", "Tools", "PROVENANCE.json"],
             sources: ["Sources"],

@@ -14,6 +14,7 @@
 #include "mmu.h"
 #include "../Source/src/net/usernet.h"
 #include "net_wait.h"
+#include "virtio_gpu_backend.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -46,12 +47,34 @@ static int parse_ipv4(const char *text,uint32_t *out) {
     *out=((uint32_t)a<<24)|((uint32_t)b<<16)|((uint32_t)c<<8)|(uint32_t)d;return 0;
 }
 static void free_device_config(AESession *s) {
+    free(s->gpu_app_group);s->gpu_app_group=NULL;
     free(s->dns_text);s->dns_text=NULL;s->dns_server=0;
     for(uint32_t i=0;i<s->share_count;i++){free(s->share[i].path);free(s->share[i].tag);s->share[i].path=NULL;s->share[i].tag=NULL;}
     s->share_count=0;s->fwd_count=0;s->requested_consoles=0;
 }
 static void dispose(AESession *s) {
     if(!s)return;
+    /* GPU teardown MUST precede the wake-pipe close. An async renderer retire
+     * callback holds wake_pipe[1] and writes it from a non-coordinator thread;
+     * closing the fd first would race with close/reuse by an unrelated
+     * descriptor, and a stale generation token cannot protect an fd that is
+     * already closed. Order: (1) disable callbacks behind a real in-flight
+     * barrier, (2) destroy the device (cancels fences, drains, releases
+     * apertures while the backend is still alive), (3) let the host backend
+     * join its renderer threads, (4) only then close the pipe. After (1)
+     * returns no callback can ever touch the fd again. */
+    if(s->machine.gpu){
+        virtio_gpu_disable_callbacks(s->machine.gpu);
+        virtio_gpu_destroy(s->machine.gpu);
+        s->machine.gpu=NULL;
+    }
+    /* HOST INTEGRATION POINT (host package job-3b20af3971fb4693): join/destroy
+     * the Venus renderer backend here, i.e. after virtio_gpu_destroy() and
+     * before the wake pipe is closed. The fd safety above does not depend on
+     * it - virtio_gpu_disable_callbacks() is already a hard barrier - but the
+     * backend's own threads must not outlive the session. */
+    if(s->machine.gpu_backend&&s->machine.gpu_backend->destroy) s->machine.gpu_backend->destroy(s->machine.gpu_backend->opaque);
+    s->machine.gpu_backend=NULL;s->machine.gpu_enabled=false;
     if(s->wake_pipe_ready){close(s->wake_pipe[0]);close(s->wake_pipe[1]);s->wake_pipe[0]=s->wake_pipe[1]=-1;s->wake_pipe_ready=0;}
     ae_parallel_destroy(s);
     ae_machine_destroy(&s->machine);
@@ -76,6 +99,7 @@ static int load(const char *path,unsigned char **out,u32 *length,uint64_t limit)
     close(fd);*out=data;*length=(u32)offset;return 0;
 }
 static uint64_t next_deadline(Machine *m) {
+    if(m->gpu&&virtio_gpu_has_work(m->gpu))return 0;
     if(fwcfg_has_work(m->fwcfg))return 0;
     for(int i=0;i<m->n_blk;i++)if(virtio_blk_has_work(m->blk[i]))return 0;
     uint64_t earliest=timer_next_event_ns(m);
@@ -131,9 +155,43 @@ static int valid_devices(const floe_ae_devices_config *d,AESession *s) {
     }
     return 0;
 }
+static int valid_memory(const floe_ae_memory_config *d,AESession *s) {
+    if(!d||d->struct_size<sizeof(*d))return FLOE_AE_VERSION;
+    for(unsigned i=0;i<5;i++)if(d->reserved[i])return FLOE_AE_UNSUPPORTED;
+    if(d->enabled>1)return FLOE_AE_INVALID;
+    /* Boot RAM is fixed at 256 MiB: 0 selects the default (min(ram_mib,256))
+     * and 256 states it explicitly. Any other custom value would be silently
+     * ignored by the engine, so it is rejected instead of advertising an
+     * unsupported option. */
+    if(d->boot_ram_mib&&d->boot_ram_mib!=(FLOE_BOOT_RAM_MAX>>20))return FLOE_AE_INVALID;
+    s->mem_enabled=d->enabled;
+    s->mem_boot_mib=d->boot_ram_mib;
+    return 0;
+}
+static int valid_gpu(const floe_ae_gpu_config *d,AESession *s) {
+    if(d->enabled>1)return FLOE_AE_INVALID;
+    for(unsigned i=0;i<4;i++)if(d->reserved[i])return FLOE_AE_UNSUPPORTED;
+    if(!d->enabled) {
+        return d->struct_size&&d->struct_size<sizeof(*d)?FLOE_AE_VERSION:0;
+    }
+    if(d->struct_size<sizeof(*d))return FLOE_AE_VERSION;
+    uint64_t budget=d->budget_bytes?d->budget_bytes:FLOE_AE_GPU_DEFAULT_BUDGET_BYTES;
+    if(budget<(UINT64_C(1)<<20)||budget>FLOE_AE_GPU_MAX_BUDGET_BYTES)return FLOE_AE_INVALID;
+    if(d->app_group_identifier) {
+        const char *group=d->app_group_identifier;size_t n=strnlen(group,29);
+        if(n<=6||n>28||strncmp(group,"group.",6)||strstr(group,".."))return FLOE_AE_INVALID;
+        for(size_t i=0;i<n;i++) {
+            unsigned char c=(unsigned char)group[i];
+            if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='.'||c=='-'))return FLOE_AE_INVALID;
+        }
+        s->gpu_app_group=ae_strdup_bounded(group,29);
+        if(!s->gpu_app_group)return FLOE_AE_NOMEM;
+    }
+    s->gpu_requested=1;s->gpu_budget_bytes=budget;return 0;
+}
 static int valid_config(const floe_ae_config *c,AESession *s) {
     if(!c||c->struct_size<sizeof(*c))return FLOE_AE_VERSION;
-    if(c->abi_version!=FLOE_AE_ABI_VERSION&&c->abi_version!=1)return FLOE_AE_VERSION;
+    if(c->abi_version>FLOE_AE_ABI_VERSION||c->abi_version<1)return FLOE_AE_VERSION;
     if(c->requested_vcpus<1||c->requested_vcpus>A64_MAX_CPUS)return FLOE_AE_UNSUPPORTED;
     if(!c->firmware_path||c->ram_mib<16||c->ram_mib>1024)return FLOE_AE_INVALID;
     if(c->initrd_path&&!c->kernel_path)return FLOE_AE_INVALID;
@@ -144,7 +202,19 @@ static int valid_config(const floe_ae_config *c,AESession *s) {
     if(c->abi_version==1)return 0;   /* version 1: devices stay disabled */
     const floe_ae_config_v2 *c2=(const floe_ae_config_v2 *)c;
     if(c->struct_size<sizeof(*c2))return FLOE_AE_VERSION;
-    return valid_devices(&c2->devices,s);
+    int error=valid_devices(&c2->devices,s);if(error)return error;
+    if(c->abi_version==2)return 0;   /* version 2: exact historical contract */
+    const floe_ae_config_v3 *c3=(const floe_ae_config_v3 *)c;
+    if(c->struct_size<FLOE_AE_CONFIG_V3_MEMORY_SIZE)return FLOE_AE_VERSION;
+    error=valid_memory(&c3->memory,s);
+    if(error)return error;
+    if(s->mem_enabled) {
+        uint32_t boot=s->mem_boot_mib?s->mem_boot_mib:(c->ram_mib<FLOE_BOOT_RAM_MAX>>20?c->ram_mib:FLOE_BOOT_RAM_MAX>>20);
+        if(boot>c->ram_mib)return FLOE_AE_INVALID;   /* boot RAM above the budget */
+    }
+    if(c->struct_size==FLOE_AE_CONFIG_V3_MEMORY_SIZE)return 0;
+    if(c->struct_size<sizeof(*c3))return FLOE_AE_VERSION;
+    return valid_gpu(&c3->gpu,s);
 }
 int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
     if(!handle)return FLOE_AE_INVALID;*handle=0;
@@ -192,7 +262,30 @@ int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
         size_t n=strnlen(c->private_writable_disk_path,PATH_MAX);if(!n||n==PATH_MAX){error=FLOE_AE_INVALID;goto finished;}
         s->disk_path=malloc(n+1);if(!s->disk_path){error=FLOE_AE_NOMEM;goto finished;}memcpy(s->disk_path,c->private_writable_disk_path,n+1);
     }
-    machine_init(&s->machine,(u64)c->ram_mib<<20);if(s->machine.host_error){error=s->machine.host_error;goto finished;}
+    if(s->mem_enabled) {
+        /* machine_init_vmem zeroes the Machine: set the flags after it. */
+        machine_init_vmem(&s->machine,(u64)c->ram_mib<<20);
+        s->machine.vmem_wanted=true;
+        /* The create target is the caller's ram_mib; the driver plugs the
+         * difference above boot RAM toward it at module load. */
+        u64 boot=s->machine.boot_ram_size;
+        u64 target=(u64)c->ram_mib<<20;
+        s->machine.vmem_requested=target>boot?target-boot:0;
+    } else
+        machine_init(&s->machine,(u64)c->ram_mib<<20);
+    if(s->machine.host_error){error=s->machine.host_error;goto finished;}
+    /* The GPU's async fence completions wake the owner loop through the same
+     * session pipe the control/input path uses, so an all-WFI guest blocked on
+     * a GPU fence is woken without a polling timer. Set before platform_build
+     * creates the device. */
+    s->machine.gpu_wake_fd=s->wake_pipe_ready?s->wake_pipe[1]:-1;
+    if(s->gpu_requested) {
+        char message[512]={0};
+        s->machine.gpu_backend=floe_virtual_gpu_backend_create_in_app_group(s->gpu_app_group,message,sizeof(message));
+        if(!s->machine.gpu_backend) {fprintf(stderr,"GPU create: %s\n",message);error=FLOE_AE_UNSUPPORTED;goto finished;}
+        s->machine.gpu_enabled=true;
+        s->machine.gpu_budget_bytes=s->gpu_budget_bytes;
+    }
     if(machine_configure_cpus(&s->machine,c->requested_vcpus)){error=FLOE_AE_UNSUPPORTED;goto finished;}
     s->endpoint.owner=s;s->endpoint.channel=0;
     s->machine.uart_ep=&s->endpoint;
@@ -213,7 +306,7 @@ int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
         s->machine.n_net_fwds++;
     }
     int net_on=0;
-    if(c->abi_version==2)net_on=((const floe_ae_config_v2 *)c)->devices.network_enabled!=0;
+    if(c->abi_version>=2)net_on=((const floe_ae_config_v2 *)c)->devices.network_enabled!=0;
     if((s->fwd_count||s->dns_server)&&!net_on){error=FLOE_AE_INVALID;goto finished;} /* rules without a device */
     s->machine.net_enabled=net_on;
     memcpy(s->machine.flash,firmware,fn);
@@ -249,7 +342,9 @@ int floe_ae_run_slice(floe_ae_handle h,uint64_t max_ns,uint64_t max_insn,floe_ae
     uint64_t began=ae_now_ns(),executed=0,reset_delta=0,observed_sequence=0;uint32_t reason=FLOE_AE_BUDGET;int error=0;
     fenv_t caller;int saved=fegetenv(&caller)==0;ae_current=s;
     if(!saved||fesetenv(FE_DFL_ENV)){error=FLOE_AE_FAULT;goto complete;}
-    const AEParallelCallbacks callbacks={pd_step,machine_tick,fwcfg_service,virtio_blk_service,fpsr_sync};
+    const AEParallelCallbacks callbacks={pd_step,machine_tick,fwcfg_service,virtio_blk_service,fpsr_sync,
+                                         virtio_gpu_has_work,virtio_gpu_service,
+                                         virtio_gpu_quiesce_requested,virtio_gpu_quiesce_drain};
     AEParallelResult result=ae_parallel_run(s,max_ns,max_insn,&callbacks);
     executed=result.instructions;reset_delta=result.resets;observed_sequence=result.observed_sequence;
     reason=result.reason;error=result.error;
@@ -496,4 +591,93 @@ int floe_ae_share_get_info(floe_ae_handle h,uint32_t slot,floe_ae_share_info *ou
         out->read_only=(uint32_t)ro;
     }
     unlock(s);return error;
+}
+
+/* ---- ABI version 3 operations: online memory budget -----------------------
+ * Safe while the machine runs: only the device's requested_size changes, plus
+ * the config-change interrupt and a host wake so a parked guest applies the
+ * resize. The guest driver performs the actual (un)plug asynchronously; the
+ * info snapshot always reports the true plugged size, never the target.
+ * Like the live forward/share operations, these return FLOE_AE_BUSY while a
+ * slice or a readiness wait owns the machine: the caller (the Swift owner
+ * queue) retries between slices, where the mutation is race-free.
+ */
+static int mem_fill(AESession *s,floe_ae_mem_info *out) {
+    memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);
+    struct VirtIOMem *v=s->machine.vmem;
+    /* Absence of the device is a normal answer (present=0), not an error;
+     * only floe_ae_mem_resize refuses to apply a budget without it. */
+    if(!s->mem_enabled||!v)return 0;
+    out->present=1;
+    out->boot_mib=(uint32_t)(s->machine.boot_ram_size>>20);
+    out->max_mib=(uint32_t)((s->machine.boot_ram_size+FLOE_VMEM_REGION_SIZE)>>20);
+    out->requested_bytes=virtio_mem_requested(v);
+    out->plugged_bytes=virtio_mem_plugged(v);
+    out->target_mib=out->boot_mib+(uint32_t)(out->requested_bytes>>20);
+    out->plugged_mib=out->boot_mib+(uint32_t)(out->plugged_bytes>>20);
+    out->region_bytes=FLOE_VMEM_REGION_SIZE;
+    return 0;
+}
+int floe_ae_mem_resize(floe_ae_handle h,uint32_t target_mib) {
+    /* The managed region plus boot RAM bounds the budget ladder. */
+    if(target_mib<(FLOE_BOOT_RAM_MAX>>20)||target_mib>((FLOE_BOOT_RAM_MAX+FLOE_VMEM_REGION_SIZE)>>20))
+        return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}   /* mutation requires a between-slices caller */
+    int error=0;
+    if(!s->mem_enabled||!s->machine.vmem)error=FLOE_AE_UNSUPPORTED;
+    else {
+        uint64_t boot=s->machine.boot_ram_size;
+        uint64_t want=((uint64_t)target_mib<<20)-boot;
+        virtio_mem_set_requested(s->machine.vmem,want);
+        ae_signal_locked(s);   /* wake a parked machine to apply the resize */
+    }
+    unlock(s);return error;
+}
+int floe_ae_mem_get_info(floe_ae_handle h,floe_ae_mem_info *out) {
+    if(!out||out->struct_size<sizeof(*out))return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}   /* consistent snapshot between slices */
+    int error=mem_fill(s,out);
+    unlock(s);return error;
+}
+
+/* Mutations and snapshots use the existing session registry/owner boundary.
+ * Renderer workers can retire allocations concurrently; the backend's ledger
+ * lock supplies the authoritative budget snapshot. No guest CPU is restarted. */
+int floe_ae_gpu_set_budget(floe_ae_handle h,uint64_t bytes) {
+    if(bytes<(UINT64_C(1)<<20)||bytes>FLOE_AE_GPU_MAX_BUDGET_BYTES)return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    int error=FLOE_AE_UNSUPPORTED;
+    if(s->machine.gpu) {
+        uint64_t actual=0,pending=0;
+        int result=virtio_gpu_set_budget(s->machine.gpu,bytes,&actual,&pending);
+        error=result?FLOE_AE_IO:0;
+        if(!error) {
+            s->gpu_budget_bytes=bytes;s->machine.gpu_budget_bytes=bytes;
+            ae_signal_locked(s);
+        }
+    }
+    unlock(s);return error;
+}
+int floe_ae_gpu_get_info(floe_ae_handle h,floe_ae_gpu_info *out) {
+    if(!out||out->struct_size<sizeof(*out))return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);
+    if(s->machine.gpu) {
+        VirtIOGPUInfo info;virtio_gpu_get_info(s->machine.gpu,&info);
+        out->present=1;out->requested_bytes=info.requested_budget;
+        out->effective_bytes=info.budget_bytes;
+        out->target_bytes=info.pending_target?info.pending_target:info.budget_bytes;
+        out->host_blob_bytes=info.host_blob_bytes;
+        out->host_internal_bytes=info.host_internal_bytes;
+        out->logical_resource_bytes=info.live_bytes;
+        out->mapped_alias_bytes=info.aperture_bytes;
+        out->pending=info.pending_target!=0;
+        out->clamped=out->target_bytes!=out->requested_bytes;
+        out->needs_reset=info.needs_reset;
+    }
+    unlock(s);return 0;
 }

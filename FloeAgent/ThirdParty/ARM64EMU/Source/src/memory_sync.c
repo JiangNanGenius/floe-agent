@@ -3,6 +3,7 @@
 #define AE_PD_GUARD_SLOT_PRIVATE 1
 #include "memory_sync.h"
 #include "machine.h"
+#include "memory_regions.h"
 #include "parallel_iface.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -159,7 +160,7 @@ bool memory_host_span(Machine *m,const void *host,u64 length,u64 *pa) {
     if(m->flash&&p>=b&&length<=m->flash_size&&p-b<=m->flash_size-length) {
         *pa=m->flash_base+(u64)(p-b);return true;
     }
-    return false;
+    return machine_region_guest_pa(m,host,length,pa);
 }
 /* Keep bitset setup/rollback out of the common one-page stack frame. */
 __attribute__((noinline))
