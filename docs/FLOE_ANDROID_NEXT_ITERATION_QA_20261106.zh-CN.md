@@ -1122,3 +1122,16 @@ G2在原项目复用已安装的图形环境，实际软件清单显示Inkscape�
 English: A new fixed-time Samsung107 run genuinely started in the background, but its first device observation was cancelled during automatic unlock by the run-liveness check. Nineteen original records are retained; no approval, resume or replay occurred. A separate source package repairs background ownership. G2 verified software size inventory, Inkscape removal, package-cache completion, classified storage readings and actual GUI-process exit; the original report reopened. It also exposed a deleted test SVG returning after Linux restart/stop. Workspace deletion reconciliation is a second independent repair. Temporary credentials, permissions and test records were cleaned; these observations do not claim either repair or whole-goal completion.
 
 English: Public81 ships the complete device namespace and owned-relock repair from immutable sourcefd37a3ca5/native41. Focused compilation, native/signature/source checks, all seven public assets, host reconstruction and both current/retained65 discovery pass. Fresh Samsung P2 proves actual result4, completed canonical calls and natural relock; its corrected model mistap and P1's setup failure remain separate evidence. Temporary credentials/permissions and owned task/export residue were restored. Remaining schedule/recovery and named G1 space-management checks continue under existing identities; this intermediate release does not close the whole goal or advance to1.0.0.
+
+## 2026-11-12 后台定时设备任务与文件删除实测
+
+公开 Alpha81 及原 S1／G3 故障保持不可变。私有工程包 `4ed352ca8`／native42 的新 S2 用例在三星 Android13 上由一次原生计划触发，触发前从未打开生成的对话：实际锁屏→解锁→计算器显示9→任务完成→原生自动重锁。49条原始记录确认只使用 Ark Plan／`ark-code-latest`，4次成功的规范 `device` 工具调用、3个界面动作，无重放。自建任务／计划／设备导出已移除，临时凭据、无障碍、应用范围、自动化、电池豁免及电源设置已恢复，原5任务保留。
+
+独立 G3D 已确认原生删除的自建文件在新终端会话及原生列表中均未回流。G3首次返回旧内容的故障仍保留；关闭标签后重新打开实际能读到 Linux 新内容，定位为保留标签未重新读取。修复 `6b9855a72` 对新的文档呈现发出一次原生打开请求，旋转恢复／进行中的载入复用现有请求，原生草稿保护保持。Full 实际编译、11项导航检查及4项 Device 指南 Swift 对象检查通过；native43 和私有 Full APK 已生产，通过58项原生／包检查，修复后的编辑器实机验收另行记录。不得将私有工程包覆盖为公开81，1.0.0仍在功能验证后提升。
+
+English: Fresh unseen scheduled S2 passes real Samsung lock/unlock, canonical device calls, result9, completion and natural relock; original failures and49 raw records remain intact and temporary configuration is restored. Independent G3D proves no deleted-file resurrection. The retained-tab refresh fix has actual Full/Swift compilation and15 focused cases plus58 package checks; its new APK behavior is recorded separately. Public81 is immutable and final1.0.0 still follows functional acceptance.
+
+
+补充实机结果：`6b9855a72`／native43的独立 G4 首次返回保留的干净标签页即显示 Linux 新内容，无关闭标签、刷新或重试。其自建文件已从原生和新 Linux 会话确认移除，已结束会话标签已清；电源设置恢复，三星自然锁屏，原5任务／2项目保留。原 G3 故障不改写。既定功能验证后，按用户要求将待发行元数据提升为1.0.0／108并同步对应源码入口；实际108构建、在线更新和公开读回仍须完成后才称交付。
+
+English: Independent G4 on6b9855a72/native43 displays the Linux update on the first return to the retained clean tab, without a tab-close, reload or retry. Owned native/guest files and ended tabs are removed and the device is restored. The user-authorized1.0.0/code108 metadata and source offer follow functional verification; final108 packaging, online update and public byte readback are still pending.

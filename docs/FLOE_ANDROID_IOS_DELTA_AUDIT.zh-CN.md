@@ -407,3 +407,20 @@ iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), wi
 已从固定Git对象核对主线检查点`78c3fc546a797721480f79e465139931f67514d0`的19条路径，范围为iPhone根导航／顶栏、任务中心、设置及工具箱、蓝牙串口发现／接入和配套测试／工程配置。后续分别归既有N08手机布局／入口及C05/N07设备通信增量，保留原编号。主线交接的六项App蓝牙合约属于iOS证据，不代替Android硬件验收；没有新增重型编辑器范围或当前APK发布等待门。
 
 这里只登记这一提交及其交接，不宣称从上次完整锚点`0ed1af723…`到此的所有提交均已对账；后续大目标收尾仍从该锚点覆盖未核对区间。Alpha65固定源`729812f2a…`及公开字节保持，N01–N08尚未结束。本次未运行iOS编译／模拟器。
+
+## 2026-11-12 N01–N08 收尾的固定增量登记
+
+本次固定比较上次完整锚点 `0ed1af72338902dc3d1da16ad8e99f0d4fb4111f` → iOS 332 源码 `22f8c31e7cbe86febe150c24284d9fd2fdf50ee8`，以 Android `96d700a1e2c959602aced75ebb55afd4a48dafb4` 为静态对照。后续 Android `6b9855a72` 的编辑器重新进入刷新和 Device 指南修复另有定向编译／设备记录。`78c3fc546…` 的单提交登记、原视觉基线 `36f63bf4…` 以及原 G/C/IOS-D、183 项和 N01–N08 编号均保留。
+
+该 iOS 区间涉及 2,889 条路径，主要增量来自原生组件、供应商源码和重型工作台；路径数不代表缺失功能数。本次只核对以下四组相关合同，其余按路径分组，未逐文件验收。
+
+| 合同 | 增量结论与本轮边界 |
+| --- | --- |
+| 工作区、路径与写入回执 | 路径包含／符号链接 guard 在两端锚点之间没有新增规则。iOS 新增基线与写入的锁跨度、过大变更的预览回执及远程补丁不完整读取检查，列为后续回执加固；未据此宣称 Android 已发生路径越界或损坏。 |
+| 任务、后台与成果 | 既有 Android 执行、作业／服务、成果读取和恢复合同继续沿原编号；新的 `task.wait`、已验证成果导入工具及分页内容引用另记后续增强，不新增本轮交付等待门。后台设备任务仍以本轮三星原始回执验收。 |
+| 提问与恢复 | iOS 新增可继续问题的默认答案／期限及恢复后投递语义；Android 自定义答案与备注字段的差异也保留记录，其中自定义字段并非此次新增差异。后续按提问合同维护，不把静态差异冒充设备失败或已实现。 |
+| 云语音与媒体 | 原有识别、合成、转录及媒体作业合同继续使用；说话人区分、持续会议转录和新的专业媒体工作台另记后续增强。保持系统／云语音、无 App 本地模型、Android 原生应用优先与 Linux 增强的已定边界。 |
+
+这是固定 Git 对象的有限静态检查，未运行 iOS 编译、模拟器或新增提供商调用。iOS 当前独立稳定性工作及新的重型编辑器不会不断扩大本轮 Android 范围；不能由本登记推定整段 2,889 路径均通过 Android 验收。
+
+English: This bounded registration compares the last complete iOS anchor0ed1af723 through immutable332 source22f8c31e7 against Android96d700a1. The path guard itself is unchanged. Additive receipt hardening, question deadlines/custom-answer fields, verified-output imports, live speaker transcription and heavy workbenches remain subsequent maintenance or enhancements. Existing task/device acceptance uses original Android evidence. No iOS/device/provider runtime acceptance or exhaustive file audit is claimed.
