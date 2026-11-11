@@ -103,7 +103,7 @@ public enum AndroidBundledSkillGuides {
                                 "system.packages.removeForUser", "system.packages.restore",
                                 "system.files.list", "system.files.read", "system.files.write",
                                 "system.files.move", "system.files.delete",
-                                "phone.observe", "phone.act", "phone.screenshot", "exec.shell"],
+                                "device.observe", "device.act", "device.screenshot", "exec.shell"],
     ]
 
     public static let all: [BundledDomainSkills.Definition] = [
@@ -188,7 +188,7 @@ public enum AndroidBundledSkillGuides {
             - `system.packages.query` confirms the installed package and version for the authorized user. Use `system.packages.uninstall` only for the task's intended application identities, then verify absence. Ordinary uninstall does not remove system-image applications. The separately enabled advanced `system.packages.removeForUser` and `system.packages.restore` paths manage eligible preinstalled apps for that user without deleting the system image; `system.packages.setEnabled` changes the selected application's enabled state. Protected components and actual OS refusals remain authoritative.
             ### Files and external apps
             - `system.files.list`/`system.files.read` inspect the exact selected root; write/move/delete require the user's writable scope. ADB cannot read arbitrary app-private data. Keep originals and verify saved results. Lightweight text/code edits belong in the existing in-app editor; use an appropriate Android app for professional editing, or the project Linux tools when more capability is needed.
-            - For UI-only external-app steps use a fresh `phone.observe`, then `phone.act` with that observation's actual identifiers and current schema, and observe the result. Use `phone.screenshot` only when the available structure is insufficient. Respect the existing user-takeover/pause and application-target controls; desktop sessions are primarily for the user, not a prerequisite for model command execution.
+            - For UI-only external-app steps use a fresh `device.observe`, then `device.act` with that observation's actual identifiers and current schema, and observe the result. Use `device.screenshot` only when the available structure is insufficient. Respect the existing user-takeover/pause and application-target controls; desktop sessions are primarily for the user, not a prerequisite for model command execution.
             """
         ),
         BundledDomainSkills.Definition(

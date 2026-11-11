@@ -733,8 +733,8 @@ class ConversationOrdinaryPathTest {
             if (sent.compareAndSet(false, true)) {
                 approved.set(true)
                 eventPage(correlation, "attached", "[" +
-                    event(1, "toolRequest", """{"id":"$callId","tool":"phone.observe","input":"{}","status":"pending"}""") + "," +
-                    event(2, "approval", """{"callID":"$callId","tool":"phone.observe","outcome":"runtime.agent_runtime.approved"}""") + "]", 2)
+                    event(1, "toolRequest", """{"id":"$callId","tool":"device.observe","input":"{}","status":"pending"}""") + "," +
+                    event(2, "approval", """{"callID":"$callId","tool":"device.observe","outcome":"runtime.agent_runtime.approved"}""") + "]", 2)
             } else eventPage(correlation, "attached", nextSequence = 2)
         }
         val exchange = buildExchange(script)

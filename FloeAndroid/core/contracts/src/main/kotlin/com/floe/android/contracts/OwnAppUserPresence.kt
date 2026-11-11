@@ -5,9 +5,10 @@ package com.floe.android.contracts
  * Neutral process-local bridge carrying trusted physical user input from
  * Floe's own Activity window into the Full-only phone-control session.
  *
- * Only a genuine user touch/key on Floe's own Activity reports through this
- * bridge ([android.app.Activity.onUserInteraction] is the sole producer, so
- * ordinary programmatic own-App clicks/scrolls can never emit it). The
+ * Floe's Activity input-dispatch hooks report touch/key/button/scroll input
+ * through this bridge. Activity.onUserInteraction is deliberately excluded:
+ * Android also calls it when launching another Activity without user input.
+ * Ordinary programmatic own-App clicks/scrolls do not dispatch input. The
  * phone-control runtime binds one listener while its AccessibilityService is
  * live and clears it on detach: a retired service can therefore never
  * receive new task input, and no global listener survives service death. The

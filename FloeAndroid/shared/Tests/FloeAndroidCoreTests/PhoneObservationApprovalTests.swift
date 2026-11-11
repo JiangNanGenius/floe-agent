@@ -77,6 +77,42 @@ final class PhoneObservationApprovalTests: XCTestCase {
         XCTAssertNil(cache.evidence(for: try call(observation: newID), redactingSecret: nil))
     }
 
+    func testCanonicalDeviceNamesCarryIdenticalEvidenceAcrossLegacySpelling() throws {
+        // The canonical device.* names are the live contract; the bounded
+        // legacy phone.* spellings keep identical evidence behavior so an
+        // activation restored from a pre-rename record is indistinguishable.
+        var canonicalCache = PhoneObservationReviewCache()
+        try record(&canonicalCache, id: newID, tool: "device.observe")
+        let canonicalEvidence = try XCTUnwrap(
+            canonicalCache.evidence(for: try call("device.act", observation: newID),
+                                    redactingSecret: nil))
+        XCTAssertEqual(canonicalEvidence.observationID, newID)
+        XCTAssertEqual(canonicalEvidence.sourceTool, "device.observe")
+        XCTAssertEqual(canonicalEvidence.nodeSummary, "n10|View|c|Save")
+
+        // A legacy-named call is accepted through the bounded alias rule and
+        // its identity carries truthfully (the original spelling is kept).
+        var legacyCache = PhoneObservationReviewCache()
+        try record(&legacyCache, id: newID, tool: "phone.observe")
+        let legacyEvidence = try XCTUnwrap(
+            legacyCache.evidence(for: try call("phone.act", observation: newID),
+                                 redactingSecret: nil))
+        XCTAssertEqual(legacyEvidence.observationID, newID)
+        XCTAssertEqual(legacyEvidence.sourceTool, "phone.observe")
+        // Mixed old/new spellings within one activation resolve to the same
+        // observation identity: the cache matches on the observation id and
+        // node ref, not on the name spelling.
+        try record(&legacyCache, id: newID, tool: "device.observe")
+        XCTAssertNotNil(legacyCache.evidence(for: try call("phone.act", observation: newID),
+                                             redactingSecret: nil))
+        // A device observation never supplies evidence to a non-device tool,
+        // and an unknown phone.* tool never receives device evidence.
+        XCTAssertNil(legacyCache.evidence(for: try call("tools.search", observation: newID),
+                                          redactingSecret: nil))
+        XCTAssertNil(legacyCache.evidence(for: try call("phone.teleport", observation: newID),
+                                          redactingSecret: nil))
+    }
+
     func testOnlyTheRequestedNodeIsProjectedAndSecretsAreRedacted() throws {
         var cache = PhoneObservationReviewCache()
         let secret = "synthetic-provider-secret"

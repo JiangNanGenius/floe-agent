@@ -5,8 +5,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * FULL-only trusted descriptor catalog for the App's phone and Android-system
- * tools.
+ * FULL-only trusted descriptor catalog for the App's device-interaction and
+ * Android-system tools.
+ *
+ * The phone/tablet screen tools are canonically named in the `device.`
+ * namespace (`device.observe`, `device.act`, `device.screenshot`) so one
+ * chain serves BOTH phones and tablets. The `PHONE_*` identifiers below are
+ * retained internal constant names whose VALUES are the canonical device
+ * names (avoiding churn in receipts, settings copy and legacy tests); new
+ * code should prefer the `DEVICE_*` spellings. The bounded legacy-alias
+ * rule that keeps previously persisted `phone.*` run records resumable
+ * lives on the shared Swift side (`DeviceToolNames`); this catalog never
+ * advertises the old names, so discovery cannot list a tool twice.
  *
  * These names, schemas and descriptions live ONLY in the `full` source set.
  * The common/Play core never sees them: Play never binds a platform catalog and
@@ -24,9 +34,28 @@ import org.json.JSONObject
  */
 internal object DeviceAccessToolCatalog {
 
-    const val PHONE_OBSERVE = "phone.observe"
-    const val PHONE_ACT = "phone.act"
-    const val PHONE_SCREENSHOT = "phone.screenshot"
+    const val DEVICE_OBSERVE = "device.observe"
+    const val DEVICE_ACT = "device.act"
+    const val DEVICE_SCREENSHOT = "device.screenshot"
+
+    /**
+     * Retained legacy identifiers: same canonical device values as the
+     * `DEVICE_*` constants. Only the wire value matters to the runtime; the
+     * old names remain so historical receipts, out-of-lane test source and
+     * granted configuration keep compiling and stay readable. Never assign
+     * the old `phone.*` strings here again.
+     */
+    const val PHONE_OBSERVE = DEVICE_OBSERVE
+    const val PHONE_ACT = DEVICE_ACT
+    const val PHONE_SCREENSHOT = DEVICE_SCREENSHOT
+
+    /**
+     * The device-interaction names as they travel on the wire, in discovery
+     * order. `PHONE_*` and `DEVICE_*` are the same three values.
+     */
+    val DEVICE_INTERACTION_NAMES: Set<String> = linkedSetOf(
+        DEVICE_OBSERVE, DEVICE_ACT, DEVICE_SCREENSHOT,
+    )
     const val SYSTEM_ACCESS_STATUS = "system.access.status"
     const val SYSTEM_FILES_LIST = "system.files.list"
     const val SYSTEM_FILES_READ = "system.files.read"
@@ -68,7 +97,7 @@ internal object DeviceAccessToolCatalog {
     )
 
     val allNames: Set<String> = linkedSetOf(
-        PHONE_OBSERVE, PHONE_ACT, PHONE_SCREENSHOT,
+        DEVICE_OBSERVE, DEVICE_ACT, DEVICE_SCREENSHOT,
         SYSTEM_ACCESS_STATUS,
         SYSTEM_FILES_LIST, SYSTEM_FILES_READ, SYSTEM_FILES_WRITE,
         SYSTEM_FILES_MOVE, SYSTEM_FILES_DELETE,
@@ -92,7 +121,7 @@ internal object DeviceAccessToolCatalog {
          * The phone module can capture at all on this platform (API 30+).
          *
          * This is the POTENTIAL capability, not the task's screen consent:
-         * like task arming for [PHONE_OBSERVE]/[PHONE_ACT], the per-call task
+         * like task arming for [DEVICE_OBSERVE]/[DEVICE_ACT], the per-call task
          * screen scope, whole-screen consent, observation/window fence and
          * arm state are all enforced by the host when the tool is invoked.
          * Discovery must not depend on those mutable grants: the runtime
@@ -132,15 +161,15 @@ internal object DeviceAccessToolCatalog {
         val phone = availability.accessibilityConnected &&
             availability.targetPackagesSelected
         if (phone) {
-            result += PHONE_OBSERVE
-            result += PHONE_ACT
+            result += DEVICE_OBSERVE
+            result += DEVICE_ACT
             // Potential capability, not a task grant. The device's capture
             // support alone decides discoverability; the host refuses the
             // call with screen_scope_off / whole_screen_consent_required /
             // window_screenshot_unsupported / phone_arm_required unless the
             // live task really holds that authority.
             if (availability.screenCaptureSupported) {
-                result += PHONE_SCREENSHOT
+                result += DEVICE_SCREENSHOT
             }
         }
         if (availability.systemServiceAlive) {
@@ -221,9 +250,9 @@ internal object DeviceAccessToolCatalog {
      * is published separately by [availableNames] for the same epoch. */
     fun catalogJson(): ByteArray {
         val tools = JSONArray()
-        tools.put(phoneObserve())
-        tools.put(phoneAct())
-        tools.put(phoneScreenshot())
+        tools.put(deviceObserve())
+        tools.put(deviceAct())
+        tools.put(deviceScreenshot())
         tools.put(systemAccessStatus())
         tools.put(systemFilesList())
         tools.put(systemFilesRead())
@@ -254,17 +283,17 @@ internal object DeviceAccessToolCatalog {
         return root.toString().toByteArray(Charsets.UTF_8)
     }
 
-    // ---------------------------------------------------------------- phone
+    // ---------------------------------------------------------------- device
 
-    private fun phoneObserve(): JSONObject = tool(
-        name = PHONE_OBSERVE,
-        description = "Observe the visible page of the active phone task. " +
+    private fun deviceObserve(): JSONObject = tool(
+        name = DEVICE_OBSERVE,
+        description = "Observe the visible page of the active device task (phone or tablet). " +
             "Returns the observation id, page identity and a bounded list of " +
             "actionable node refs (clickable/editable/scrollable). Password " +
             "fields, secure windows and the lock screen are never read. A " +
             "fresh observation invalidates older refs. Pass the returned " +
-            "observation= id as observationId on the next phone.act: every " +
-            "phone.act action except launch requires it.",
+            "observation= id as observationId on the next device.act: every " +
+            "device.act action except launch requires it.",
         schema = schema(
             properties = JSONObject()
                 .put("includeInvisible", bool("Include nodes that are not visible.")),
@@ -275,14 +304,14 @@ internal object DeviceAccessToolCatalog {
         sideEffecting = false,
     )
 
-    private fun phoneAct(): JSONObject = tool(
-        name = PHONE_ACT,
-        description = "Act on the latest phone observation: every action except launch requires " +
-            "observationId, the id from the observation= line of the newest phone.observe result in " +
+    private fun deviceAct(): JSONObject = tool(
+        name = DEVICE_ACT,
+        description = "Act on the latest device observation: every action except launch requires " +
+            "observationId, the id from the observation= line of the newest device.observe result in " +
             "this run; after an approval wait, a takeover or any screen change, observe again first. " +
             "Only action=launch may omit observationId: launch an authorized app with action=launch " +
             "and packageName, and the existing launch path obtains current navigation state after " +
-            "approval. If a call fails with phone_observation_required, call phone.observe again and " +
+            "approval. If a call fails with phone_observation_required, call device.observe again and " +
             "act on its new id; never invent or reuse an older id. " +
             "Supported actions: click, setText, scroll, swipe, back, home, " +
             "launch. The action is dispatched once, then re-observed; framework " +
@@ -301,7 +330,7 @@ internal object DeviceAccessToolCatalog {
             "visible. Never search the screen, files or other apps for a password.",
         schema = schema(
             properties = JSONObject()
-                .put("observationId", string("Required for every action except launch: the id from the latest phone.observe observation= line. Omit only for action=launch; back and home also require it.", 1, 64))
+                .put("observationId", string("Required for every action except launch: the id from the latest device.observe observation= line. Omit only for action=launch; back and home also require it.", 1, 64))
                 .put("action", enum(
                     "Action to perform.",
                     listOf("click", "setText", "scroll", "swipe", "back", "home", "launch"),
@@ -325,8 +354,8 @@ internal object DeviceAccessToolCatalog {
         sideEffecting = true,
     )
 
-    private fun phoneScreenshot(): JSONObject = tool(
-        name = PHONE_SCREENSHOT,
+    private fun deviceScreenshot(): JSONObject = tool(
+        name = DEVICE_SCREENSHOT,
         description = "Capture the current page as a real image artifact. " +
             "With observationId the preferred window-scoped capture is used " +
             "where the platform supports it; without it an explicit whole-screen " +

@@ -141,7 +141,8 @@ public struct PhoneObservationEvidence: Sendable, Codable, Hashable {
 /// A returned result or accepted launch does not prove completion of an
 /// external effect. Its bounded output excerpt remains untrusted context.
 public struct CommittedStepReceipt: Sendable, Codable, Hashable {
-    /// The catalog tool name that completed (e.g. `phone.act`).
+    /// The catalog tool name that completed (e.g. `device.act`, published
+    /// as `phone.act` before the device-namespace rename).
     public var toolName: String
     /// Bounded excerpt of the settled result. Untrusted data, context only.
     public var excerpt: String

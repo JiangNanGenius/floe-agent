@@ -1090,3 +1090,13 @@ English: Samsung evidence closes real system-app restoration, the Linux-to-APK p
 清理本轮7个自建任务、5个下载APK、3个共享暂存文件及2个已退役任务的暂存引用，保留原任务／项目和原失败。清理6处完成构件并保存8份生产回执；当前／必要回滚、符号、SDK/AVD和下一明确用途缓存保持。AS／Root关闭且无解锁凭据；常亮、无线调试及已选高级范围明确交给紧接的N02排查，结束再恢复。无模拟器启动或删除。
 
 English: Public80 passes exact production/package/source/update/public-byte checks and both current/retained-client discovery. Samsung's real in-App engineering105-to-public106 full joint update preserves bytes, UIDs and baseline data. The child staging page and saved pairing work; fresh UID capability refresh, unlock/relock, cross-App saves and scheduling/recovery remain open. The user approves the overall UI; only small refinements remain. The following default-outline change passes actual Release design-system compilation and ships in the next batch, without changing frozen80 or expanding verification. Owned residue/completed outputs were retired; required recovery and original evidence survive. The existing whole goal stays active.
+
+## 2026-11-12 设备工具命名与三星图形编辑回传
+
+**用户命名决定：** 手机和平板共同使用的观察、操作和截图工具统一为 `device.observe`、`device.act`、`device.screenshot`。同步接通目录、派发、审批、等待恢复、敏感参数脱敏和指南；新目录不重复展示旧名，已有记录及尚待恢复的旧调用保留受限兼容。内部服务、类型和存储字段不为更名而整体迁移。代码已接通，实际Swift对象／测试编译45项和Android Full Release消费端编译／46项相关检查通过；尚不在公开80包中。
+
+三星公开80的新O1用例实际完成自动解锁、10项工具调用及6次设备操作，读取计算器结果4并正常结束；完整原始记录已导出。结束重锁被Activity离开回调误判为用户接管，仍未通过。后续3文件小修改为识别实际输入派发，并标记自主应用启动；待与工具更名统一编译、新包复测，不倒填为80通过。自己的任务及导出已清，临时解锁凭据删除，设备控制范围及无障碍恢复。
+
+N05新的三星手动G1通路通过：原生轻编辑器保存SVG并预览，在真实项目环境按需安装并打开ARM64 Inkscape，手动修改颜色并保存；停止图形会话后，Floe重新打开文件显示实际修改。自己的四个图形进程已退出，测试SVG通过App删除，原工作区两份文件保持可见；没有新模型运行或云端调用。该证据闭合本场景的专业Linux编辑、保存和App重开，不扩成跨项目、进程死亡或定时自动化的全面通过。图形环境仍供用户手动使用，模型优先命令行；轻编辑继续留在App。
+
+English: Android phone/tablet tools now use device.observe/act/screenshot across dispatch, approval, restoration and sensitive-input handling. Actual Swift object/test compilation passes45 focused cases; the Android Full Release Kotlin consumer and46 related JVM cases pass. The rename is not yet a released APK. Fresh Samsung O1 proves automatic unlock and six actual calculator actions with result4, but owned relock is still cancelled by a lifecycle callback; the local follow-up awaits the combined APK/device check. Manual G1 passes native SVG authoring, real project Inkscape installation/edit/save, explicit session stop and reopening the modified file in Floe. Owned processes and the fixture were retired; existing files remain. This focused result does not imply process-death or scheduled-workflow acceptance.

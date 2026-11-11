@@ -302,7 +302,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// Identifiers of pending tool calls whose credential arguments were
     /// intentionally scrubbed from this checkpoint's durable copies. Recovery
     /// fails these calls closed instead of replaying redacted bytes (a
-    /// redacted phone.act text input must never be re-dispatched). Optional
+    /// redacted device.act text input — or its legacy phone.act persisted
+    /// spelling — must never be re-dispatched). Optional
     /// so checkpoints written before this field remain decodable; an absent
     /// value keeps the previous conservative repair behavior.
     public var sensitiveToolCallIDs: [String]?

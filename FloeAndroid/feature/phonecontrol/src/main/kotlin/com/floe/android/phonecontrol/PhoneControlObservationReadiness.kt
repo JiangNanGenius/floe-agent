@@ -25,8 +25,9 @@ internal interface PhoneObservationReadinessDriver {
 /**
  * The ONE bounded readiness transaction for an explicit observation whose
  * first capture found no published active window. The demonstrated case
- * (Samsung API33, public78/code104): an admitted task's first phone.observe
- * performed the in-call automatic unlock, the keyguard reported unlocked at
+ * (Samsung API33, public78/code104, when the observation tool was still
+ * published as `phone.observe`): an admitted task's first observe performed
+ * the in-call automatic unlock, the keyguard reported unlocked at
  * the exact completion second, and the framework had not yet re-published the
  * active accessibility window — the old single-shot capture mapped that
  * ordinary transition instant to OBSERVATION_FAILED and the model stopped.

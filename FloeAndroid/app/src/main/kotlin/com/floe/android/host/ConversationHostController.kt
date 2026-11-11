@@ -104,11 +104,22 @@ private const val NOTES_PLATFORM_WAIT_MILLIS = 15_000L
  */
 private const val QUESTION_DISCOVERY_ATTEMPTS = 8
 private const val QUESTION_DISCOVERY_INTERVAL_MILLIS = 400L
-// Full's phone handler has a 25s operation budget. Discovery covers that
+// Full's device handler has a 25s operation budget. Discovery covers that
 // preparation window; it does not extend tool execution or approve takeover.
 private const val PHONE_QUESTION_DISCOVERY_ATTEMPTS = 32
 private const val PHONE_QUESTION_DISCOVERY_INTERVAL_MILLIS = 1_000L
-private val PHONE_QUESTION_TOOLS = setOf("phone.observe", "phone.act", "phone.screenshot")
+/**
+ * Run-event tool names that may carry a phone-control handover question.
+ * The canonical device-namespace names are what the runtime emits today; the
+ * bounded legacy phone.* spellings stay so an event page persisted under the
+ * old naming (or produced while a resumed run still names the old tool) is
+ * still discovered. Exact closed set — never a prefix match, so unknown
+ * phone.* tools can never acquire question discovery.
+ */
+private val PHONE_QUESTION_TOOLS = setOf(
+    "device.observe", "device.act", "device.screenshot",
+    "phone.observe", "phone.act", "phone.screenshot",
+)
 
 
 /**

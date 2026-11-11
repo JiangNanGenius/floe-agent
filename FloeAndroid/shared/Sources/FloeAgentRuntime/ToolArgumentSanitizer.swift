@@ -9,24 +9,80 @@
 // `ToolCall`, so the real dispatch is unchanged.
 //
 // Scope is deliberately narrow: header/argument names whose value is a
-// credential, plus the exact phone.act setText inputs. It does not try to be
-// a general secret scanner and does not depend on a global registry.
+// credential, plus the exact device.act setText inputs (the tool is
+// canonically named `device.act`; it was published as `phone.act` before
+// the device-namespace rename, and BOTH spellings carry the identical
+// redaction rule so previously persisted records stay scrubbed). It does
+// not try to be a general secret scanner and does not depend on a global
+// registry.
 //
-// Phone sensitive input (conservative v1 rule): the Android host learns
+// Device sensitive input (conservative v1 rule): the Android host learns
 // whether the target node is a protected field only at dispatch, which is
 // AFTER the tool request and checkpoint copies are written, and a dispatcher
-// can reject the call AFTER persistence. So for `phone.act`, ANY root-level
-// `text` or `sensitiveText` key is credential material REGARDLESS of the
-// declared action (a missing or invalid action must not leave a leaked
-// value), matched case-insensitively. Any malformed/unparseable or
-// non-object phone.act payload is omitted WHOLE rather than substring
-// scanned, because escaped key names and field order must never evade the
-// rule. Ordinary phone actions without text stay replayable and unrelated
-// document/file tools are never blanket-redacted. The live dispatch copy
-// always keeps the exact bytes.
+// can reject the call AFTER persistence. So for `device.act` (and the legacy
+// `phone.act` spelling), ANY root-level `text` or `sensitiveText` key is
+// credential material REGARDLESS of the declared action (a missing or
+// invalid action must not leave a leaked value), matched case-insensitively.
+// Any malformed/unparseable or non-object device.act payload is omitted
+// WHOLE rather than substring scanned, because escaped key names and field
+// order must never evade the rule. Ordinary device actions without text
+// stay replayable and unrelated document/file tools are never blanket-
+// redacted. The live dispatch copy always keeps the exact bytes.
 
 import Foundation
 import FloeModels
+import FloeTools
+
+/// Canonical Android device-namespace tool names and the bounded legacy
+/// alias for the phone.* → device.* rename.
+///
+/// `device.observe`, `device.act` and `device.screenshot` are the ONE
+/// tool chain for BOTH phones and tablets. The table below is the ONLY
+/// compatibility path for previously persisted `phone.*` records: exactly
+/// the three pre-rename spellings map to their canonical names, so a
+/// resumed run, an old persisted task policy, a stored interrupted question
+/// or persisted sensitive arguments keep working without rewriting any
+/// historical data. It is a closed 3-entry map — NEVER a prefix or family
+/// match — so unknown `phone.*` names pass through unchanged and can never
+/// become a universal alias or widen a grant.
+public enum DeviceToolNames {
+    public static let observe = "device.observe"
+    public static let act = "device.act"
+    public static let screenshot = "device.screenshot"
+
+    /// Exact pre-rename spellings → canonical names. Closed set.
+    static let legacyToCanonical = ToolAliasTable.deviceInteractionRenames
+
+    /// Canonical spelling for one of the three legacy names; every other
+    /// name (including unknown `phone.*` names) passes through unchanged.
+    public static func canonical(_ name: String) -> String {
+        legacyToCanonical[name] ?? name
+    }
+
+    /// The canonical device-interaction names, in handoff order.
+    public static let interactionNames: Set<String> = [observe, act, screenshot]
+
+    /// The bounded legacy spellings accepted alongside the canonical names.
+    public static let legacyInteractionNames: Set<String> = [
+        "phone.observe", "phone.act", "phone.screenshot",
+    ]
+
+    /// Canonical + bounded legacy spellings, for gates that must treat an
+    /// old persisted record exactly like its canonical successor.
+    public static let allInteractionNames: Set<String> =
+        interactionNames.union(legacyInteractionNames)
+
+    /// True when a persisted allowed-tool ceiling admits `name` under the
+    /// bounded alias rule: the exact name, or one of the three legacy
+    /// spellings whose canonical form is `name`. Both directions are
+    /// covered (an old policy listing `phone.observe` admits the canonical
+    /// `device.observe`, and a new policy listing `device.observe` admits a
+    /// legacy-named call), while unknown names behave exactly as before.
+    public static func ceilingAllows(_ allowed: Set<String>, name: String) -> Bool {
+        let target = canonical(name)
+        return allowed.contains { canonical($0) == target }
+    }
+}
 
 public enum ToolArgumentSanitizer {
     /// Case-insensitive names whose value is a credential when found in a
@@ -46,20 +102,22 @@ public enum ToolArgumentSanitizer {
         "storage", "localstorage", "sessionstorage", "cookiestorage", "storagearea"
     ]
 
-    /// The Android platform tool that carries text input. The legacy
-    /// underscore alias is normalised exactly like the browser helper, so a
-    /// wire name accepted by the dispatcher can never escape this rule.
-    /// Only this tool is affected; document, file and chat tools keep
-    /// ordinary text persistence behaviour.
+    /// The Android platform tool that carries text input. Both the canonical
+    /// `device.act` and the legacy `phone.act` spelling (plus the legacy
+    /// underscore alias) are normalised exactly like the browser helper, so
+    /// a wire name accepted by the dispatcher can never escape this rule
+    /// and previously persisted `phone.act` argument payloads stay scrubbed
+    /// when they are re-persisted. Only this tool is affected; document,
+    /// file and chat tools keep ordinary text persistence behaviour.
     static func isPhoneActTool(_ toolName: String?) -> Bool {
         guard let toolName else { return false }
         let canonical = toolName.lowercased().replacingOccurrences(of: "_", with: ".")
-        return canonical == "phone.act"
+        return canonical == DeviceToolNames.act || canonical == "phone.act"
     }
 
-    /// Conservative phone.act rule: any root-level `text`/`sensitiveText`
+    /// Conservative device.act rule: any root-level `text`/`sensitiveText`
     /// key (case-insensitive) is a credential regardless of the declared
-    /// action, and any NON-OBJECT parsed phone.act payload fails closed as
+    /// action, and any NON-OBJECT parsed device.act payload fails closed as
     /// sensitive so it is omitted whole. Malformed bytes are handled by the
     /// callers before structural scrubbing is possible.
     static func phoneTextInputRequested(_ object: Any, toolName: String?) -> Bool {
@@ -86,7 +144,7 @@ public enum ToolArgumentSanitizer {
             return Data(redactedText(String(decoding: data, as: UTF8.self)).utf8)
         }
         if isPhoneActTool(toolName), object as? [String: Any] == nil {
-            // A non-object phone.act document (array or fragment) cannot be
+            // A non-object device.act document (array or fragment) cannot be
             // scrubbed field-wise: omit the whole payload instead of
             // persisting it unchanged.
             return Data(#"{"_redacted":"Phone text input arguments omitted"}"#.utf8)
@@ -104,7 +162,7 @@ public enum ToolArgumentSanitizer {
                 options: [.sortedKeys, .withoutEscapingSlashes]
               ) else {
             if phoneText {
-                // A phone text argument that cannot be re-encoded must never
+                // A device text argument that cannot be re-encoded must never
                 // fall back to pattern substitution over the raw payload.
                 return Data(#"{"_redacted":"Phone text input arguments omitted"}"#.utf8)
             }
@@ -129,7 +187,7 @@ public enum ToolArgumentSanitizer {
     ) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
             if isPhoneActTool(toolName) {
-                // Malformed or partial phone.act bytes are omitted whole:
+                // Malformed or partial device.act bytes are omitted whole:
                 // escaped key names and field order must never evade the
                 // detection by substring scanning.
                 return true
@@ -250,7 +308,7 @@ public enum ToolArgumentSanitizer {
             for (key, child) in dictionary {
                 let lowered = key.lowercased()
                 if sensitivePhoneText, lowered == "text" || lowered == "sensitivetext" {
-                    // phone.act shape (action-agnostic): {action?,
+                    // device.act shape (action-agnostic): {action?,
                     // nodeRef:"n3", text|sensitiveText:"SECRET", ...}.
                     // Keep the action/ref/id metadata; mask only the typed
                     // value. The flag is consumed at this arguments root —

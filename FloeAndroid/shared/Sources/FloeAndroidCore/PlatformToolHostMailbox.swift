@@ -700,8 +700,15 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
 
     // MARK: Execution (registered runner body)
 
-    public func execute(toolName: String, argumentsJSON: Data,
+    public func execute(toolName requestedName: String, argumentsJSON: Data,
                         context: ToolContext) async throws -> ToolExecutionOutput {
+        // Bounded legacy alias (exactly phone.observe/act/screenshot →
+        // device.*): a call minted from a persisted pre-rename record keeps
+        // its identity across the rename and dispatches against the canonical
+        // catalog entry. Unknown phone.* names pass through unchanged and
+        // fail closed at the exact-name catalog lookup below — never a
+        // universal alias.
+        let toolName = DeviceToolNames.canonical(requestedName)
         try context.cancellation.throwIfCancelled()
         guard !context.temporaryReadOnly, !context.publicWebOnly else {
             throw FloeError.validationFailed(
@@ -718,13 +725,14 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         if let origin = context.callOrigin {
             guard origin.kind == .mainRunDelegate,
                   origin.runID == context.runID,
-                  origin.toolName == toolName,
+                  origin.toolName == requestedName,
                   origin.callID == (context.toolCallID ?? "") else {
                 throw FloeError.validationFailed(
                     "Phone and system tools are main-run only")
             }
         }
-        if let ceiling = context.allowedToolNames, !ceiling.contains(toolName) {
+        if let ceiling = context.allowedToolNames,
+           !DeviceToolNames.ceilingAllows(ceiling, name: toolName) {
             throw FloeError.validationFailed(
                 "This tool is outside the task's effective capability set")
         }
@@ -791,7 +799,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                                           owner: owner, cancellation: context.cancellation)
             } catch PlatformToolTransportError.remoteFailed(let code, let detail)
                 where ["phone_presence_required", "phone_unlock_required", "phone_unlock_needs_user", "phone_paused_by_user"].contains(code)
-                    && ["phone.observe", "phone.act", "phone.screenshot"].contains(toolName) {
+                    && DeviceToolNames.allInteractionNames.contains(toolName) {
                 // Park through the SAME durable question coordinator, after
                 // the transport ticket has retired. Pause fences observations;
                 // an interrupted action's old observation must be refreshed.

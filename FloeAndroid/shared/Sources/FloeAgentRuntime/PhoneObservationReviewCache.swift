@@ -4,9 +4,12 @@ import FloeCore
 import FloeModels
 import FloeSecurity
 
-/// Activation-local evidence for phone approval. It is intentionally absent
-/// from checkpoints: resumed work must obtain a new device observation.
-/// Dispatch still checks live owner, window, generation and expiry itself.
+/// Activation-local evidence for device (phone/tablet) approval. It is
+/// intentionally absent from checkpoints: resumed work must obtain a new
+/// device observation. Dispatch still checks live owner, window, generation
+/// and expiry itself. Both the canonical device.* names and the bounded
+/// legacy phone.* spellings are accepted so a restored activation that still
+/// names the old tools keeps identical evidence behavior.
 struct PhoneObservationReviewCache: Sendable {
     private struct Observation: Sendable {
         let sourceTool: String
@@ -19,7 +22,7 @@ struct PhoneObservationReviewCache: Sendable {
     /// Called only on the normal, just-settled execution path, before durable
     /// result compaction. Recovery and assistant messages never populate it.
     mutating func record(call: ToolCall, result: ToolResult, outcomeUnknown: Bool) {
-        guard call.toolName == "phone.observe" || call.toolName == "phone.act" else { return }
+        guard DeviceToolNames.allInteractionNames.contains(call.toolName) else { return }
         latest = nil
         guard result.callID == call.id, result.status == .ok, !outcomeUnknown else { return }
         let lines = String(result.outputSummary.prefix(4_096))
@@ -29,12 +32,15 @@ struct PhoneObservationReviewCache: Sendable {
               let first = header.split(separator: " ").first,
               let id = UUID(uuidString: String(first.dropFirst("observation=".count)))
         else { return }
+        // The recorded source tool keeps the call's ORIGINAL spelling so
+        // evidence identity carries truthfully across old/new persisted
+        // runs; matching below canonicalises instead.
         latest = Observation(sourceTool: call.toolName, id: id,
                              page: header, lines: lines)
     }
 
     func evidence(for call: ToolCall, redactingSecret secret: String?) -> PhoneObservationEvidence? {
-        guard call.toolName == "phone.act", let latest,
+        guard DeviceToolNames.canonical(call.toolName) == DeviceToolNames.act, let latest,
               let args = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
               let rawID = args["observationId"] as? String,
               let id = UUID(uuidString: rawID), id == latest.id,

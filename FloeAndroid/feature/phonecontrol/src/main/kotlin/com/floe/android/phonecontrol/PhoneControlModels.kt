@@ -211,7 +211,8 @@ sealed interface PhoneControlAction {
      * Never logged or echoed; [toString] intentionally hides the payload.
      *
      * [sensitive] is true when the payload arrived through the explicit
-     * `phone.act` `sensitiveText` parameter: a credential the user already
+     * `device.act` `sensitiveText` parameter (published as `phone.act`
+     * before the device-namespace rename): a credential the user already
      * supplied inside this authorized task (no vault prerequisite). The exact
      * bytes are dispatched once to a live-owned, fresh, editable node, both
      * wire keys are redacted before persistence, and an interrupted fill is

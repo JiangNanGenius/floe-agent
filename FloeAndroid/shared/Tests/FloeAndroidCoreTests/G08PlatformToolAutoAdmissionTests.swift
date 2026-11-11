@@ -397,8 +397,13 @@ final class G08PlatformToolAutoAdmissionTests: XCTestCase {
                            "\(other) was not opted in")
         }
 
-        // Everything outside the closed sets is never admitted.
-        for foreign in ["phone.observe", "system.packages.query",
+        // Everything outside the closed sets is never admitted. The
+        // canonical device-interaction names and the bounded legacy phone.*
+        // spellings are equally foreign to the admission ceiling: device
+        // tools keep their own approval lifecycle and are never auto-admitted.
+        for foreign in ["device.observe", "device.act", "device.screenshot",
+                        "phone.observe", "phone.act", "phone.screenshot",
+                        "system.packages.query",
                         "system.access.status", "workspace.listDirectory"] {
             XCTAssertFalse(try eligible(foreign, admission: admission))
         }
@@ -502,12 +507,14 @@ final class G08PlatformToolAutoAdmissionTests: XCTestCase {
             XCTAssertEqual(PlatformToolHostLimits.budgetMillis(toolName: name), 1_080_000,
                            "\(name) carries the 18 min bounded-batch budget")
         }
-        // Exact-name negatives: reads, phone, single-package stop, file
-        // mutations and unknown names all keep the ordinary 30s budget.
+        // Exact-name negatives: reads, device interaction (canonical and
+        // legacy spellings), single-package stop, file mutations and unknown
+        // names all keep the ordinary 30s budget.
         for name in ["system.packages.forceStop", "system.packages.staged",
                      "system.packages.query", "system.files.write",
-                     "system.access.status", "phone.observe", "phone.act",
-                     "ghost.tool"] {
+                     "system.access.status", "device.observe", "device.act",
+                     "device.screenshot", "phone.observe", "phone.act",
+                     "phone.screenshot", "ghost.tool"] {
             XCTAssertEqual(PlatformToolHostLimits.budgetMillis(toolName: name), 30_000,
                            "\(name) must keep the 30s budget")
         }

@@ -3156,9 +3156,9 @@ internal class DeviceAccessHost(
     private suspend fun executeTool(call: PlatformToolCall): PlatformToolOutcome {
         val revision = phoneControlRevision.get()
         val outcome = when (call.tool) {
-            DeviceAccessToolCatalog.PHONE_OBSERVE -> phoneObserve(call)
-            DeviceAccessToolCatalog.PHONE_ACT -> phoneAct(call)
-            DeviceAccessToolCatalog.PHONE_SCREENSHOT -> phoneScreenshot(call)
+            DeviceAccessToolCatalog.DEVICE_OBSERVE -> deviceObserve(call)
+            DeviceAccessToolCatalog.DEVICE_ACT -> deviceAct(call)
+            DeviceAccessToolCatalog.DEVICE_SCREENSHOT -> deviceScreenshot(call)
             DeviceAccessToolCatalog.SYSTEM_ACCESS_STATUS -> systemStatus()
             DeviceAccessToolCatalog.SYSTEM_FILES_LIST -> systemFilesList(call)
             DeviceAccessToolCatalog.SYSTEM_FILES_READ -> systemFilesRead(call)
@@ -3185,13 +3185,20 @@ internal class DeviceAccessHost(
             DeviceAccessToolCatalog.SYSTEM_SETTINGS_WRITE -> systemSettingsWrite(call)
             else -> PlatformToolOutcome.Failure("unknown_tool")
         }
-        if (call.tool.startsWith("phone.")) pausedPhoneOutcome(call)?.let { return it }
-        if (call.tool.startsWith("phone.") && revision != phoneControlRevision.get())
-            return PlatformToolOutcome.Failure("phone_interrupted", "Observe the current screen before continuing phone actions.")
+        // The pause/interruption fence covers the device-interaction tools by
+        // their canonical wire names (the shared Swift mailbox resolves the
+        // bounded legacy phone.* spellings BEFORE a ticket reaches this host,
+        // so old names never arrive here; the check below is exact-name, not
+        // a prefix rule, and never widens to unknown phone.* tools).
+        if (call.tool in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES)
+            pausedPhoneOutcome(call)?.let { return it }
+        if (call.tool in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES &&
+            revision != phoneControlRevision.get())
+            return PlatformToolOutcome.Failure("phone_interrupted", "Observe the current screen before continuing device actions.")
         return outcome
     }
 
-    // ---------------------------------------------------------------- phone tools
+    // ----------------------------------------------------------- device tools
 
     private fun ownerOf(call: PlatformToolCall) =
         PhoneControlOwner(call.taskID, call.runID)
@@ -3361,7 +3368,7 @@ internal class DeviceAccessHost(
         return null
     }
 
-    private suspend fun phoneObserve(call: PlatformToolCall): PlatformToolOutcome {
+    private suspend fun deviceObserve(call: PlatformToolCall): PlatformToolOutcome {
         preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = false)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
@@ -3396,7 +3403,7 @@ internal class DeviceAccessHost(
         }
     }
 
-    private suspend fun phoneAct(call: PlatformToolCall): PlatformToolOutcome {
+    private suspend fun deviceAct(call: PlatformToolCall): PlatformToolOutcome {
         preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = true)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
@@ -3410,12 +3417,14 @@ internal class DeviceAccessHost(
                 // undifferentiated invalid_arguments the Alpha72 trace showed:
                 // the closed advertised schema cannot express the conditional
                 // `required`, so the supported contract enforces it here. The
-                // model recovers by calling phone.observe again and passing
+                // code keeps its historical phone_observation_required
+                // spelling (legacy receipts stay readable); the model
+                // recovers by calling device.observe again and passing
                 // the new observation= id; NO dispatch or device-side effect
                 // happens on this path and no argument value is ever echoed.
                 return PlatformToolOutcome.Failure(
                     PhoneActionArguments.OBSERVATION_REQUIRED_CODE,
-                    "Call phone.observe first, then pass its observation id as observationId",
+                    "Call device.observe first, then pass its observation id as observationId",
                 )
             is PhoneActionArguments.Request.Dispatch -> request
         }
@@ -3449,7 +3458,7 @@ internal class DeviceAccessHost(
         }
     }
 
-    private suspend fun phoneScreenshot(call: PlatformToolCall): PlatformToolOutcome {
+    private suspend fun deviceScreenshot(call: PlatformToolCall): PlatformToolOutcome {
         preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = false)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
@@ -5863,9 +5872,13 @@ internal class DeviceAccessHost(
 
     /** Called by the pump when a claimed ticket must stop. */
     private fun cancelBackend(call: PlatformToolCall) {
-        // Phone: fencethe whole service session; the module rejects the
-        // in-flight call and the pump settles it as cancelled, never success.
-        if (call.tool.startsWith("phone.")) {
+        // Device interaction: fence the whole phone-control service session;
+        // the module rejects the in-flight call and the pump settles it as
+        // cancelled, never success. Exact canonical names (the legacy
+        // phone.* spellings are the same values through the retained
+        // constants) — never a prefix rule, so unknown phone.* tools never
+        // stop the service session.
+        if (call.tool in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES) {
             // The actual phone session is being stopped: its RAM-only screen
             // consent cannot outlive that service state.
             screenShare.clear()

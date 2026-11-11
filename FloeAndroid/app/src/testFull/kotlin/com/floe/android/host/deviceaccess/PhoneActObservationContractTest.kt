@@ -18,8 +18,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins the repaired `phone.act` observation contract after the Alpha72
- * known-password fixture run:
+ * Pins the repaired `device.act` observation contract (published as
+ * `phone.act` before the device-namespace rename; the wire contract itself
+ * is unchanged) after the Alpha72 known-password fixture run:
  *  - a well-formed non-launch action without observationId classifies as
  *    [MissingObservation], which the host maps to the precise bounded
  *    [PhoneActionArguments.OBSERVATION_REQUIRED_CODE] failure instead of the
@@ -36,7 +37,11 @@ import org.junit.Test
  *    time — so the conditional rule lives in model-facing guidance plus the
  *    host-side precise code, never in an unsupported schema keyword;
  *  - the guidance and the host code name the SAME recovery token, and that
- *    token survives the transport's failure-code grammar byte-for-byte.
+ *    token survives the transport's failure-code grammar byte-for-byte;
+ *  - the catalog advertises ONLY the canonical device.* names: the legacy
+ *    phone.* spellings are resolvable through the bounded Swift alias rule
+ *    for persisted records but are never discoverable, so a tool cannot be
+ *    advertised twice.
  *
  * All payloads are synthetic canaries; the fixture package name is the
  * already-published QA harness, not a user app.
@@ -174,7 +179,7 @@ class PhoneActObservationContractTest {
         // the token must survive it byte-for-byte.
         assertEquals(code, BoundedResultText.token(code))
         // The model-facing recovery token in the catalog is the SAME code.
-        assertTrue(descriptor(DeviceAccessToolCatalog.PHONE_ACT).getString("description")
+        assertTrue(descriptor(DeviceAccessToolCatalog.DEVICE_ACT).getString("description")
             .contains(code))
     }
 
@@ -182,7 +187,7 @@ class PhoneActObservationContractTest {
 
     @Test
     fun theActGuidanceTeachesTheRequirementAndRecoveryWithoutNewKeywords() {
-        val act = descriptor(DeviceAccessToolCatalog.PHONE_ACT)
+        val act = descriptor(DeviceAccessToolCatalog.DEVICE_ACT)
         val description = act.getString("description")
         assertTrue(description.contains("every action except launch requires"))
         assertTrue(description.contains("Only action=launch may omit observationId"))
@@ -215,11 +220,63 @@ class PhoneActObservationContractTest {
 
     @Test
     fun theObserveGuidanceNamesTheActHandoff() {
-        val observe = descriptor(DeviceAccessToolCatalog.PHONE_OBSERVE)
+        val observe = descriptor(DeviceAccessToolCatalog.DEVICE_OBSERVE)
         val description = observe.getString("description")
         assertTrue(description.contains("Pass the returned observation= id as observationId"))
-        assertTrue(description.contains("every phone.act action except launch requires it"))
+        assertTrue(description.contains("every device.act action except launch requires it"))
         assertTrue(description.toByteArray(Charsets.UTF_8).size <= 4_096)
+    }
+
+    @Test
+    fun theCatalogAdvertisesOnlyCanonicalDeviceNames() {
+        // The rename is discovery-exact: the trusted catalog carries the
+        // canonical device.* names and NEVER the legacy phone.* spellings,
+        // so a resumed model cannot see a tool advertised twice and unknown
+        // phone.* names have nothing to attach to. Persisted phone.* records
+        // stay resumable through the bounded Swift alias rule instead.
+        val root = JSONObject(String(DeviceAccessToolCatalog.catalogJson(), Charsets.UTF_8))
+        val tools = root.getJSONArray("tools")
+        val names = HashSet<String>()
+        for (index in 0 until tools.length()) {
+            names += tools.getJSONObject(index).getString("name")
+        }
+        assertTrue(DeviceAccessToolCatalog.DEVICE_OBSERVE in names)
+        assertTrue(DeviceAccessToolCatalog.DEVICE_ACT in names)
+        assertTrue(DeviceAccessToolCatalog.DEVICE_SCREENSHOT in names)
+        assertFalse("legacy phone.observe must not be advertised",
+            "phone.observe" in names)
+        assertFalse("legacy phone.act must not be advertised",
+            "phone.act" in names)
+        assertFalse("legacy phone.screenshot must not be advertised",
+            "phone.screenshot" in names)
+        // The same exact-name rule guards fail-closed availability.
+        val available = DeviceAccessToolCatalog.availableNames(
+            DeviceAccessToolCatalog.Availability(
+                accessibilityConnected = true,
+                targetPackagesSelected = true,
+                screenCaptureSupported = true,
+            ),
+        )
+        assertFalse("phone.observe" in available)
+        assertFalse("phone.act" in available)
+        assertFalse("phone.screenshot" in available)
+        assertTrue(DeviceAccessToolCatalog.DEVICE_SCREENSHOT in available)
+    }
+
+    @Test
+    fun legacyPhoneConstantsCarryTheCanonicalValues() {
+        // The retained PHONE_* identifiers keep the canonical device values
+        // so out-of-lane legacy test source and historical receipts stay
+        // readable; they can never resurrect the old wire spelling.
+        assertEquals("device.observe", DeviceAccessToolCatalog.PHONE_OBSERVE)
+        assertEquals("device.act", DeviceAccessToolCatalog.PHONE_ACT)
+        assertEquals("device.screenshot", DeviceAccessToolCatalog.PHONE_SCREENSHOT)
+        assertEquals(DeviceAccessToolCatalog.DEVICE_OBSERVE,
+            DeviceAccessToolCatalog.PHONE_OBSERVE)
+        assertEquals(DeviceAccessToolCatalog.DEVICE_ACT,
+            DeviceAccessToolCatalog.PHONE_ACT)
+        assertEquals(DeviceAccessToolCatalog.DEVICE_SCREENSHOT,
+            DeviceAccessToolCatalog.PHONE_SCREENSHOT)
     }
 
     @Test

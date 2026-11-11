@@ -323,7 +323,14 @@ internal class PlatformToolHostPump(
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_REMOVE_FOR_USER,
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE,
                 -> timing.packageBatchTimeoutMillis
-                "phone.observe", "phone.act", "phone.screenshot" -> timing.phoneInteractionTimeoutMillis
+                // Device-interaction calls (canonical device.* names; the
+                // bounded legacy phone.* spellings are listed too so an
+                // in-flight ticket minted under the old name keeps the same
+                // interaction budget across the rename) may include one real
+                // foreground operation.
+                "device.observe", "device.act", "device.screenshot",
+                "phone.observe", "phone.act", "phone.screenshot",
+                -> timing.phoneInteractionTimeoutMillis
                 else -> timing.operationTimeoutMillis
             }
             withTimeout(budget) { handler(call) }

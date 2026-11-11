@@ -6,6 +6,14 @@
 import Foundation
 
 public enum ToolAliasTable {
+    /// Closed compatibility map for the Android phone/tablet tool rename.
+    /// Shared with runtime ceilings and redaction; no prefix aliases.
+    public static let deviceInteractionRenames: [String: String] = [
+        "phone.observe": "device.observe",
+        "phone.act": "device.act",
+        "phone.screenshot": "device.screenshot"
+    ]
+
     /// Renamed tool → canonical registered name. The runtime resolves an
     /// exact call to a renamed name before rejecting it, and discovery shows
     /// the canonical spelling. Entries are removed one minor release after
@@ -27,7 +35,7 @@ public enum ToolAliasTable {
         "cloudWorkspace.gitPull": "cloudWorkspace.git.pull",
         "cloudWorkspace.gitPush": "cloudWorkspace.git.push",
         "cloudWorkspace.gitBranch": "cloudWorkspace.git.branch"
-    ]
+    ].merging(deviceInteractionRenames) { _, deviceName in deviceName }
 
     /// Lowercased query token → capability group. A query containing one of
     /// these terms expands to the group before falling back to description

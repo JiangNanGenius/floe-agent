@@ -1153,8 +1153,9 @@ public actor ConversationRunService {
             eventChannel.yield(.toolLifecycle(.requested(call)))
             toolNames[call.id] = call.toolName
             toolRequestedAt[call.id] = ContinuousClock.now
-            // Explicit phone.act text inputs (and Cookie/Authorization
-            // argument values) are scrubbed over the FULL argument data
+            // Explicit device.act text inputs (and the legacy phone.act
+            // persisted spelling), plus Cookie/Authorization
+            // argument values, are scrubbed over the FULL argument data
             // BEFORE the bounded event projection. Truncating raw JSON first
             // could cut the value in half, leave an object unparsable, and
             // make the fallback miss a nested credential. The live dispatch

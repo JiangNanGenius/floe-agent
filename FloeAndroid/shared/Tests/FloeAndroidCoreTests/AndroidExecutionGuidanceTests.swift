@@ -13,11 +13,13 @@ final class AndroidExecutionGuidanceTests: XCTestCase {
     func testFullTaskRetainsPhoneBoundaryAlongsideCLIContext() {
         let notes = AndroidExecutionGuidance.workspaceNotes(
             temporary: false, isNotes: false,
-            availableTools: ["exec.shell", "system.access.status", "phone.observe"])
+            availableTools: ["exec.shell", "system.access.status", "device.observe"])
         XCTAssertEqual(notes.count, 2)
         XCTAssertEqual(notes.first, AndroidExecutionGuidance.commandLine)
         XCTAssertEqual(notes.last, AndroidExecutionGuidance.phone)
         XCTAssertTrue(notes.last?.contains("not VNC or a Linux desktop") == true)
+        XCTAssertTrue(notes.last?.contains("device.observe / device.act / device.screenshot") == true,
+                      "the guidance teaches the canonical device-namespace names")
     }
 
     func testMissingCapabilitiesNotesAndTemporaryRunsKeepTheirCeilings() {

@@ -12,7 +12,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins the `phone.act` sensitive-text input wire contract: exactly one
+ * Pins the `device.act` sensitive-text input wire contract (published as
+ * `phone.act` before the device-namespace rename; the wire shape is
+ * unchanged): exactly one
  * text-bearing key (`text` XOR `sensitiveText`), the closed boolean-free
  * schema, the unchanged risk/effect ceiling and the serial main-run-only
  * execution boundary. Payload values are synthetic canaries.
@@ -24,9 +26,9 @@ class PhoneActSensitiveTextInputTest {
         val tools = root.getJSONArray("tools")
         for (index in 0 until tools.length()) {
             val tool = tools.getJSONObject(index)
-            if (tool.getString("name") == DeviceAccessToolCatalog.PHONE_ACT) return tool
+            if (tool.getString("name") == DeviceAccessToolCatalog.DEVICE_ACT) return tool
         }
-        throw AssertionError("phone.act missing from the trusted catalog")
+        throw AssertionError("device.act missing from the trusted catalog")
     }
 
     @Test

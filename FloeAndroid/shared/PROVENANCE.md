@@ -1219,3 +1219,97 @@ Frozen inputs untouched: the n02-known-password72 donor, the last public
 Android71/code97 source `e9f94bd602efda39be91a39e4486bf60abc578ee`, all
 `FloeAgent/` iOS sources and tests. No APK or device-delivery claim is made
 by this source record.
+
+## Device-namespace tool rename (2026-11-11, n02-device-tool-names81)
+
+`device.observe` / `device.act` / `device.screenshot` are now the ONE
+canonical tool chain for BOTH phones and tablets (previously published as
+`phone.observe` / `phone.act` / `phone.screenshot`). Source-only packet;
+no compilation, build, device or delivery claim is made here.
+
+What changed:
+
+* `app/src/full/.../DeviceAccessToolCatalog.kt` — the trusted FULL catalog
+  now publishes the three `device.*` names and descriptions. The
+  `PHONE_OBSERVE/PHONE_ACT/PHONE_SCREENSHOT` Kotlin identifiers are retained
+  with the canonical device values (internal names avoid churn; an
+  out-of-lane legacy JVM test references the identifiers). The catalog never
+  advertises the old spellings, so a tool cannot be discovered twice.
+* `DeviceAccessHost.kt` — dispatch/fence keyed on the canonical names
+  (exact set, not a prefix); the `phone_observation_required` recovery code
+  and every other host error code keep their historical `phone_*` spelling
+  so legacy receipts stay readable; the recovery detail teaches
+  `device.observe`.
+* Shared Swift (`ToolArgumentSanitizer.swift`) — the new public
+  `DeviceToolNames` table is the single bounded compatibility rule: exactly
+  the three pre-rename spellings map to the canonical names (closed map,
+  never a prefix/family match), and `ceilingAllows` makes persisted task
+  policies written under either spelling admit the canonical tools. The
+  sanitizer redacts `text`/`sensitiveText` for BOTH `device.act` and the
+  legacy `phone.act` spellings, so previously persisted sensitive arguments
+  stay scrubbed when re-persisted.
+* `AgentRuntime.swift` — provider tool calls are canonicalised at intake
+  (after `ToolAliasTable`), and the `allowedToolNames` ceiling checks
+  (catalog filtering, main dispatch, child dispatch) are alias-aware.
+* `PlatformToolHostMailbox.swift` — the trusted bridge normalises the
+  bounded legacy spellings before catalog lookup; the task-policy ceiling
+  check is alias-aware; the pause/presence question path accepts canonical
+  and legacy device names.
+* `UserQuestionCoordinator.swift` / `PhoneObservationReviewCache.swift` —
+  interrupted-question recovery and observation evidence accept the
+  canonical names plus the bounded legacy spellings; evidence keeps the
+  call's original `sourceTool` spelling so identity carries truthfully
+  across old/new persisted runs.
+* Kotlin `PlatformToolHostPump.kt` (per-call interaction budget),
+  `ConversationHostController.kt` (handover-question discovery),
+  `ScreenScopeConsent.kt`, `PhoneActionArguments.kt`,
+  `PhoneControlModels.kt`, `PhoneControlObservationReadiness.kt` — current
+  contract docs and name-keyed gates updated; historical device-trace
+  narratives in test files keep their original wording.
+* Model-facing texts teach the canonical names only:
+  `RuntimeFacadeRunAssembly.swift` (platform guidance),
+  `G04ExternalEditTool.swift` (external-edit description),
+  `FloeSkills/AndroidBundledSkillGuides.swift` (floe-android-device guide
+  manifest + markdown).
+* Focused regression source: `PhoneActObservationContractTest.kt` (pins the
+  contract under the canonical names + asserts the catalog never advertises
+  the legacy spellings), `DeviceToolNamesAliasTests` and
+  `testSanitizerTreatsCanonicalAndLegacyActIdentically` (bounded alias +
+  redaction parity) in `PhoneTextInputRedactionTests.swift`,
+  `PhoneObservationApprovalTests.swift` (canonical + mixed-spelling
+  evidence), `AndroidExecutionGuidanceTests.swift` and
+  `G08PlatformToolAutoAdmissionTests.swift` (canonical names are ordinary-
+  budget and never auto-admitted, legacy spellings retained as coverage).
+
+Compatibility boundary: no historical data is rewritten; checkpoints,
+committed steps, task policies, stored questions and persisted argument
+records written under `phone.*` remain readable and resumable through the
+closed 3-entry alias. Unknown `phone.*` names pass through unchanged and
+fail closed at exact-name catalog lookup — never a universal alias. Existing
+`device.*`-adjacent system tools are untouched: no collision, no new
+capability, no broader grants.
+
+Recommended follow-up (out of this lane's write scope): add the three
+entries to `FloeTools/ToolAliasTable.swift` `renamed` so the generic rename
+mechanism (discovery alias display, registry lookup) also covers this
+rename; it can only ship AFTER the catalog rename, because
+`PlatformToolHostBridge.validateName` refuses to bind any catalog name that
+is itself a registered alias.
+
+Frozen inputs untouched: the n02-owninput-launch81 lane
+(`MainActivity.kt`, `OwnAppUserPresence.kt`, `PhoneControlSession.kt`), the
+053a146cc DeviceAccessHost status-refresh implementation, all
+`FloeAgent/` iOS sources and tests, and every historical PROVENANCE entry.
+
+Primary integration, 2026-11-12: the recommended generic alias follow-up
+above is now implemented in `FloeTools/ToolAliasTable.swift`. Its exact
+three-entry `deviceInteractionRenames` is also the runtime ceiling's sole
+rename source. Registry lookup resolves old names to canonical runners,
+discovery advertises each tool once, and unrelated aliases cannot enlarge
+the device ceiling. Fresh fixture descriptors use the canonical names;
+historical calls/checkpoints and sensitive-input assertions remain intact.
+Actual Swift object/test compilation passes 45 focused cases, and the
+Android Full Release Kotlin consumer plus 46 affected JVM cases pass.
+The primary's actual-input/NO_USER_ACTION relock repair is included in that
+consumer build. ARM64 production, installation and fresh device behavior
+remain separate evidence; no released Alpha80 bytes are changed.

@@ -156,7 +156,10 @@ final class PhoneTextInputRuntimeRedactionTests: XCTestCase {
         XCTAssertFalse(durableArguments.contains(secret),
                        "the checkpoint must not contain the phone text input")
         XCTAssertTrue(durableArguments.contains("[redacted]"))
-        XCTAssertEqual(durableCall.toolName, "phone.act")
+        // A fresh provider call using the old wire spelling is admitted as
+        // the current catalog tool. Historical checkpoints below keep their
+        // original phone.act names and still must never replay secrets.
+        XCTAssertEqual(durableCall.toolName, "device.act")
         // Metadata needed for an honest tool card survives the scrub.
         XCTAssertTrue(durableArguments.contains("setText"))
         XCTAssertTrue(durableArguments.contains("n3"))
@@ -559,7 +562,8 @@ private final class RecordingExecutor: ToolExecutor, @unchecked Sendable {
         [ToolCatalog.descriptor(named: FixturePhoneTextTool.name)].compactMap { $0 }
     }
     func descriptor(named name: String) -> ToolCatalog.Descriptor? {
-        name == FixturePhoneTextTool.name ? ToolCatalog.descriptor(named: name) : nil
+        let canonical = ToolAliasTable.canonical(name)
+        return canonical == FixturePhoneTextTool.name ? ToolCatalog.descriptor(named: canonical) : nil
     }
 
     func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
@@ -604,7 +608,7 @@ private struct FixturePhoneTextTool: AgentTool {
         var sensitiveText: String?
     }
 
-    static let name = "phone.act"
+    static let name = "device.act"
     static let toolDescription = "Synthetic phone text entry (redaction regression)"
     static let riskLabels: Set<RiskLabel> = [.writesFiles]
     static let isSideEffecting = true
@@ -628,5 +632,126 @@ private struct FixturePhoneTextTool: AgentTool {
         private var count = 0
         var value: Int { lock.withLock { count } }
         func mark() { lock.withLock { count += 1 } }
+    }
+}
+
+// MARK: - Device namespace rename: bounded legacy alias rule (n02-device-tool-names81)
+
+/// The phone.* → device.* rename is carried by ONE closed 3-entry table.
+/// These tests pin the exact compatibility boundary: canonicalisation of the
+/// three pre-rename spellings, pass-through of every other name (unknown
+/// phone.* can never become a universal alias), and symmetric ceiling
+/// admission so persisted task policies written under either spelling keep
+/// admitting the canonical device tools. Synthetic fixtures only.
+final class DeviceToolNamesAliasTests: XCTestCase {
+    func testLegacyNamesResolveThroughTheActualRunnerRegistryWithoutDuplicateDiscovery() throws {
+        let registry = ToolRunnerRegistry()
+        for name in ["device.observe", "device.act", "device.screenshot"] {
+            let descriptor = ToolCatalog.Descriptor(
+                name: name, toolDescription: "Synthetic device tool",
+                parametersJSON: #"{"type":"object"}"#,
+                riskLabels: [], isSideEffecting: name == "device.act",
+                requiresHostScope: false)
+            registry.register(AnyAgentTool(descriptor: descriptor, run: { _, _ in
+                throw FloeError.validationFailed("Registry lookup fixture must not execute")
+            }))
+        }
+        for (legacy, canonical) in ToolAliasTable.deviceInteractionRenames {
+            XCTAssertEqual(try XCTUnwrap(registry.descriptor(named: legacy)).name, canonical)
+            XCTAssertEqual(try XCTUnwrap(registry.descriptor(named: canonical)).name, canonical)
+        }
+        XCTAssertEqual(Set(registry.allDescriptors.map(\.name)), DeviceToolNames.interactionNames)
+        XCTAssertNil(registry.descriptor(named: "phone.teleport"))
+        XCTAssertNil(registry.descriptor(named: "phone.observe.extra"))
+    }
+
+    func testDeviceCeilingDoesNotExpandOtherToolRenameFamilies() {
+        XCTAssertEqual(ToolAliasTable.canonical("task.readPlan"), "checklist.readPlan")
+        XCTAssertFalse(DeviceToolNames.ceilingAllows(["task.readPlan"], name: "checklist.readPlan"))
+        XCTAssertEqual(DeviceToolNames.canonical("task.readPlan"), "task.readPlan")
+    }
+
+    func testCanonicalMapsExactlyTheThreeLegacySpellings() {
+        XCTAssertEqual(DeviceToolNames.canonical("phone.observe"), "device.observe")
+        XCTAssertEqual(DeviceToolNames.canonical("phone.act"), "device.act")
+        XCTAssertEqual(DeviceToolNames.canonical("phone.screenshot"), "device.screenshot")
+        XCTAssertEqual(DeviceToolNames.canonical("device.observe"), "device.observe")
+        XCTAssertEqual(DeviceToolNames.canonical("device.act"), "device.act")
+        XCTAssertEqual(DeviceToolNames.canonical("device.screenshot"), "device.screenshot")
+        // Unknown names pass through unchanged — never a family/prefix alias.
+        XCTAssertEqual(DeviceToolNames.canonical("phone.teleport"), "phone.teleport")
+        XCTAssertEqual(DeviceToolNames.canonical("phone."), "phone.")
+        XCTAssertEqual(DeviceToolNames.canonical("phone.observe.extra"), "phone.observe.extra")
+        XCTAssertEqual(DeviceToolNames.canonical("system.access.status"), "system.access.status")
+        XCTAssertEqual(DeviceToolNames.canonical("workspace.readFile"), "workspace.readFile")
+    }
+
+    func testInteractionNameSetsAreClosedAndComplete() {
+        XCTAssertEqual(DeviceToolNames.interactionNames,
+                       ["device.observe", "device.act", "device.screenshot"])
+        XCTAssertEqual(DeviceToolNames.legacyInteractionNames,
+                       ["phone.observe", "phone.act", "phone.screenshot"])
+        XCTAssertEqual(DeviceToolNames.allInteractionNames.count, 6)
+        XCTAssertTrue(DeviceToolNames.allInteractionNames
+            .isSuperset(of: DeviceToolNames.interactionNames))
+        XCTAssertTrue(DeviceToolNames.allInteractionNames
+            .isSuperset(of: DeviceToolNames.legacyInteractionNames))
+    }
+
+    func testCeilingAllowsAdmitsLegacyPolicyForCanonicalCallBothDirections() {
+        // Old persisted task policy listing the phone.* spelling admits the
+        // canonical device.* call.
+        let legacyPolicy: Set<String> = ["phone.observe"]
+        XCTAssertTrue(DeviceToolNames.ceilingAllows(legacyPolicy, name: "device.observe"))
+        XCTAssertFalse(DeviceToolNames.ceilingAllows(legacyPolicy, name: "device.act"))
+        XCTAssertFalse(DeviceToolNames.ceilingAllows(legacyPolicy, name: "system.files.read"))
+        // New policy listing the canonical spelling admits a legacy-named
+        // call (defensive path for callers that predate intake
+        // canonicalisation).
+        let canonicalPolicy: Set<String> = ["device.act"]
+        XCTAssertTrue(DeviceToolNames.ceilingAllows(canonicalPolicy, name: "phone.act"))
+        XCTAssertTrue(DeviceToolNames.ceilingAllows(canonicalPolicy, name: "device.act"))
+        XCTAssertFalse(DeviceToolNames.ceilingAllows(canonicalPolicy, name: "phone.observe"))
+        // Unknown phone.* entries in a policy never widen to device tools.
+        let unknownPolicy: Set<String> = ["phone.teleport"]
+        XCTAssertFalse(DeviceToolNames.ceilingAllows(unknownPolicy, name: "device.observe"))
+        XCTAssertTrue(DeviceToolNames.ceilingAllows(unknownPolicy, name: "phone.teleport"))
+    }
+
+    func testSanitizerTreatsCanonicalAndLegacyActIdentically() {
+        let secret = "canary-rename-secret"
+        let canonical = Data(
+            #"{"action":"setText","nodeRef":"n3","sensitiveText":"\#(secret)"}"#.utf8)
+        let legacy = Data(
+            #"{"action":"setText","nodeRef":"n3","sensitiveText":"\#(secret)"}"#.utf8)
+        let canonicalScrubbed = ToolArgumentSanitizer.redactedArgumentsJSON(
+            canonical, toolName: "device.act")
+        let legacyScrubbed = ToolArgumentSanitizer.redactedArgumentsJSON(
+            legacy, toolName: "phone.act")
+        XCTAssertFalse(String(decoding: canonicalScrubbed, as: UTF8.self).contains(secret),
+                       "the canonical device.act input is redacted")
+        XCTAssertFalse(String(decoding: legacyScrubbed, as: UTF8.self).contains(secret),
+                       "the legacy phone.act persisted input stays redacted")
+        XCTAssertEqual(String(decoding: canonicalScrubbed, as: UTF8.self),
+                       String(decoding: legacyScrubbed, as: UTF8.self),
+                       "both spellings produce the identical durable record")
+        XCTAssertTrue(String(decoding: canonicalScrubbed, as: UTF8.self).contains("[redacted]"))
+        XCTAssertTrue(String(decoding: canonicalScrubbed, as: UTF8.self).contains("setText"))
+        XCTAssertTrue(String(decoding: canonicalScrubbed, as: UTF8.self).contains("n3"))
+        // Sensitivity detection matches for both spellings.
+        XCTAssertTrue(ToolArgumentSanitizer.containsSensitiveValues(canonical, toolName: "device.act"))
+        XCTAssertTrue(ToolArgumentSanitizer.containsSensitiveValues(legacy, toolName: "phone.act"))
+        // The underscore alias is still normalised for the canonical name.
+        XCTAssertTrue(ToolArgumentSanitizer.containsSensitiveValues(
+            canonical, toolName: "device_act"))
+        // Ordinary device actions without text stay replayable.
+        let click = Data(#"{"action":"click","nodeRef":"n7"}"#.utf8)
+        XCTAssertFalse(ToolArgumentSanitizer.containsSensitiveValues(click, toolName: "device.act"))
+        XCTAssertEqual(String(decoding: ToolArgumentSanitizer.redactedArgumentsJSON(
+            click, toolName: "device.act"), as: UTF8.self),
+            #"{"action":"click","nodeRef":"n7"}"#)
+        // Unknown phone.* tools are NOT redacted by this rule.
+        let foreign = Data(#"{"text":"hello"}"#.utf8)
+        XCTAssertFalse(ToolArgumentSanitizer.containsSensitiveValues(foreign, toolName: "phone.teleport"))
     }
 }

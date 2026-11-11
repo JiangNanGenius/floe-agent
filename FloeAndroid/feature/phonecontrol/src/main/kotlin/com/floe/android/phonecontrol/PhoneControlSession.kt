@@ -273,7 +273,8 @@ internal class PhoneControlSession(
         fence.onPageChanged()
         suppressOwnInput()
         return try {
-            service.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
+            service.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or Intent.FLAG_ACTIVITY_NO_USER_ACTION))
             PhoneControlRuntime.publish()
             PhoneControlResult.Ok(PhoneControlActionResult("launch", PhoneControlDispatch.ACCEPTED,
                 null, null, null, "Launch requested. Observe the target app before further actions."))
@@ -722,7 +723,8 @@ internal class PhoneControlSession(
             )
             return
         }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+            Intent.FLAG_ACTIVITY_NO_USER_ACTION)
         suppressOwnInput()
         val started = runCatching { service.startActivity(intent) }
         if (started.isFailure) {

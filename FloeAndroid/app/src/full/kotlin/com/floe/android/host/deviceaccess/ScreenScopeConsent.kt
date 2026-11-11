@@ -7,7 +7,9 @@ import com.floe.android.phonecontrol.PhoneControlOwner
 import com.floe.android.phonecontrol.PhoneControlStatus
 
 /**
- * RAM-only screen-share consent for `phone.screenshot`.
+ * RAM-only screen-share consent for `device.screenshot` (canonical
+ * device-namespace name; the tool was previously published as
+ * `phone.screenshot` and legacy persisted records keep that spelling).
  *
  * "This task" is an explicit user grant for ONE live task/run owner in ONE
  * native root epoch. It never applies to a different live task, a finished

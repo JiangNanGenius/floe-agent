@@ -5,6 +5,8 @@ import android.Manifest
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -89,15 +91,30 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
-    override fun onUserInteraction() {
-        super.onUserInteraction()
-        // Trusted physical input (a real user touch or key) on Floe's own
-        // window. Programmatic own-App UI changes never reach this callback,
-        // so chat streaming/autoscroll cannot take over a phone task through
-        // it. The bridge is a no-op unless the Full AccessibilityService is
-        // live, which keeps this common-source Activity independent of the
-        // Full-only phone module.
-        com.floe.android.contracts.OwnAppUserPresence.reportOwnAppUserInteraction()
+    // Activity.onUserInteraction is also called by performUserLeaving when
+    // another Activity opens. It is not evidence of a touch: using it here
+    // makes an Agent's own app launch cancel its UI ownership and relock.
+    // Report input at dispatch instead; keep event contents inside Android.
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            com.floe.android.contracts.OwnAppUserPresence.reportOwnAppUserInteraction()
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            com.floe.android.contracts.OwnAppUserPresence.reportOwnAppUserInteraction()
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL ||
+            event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS) {
+            com.floe.android.contracts.OwnAppUserPresence.reportOwnAppUserInteraction()
+        }
+        return super.dispatchGenericMotionEvent(event)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -8,7 +8,7 @@ import com.floe.android.phonecontrol.PhoneControlSwipeDirection
 import org.json.JSONObject
 
 /**
- * Pure host-side parsing of `phone.act` arguments into the phone-control
+ * Pure host-side parsing of `device.act` arguments into the phone-control
  * action model, kept out of [DeviceAccessHost] so the sensitive-input wire
  * rules are JVM-testable without an Android context.
  *
@@ -32,7 +32,7 @@ import org.json.JSONObject
  *
  * Observation rule (enforced by [request], NOT by the advertised schema):
  *  - every action except `launch` must carry a non-empty `observationId`
- *    taken from the LATEST `phone.observe` result of this run; `launch`
+ *    taken from the LATEST `device.observe` result of this run; `launch`
  *    alone may omit it (the approved current-navigation launch path);
  *  - the trusted catalog schema stays inside the closed JSON-Schema subset
  *    the shared Swift bind enforces, and that subset cannot express a
@@ -40,7 +40,9 @@ import org.json.JSONObject
  *    the WHOLE catalog at bind time. So the rule is decided here and the
  *    host maps [Request.MissingObservation] to the precise, static and
  *    bounded `phone_observation_required` failure code instead of folding
- *    it into `invalid_arguments`;
+ *    it into `invalid_arguments` (the code intentionally keeps its legacy
+ *    phone_* spelling so historical receipts stay readable; the catalog
+ *    guidance names the same token with the new device.observe recovery);
  *  - malformed action arguments keep the original precedence and still
  *    classify as [Request.InvalidArguments] even when `observationId` is
  *    also absent.
@@ -52,12 +54,14 @@ internal object PhoneActionArguments {
      * the mailbox failure-code grammar (ASCII letter first, then
      * alphanumeric/`_`/`-`, at most 64 characters) so it survives
      * [BoundedResultText.token] unchanged, and the trusted catalog's
-     * `phone.act` description teaches the same token so the model can
-     * recover with a fresh phone.observe instead of guessing.
+     * `device.act` description teaches the same token so the model can
+     * recover with a fresh device.observe instead of guessing. The
+     * `phone_` prefix is the historical spelling retained for receipt
+     * readability across the device-namespace rename.
      */
     const val OBSERVATION_REQUIRED_CODE = "phone_observation_required"
 
-    /** The host-side `phone.act` contract decision for one argument object. */
+    /** The host-side `device.act` contract decision for one argument object. */
     sealed interface Request {
         /** Parsed action plus the observation it names ("" = launch path). */
         data class Dispatch(
@@ -133,7 +137,7 @@ internal object PhoneActionArguments {
     }
 
     /**
-     * Full `phone.act` decision used by the host dispatch: [parse] first
+     * Full `device.act` decision used by the host dispatch: [parse] first
      * (malformed arguments keep the exact original refusal), then the
      * non-launch observationId rule. A value is NEVER echoed into the
      * classification; only the shape decides.

@@ -1425,8 +1425,9 @@ public actor FloeAgentRuntime {
             var outcomeUnknown = false
             if sensitivePendingCallIDs.contains(call.id) {
                 // The durable checkpoint intentionally does not contain the
-                // phone.act text input (or other credential arguments) this
-                // call was dispatched with. Replaying a redacted request
+                // device.act text input (or other credential arguments;
+                // legacy phone.act persisted records carry the same rule)
+                // this call was dispatched with. Replaying a redacted request
                 // would change its meaning — typing "[redacted]" into the
                 // authorized field — so the runtime fails it closed and
                 // requires a rebuilt, re-authorized request. This covers both
@@ -1686,7 +1687,13 @@ public actor FloeAgentRuntime {
             descriptors.removeAll { $0.name == "image.inspect" }
         }
         if let allowed = configuration.allowedToolNames {
-            descriptors.removeAll { !allowed.contains($0.name) }
+            // Alias-aware containment: a persisted task policy written
+            // before the device-namespace rename (listing phone.observe/
+            // phone.act/phone.screenshot) keeps admitting the canonical
+            // device.* tools, and vice versa. The rule is the closed
+            // 3-entry DeviceToolNames map — never a prefix match — so
+            // unknown names behave exactly as before.
+            descriptors.removeAll { !DeviceToolNames.ceilingAllows(allowed, name: $0.name) }
         }
         // On-device runs are bounded by the curated ceiling. Apply it to this
         // run's catalog before any discovery so hidden tools (shell, code
@@ -1732,7 +1739,7 @@ public actor FloeAgentRuntime {
         for descriptor in executor.allDescriptors
         where descriptor.executionBoundary == .childOnly {
             if let allowed = configuration.allowedToolNames,
-               !allowed.contains(descriptor.name) { continue }
+               !DeviceToolNames.ceilingAllows(allowed, name: descriptor.name) { continue }
             if configuration.temporaryReadOnly,
                TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) == nil { continue }
             names.insert(descriptor.name)
@@ -2380,9 +2387,10 @@ public actor FloeAgentRuntime {
         latestProviderDispatchEnvelope = dispatchEnvelope
         // The durable dispatch snapshot is recovery evidence, not the wire
         // body: the live request keeps the exact authorized argument bytes,
-        // while this snapshot's copies scrub phone.act text inputs and other
-        // credential arguments. The envelope digests IDs only, so recovery
-        // identity stays byte-exact and a resumed run relies on
+        // while this snapshot's copies scrub device.act text inputs (legacy
+        // phone.act records included) and other credential arguments. The
+        // envelope digests IDs only, so recovery identity stays byte-exact
+        // and a resumed run relies on
         // `sensitiveToolCallIDs` to fail scrubbed calls closed.
         var persistedDispatchSnapshot = ProviderDispatchRequestSnapshot(request: request)
         persistedDispatchSnapshot.pendingToolCalls = persistedDispatchSnapshot
@@ -2832,7 +2840,14 @@ public actor FloeAgentRuntime {
             // parallel and writes act as barriers.
             do {
                 var canonicalCall = call
-                canonicalCall.toolName = ToolAliasTable.canonical(call.toolName)
+                // Generic rename aliases first, then the bounded device
+                // namespace alias (exactly phone.observe/act/screenshot →
+                // device.*): a model resuming a persisted run that still
+                // names the old tools has its calls canonicalised BEFORE
+                // catalog resolution, so previously persisted phone.*
+                // records stay resumable without advertising the old names.
+                canonicalCall.toolName = DeviceToolNames.canonical(
+                    ToolAliasTable.canonical(call.toolName))
                 let normalized = try await toolCallNormalizer?(canonicalCall) ?? canonicalCall
                 pendingToolBatch.append(normalized.withIDContext(runID: runID))
             } catch {
@@ -3250,7 +3265,8 @@ public actor FloeAgentRuntime {
             )
         }
         let effectiveAllowedNames = configuration.allowedToolNames
-        if let effectiveAllowedNames, !effectiveAllowedNames.contains(call.toolName) {
+        if let effectiveAllowedNames,
+           !DeviceToolNames.ceilingAllows(effectiveAllowedNames, name: call.toolName) {
             return .denied(
                 reason: "Tool '\(call.toolName)' is outside the active skill capability set",
                 decision: "deny:skill-capability"
@@ -4001,7 +4017,8 @@ public actor FloeAgentRuntime {
                 decision: "deny:child-main-only"
             )
         }
-        if let allowed = childContext.allowedToolNames, !allowed.contains(call.toolName) {
+        if let allowed = childContext.allowedToolNames,
+           !DeviceToolNames.ceilingAllows(allowed, name: call.toolName) {
             return await childDenied(
                 call,
                 reason: "Tool '\(call.toolName)' is outside this task's effective capability set",
@@ -5605,8 +5622,9 @@ public actor FloeAgentRuntime {
                 goal: messages.last(where: { $0.role == "user" })?.content ?? ""
             ))
         case .waitingApproval(var info):
-            // The durable approval record must not carry the raw phone.act
-            // text input (or any other credential arguments): the live card
+            // The durable approval record must not carry the raw device.act
+            // text input (legacy phone.act records included) or any other
+            // credential arguments: the live card
             // keeps the exact bytes for the authorized decision, the
             // checkpoint keeps only the scrubbed copy plus the call identity.
             info.toolCall = ToolArgumentSanitizer.sanitizedForPersistence(info.toolCall)
@@ -5626,8 +5644,9 @@ public actor FloeAgentRuntime {
         // byte-identical to what the dispatch envelope digested so a resumed
         // run rebuilds a matching request, and so the first post-tool
         // checkpoint never encodes a full multi-megabyte result twice.
-        // A checkpoint is durable evidence: scrub phone.act text inputs and
-        // other credential arguments from its CALL copies (the live dispatch
+        // A checkpoint is durable evidence: scrub device.act text inputs
+        // (legacy phone.act records included) and other credential arguments
+        // from its CALL copies (the live dispatch
         // keeps the exact authorized bytes) and remember which call IDs were
         // scrubbed so a resume can never replay redacted input.
         let rawCheckpointCalls = activeProviderPendingCalls.isEmpty

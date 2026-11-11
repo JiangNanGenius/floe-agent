@@ -126,8 +126,9 @@ extension FacadeRunDomain {
         }
         let bundle = ownership.bundle
         // The live pump RETAINS encoded frames for consumers, so a raw
-        // phone.act text input would survive in the projection ring even
-        // though the durable event row was already scrubbed by the service.
+        // device.act text input (legacy phone.act spelling included) would
+        // survive in the projection ring even though the durable event row
+        // was already scrubbed by the service.
         // Ingest (and classify) a scrubbed COPY: the business run and its
         // authorized dispatch are untouched — only the retained UI record
         // omits the credential bytes. Non-input events pass through exactly.

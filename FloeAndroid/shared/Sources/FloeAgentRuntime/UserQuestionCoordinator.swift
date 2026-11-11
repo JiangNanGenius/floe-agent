@@ -377,7 +377,11 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         conversationID: UUID,
         call: ToolCall
     ) async -> ToolResult? {
-        let phoneWait = ["phone.observe", "phone.act", "phone.screenshot"].contains(call.toolName)
+        // Device-interaction waits use the canonical device.* names; the
+        // bounded legacy phone.* spellings stay in the set so an interrupted
+        // call persisted under the old naming still recovers its human
+        // decision. Closed exact set — never a prefix match.
+        let phoneWait = DeviceToolNames.allInteractionNames.contains(call.toolName)
         guard call.toolName == UserAskTool.name || phoneWait else { return nil }
         let snapshot: UserQuestionWaitingSnapshot?
         do {
