@@ -102,11 +102,16 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -546,15 +551,20 @@ internal class DeviceAccessHost(
         // The module-level flows survive a controller rebuild; a per-controller
         // collector would be cancelled by the next config rebuild.
         statusJobs += scope.launch {
-            RootSystemModule.adbStatus.collect { status ->
-                adbStatus = status
+            combine(RootSystemModule.adbStatus, RootSystemModule.rootStatus) { adb, root ->
+                adb to root
+            }.collectLatest { (adb, root) ->
+                adbStatus = adb
+                rootStatus = root
                 onRootStateChanged()
-            }
-        }
-        statusJobs += scope.launch {
-            RootSystemModule.rootStatus.collect { status ->
-                rootStatus = status
-                onRootStateChanged()
+                // These are ordinary volatile fields, not Compose state.
+                // Observe the actual service flows, including peer changes
+                // while overall availability remains true.
+                withContext(io) {
+                    refreshAppOpsUidScopeSupport()
+                    refreshAdvancedSystemPackages()
+                }
+                if (!closed) publish()
             }
         }
         // The settings page collects a StateFlow; no host event fires merely
@@ -573,19 +583,6 @@ internal class DeviceAccessHost(
             refreshPackages()
             refreshControllerStatus()
             publish()
-        }
-        statusJobs += scope.launch(io) {
-            // Eligible advanced targets track service liveness; refresh them
-            // whenever the service tier changes as well.
-            snapshotFlow { systemServiceAlive() }
-                .distinctUntilChanged()
-                .collect {
-                    if (!closed) {
-                        refreshAppOpsUidScopeSupport()
-                        refreshAdvancedSystemPackages()
-                        publish()
-                    }
-                }
         }
         attachSettingsPresentation()
         publish()
@@ -1018,11 +1015,16 @@ internal class DeviceAccessHost(
         val supported = try {
             com.floe.android.rootsystem.policy.PermissionOpsPolicy.CAPABILITY_APPOPS_UID in
                 (rootController?.serviceCapabilities() ?: emptySet())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Throwable) {
             false
         }
+        currentCoroutineContext().ensureActive()
+        if (closed) return
         if (supported != appOpsUidScopeSupported) {
             appOpsUidScopeSupported = supported
+            publish()
         }
     }
 
@@ -1381,6 +1383,7 @@ internal class DeviceAccessHost(
         runCatching { rootController?.refresh() }
         adbStatus = runCatching { rootController?.adbStatus?.value }.getOrNull() ?: adbStatus
         rootStatus = runCatching { rootController?.rootStatus?.value }.getOrNull() ?: rootStatus
+        refreshAppOpsUidScopeSupport()
     }
 
     private fun refreshFromUser() {
@@ -4697,6 +4700,7 @@ internal class DeviceAccessHost(
                 if (!appOpsUidScopeAllowed()) {
                     return DeviceAccessPermissionOpsResult.Failed("uid_scope_not_allowed")
                 }
+                if (!appOpsUidScopeSupported) refreshAppOpsUidScopeSupport()
                 if (!appOpsUidScopeSupported) {
                     return DeviceAccessPermissionOpsResult.Failed("uid_scope_unsupported")
                 }
@@ -5052,6 +5056,7 @@ internal class DeviceAccessHost(
                         "op=${item.operation} code=uid_scope_not_allowed"
                     continue
                 }
+                if (!appOpsUidScopeSupported) refreshAppOpsUidScopeSupport()
                 if (!appOpsUidScopeSupported) {
                     failed += 1
                     lines += "fail pkg=${item.packageName.take(100)} " +
