@@ -1100,3 +1100,13 @@ English: Public80 passes exact production/package/source/update/public-byte chec
 N05新的三星手动G1通路通过：原生轻编辑器保存SVG并预览，在真实项目环境按需安装并打开ARM64 Inkscape，手动修改颜色并保存；停止图形会话后，Floe重新打开文件显示实际修改。自己的四个图形进程已退出，测试SVG通过App删除，原工作区两份文件保持可见；没有新模型运行或云端调用。该证据闭合本场景的专业Linux编辑、保存和App重开，不扩成跨项目、进程死亡或定时自动化的全面通过。图形环境仍供用户手动使用，模型优先命令行；轻编辑继续留在App。
 
 English: Android phone/tablet tools now use device.observe/act/screenshot across dispatch, approval, restoration and sensitive-input handling. Actual Swift object/test compilation passes45 focused cases; the Android Full Release Kotlin consumer and46 related JVM cases pass. The rename is not yet a released APK. Fresh Samsung O1 proves automatic unlock and six actual calculator actions with result4, but owned relock is still cancelled by a lifecycle callback; the local follow-up awaits the combined APK/device check. Manual G1 passes native SVG authoring, real project Inkscape installation/edit/save, explicit session stop and reopening the modified file in Floe. Owned processes and the fixture were retired; existing files remain. This focused result does not imply process-death or scheduled-workflow acceptance.
+
+## 2026-11-12 Alpha81工具链与重锁收口
+
+[Alpha81/code107已公开](releases/ANDROID_ALPHA81_DELIVERY.md)，固定源码`fd37a3ca5998dff5800cc5ae76583ba05c203dc2`／native41。整个手机、平板观察／操作／截图工具链统一为`device.*`，保留三个旧名的精确兼容映射；45项Swift对象／测试、Full Release消费端／46项JVM、58项封装、ARM64/16KiB、API28/29签名与源码许可通过。七附件匿名完整字节、80→81主机重建、当前和保留65客户端发现通过，iOS Latest保留。
+
+三星P2的115条原始记录确认12项成功结果、最新观察、真实计算结果4及正常结束；自动解锁后自然重锁通过，旧O1误判接管故障由本批修复闭合。模型曾选错“1”后在限额内清除并更正，原记录保留。P1漏设测试审批模式的原阻塞另存且未恢复，不倒填为成功。临时凭据、无障碍、自动化与范围恢复，自己的两条任务和设备导出已清，原5条任务保留，手机自然休眠。新ADB服务的能力提示刷新已观察，已退役旧测试包的查询失败不计新UID修改通过。
+
+下一段沿原编号处理尚未闭合的定时／恢复组合，以及G1保留软件的空间管理检查；新出现的独立iOS重型编辑能力继续另记，避免扩张本轮。未改组件复用证据，不重新启动全量矩阵。1.0.0仍待既定功能验证完成，N01–N08总目标保持活动。
+
+English: Public81 ships the complete device namespace and owned-relock repair from immutable sourcefd37a3ca5/native41. Focused compilation, native/signature/source checks, all seven public assets, host reconstruction and both current/retained65 discovery pass. Fresh Samsung P2 proves actual result4, completed canonical calls and natural relock; its corrected model mistap and P1's setup failure remain separate evidence. Temporary credentials/permissions and owned task/export residue were restored. Remaining schedule/recovery and named G1 space-management checks continue under existing identities; this intermediate release does not close the whole goal or advance to1.0.0.
