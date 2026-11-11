@@ -25,6 +25,11 @@
 extern "C" {
 #endif
 
+/* Public declarations remain linkable from the separate transport target. */
+#if defined(__GNUC__)
+#pragma GCC visibility push(default)
+#endif
+
 typedef struct FloeGPUSession FloeGPUSession;
 
 /* host-internal result codes (the transport adapter maps them onto
@@ -193,6 +198,10 @@ int floe_gpu_scanout_set(FloeGPUSession *s, uint32_t scanout_id,
 int floe_gpu_scanout_close(FloeGPUSession *s, uint32_t scanout_id);
 int floe_gpu_scanout_snapshot(FloeGPUSession *s, uint32_t scanout_id,
                               FloeGPUScanout *out);
+
+#if defined(__GNUC__)
+#pragma GCC visibility pop
+#endif
 
 #ifdef __cplusplus
 }

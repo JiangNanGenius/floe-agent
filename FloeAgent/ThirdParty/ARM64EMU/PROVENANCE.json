@@ -42,7 +42,8 @@
     "Source/src/sysreg.c",
     "Source/src/devices/virtio_gpu.c",
     "Source/src/memory_regions.c",
-    "Source/src/devices/virtio_mem.c"
+    "Source/src/devices/virtio_mem.c",
+    "Bridge/fvgpu_virtio_backend_adapter.c"
   ],
   "capabilities": {
     "nativeJIT": false,
@@ -494,6 +495,14 @@
     {
       "path": "include/floe_arm64emu.h",
       "sha256": "676163ea865e64568cce3d9d32012e4b2031e05cd4cff56de0f0ed78ca7c8a08"
+    },
+    {
+      "path": "Bridge/fvgpu_virtio_backend_adapter.c",
+      "sha256": "5805104d58cef619d1f268616e89ff59af2837560a24cab5c9b98734015384b4"
+    },
+    {
+      "path": "Sources/33_gpu_backend_adapter.c",
+      "sha256": "39d2a5cd250f36fd3f6d97038f4f2e4bfe874ca7270fa605c73d6c2b1c23a9dd"
     }
   ],
   "patches": [
@@ -691,6 +700,22 @@
         }
       ],
       "qualification": "Actual consumer link exposed hidden constructor first, then three hidden transport callbacks. Both original failures retained. Final link/runtime tests recorded separately."
+    },
+    {
+      "name": "Own transport adapter in engine instead of reverse-linking the GPU backend",
+      "scope": "Existing Apache-2.0 adapter moved byte-identically to Bridge and compiled by Sources/33_gpu_backend_adapter.c. Transport callbacks are defined by this same target; session API stays in FloeVirtualGPU.",
+      "files": [
+        {
+          "path": "Bridge/fvgpu_virtio_backend_adapter.c",
+          "baseSHA256": "5805104d58cef619d1f268616e89ff59af2837560a24cab5c9b98734015384b4",
+          "sha256": "5805104d58cef619d1f268616e89ff59af2837560a24cab5c9b98734015384b4"
+        },
+        {
+          "path": "Sources/33_gpu_backend_adapter.c",
+          "sha256": "39d2a5cd250f36fd3f6d97038f4f2e4bfe874ca7270fa605c73d6c2b1c23a9dd"
+        }
+      ],
+      "qualification": "Independent arm64 iOS26 Simulator dynamic GPU and engine target link/export validation is separate from full App and runtime acceptance."
     }
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",
@@ -725,5 +750,18 @@
     "wait": "Typed read/write/error interests with deadlines and owned duplicates",
     "offload": "Negotiated TX checksum/TSO4/TSO6 and RX checksum; RX GSO selected by build profile",
     "qualification": "Component and actual Linux/Node qualification recorded separately; full App and physical M1 results belong to integration evidence."
+  },
+  "licenseExceptions": {
+    "Bridge/fvgpu_virtio_backend_adapter.c": "Apache-2.0"
+  },
+  "sourceIntegration": {
+    "translationUnits": 34,
+    "adapterOwner": "FloeARM64Engine",
+    "adapterPath": "Bridge/fvgpu_virtio_backend_adapter.c",
+    "wrapperPath": "Sources/33_gpu_backend_adapter.c",
+    "adapterSHA256": "5805104d58cef619d1f268616e89ff59af2837560a24cab5c9b98734015384b4",
+    "sessionAPIOwner": "FloeVirtualGPU",
+    "adapterLicense": "Apache-2.0",
+    "existingComponentQualification": "The 33-unit qualification below predates adapter ownership migration and remains historical evidence."
   }
 }

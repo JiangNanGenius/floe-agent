@@ -212,7 +212,6 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .headerSearchPath("src"),
-                .headerSearchPath("../ARM64EMU/Bridge"),
                 .define("_POSIX_C_SOURCE", to: "200809L"),
                 .define("_DARWIN_C_SOURCE"),
                 .unsafeFlags(["-std=c11", "-O2", "-fvisibility=hidden"])
@@ -222,6 +221,7 @@ let package = Package(
                 .linkedFramework("Metal"), .linkedFramework("IOSurface"),
                 .linkedFramework("QuartzCore"), .linkedFramework("CoreGraphics"),
                 .linkedFramework("Foundation"), .linkedFramework("CoreFoundation"),
+                .linkedFramework("UIKit", .when(platforms: [.iOS])),
                 .linkedFramework("AppKit", .when(platforms: [.macOS])),
                 .linkedFramework("IOKit", .when(platforms: [.macOS]))
             ]

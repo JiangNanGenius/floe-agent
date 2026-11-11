@@ -23,8 +23,17 @@ def main():
         assert path.is_file() and not path.is_symlink(), relative
         assert hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"], relative
         pinned.add(relative.as_posix())
-    assert len(record["productionTranslationUnits"]) == 33
+    assert len(record["productionTranslationUnits"]) == 34
     assert set(record["productionTranslationUnits"]).issubset(pinned)
+    adapter = "Bridge/fvgpu_virtio_backend_adapter.c"
+    wrapper = "Sources/33_gpu_backend_adapter.c"
+    assert adapter in record["productionTranslationUnits"] and adapter in pinned
+    assert wrapper in pinned
+    assert record["licenseExceptions"][adapter] == "Apache-2.0"
+    assert record["sourceIntegration"]["adapterSHA256"] == hashlib.sha256((root / adapter).read_bytes()).hexdigest()
+    assert '#include "../Bridge/fvgpu_virtio_backend_adapter.c"' in (root / wrapper).read_text()
+    gpu_root = root.parent / "FloeVirtualGPU"
+    assert not (gpu_root / "src/fvgpu_virtio_backend_adapter.c").exists()
     for source in ("devices/virtio_gpu.c", "devices/virtio_mem.c", "memory_regions.c"):
         assert "Source/src/" + source in record["productionTranslationUnits"]
     for name in ("Source/LICENSE", "Source/NOTICE", "Bridge/MPL-2.0.txt"):
@@ -33,6 +42,10 @@ def main():
     assert 'name: "FloeARM64Engine"' in package
     engine_target = package.split('name: "FloeARM64Engine"', 1)[1].split('cSettings:', 1)[0]
     assert 'resources: [.copy("PrivacyInfo.xcprivacy")]' in engine_target
+    gpu_target = package.split('name: "FloeVirtualGPU"', 1)[1].split('name: "FloeARM64Engine"', 1)[0]
+    assert "ARM64EMU/Bridge" not in gpu_target
+    assert '.linkedFramework("UIKit", .when(platforms: [.iOS]))' in gpu_target
+    assert '"FloeVirtualGPU"' in engine_target
     privacy = plistlib.loads((root / "PrivacyInfo.xcprivacy").read_bytes())
     assert "PrivacyInfo.xcprivacy" in pinned
     assert privacy["NSPrivacyTracking"] is False
@@ -47,7 +60,7 @@ def main():
     assert '"FloeTinyEMU"' not in package
     assert not (root.parent / "TinyEMU").exists()
     subprocess.run(["python3", str(root / "Tools/generate_crc32_tables.py"), "--check"], check=True)
-    print("ARM64 provenance, 33 translation units, licenses and App wiring verified")
+    print("ARM64 provenance, 34 translation units, licenses and App wiring verified")
 
 
 if __name__ == "__main__":
