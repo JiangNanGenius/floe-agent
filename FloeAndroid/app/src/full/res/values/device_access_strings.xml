@@ -82,6 +82,8 @@
 
     <string name="device_access_error_details">Details</string>
     <string name="device_access_error_hide_details">Hide details</string>
+    <string name="device_access_details">Details</string>
+    <string name="device_access_details_hide">Hide details</string>
     <string name="device_access_retry">Check again</string>
 
 <!-- G08 App integration: explicit capability ceilings, pairing/root flow. -->
@@ -140,6 +142,9 @@
     <string name="device_access_stage_apks">Stage APKs for install</string>
     <string name="device_access_staged_empty">No staged APKs yet. Pick one or more APK files to make them installable by an admitted task.</string>
     <string name="device_access_staged_remove">Remove</string>
+    <string name="device_access_staged_count">%1$d</string>
+    <string name="device_access_staged_path_label">Staged path</string>
+    <string name="device_access_staged_sha_label">SHA-256</string>
     <string name="device_access_staged_pkg_unknown">package unknown</string>
     <string name="device_access_staged_partial">Some APKs could not be staged. Staged ones are ready.</string>
     <string name="device_access_staged_failed">APKs could not be staged.</string>

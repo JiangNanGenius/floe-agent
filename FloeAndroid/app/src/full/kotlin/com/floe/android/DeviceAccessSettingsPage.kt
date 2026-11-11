@@ -1,18 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.floe.android
 
 import android.Manifest
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -20,9 +29,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -35,14 +51,19 @@ import com.floe.android.design.FloeCapsuleButton
 import com.floe.android.design.FloeConfirmDialog
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeInlineSwitch
+import com.floe.android.design.FloeLayout
+import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeSectionRow
 import com.floe.android.design.FloeSecureFormField
 import com.floe.android.design.FloeSegmented
+import com.floe.android.design.FloeSettingsContentDensity
 import com.floe.android.design.FloeSettingsSectionCard
+import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeValueRow
+import com.floe.android.design.IconGlyph
 import com.floe.android.host.deviceaccess.DeviceAccessToolCatalog
 import com.floe.android.host.deviceaccess.PairingNotificationAccess
 import com.floe.android.host.deviceaccess.PairingNotificationPolicy
@@ -77,6 +98,17 @@ import io.github.robinpcrd.cupertino.section.SectionScope
  *    the folder classes are progressive-disclosure count rows that open
  *    child sheets instead of permanent switch lists. Every control,
  *    callback, gate and capability state from the flat layout is preserved.
+ *  - Compact density (N08 round 2): each connection card carries ONE status
+ *    row whose trailing slot hosts the direct next action, so the phone
+ *    scan is status → action without full-width button rows; sibling
+ *    secondary actions share one wrapping capsule row. Static explanation
+ *    prose rides behind an opened "Details" fold in the card footer; live
+ *    identity (UID), state-specific guidance and risk hints stay visible.
+ *    App management keeps both ceiling switches on the page with the full
+ *    permission/risk wording in an opened details fold, and the staged-APK
+ *    list moves into a child sheet that shows readable file identity
+ *    (name, size, package) with exact staged IDs, callbacks and opened
+ *    path/digest diagnostics preserved.
  */
 enum class DeviceAccessScreenScopeUi { OFF, CURRENT_TASK, UNTIL_STOPPED }
 
@@ -654,6 +686,10 @@ fun DeviceAccessSettingsPage(
     var systemSettingsOpen by remember { mutableStateOf(false) }
     var sharedFoldersOpen by remember { mutableStateOf(false) }
     var systemFoldersOpen by remember { mutableStateOf(false) }
+    var stagedApksOpen by remember { mutableStateOf(false) }
+    var adbDetailsOpen by remember { mutableStateOf(false) }
+    var accessibilityLimitsOpen by remember { mutableStateOf(false) }
+    var managementDetailsOpen by remember { mutableStateOf(false) }
     var confirmUnlock by remember { mutableStateOf(false) }
     var unlockDraft by remember { mutableStateOf("") }
     var revealUnlock by remember { mutableStateOf(false) }
@@ -792,6 +828,20 @@ fun DeviceAccessSettingsPage(
     ) { uris ->
         if (uris.isNotEmpty()) callbacks.onStageApks(uris)
     }
+    // Progressive-disclosure staging: the page carries one count row; the
+    // stage action, the per-APK rows and the opened path/digest diagnostics
+    // live in this child sheet. Remove forwards the EXACT stagedId through
+    // the existing callback; staging alone never installs anything.
+    DeviceAccessStagedApksSheet(
+        visible = stagedApksOpen,
+        stagedApks = state.targets.stagedApks,
+        enabled = state.busy == DeviceAccessBusyUi.NONE,
+        onStageClick = {
+            stageApks.launch(arrayOf("application/vnd.android.package-archive"))
+        },
+        onRemove = callbacks.onRemoveStagedApk,
+        onDismiss = { stagedApksOpen = false },
+    )
     val activity = context as? ComponentActivity
     DisposableEffect(activity) {
         if (activity == null) return@DisposableEffect onDispose { }
@@ -836,6 +886,44 @@ fun DeviceAccessSettingsPage(
     // validates the backend-shape before it becomes a grantable root.
     var appDataDraft by remember { mutableStateOf("") }
     val adbActions = DeviceAccessPresentation.adbActions(state.adb, state.busy)
+    // One direct next action rides the status row; the remaining honest
+    // actions for the current state share one wrapping capsule row. The
+    // action sets come from DeviceAccessPresentation, so busy work already
+    // disables conflicting actions and no dead control is rendered.
+    val adbPrimaryAction: Pair<String, () -> Unit>? = when {
+        DeviceAccessAdbActionUi.STOP in adbActions ->
+            stringResource(R.string.device_access_adb_stop) to callbacks.onStopAdbService
+        DeviceAccessAdbActionUi.START in adbActions ->
+            stringResource(R.string.device_access_adb_start) to callbacks.onStartAdbService
+        DeviceAccessAdbActionUi.ENABLE in adbActions ->
+            stringResource(R.string.device_access_adb_enable) to callbacks.onEnableAdb
+        DeviceAccessAdbActionUi.PAIR in adbActions ->
+            stringResource(R.string.device_access_adb_pair) to pairWithNotification
+        // Pairing code form is open: submit rides next to the code field.
+        else -> null
+    }
+    val adbCancelLabel = stringResource(R.string.device_access_adb_cancel_pairing)
+    val adbDevOptionsLabel = stringResource(R.string.device_access_adb_open_developer_options)
+    val adbForgetLabel = stringResource(R.string.device_access_adb_forget)
+    val adbSecondaryActions: List<Pair<String, () -> Unit>> = listOfNotNull(
+        if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions &&
+            !DeviceAccessPresentation.adbShowsCodeField(state.adb)
+        ) {
+            adbCancelLabel to callbacks.onCancelPairing
+        } else {
+            null
+        },
+        if (DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS in adbActions) {
+            adbDevOptionsLabel to callbacks.onOpenDeveloperOptions
+        } else {
+            null
+        },
+        if (DeviceAccessAdbActionUi.FORGET in adbActions) {
+            adbForgetLabel to { confirmForget = true }
+        } else {
+            null
+        },
+    )
     val accessibilityStatus = stringResource(
         DeviceAccessPresentation.accessibilityStatusRes(state.accessibility))
     val adbStatus = stringResource(DeviceAccessPresentation.adbStatusRes(state.adb))
@@ -864,24 +952,8 @@ fun DeviceAccessSettingsPage(
             title = stringResource(R.string.device_access_adb_section),
             caption = {
                 Column {
-                    CaptionText(stringResource(R.string.device_access_adb_intro))
-                    if (!state.pairingSupported) {
-                        CaptionText(
-                            stringResource(R.string.device_access_pairing_unsupported),
-                            Modifier.padding(top = 2.dp),
-                        )
-                        if (state.usbBootstrapExported) {
-                            CaptionText(
-                                stringResource(R.string.device_access_usb_bootstrap_copied),
-                                Modifier.padding(top = 2.dp),
-                            )
-                        }
-                    }
                     DeviceAccessPresentation.adbEffectiveUid(state.adb)?.let { uid ->
-                        CaptionText(
-                            stringResource(R.string.device_access_adb_state_uid, uid),
-                            Modifier.padding(top = 2.dp),
-                        )
+                        CaptionText(stringResource(R.string.device_access_adb_state_uid, uid))
                     }
                     // State-specific guidance, never a fabricated success. While
                     // the pairing session is open the notification text explains
@@ -917,10 +989,37 @@ fun DeviceAccessSettingsPage(
                             Modifier.padding(top = 2.dp),
                         )
                     }
+                    if (!state.pairingSupported) {
+                        CaptionText(
+                            stringResource(R.string.device_access_pairing_unsupported),
+                            Modifier.padding(top = 2.dp),
+                        )
+                        if (state.usbBootstrapExported) {
+                            CaptionText(
+                                stringResource(R.string.device_access_usb_bootstrap_copied),
+                                Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                    // Static implementation explanation lives behind the opened
+                    // details fold; live identity and next-step guidance above
+                    // stay visible. Same string, same conditions as the flat
+                    // layout.
+                    CaptionDetailsToggle(adbDetailsOpen) { adbDetailsOpen = !adbDetailsOpen }
+                    if (adbDetailsOpen) {
+                        CaptionText(
+                            stringResource(R.string.device_access_adb_intro),
+                            Modifier.padding(top = 2.dp),
+                        )
+                    }
                 }
             },
         ) {
-            FloeValueRow(stringResource(R.string.device_access_status_label), adbStatus)
+            StatusActionRow(
+                status = adbStatus,
+                actionLabel = adbPrimaryAction?.first,
+                onAction = adbPrimaryAction?.second,
+            )
             state.error?.takeIf { it.section == DeviceAccessErrorSectionUi.ADB }?.let { error ->
                 DeviceAccessErrorRows(error, showErrorDetails,
                     onToggleDetails = { showErrorDetails = !showErrorDetails },
@@ -979,8 +1078,14 @@ fun DeviceAccessSettingsPage(
                     revealOnLabel = stringResource(R.string.notes_pdf_unlock_show),
                     revealOffLabel = stringResource(R.string.notes_pdf_unlock_hide),
                 )
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
+                // Submit and cancel share one wrapping capsule row instead of
+                // stacking full-width button rows above the keyboard.
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    PageCapsuleButton(
                         stringResource(R.string.device_access_adb_code_submit),
                         onClick = {
                             if (DeviceAccessPairingCode.canSubmit(pairingCode) &&
@@ -993,7 +1098,13 @@ fun DeviceAccessSettingsPage(
                         enabled = DeviceAccessPresentation.adbSubmitEnabled(
                             pairingCode, state.pairingPort, state.adb, state.busy),
                     )
-                })
+                    if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions) {
+                        PageCapsuleButton(
+                            stringResource(R.string.device_access_adb_cancel_pairing),
+                            onClick = callbacks.onCancelPairing,
+                        )
+                    }
+                }
                 // Inline validation stays adjacent to the field while the
                 // partial code is on screen: it is a transient error state,
                 // not a group explanation.
@@ -1017,64 +1128,26 @@ fun DeviceAccessSettingsPage(
                 }
                 else -> Unit
             }
-            // One explicit row per action the current state genuinely offers.
-            if (DeviceAccessAdbActionUi.ENABLE in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_enable),
-                        onClick = callbacks.onEnableAdb,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.PAIR in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_pair),
-                        onClick = pairWithNotification,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.START in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_start),
-                        onClick = callbacks.onStartAdbService,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.STOP in adbActions) {
-                FloeSectionRow(title = {
-                    FloeCapsuleButton(
-                        stringResource(R.string.device_access_adb_stop),
-                        onClick = callbacks.onStopAdbService,
-                    )
-                })
-            }
-            if (DeviceAccessAdbActionUi.CANCEL_PAIRING in adbActions) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_adb_cancel_pairing),
-                    onClick = callbacks.onCancelPairing,
-                )
-            }
-            if (DeviceAccessAdbActionUi.OPEN_DEVELOPER_OPTIONS in adbActions) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_adb_open_developer_options),
-                    onClick = callbacks.onOpenDeveloperOptions,
-                )
-            }
-            if (DeviceAccessAdbActionUi.FORGET in adbActions) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_adb_forget),
-                    onClick = { confirmForget = true },
-                )
+            // Remaining actions the current state genuinely offers share one
+            // wrapping capsule row (cancel / developer options / forget).
+            if (adbSecondaryActions.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    adbSecondaryActions.forEach { (label, onClick) ->
+                        PageCapsuleButton(label, onClick)
+                    }
+                }
             }
         }
 
         // ---------------------------------------------------------- root layer
-        // Default-off and separate from ADB: the status, the switch (live only
-        // after a real grant) and the check action stay unchanged; the two
-        // explanation paragraphs ride in the card footer instead of a tall
-        // prose row.
+        // Default-off and separate from ADB. One status row carries the direct
+        // next action (check grant) in its trailing slot; the enable hint
+        // belongs to the switch and rides inside its 48dp cell; the risk
+        // disclosure stays in the card footer.
         val rootUid = DeviceAccessPresentation.rootEffectiveUid(state.root)
         FloeSettingsSectionCard(
             title = stringResource(R.string.device_access_root_section),
@@ -1084,14 +1157,24 @@ fun DeviceAccessSettingsPage(
                         CaptionText(stringResource(R.string.device_access_root_uid, uid))
                     }
                     CaptionText(stringResource(R.string.device_access_root_intro))
-                    CaptionText(
-                        stringResource(R.string.device_access_root_enable_hint),
-                        Modifier.padding(top = 2.dp),
-                    )
                 }
             },
         ) {
-            FloeValueRow(stringResource(R.string.device_access_status_label), rootStatus)
+            StatusActionRow(
+                status = rootStatus,
+                actionLabel = if (DeviceAccessPresentation.rootCheckVisible(state.root)) {
+                    stringResource(R.string.device_access_root_check)
+                } else {
+                    null
+                },
+                onAction = if (DeviceAccessPresentation.rootCheckVisible(state.root)) {
+                    { confirmRootCheck = true }
+                } else {
+                    null
+                },
+                actionEnabled = state.busy != DeviceAccessBusyUi.ROOT_CHECK &&
+                    state.busy != DeviceAccessBusyUi.ROOT_ENABLE,
+            )
             FloeSectionRow(
                 title = {
                     FloeText(
@@ -1114,21 +1197,14 @@ fun DeviceAccessSettingsPage(
                         description = stringResource(R.string.device_access_root_enable),
                     )
                 },
+                caption = stringResource(R.string.device_access_root_enable_hint),
             )
-            if (DeviceAccessPresentation.rootCheckVisible(state.root)) {
-                FloeActionRow(
-                    label = stringResource(R.string.device_access_root_check),
-                    onClick = { confirmRootCheck = true },
-                    enabled = state.busy != DeviceAccessBusyUi.ROOT_CHECK &&
-                        state.busy != DeviceAccessBusyUi.ROOT_ENABLE,
-                )
-            }
         }
 
         // ------------------------------------------------- accessibility layer
-        // The disclosure and the four boundary bullets moved from a dedicated
-        // prose row into the card footer: identical text and conditions, one
-        // less permanent row. The status row and the honest system action stay.
+        // One status row carries the honest system action in its trailing slot.
+        // The disclosure stays visible; the limits list rides behind an opened
+        // details fold — identical text and conditions, nothing is dropped.
         FloeSettingsSectionCard(
             title = stringResource(R.string.device_access_accessibility_section),
             caption = {
@@ -1139,21 +1215,26 @@ fun DeviceAccessSettingsPage(
                         )
                     }
                     CaptionText(stringResource(R.string.device_access_accessibility_disclosure))
-                    CaptionText(
-                        stringResource(R.string.device_access_boundary_title),
-                        Modifier.padding(top = 2.dp),
-                    )
-                    BoundaryLine(stringResource(R.string.device_access_boundary_nodes))
-                    BoundaryLine(stringResource(R.string.device_access_boundary_secrets))
-                    BoundaryLine(stringResource(R.string.device_access_boundary_actions))
-                    BoundaryLine(stringResource(R.string.device_access_boundary_screenshots))
+                    CaptionDetailsToggle(accessibilityLimitsOpen) {
+                        accessibilityLimitsOpen = !accessibilityLimitsOpen
+                    }
+                    if (accessibilityLimitsOpen) {
+                        CaptionText(
+                            stringResource(R.string.device_access_boundary_title),
+                            Modifier.padding(top = 2.dp),
+                        )
+                        BoundaryLine(stringResource(R.string.device_access_boundary_nodes))
+                        BoundaryLine(stringResource(R.string.device_access_boundary_secrets))
+                        BoundaryLine(stringResource(R.string.device_access_boundary_actions))
+                        BoundaryLine(stringResource(R.string.device_access_boundary_screenshots))
+                    }
                 }
             },
         ) {
-            FloeValueRow(stringResource(R.string.device_access_status_label), accessibilityStatus)
-            FloeActionRow(
-                label = stringResource(R.string.device_access_open_settings),
-                onClick = callbacks.onOpenAccessibilitySettings,
+            StatusActionRow(
+                status = accessibilityStatus,
+                actionLabel = stringResource(R.string.device_access_open_settings),
+                onAction = callbacks.onOpenAccessibilitySettings,
             )
         }
 
@@ -1222,16 +1303,24 @@ fun DeviceAccessSettingsPage(
                     }
                 })
                 if (taskArmed) {
-                    FloeActionRow(
-                        label = stringResource(R.string.device_access_stop_task),
-                        onClick = callbacks.onStopActiveTask,
-                        enabled = DeviceAccessPresentation.canStopTask(state),
-                    )
-                    FloeActionRow(
-                        label = stringResource(R.string.device_access_take_over),
-                        onClick = callbacks.onTakeOverActiveTask,
-                        enabled = DeviceAccessPresentation.canTakeOverTask(state),
-                    )
+                    // Stop and take over are sibling controls: one wrapping
+                    // capsule row, each keeping its own honest enabled state.
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        PageCapsuleButton(
+                            stringResource(R.string.device_access_stop_task),
+                            onClick = callbacks.onStopActiveTask,
+                            enabled = DeviceAccessPresentation.canStopTask(state),
+                        )
+                        PageCapsuleButton(
+                            stringResource(R.string.device_access_take_over),
+                            onClick = callbacks.onTakeOverActiveTask,
+                            enabled = DeviceAccessPresentation.canTakeOverTask(state),
+                        )
+                    }
                 } else {
                     FloeSectionRow(title = {
                         FloeCapsuleButton(
@@ -1417,17 +1506,11 @@ fun DeviceAccessSettingsPage(
                         appDataDraft.isNotBlank(),
                 )
             } else {
-                // Without a live Root service the hint and the requirement are
-                // the whole message of this card: one dense cell, not two
-                // full-height rows.
+                // Without a live Root service the actionable requirement is
+                // the whole message; the full path/SELinux explanation appears
+                // with the add field once Root is running.
                 FloeSectionRow(title = {
-                    Column(Modifier.fillMaxWidth()) {
-                        CaptionText(stringResource(R.string.device_access_app_data_hint))
-                        CaptionText(
-                            stringResource(R.string.device_access_app_data_requires_root),
-                            Modifier.padding(top = 2.dp),
-                        )
-                    }
+                    CaptionText(stringResource(R.string.device_access_app_data_requires_root))
                 })
             }
         }
@@ -1438,7 +1521,35 @@ fun DeviceAccessSettingsPage(
         // for force-stop/install/uninstall of ordinary third-party packages;
         // Floe itself and system packages stay hard-refused, and the revoke
         // row below is the visible stop for everything live right now.
-        FloeSettingsSectionCard(title = stringResource(R.string.device_access_management_section)) {
+        FloeSettingsSectionCard(
+            title = stringResource(R.string.device_access_management_section),
+            caption = {
+                Column {
+                    // The full permission/risk wording for both ceiling
+                    // switches stays one tap away in the opened details fold;
+                    // the switch labels above name what each grant allows.
+                    CaptionDetailsToggle(managementDetailsOpen) {
+                        managementDetailsOpen = !managementDetailsOpen
+                    }
+                    if (managementDetailsOpen) {
+                        FloeText(
+                            stringResource(R.string.device_access_package_management),
+                            style = Floe.typography.body,
+                            color = colors.label,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        CaptionText(stringResource(R.string.device_access_package_management_hint))
+                        FloeText(
+                            stringResource(R.string.device_access_advanced_master),
+                            style = Floe.typography.body,
+                            color = colors.label,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                        CaptionText(stringResource(R.string.device_access_advanced_master_hint))
+                    }
+                }
+            },
+        ) {
             FloeSectionRow(
                 title = {
                     FloeText(
@@ -1455,7 +1566,6 @@ fun DeviceAccessSettingsPage(
                         enabled = state.busy == DeviceAccessBusyUi.NONE,
                     )
                 },
-                caption = stringResource(R.string.device_access_package_management_hint),
             )
             // The shared advanced-system master. It is intentionally one
             // switch: the per-name allowed list and the target chooser below
@@ -1477,7 +1587,6 @@ fun DeviceAccessSettingsPage(
                         enabled = state.busy == DeviceAccessBusyUi.NONE,
                     )
                 },
-                caption = stringResource(R.string.device_access_advanced_master_hint),
             )
             if (state.targets.advancedSystemManagementAllowed) {
                 FloeActionRow(
@@ -1535,49 +1644,16 @@ fun DeviceAccessSettingsPage(
                     enabled = state.busy == DeviceAccessBusyUi.NONE,
                 )
             }
-            FloeActionRow(
-                label = stringResource(R.string.device_access_stage_apks),
-                onClick = {
-                    stageApks.launch(arrayOf("application/vnd.android.package-archive"))
-                },
-                enabled = state.busy == DeviceAccessBusyUi.NONE,
+            // Progressive-disclosure staging: one count row opens the child
+            // sheet carrying the stage action, the readable APK rows and the
+            // opened path/digest diagnostics. Exact staged IDs and the remove
+            // callback are unchanged.
+            FloeValueRow(
+                title = stringResource(R.string.device_access_stage_apks),
+                value = stringResource(
+                    R.string.device_access_staged_count, state.targets.stagedApks.size),
+                onClick = { stagedApksOpen = true },
             )
-            if (state.targets.stagedApks.isEmpty()) {
-                FloeSectionRow(title = {
-                    CaptionText(stringResource(R.string.device_access_staged_empty))
-                })
-            } else {
-                state.targets.stagedApks.forEach { apk ->
-                    FloeSectionRow(
-                        title = {
-                            Column(Modifier.fillMaxWidth()) {
-                                FloeText(
-                                    apk.fileName,
-                                    style = Floe.typography.body,
-                                    color = colors.label,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                FloeText(
-                                    stagedApkSubtitle(context, apk),
-                                    style = Floe.typography.metadata,
-                                    color = colors.secondaryLabel,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        },
-                        trailing = {
-                            FloeCapsuleButton(
-                                stringResource(R.string.device_access_staged_remove),
-                                onClick = { callbacks.onRemoveStagedApk(apk.stagedId) },
-                                enabled = state.busy == DeviceAccessBusyUi.NONE,
-                                modifier = Modifier.widthIn(min = 64.dp, max = 96.dp),
-                            )
-                        },
-                    )
-                }
-            }
             FloeActionRow(
                 label = stringResource(R.string.device_access_revoke_grants),
                 onClick = callbacks.onRevokeSystemGrants,
@@ -1794,6 +1870,280 @@ private fun CaptionText(text: String, modifier: Modifier = Modifier) {
         color = Floe.colors.secondaryLabel,
         modifier = modifier,
     )
+}
+
+/**
+ * Accent "Details / Hide details" disclosure used inside card captions. Lives
+ * in the footer (not a section row) so explanatory prose opens in place
+ * without adding permanent rows; keeps the shared 48dp hit floor.
+ */
+@Composable
+private fun CaptionDetailsToggle(open: Boolean, onToggle: () -> Unit) {
+    val label = stringResource(
+        if (open) R.string.device_access_details_hide
+        else R.string.device_access_details
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = FloeLayout.MinimumTarget)
+            .clickable(onClick = onToggle, role = Role.Button)
+            .semantics { contentDescription = label },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        FloeText(
+            label,
+            style = Floe.typography.metadata,
+            color = Floe.colors.accent,
+            maxLines = 1,
+        )
+        IconGlyph(
+            icon = if (open) FloeIcons.ChevronUp else FloeIcons.ChevronDown,
+            tint = Floe.colors.accent,
+            size = 12.dp,
+        )
+    }
+}
+
+/**
+ * Compact capsule for dense phone rows: the same Floe capsule shape/fill and
+ * the shared 48dp floor as the wide [FloeCapsuleButton], without the baked-in
+ * full-width chrome, so sibling actions can share one wrapping row.
+ */
+@Composable
+private fun PageCapsuleButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    Box(
+        modifier = modifier
+            .heightIn(min = FloeLayout.MinimumTarget)
+            .clip(FloeLayout.SidebarSelectionShape)
+            .background(Floe.colors.fillTertiary)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics {
+                contentDescription = label
+                if (!enabled) disabled()
+            }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        FloeText(
+            label,
+            style = Floe.typography.body,
+            color = if (enabled) Floe.colors.label else Floe.colors.secondaryLabel,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * One status cell with the capability's direct next action in the trailing
+ * slot: the phone scan reads status → action without a separate full-width
+ * button row. The label/value wording is identical to the old status row.
+ */
+@Composable
+private fun SectionScope.StatusActionRow(
+    status: String,
+    actionLabel: String?,
+    onAction: (() -> Unit)?,
+    actionEnabled: Boolean = true,
+) {
+    val statusLabel = stringResource(R.string.device_access_status_label)
+    FloeSectionRow(title = {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "$statusLabel: $status" },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                FloeText(
+                    statusLabel,
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                FloeText(
+                    status,
+                    style = Floe.typography.body,
+                    color = Floe.colors.label,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (actionLabel != null && onAction != null) {
+                PageCapsuleButton(actionLabel, onAction, enabled = actionEnabled)
+            }
+        }
+    })
+}
+
+/**
+ * Staged-APK detail sheet: the phone overview carries only a count row; the
+ * stage action, the readable per-APK rows and the opened path/digest
+ * diagnostics live here. Rows show file identity (name, size, package), never
+ * raw internal directories; the exact staged path and SHA-256 stay available
+ * behind each row's opened details. Remove forwards the EXACT stagedId
+ * through the existing callback.
+ */
+@Composable
+private fun DeviceAccessStagedApksSheet(
+    visible: Boolean,
+    stagedApks: List<DeviceAccessStagedApkUi>,
+    enabled: Boolean,
+    onStageClick: () -> Unit,
+    onRemove: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (!visible) return
+    val config = LocalConfiguration.current
+    val compact = FloeLayout.usesCompactNavigation(
+        config.screenWidthDp.toFloat(), config.smallestScreenWidthDp.toFloat(),
+    )
+    var expandedIds by remember { mutableStateOf(setOf<String>()) }
+    val context = LocalContext.current
+    FloeSettingsContentDensity(compact) {
+        FloePageSheet(
+            visible = true,
+            onDismiss = onDismiss,
+            topInset = if (compact) 16.dp else 0.dp,
+            widthFraction = if (compact) 1f else 0.6f,
+            heightFraction = if (compact) 1f else 0.8f,
+            placement = if (compact) FloeSheetPlacement.BOTTOM else FloeSheetPlacement.CENTER,
+        ) {
+            Column(Modifier.fillMaxSize().background(Floe.colors.groupedSurface)) {
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeText(
+                        stringResource(R.string.device_access_stage_apks),
+                        style = Floe.typography.section,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    PageCapsuleButton(
+                        stringResource(R.string.done),
+                        onClick = onDismiss,
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    PageCapsuleButton(
+                        stringResource(R.string.device_access_stage_apks),
+                        onClick = onStageClick,
+                        enabled = enabled,
+                    )
+                    if (stagedApks.isNotEmpty()) {
+                        FloeText(
+                            stringResource(R.string.device_access_staged_count, stagedApks.size),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                }
+                if (stagedApks.isEmpty()) {
+                    FloeText(
+                        stringResource(R.string.device_access_staged_empty),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
+                        items(stagedApks, key = { it.stagedId }) { apk ->
+                            val expanded = apk.stagedId in expandedIds
+                            StagedApkRow(
+                                apk = apk,
+                                subtitle = stagedApkSubtitle(context, apk),
+                                expanded = expanded,
+                                enabled = enabled,
+                                onToggleDiagnostics = {
+                                    expandedIds = if (expanded) {
+                                        expandedIds - apk.stagedId
+                                    } else {
+                                        expandedIds + apk.stagedId
+                                    }
+                                },
+                                onRemove = { onRemove(apk.stagedId) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One staged-APK row: readable identity plus opened path/digest diagnostics. */
+@Composable
+private fun StagedApkRow(
+    apk: DeviceAccessStagedApkUi,
+    subtitle: String,
+    expanded: Boolean,
+    enabled: Boolean,
+    onToggleDiagnostics: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Floe.colors.sectionCardSurface)
+            .clickable(onClick = onToggleDiagnostics, role = Role.Button)
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                FloeText(
+                    // Service-adopted entries record their full staged path;
+                    // the identity line shows the file name only. The exact
+                    // path stays in the opened diagnostics below.
+                    apk.fileName.substringAfterLast('/'),
+                    style = Floe.typography.body,
+                    color = Floe.colors.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FloeText(
+                    subtitle,
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            PageCapsuleButton(
+                stringResource(R.string.device_access_staged_remove),
+                onClick = onRemove,
+                enabled = enabled,
+            )
+        }
+        if (expanded) {
+            CaptionText(
+                stringResource(R.string.device_access_staged_path_label) + ": " + apk.fileName,
+                Modifier.padding(top = 4.dp),
+            )
+            CaptionText(
+                stringResource(R.string.device_access_staged_sha_label) + ": " + apk.sha256,
+                Modifier.padding(top = 2.dp),
+            )
+        }
+    }
 }
 
 /** One-line staged APK subtitle: human size plus the archive package name. */

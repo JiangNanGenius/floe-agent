@@ -80,6 +80,8 @@
 
     <string name="device_access_error_details">详情</string>
     <string name="device_access_error_hide_details">收起详情</string>
+    <string name="device_access_details">详情</string>
+    <string name="device_access_details_hide">收起详情</string>
     <string name="device_access_retry">重新检查</string>
 
     <string name="device_access_task_not_allowed">此任务尚未开启手机控制。需要你明确允许，Agent 不能自行开启。</string>
@@ -137,6 +139,9 @@
     <string name="device_access_stage_apks">暂存待安装的 APK</string>
     <string name="device_access_staged_empty">还没有暂存的 APK。选择一个或多个 APK 文件后，已授权的任务即可安装它们。</string>
     <string name="device_access_staged_remove">移除</string>
+    <string name="device_access_staged_count">%1$d</string>
+    <string name="device_access_staged_path_label">暂存路径</string>
+    <string name="device_access_staged_sha_label">SHA-256</string>
     <string name="device_access_staged_pkg_unknown">包名未知</string>
     <string name="device_access_staged_partial">部分 APK 无法暂存，已暂存的可以正常使用。</string>
     <string name="device_access_staged_failed">无法暂存 APK。</string>

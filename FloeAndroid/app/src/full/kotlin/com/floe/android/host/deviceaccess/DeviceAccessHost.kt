@@ -4733,13 +4733,21 @@ internal class DeviceAccessHost(
      * Compact read-back suffix for the AppOps UID scope: the requested
      * scope and the service-resolved UID stay visible in the model-facing
      * summary, so a package-scope result can never masquerade as a UID one.
+     * Preserve the captured layers for restoration on success and failure;
+     * an absent entry differs from an unobserved platform default.
      */
     private fun appOpsScopeSuffix(receipt: com.floe.android.rootsystem.AppOpsSetReceipt): String =
-        if (receipt.scope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID) {
+        (if (receipt.scope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID) {
             " scope=uid uid=${receipt.resolvedUid}"
         } else {
-            ""
-        }
+            " scope=package"
+        }) +
+            " overrideBefore=${receipt.overrideBefore ?: "absent"}" +
+            " uidBefore=${receipt.uidBefore ?: "absent"}" +
+            " defaultBefore=${receipt.defaultBefore ?: "unknown"}" +
+            " effectiveBefore=${receipt.effectiveBefore}" +
+            " overrideAfter=${receipt.overrideAfter ?: "absent"}" +
+            " uidAfter=${receipt.uidAfter ?: "absent"}"
 
     private fun permissionOpsFailure(result: RootResult<*>): DeviceAccessPermissionOpsResult =
         when (result) {

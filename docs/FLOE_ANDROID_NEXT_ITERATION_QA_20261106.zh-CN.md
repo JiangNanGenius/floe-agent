@@ -1068,3 +1068,12 @@ English: UID AppOps reuses the existing management/category/selected-app authori
 同包R3真实读到了冷启动PDF指南并打开一个PTY；加载Office资源仍在receipt阶段未确认，随后仅关闭该PTY一次，未重试或重开绕过。新诊断定位到调用方把IPC外层ok/result报文直接交给要求内层state的轮询器；源码已改用现有result解包。另据三星实际输出，数字UID查询不包含应用级覆盖值，已补同时读取应用层与UID层并在结束复核身份。这两项小修合成下一份Full；复用未改native40及已通过的相关检查，新的实际消费者编译和C2／R4行为分开记录。
 
 English: Private06 passes the real automatic system-app removal/restoration cycle with91 original records and6 system receipts. UID/version/default-enabled state and the nonzero CE directory inode match; this is not a full data-backup claim, and E1 remains a retained failure. R3 isolates hot staging to receipt handling: the caller missed IPC result unwrapping. That small fix and complete package/UID AppOps snapshots form the next Full candidate, with compilation and fresh device behavior still pending.
+
+
+## 2026-11-11 Alpha80源码准备与本批实机收口
+
+E2系统应用移除／恢复、A6任务Linux安装工具至APK暂存／安装／卸载，以及C2 UID层实际修改／恢复、R4同一PTY资源热加载已有独立三星回执。C2未展示前后字段的原合同缺口、R4没有结尾换行的标记格式偏差和约57秒冷准备分别保留；不以模型总结代替实际结果，也不重跑未改矩阵。摘要字段与手机设置紧凑布局合入下一份code106，旧工程code105证据不作为新包安装证明。
+
+下一空闲中间版本准备为0.1.0-alpha.80，Full-only；实际编译、UI、升级及公开发现待执行。1.0.0仍待整轮剩余验收。详见[Alpha80准备记录](releases/ANDROID_ALPHA80_DELIVERY.md)。
+
+English: Samsung evidence closes real system-app restoration, the Linux-to-APK path, UID-mode restoration and same-PTY hot loading for this batch. Retained receipt/formatting/startup limits remain distinct. Alpha80/code106 combines the summary and compact-settings changes; its actual build, UI, upgrade and publication are pending, and final1.0.0 still follows whole-round closure.
