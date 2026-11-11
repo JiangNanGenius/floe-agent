@@ -1,7 +1,9 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
 
-日期：2026-11-06，实测更新至2026-11-11。当前：[Alpha79/code105已公开](releases/ANDROID_ALPHA79_DELIVERY.md)，固定源`3eb408bfb43a786b1df3bf79aeea9308e945fc6a`。35项唯一聚焦、实际Full、58项封装／签名、78→79重建、七附件匿名字节及当前／旧客户端发现均通过；无Play构建。三星真实镜像增量联合安装后，两包105字节／原UID与5任务2项目保持。后续私有工程包已完成合包和三星安装，手机输入、运行中技能资源及新增ADB链路仍在收口，证据分别记录如下。26处已用完的79产物已清，当前／回滚／符号及原失败保持，整轮继续。
+日期：2026-11-06，实测更新至2026-11-12。当前：[Alpha81/code107已公开](releases/ANDROID_ALPHA81_DELIVERY.md)，固定源`fd37a3ca5998dff5800cc5ae76583ba05c203dc2`。实际Full与ARM64生产、91项聚焦检查、58项封装／签名、80→81主机重建、七附件匿名字节及当前／保留旧客户端发现通过；iOS Latest保持。三星精确107已验证`device.observe`／`device.act`、实际计算成果及任务结束自然重锁；保留模型最初误选及独立用例的原始阻塞，不记作无误操作。自己的任务、设备导出、临时凭据和授权已在该轮恢复，原5任务／2项目保持。后续实测发现后台定时归属、工作区删除同步两个断点；软件占用／卸载和会话停止已验证，详见文末。整轮N01–N08尚未结束，最终1.0.0仍待约定功能验证完成。
+
+以下保留此前Alpha77–80的故障与修复过程；是否完成以文末逐版实测及上方当前交付为准。
 
 **后续实测与源码更新：** 三星新独立用例已真实自动解锁，`phone.observe`在2653ms内成功返回受保护页面的导航状态；随后启动已授权计算器却误触发“用户正在使用手机”的确认，计算器及任务结束重锁仍未通过。原始41条记录保留，临时解锁凭据、控制范围及权限已恢复，自建任务和设备导出已清。后来的能力撤销回执来自收尾撤权，不另算成最初故障。连续控制修复单独推进，旧用例不恢复。
 
@@ -168,7 +170,7 @@ Android 更接近电脑上的 Agent 工作台：Floe 负责任务、文件、授
 
 ### 4.5 项目 Linux 图形会话与软件安装
 
-**2026-11-09执行分工补充（覆盖本轮较早的桌面优先设想）：** 模型以命令行为主要执行手段。能通过CLI完成的安装、批处理、文件转换、分析、编辑和成果校验，使用任务解析到的Linux环境及`exec.shell`；不把打开、常驻桌面或截图点选作为普通模型任务的前提。Linux桌面主要供用户手动使用专业软件。用户需要时，模型可以准备依赖、文件与启动命令并打开软件供用户接手；GUI交互不作为模型的默认工作通路。手机外部App自动化继续走既有授权的`phone.observe`／`phone.act`，保留明确用户请求的远程能力，不能拿Linux桌面替代手机或切换目标绕过授权。
+**2026-11-09执行分工补充（覆盖本轮较早的桌面优先设想；工具名按2026-11-12决定更新）：** 模型以命令行为主要执行手段。能通过CLI完成的安装、批处理、文件转换、分析、编辑和成果校验，使用任务解析到的Linux环境及`exec.shell`；不把打开、常驻桌面或截图点选作为普通模型任务的前提。Linux桌面主要供用户手动使用专业软件。用户需要时，模型可以准备依赖、文件与启动命令并打开软件供用户接手；GUI交互不作为模型的默认工作通路。手机和平板外部App自动化继续走既有授权的`device.observe`／`device.act`，截图使用`device.screenshot`；历史`phone.*`调用保留可读与兼容别名。保留明确用户请求的远程能力，不能拿Linux桌面替代设备控制或切换目标绕过授权。
 
 - ARM64 Linux 环境按项目隔离，同项目任务共享已有软件和图形会话；仅启动正在使用的会话，复用持久项目和已有服务生命周期。
 - 手机默认全屏单应用，平板默认桌面/窗口，用户可切换；接通键鼠、软键盘、滚动、剪贴板、窗口尺寸和暂停/恢复。
@@ -1108,5 +1110,15 @@ English: Android phone/tablet tools now use device.observe/act/screenshot across
 三星P2的115条原始记录确认12项成功结果、最新观察、真实计算结果4及正常结束；自动解锁后自然重锁通过，旧O1误判接管故障由本批修复闭合。模型曾选错“1”后在限额内清除并更正，原记录保留。P1漏设测试审批模式的原阻塞另存且未恢复，不倒填为成功。临时凭据、无障碍、自动化与范围恢复，自己的两条任务和设备导出已清，原5条任务保留，手机自然休眠。新ADB服务的能力提示刷新已观察，已退役旧测试包的查询失败不计新UID修改通过。
 
 下一段沿原编号处理尚未闭合的定时／恢复组合，以及G1保留软件的空间管理检查；新出现的独立iOS重型编辑能力继续另记，避免扩张本轮。未改组件复用证据，不重新启动全量矩阵。1.0.0仍待既定功能验证完成，N01–N08总目标保持活动。
+
+## 2026-11-12 Alpha81后续实测：后台归属与空间管理
+
+三星107的新S1用例保存了一次性定时任务，明确选择Ark套餐模型和完全访问，系统定时器真实启动后台运行。首个`device.observe`进入自动解锁后，却被运行存活检查取消，未执行计算器操作；19条原始记录和取消前原生日志保留。源码检查发现该检查依赖已打开对话的界面状态，后台归属的完整修复另包推进。用例未批准、恢复或重放；自己的定时任务、对话和导出副本已清，临时凭据、无障碍、控制范围及后台授权恢复。
+
+G2在原项目复用已安装的图形环境，实际软件清单显示Inkscape约100MB估算占用，卸载后重新查询为未安装；软件包缓存清理返回，停止会话后3个图形进程及2个父进程均退出。存储页真实显示Linux分类占用，对未完整统计的环境明确显示下限；临时文件清理返回零项，没有虚报回收量。原有报告在内置全屏IDE重新打开，原有文件保留。
+
+同一用例另外发现：此前已从App删除的自建SVG，在重开并停止Linux会话后重新出现在原生文件列表。删除前后、重启前后及停止回执均保留；工作区同步的删除处理单独修复，不以隐藏文件或清空工作区掩盖。设备上的该自建文件再次清理，Linux旧副本仅作为下一项明确回归素材保留。两个修复包写域独立，代码集中交接后再统一相关编译和新包实测；本段不代表两项故障已修复或整轮完成。
+
+English: A new fixed-time Samsung107 run genuinely started in the background, but its first device observation was cancelled during automatic unlock by the run-liveness check. Nineteen original records are retained; no approval, resume or replay occurred. A separate source package repairs background ownership. G2 verified software size inventory, Inkscape removal, package-cache completion, classified storage readings and actual GUI-process exit; the original report reopened. It also exposed a deleted test SVG returning after Linux restart/stop. Workspace deletion reconciliation is a second independent repair. Temporary credentials, permissions and test records were cleaned; these observations do not claim either repair or whole-goal completion.
 
 English: Public81 ships the complete device namespace and owned-relock repair from immutable sourcefd37a3ca5/native41. Focused compilation, native/signature/source checks, all seven public assets, host reconstruction and both current/retained65 discovery pass. Fresh Samsung P2 proves actual result4, completed canonical calls and natural relock; its corrected model mistap and P1's setup failure remain separate evidence. Temporary credentials/permissions and owned task/export residue were restored. Remaining schedule/recovery and named G1 space-management checks continue under existing identities; this intermediate release does not close the whole goal or advance to1.0.0.
