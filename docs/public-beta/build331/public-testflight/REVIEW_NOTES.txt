@@ -1,0 +1,23 @@
+Floe 1.8.9 (331) — Public TestFlight review
+
+English
+
+This update fixes measurement-tool callback crashes, replaces custom timer duration fields with hour/minute/second wheels, and fixes deletion of older chemistry projects and permanent deletion of biology projects in Trash. It also corrects some Done buttons and local terminal screen error presentation.
+
+No Floe account or demo sign-in is required. Open Space > Toolbox to open a measurement tool or create a timer. Sensor availability depends on the device; permissions are requested when needed. In Space > Files, a selected project's menu offers deletion. Trash supports restoration and permanent deletion. Imported external source files remain separate from project-owned copies.
+
+Saving a goal returns the composer to Agent mode; if saving fails, the goal form and draft remain for retry. AI can set a goal for the current authorized task. Goals show clear paused, resumed and blocked prompts. To check this, set a goal from an ordinary task's composer and check it after saving; check draft retention after a failed save, and inspect pause, resume and blocked prompts. With a configured AI model, ask it to set a goal for that same authorized task.
+
+Cloud AI and other external services use the user's own configuration. The existing help articles, editors, and local file entry points remain available without a cloud account. Existing native video editing and playback are retained.
+
+This build is submitted for public TestFlight review in the existing public beta group. It uses the same app build as the internal beta and GitHub/Feather installer. New Linux video hardware decoding is not included; existing native video editing and playback remain available. Linux GPU work continues separately. The existing App Store build and release settings are unchanged.
+
+简体中文
+
+本次更新修复测量工具的回调闪退，将自定义倒计时改为时、分、秒滚轮，并修复旧化学项目删除和生物项目回收站彻底清理的问题，同时改善部分完成按钮与本地终端屏幕错误提示。
+
+无需 Floe 账号或演示登录。可从“空间 > 工具箱”打开测量工具或创建倒计时；传感器能力取决于设备，需要时才请求权限。“空间 > 文件”的项目菜单提供删除操作，回收站支持恢复和彻底删除；导入的外部原文件与项目自有副本分开保留。
+
+目标设置成功后，输入框返回普通 Agent 模式；保存失败时保留目标表单和草稿，便于重试。AI 可以为当前已授权任务设置目标，目标暂停、继续或受阻时显示清晰提示。请从普通任务的输入框设置目标，检查保存后的输入框、保存失败后的草稿保留及暂停、继续、受阻提示；配置 AI 模型后，可要求其为同一已授权任务设置目标。
+
+云端 AI 和其他外部服务使用用户自己的配置；现有帮助文章、编辑器和本地文件入口无需云账号即可使用，现有原生视频编辑与播放保持可用。本次通过现有公开测试组申请公开 TestFlight，使用与内部测试及 GitHub/Feather 安装包相同的 App 构建；不包含新增 Linux 视频硬件解码，Linux GPU 继续另行完善。现有 App Store 构建及发行设置保持。
