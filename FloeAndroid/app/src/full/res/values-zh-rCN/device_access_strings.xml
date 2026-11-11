@@ -213,6 +213,7 @@
     <string name="device_access_targets_lookup_missing">未找到名为“%1$s”的应用</string>
     <string name="device_access_advanced_tool_permissions_manage">更改应用权限</string>
     <string name="device_access_advanced_tool_appops_manage">更改 AppOps 模式</string>
+    <string name="device_access_appops_uid_scope_unsupported">请重启 Floe 系统服务，以使用应用级权限控制。</string>
     <string name="device_access_permission_ops_open">查看权限和 AppOps</string>
     <string name="device_access_permission_ops_title">权限和 AppOps</string>
     <string name="device_access_permission_ops_hint">查看或更改所选应用的真实权限和 AppOps 状态。更改仅适用于你在上方高级列表中选择的应用。</string>
@@ -221,6 +222,9 @@
     <string name="device_access_permission_ops_failed">失败：%1$s</string>
     <string name="device_access_permission_ops_section_permissions">权限</string>
     <string name="device_access_permission_ops_section_appops">AppOps</string>
+    <string name="device_access_permission_ops_scope_app">应用</string>
+    <string name="device_access_permission_ops_scope_uid">应用 UID</string>
+    <string name="device_access_permission_ops_scope_uid_hint">更改 UID 级模式：对整个 UID 生效，仅适用于唯一拥有其 UID 的应用。</string>
     <string name="device_access_permission_ops_inspect">查看</string>
     <string name="device_access_permission_ops_collapse">收起</string>
     <string name="device_access_permission_ops_refresh">刷新</string>

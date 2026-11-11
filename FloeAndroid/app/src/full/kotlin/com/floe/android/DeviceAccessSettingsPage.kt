@@ -152,6 +152,14 @@ data class DeviceAccessTargetsUi(
     /** Allowed advanced tool names (exact ABI names, shipped subset only). */
     val advancedSystemAllowedTools: Set<String> = emptySet(),
     val selectedAdvancedSystemTargets: Set<String> = emptySet(),
+    /** Derived from the existing app-management and AppOps category gates. */
+    val appOpsUidScopeAllowed: Boolean = false,
+    /**
+     * The LIVE privileged peer advertises the AppOps UID write scope; the
+     * scope is available only while this is true, so an older service
+     * never receives a UID request it would silently downgrade.
+     */
+    val appOpsUidScopeSupported: Boolean = false,
     /** Eligible advanced targets incl. disabled/removed preinstalled apps. */
     val advancedSystemTargets: List<DeviceAccessPackageUi> = emptyList(),
     /** Pre-window launcher rows; larger than packages.size means the sheet is
@@ -675,6 +683,8 @@ fun DeviceAccessSettingsPage(
         targets = state.targets.advancedSystemTargets.filter { it.selected },
         enabled = state.busy == DeviceAccessBusyUi.NONE,
         inspector = permissionOpsInspector,
+        uidScopeAvailable = state.targets.appOpsUidScopeAllowed &&
+            state.targets.appOpsUidScopeSupported,
         onDismiss = { permissionOpsOpen = false },
     )
     DeviceAccessAppChooserSheet(
@@ -1501,6 +1511,15 @@ fun DeviceAccessSettingsPage(
                         )
                     },
                 )
+                if (state.targets.appOpsUidScopeAllowed &&
+                    !state.targets.appOpsUidScopeSupported
+                ) {
+                    FloeText(
+                        stringResource(R.string.device_access_appops_uid_scope_unsupported),
+                        style = Floe.typography.metadata,
+                        color = colors.secondaryLabel,
+                    )
+                }
             }
             // Compact entry to the closed system-settings editor. It renders
             // only when the real ceiling (management + advanced master +

@@ -220,7 +220,7 @@ struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
     func publishStagedBundle(workspaceRoot: URL, runID: UUID,
                              conversationID: UUID?,
                              cancellation: CancellationToken) async -> SkillGuestPublishOutcome {
-        guard !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed }
+        guard !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed(detail: nil) }
         let projectID = LinuxShellProjectMapping
             .projectID(forCanonicalCoreWorkspaceRoot: workspaceRoot)
         let payload: [String: Any] = [
@@ -240,17 +240,34 @@ struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
             // A claimed ticket may still complete remotely (the bounded wait
             // expired or the generation fenced); the probe re-answer is the
             // only truth, so every transport failure is honestly unconfirmed.
+            // Each carries its BOUNDED case token (and the engine's own
+            // bounded code for a failed claim) so one fresh device case
+            // discriminates the boundary — never a host path or payload.
             switch error {
-            case .remoteFailed, .remoteFailedWithRestore, .remoteFailedWithStartFailure,
-                 .waitBudgetExpired,
-                 .hostFenced, .notBound, .saturated, .replyMalformed, .payloadTooLarge:
-                return .unconfirmed
+            case .remoteFailed(let code):
+                return .unconfirmed(detail: "remoteFailed:\(Self.boundedToken(code) ?? "failed")")
+            case .remoteFailedWithRestore(let code, _):
+                return .unconfirmed(detail: "remoteFailed:\(Self.boundedToken(code) ?? "failed")")
+            case .remoteFailedWithStartFailure(let code, _, _, _):
+                return .unconfirmed(detail: "remoteFailed:\(Self.boundedToken(code) ?? "failed")")
+            case .waitBudgetExpired:
+                return .unconfirmed(detail: "waitBudgetExpired")
+            case .hostFenced:
+                return .unconfirmed(detail: "hostFenced")
+            case .notBound:
+                return .unconfirmed(detail: "notBound")
+            case .saturated:
+                return .unconfirmed(detail: "saturated")
+            case .replyMalformed:
+                return .unconfirmed(detail: "replyMalformed")
+            case .payloadTooLarge:
+                return .unconfirmed(detail: "payloadTooLarge")
             }
         } catch {
-            return .unconfirmed
+            return .unconfirmed(detail: nil)
         }
         guard let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any] else {
-            return .unconfirmed
+            return .unconfirmed(detail: nil)
         }
         switch object["state"] as? String {
         case "ok":
@@ -258,9 +275,44 @@ struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
         case "refused":
             let code = (object["code"] as? String) ?? "refused"
             return code == "workspaceNotLive" ? .noLiveWorkspace : .refused(reason: code)
+        case "unconfirmed":
+            // N07 R2 repair — the host's honest unconfirmed answer: carry its
+            // bounded `code` (and its `phase` when present, e.g.
+            // `transportUnavailable:receipt`) so the model-facing reason
+            // discriminates the failing boundary instead of collapsing to a
+            // generic `transport`. Absent stays nil; the stager's boundedCode
+            // gate keeps the reason a printable token.
+            let code = (object["code"] as? String).flatMap(Self.boundedToken)
+            let phase = (object["phase"] as? String).flatMap(Self.boundedToken)
+            switch (code, phase) {
+            case let (code?, phase?):
+                return .unconfirmed(detail: "\(code):\(phase)")
+            case let (code?, nil):
+                return .unconfirmed(detail: code)
+            case (nil, let phase?):
+                return .unconfirmed(detail: phase)
+            case (nil, nil):
+                return .unconfirmed(detail: nil)
+            }
         default:
-            return .unconfirmed
+            return .unconfirmed(detail: nil)
         }
+    }
+
+    /// One bounded printable token (<=24 bytes, no whitespace/control) from a
+    /// wire string; anything else is nil so the detail can never smuggle a
+    /// host path, payload or free text into the model-facing reason.
+    static func boundedToken(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 24 else { return nil }
+        guard trimmed == value, trimmed.unicodeScalars.allSatisfy({
+            (0x41...0x5a).contains($0.value) || (0x61...0x7a).contains($0.value) ||
+            (0x30...0x39).contains($0.value) || $0.value == 0x5f
+        }) else {
+            return nil
+        }
+        return trimmed
     }
 }
 
@@ -270,10 +322,10 @@ private struct EpochBoundResourcePublisher: SkillGuestResourcePublishing {
 
     func publishStagedBundle(workspaceRoot: URL, runID: UUID, conversationID: UUID?,
                              cancellation: CancellationToken) async -> SkillGuestPublishOutcome {
-        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed }
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed(detail: nil) }
         let result = await base.publishStagedBundle(workspaceRoot: workspaceRoot, runID: runID,
             conversationID: conversationID, cancellation: cancellation)
-        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed }
+        guard isLive(), !cancellation.isCancelled, !Task.isCancelled else { return .unconfirmed(detail: nil) }
         return result
     }
 }

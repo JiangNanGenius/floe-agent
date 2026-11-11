@@ -745,12 +745,29 @@ internal class FloeSystemServiceBinder(
         if (!appStateTargetAllowed(claim, packageName)) {
             return BinderProtocol.failure("target_not_authorized")
         }
+        // Closed write scope; absent means the legacy package scope. A UID
+        // scope additionally requires the canonical grant to have been
+        // registered with the UID-scope allowance, so a package-scoped grant
+        // can never be replayed as a UID-wide write on this service.
+        val scope = if (request.containsKey(BinderProtocol.KEY_APPOP_SCOPE)) {
+            com.floe.android.rootsystem.policy.PermissionOpsPolicy.appOpScope(
+                request.getString(BinderProtocol.KEY_APPOP_SCOPE),
+            ) ?: return BinderProtocol.failure("appop_scope")
+        } else {
+            com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE
+        }
+        if (scope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID &&
+            !registry.appOpsUidScopeAllowed(claim)
+        ) {
+            return BinderProtocol.failure("uid_scope_not_authorized")
+        }
         return try {
             val receipt = operations.manageAppOps(
                 packageName,
                 request.getInt(BinderProtocol.KEY_USER_ID, 0),
                 request.getString(BinderProtocol.KEY_APPOP_OPERATION) ?: "",
                 request.getString(BinderProtocol.KEY_APPOP_MODE) ?: "",
+                scope,
             ) { registry.isCancelled(claim.requestId) }
             if (registry.isCancelled(claim.requestId)) {
                 BinderProtocol.failure("cancelled")
@@ -800,8 +817,15 @@ internal class FloeSystemServiceBinder(
         }
         putString(BinderProtocol.KEY_EFFECTIVE_BEFORE, receipt.effectiveBefore.take(16))
         putString(BinderProtocol.KEY_REQUESTED_MODE, receipt.requestedMode.take(16))
+        putString(BinderProtocol.KEY_APPOP_SCOPE, receipt.scope.take(16))
+        if (receipt.resolvedUid >= 0) {
+            putInt(BinderProtocol.KEY_RESOLVED_UID, receipt.resolvedUid)
+        }
         receipt.overrideAfter?.let {
             putString(BinderProtocol.KEY_OVERRIDE_MODE, it.take(16))
+        }
+        receipt.uidAfter?.let {
+            putString(BinderProtocol.KEY_UID_AFTER, it.take(16))
         }
         putString(BinderProtocol.KEY_EFFECTIVE_MODE, receipt.effectiveAfter.take(16))
         putBoolean(BinderProtocol.KEY_SUCCEEDED, receipt.succeeded)
@@ -956,6 +980,10 @@ internal class FloeSystemServiceBinder(
         add("permissions.manage")
         add("appOps.query")
         add("appOps.manage")
+        // N02: the UID-level AppOps write scope for uniquely owned UIDs.
+        // The App host enables scope=uid only when this advertisement is
+        // present, so an older same-revision peer never sees a UID request.
+        add(com.floe.android.rootsystem.policy.PermissionOpsPolicy.CAPABILITY_APPOPS_UID)
         add(if (mode == AccessPolicy.MODE_ROOT) "root.uid0" else "adb.shell")
         if (mode == AccessPolicy.MODE_ROOT) add("capture.root")
     }

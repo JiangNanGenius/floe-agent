@@ -125,16 +125,35 @@ internal object RuntimeWorkspaceInputSync {
         val projectID = canonicalUUID(payload.getString("projectID"))
         val runID = canonicalUUID(payload.getString("runID"))
         if (harness.exclusiveWork()) return refused(REFUSED_BUSY)
-        val live = harness.liveWorkspace(projectID)
-            ?: return refused(REFUSED_NOT_LIVE)
+        // N07 R2 repair — an UNCHECKED engine failure at a destination/
+        // identity/session boundary is honestly UNCONFIRMED (the transfer
+        // never ran, or may have partially applied; the read-side probe
+        // re-answers visibility), carrying a bounded same-request `phase`
+        // token so one fresh device case discriminates the boundary — never
+        // a bare `operation_failed` receipt (which collapses to a generic
+        // unconfirmed) and never a fabricated refusal/success. The typed
+        // refusal vocabulary and every in-transfer failure check are
+        // unchanged: those still map to the bounded `refused` codes below.
+        val live = try {
+            harness.liveWorkspace(projectID)
+        } catch (failure: Exception) {
+            return unconfirmed("liveWorkspace")
+        } ?: return refused(REFUSED_NOT_LIVE)
         // Identity re-proof: the destination MUST be the canonical
         // `Workspaces/<projectID>` directory the live owner serves — never a
         // scratch, journal or caller-influenced path.
-        val expected = File(harness.workspacesRoot.canonicalFile, projectID).canonicalFile
-        if (live.workspaceRoot.canonicalFile != expected || !live.workspaceRoot.isDirectory) {
-            return refused(REFUSED_IDENTITY)
+        val identityOK = try {
+            val expected = File(harness.workspacesRoot.canonicalFile, projectID).canonicalFile
+            live.workspaceRoot.canonicalFile == expected && live.workspaceRoot.isDirectory
+        } catch (failure: Exception) {
+            return unconfirmed("identity")
         }
-        val session = harness.openWorkspace(projectID, runID, live.workspaceRoot)
+        if (!identityOK) return refused(REFUSED_IDENTITY)
+        val session = try {
+            harness.openWorkspace(projectID, runID, live.workspaceRoot)
+        } catch (failure: Exception) {
+            return unconfirmed("openSession")
+        }
         try {
             val receipt = session.importNewInputs(
                 WorkspaceCancelSignal { cancelled() }, live.baseline)
@@ -166,6 +185,14 @@ internal object RuntimeWorkspaceInputSync {
 
     private fun refused(code: String): JSONObject =
         JSONObject().put("state", "refused").put("code", code)
+
+    /** An UNCHECKED engine failure at one named boundary: honestly
+     *  `unconfirmed` (never a fabricated refusal/success), with a bounded
+     *  same-request `phase` token so one fresh device case discriminates
+     *  where the live publish actually failed. Typed lowercase token only. */
+    private fun unconfirmed(phase: String): JSONObject =
+        JSONObject().put("state", "unconfirmed").put("code", "engineException")
+            .put("phase", phase.take(48))
 
     /** Same uppercase-canonical grammar rule as the preflight (one shared
      *  implementation): validate the ACTUAL Core identity form and return

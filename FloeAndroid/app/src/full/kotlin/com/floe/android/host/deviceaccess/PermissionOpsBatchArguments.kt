@@ -32,6 +32,8 @@ internal object PermissionOpsBatchArguments {
             val packageName: String,
             val operation: String,
             val mode: String,
+            /** Closed write scope: "package" (legacy default) or "uid". */
+            val scope: String = PermissionOpsPolicy.SCOPE_PACKAGE,
         )
 
         data class AppOpsManage(val items: List<AppOpsItem>, val userId: Int) : Request
@@ -97,10 +99,19 @@ internal object PermissionOpsBatchArguments {
                 return Request.Invalid("invalid_arguments")
             }
             if (mode !in PermissionOpsPolicy.MODES) return Request.Invalid("invalid_arguments")
+            // Optional closed scope; absent keeps the legacy package scope.
+            // Dedupe stays on (packageName, operation): the same target+op
+            // twice in one batch is ambiguous regardless of scope.
+            val scope = if (item.has("scope")) {
+                PermissionOpsPolicy.appOpScope(item.optString("scope").trim())
+                    ?: return Request.Invalid("invalid_arguments")
+            } else {
+                PermissionOpsPolicy.SCOPE_PACKAGE
+            }
             if (items.any { it.packageName == packageName && it.operation == operation }) {
                 return Request.Invalid("invalid_arguments")
             }
-            items += Request.AppOpsItem(packageName, operation, mode)
+            items += Request.AppOpsItem(packageName, operation, mode, scope)
         }
         val userId = userId(arguments) ?: return Request.Invalid("invalid_arguments")
         return Request.AppOpsManage(items, userId)

@@ -1110,17 +1110,37 @@ internal class RootSystemControllerImpl(
         userId: Int,
         operation: String,
         mode: String,
+        scope: String = PermissionOpsPolicy.SCOPE_PACKAGE,
     ): RootResult<com.floe.android.rootsystem.AppOpsSetReceipt> {
         if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
         if (ProtectedTargets.isProtectedPackage(packageName, protectedPackages)) {
             return RootResult.Denied("protected_target")
+        }
+        // Closed scope vocabulary; anything else refuses before any grant
+        // work, and a UID scope against a live peer that does not advertise
+        // it fails explicitly instead of degrading to a package write.
+        val scopeToken = PermissionOpsPolicy.appOpScope(scope)
+            ?: return RootResult.Denied("appop_scope")
+        if (scopeToken == PermissionOpsPolicy.SCOPE_UID &&
+            PermissionOpsPolicy.CAPABILITY_APPOPS_UID !in serviceCapabilities()
+        ) {
+            return RootResult.Denied("uid_scope_unsupported")
         }
         return dispatch(
             claim,
             SystemOperation.APP_OPS_MANAGE,
             packageName,
             destructive = true,
-        ) { client -> client.manageAppOps(claim, packageName, userId, operation, mode) }
+        ) { client -> client.manageAppOps(claim, packageName, userId, operation, mode, scopeToken) }
+    }
+
+    /**
+     * Capability strings advertised by the LIVE connected service (describe()).
+     * Empty when no service is connected; the AppOps UID write scope is
+     * enabled only when [PermissionOpsPolicy.CAPABILITY_APPOPS_UID] appears.
+     */
+    suspend fun serviceCapabilities(): Set<String> = withContext(Dispatchers.IO) {
+        activeClient()?.capabilities().orEmpty()
     }
 
     suspend fun readSetting(

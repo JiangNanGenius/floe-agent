@@ -31,6 +31,7 @@ import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloeSettingsContentDensity
+import com.floe.android.design.FloeSegmented
 import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeText
 import kotlinx.coroutines.launch
@@ -61,15 +62,25 @@ interface DeviceAccessPermissionOpsInspector {
         grant: Boolean,
     ): DeviceAccessPermissionOpsResult
 
+    /**
+     * Set one AppOps mode. [scope] is the closed write scope ("package"
+     * legacy default, or "uid" for a uniquely owned UID when the user
+     * enabled the UID-scope switch and the live peer supports it).
+     */
     suspend fun setAppOp(
         packageName: String,
         operation: String,
         mode: String,
+        scope: String,
     ): DeviceAccessPermissionOpsResult
 }
 
 /** Closed AppOps mode vocabulary (mirrors the frozen tool contract). */
 val DEVICE_ACCESS_APPOPS_MODES = listOf("allow", "ignore", "deny", "default", "foreground")
+
+/** Closed AppOps write-scope vocabulary (package = legacy default). */
+const val DEVICE_ACCESS_APPOPS_SCOPE_PACKAGE = "package"
+const val DEVICE_ACCESS_APPOPS_SCOPE_UID = "uid"
 
 /**
  * Compact modal for inspecting and managing the SELECTED target apps' real
@@ -83,6 +94,11 @@ internal fun DeviceAccessPermissionOpsSheet(
     targets: List<DeviceAccessPackageUi>,
     enabled: Boolean,
     inspector: DeviceAccessPermissionOpsInspector?,
+    /**
+     * True when the user allowed the AppOps UID write scope and the LIVE
+     * peer advertises it; then the detail shows the App/UID scope choice.
+     */
+    uidScopeAvailable: Boolean = false,
     onDismiss: () -> Unit,
 ) {
     if (!visible) return
@@ -97,6 +113,10 @@ internal fun DeviceAccessPermissionOpsSheet(
     var status by remember { mutableStateOf<DeviceAccessPermissionOpsResult?>(null) }
     var permissionsText by remember { mutableStateOf<String?>(null) }
     var appOpsRows by remember { mutableStateOf<List<AppOpsRowUi>>(emptyList()) }
+    // AppOps write scope for the user-initiated set actions: "package" is
+    // the legacy default; "uid" writes the UID-level mode and is offered
+    // only when uidScopeAvailable (durable switch + live capability).
+    var appOpsScope by remember { mutableStateOf(DEVICE_ACCESS_APPOPS_SCOPE_PACKAGE) }
 
     fun reload(packageName: String) {
         val active = inspector ?: return
@@ -197,6 +217,7 @@ internal fun DeviceAccessPermissionOpsSheet(
                                             permissionsText = null
                                             appOpsRows = emptyList()
                                             status = null
+                                            appOpsScope = DEVICE_ACCESS_APPOPS_SCOPE_PACKAGE
                                         } else {
                                             selectedPackage = app.packageName
                                             reload(app.packageName)
@@ -212,6 +233,9 @@ internal fun DeviceAccessPermissionOpsSheet(
                                     permissionsText = permissionsText,
                                     appOpsRows = appOpsRows,
                                     status = status,
+                                    uidScopeAvailable = uidScopeAvailable,
+                                    appOpsScope = appOpsScope,
+                                    onAppOpsScopeChange = { appOpsScope = it },
                                     enabled = enabled && !busy && inspector != null,
                                     onRefresh = { reload(app.packageName) },
                                     onSetPermission = { permission, grant ->
@@ -227,7 +251,9 @@ internal fun DeviceAccessPermissionOpsSheet(
                                         val active = inspector ?: return@PermissionOpsDetail
                                         scope.launch {
                                             busy = true
-                                            status = active.setAppOp(app.packageName, operation, mode)
+                                            status = active.setAppOp(
+                                                app.packageName, operation, mode, appOpsScope,
+                                            )
                                             busy = false
                                             reload(app.packageName)
                                         }
@@ -287,6 +313,9 @@ private fun PermissionOpsDetail(
     permissionsText: String?,
     appOpsRows: List<AppOpsRowUi>,
     status: DeviceAccessPermissionOpsResult?,
+    uidScopeAvailable: Boolean,
+    appOpsScope: String,
+    onAppOpsScopeChange: (String) -> Unit,
     enabled: Boolean,
     onRefresh: () -> Unit,
     onSetPermission: (String, Boolean) -> Unit,
@@ -363,11 +392,46 @@ private fun PermissionOpsDetail(
                 }
             }
         }
-        FloeText(
-            stringResource(R.string.device_access_permission_ops_section_appops),
-            style = Floe.typography.body,
-            color = Floe.colors.label,
-        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FloeText(
+                stringResource(R.string.device_access_permission_ops_section_appops),
+                style = Floe.typography.body,
+                color = Floe.colors.label,
+                modifier = Modifier.weight(1f),
+            )
+            // Meaningful scope choice, visible only when the user allowed
+            // the UID scope AND the live peer supports it; diagnostics stay
+            // in the status line.
+            if (uidScopeAvailable) {
+                FloeSegmented(
+                    options = listOf(
+                        stringResource(R.string.device_access_permission_ops_scope_app),
+                        stringResource(R.string.device_access_permission_ops_scope_uid),
+                    ),
+                    selectedIndex = if (appOpsScope == DEVICE_ACCESS_APPOPS_SCOPE_UID) 1 else 0,
+                    onSelect = { index ->
+                        onAppOpsScopeChange(
+                            if (index == 1) {
+                                DEVICE_ACCESS_APPOPS_SCOPE_UID
+                            } else {
+                                DEVICE_ACCESS_APPOPS_SCOPE_PACKAGE
+                            },
+                        )
+                    },
+                )
+            }
+        }
+        if (uidScopeAvailable && appOpsScope == DEVICE_ACCESS_APPOPS_SCOPE_UID) {
+            FloeText(
+                stringResource(R.string.device_access_permission_ops_scope_uid_hint),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        }
         appOpsRows.forEach { row ->
             Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

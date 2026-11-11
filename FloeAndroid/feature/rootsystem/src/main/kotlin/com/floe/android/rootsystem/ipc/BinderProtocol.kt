@@ -159,6 +159,13 @@ object BinderProtocol {
     const val KEY_EFFECTIVE_BEFORE = "effectiveBefore"
     const val KEY_REQUESTED_MODE = "requestedMode"
     const val KEY_OP_NAME = "opName"
+    // AppOps UID write scope (N02): request scope token, service-resolved
+    // UID, observed UID-level row after the set, and the grant allowance
+    // that binds the scope into the canonical grant registration.
+    const val KEY_APPOP_SCOPE = "appOpScope"
+    const val KEY_RESOLVED_UID = "resolvedUid"
+    const val KEY_UID_AFTER = "uidAfter"
+    const val KEY_APPOPS_UID_SCOPE = "appOpsUidScope"
 
     // Pinned packet-capture request/reply keys (no command or arbitrary path).
     const val KEY_CAPTURE_MODE = "captureMode"
@@ -239,6 +246,9 @@ object BinderProtocol {
         putBooleanArray(KEY_SCOPE_WRITABLE, request.scopes.map { it.writable }.toBooleanArray())
         putStringArray(KEY_OPERATIONS, request.operations.map { it.name }.toTypedArray())
         putBoolean(KEY_PACKAGE_MANAGEMENT, request.packageManagementAllowed)
+        if (request.appOpsUidScopeAllowed) {
+            putBoolean(KEY_APPOPS_UID_SCOPE, true)
+        }
         if (request.packageTargets.isNotEmpty()) {
             putStringArray(
                 KEY_PACKAGE_TARGETS,
@@ -269,6 +279,7 @@ object BinderProtocol {
             scopes = ids.indices.map { ScopeRoot(ids[it], paths[it], writable[it]) },
             operations = operations,
             packageManagementAllowed = bundle.getBoolean(KEY_PACKAGE_MANAGEMENT),
+            appOpsUidScopeAllowed = bundle.getBoolean(KEY_APPOPS_UID_SCOPE, false),
             packageTargets = (bundle.getStringArray(KEY_PACKAGE_TARGETS) ?: emptyArray())
                 .take(com.floe.android.rootsystem.GrantRequest.MAX_PACKAGE_TARGETS)
                 .toSet(),
@@ -559,14 +570,23 @@ object BinderProtocol {
         }
     }.toTypedArray()
 
-    /** Reply codec for the typed appops set receipt. */
+    /** Reply codec for the typed appops set receipt (scope-aware). */
     fun appOpsSetResult(bundle: Bundle?): com.floe.android.rootsystem.AppOpsSetReceipt? {
         val item = bundle?.getBundle(KEY_PACKAGE_RESULT) ?: return null
+        val scope = if (item.containsKey(KEY_APPOP_SCOPE)) {
+            com.floe.android.rootsystem.policy.PermissionOpsPolicy.appOpScope(
+                item.getString(KEY_APPOP_SCOPE),
+            ) ?: return null
+        } else {
+            com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE
+        }
         return com.floe.android.rootsystem.AppOpsSetReceipt(
             packageName = item.getString(KEY_PACKAGE_NAME)?.take(MAX_NAME) ?: return null,
             userId = item.getInt(KEY_USER_ID),
             operation = item.getString(KEY_APPOP_OPERATION)?.take(32) ?: return null,
             opName = item.getString(KEY_OP_NAME)?.take(64) ?: return null,
+            scope = scope,
+            resolvedUid = item.getInt(KEY_RESOLVED_UID, -1),
             overrideBefore = nullableString(item, KEY_OVERRIDE_BEFORE, 16),
             uidBefore = nullableString(item, KEY_UID_BEFORE, 16),
             defaultBefore = nullableString(item, KEY_DEFAULT_BEFORE, 16),
@@ -574,6 +594,7 @@ object BinderProtocol {
                 ?: return null,
             requestedMode = item.getString(KEY_REQUESTED_MODE)?.take(16) ?: return null,
             overrideAfter = nullableString(item, KEY_OVERRIDE_MODE, 16),
+            uidAfter = nullableString(item, KEY_UID_AFTER, 16),
             effectiveAfter = item.getString(KEY_EFFECTIVE_MODE)?.take(16) ?: return null,
             succeeded = item.getBoolean(KEY_SUCCEEDED),
             detailCode = item.getString(KEY_DETAIL_CODE)?.take(48) ?: return null,

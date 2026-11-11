@@ -76,9 +76,12 @@ class RuntimeWorkspaceInputSyncTest {
         live: Boolean = true,
         exclusive: Boolean = false,
         foreignDirectory: File? = null,
+        liveThrows: Boolean = false,
+        openThrows: Boolean = false,
     ) = InputSyncHarness(
         workspacesRoot = workspace.parentFile!!,
         liveWorkspace = { pid ->
+            if (liveThrows) throw IllegalStateException("live lookup exploded")
             if (!live || pid != projectID) null
             else LiveInputSyncWorkspace(
                 foreignDirectory ?: workspace,
@@ -87,6 +90,7 @@ class RuntimeWorkspaceInputSyncTest {
                 })
         },
         openWorkspace = { _, _, _ ->
+            if (openThrows) throw IllegalStateException("session open exploded")
             observed.opened += 1
             InputSyncWorkspace(
                 importNewInputs = { cancel, baseline ->
@@ -262,5 +266,66 @@ class RuntimeWorkspaceInputSyncTest {
             fail("lowercase run id must refuse")
         } catch (_: IllegalArgumentException) { }
         assertEquals(0, observed.opened)
+    }
+
+    // MARK: - R2 repair: unchecked engine failures at a destination/identity/
+    // session boundary are honestly unconfirmed with a bounded phase, never a
+    // bare operation_failed receipt and never a fabricated refusal. Typed
+    // transfer failures stay bounded refusals (unchanged).
+
+    @Test
+    fun `unchecked live lookup failure is unconfirmed with a bounded phase`() {
+        val workspace = workspace()
+        val observed = Observed()
+        val outcome = RuntimeWorkspaceInputSync.execute(
+            harness(workspace, observed, receipt(), liveThrows = true),
+            payload(), cancelled = { false })
+        assertEquals("unconfirmed", outcome.getString("state"))
+        assertEquals("engineException", outcome.getString("code"))
+        assertEquals("liveWorkspace", outcome.getString("phase"))
+        // No session was opened and no transfer ran.
+        assertEquals(0, observed.opened)
+        assertEquals(0, observed.imports)
+        assertEquals(0, observed.closed)
+    }
+
+    @Test
+    fun `unchecked session open failure is unconfirmed with a bounded phase`() {
+        val workspace = workspace()
+        val observed = Observed()
+        val outcome = RuntimeWorkspaceInputSync.execute(
+            harness(workspace, observed, receipt(), openThrows = true),
+            payload(), cancelled = { false })
+        assertEquals("unconfirmed", outcome.getString("state"))
+        assertEquals("engineException", outcome.getString("code"))
+        assertEquals("openSession", outcome.getString("phase"))
+        // The failed open never ran a transfer and there is nothing to close.
+        assertEquals(0, observed.imports)
+        assertEquals(0, observed.closed)
+    }
+
+    @Test
+    fun `an unexpected in-transfer exception stays a bounded transfer refusal`() {
+        val workspace = workspace()
+        val observed = Observed()
+        // A non-bridge engine failure INSIDE the transfer is a definitive
+        // refusal of THIS transfer (the typed catch), never an unconfirmed:
+        // R2 only converts the OUTSIDE-try destination/identity/session
+        // escapes; every in-transfer failure check is unchanged.
+        val harness = InputSyncHarness(
+            workspacesRoot = workspace.parentFile!!,
+            liveWorkspace = { LiveInputSyncWorkspace(workspace,
+                InputSyncBaseline { _, _, _ -> }) },
+            openWorkspace = { _, _, _ ->
+                InputSyncWorkspace(
+                    importNewInputs = { _, _ -> throw RuntimeException("engine exploded") },
+                    close = { observed.closed += 1 })
+            },
+            exclusiveWork = { false },
+        )
+        val outcome = RuntimeWorkspaceInputSync.execute(harness, payload(), cancelled = { false })
+        assertEquals("refused", outcome.getString("state"))
+        assertEquals("workspaceTransferFailed", outcome.getString("code"))
+        assertEquals(1, observed.closed)
     }
 }

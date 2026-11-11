@@ -581,6 +581,7 @@ internal class DeviceAccessHost(
                 .distinctUntilChanged()
                 .collect {
                     if (!closed) {
+                        refreshAppOpsUidScopeSupport()
                         refreshAdvancedSystemPackages()
                         publish()
                     }
@@ -997,6 +998,32 @@ internal class DeviceAccessHost(
         settings = settings.copy(advancedSystemTargets = clean)
         persist()
         publish()
+    }
+
+    /** UID operations inherit the existing app-management, category and target gates. */
+    private fun appOpsUidScopeAllowed(): Boolean =
+        settings.packageManagementAllowed && settings.advancedSystemManagementAllowed &&
+            DeviceAccessToolCatalog.SYSTEM_APPOPS_MANAGE in settings.advancedSystemAllowedTools
+
+    /**
+     * True only when the LIVE privileged peer advertises the AppOps UID
+     * write scope. Refreshed whenever service liveness flips; the UID scope
+     * control and every scope=uid dispatch re-check this so an older peer
+     * never receives a UID request it would silently downgrade.
+     */
+    @Volatile
+    private var appOpsUidScopeSupported: Boolean = false
+
+    private suspend fun refreshAppOpsUidScopeSupport() {
+        val supported = try {
+            com.floe.android.rootsystem.policy.PermissionOpsPolicy.CAPABILITY_APPOPS_UID in
+                (rootController?.serviceCapabilities() ?: emptySet())
+        } catch (_: Throwable) {
+            false
+        }
+        if (supported != appOpsUidScopeSupported) {
+            appOpsUidScopeSupported = supported
+        }
     }
 
     /**
@@ -1817,6 +1844,8 @@ internal class DeviceAccessHost(
             advancedSystemManagementAllowed = settings.advancedSystemManagementAllowed,
             advancedSystemAllowedTools = settings.advancedSystemAllowedTools,
             selectedAdvancedSystemTargets = settings.advancedSystemTargets,
+            appOpsUidScopeAllowed = appOpsUidScopeAllowed(),
+            appOpsUidScopeSupported = appOpsUidScopeSupported,
             advancedSystemTargets = advancedSystemPackages.map {
                 it.copy(selected = it.packageName in settings.advancedSystemTargets)
             },
@@ -3771,6 +3800,7 @@ internal class DeviceAccessHost(
         destructive: Boolean,
         target: String? = null,
         packageTargets: Set<String> = emptySet(),
+        appOpsScope: String = com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE,
         block: suspend (OperationClaim) -> RootResult<T>,
     ): RootResult<T> {
         if (rootRebuilding || rootConfigDirty) return RootResult.Unavailable("policy_updating")
@@ -3828,6 +3858,12 @@ internal class DeviceAccessHost(
             scopes = scopes,
             operations = setOf(operation),
             packageManagementAllowed = management,
+            // Canonical scope binding (N02): the UID write scope allowance is
+            // minted only for an AppOps manage call that the caller declared
+            // as scope=uid, so a package-scoped approval can never be
+            // replayed against this grant as a UID-wide operation.
+            appOpsUidScopeAllowed = operation == SystemOperation.APP_OPS_MANAGE &&
+                appOpsScope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID,
             packageTargets = packageTargets
                 .filterNot { isFloeSelfPackage(it) }
                 .take(GrantRequest.MAX_PACKAGE_TARGETS)
@@ -4654,13 +4690,23 @@ internal class DeviceAccessHost(
             packageName: String,
             operation: String,
             mode: String,
+            scope: String,
         ): DeviceAccessPermissionOpsResult {
+            // Use the same app-management/category gates and LIVE peer capability as the model path.
+            if (scope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID) {
+                if (!appOpsUidScopeAllowed()) {
+                    return DeviceAccessPermissionOpsResult.Failed("uid_scope_not_allowed")
+                }
+                if (!appOpsUidScopeSupported) {
+                    return DeviceAccessPermissionOpsResult.Failed("uid_scope_unsupported")
+                }
+            }
             val result = withUserAdvancedGrant(
-                SystemOperation.APP_OPS_MANAGE, packageName,
+                SystemOperation.APP_OPS_MANAGE, packageName, appOpsScope = scope,
             ) { claim ->
                 val controller = rootController
                     ?: return@withUserAdvancedGrant RootResult.Unavailable("service_not_alive")
-                controller.manageAppOps(claim, packageName, currentUserId(), operation, mode)
+                controller.manageAppOps(claim, packageName, currentUserId(), operation, mode, scope)
             }
             return when (result) {
                 is RootResult.Ok -> {
@@ -4668,11 +4714,12 @@ internal class DeviceAccessHost(
                     if (receipt.succeeded) {
                         DeviceAccessPermissionOpsResult.Ok(
                             "ok ${receipt.operation} requested=${receipt.requestedMode} " +
-                                "effective=${receipt.effectiveAfter}",
+                                "effective=${receipt.effectiveAfter}" +
+                                appOpsScopeSuffix(receipt),
                         )
                     } else {
                         DeviceAccessPermissionOpsResult.Failed(
-                            receipt.detailCode +
+                            receipt.detailCode + appOpsScopeSuffix(receipt) +
                                 (receipt.failureDetail?.let { ": ${it.take(80)}" } ?: ""),
                         )
                     }
@@ -4681,6 +4728,18 @@ internal class DeviceAccessHost(
             }
         }
     }
+
+    /**
+     * Compact read-back suffix for the AppOps UID scope: the requested
+     * scope and the service-resolved UID stay visible in the model-facing
+     * summary, so a package-scope result can never masquerade as a UID one.
+     */
+    private fun appOpsScopeSuffix(receipt: com.floe.android.rootsystem.AppOpsSetReceipt): String =
+        if (receipt.scope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID) {
+            " scope=uid uid=${receipt.resolvedUid}"
+        } else {
+            ""
+        }
 
     private fun permissionOpsFailure(result: RootResult<*>): DeviceAccessPermissionOpsResult =
         when (result) {
@@ -4703,6 +4762,7 @@ internal class DeviceAccessHost(
     private suspend fun <T> withUserAdvancedGrant(
         operation: SystemOperation,
         target: String,
+        appOpsScope: String = com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE,
         block: suspend (OperationClaim) -> RootResult<T>,
     ): RootResult<T> {
         if (rootRebuilding || rootConfigDirty) return RootResult.Unavailable("policy_updating")
@@ -4719,6 +4779,7 @@ internal class DeviceAccessHost(
             target = target,
             destructive = operation !in readOnlyOperations,
             packageTargets = settings.advancedSystemTargets,
+            appOpsScope = appOpsScope,
             block = block,
         )
     }
@@ -4974,16 +5035,33 @@ internal class DeviceAccessHost(
                     "op=${item.operation} code=${it.code}"
                 continue
             }
+            // UID scope uses the existing authorization and LIVE peer capability.
+            // An older service must never silently downgrade it to a package write.
+            if (item.scope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID) {
+                if (!appOpsUidScopeAllowed()) {
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "op=${item.operation} code=uid_scope_not_allowed"
+                    continue
+                }
+                if (!appOpsUidScopeSupported) {
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "op=${item.operation} code=uid_scope_unsupported"
+                    continue
+                }
+            }
             val result = withRootGrant(
                 call, SystemOperation.APP_OPS_MANAGE, null, destructive = true,
                 target = item.packageName,
                 packageTargets = settings.advancedSystemTargets,
+                appOpsScope = item.scope,
             ) { claim ->
                 val controller = rootController
                     ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
                 controller.manageAppOps(
                     claim, item.packageName, request.userId,
-                    item.operation, item.mode,
+                    item.operation, item.mode, item.scope,
                 )
             }
             when (result) {
@@ -4993,12 +5071,14 @@ internal class DeviceAccessHost(
                         ok += 1
                         lines += "ok pkg=${receipt.packageName.take(100)} " +
                             "op=${receipt.operation} requested=${receipt.requestedMode} " +
-                            "effective=${receipt.effectiveAfter}"
+                            "effective=${receipt.effectiveAfter}" +
+                            appOpsScopeSuffix(receipt)
                     } else {
                         failed += 1
                         lines += "fail pkg=${receipt.packageName.take(100)} " +
                             "op=${receipt.operation} code=${receipt.detailCode} " +
                             "effective=${receipt.effectiveBefore}->${receipt.effectiveAfter}" +
+                            appOpsScopeSuffix(receipt) +
                             (receipt.failureDetail?.let { " reason=${it.take(60)}" } ?: "")
                     }
                 }
@@ -5598,6 +5678,7 @@ internal class DeviceAccessHost(
         target: String?,
         destructive: Boolean,
         packageTargets: Set<String> = emptySet(),
+        appOpsScope: String = com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE,
         timeoutMillis: Long = rootOperationTimeoutMillis(operation),
         block: suspend (OperationClaim) -> RootResult<T>,
     ): RootResult<T> {
@@ -5640,6 +5721,8 @@ internal class DeviceAccessHost(
             ),
             operations = setOf(operation),
             packageManagementAllowed = management,
+            appOpsUidScopeAllowed = operation == SystemOperation.APP_OPS_MANAGE &&
+                appOpsScope == com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_UID,
             packageTargets = packageTargets,
         )
         when (val registered = controller.registerGrant(request)) {

@@ -216,6 +216,7 @@
     <string name="device_access_targets_lookup_missing">No app named "%1$s"</string>
     <string name="device_access_advanced_tool_permissions_manage">Change app permissions</string>
     <string name="device_access_advanced_tool_appops_manage">Change AppOps modes</string>
+    <string name="device_access_appops_uid_scope_unsupported">Restart the Floe system service to enable app-wide permission controls.</string>
     <string name="device_access_permission_ops_open">Inspect permissions &amp; AppOps</string>
     <string name="device_access_permission_ops_title">Permissions &amp; AppOps</string>
     <string name="device_access_permission_ops_hint">Inspect or change the selected apps’ real permission and AppOps state. Changes apply only to apps you selected above.</string>
@@ -224,6 +225,9 @@
     <string name="device_access_permission_ops_failed">Failed: %1$s</string>
     <string name="device_access_permission_ops_section_permissions">Permissions</string>
     <string name="device_access_permission_ops_section_appops">AppOps</string>
+    <string name="device_access_permission_ops_scope_app">App</string>
+    <string name="device_access_permission_ops_scope_uid">App UID</string>
+    <string name="device_access_permission_ops_scope_uid_hint">Changes the UID-level mode: it applies to the whole UID and only works for apps that uniquely own their UID.</string>
     <string name="device_access_permission_ops_inspect">Inspect</string>
     <string name="device_access_permission_ops_collapse">Close</string>
     <string name="device_access_permission_ops_refresh">Refresh</string>

@@ -697,6 +697,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
      * new-inputs import. The answer is the runtime's own bounded receipt;
      * an await expiry or transport loss is honestly `unconfirmed` (the
      * read-side probe re-answers visibility), never a fabricated state.
+     *
+     * N07 R2 repair — the honest `unconfirmed` carries a bounded, same-request
+     * `phase` token naming the boundary that produced it (acquire/grant/
+     * identity/connect/exchange/receipt). The token is typed only, rides the
+     * SAME claim's outcome object (one request, one epoch), and is ABSENT from
+     * every definitive outcome (ok/refused/cancelled keep their exact frozen
+     * shape). It never widens privileges, invents a result or relaxes the
+     * probe's visibility authority; it only lets one fresh device case
+     * discriminate the failing boundary instead of collapsing everything into
+     * a generic `transport`.
      */
     private suspend fun syncWorkspaceInputs(claim: Long, payload: JSONObject, acceptedEpoch: Long) {
         fun refused(code: String): JSONObject =
@@ -714,10 +724,15 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         var lease: ForegroundLease? = null
         var grant: CoreWorkspaceGrant? = null
         var client: RuntimeConnection? = null
+        // The boundary currently being crossed; threaded into the honest
+        // `unconfirmed` answer so the caller can discriminate acquire/grant/
+        // identity/connect/exchange/receipt. Typed lowercase token only.
+        var phase = "acquire"
         try {
             val acquired = foreground.acquireOperation(syncID, OperationKind.LOCAL_EXECUTION,
                 RunStopHandler { stopSync.set(true) })
             lease = acquired
+            phase = "grant"
             val minted = CoreWorkspaceGrant.create(context, acceptedEpoch, request.second,
                 trustedCallID = null, trustedOperationID = null,
                 isOwned = WorkspaceOwnershipProbe {
@@ -730,17 +745,21 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     complete(claim, 0, refused("workspaceUnresolved")); return
                 }
             grant = minted
+            phase = "identity"
             if (minted.projectID != request.first) {
                 complete(claim, 0, refused("identityMismatch")); return
             }
             if (stopSync.get() || LinuxShellNative.shouldStop(claim) != 0) {
                 complete(claim, 0, refused("cancelled")); return
             }
+            phase = "connect"
             val connection = RuntimeConnection(context, acquired.runtimePermit, minted).also {
                 it.connect().get(15, TimeUnit.SECONDS)
             }
             client = connection
+            phase = "exchange"
             val first = result(connection.exchange("workspace.syncInputs", payload, syncID))
+            phase = "receipt"
             // The kernel queues this control on its single executor (it can
             // wait behind an admitted start) and then runs the transfer. The
             // bounded await NEVER re-dispatches: the same request id makes a
@@ -755,7 +774,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             when {
                 outcome == null ->
                     complete(claim, 0, JSONObject().put("state", "unconfirmed")
-                        .put("code", "awaitBudgetExpired"))
+                        .put("code", "awaitBudgetExpired").put("phase", phase))
                 stopSync.get() || LinuxShellNative.shouldStop(claim) != 0 ->
                     complete(claim, 0, refused("cancelled"))
                 else -> complete(claim, 0, outcome)
@@ -769,7 +788,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // the transfer may or may not have crossed the wire. Never a
             // fabricated refusal reason — the read-side probe re-answers.
             complete(claim, 0, JSONObject().put("state", "unconfirmed")
-                .put("code", "transportUnavailable"))
+                .put("code", "transportUnavailable").put("phase", phase))
             if (failure is kotlinx.coroutines.CancellationException) throw failure
         } finally {
             // Settlement order: stop owning first (the isOwned probe dies),

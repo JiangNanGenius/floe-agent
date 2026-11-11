@@ -133,6 +133,50 @@ object PermissionOpsPolicy {
     fun modeSupported(mode: String, sdk: Int): Boolean =
         mode in MODES && (mode != "foreground" || sdk >= 29)
 
+    // -------------------------------------------------------- target scope
+
+    /**
+     * Closed write-scope vocabulary for system.appOps.manage. PACKAGE is the
+     * legacy per-package override (`appops set --user <u> <pkg> <op> <mode>`)
+     * and stays the default for every old request. UID writes the UID-level
+     * mode (`appops set --user <u> --uid <uid> <op> <mode>`) so the effective
+     * mode actually changes for the whole UID; per the frozen C1 evidence a
+     * package override alone never proves the effective mode moved.
+     */
+    const val SCOPE_PACKAGE = "package"
+    const val SCOPE_UID = "uid"
+
+    val APPOP_SCOPES: Set<String> = setOf(SCOPE_PACKAGE, SCOPE_UID)
+
+    /** Live-peer capability string advertising the UID write scope. */
+    const val CAPABILITY_APPOPS_UID = "appOps.manage.uid"
+
+    /**
+     * Normalize one caller-declared scope token onto the closed set; null
+     * refuses. An absent scope is the caller's concern and maps to
+     * [SCOPE_PACKAGE] before this validator runs.
+     */
+    fun appOpScope(raw: String?): String? =
+        raw?.trim()?.takeIf { it in APPOP_SCOPES }
+
+    /**
+     * Pure UID-ownership admission for the UID scope: the resolved UID must
+     * be owned by EXACTLY the requested package. More than one package means
+     * a UID write cannot avoid collateral effect ("shared_uid_refused"); an
+     * unresolvable or inconsistent ownership means the identity cannot be
+     * established ("uid_scope_unavailable"). The service resolves the real
+     * sibling set from the live PackageManager, never from model text.
+     */
+    fun uidScopeOwnershipRefusal(
+        siblings: List<String>?,
+        packageName: String,
+    ): String? {
+        if (siblings.isNullOrEmpty() || packageName !in siblings) {
+            return "uid_scope_unavailable"
+        }
+        return sharedUidRefusal(siblings.size)
+    }
+
     // ---------------------------------------------------- appops get parsing
 
     /**

@@ -1052,3 +1052,12 @@ English: The independent SAF case selected two real owned APKs and reached actua
 软件包准备不再硬接空后端：从原配置读取专用角色、通用辅助或默认Agent，验证启用状态、能力、用途和凭据后，用真实配置的提供商进行无工具审查，再沿既有策略签发授权。未配置、已撤销或审查失败保留人工等待和真实原因；不新增无条件放行或宿主解释器。实际Mac Swift6对象编译和21项角色／解析／策略检查通过，原新夹具的可变值、传输注入和队列错误保留并修正，未弱化断言。Android ARM64、新Full和真实Linux安装仍待后续验证。
 
 English: Linux package preparation now resolves the original configured review-role chain, validates capabilities and credentials, and uses a tool-free provider review through the existing approval policy. Missing, revoked or failed reviews retain truthful human fallback. Actual Mac Swift6 objects and21 focused cases pass; original fixture failures are retained. Android ARM64, a consuming Full APK and real Linux installation remain pending.
+
+
+## 2026-11-11 UID AppOps 与运行层定向修复
+
+ADB 应用操作继续沿用现有总开关、类别多选和已选应用范围。AppOps 在原工具中增加 package／uid 范围，UID 由真实系统服务解析，不接受模型指定数字；已选应用独占 UID 时可修改 UID 层模式，并分别返回修改前、修改后及有效模式。它不增加另一项持久权限开关，仍保留每次调用的范围绑定、旧服务能力核对、撤销／过期／任务归属及受保护目标限制。56项定向授权／范围／传输和参数检查及Root／Full实际编译通过，原始撤销授权回归失败保留。系统应用移除默认保留数据，恢复时可识别当前用户已移除但仍在系统映像中的应用；三星新的移除／恢复与 UID 模式用例待新包执行。
+
+热资源原故障仍未闭合。本批在现有同步通路保留具体的受限错误阶段，使下一次同一终端会话的失败能定位到授权、身份、连接、交换或回执；诊断不带路径或内容。41 项 Swift 定向用例和14项运行层检查已通过，Full／运行组件实际编译通过；这不是热资源实机成功证明。新包继续合入 Linux 事务准备与可逆恢复修复，以实际任务和可读取成果验收，不重复未改模块矩阵。当前公开 Alpha79 保持不可变，最终 1.0.0 等本轮实际功能验证后再提升。
+
+English: UID AppOps reuses the existing management/category/selected-app authorization with per-call scope binding and live service capability checks. System-app removal now keeps data by default; restore can resolve a removed-for-user system image. 56 focused cases and actual Root/Full compilation pass; fresh Samsung receipts remain pending. Hot-resource synchronization gains bounded stage diagnostics;41 focused Swift and14 runtime cases plus actual Full/runtime compilation pass, without claiming the original device failure is fixed. Public Alpha79 is unchanged; final1.0.0 still follows functional verification.

@@ -35,6 +35,16 @@ internal class FloeBinderClient(private val binder: IBinder) {
         null
     }
 
+    /** Capability strings advertised by the live peer; empty when unknown. */
+    fun capabilities(): Set<String> = try {
+        describe()
+            ?.getStringArray(BinderProtocol.KEY_CAPABILITIES)
+            ?.toSet()
+            .orEmpty()
+    } catch (_: Throwable) {
+        emptySet()
+    }
+
     fun registerGrant(request: GrantRequest): RootResult<GrantReceipt> = try {
         val reply = service?.registerGrant(BinderProtocol.grantBundle(request))
         if (BinderProtocol.isOk(reply)) {
@@ -613,12 +623,17 @@ internal class FloeBinderClient(private val binder: IBinder) {
         userId: Int,
         operation: String,
         mode: String,
+        scope: String = com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE,
     ): RootResult<com.floe.android.rootsystem.AppOpsSetReceipt> {
         val request = request(claim, SystemOperation.APP_OPS_MANAGE, null).apply {
             putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
             putInt(BinderProtocol.KEY_USER_ID, userId)
             putString(BinderProtocol.KEY_APPOP_OPERATION, operation)
             putString(BinderProtocol.KEY_APPOP_MODE, mode)
+            // The scope token is closed ("package"/"uid"); the UID itself is
+            // resolved by the service from the live package identity, never
+            // accepted from the wire.
+            putString(BinderProtocol.KEY_APPOP_SCOPE, scope)
         }
         return try {
             val reply = service?.manageAppOps(request)

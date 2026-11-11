@@ -249,9 +249,15 @@ public enum SkillGuestPublishOutcome: Sendable, Equatable {
     /// conflict, ownership revocation). `reason` is the engine's bounded
     /// code, never a host path.
     case refused(reason: String)
-    /// The outcome is unknown (transport failure/timeout). The transfer may
-    /// still have landed; only the probe can confirm.
-    case unconfirmed
+    /// The outcome is unknown (transport failure/timeout, a bounded-wait
+    /// expiry, or an unchecked engine failure the host bounded). The transfer
+    /// may still have landed; only the probe can confirm. `detail` is an
+    /// OPTIONAL bounded, printable token carried from the host's answer
+    /// (its own `code`, plus a `phase` when present, e.g.
+    /// `transportUnavailable:receipt`), naming the boundary so one fresh
+    /// device case discriminates the failure — never a host path, payload or
+    /// free text, and ABSENT (nil) whenever the host named no boundary.
+    case unconfirmed(detail: String?)
 }
 
 /// Hot-publish seam: commits the ALREADY Core-side-staged pinned bundle into
@@ -616,9 +622,25 @@ public actor SkillWorkspaceResourceStager {
                 "appliedNotVisible"))
         case .refused(let reason):
             return .unavailable(reason: SkillStageReason.liveWorkspaceSyncRefused(reason))
-        case .unconfirmed:
+        case .unconfirmed(let detail):
+            // The honest unconfirmed answer: the host's bounded `code` (and
+            // `phase`, when present) names the failing boundary so one fresh
+            // device case discriminates it; absent (nil) stays the generic
+            // `transport`. The boundedCode gate keeps the model-facing reason
+            // a printable token — never a host path or payload.
+            let safeDetail = detail.flatMap { value -> String? in
+                let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+                guard value.utf8.count <= 48, (1...2).contains(parts.count),
+                      parts.allSatisfy({ token in
+                          !token.isEmpty && token.utf8.count <= 24 && token.utf8.allSatisfy({
+                              (0x41...0x5a).contains($0) || (0x61...0x7a).contains($0) ||
+                              (0x30...0x39).contains($0) || $0 == 0x5f
+                          })
+                      }) else { return nil }
+                return value
+            }
             return .unavailable(reason: SkillStageReason.liveWorkspaceSyncUnconfirmed(
-                "transport"))
+                safeDetail ?? "transport"))
         case .noLiveWorkspace:
             return staged(false) // handled above; never reached
         }

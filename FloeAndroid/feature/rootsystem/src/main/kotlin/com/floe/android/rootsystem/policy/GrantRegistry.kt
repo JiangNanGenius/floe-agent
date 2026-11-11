@@ -110,6 +110,17 @@ class GrantRegistry(
         grants[claim.grantId]?.request?.packageTargets
     }
 
+    /**
+     * True only when the live grant was registered with the AppOps UID write
+     * scope allowance. A grant minted for a package-scoped AppOps operation
+     * therefore never authorizes a UID-wide write: replaying the same claim
+     * with scope=uid fails closed at the service instead of widening.
+     */
+    fun appOpsUidScopeAllowed(claim: OperationClaim): Boolean = synchronized(this) {
+        check(claim, SystemOperation.APP_OPS_MANAGE, null, write = true) == Verdict.Ok &&
+            grants[claim.grantId]?.request?.appOpsUidScopeAllowed == true
+    }
+
     fun cancel(requestId: String): Boolean = synchronized(this) {
         if (requestId.isBlank() || requestId.length > 128) return false
         cancellations[requestId] = clock()

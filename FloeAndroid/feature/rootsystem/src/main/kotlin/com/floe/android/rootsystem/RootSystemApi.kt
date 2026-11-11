@@ -261,6 +261,13 @@ data class GrantRequest(
      * File and package lifecycle operations ignore it.
      */
     val packageTargets: Set<String> = emptySet(),
+    /**
+     * Canonical binding for the AppOps UID write scope (N02): true only when
+     * the App host minted this grant for a scope=uid AppOps operation inside
+     * the user's UID-scope durable ceiling. A package-scoped grant never
+     * carries it, so a package-signed operation cannot be replayed UID-wide.
+     */
+    val appOpsUidScopeAllowed: Boolean = false,
 ) {
     fun isWellFormed(): Boolean =
         grantId.isNotBlank() && taskId.isNotBlank() && runId.isNotBlank() &&
@@ -488,12 +495,29 @@ data class AppOpsSetReceipt(
     val userId: Int,
     val operation: String,
     val opName: String,
+    /**
+     * Requested write scope ("package" legacy default, or "uid"). The read-
+     * back fields below are interpreted against this scope: for "uid" the
+     * decisive rows are uidBefore/uidAfter plus the effective mode, and the
+     * package override row is disclosure only.
+     */
+    val scope: String = com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE,
+    /**
+     * Service-resolved application UID for scope="uid" (-1 for package
+     * scope or when unresolved). The service derives it from the live
+     * PackageManager identity of the selected package; a model can never
+     * supply it.
+     */
+    val resolvedUid: Int = -1,
     val overrideBefore: String?,
     val uidBefore: String?,
     val defaultBefore: String?,
     val effectiveBefore: String,
     val requestedMode: String,
     val overrideAfter: String?,
+    /** Observed UID-level mode row after the set; distinct from the
+     *  per-package override row so UID/default/absent state stays separate. */
+    val uidAfter: String? = null,
     val effectiveAfter: String,
     val succeeded: Boolean,
     val detailCode: String,
@@ -870,6 +894,10 @@ class RootSystemController internal constructor(
     /**
      * Set one closed-catalog AppOps mode for one selected app of the current
      * profile, with old/requested/effective capture and a post-set read-back.
+     * [scope] is the closed write scope ("package" legacy default, "uid"
+     * writes the UID-level mode for a uniquely owned UID); the live peer
+     * capability is enforced here so an unsupported UID scope fails
+     * explicitly instead of degrading to a package write.
      */
     suspend fun manageAppOps(
         claim: OperationClaim,
@@ -877,8 +905,18 @@ class RootSystemController internal constructor(
         userId: Int,
         operation: String,
         mode: String,
+        scope: String = com.floe.android.rootsystem.policy.PermissionOpsPolicy.SCOPE_PACKAGE,
     ): RootResult<AppOpsSetReceipt> =
-        impl.manageAppOps(claim, packageName, userId, operation, mode)
+        impl.manageAppOps(claim, packageName, userId, operation, mode, scope)
+
+    /**
+     * Capability strings advertised by the LIVE privileged peer (describe()).
+     * The App host gates the AppOps UID write scope on
+     * [com.floe.android.rootsystem.policy.PermissionOpsPolicy.CAPABILITY_APPOPS_UID]
+     * so the new scope is enabled only when the connected service actually
+     * understands it; an empty set means no live service.
+     */
+    suspend fun serviceCapabilities(): Set<String> = impl.serviceCapabilities()
 
     /** Read one closed settings key (system = exact current user, global = device-wide). */
     suspend fun readSetting(

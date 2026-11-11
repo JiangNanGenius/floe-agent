@@ -225,7 +225,7 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
     func testUnconfirmedPublishWithUnconfirmedReprobeIsActionableFailure() async throws {
         let (snapshot, _) = try makeSnapshot(id: "hot-guide")
         let prober = ScriptedProber(answers: [false, nil])
-        let publisher = ScriptedPublisher(outcome: .unconfirmed)
+        let publisher = ScriptedPublisher(outcome: .unconfirmed(detail: nil))
         let stager = SkillWorkspaceResourceStager(
             resolve: localResolver(), probeVisibility: prober, publishVisibility: publisher)
         let outcome = await stager.stage(
@@ -255,6 +255,66 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         XCTAssertTrue(reason.contains("appliedNotVisible"), "reason was: \(reason)")
     }
 
+    // MARK: - R2: the unconfirmed reason discriminates the failing boundary
+
+    func testUnconfirmedDetailReachesTheModelFacingReason() async throws {
+        // The host's honest unconfirmed carries a bounded code:phase detail,
+        // and the model-facing reason names that boundary so one fresh device
+        // case discriminates it (never a bare `transport`).
+        let (snapshot, _) = try makeSnapshot(id: "hot-guide")
+        let prober = ScriptedProber(answers: [false, false])
+        let publisher = ScriptedPublisher(outcome: .unconfirmed(detail: "engineException:openSession"))
+        let stager = SkillWorkspaceResourceStager(
+            resolve: localResolver(), probeVisibility: prober, publishVisibility: publisher)
+        let outcome = await stager.stage(
+            snapshot: snapshot, runID: UUID(), conversationID: UUID(), context: context())
+        guard case .unavailable(let reason) = outcome else {
+            return XCTFail("expected actionable failure, got \(outcome)")
+        }
+        XCTAssertTrue(reason.hasPrefix("liveWorkspaceSyncUnconfirmed"),
+                      "reason was: \(reason)")
+        XCTAssertTrue(reason.contains("engineException:openSession"), "reason was: \(reason)")
+    }
+
+    func testUnconfirmedWithoutDetailKeepsGenericTransport() async throws {
+        // No named boundary (nil) preserves the original generic `transport`
+        // reason byte-for-byte — absent is preserved.
+        let (snapshot, _) = try makeSnapshot(id: "hot-guide")
+        let prober = ScriptedProber(answers: [false, false])
+        let publisher = ScriptedPublisher(outcome: .unconfirmed(detail: nil))
+        let stager = SkillWorkspaceResourceStager(
+            resolve: localResolver(), probeVisibility: prober, publishVisibility: publisher)
+        let outcome = await stager.stage(
+            snapshot: snapshot, runID: UUID(), conversationID: UUID(), context: context())
+        guard case .unavailable(let reason) = outcome else {
+            return XCTFail("expected actionable failure, got \(outcome)")
+        }
+        XCTAssertEqual(reason, SkillStageReason.liveWorkspaceSyncUnconfirmed("transport"))
+    }
+
+    func testShortPathsAreRejectedAtThePublisherWireBoundary() {
+        XCTAssertNil(C02LiveGuestResourcePublisher.boundedToken("/private/token"))
+        XCTAssertNil(C02LiveGuestResourcePublisher.boundedToken("../token"))
+        XCTAssertNil(C02LiveGuestResourcePublisher.boundedToken("\nexchange"))
+        XCTAssertEqual(C02LiveGuestResourcePublisher.boundedToken("openSession"), "openSession")
+    }
+
+    func testUnconfirmedPathCannotLeakThroughTheModelFacingReason() async throws {
+        let (snapshot, _) = try makeSnapshot(id: "hot-guide")
+        let prober = ScriptedProber(answers: [false, false])
+        let publisher = ScriptedPublisher(outcome: .unconfirmed(detail: "/private/token"))
+        let stager = SkillWorkspaceResourceStager(
+            resolve: localResolver(), probeVisibility: prober, publishVisibility: publisher)
+        let outcome = await stager.stage(
+            snapshot: snapshot, runID: UUID(), conversationID: UUID(), context: context())
+        guard case .unavailable(let reason) = outcome else {
+            return XCTFail("expected unconfirmed, got \(outcome)")
+        }
+        XCTAssertTrue(reason.contains("(transport)"))
+        XCTAssertFalse(reason.contains("/private"))
+        XCTAssertFalse(reason.contains("token"))
+    }
+
     // MARK: - Probe authority wins over an uncertain publish
 
     func testProbeConfirmationWinsOverUnconfirmedPublish() async throws {
@@ -263,7 +323,7 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         // the only visibility authority, so the read reports visible.
         let (snapshot, _) = try makeSnapshot(id: "hot-guide")
         let prober = ScriptedProber(answers: [false, true])
-        let publisher = ScriptedPublisher(outcome: .unconfirmed)
+        let publisher = ScriptedPublisher(outcome: .unconfirmed(detail: nil))
         let stager = SkillWorkspaceResourceStager(
             resolve: localResolver(), probeVisibility: prober, publishVisibility: publisher)
         let outcome = await stager.stage(
@@ -467,7 +527,7 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
             relativePath: ".floe/skills/retired", conversationID: UUID(), cancellation: CancellationToken())
         let published = await publisher.requestCount()
         let probed = await prober.askedPaths()
-        XCTAssertEqual(result, .unconfirmed)
+        XCTAssertEqual(result, .unconfirmed(detail: nil))
         XCTAssertNil(visible)
         XCTAssertEqual(published, 0)
         XCTAssertTrue(probed.isEmpty)
@@ -491,7 +551,7 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
             conversationID: UUID(), cancellation: CancellationToken())
         let dispatched = await publisher.requestCount()
         XCTAssertEqual(dispatched, 1)
-        XCTAssertEqual(result, .unconfirmed)
+        XCTAssertEqual(result, .unconfirmed(detail: nil))
     }
 
     func testProductionPublisherCannotEnqueueIntoANewerMailbox() async {
@@ -500,7 +560,9 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         let publisher = C02LiveGuestResourcePublisher(mailbox: mailbox, acceptedEpoch: 41)
         let result = await publisher.publishStagedBundle(workspaceRoot: workspace, runID: UUID(),
             conversationID: UUID(), cancellation: CancellationToken())
-        XCTAssertEqual(result, .unconfirmed)
+        // An epoch-fenced enqueue never reaches the wire; the honest unconfirmed
+        // carries the bounded `hostFenced` token so the boundary is visible.
+        XCTAssertEqual(result, .unconfirmed(detail: "hostFenced"))
         XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
     }
 
@@ -593,6 +655,80 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         XCTAssertEqual(outcome, .refused(reason: "budgetExceeded"))
     }
 
+    // MARK: - R2: honest unconfirmed carries a bounded discriminating detail
+
+    func testPublisherMapsUnconfirmedCodeAndPhase() async throws {
+        // The pump's honest unconfirmed answer: a bounded code PLUS a bounded
+        // phase token name the failing boundary so one fresh device case can
+        // discriminate it (here: transportUnavailable at the receipt await).
+        let mailbox = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 46))
+        let publisher = C02LiveGuestResourcePublisher(mailbox: mailbox)
+        let replyTask = Task {
+            await publisher.publishStagedBundle(
+                workspaceRoot: workspace, runID: UUID(), conversationID: nil,
+                cancellation: CancellationToken())
+        }
+        let host = try claimOne(mailbox)
+        complete(mailbox, claim: host.claim, status: 0,
+                 json: #"{"state":"unconfirmed","code":"transportUnavailable","phase":"receipt"}"#)
+        let outcome = await replyTask.value
+        XCTAssertEqual(outcome, .unconfirmed(detail: "transportUnavailable:receipt"))
+    }
+
+    func testPublisherMapsUnconfirmedCodeWithoutPhase() async throws {
+        // A code with no phase carries the code alone; a phase with no code
+        // carries the phase alone (bounded printable tokens only).
+        let mailbox = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 47))
+        let publisher = C02LiveGuestResourcePublisher(mailbox: mailbox)
+        let codeTask = Task {
+            await publisher.publishStagedBundle(
+                workspaceRoot: workspace, runID: UUID(), conversationID: nil,
+                cancellation: CancellationToken())
+        }
+        let codeHost = try claimOne(mailbox)
+        complete(mailbox, claim: codeHost.claim, status: 0,
+                 json: #"{"state":"unconfirmed","code":"engineException","phase":"openSession"}"#)
+        let codeOutcome = await codeTask.value
+        XCTAssertEqual(codeOutcome, .unconfirmed(detail: "engineException:openSession"))
+
+        let bareTask = Task {
+            await publisher.publishStagedBundle(
+                workspaceRoot: workspace, runID: UUID(), conversationID: nil,
+                cancellation: CancellationToken())
+        }
+        let bareHost = try claimOne(mailbox)
+        complete(mailbox, claim: bareHost.claim, status: 0,
+                 json: #"{"state":"unconfirmed","code":"awaitBudgetExpired","phase":"receipt"}"#)
+        let bareOutcome = await bareTask.value
+        XCTAssertEqual(bareOutcome, .unconfirmed(detail: "awaitBudgetExpired:receipt"))
+    }
+
+    func testPublisherDropsUnboundedOrNonPrintableDetail() async throws {
+        // A hostile/unbounded detail never reaches the model-facing reason:
+        // it is dropped to nil, keeping the honest unconfirmed WITHOUT a
+        // boundary (the generic `transport`), never a path/payload leak.
+        let mailbox = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 48))
+        let publisher = C02LiveGuestResourcePublisher(mailbox: mailbox)
+        let replyTask = Task {
+            await publisher.publishStagedBundle(
+                workspaceRoot: workspace, runID: UUID(), conversationID: nil,
+                cancellation: CancellationToken())
+        }
+        let host = try claimOne(mailbox)
+        // Hostile detail: an over-long path-like code AND a phase with a raw
+        // control byte (built with real escaping, not a raw literal).
+        let hostileData = try JSONSerialization.data(withJSONObject: [
+            "state": "unconfirmed", "code": "/data/data/host/path secret", "phase": "receipt\u{1}tail",
+        ])
+        let hostile = String(decoding: hostileData, as: UTF8.self)
+        complete(mailbox, claim: host.claim, status: 0, json: hostile)
+        let outcome = await replyTask.value
+        XCTAssertEqual(outcome, .unconfirmed(detail: nil))
+    }
+
     func testPublisherMapsFailedClaimAndMalformedReplyToUnconfirmed() async throws {
         let mailbox = makeMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 44))
@@ -605,7 +741,9 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         let failed = try claimOne(mailbox)
         complete(mailbox, claim: failed.claim, status: 1, json: #"{"code":"runtime_unavailable"}"#)
         let failedOutcome = await failedTask.value
-        XCTAssertEqual(failedOutcome, .unconfirmed)
+        // A failed claim stays honestly unconfirmed and now names the bounded
+        // boundary: the transport-error kind plus the engine's bounded code.
+        XCTAssertEqual(failedOutcome, .unconfirmed(detail: "remoteFailed:runtime_unavailable"))
 
         let malformedTask = Task {
             await publisher.publishStagedBundle(
@@ -615,7 +753,8 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         let malformed = try claimOne(mailbox)
         complete(mailbox, claim: malformed.claim, status: 0, json: #"{"state":"weird"}"#)
         let malformedOutcome = await malformedTask.value
-        XCTAssertEqual(malformedOutcome, .unconfirmed)
+        // An unrecognized engine state is unconfirmed with NO named boundary.
+        XCTAssertEqual(malformedOutcome, .unconfirmed(detail: nil))
     }
 
     func testPublisherCancellationNeverReachesTheWire() async throws {
@@ -627,7 +766,9 @@ final class SkillWorkspaceResourceHotPublishTests: XCTestCase, @unchecked Sendab
         let outcome = await publisher.publishStagedBundle(
             workspaceRoot: workspace, runID: UUID(), conversationID: nil,
             cancellation: token)
-        XCTAssertEqual(outcome, .unconfirmed)
+        // Cancellation before the wire stays honestly unconfirmed with no
+        // named boundary (nothing was ever submitted).
+        XCTAssertEqual(outcome, .unconfirmed(detail: nil))
         // Nothing was queued: the host sees no claim at all.
         XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 100), 0)
     }

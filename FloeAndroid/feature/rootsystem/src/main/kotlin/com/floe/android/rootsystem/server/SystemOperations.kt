@@ -1148,23 +1148,36 @@ internal class SystemOperations(
 
     /**
      * Set one closed-catalog AppOps mode for [packageName] of the current
-     * user through the real `appops set --user <u> <pkg> <op> <mode>` path
-     * (package form only; a UID/shared-UID target can never be expressed,
-     * and a package sharing its UID with another package refuses before
-     * dispatch as "shared_uid_refused"). The restorable BEFORE state
-     * (override/UID/default separately) is captured before the set and the
-     * observed override after it; unparseable read-back refuses instead of
-     * reporting success. Success requires exit 0 plus a read-back proving
-     * the request: a concrete mode equals the per-package override; "default"
-     * is proven by the override row being gone OR recorded as "default"
-     * (both restore platform/UID behavior — restoring an inherited UID mode
-     * as a new package override is NOT a restore).
+     * user through the real `appops set` path. Two closed write scopes:
+     *
+     *  - [PermissionOpsPolicy.SCOPE_PACKAGE] (the legacy default): the
+     *    package form `appops set --user <u> <pkg> <op> <mode>`; a package
+     *    sharing its UID with another package refuses before dispatch as
+     *    "shared_uid_refused".
+     *  - [PermissionOpsPolicy.SCOPE_UID]: the UID form `appops set --user
+     *    <u> --uid <uid> <op> <mode>`. The UID is resolved HERE from the
+     *    live installed identity of the selected package (never accepted
+     *    from the wire), must be uniquely owned by exactly this package
+     *    (shared UIDs and unresolvable ownership refuse), and the identity
+     *    is re-validated immediately before dispatch so a stale UID mapping
+     *    fails closed ("uid_identity_changed") instead of writing another
+     *    app's UID mode. Only the protected/critical package refusal and
+     *    the current-profile binding apply as for the package scope.
+     *
+     * The restorable BEFORE state (override/UID/default separately) is
+     * captured before the set and the observed rows after it; unparseable
+     * read-back refuses instead of reporting success. Success requires exit
+     * 0 plus a read-back proving the request ON THE REQUESTED SCOPE's row:
+     * a concrete mode equals that row, "default" is proven by the row being
+     * gone OR recorded as "default". Per the frozen C1 evidence a package
+     * override match must never be reported as an effective UID change.
      */
     fun manageAppOps(
         packageName: String,
         userId: Int,
         operation: String,
         mode: String,
+        scope: String = PermissionOpsPolicy.SCOPE_PACKAGE,
         cancelled: () -> Boolean,
     ): com.floe.android.rootsystem.AppOpsSetReceipt {
         if (cancelled()) throw OpException("cancelled")
@@ -1173,6 +1186,8 @@ internal class SystemOperations(
         if (ProtectedTargets.isProtectedPackage(packageName, ownPackages)) {
             throw OpException("protected_target")
         }
+        val scopeToken = PermissionOpsPolicy.appOpScope(scope)
+            ?: throw OpException("appop_scope")
         val sdk = android.os.Build.VERSION.SDK_INT
         val spec = PermissionOpsPolicy.appOp(operation, sdk)
             ?: throw OpException("appop_operation")
@@ -1180,14 +1195,30 @@ internal class SystemOperations(
         if (packageApplication(packageName) == null) throw OpException("package_not_found")
         sharedUidRefusal(packageName)?.let { throw OpException(it) }
         val opName = spec.opName
+        val uidScope = scopeToken == PermissionOpsPolicy.SCOPE_UID
+        // The UID-scope target must still be a CURRENTLY INSTALLED package:
+        // resolution is installed-only by construction (packageApplication),
+        // so removed-for-user/system-image-only identities refuse here.
+        val resolvedUid = if (uidScope) resolveUniqueUidOrThrow(packageName) else -1
 
-        val before = readAppOpsParsed(packageName, userId, opName, cancelled)
+        val before = readAppOpsParsed(
+            packageName, userId, opName, cancelled,
+            uid = if (uidScope) resolvedUid else null,
+        )
+        if (uidScope) revalidateUidIdentityOrThrow(packageName, resolvedUid)
         var reason: String? = null
         val exit = runPackageChild(
-            argv = listOf(
-                "/system/bin/appops", "set", "--user", userId.toString(),
-                packageName, opName, mode,
-            ),
+            argv = if (uidScope) {
+                listOf(
+                    "/system/bin/appops", "set", "--user", userId.toString(),
+                    "--uid", resolvedUid.toString(), opName, mode,
+                )
+            } else {
+                listOf(
+                    "/system/bin/appops", "set", "--user", userId.toString(),
+                    packageName, opName, mode,
+                )
+            },
             timeoutMillis = APPOPS_SET_TIMEOUT_MILLIS,
             cancelled = cancelled,
             unavailableCode = "appops_unavailable",
@@ -1195,13 +1226,20 @@ internal class SystemOperations(
             onOutputTail = { reason = conciseFailureReason(it) },
         )
         if (cancelled()) throw OpException("cancelled")
-        val after = readAppOpsParsed(packageName, userId, opName, cancelled)
-        val decision = PermissionOpsDecision.appOps(exit, mode, after.overrideMode)
+        val after = readAppOpsParsed(
+            packageName, userId, opName, cancelled,
+            uid = if (uidScope) resolvedUid else null,
+        )
+        val decision = PermissionOpsDecision.appOps(
+            exit, mode, after.overrideMode, scopeToken, after.uidMode,
+        )
         return com.floe.android.rootsystem.AppOpsSetReceipt(
             packageName = packageName,
             userId = userId,
             operation = spec.token,
             opName = opName,
+            scope = scopeToken,
+            resolvedUid = resolvedUid,
             overrideBefore = before.overrideMode,
             uidBefore = before.uidMode,
             defaultBefore = before.defaultMode,
@@ -1213,6 +1251,7 @@ internal class SystemOperations(
             ),
             requestedMode = mode,
             overrideAfter = after.overrideMode,
+            uidAfter = after.uidMode,
             effectiveAfter = PermissionOpsDecision.effectiveMode(
                 after.overrideMode,
                 after.uidMode,
@@ -1226,6 +1265,41 @@ internal class SystemOperations(
     }
 
     /**
+     * Authoritative service-side UID resolution for the UID write scope:
+     * the installed application identity of [packageName] gives the UID,
+     * and the UID must be owned by EXACTLY this package. Shared UIDs
+     * ("shared_uid_refused") and unresolvable/inconsistent ownership
+     * ("uid_scope_unavailable") refuse; the numeric UID itself is never
+     * taken from the caller.
+     */
+    private fun resolveUniqueUidOrThrow(packageName: String): Int {
+        val uid = packageApplication(packageName)?.uid ?: throw OpException("package_not_found")
+        val siblings = runCatching {
+            context.packageManager.getPackagesForUid(uid)?.distinct()
+        }.getOrNull() ?: throw OpException("uid_scope_unavailable")
+        PermissionOpsPolicy.uidScopeOwnershipRefusal(siblings, packageName)
+            ?.let { throw OpException(it) }
+        return uid
+    }
+
+    /**
+     * Stale-identity guard: re-resolve the package->UID mapping and the UID
+     * ownership immediately BEFORE the mutation so an identity that changed
+     * between the capture read and the set fails closed instead of writing
+     * the mode onto a different UID.
+     */
+    private fun revalidateUidIdentityOrThrow(packageName: String, uid: Int) {
+        val current = packageApplication(packageName)?.uid
+            ?: throw OpException("package_not_found")
+        if (current != uid) throw OpException("uid_identity_changed")
+        val siblings = runCatching {
+            context.packageManager.getPackagesForUid(uid)?.distinct()
+        }.getOrNull() ?: throw OpException("uid_scope_unavailable")
+        PermissionOpsPolicy.uidScopeOwnershipRefusal(siblings, packageName)
+            ?.let { throw OpException(it) }
+    }
+
+    /**
      * One bounded single-operation `appops get`. Command failure maps to a
      * typed code; unparseable output maps to "appops_unparseable" so callers
      * fail closed instead of treating ambiguity as absence.
@@ -1236,13 +1310,23 @@ internal class SystemOperations(
         opName: String,
         cancelled: () -> Boolean,
         timeoutMillis: Long = APPOPS_GET_TIMEOUT_MILLIS,
+        uid: Int? = null,
     ): PermissionOpsPolicy.AppOpsGet {
         var tail: String? = null
+        // UID form (`--uid <uid>`) is used only for the UID write scope's
+        // before/after reads; the package form stays the default everywhere.
         val exit = runPackageChild(
-            argv = listOf(
-                "/system/bin/appops", "get", "--user", userId.toString(),
-                packageName, opName,
-            ),
+            argv = if (uid != null) {
+                listOf(
+                    "/system/bin/appops", "get", "--user", userId.toString(),
+                    "--uid", uid.toString(), opName,
+                )
+            } else {
+                listOf(
+                    "/system/bin/appops", "get", "--user", userId.toString(),
+                    packageName, opName,
+                )
+            },
             timeoutMillis = timeoutMillis,
             cancelled = cancelled,
             unavailableCode = "appops_unavailable",

@@ -33,18 +33,32 @@ object PermissionOpsDecision {
     }
 
     /**
-     * appops set proof on the parsed per-package override of the SAME single
-     * operation. For a concrete requested mode the post-set per-package
-     * override must equal the request. For "default" the package must be
-     * back at platform/UID behavior: either the per-package row is gone, or
-     * the platform recorded an explicit "default" entry (observed on a
-     * dedicated Samsung/API 33 device as `OP: default; rejectTime=...`).
-     * The UID/platform fallback is reported separately and never widened
-     * into an allow claim.
+     * appops set proof on the parsed row of the SAME single operation that
+     * the requested scope actually writes. PACKAGE scope (the legacy default)
+     * proves on the per-package override: a concrete requested mode must
+     * equal it; "default" means the package is back at platform/UID behavior
+     * (override row gone, or the platform recorded an explicit "default"
+     * entry as seen on Samsung/API 33 as `OP: default; rejectTime=...`).
+     * UID scope proves on the UID-level row instead: a concrete mode must
+     * equal the observed UID mode; "default" means the UID row is gone or
+     * recorded "default". Proving the wrong layer for the scope is a real
+     * failure ("verify_failed"), never a success: per the frozen C1 evidence
+     * a package-override match must not be reported as an effective UID
+     * change, and a UID match must not be reported as a package restore.
      */
-    fun appOps(pmExitCode: Int, requestedMode: String, overrideAfter: String?): Outcome {
+    fun appOps(
+        pmExitCode: Int,
+        requestedMode: String,
+        overrideAfter: String?,
+        scope: String = PermissionOpsPolicy.SCOPE_PACKAGE,
+        uidAfter: String? = null,
+    ): Outcome {
         val verified = when {
             pmExitCode != 0 -> false
+            scope == PermissionOpsPolicy.SCOPE_UID -> when (requestedMode) {
+                "default" -> uidAfter == null || uidAfter == "default"
+                else -> uidAfter == requestedMode
+            }
             requestedMode == "default" ->
                 overrideAfter == null || overrideAfter == "default"
             else -> overrideAfter == requestedMode
