@@ -1230,6 +1230,7 @@ internal class SystemOperations(
             packageName, userId, opName, cancelled,
             uid = if (uidScope) resolvedUid else null,
         )
+        if (uidScope) revalidateUidIdentityOrThrow(packageName, resolvedUid)
         val decision = PermissionOpsDecision.appOps(
             exit, mode, after.overrideMode, scopeToken, after.uidMode,
         )
@@ -1312,6 +1313,13 @@ internal class SystemOperations(
         timeoutMillis: Long = APPOPS_GET_TIMEOUT_MILLIS,
         uid: Int? = null,
     ): PermissionOpsPolicy.AppOpsGet {
+        // A numeric-UID query omits package overrides. Preserve the package
+        // snapshot as well so a UID write cannot report that override as absent.
+        val packageState = if (uid != null) {
+            readAppOpsParsed(packageName, userId, opName, cancelled, timeoutMillis)
+        } else {
+            null
+        }
         var tail: String? = null
         // UID form (`--uid <uid>`) is used only for the UID write scope's
         // before/after reads; the package form stays the default everywhere.
@@ -1337,7 +1345,7 @@ internal class SystemOperations(
         if (exit != 0) throw OpException("appops_get_failed")
         val parsed = PermissionOpsPolicy.parseAppOpsGet(tail ?: "", opName)
         if (parsed.unparseable) throw OpException("appops_unparseable")
-        return parsed
+        return packageState?.copy(uidMode = parsed.uidMode) ?: parsed
     }
 
     /**

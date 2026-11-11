@@ -766,7 +766,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // retry a receipt read, and a timeout is the honest unconfirmed.
             val outcome = withTimeoutOrNull(RESOURCE_SYNC_RECEIPT_BUDGET_MILLIS) {
                 awaitControlReceipt(first, poll = { id ->
-                    connection.exchange("request.status", JSONObject().put("requestID", id))
+                    result(connection.exchange("request.status", JSONObject().put("requestID", id)))
                 }, onWaiting = {
                     if (stopSync.get() || LinuxShellNative.shouldStop(claim) != 0) throw SyncAwaitStopped()
                 })

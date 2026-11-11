@@ -1061,3 +1061,10 @@ ADB 应用操作继续沿用现有总开关、类别多选和已选应用范围�
 热资源原故障仍未闭合。本批在现有同步通路保留具体的受限错误阶段，使下一次同一终端会话的失败能定位到授权、身份、连接、交换或回执；诊断不带路径或内容。41 项 Swift 定向用例和14项运行层检查已通过，Full／运行组件实际编译通过；这不是热资源实机成功证明。新包继续合入 Linux 事务准备与可逆恢复修复，以实际任务和可读取成果验收，不重复未改模块矩阵。当前公开 Alpha79 保持不可变，最终 1.0.0 等本轮实际功能验证后再提升。
 
 English: UID AppOps reuses the existing management/category/selected-app authorization with per-call scope binding and live service capability checks. System-app removal now keeps data by default; restore can resolve a removed-for-user system image. 56 focused cases and actual Root/Full compilation pass; fresh Samsung receipts remain pending. Hot-resource synchronization gains bounded stage diagnostics;41 focused Swift and14 runtime cases plus actual Full/runtime compilation pass, without claiming the original device failure is fixed. Public Alpha79 is unchanged; final1.0.0 still follows functional verification.
+
+
+三星工程候选06（源码3049602c9，仍为内部code105）已通过真实自动审批的系统应用移除／恢复：91条原始记录、6项系统工具回执，移除后独立查询、恢复后独立查询均对应同一目标；UID、版本、默认启用状态与非零CE目录inode保持。目录元数据保持不等于完整内容备份。原E1恢复失败及旧路径未保留测试应用数据的记录保留，不将后续成功倒填为旧版通过。
+
+同包R3真实读到了冷启动PDF指南并打开一个PTY；加载Office资源仍在receipt阶段未确认，随后仅关闭该PTY一次，未重试或重开绕过。新诊断定位到调用方把IPC外层ok/result报文直接交给要求内层state的轮询器；源码已改用现有result解包。另据三星实际输出，数字UID查询不包含应用级覆盖值，已补同时读取应用层与UID层并在结束复核身份。这两项小修合成下一份Full；复用未改native40及已通过的相关检查，新的实际消费者编译和C2／R4行为分开记录。
+
+English: Private06 passes the real automatic system-app removal/restoration cycle with91 original records and6 system receipts. UID/version/default-enabled state and the nonzero CE directory inode match; this is not a full data-backup claim, and E1 remains a retained failure. R3 isolates hot staging to receipt handling: the caller missed IPC result unwrapping. That small fix and complete package/UID AppOps snapshots form the next Full candidate, with compilation and fresh device behavior still pending.
