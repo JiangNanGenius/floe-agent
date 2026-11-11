@@ -67,8 +67,10 @@ struct HelpLibraryTests {
         #expect(english.manifest.version == HelpBundleMetadata.bundledVersion)
         #expect(english.manifest.indexPaths["en"] != nil)
         #expect(chinese.index.locale == .simplifiedChinese)
-        #expect(english.index.articles.count == 6)
-        #expect(chinese.index.articles.count == 6)
+        let expectedArticleIDs: Set<String> = ["quickstart", "shared-basics", "user-manual", "workspaces",
+                                               "input.keyboard", "voice.output", "environment.memory"]
+        #expect(Set(english.index.articles.map(\.id)) == expectedArticleIDs)
+        #expect(Set(chinese.index.articles.map(\.id)) == expectedArticleIDs)
         #expect(english.index.categories.count == 7)
         #expect(Set(english.index.articles.map(\.id)) == Set(chinese.index.articles.map(\.id)))
     }

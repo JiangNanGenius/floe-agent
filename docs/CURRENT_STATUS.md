@@ -1,9 +1,9 @@
-<!-- docs-updated: 2026-11-11 -->
+<!-- docs-updated: 2026-11-12 -->
 # 当前版本与验证状态 / Current release and verification status
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近已交付为1.8.9（331），内部TestFlight可安装，GitHub／Feather已核验。用户随后要求撤回331公测，重点修好后另发新构建；331的外部测试访问及审核均已撤回。** 冻结源 `8dcf7c38f77d43a76575e10f96be72807c1c6f47`／`v1.8.9`；后续源码不属于此包。327／328仍是未交付尝试。 / **The latest delivered build is1.8.9 (331), available internally with verified GitHub/Feather delivery. The user subsequently withdrew public331 and requested priority fixes before a new public build; external access and beta review for331 have been withdrawn.** Later source changes are outside the immutable artifact.
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近保留交付为1.8.10（332），内部TestFlight、GitHub及Feather已核验；publictest1提交一次，2026-11-11读回待审，当前审核状态未在本次文档更新刷新。** 冻结源 `22f8c31e7cbe86febe150c24284d9fd2fdf50ee8`／`v1.8.10`，详见[332交付记录](releases/builds/FLOE_1.8.10_BUILD332_DELIVERY.md)。331公测撤回和315正式版既有安排保持；后续小修源码不属于332安装包。 / **The latest retained delivery is1.8.10 (332), with verified internal TestFlight, GitHub and Feather.** Publictest1 was submitted once and was awaiting review on11 November; this documentation update does not refresh its current review state. Later source changes are outside that immutable build. Public331 remains withdrawn; Build315's formal arrangements remain unchanged.
 
 ## 2026-11-11 iOS 1.8.9（331）渠道核对 / iOS delivery snapshot
 
