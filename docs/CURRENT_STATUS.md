@@ -3,11 +3,26 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**1.8.7（329）内部 TestFlight 已可安装，GitHub／Feather 已交付；公开 TestFlight 已提交、等待 Apple 审核。** 冻结源包含本轮整合功能与大包资源消费端；后续 main 修改不自动属于该安装包。1.9.0（327）和 1.9.1（328）仍属未交付尝试。 / **1.8.7 (329) is available through internal TestFlight and verified GitHub/Feather delivery. Public TestFlight is submitted and awaiting Apple review.** The frozen source includes this round's integrated features and large-package consumer; later mainline changes are outside the artifact. Builds 327 and 328 remain undelivered attempts.
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近已交付版本为 1.8.8（330），内部 TestFlight 可安装，GitHub／Feather 已核验；330 未提交公开 TestFlight。** 冻结源为 `b5bf026b16e734a6a1923c2416a687ee274fce41`；后续 main 修改不属于该安装包。1.9.0（327）和 1.9.1（328）仍属未交付尝试。 / **The latest delivered build is 1.8.8 (330), available through internal TestFlight with verified GitHub/Feather delivery. Build330 was not submitted to public TestFlight.** Its source is frozen; later mainline changes are outside the artifact. Builds 327 and 328 remain undelivered attempts.
 
-## 2026-11-11 iOS 1.8.7（329）渠道核对 / iOS delivery snapshot
+## 2026-11-11 iOS 1.8.8（330）渠道核对 / iOS delivery snapshot
 
-以下为本轮实际产物与渠道读回，日期按悉尼时间；[329交付记录](releases/builds/FLOE_1.8.7_BUILD329_DELIVERY.md)保留源码、验证、原始等待超时和清理边界。 / This Sydney-dated snapshot uses the actual artifact and channel readbacks; the build-specific record preserves source, qualification, the original processing timeout and cleanup boundaries.
+日期按悉尼时间；[330交付记录](releases/builds/FLOE_1.8.8_BUILD330_DELIVERY.md)保存不可变源码、实际包摘要及各渠道边界。 / Dates use Sydney time; the build-specific record preserves immutable source, package digests and channel limits.
+
+| 渠道 / Channel | 已核实结果 / Observed result | 来源与边界 / Source and limits |
+| --- | --- | --- |
+| 内部 TestFlight / Internal TestFlight | 1.8.8（330）：`VALID`、未过期，Floe QA `IN_BETA_TESTING` | [独立 Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/42971538592)成功，内部组可安装。 / Independent readback passed; available to the existing internal group. |
+| GitHub | [1.8.8（330）stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.8)及未签名 IPA／校验文件已交付 | [正常 unsigned 发布](https://github.com/JiangNanGenius/floe-agent/actions/runs/42971881361)与严格公开读回通过；需自行签名。 / Normal publication and strict readback passed; your signing is required. |
+| Feather | [安装源](https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json)与330实际 IPA一致 | 同次 awaited Feather 成功，版本、源码、下载地址、大小及 SHA-256 匹配。 / The awaited workflow passed and the live feed matched the exact artifact. |
+| 公开 TestFlight / Public TestFlight | 330 未提交 / Build330 not submitted | 不能据内部可安装或 GitHub 公开下载推定公开 TestFlight 可用。 / Internal availability and public unsigned downloads do not establish public TestFlight availability. |
+
+**下一阶段：先修复传感器、计时器、化学文件删除及生物回收站清理，再尽快交付中间内测，不等 GPU／新增 Linux 视频硬件解码。** 暂选 **1.8.9（331）**，尚未冻结或交付；后续支持硬解的完整版本再推进公开 TestFlight。330 用户反馈仍在修复和实际 App 验证中，不能视为330已解决这些问题。 / **Next: fix sensors, timers, Chemistry file deletion and Biology Trash cleanup, then deliver an intermediate internal beta without waiting for GPU or new Linux hardware video decoding.** Proposed 1.8.9 (331) is not frozen or delivered. Public TestFlight is deferred to the later complete hardware-decoding build; these reported issues are not claimed fixed in Build330.
+
+正式 App Store 构建315及既有安排未修改。 / Build315's formal App Store arrangements remain unchanged.
+
+## 2026-11-11 iOS 1.8.7（329）先前渠道快照 / Earlier iOS delivery snapshot
+
+以下保留329交付时的实际读回，不覆盖上方330状态；[329交付记录](releases/builds/FLOE_1.8.7_BUILD329_DELIVERY.md)保留源码、验证、原始等待超时和清理边界。329的公开审核未在本次重新查询。 / This preserves the earlier Build329 readback rather than the current Build330 state. Its public review was not refreshed in this documentation update.
 
 | 渠道 / Channel | 已核实结果 / Observed result | 来源与边界 / Source and limits |
 | --- | --- | --- |
