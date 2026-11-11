@@ -311,7 +311,8 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
             try await validateSource(); try Task.checkCancellation()
             if plan.requiresPreparation {
                 for record in plan.members {
-                    try await prepareForDeletion(record, directory: root.appendingPathComponent(record.relativePath), environment: environment)
+                    try await prepareForDeletion(record, directory: root.appendingPathComponent(record.relativePath), environment: environment,
+                        permanentPlan: plan)
                 }
             } else {
                 // The owned journal was created only after preparation.
@@ -390,7 +391,14 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         return result
     }
 
-    private static func prepareForDeletion(_ record: PersonalContentRecord, directory: URL, environment: AppEnvironment?) async throws {
+    /// Native lifecycle callers must still own the exact file's exclusion
+    /// boundary. This is not a model/tool permission or an expired run grant.
+    static func requireHeldFileAction(_ id: UUID) throws {
+        guard active.contains(id) else { throw PersonalFileActionError.changed }
+    }
+
+    private static func prepareForDeletion(_ record: PersonalContentRecord, directory: URL, environment: AppEnvironment?,
+        permanentPlan: PersonalPermanentDeletePlan? = nil) async throws {
         switch record.kind {
         case .document:
             try PersonalTextDocument.requireClosedForFileAction(projectID: record.id)
@@ -405,7 +413,8 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         case .meeting: await MeetingProjectSession.prepareForDeletion(id: record.id)
         case .chemistry:
             guard let environment else { throw PersonalContentError.storageUnavailable }
-            try await ChemistryProjectSession.prepareForLibraryDeletion(id: record.id, directory: directory, environment: environment)
+            try await ChemistryProjectSession.prepareForLibraryDeletion(record: record, directory: directory,
+                environment: environment, permanentPlan: permanentPlan)
         case .biology: break // The same held barrier wraps native stop/trash and the atomic Library commit above.
         case .canvas: try await CanvasHostSessions.shared.requireIdleForDeletion(canvasID: record.id, directory: directory)
         case .diagram, .latex: break // The editor/AI usage lease owns all writes.

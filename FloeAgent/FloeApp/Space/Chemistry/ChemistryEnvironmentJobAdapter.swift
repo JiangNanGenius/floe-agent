@@ -890,7 +890,7 @@ nonisolated struct ChemistryNativeRunMetadata: Codable, Sendable {
     /// run record, never by reviving a historical execution context that may
     /// have expired. Assistant-owned live work still belongs to its task.
     func prepareForDeletion(session: ChemistryProjectSession) async throws {
-        let location = try await PersonalContentService.shared.library().resolve(session.projectID)
+        let location = try await ChemistryProjectSession.resolveLibraryOriginal(id: session.projectID, directory: session.root)
         guard ChemistryWorkerFiles.canonical(location.url) == ChemistryWorkerFiles.canonical(session.root) else { throw PersonalContentError.changedDocument }
         let archive = try journal(location.url)
         let paths = try FileManager.default.contentsOfDirectory(at: archive, includingPropertiesForKeys: nil)

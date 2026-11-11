@@ -7,7 +7,9 @@ import FloeCore
 import FloeModels
 import FloeTools
 import FloePersistence
-import FloeAgentRuntime
+@testable import FloeAgentRuntime
+import FloeProviders
+import FloeSecurity
 @testable import FloeApp
 
 @Suite("FloeApp.ColdWaitLifecycle", .serialized, .timeLimit(.minutes(1)))
@@ -206,6 +208,266 @@ struct ColdWaitAppLifecycleTests {
         } catch {
             await f.finish()
             throw error
+        }
+    }
+}
+
+@Suite("FloeApp.GoalLifecycle", .serialized, .timeLimit(.minutes(1)))
+@MainActor
+struct GoalLifecycleTests {
+    private let input = TaskGoalCreateArguments(objective: "Record a concrete target for this authorized task",
+        acceptanceCriteria: ["The native goal is saved and attached to this run"], steps: ["Keep durable task progress"])
+    private func arguments(_ objective: String = "Record a concrete target for this authorized task") throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["objective": objective,
+            "acceptanceCriteria": ["The native goal is saved and attached to this run"], "steps": ["Keep durable task progress"]])
+    }
+    private func stores() async throws -> (DatabaseManager, SQLiteConversationStore, SQLiteRunStore, SQLiteIntelligenceStore, UUID) {
+        let db = try DatabaseManager.inMemory(); try await db.migrate()
+        let conversations = SQLiteConversationStore(database: db), runs = SQLiteRunStore(database: db)
+        let id = UUID(), now = Date()
+        try await conversations.saveConversation(.init(id: id, title: "Owned goal fixture", createdAt: now, updatedAt: now))
+        return (db, conversations, runs, SQLiteIntelligenceStore(database: db), id)
+    }
+    private func context(runID: UUID, conversationID: UUID, call: String, temporary: Bool = false) -> ToolContext {
+        ToolContext(runID: runID, toolCallID: call, allowedToolNames: [TaskCreateGoalTool.name, TaskReadGoalTool.name],
+            cancellation: CancellationToken(), conversationID: conversationID,
+            callOrigin: .init(kind: .mainRunDelegate, runID: runID, callID: call, toolName: TaskCreateGoalTool.name),
+            temporaryReadOnly: temporary)
+    }
+    private func until(_ condition: @MainActor () async -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
+    @Test func modelDiscoversCreatesAndFinishesCurrentRunWithDurableGoalReservation() async throws {
+        let (db, conversations, runs, goals, conversationID) = try await stores()
+        let registry = ToolRunnerRegistry()
+        registerTaskChecklistTools(store: TaskChecklistStore(database: db), goalStore: goals, registry: registry)
+        let provider = ProviderProfile(kind: .openAI, wireProtocol: .openAIChatCompletions, baseURL: URL(string: "https://goal-fixture.invalid/v1")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "goal-fixture", displayName: "Goal fixture",
+            limits: .init(contextTokens: 16_384, maxOutputTokens: 2_048), capabilities: [.text, .tools])
+        let state = GoalLifecycleProviderState()
+        let adapter = GoalLifecycleProvider(state: state, createArguments: try arguments())
+        let service = ConversationRunService(configuration: .init(conversationID: conversationID,
+                provider: provider, model: model, maxToolSteps: 4, verifyFinalAnswer: false),
+            adapter: adapter, policy: TaskFullAccessPolicy(), executor: CatalogToolExecutor(runners: registry),
+            intelligenceStore: goals, conversationStore: conversations, runStore: runs)
+        let userTask = "Only establish a durable goal for my current task; do not perform external actions."
+        try await service.start(goal: userTask)
+        let goal = try #require(try await goals.goals(conversationID: conversationID).first)
+        let run = try #require(try await runs.run(id: service.runID))
+        #expect(state.offeredGoalSchemas)
+        #expect(run.goalID == goal.id && run.conversationMode == "chat")
+        #expect(run.state == "completed")
+        #expect(goal.objective == userTask && goal.steps.first?.detail == input.objective)
+        #expect(goal.status == .verifying && goal.progress.cycleCount == 1 && goal.revision == 2)
+        #expect(goal.evidence.isEmpty, "Creating a goal is preparation, not completion evidence")
+        #expect(goal.budgets.maxParentIterationsPerCycle == 4, "A model goal cannot raise this run's cap")
+        #expect(try await runs.runs(conversationID: conversationID).count == 1, "No tool-created replacement run")
+    }
+
+    @Test func registeredGoalToolRejectsOverwriteSpoofAndTemporaryWritesAtomically() async throws {
+        let (db, _, runs, goals, conversationID) = try await stores()
+        let registry = ToolRunnerRegistry()
+        registerTaskChecklistTools(store: TaskChecklistStore(database: db), goalStore: goals, registry: registry)
+        let executor = CatalogToolExecutor(runners: registry), runID = UUID(), now = Date()
+        func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+            try await TaskGoalRuntimeBudgetScope.$budgets.withValue(GoalBudgets(maxParentIterationsPerCycle: 4)) {
+                try await executor.execute(call, context: context)
+            }
+        }
+        // The approved call may outrun RunService's phase projection.
+        try await runs.saveRun(.init(id: runID, conversationID: conversationID, state: "streamingModel",
+            goal: "User-authorized original task", startedAt: now, conversationMode: "chat"))
+        let call = try ToolCall(id: "create-native-goal", toolName: TaskCreateGoalTool.name,
+            argumentsJSON: arguments(), scope: .local)
+        let temporary = try await execute(call, context: context(runID: runID, conversationID: conversationID,
+            call: call.id, temporary: true))
+        #expect(temporary.status == .failed && temporary.outputSummary.contains("unauthorized"))
+        #expect(try await goals.goals(conversationID: conversationID).isEmpty)
+        let first = try await execute(call, context: context(runID: runID, conversationID: conversationID, call: call.id))
+        let replay = try await execute(call, context: context(runID: runID, conversationID: conversationID, call: call.id))
+        #expect(first.status == .ok && replay.status == .ok)
+        let initial = try #require(try await goals.goals(conversationID: conversationID).first)
+        var changed = call; changed.argumentsJSON = try arguments("Different target under the same call ID")
+        let reused = try await execute(changed, context: context(runID: runID, conversationID: conversationID, call: call.id))
+        #expect(reused.status == .failed && reused.outputSummary.contains("identityReused"))
+        let nextRunID = UUID()
+        try await runs.saveRun(.init(id: nextRunID, conversationID: conversationID, state: "executingTool",
+            goal: "Same task next activation", startedAt: now.addingTimeInterval(1), conversationMode: "chat"))
+        let nextCall = try ToolCall(id: "do-not-replace", toolName: TaskCreateGoalTool.name,
+            argumentsJSON: arguments(), scope: .local)
+        let denied = try await execute(nextCall,
+            context: context(runID: nextRunID, conversationID: conversationID, call: nextCall.id))
+        #expect(denied.status == .failed && denied.outputSummary.contains("activeGoalExists"))
+        #expect(try await goals.goals(conversationID: conversationID) == [initial])
+        #expect(try await runs.run(id: nextRunID)?.goalID == nil)
+        let forbidden = try ToolCall(id: "no-budget-escalation", toolName: TaskCreateGoalTool.name,
+            argumentsJSON: Data(#"{"objective":"x","acceptanceCriteria":["x"],"steps":["x"],"budgets":{"maxCycles":9999}}"#.utf8),
+            scope: .local)
+        let budget = try await execute(forbidden,
+            context: context(runID: nextRunID, conversationID: conversationID, call: forbidden.id))
+        #expect(budget.status == .failed && budget.outputSummary.contains("invalidArguments"))
+        #expect(try await goals.goals(conversationID: conversationID) == [initial])
+    }
+
+    @Test func pauseFencesLateCompletionAndExplicitBlockedResumeKeepsSameGoalAndEvidence() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        environment.markIsolatedLaunchReadyForTesting()
+        let center = environment.conversationCenter
+        let provider = ProviderProfile(kind: .openAI, wireProtocol: .openAIChatCompletions, baseURL: URL(string: "https://goal-fixture.invalid/v1")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "goal-control-fixture", displayName: "Goal control fixture",
+            limits: .init(contextTokens: 16_384, maxOutputTokens: 2_048), capabilities: [.text, .tools])
+        try await environment.configurationStore.saveProvider(provider)
+        try await environment.configurationStore.saveModel(model)
+        let conversationID = UUID(), now = Date()
+        try await environment.conversationStore.saveConversation(.init(id: conversationID,
+            title: "Owned goal controls", createdAt: now, updatedAt: now))
+        let evidence = GoalEvidence(kind: .testResult, reference: "owned-fixture", summary: "Retained prior progress")
+        let original = ConversationGoal(conversationID: conversationID, objective: "Continue this same authorized task",
+            acceptanceCriteria: [.init(text: "Preserve prior evidence")], steps: [.init(title: "Continue", order: 0)],
+            evidence: [evidence], status: .active, budgets: .init(maxCycles: 10, maxModelCalls: 20),
+            progress: .init(cycleCount: 2, modelCallCount: 2, totalIterationCount: 4, startedAt: now))
+        try await environment.intelligenceStore.saveGoal(original)
+        let state = GoalLifecycleProviderState(), idle = GoalLifecycleProvider(state: state, createArguments: nil)
+        center.providerAdapterTestOverride = { _, _ in idle }
+        defer { center.providerAdapterTestOverride = nil }
+        let preflight = GoalLaunchPreflightGate()
+        center.launchTestHooks.beforeGoalPreflight = { await preflight.hold() }
+        let lateStart = Task {
+            try await center.startRun(goal: original.objective, in: conversationID,
+                provider: provider, model: model, executionMode: .goal, isGoalContinuation: true,
+                expectedGoal: (original.id, 1), startOrigin: .goalContinuation)
+        }
+        await preflight.waitForEntry()
+        let preflightPaused = try await center.pauseGoal(conversationID: conversationID,
+            expectedGoalID: original.id, expectedRevision: 1)
+        center.launchTestHooks.beforeGoalPreflight = nil
+        await preflight.release()
+        do {
+            _ = try await lateStart.value
+            Issue.record("A continuation suspended before availability survived Pause")
+        } catch is CancellationError { }
+        #expect(try await environment.runStore.runs(conversationID: conversationID).isEmpty,
+            "A stale preflight must create neither a new run nor a failed-run notification")
+        #expect(state.requestCount == 0)
+        let started = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
+            expectedRevision: preflightPaused.revision ?? 1, provider: provider, model: model)
+        let attached = await until {
+            (try? await environment.runStore.run(id: started.runID)?.goalID) == original.id && state.requestCount >= 1
+        }
+        #expect(attached)
+        let beforePause = try #require(try await environment.intelligenceStore.goal(id: original.id))
+        let paused = try await center.pauseGoal(conversationID: conversationID, expectedGoalID: original.id,
+            expectedRevision: beforePause.revision ?? 1)
+        _ = await started.result.value
+        #expect(paused.status == .paused && paused.evidence == original.evidence && paused.progress == original.progress)
+        let lateAttempted = await until { state.lateCompletionAttempts >= 1 }
+        #expect(lateAttempted)
+        var stale = original; stale.status = .verifying
+        let overwritten = try await environment.intelligenceStore.saveGoalIfRevisionMatches(stale, expectedRevision: 1)
+        #expect(!overwritten, "A late completion must not overwrite the paused revision")
+        var blocked = paused
+        blocked.status = .blocked; blocked.progress.repeatedBlockerKey = "no-inspectable-evidence"; blocked.progress.repeatedBlockerCount = 3
+        let blockedSaved = try await environment.intelligenceStore.saveGoalIfRevisionMatches(blocked, expectedRevision: paused.revision ?? 1)
+        #expect(blockedSaved)
+        let savedBlocked = try #require(try await environment.intelligenceStore.goal(id: original.id))
+        #expect(center.goalBlockedReason(savedBlocked)?.isEmpty == false)
+        let resumed = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
+            expectedRevision: savedBlocked.revision ?? 1, provider: provider, model: model)
+        let reattached = await until {
+            (try? await environment.runStore.run(id: resumed.runID)?.goalID) == original.id && state.requestCount >= 2
+        }
+        #expect(reattached && resumed.runID != started.runID)
+        let active = try #require(try await environment.intelligenceStore.goal(id: original.id))
+        do {
+            _ = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
+                expectedRevision: active.revision ?? 1, provider: provider, model: model)
+            Issue.record("Resume re-entered an already-owned goal run")
+        } catch { }
+        let final = try await center.pauseGoal(conversationID: conversationID, expectedGoalID: original.id,
+            expectedRevision: active.revision ?? 1)
+        _ = await resumed.result.value
+        #expect(final.evidence == original.evidence && final.budgets == original.budgets)
+        #expect(final.progress.cycleCount == 2 && final.progress.totalIterationCount == 4)
+        #expect(try await environment.intelligenceStore.goals(conversationID: conversationID).count == 1)
+        #expect(try await environment.runStore.runs(conversationID: conversationID).count == 2)
+        try await center.deleteConversation(id: conversationID)
+    }
+}
+
+private final class GoalLifecycleProviderState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0, late = 0
+    private var offered = false
+    var requestCount: Int { lock.withLock { count } }
+    var lateCompletionAttempts: Int { lock.withLock { late } }
+    var offeredGoalSchemas: Bool { lock.withLock { offered } }
+    func next(_ names: Set<String>) -> Int {
+        lock.withLock {
+            let value = count; count += 1
+            offered = offered || names.isSuperset(of: [TaskCreateGoalTool.name, TaskReadGoalTool.name])
+            return value
+        }
+    }
+    func lateCompletion() { lock.withLock { late += 1 } }
+}
+
+private actor GoalLaunchPreflightGate {
+    private var entered = false
+    private var observers: [CheckedContinuation<Void, Never>] = []
+    private var blocked: CheckedContinuation<Void, Never>?
+    func hold() async {
+        entered = true
+        for observer in observers { observer.resume() }
+        observers.removeAll()
+        await withCheckedContinuation { blocked = $0 }
+    }
+    func waitForEntry() async {
+        if entered { return }
+        await withCheckedContinuation { observers.append($0) }
+    }
+    func release() { blocked?.resume(); blocked = nil }
+}
+
+/// Only provider transport is synthetic; dispatch, registry, SQL, RunService
+/// and center control methods above are their production implementations.
+private struct GoalLifecycleProvider: ProviderAdapter {
+    let state: GoalLifecycleProviderState
+    let createArguments: Data?
+    var protocolKind: ModelProtocol { .openAIChatCompletions }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+        let index = state.next(Set(request.toolSchemas.map(\.name)))
+        return AsyncThrowingStream { continuation in
+            if let createArguments {
+                if index == 0 {
+                    do {
+                        continuation.yield(.toolRequest(try ToolCall(id: "model-native-goal", toolName: TaskCreateGoalTool.name,
+                            argumentsJSON: createArguments, scope: .local)))
+                    } catch { continuation.finish(throwing: error); return }
+                } else {
+                    continuation.yield(.textDelta(.init(text: "The task goal is recorded in Floe. No external action was performed.")))
+                    continuation.yield(.completed(.init(stopReason: .endTurn)))
+                }
+                continuation.finish()
+            } else {
+                let work = Task {
+                    continuation.yield(.textDelta(.init(text: "Working on the saved task goal.")))
+                    do { try await Task.sleep(for: .seconds(60)) } catch { }
+                    // Deliberately late even after cancellation: the runtime
+                    // and durable revision must refuse resurrection.
+                    state.lateCompletion()
+                    continuation.yield(.completed(.init(stopReason: .endTurn)))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in work.cancel() }
+            }
         }
     }
 }

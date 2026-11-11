@@ -266,7 +266,7 @@ import FloeToolboxUtilities
             }
         }
         .presentationSizing(.form)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
     }
 
     private var durationPicker: some View {

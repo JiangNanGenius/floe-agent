@@ -179,7 +179,7 @@ struct ThreadDetailView: View {
                 if let checklist = viewModel.taskChecklist {
                     checklistStatus(checklist)
                 }
-                if viewModel.latestPlan != nil || viewModel.activeGoal != nil {
+                if viewModel.latestPlan != nil {
                     intelligenceStatus
                 }
                 Divider()
@@ -229,6 +229,9 @@ struct ThreadDetailView: View {
                 if viewModel.canContinue {
                     continuationBar
                         .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                }
+                if let goal = viewModel.activeGoal {
+                    goalStatusRow(goal)
                 }
                 composer
             }
@@ -403,15 +406,13 @@ struct ThreadDetailView: View {
                 }
             }
             .sheet(isPresented: $showingGoalBuilder) {
-                GoalBuilderSheet { objective, criteria, blockers, stops in
-                    Task {
-                        await viewModel.createGoal(
-                            objective: objective,
-                            criteria: criteria,
-                            blockingConditions: blockers,
-                            stoppingConditions: stops
-                        )
-                    }
+                GoalBuilderSheet(errorMessage: viewModel.actionError) { objective, criteria, blockers, stops in
+                    await viewModel.createGoal(
+                        objective: objective,
+                        criteria: criteria,
+                        blockingConditions: blockers,
+                        stoppingConditions: stops
+                    )
                 }
             }
             .sheet(isPresented: $showingPermissionsSheet) {
@@ -602,28 +603,64 @@ struct ThreadDetailView: View {
                     }
                 }
             }
-            if let goal = viewModel.activeGoal {
-                HStack {
-                    Label("goal.title", systemImage: "target").font(.headline)
-                    Spacer()
-                    Text(goal.status.rawValue).font(.caption).foregroundStyle(.secondary)
-                }
-                Text(goal.objective).font(.subheadline).lineLimit(2)
-                ProgressView(
-                    value: Double(goal.steps.filter { $0.status == .completed }.count),
-                    total: Double(max(1, goal.steps.count))
-                )
-                if goal.status == .verifying {
-                    Button("goal.confirm_complete") {
-                        Task { await viewModel.confirmGoalCompletion() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
         }
         .padding(12)
         .background(FloeTheme.groupedSurface)
         .accessibilityElement(children: .contain)
+    }
+
+    private func goalStatusRow(_ goal: ConversationGoal) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Label("goal.title", systemImage: "target").font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Text(viewModel.goalStatusTitle(goal.status))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("thread.goal.status")
+                    }
+                    Text(goal.objective).font(.subheadline).lineLimit(2)
+                }
+                Group {
+                    if viewModel.isChangingGoal {
+                        ProgressView().controlSize(.small).accessibilityLabel("goal.updating")
+                    } else if viewModel.canPauseGoal {
+                        Button("goal.pause", systemImage: "pause.fill") {
+                            Task { await viewModel.pauseActiveGoal() }
+                        }
+                        .accessibilityIdentifier("thread.goal.pause")
+                    } else if viewModel.canResumeGoal {
+                        Button("goal.resume", systemImage: "play.fill") {
+                            Task { await viewModel.resumeActiveGoal() }
+                        }
+                        .accessibilityIdentifier("thread.goal.resume")
+                    }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .frame(minWidth: 44, minHeight: 44)
+            }
+            ProgressView(value: Double(goal.steps.filter { $0.status == .completed }.count),
+                         total: Double(max(1, goal.steps.count)))
+                .accessibilityLabel("goal.progress")
+            if let reason = viewModel.goalBlockedReason(goal) {
+                Text(reason).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("thread.goal.blockedReason")
+            }
+            if goal.status == .verifying {
+                Button("goal.confirm_complete") {
+                    Task { await viewModel.confirmGoalCompletion() }
+                }
+                .disabled(viewModel.isChangingGoal)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(FloeTheme.groupedSurface)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("thread.goal")
     }
 
     // MARK: - Thread content
@@ -893,7 +930,7 @@ struct ThreadDetailView: View {
                 event: event,
                 isLive: viewModel.isRunning,
                 hasError: viewModel.events.contains { $0.kind == .error },
-                onRetry: viewModel.selectedRun.map {
+                onRetry: viewModel.canContinue && viewModel.selectedRun.map {
                     $0.state == "failed" || $0.state == "interrupted"
                 } == true
                     ? { Task { await viewModel.retry() } }
@@ -1893,7 +1930,10 @@ private struct GoalBuilderSheet: View {
     @State private var criteria = ""
     @State private var blockers = ""
     @State private var stops = ""
-    let onCreate: (String, [String], [String], [String]) -> Void
+    @State private var isSubmitting = false
+    @State private var hasSubmitted = false
+    let errorMessage: String?
+    let onCreate: @MainActor (String, [String], [String], [String]) async -> Bool
 
     var body: some View {
         NavigationStack {
@@ -1910,21 +1950,34 @@ private struct GoalBuilderSheet: View {
                 Section("chat.thread_detail_view.stop_conditions_one_per_line") {
                     TextEditor(text: $stops).frame(minHeight: 80)
                 }
+                if hasSubmitted, let errorMessage {
+                    Text(errorMessage).font(.callout).foregroundStyle(.red)
+                        .accessibilityIdentifier("goal.builder.error")
+                }
             }
+            .disabled(isSubmitting)
             .navigationTitle("chat.thread_detail_view.set_goal")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("workspace.workspace_canvas_view.cancel") { dismiss() }
+                        .disabled(isSubmitting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("chat.thread_detail_view.create_and_start") {
-                        onCreate(objective, lines(criteria), lines(blockers), lines(stops))
-                        dismiss()
+                        isSubmitting = true
+                        hasSubmitted = true
+                        Task {
+                            let created = await onCreate(objective, lines(criteria), lines(blockers), lines(stops))
+                            isSubmitting = false
+                            if created { dismiss() }
+                        }
                     }
-                    .disabled(objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isSubmitting || objective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("goal.builder.create")
                 }
             }
         }
+        .interactiveDismissDisabled(isSubmitting)
     }
 
     private func lines(_ value: String) -> [String] {

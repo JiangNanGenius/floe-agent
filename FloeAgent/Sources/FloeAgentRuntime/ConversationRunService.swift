@@ -711,7 +711,8 @@ public actor ConversationRunService {
         resumption: RuntimeSteerInput? = nil
     ) async throws {
         logger.info("Run \(runID.uuidString) resuming from checkpoint")
-        if conversationMode == .goal {
+        let attachedGoalID = try await runStore.run(id: runID)?.goalID
+        if conversationMode == .goal || checkpoint.goalID != nil || attachedGoalID != nil {
             guard await restoreGoalReservation(checkpointGoalID: checkpoint.goalID) else {
                 throw FloeError.validationFailed(
                     durabilityFailure ?? "Unable to restore the durable goal reservation"
@@ -1444,6 +1445,12 @@ public actor ConversationRunService {
             )
             let durationMs = timing.durationMs
             let finishedToolName = toolNames.removeValue(forKey: result.callID) ?? ""
+            if finishedToolName == TaskCreateGoalTool.name, result.status == .ok,
+               !temporaryReadOnly, conversationMode != .plan {
+                // Read native durable ownership, never a model/tool-output
+                // goalID. The executing run and its budgets stay unchanged.
+                await adoptModelCreatedGoal()
+            }
             logger.info("toolFinished run=\(runID.uuidString) tool=\(finishedToolName) status=\(result.status.rawValue) durationMs=\(durationMs) queuedMs=\(timing.queuedMs ?? -1) dispatched=\(timing.dispatched)")
             var persisted = [
                 "tool": finishedToolName,
@@ -1743,7 +1750,7 @@ public actor ConversationRunService {
                     ? lastCompletedAssistantStepText
                     : streamedText
                 await persistPlanDraft(from: planText)
-            } else if conversationMode == .goal {
+            } else if conversationMode == .goal || goalRunReservation != nil {
                 await moveGoalToVerification()
             }
             providerCompletionBoundaryReached = false
@@ -2156,10 +2163,30 @@ public actor ConversationRunService {
         )))
     }
 
+    private func adoptModelCreatedGoal() async {
+        guard let intelligenceStore, !isTerminal(latestState),
+              let run = try? await runStore.run(id: runID), run.endedAt == nil, run.conversationID == conversationID,
+              let goalID = run.goalID,
+              let goal = try? await intelligenceStore.goal(id: goalID),
+              goal.conversationID == conversationID, goal.status == .active else { return }
+        reserveGoal(goal)
+        eventChannel.yield(.goalChanged(GoalSnapshot(id: goal.id, status: goal.status,
+            completedSteps: goal.steps.filter { $0.status == .completed }.count, totalSteps: goal.steps.count)))
+    }
+
     private func ensureDurableGoal(objective: String) async -> Bool {
         guard let intelligenceStore else { return true }
-        if let existing = try? await intelligenceStore.goals(conversationID: conversationID),
-           let active = existing.first(where: { !$0.status.isTerminal }) {
+        let existing: [ConversationGoal]
+        do { existing = try await intelligenceStore.goals(conversationID: conversationID) }
+        catch {
+            durabilityFailure = "The task's existing goal could not be read; no replacement was created."
+            return false
+        }
+        if let active = existing.first(where: { !$0.status.isTerminal }) {
+            guard active.status == .active else {
+                durabilityFailure = "The goal needs explicit user resume before another cycle can start."
+                return false
+            }
             guard await assignGoalReliably(active.id) else { return false }
             reserveGoal(active)
             return true
@@ -2206,8 +2233,12 @@ public actor ConversationRunService {
             logger.error("goalReservationRunMismatch run=\(runID.uuidString) goal=\(reservation.goalID.uuidString)")
             return
         }
-        guard var goal = try? await intelligenceStore.goal(id: reservation.goalID),
-              !goal.status.isTerminal,
+        guard var goal = try? await intelligenceStore.goal(id: reservation.goalID) else {
+            durabilityFailure = "The reserved Goal could not be read."
+            return
+        }
+        if goal.status == .paused || goal.status == .blocked || goal.status.isTerminal { return }
+        guard
               (goal.revision ?? 1) == reservation.expectedRevision,
               goal.progress.cycleCount + 1 == reservation.round else {
             durabilityFailure = "The Goal changed before this run could publish its progress."
@@ -2282,6 +2313,9 @@ public actor ConversationRunService {
                         expectedRevision: expectedRevision
                     )
                     guard saved else {
+                        if let latest = try await intelligenceStore.goal(id: goal.id), latest.status == .paused {
+                            return false // Explicit pause owns the newer revision.
+                        }
                         durabilityFailure = "Goal changed while this run was finishing; the stale run was not allowed to overwrite it."
                         logger.warning("durableGoalRevisionConflict run=\(runID.uuidString) goal=\(goal.id.uuidString)")
                         return false
@@ -2345,7 +2379,7 @@ public actor ConversationRunService {
         }
         do {
             guard let goal = try await intelligenceStore.goal(id: goalID),
-                  !goal.status.isTerminal else {
+                  goal.status == .active else {
                 durabilityFailure = "The checkpoint's Goal is no longer active."
                 return false
             }

@@ -3,6 +3,7 @@ import GRDB
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeTools
 
 public enum MemoryEntryStatus: String, Sendable, Codable, Hashable {
     case pending, active, rejected, superseded
@@ -271,6 +272,10 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func saveGoal(_ goal: ConversationGoal) async throws {
+        try await database.writer { db in try Self.writeGoal(goal, in: db) }
+    }
+
+    private static func writeGoal(_ goal: ConversationGoal, in db: Database) throws {
         let criteria = try Self.json(goal.acceptanceCriteria)
         let steps = try Self.json(goal.steps)
         let evidence = try Self.json(goal.evidence)
@@ -278,50 +283,131 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         let progress = try Self.json(goal.progress)
         let blockingConditions = try Self.json(goal.blockingConditions ?? [])
         let stoppingConditions = try Self.json(goal.stoppingConditions ?? [])
-        try await database.writer { db in
+        try db.execute(sql: """
+            INSERT INTO conversation_goals (
+                id, conversation_id, source_plan_id, source_plan_digest, objective,
+                status, criteria_json, steps_json, evidence_json, budgets_json,
+                progress_json, blocking_fingerprint, consecutive_blocked_cycles,
+                blocking_conditions_json, stopping_conditions_json, revision,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                objective=excluded.objective, status=excluded.status,
+                criteria_json=excluded.criteria_json, steps_json=excluded.steps_json,
+                evidence_json=excluded.evidence_json, budgets_json=excluded.budgets_json,
+                progress_json=excluded.progress_json,
+                blocking_fingerprint=excluded.blocking_fingerprint,
+                consecutive_blocked_cycles=excluded.consecutive_blocked_cycles,
+                blocking_conditions_json=excluded.blocking_conditions_json,
+                stopping_conditions_json=excluded.stopping_conditions_json,
+                revision=excluded.revision,
+                updated_at=excluded.updated_at
+            """, arguments: [
+                goal.id.uuidString, goal.conversationID.uuidString, goal.sourcePlanID?.uuidString,
+                goal.sourcePlanDigest, goal.objective, goal.status.rawValue, criteria, steps,
+                evidence, budgets, progress, goal.progress.repeatedBlockerKey,
+                goal.progress.repeatedBlockerCount, blockingConditions, stoppingConditions,
+                goal.revision ?? 1, Self.date(goal.createdAt), Self.date(goal.updatedAt)
+            ])
+        try db.execute(sql: "DELETE FROM goal_criteria WHERE goal_id = ?", arguments: [goal.id.uuidString])
+        for (index, criterion) in goal.acceptanceCriteria.enumerated() {
             try db.execute(sql: """
-                INSERT INTO conversation_goals (
-                    id, conversation_id, source_plan_id, source_plan_digest, objective,
-                    status, criteria_json, steps_json, evidence_json, budgets_json,
-                    progress_json, blocking_fingerprint, consecutive_blocked_cycles,
-                    blocking_conditions_json, stopping_conditions_json, revision,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    objective=excluded.objective, status=excluded.status,
-                    criteria_json=excluded.criteria_json, steps_json=excluded.steps_json,
-                    evidence_json=excluded.evidence_json, budgets_json=excluded.budgets_json,
-                    progress_json=excluded.progress_json,
-                    blocking_fingerprint=excluded.blocking_fingerprint,
-                    consecutive_blocked_cycles=excluded.consecutive_blocked_cycles,
-                    blocking_conditions_json=excluded.blocking_conditions_json,
-                    stopping_conditions_json=excluded.stopping_conditions_json,
-                    revision=excluded.revision,
-                    updated_at=excluded.updated_at
-                """, arguments: [
-                    goal.id.uuidString, goal.conversationID.uuidString, goal.sourcePlanID?.uuidString,
-                    goal.sourcePlanDigest, goal.objective, goal.status.rawValue, criteria, steps,
-                    evidence, budgets, progress, goal.progress.repeatedBlockerKey,
-                    goal.progress.repeatedBlockerCount, blockingConditions, stoppingConditions,
-                    goal.revision ?? 1, Self.date(goal.createdAt), Self.date(goal.updatedAt)
-                ])
-            try db.execute(sql: "DELETE FROM goal_criteria WHERE goal_id = ?", arguments: [goal.id.uuidString])
-            for (index, criterion) in goal.acceptanceCriteria.enumerated() {
-                try db.execute(sql: """
-                    INSERT INTO goal_criteria (id, goal_id, criterion_index, text, status, evidence_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, arguments: [criterion.id.uuidString, goal.id.uuidString, index,
-                        criterion.text, criterion.isSatisfied ? "satisfied" : "pending",
-                        try Self.json(criterion.evidenceIDs), Self.date(goal.updatedAt)])
+                INSERT INTO goal_criteria (id, goal_id, criterion_index, text, status, evidence_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [criterion.id.uuidString, goal.id.uuidString, index,
+                    criterion.text, criterion.isSatisfied ? "satisfied" : "pending",
+                    try Self.json(criterion.evidenceIDs), Self.date(goal.updatedAt)])
+        }
+        try db.execute(sql: "DELETE FROM goal_steps WHERE goal_id = ?", arguments: [goal.id.uuidString])
+        for (index, step) in goal.steps.enumerated() {
+            try db.execute(sql: """
+                INSERT INTO goal_steps (id, goal_id, step_index, title, detail, status, evidence_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [step.id.uuidString, goal.id.uuidString, index, step.title,
+                    step.detail, step.status.rawValue, try Self.json(step.evidenceIDs), Self.date(goal.updatedAt)])
+        }
+    }
+
+    /// The model can refine its current task, never supply another task ID,
+    /// change permissions/budgets, or replace unfinished user work. Creation
+    /// and assignment to this exact executing run share one SQL transaction.
+    public func createGoalForCurrentRun(_ input: TaskGoalCreateArguments, runID: UUID,
+        conversationID: UUID, callID: String, budgets: GoalBudgets, cancellation: CancellationToken) async throws -> ConversationGoal {
+        try input.validate(); try cancellation.throwIfCancelled()
+        let goalID = TaskGoalCreateArguments.identity("goal:\(runID):\(callID)")
+        return try await database.writer { db in
+            try cancellation.throwIfCancelled()
+            guard !callID.isEmpty,
+                  let run = try Row.fetchOne(db, sql: """
+                    SELECT r.* FROM runs r WHERE r.id=? AND r.conversation_id=?
+                    AND r.state NOT IN ('completed','failed','cancelled','canceled','aborted')
+                    AND NOT EXISTS (
+                        SELECT 1 FROM runs newer WHERE newer.conversation_id=r.conversation_id
+                        AND (newer.started_at>r.started_at OR (newer.started_at=r.started_at AND newer.id>r.id))
+                    )
+                    """,
+                    arguments: [runID.uuidString, conversationID.uuidString]),
+                  (run["ended_at"] as String?) == nil,
+                  (run["conversation_mode"] as String?) != "plan",
+                  let conversation = try Row.fetchOne(db, sql: "SELECT purpose FROM conversations WHERE id=?",
+                    arguments: [conversationID.uuidString]),
+                  (conversation["purpose"] as String?) != "temporary" else { throw TaskGoalError.staleRun }
+            let task = (run["goal"] as String).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !task.isEmpty, task.utf8.count <= 128_000 else { throw TaskGoalError.invalidArguments }
+            let criteria = input.acceptanceCriteria.enumerated().map {
+                GoalCriterion(id: TaskGoalCreateArguments.identity("\(goalID):criterion:\($0.offset)"),
+                    text: $0.element.trimmingCharacters(in: .whitespacesAndNewlines))
             }
-            try db.execute(sql: "DELETE FROM goal_steps WHERE goal_id = ?", arguments: [goal.id.uuidString])
-            for (index, step) in goal.steps.enumerated() {
-                try db.execute(sql: """
-                    INSERT INTO goal_steps (id, goal_id, step_index, title, detail, status, evidence_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, arguments: [step.id.uuidString, goal.id.uuidString, index, step.title,
-                        step.detail, step.status.rawValue, try Self.json(step.evidenceIDs), Self.date(goal.updatedAt)])
+            let steps = input.steps.enumerated().map {
+                GoalStep(id: TaskGoalCreateArguments.identity("\(goalID):step:\($0.offset)"),
+                    title: $0.element.trimmingCharacters(in: .whitespacesAndNewlines),
+                    detail: $0.offset == 0 ? input.objective.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                    status: $0.offset == 0 ? .inProgress : .pending, order: $0.offset)
             }
+            if let existing = try Row.fetchOne(db, sql: "SELECT * FROM conversation_goals WHERE id=?",
+                arguments: [goalID.uuidString]) {
+                let saved = try Self.goal(existing)
+                guard (run["goal_id"] as String?) == goalID.uuidString,
+                      saved.conversationID == conversationID, saved.objective == task,
+                      saved.acceptanceCriteria.map(\.text) == criteria.map(\.text),
+                      saved.steps.map(\.title) == steps.map(\.title),
+                      saved.steps.map(\.detail) == steps.map(\.detail) else { throw TaskGoalError.identityReused }
+                return saved // Exact call replay retains progress and evidence.
+            }
+            guard (run["goal_id"] as String?) == nil else { throw TaskGoalError.staleRun }
+            let unfinished = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM conversation_goals WHERE conversation_id=?
+                AND status NOT IN ('completed','cancelled','failed')
+                """, arguments: [conversationID.uuidString]) ?? 0
+            guard unfinished == 0 else { throw TaskGoalError.activeGoalExists }
+            let goal = ConversationGoal(id: goalID, conversationID: conversationID,
+                objective: task, acceptanceCriteria: criteria, steps: steps, status: .active,
+                budgets: budgets, progress: .init(startedAt: Date()))
+            try Self.writeGoal(goal, in: db)
+            try cancellation.throwIfCancelled()
+            try db.execute(sql: """
+                UPDATE runs SET goal_id=? WHERE id=? AND conversation_id=? AND goal_id IS NULL AND ended_at IS NULL
+                AND state NOT IN ('completed','failed','cancelled','canceled','aborted')
+                """, arguments: [goalID.uuidString, runID.uuidString, conversationID.uuidString])
+            guard db.changesCount == 1 else { throw TaskGoalError.staleRun }
+            return goal
+        }
+    }
+
+    public func goalForCurrentRun(runID: UUID, conversationID: UUID) async throws -> ConversationGoal? {
+        try await database.reader { db in
+            guard let run = try Row.fetchOne(db, sql: "SELECT goal_id,ended_at FROM runs WHERE id=? AND conversation_id=?",
+                arguments: [runID.uuidString, conversationID.uuidString]), (run["ended_at"] as String?) == nil else {
+                throw TaskGoalError.staleRun
+            }
+            if let id = run["goal_id"] as String? {
+                guard let row = try Row.fetchOne(db, sql: "SELECT * FROM conversation_goals WHERE id=? AND conversation_id=?",
+                    arguments: [id, conversationID.uuidString]) else { throw TaskGoalError.staleRun }
+                return try Self.goal(row)
+            }
+            return try Row.fetchOne(db, sql: """
+                SELECT * FROM conversation_goals WHERE conversation_id=? ORDER BY updated_at DESC LIMIT 1
+                """, arguments: [conversationID.uuidString]).map(Self.goal)
         }
     }
 

@@ -2421,7 +2421,7 @@ final class AppEnvironment: ObservableObject {
         Task { await contentUpdateCenter.checkAutomaticallyIfDue() }
         // Durable memory.
         registerAgentWaitTool()
-        registerTaskChecklistTools(store: TaskChecklistStore(database: database))
+        registerTaskChecklistTools(store: TaskChecklistStore(database: database), goalStore: intelligenceStore)
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID
         }

@@ -94,6 +94,10 @@ struct ChemistryDeletionLifecycleTests {
         for original in originals {
             #expect(try Data(contentsOf: original.directory.appendingPathComponent("FloeProject.json")) == original.metadata)
             #expect(try read(original.attemptID, root: original.directory).state == .cancelled)
+            do {
+                _ = try await library.resolve(original.record.id)
+                Issue.record("Ordinary active-only access opened a trashed original")
+            } catch PersonalContentError.deleted { }
             let bindings = await environment.studioCoordinator.assistantBindings()
             #expect(bindings.contains { $0.projectID == original.record.id && $0.conversationID == original.assistantID })
         }
@@ -110,7 +114,8 @@ struct ChemistryDeletionLifecycleTests {
         let trash = try await library.recentlyDeleted().filter { $0.projectID.map(selectedIDs.contains) == true }
         let plans = try await PersonalLibraryFileActions.permanentDeletionPlans(trash, environment: environment, library: library)
         let purged = await PersonalLibraryFileActions.permanentlyDeleteBatch(plans, environment: environment, library: library)
-        #expect(purged.failed.isEmpty && purged.deleted.count == 3)
+        #expect(purged.failed.isEmpty && purged.deleted.count == 3,
+            "Real Files permanent-deletion failures: \(purged.failed.map { $0.code + ": " + $0.message })")
         for original in originals {
             let foreignConversation = try await environment.conversationStore.conversation(id: original.oldTaskID)
             #expect(foreignConversation != nil, "An expired calculation never grants ownership of its task")

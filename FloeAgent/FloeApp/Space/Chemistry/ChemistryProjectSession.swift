@@ -28,6 +28,56 @@ enum ChemistryHostFactory {
     }
 }
 
+/// A native purge may inspect only the already-confirmed, still-fenced
+/// original. It never changes the library's active-only resolver or a model's
+/// grants, and an inherited callback loses this authority when the scope ends.
+@MainActor private final class ChemistryLibraryPurgeAccess {
+    let record: PersonalContentRecord
+    let directory: URL
+    let library: PersonalContentLibrary
+    let plan: PersonalPermanentDeletePlan
+    private var directoryIdentity: String?
+    private var valid = true
+    init(record: PersonalContentRecord, directory: URL, library: PersonalContentLibrary, plan: PersonalPermanentDeletePlan) {
+        self.record = record; self.directory = directory; self.library = library; self.plan = plan
+    }
+    func invalidate() { valid = false }
+    func prepare() async throws {
+        try PersonalLibraryFileActions.requireHeldFileAction(record.id)
+        guard plan.requiresPreparation, plan.members.contains(record) else { throw PersonalFileActionError.changed }
+        let fresh = try await library.permanentDeletionProposals([plan.entry])
+        guard fresh.count == 1, try fresh[0].includingBiology(plan.biologySources) == plan else {
+            throw PersonalFileActionError.changed
+        }
+        let root = await library.root
+        directoryIdentity = try PersonalLibraryPurgeIO.resourceIdentity(root: root, path: record.relativePath)
+        _ = try await resolve()
+    }
+    func resolve() async throws -> (record: PersonalContentRecord, url: URL) {
+        try PersonalLibraryFileActions.requireHeldFileAction(record.id)
+        guard valid, let directoryIdentity else { throw PersonalFileActionError.changed }
+        let entries = try await library.recentlyDeleted()
+        guard entries.contains(plan.entry),
+              let current = try await library.records(includingDeleted: true).first(where: { $0.id == record.id }),
+              current.kind == .chemistry, current.deletedAt != nil,
+              current.relativePath == record.relativePath, current.modifiedAt == record.modifiedAt else {
+            throw PersonalFileActionError.changed
+        }
+        let root = await library.root
+        let url = try await library.confined(root.appendingPathComponent(current.relativePath, isDirectory: true))
+        guard valid, ChemistryWorkerFiles.canonical(url).path == ChemistryWorkerFiles.canonical(directory).path,
+              try PersonalLibraryPurgeIO.resourceIdentity(root: root, path: current.relativePath) == directoryIdentity else {
+            throw PersonalFileActionError.changed
+        }
+        try PersonalLibraryFileActions.requireHeldFileAction(record.id)
+        return (current, url)
+    }
+}
+
+private enum ChemistryLibraryPurgeScope {
+    @TaskLocal static var access: ChemistryLibraryPurgeAccess?
+}
+
 /// A single service owns the calculation tasks for this original. Opening
 /// Notes or an assistant must not construct a second service and mislabel
 /// this service's live calculations as interrupted.
@@ -61,9 +111,31 @@ enum ChemistryHostFactory {
     }
     /// Called only after the file-action barrier has excluded editors/tools.
     /// The existing job reconciler examines persisted workers before tombstoning.
-    static func prepareForLibraryDeletion(id: UUID, directory: URL, environment: AppEnvironment) async throws {
-        _ = try await openVerified(id: id, directory: directory, environment: environment, additionalBackends: [])
-        try await prepareForDeletion(id: id)
+    static func prepareForLibraryDeletion(record: PersonalContentRecord, directory: URL, environment: AppEnvironment,
+        permanentPlan: PersonalPermanentDeletePlan? = nil) async throws {
+        if let permanentPlan {
+            let access = ChemistryLibraryPurgeAccess(record: record, directory: directory,
+                library: try await PersonalContentService.shared.library(), plan: permanentPlan)
+            defer { access.invalidate() }
+            try await access.prepare()
+            try await ChemistryLibraryPurgeScope.$access.withValue(access) {
+                _ = try await openVerified(id: record.id, directory: directory, environment: environment, additionalBackends: [])
+                try await prepareForDeletion(id: record.id)
+            }
+        } else {
+            _ = try await openVerified(id: record.id, directory: directory, environment: environment, additionalBackends: [])
+            try await prepareForDeletion(id: record.id)
+        }
+    }
+    static func resolveLibraryOriginal(id: UUID, directory: URL) async throws -> (record: PersonalContentRecord, url: URL) {
+        if let access = ChemistryLibraryPurgeScope.access {
+            guard access.record.id == id,
+                  ChemistryWorkerFiles.canonical(access.directory).path == ChemistryWorkerFiles.canonical(directory).path else {
+                throw PersonalContentError.changedDocument
+            }
+            return try await access.resolve()
+        }
+        return try await PersonalContentService.shared.library().resolve(id)
     }
     private static func openVerified(id: UUID, directory: URL, environment: AppEnvironment,
                                      additionalBackends: [any ChemistryBackend]) async throws -> ChemistryProjectSession {
@@ -79,7 +151,7 @@ enum ChemistryHostFactory {
             return value
         }
         let pending = Task { @MainActor in
-            let location = try await PersonalContentService.shared.library().resolve(id)
+            let location = try await resolveLibraryOriginal(id: id, directory: directory)
             guard location.record.kind == .chemistry, location.url.standardizedFileURL == directory.standardizedFileURL else {
                 throw PersonalContentError.changedDocument
             }
@@ -93,7 +165,7 @@ enum ChemistryHostFactory {
                 guard access.projectID == id, access.action != .create else {
                     throw ChemistryError.unavailable("This service is bound to one existing personal chemistry original.")
                 }
-                let current = try await PersonalContentService.shared.library().resolve(id)
+                let current = try await resolveLibraryOriginal(id: id, directory: directory)
                 guard current.record.kind == .chemistry, current.url.standardizedFileURL == directory.standardizedFileURL else {
                     throw PersonalContentError.changedDocument
                 }

@@ -205,6 +205,11 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var latestPlan: PlanDraft?
     @Published private(set) var taskChecklist: TaskChecklist?
     @Published private(set) var activeGoal: ConversationGoal?
+    @Published private(set) var isChangingGoal = false
+    /// One setup attempt keeps its identity even if persistence succeeds but
+    /// launching fails. Retrying the same form must not create another goal.
+    private var pendingGoalSetupID: UUID?
+    private var pendingGoalSetupModeSelection: Int?
     @Published private(set) var taskTitle: String = ""
     @Published private(set) var taskPolicy: TaskPolicy
     @Published private(set) var pendingInputs: [PendingUserInput] = []
@@ -518,6 +523,9 @@ final class ThreadDetailViewModel: ObservableObject {
 
     var canContinue: Bool {
         guard !isRunning, let state = selectedRun?.state else { return false }
+        // A persistent goal resumes through its revision-checked control,
+        // never through the generic failed/interrupted-run retry action.
+        guard activeGoal?.status.isTerminal != false else { return false }
         // A run parked on required background work is NOT finished: Continue
         // must not resume it without the dependency (a user message still
         // steers/resumes it intentionally). It becomes continuable again if
@@ -1257,6 +1265,7 @@ final class ThreadDetailViewModel: ObservableObject {
         // (TemporaryChatToolPolicy + descriptor projection) is the authority
         // that decides what the model may call.
         let executionMode = effectiveAgentMode
+        let modeSelectionAtSend = modeSelectionGeneration
         guard !isConversationMissing, !goal.isEmpty,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
         let projectIDAtSend = selectedProjectID
@@ -1363,6 +1372,9 @@ final class ThreadDetailViewModel: ObservableObject {
             // draft before awaiting the provider, so leaving and returning
             // while it runs cannot restore an already-sent prompt.
             launchAccepted = true
+            if executionMode == .goal {
+                finishGoalComposerSetup(selection: modeSelectionAtSend)
+            }
             if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
                 commit.acceptLaunch()
                 draft = commit.draftAfterSuccess(currentDraft: draft, currentGeneration: draftGeneration)
@@ -1445,6 +1457,21 @@ final class ThreadDetailViewModel: ObservableObject {
                 self.actionError = FloeL10n.l("chat.thread_detail_view_model.mode_change_not_saved")
             }
         }
+    }
+
+    private func finishGoalComposerSetup(selection: Int) {
+        // Only the input's selection changes. The accepted run keeps .goal,
+        // and a newer explicit choice made during launch always wins.
+        guard selection == modeSelectionGeneration else { return }
+        selectAgentMode(.agent)
+    }
+
+    private func finishPendingGoalSetup(goalID: UUID) {
+        guard pendingGoalSetupID == goalID else { return }
+        let selection = pendingGoalSetupModeSelection
+        pendingGoalSetupID = nil
+        pendingGoalSetupModeSelection = nil
+        if let selection { finishGoalComposerSetup(selection: selection) }
     }
 
     // MARK: - Temporary chat actions
@@ -2060,7 +2087,7 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Resumes the selected durable run without duplicating its user message.
     func retry() async {
-        guard let runID = selectedRun?.id else { return }
+        guard canContinue, let runID = selectedRun?.id else { return }
         actionError = nil
         do {
             let started = try await center.retry(
@@ -2124,6 +2151,7 @@ final class ThreadDetailViewModel: ObservableObject {
         isAcceptingPlan = true
         defer { isAcceptingPlan = false }
         let selectedExecution = execution ?? latestPlan.executionRecommendation ?? .normal
+        let modeSelectionAtStart = modeSelectionGeneration
         let accepted = latestPlan.revised(
             status: .accepted,
             assumptions: latestPlan.assumptions.map {
@@ -2166,31 +2194,40 @@ final class ThreadDetailViewModel: ObservableObject {
                 executionMode: selectedExecution == .goal ? .goal : .agent,
                 startOrigin: .explicitUserAction
             )
+            if selectedExecution == .goal {
+                finishGoalComposerSetup(selection: modeSelectionAtStart)
+            }
             locallyStoppedRunIDs.remove(started.runID)
             selectedRunID = started.runID
             await load()
         } catch { actionError = error.localizedDescription }
     }
 
+    @discardableResult
     func createGoal(
         objective: String,
         criteria: [String],
         blockingConditions: [String],
         stoppingConditions: [String]
-    ) async {
+    ) async -> Bool {
         let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanObjective.isEmpty else { return }
-        guard !isRunning,
+        guard !cleanObjective.isEmpty else { return false }
+        guard !isRunning, !isChangingGoal,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
-            return
+            return false
         }
+        isChangingGoal = true
+        actionError = nil
+        defer { isChangingGoal = false }
+        let modeSelectionAtStart = modeSelectionGeneration
         let cleanCriteria = criteria.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let goalCriteria = cleanCriteria.isEmpty
             ? [FloeL10n.l("chat.thread_detail_view_model.the_goal_was_verified_with_inspectable")]
             : cleanCriteria
-        let goal = ConversationGoal(
+        var goal = ConversationGoal(
+            id: pendingGoalSetupID ?? UUID(),
             conversationID: conversationID,
             objective: cleanObjective,
             blockingConditions: blockingConditions.filter { !$0.isEmpty },
@@ -2200,8 +2237,22 @@ final class ThreadDetailViewModel: ObservableObject {
             status: .active,
             progress: GoalProgress(startedAt: Date())
         )
+        if pendingGoalSetupID == nil { pendingGoalSetupModeSelection = modeSelectionAtStart }
+        pendingGoalSetupID = goal.id
         do {
-            try await center.environment.intelligenceStore.saveGoal(goal)
+            if let saved = try await center.environment.intelligenceStore.goal(id: goal.id) {
+                guard saved.conversationID == conversationID, saved.status == .active,
+                      saved.objective == goal.objective,
+                      saved.acceptanceCriteria.map(\.text) == goal.acceptanceCriteria.map(\.text),
+                      saved.blockingConditions == goal.blockingConditions,
+                      saved.stoppingConditions == goal.stoppingConditions else {
+                    actionError = FloeL10n.l("goal.saved_setup_resume")
+                    return false
+                }
+                goal = saved // Preserve its revision, progress and evidence.
+            } else {
+                try await center.environment.intelligenceStore.saveGoal(goal)
+            }
             activeGoal = goal
             let blockers = blockingConditions.filter { !$0.isEmpty }.map { "- \($0)" }.joined(separator: "\n")
             let stops = stoppingConditions.filter { !$0.isEmpty }.map { "- \($0)" }.joined(separator: "\n")
@@ -2214,11 +2265,78 @@ final class ThreadDetailViewModel: ObservableObject {
                 executionMode: .goal,
                 startOrigin: .explicitUserAction
             )
+            finishPendingGoalSetup(goalID: goal.id)
+            locallyStoppedRunIDs.remove(started.runID)
+            selectedRunID = started.runID
+            await load()
+            return true
+        } catch {
+            actionError = FloeL10n.l("goal.create_failed_preserved")
+            return false
+        }
+    }
+
+    var canPauseGoal: Bool {
+        guard !isChangingGoal, let goal = activeGoal else { return false }
+        return [GoalStatus.active, .waitingApproval, .waitingUser, .verifying].contains(goal.status)
+            && (goal.status != .active || isRunning || center.hasLiveOwner(runID: selectedRun?.id))
+    }
+
+    var canResumeGoal: Bool {
+        guard !isChangingGoal, let goal = activeGoal,
+              !center.hasLiveOwner(runID: selectedRun?.id) else { return false }
+        if [GoalStatus.paused, .blocked, .interrupted, .waitingUser].contains(goal.status) { return true }
+        return goal.status == .active && !isRunning && !center.hasLiveOwner(runID: selectedRun?.id)
+    }
+
+    func goalStatusTitle(_ status: GoalStatus) -> String {
+        FloeL10n.l("goal.status.\(status.rawValue)")
+    }
+
+    func goalBlockedReason(_ goal: ConversationGoal) -> String? {
+        center.goalBlockedReason(goal)
+    }
+
+    func pauseActiveGoal() async {
+        guard canPauseGoal, let goal = activeGoal else { return }
+        isChangingGoal = true
+        actionError = nil
+        defer { isChangingGoal = false }
+        do {
+            let updated = try await center.pauseGoal(conversationID: conversationID,
+                expectedGoalID: goal.id, expectedRevision: goal.revision ?? 1)
+            guard activeGoal?.id == goal.id else { return }
+            activeGoal = updated
+            await load()
+        } catch {
+            let message = error.localizedDescription
+            await load()
+            actionError = message
+        }
+    }
+
+    func resumeActiveGoal() async {
+        guard canResumeGoal, let goal = activeGoal else { return }
+        guard let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
+            actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
+            return
+        }
+        isChangingGoal = true
+        actionError = nil
+        defer { isChangingGoal = false }
+        do {
+            let started = try await center.resumeGoal(conversationID: conversationID,
+                expectedGoalID: goal.id, expectedRevision: goal.revision ?? 1,
+                provider: provider, model: model, workspaceID: selectedProjectID)
+            guard activeGoal?.id == goal.id else { return }
+            finishPendingGoalSetup(goalID: goal.id)
             locallyStoppedRunIDs.remove(started.runID)
             selectedRunID = started.runID
             await load()
         } catch {
-            actionError = error.localizedDescription
+            let message = error.localizedDescription
+            await load()
+            actionError = message
         }
     }
 

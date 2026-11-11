@@ -613,6 +613,9 @@ public actor FloeAgentRuntime {
         /// unbounded value and are governed by progress fingerprints instead;
         /// tests and constrained deployments can still provide a finite cap.
         public var maxToolSteps: Int
+        /// Native goal-cycle caps, intersected with the ordinary runtime
+        /// limits. Nil leaves ordinary/current-run budgets unchanged.
+        public var goalBudgets: GoalBudgets?
         /// When enabled, a completed answer gets one tool-free self-critique
         /// pass (verifying) before the run terminates, letting the model
         /// correct omissions or tighten its final reply.
@@ -760,6 +763,7 @@ public actor FloeAgentRuntime {
             toolsEnabled: Bool = true,
             pauseTimeout: TimeInterval = 300,
             maxToolSteps: Int = Int.max / 4,
+            goalBudgets: GoalBudgets? = nil,
             verifyFinalAnswer: Bool = false,
             forceInitialCompaction: Bool = false,
             maxProviderRetries: Int = 5,
@@ -806,6 +810,7 @@ public actor FloeAgentRuntime {
             self.toolsEnabled = toolsEnabled
             self.pauseTimeout = pauseTimeout
             self.maxToolSteps = maxToolSteps
+            self.goalBudgets = goalBudgets
             self.verifyFinalAnswer = verifyFinalAnswer
             self.forceInitialCompaction = forceInitialCompaction
             self.maxProviderRetries = max(0, maxProviderRetries)
@@ -1232,10 +1237,10 @@ public actor FloeAgentRuntime {
         self.budgetLedger = HarnessBudgetLedger(
             rootRunID: runID,
             budgets: HarnessBudgets(
-                maxParentIterations: max(1, configuration.maxToolSteps),
-                maxChildIterations: 50,
-                maxTotalIterations: max(1, configuration.maxToolSteps + 200),
-                maxConcurrentChildren: 4
+                maxParentIterations: min(max(1, configuration.maxToolSteps), configuration.goalBudgets?.maxParentIterationsPerCycle ?? Int.max),
+                maxChildIterations: min(50, configuration.goalBudgets?.maxChildIterations ?? 50),
+                maxTotalIterations: min(max(1, configuration.maxToolSteps + 200), configuration.goalBudgets?.maxTotalIterationsPerActivation ?? Int.max),
+                maxConcurrentChildren: min(4, configuration.goalBudgets?.maxConcurrentChildren ?? 4)
             )
         )
     }
@@ -5080,6 +5085,13 @@ public actor FloeAgentRuntime {
         // or a pre-execution cancellation); any executor-thrown error keeps
         // it, because the tool body did start.
         executorCrossedCallIDs.insert(call.id)
+        let nativeBudgets = await budgetLedger.budgets
+        let defaults = GoalBudgets()
+        let goalBudgets: GoalBudgets? = call.toolName == TaskCreateGoalTool.name && childExecution == nil
+            ? .init(maxParentIterationsPerCycle: min(defaults.maxParentIterationsPerCycle, nativeBudgets.maxParentIterations),
+                maxChildIterations: min(defaults.maxChildIterations, nativeBudgets.maxChildIterations),
+                maxTotalIterationsPerActivation: min(defaults.maxTotalIterationsPerActivation, nativeBudgets.maxTotalIterations),
+                maxConcurrentChildren: min(defaults.maxConcurrentChildren, nativeBudgets.maxConcurrentChildren)) : nil
         do {
             result = try await withEnvironmentCoordination(
                 environmentID: effectiveEnvironmentID,
@@ -5090,11 +5102,13 @@ public actor FloeAgentRuntime {
                 if childExecution != nil, !childDispatchIsActive || effectiveCancellation.isCancelled {
                     throw FloeError.cancelled
                 }
-                return try await executor.execute(
-                    call,
-                    expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
-                    context: context
-                )
+                return try await TaskGoalRuntimeBudgetScope.$budgets.withValue(goalBudgets) {
+                    try await executor.execute(
+                        call,
+                        expectedAuthorizationIdentity: grant.scope.toolAuthorizationIdentity,
+                        context: context
+                    )
+                }
             }
         } catch let busy as EnvironmentBusyError {
             // Proven coordination boundary: the executor body never ran.

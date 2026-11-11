@@ -10,6 +10,8 @@ import Testing
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeAgentRuntime
+import FloeProviders
 @testable import FloeApp
 
 @Suite("FloeApp.QueuedInputMode")
@@ -190,5 +192,201 @@ struct QueuedInputModeTests {
             try await fixture.center.demoteSteerToQueued(id: UUID())
         }
     }
+}
+
+@Suite("Goal composer and controls")
+@MainActor
+struct GoalComposerTests {
+    private struct Fixture {
+        let environment: AppEnvironment
+        let center: ConversationCenter
+        let modelID: UUID?
+    }
+
+    private func fixture(configured: Bool = true) async throws -> Fixture {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let center = ConversationCenter(environment: environment)
+        center.localModelDiscoveryOverrideForTesting = {}
+        center.providerAdapterTestOverride = { _, _ in GoalComposerIdleProvider() }
+        guard configured else { return Fixture(environment: environment, center: center, modelID: nil) }
+        let provider = ProviderProfile(kind: .openAI, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://goal-composer.invalid/v1")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "goal-composer",
+            displayName: "Goal composer fixture", limits: .init(contextTokens: 8192, maxOutputTokens: 1024),
+            capabilities: [.text, .tools])
+        try await environment.configurationStore.saveProvider(provider)
+        try await environment.configurationStore.saveModel(model)
+        var preferences = try await environment.configurationStore.preferences()
+        preferences.defaultAgentModelID = model.id
+        try await environment.configurationStore.savePreferences(preferences)
+        await center.reload()
+        return Fixture(environment: environment, center: center, modelID: model.id)
+    }
+
+    @Test("Goal setup resets only the composer; pause/resume preserves the same durable goal")
+    func successfulSetupThenPauseResumeKeepsGoalAndAgentComposer() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Goal composer")
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        view.selectedModelID = f.modelID
+        await view.load()
+        view.selectAgentMode(.goal)
+        view.draft = "Keep this separate unsent draft"
+        let created = await view.createGoal(objective: "Preserve the actual goal", criteria: ["Inspect the result"],
+            blockingConditions: ["Ask before sending"], stoppingConditions: ["Result confirmed"])
+        #expect(created)
+        let goal = try #require(view.activeGoal)
+        let firstRunID = try #require(view.selectedRunID)
+        let firstRun = try #require(try await f.environment.runStore.run(id: firstRunID))
+        #expect(firstRun.conversationMode == AgentExecutionMode.goal.conversationMode.rawValue)
+        #expect(view.agentMode == .agent && view.draft == "Keep this separate unsent draft")
+        #expect(goal.status == .active && goal.conversationID == conversation.id)
+
+        await view.pauseActiveGoal()
+        let paused = try #require(try await f.environment.intelligenceStore.goal(id: goal.id))
+        #expect(paused.status == .paused && view.activeGoal?.id == goal.id)
+        #expect(paused.steps == goal.steps && paused.acceptanceCriteria == goal.acceptanceCriteria)
+        #expect(paused.evidence == goal.evidence && paused.progress.startedAt == goal.progress.startedAt)
+        #expect(view.canResumeGoal && !view.canContinue)
+        #expect(view.goalStatusTitle(.paused) != GoalStatus.paused.rawValue)
+        #expect(!view.goalStatusTitle(.paused).hasPrefix("goal.status."))
+
+        await view.resumeActiveGoal()
+        let resumed = try #require(try await f.environment.intelligenceStore.goal(id: goal.id))
+        let nextRunID = try #require(view.selectedRunID)
+        let nextRun = try #require(try await f.environment.runStore.run(id: nextRunID))
+        #expect(resumed.id == goal.id && resumed.conversationID == conversation.id && resumed.status == .active)
+        #expect(resumed.steps == goal.steps && resumed.evidence == goal.evidence)
+        #expect(nextRunID != firstRunID && nextRun.conversationID == conversation.id)
+        #expect(nextRun.conversationMode == AgentExecutionMode.goal.conversationMode.rawValue)
+        #expect(view.agentMode == .agent && view.draft == "Keep this separate unsent draft")
+        await view.pauseActiveGoal()
+    }
+
+    @Test("A saved goal whose launch fails keeps its draft and retries the same goal identity")
+    func failedSetupPreservesGoalModeAndDraft() async throws {
+        for useGoalControl in [false, true] {
+            let f = try await fixture()
+            let conversation = try await f.center.createConversation(title: "Goal failure")
+            let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+            await view.load()
+            view.selectedModelID = f.modelID
+            view.selectAgentMode(.goal)
+            view.draft = "  original draft  "
+            // A real missing workspace rejects the launch AFTER GoalStore
+            // saved the goal. Both recovery entries must finish that setup.
+            view.selectedProjectID = UUID()
+            let created = await view.createGoal(objective: "New goal still in the form", criteria: [],
+                blockingConditions: [], stoppingConditions: [])
+            #expect(!created && view.agentMode == .goal && view.draft == "  original draft  ")
+            let original = try #require(view.activeGoal)
+            #expect(view.actionError != nil)
+            let saved = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
+            #expect(saved.count == 1 && saved.first?.id == original.id)
+            #expect(try await f.environment.runStore.recentRuns(conversationID: conversation.id, limit: 10).isEmpty)
+            view.selectedProjectID = nil
+            if useGoalControl {
+                await view.resumeActiveGoal()
+            } else {
+                let retried = await view.createGoal(objective: "New goal still in the form", criteria: [],
+                    blockingConditions: [], stoppingConditions: [])
+                #expect(retried)
+            }
+            #expect(view.agentMode == .agent && view.draft == "  original draft  ")
+            let after = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
+            #expect(after.count == 1 && after.first?.id == original.id && view.activeGoal?.id == original.id)
+            #expect(after.first?.progress.startedAt == original.progress.startedAt)
+            #expect(view.selectedRun?.conversationMode == AgentExecutionMode.goal.conversationMode.rawValue)
+            await view.pauseActiveGoal()
+
+            // A terminal stored fixture isolates pending-composer cleanup;
+            // it does not claim to exercise the evidence completion gate.
+            var finished = try #require(try await f.environment.intelligenceStore.goal(id: original.id))
+            finished.status = .completed
+            finished.updatedAt = Date()
+            try await f.environment.intelligenceStore.saveGoal(finished)
+            await view.load()
+            view.selectAgentMode(.goal)
+            let nextCreated = await view.createGoal(objective: "A separate next goal", criteria: [],
+                blockingConditions: [], stoppingConditions: [])
+            #expect(nextCreated && view.activeGoal?.id != original.id && view.agentMode == .agent)
+            let goals = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
+            #expect(goals.count == 2 && goals.contains { $0.id == original.id && $0.status == .completed })
+            await view.pauseActiveGoal()
+        }
+    }
+
+    @Test("A blocked goal stays blocked on load and offers explicit goal resume")
+    func blockedGoalDoesNotResumeWhenComposerLoads() async throws {
+        for status in [GoalStatus.blocked, .paused] {
+            let f = try await fixture()
+            let conversation = try await f.center.createConversation(title: "Stopped goal")
+            var goal = ConversationGoal(conversationID: conversation.id, objective: "Wait for the required file",
+                blockingConditions: ["Required file is missing"], acceptanceCriteria: [], steps: [], status: status)
+            goal.progress.repeatedBlockerKey = "user-condition:Required file is missing"
+            goal.progress.repeatedBlockerCount = 3
+            try await f.environment.intelligenceStore.saveGoal(goal)
+            let pair = try #require(f.center.providerAndModel(modelID: f.modelID))
+            let prior = RunRecord(id: UUID(), conversationID: conversation.id,
+                state: status == .paused ? "interrupted" : "failed", goal: goal.objective,
+                startedAt: Date(), endedAt: Date(), goalID: goal.id,
+                providerID: pair.0.id, modelID: pair.1.id,
+                conversationMode: AgentExecutionMode.goal.conversationMode.rawValue)
+            try await f.environment.runStore.saveRun(prior)
+            let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+            view.selectedRunID = prior.id
+            await view.load()
+            #expect(view.activeGoal?.status == status && view.canResumeGoal && !view.canContinue)
+            if status == .blocked {
+                #expect(view.goalBlockedReason(goal)?.isEmpty == false)
+                #expect(view.goalBlockedReason(goal)?.contains("user-condition:") == false)
+            }
+            // Exercise the real VM action that historical error rows used,
+            // with a real failed/interrupted run selected (not a nil no-op).
+            await view.retry()
+            #expect(view.actionError == nil)
+            let runs = try await f.environment.runStore.recentRuns(conversationID: conversation.id, limit: 10)
+            #expect(runs.count == 1 && runs.first?.id == prior.id && runs.first?.state == prior.state)
+            #expect(try await f.environment.intelligenceStore.goal(id: goal.id)?.status == status)
+        }
+    }
+
+    @Test("Home resets a goal input only after launch succeeds")
+    func homeGoalInputResetsOnlyAfterSuccess() async throws {
+        for fails in [false, true] {
+            let f = try await fixture()
+            let view = HomeLaunchpadViewModel(center: f.center,
+                taskStarter: fails ? GoalComposerRejectedLaunch() : nil,
+                draftStorageID: UUID(), initialDraft: "Home goal")
+            view.selectedModelID = f.modelID
+            view.agentMode = .goal
+            let conversationID = await view.sendNewTask()
+            if fails {
+                #expect(conversationID == nil && view.agentMode == .goal && view.draft == "Home goal")
+            } else {
+                let id = try #require(conversationID)
+                let run = try #require(try await f.environment.runStore.recentRuns(conversationID: id, limit: 10).first)
+                #expect(view.agentMode == .agent)
+                #expect(run.conversationMode == AgentExecutionMode.goal.conversationMode.rawValue)
+                await f.center.cancel(runID: run.id)
+            }
+        }
+    }
+}
+
+/// The real launch/store path runs, while the scripted transport waits until
+/// cancellation. No network, credential, Linux activation or paid model is used.
+private struct GoalComposerIdleProvider: ProviderAdapter {
+    var protocolKind: ModelProtocol { .openAIChatCompletions }
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+        AsyncThrowingStream { _ in }
+    }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+}
+
+private struct GoalComposerRejectedLaunch: HomeTaskStarting {
+    struct Rejected: Error {}
+    func startTask(goal: String, modelID: UUID?) async throws -> UUID { throw Rejected() }
 }
 #endif

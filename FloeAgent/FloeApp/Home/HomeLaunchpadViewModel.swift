@@ -125,7 +125,10 @@ final class HomeLaunchpadViewModel: ObservableObject {
     @Published var selectedModelID: UUID?
     @Published var selectedProjectID: UUID?
     @Published var executionTarget: AgentExecutionTarget = .local
-    @Published var agentMode: AgentExecutionMode = .agent
+    @Published var agentMode: AgentExecutionMode = .agent {
+        didSet { if oldValue != agentMode { modeSelectionGeneration &+= 1 } }
+    }
+    private var modeSelectionGeneration = 0
     @Published var attachments: [AttachmentRef] = []
     @Published var draftPolicy = DraftTaskPolicy()
     /// Select Notes before sending without creating a blank conversation.
@@ -650,6 +653,8 @@ final class HomeLaunchpadViewModel: ObservableObject {
               center.providerAndModel(modelID: selectedModelID) != nil
         else { return nil }
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let executionModeAtSend = agentMode
+        let modeSelectionAtSend = modeSelectionGeneration
         let stagedAttachments = attachments
         let sentText = draft
         // Identity of this send's claim on the field and the stored draft.
@@ -678,8 +683,14 @@ final class HomeLaunchpadViewModel: ObservableObject {
             } else {
                 conversationID = try await startTaskLive(
                     goal: goal, stagedAttachments: stagedAttachments,
-                    designLaunchBinding: designLaunchBinding
+                    designLaunchBinding: designLaunchBinding,
+                    executionMode: executionModeAtSend
                 )
+            }
+            // The accepted task retains .goal. Only reset this send's input
+            // choice, preserving a newer selection made during launch.
+            if executionModeAtSend == .goal, modeSelectionGeneration == modeSelectionAtSend {
+                agentMode = .agent
             }
             // Clear only what this send consumed: text typed while the task
             // was being created (and attachments staged in that window)
@@ -721,7 +732,8 @@ final class HomeLaunchpadViewModel: ObservableObject {
     private func startTaskLive(
         goal: String,
         stagedAttachments: [AttachmentRef],
-        designLaunchBinding: DesignLaunchBinding? = nil
+        designLaunchBinding: DesignLaunchBinding? = nil,
+        executionMode: AgentExecutionMode
     ) async throws -> UUID {
         guard let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             throw FloeError.invalidConfiguration("No provider and model configured")
@@ -733,7 +745,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
             model: model,
             workspaceID: selectedProjectID,
             attachments: stagedAttachments,
-            executionMode: agentMode,
+            executionMode: executionMode,
             initialPolicy: draftPolicy,
             newConversationID: draftConversationID,
             designLaunchBinding: designLaunchBinding,
