@@ -1761,7 +1761,10 @@ final class ConversationCenter: ObservableObject {
         // intelligence store must never see their content.
         let latestPlan = isTemporary ? nil : try await environment.intelligenceStore.latestPlan(conversationID: conversationID)
         let taskChecklist = isTemporary ? nil : try await TaskChecklistStore(database: environment.database).latest(conversationID: conversationID)
-        let activeGoal = isTemporary ? nil : try await environment.intelligenceStore.goals(conversationID: conversationID).first
+        let goals = isTemporary ? [] : try await environment.intelligenceStore.goals(conversationID: conversationID)
+        // Updates can share the same persisted second. A terminal goal must
+        // never hide the next unfinished goal in a streamed UI snapshot.
+        let activeGoal = goals.first(where: { !$0.status.isTerminal }) ?? goals.first
         let snapshot = ConversationSessionSnapshot(
             revision: revision,
             conversation: conversation,

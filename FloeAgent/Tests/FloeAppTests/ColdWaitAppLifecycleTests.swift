@@ -346,17 +346,24 @@ struct GoalLifecycleTests {
         #expect(try await environment.conversationStore.conversations() == conversationsBefore)
         #expect(try await workspaces.workspaces() == workspacesBefore)
         let conversation = try await center.createConversation(title: "Owned goal controls")
-        let conversationID = conversation.id, now = Date()
+        // Goal JSON uses ISO-8601 seconds. Keep the synthetic seed at that
+        // precision so round-trip equality does not compare subsecond RAM dates.
+        let conversationID = conversation.id
+        let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
         let workspaceID = try #require(try await workspaces.workspaceID(conversationID: conversationID))
         let canonical = try #require(try await workspaces.workspace(id: workspaceID))
         #expect(canonical.kind == .privateTask)
         #expect(canonical.internalRelativePath == "PrivateTasks/\(conversationID.uuidString)")
-        let evidence = GoalEvidence(kind: .testResult, reference: "owned-fixture", summary: "Retained prior progress")
+        let evidence = GoalEvidence(kind: .testResult, reference: "owned-fixture",
+            summary: "Retained prior progress", capturedAt: now)
         let original = ConversationGoal(conversationID: conversationID, objective: "Continue this same authorized task",
             acceptanceCriteria: [.init(text: "Preserve prior evidence")], steps: [.init(title: "Continue", order: 0)],
             evidence: [evidence], status: .active, budgets: .init(maxCycles: 10, maxModelCalls: 20),
             progress: .init(cycleCount: 2, modelCallCount: 2, totalIterationCount: 4, startedAt: now))
         try await environment.intelligenceStore.saveGoal(original)
+        let persistedSeed = try #require(try await environment.intelligenceStore.goal(id: original.id))
+        #expect(persistedSeed.evidence == original.evidence && persistedSeed.progress == original.progress)
+        #expect(persistedSeed.budgets == original.budgets)
         let state = GoalLifecycleProviderState(), idle = GoalLifecycleProvider(state: state, createArguments: nil)
         center.providerAdapterTestOverride = { _, _ in idle }
         defer { center.providerAdapterTestOverride = nil }
@@ -379,6 +386,7 @@ struct GoalLifecycleTests {
         #expect(try await environment.runStore.runs(conversationID: conversationID).isEmpty,
             "A stale preflight must create neither a new run nor a failed-run notification")
         #expect(state.requestCount == 0)
+        #expect(preflightPaused.evidence == persistedSeed.evidence && preflightPaused.progress == persistedSeed.progress)
         let started = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
             expectedRevision: preflightPaused.revision ?? 1, provider: provider, model: model)
         let attached = await until {
@@ -389,9 +397,15 @@ struct GoalLifecycleTests {
         let paused = try await center.pauseGoal(conversationID: conversationID, expectedGoalID: original.id,
             expectedRevision: beforePause.revision ?? 1)
         _ = await started.result.value
-        #expect(paused.status == .paused && paused.evidence == original.evidence && paused.progress == original.progress)
+        #expect(paused.status == .paused)
+        #expect(paused.evidence == beforePause.evidence && paused.progress == beforePause.progress,
+            "Pause must preserve the durable snapshot immediately before it, including legitimate execution progress")
+        #expect(paused.budgets == beforePause.budgets && paused.budgets == persistedSeed.budgets)
+        #expect(persistedSeed.evidence.allSatisfy { paused.evidence.contains($0) }, "Prior evidence must not be lost")
         let lateAttempted = await until { state.lateCompletionAttempts >= 1 }
         #expect(lateAttempted)
+        let afterLateCompletion = try #require(try await environment.intelligenceStore.goal(id: original.id))
+        #expect(afterLateCompletion == paused, "A late completion must not change any paused goal field or revision")
         var stale = original; stale.status = .verifying
         let overwritten = try await environment.intelligenceStore.saveGoalIfRevisionMatches(stale, expectedRevision: 1)
         #expect(!overwritten, "A late completion must not overwrite the paused revision")
@@ -416,8 +430,18 @@ struct GoalLifecycleTests {
         let final = try await center.pauseGoal(conversationID: conversationID, expectedGoalID: original.id,
             expectedRevision: active.revision ?? 1)
         _ = await resumed.result.value
-        #expect(final.evidence == original.evidence && final.budgets == original.budgets)
-        #expect(final.progress.cycleCount == 2 && final.progress.totalIterationCount == 4)
+        #expect(final.status == .paused)
+        #expect(final.evidence == active.evidence && final.progress == active.progress)
+        #expect(final.budgets == active.budgets && final.budgets == persistedSeed.budgets)
+        #expect(persistedSeed.evidence.allSatisfy { final.evidence.contains($0) }, "Explicit resume must retain prior evidence")
+        #expect(final.progress.cycleCount >= persistedSeed.progress.cycleCount
+            && final.progress.modelCallCount >= persistedSeed.progress.modelCallCount
+            && final.progress.totalIterationCount >= persistedSeed.progress.totalIterationCount,
+            "Execution may advance counters but cannot discard existing progress")
+        let secondLateAttempted = await until { state.lateCompletionAttempts >= 2 }
+        #expect(secondLateAttempted)
+        #expect(try await environment.intelligenceStore.goal(id: original.id) == final,
+            "The second late completion must leave the entire final paused snapshot unchanged")
         #expect(try await environment.intelligenceStore.goals(conversationID: conversationID).count == 1)
         #expect(try await environment.runStore.runs(conversationID: conversationID).count == 2)
         try await center.deleteConversation(id: conversationID)

@@ -284,6 +284,7 @@ struct GoalComposerTests {
             #expect(view.actionError != nil)
             let saved = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
             #expect(saved.count == 1 && saved.first?.id == original.id)
+            let persistedStartedAt = try #require(saved.first?.progress.startedAt)
             #expect(try await f.environment.runStore.recentRuns(conversationID: conversation.id, limit: 10).isEmpty)
             view.selectedProjectID = nil
             if useGoalControl {
@@ -296,9 +297,13 @@ struct GoalComposerTests {
             #expect(view.agentMode == .agent && view.draft == "  original draft  ")
             let after = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
             #expect(after.count == 1 && after.first?.id == original.id && view.activeGoal?.id == original.id)
-            #expect(after.first?.progress.startedAt == original.progress.startedAt)
+            #expect(after.first?.progress.startedAt == persistedStartedAt)
             #expect(view.selectedRun?.conversationMode == AgentExecutionMode.goal.conversationMode.rawValue)
             await view.pauseActiveGoal()
+            let pausedRunID = try #require(view.selectedRunID)
+            #expect(!f.center.hasLiveOwner(runID: pausedRunID))
+            #expect(try await f.environment.runStore.run(id: pausedRunID)?.endedAt != nil)
+            #expect(try await f.environment.intelligenceStore.goal(id: original.id)?.status == .paused)
 
             // A terminal stored fixture isolates pending-composer cleanup;
             // it does not claim to exercise the evidence completion gate.
@@ -310,9 +315,26 @@ struct GoalComposerTests {
             view.selectAgentMode(.goal)
             let nextCreated = await view.createGoal(objective: "A separate next goal", criteria: [],
                 blockingConditions: [], stoppingConditions: [])
-            #expect(nextCreated && view.activeGoal?.id != original.id && view.agentMode == .agent)
+            #expect(nextCreated)
             let goals = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
             #expect(goals.count == 2 && goals.contains { $0.id == original.id && $0.status == .completed })
+            let next = try #require(goals.first { $0.id != original.id })
+            #expect(view.activeGoal?.id == next.id)
+            #expect(view.agentMode == .agent)
+
+            // Make the actual whole-second SQL ordering tie deterministic.
+            // Only fixture timestamps change; identities, status and progress
+            // stay intact. No sleep or product clock workaround is involved.
+            let sameStoredTime = Date(timeIntervalSince1970: 1_800_000_000)
+            for var snapshot in goals {
+                snapshot.updatedAt = sameStoredTime
+                try await f.environment.intelligenceStore.saveGoal(snapshot)
+            }
+            let tied = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
+            #expect(Set(tied.map(\.updatedAt)).count == 1)
+            await view.load()
+            #expect(view.activeGoal?.id == next.id && view.activeGoal?.status == .active)
+            #expect(view.agentMode == .agent)
             await view.pauseActiveGoal()
         }
     }

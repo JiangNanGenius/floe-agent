@@ -734,8 +734,8 @@ final class ThreadDetailViewModel: ObservableObject {
             // the mode it was running in.
             reconcilePlanComposerMode()
             stage = "goalLoad"
-            activeGoal = isTemporary ? nil : try await center.environment.intelligenceStore
-                .goals(conversationID: conversationID).first
+            activeGoal = isTemporary ? nil : Self.preferredGoal(
+                try await center.environment.intelligenceStore.goals(conversationID: conversationID))
             stage = "pendingInputLoad"
             pendingInputs = try await center.runningInputStore(for: conversationID)
                 .pending(conversationID: conversationID)
@@ -2291,6 +2291,12 @@ final class ThreadDetailViewModel: ObservableObject {
 
     func goalStatusTitle(_ status: GoalStatus) -> String {
         FloeL10n.l("goal.status.\(status.rawValue)")
+    }
+
+    private static func preferredGoal(_ goals: [ConversationGoal]) -> ConversationGoal? {
+        // Updated timestamps can tie at storage precision. A completed goal
+        // must not hide the unfinished goal that now owns the conversation.
+        goals.first(where: { !$0.status.isTerminal }) ?? goals.first
     }
 
     func goalBlockedReason(_ goal: ConversationGoal) -> String? {
