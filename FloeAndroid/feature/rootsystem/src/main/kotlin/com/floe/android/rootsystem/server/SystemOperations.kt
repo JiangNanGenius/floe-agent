@@ -595,7 +595,9 @@ internal class SystemOperations(
                     userId.toString(),
                     "-S",
                     size.toString(),
-                    "-",
+                    // With -S and no path, pm consumes stdin. Some vendor
+                    // parsers treat a trailing standalone '-' as an unknown
+                    // option rather than the stdin path (Samsung API 33).
                 ),
                 timeoutMillis = INSTALL_TIMEOUT_MILLIS,
                 cancelled = cancelled,
@@ -1808,6 +1810,9 @@ internal class SystemOperations(
                 process.destroy()
                 throw OpException("cancelled")
             }
+            // Child exit and pipe drain are independent. Capture the reason
+            // after the bounded drain, not before the reader's last chunk.
+            joinChildThread(reader)
             val tail = synchronized(outputLock) { outputTail.toString() }
             onOutputTail?.invoke(tail)
             process.exitValue()
@@ -1831,6 +1836,10 @@ internal class SystemOperations(
         val lines = outputTail.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
+            // pm prints this generic header before the actionable exception.
+            // Returning the header alone hides the cause from users/models.
+            .filterNot { it.startsWith("Exception occurred while executing '") }
+            .filterNot { it.startsWith("at ") || it.startsWith("... ") }
             .toList()
         if (lines.isEmpty()) return null
         val reason = lines.firstOrNull {

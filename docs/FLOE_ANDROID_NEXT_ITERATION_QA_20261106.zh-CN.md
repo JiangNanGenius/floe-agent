@@ -1030,3 +1030,7 @@ English: Typed permissions, AppOps and ten settings now join the existing app-ma
 旧版服务在更新后仍可能发布旧协议，原入口直接丢弃它，导致已有受控退役逻辑无法看见。源码改为单独暂存已知旧协议，再经原有身份核验与类型化停止退役；它不能覆盖或清除当前服务。实际Full Release消费者及相关Root代码已编译，30项服务归属／生命周期检查通过；未改的权限／设置检查复用原证据，不重跑整套矩阵。新版界面和真实旧服务退役仍待下一份Full在三星验证。
 
 English: The Phone page puts embedded ADB first and replaces permanent folder lists with two scoped selectors. Settings controls use less space while retaining usable targets. Known legacy helpers now reach verified typed retirement through a separate publication store and cannot replace the current helper. Actual Full Release compilation and30 focused ownership/lifecycle checks pass. New UI and real stale-helper retirement remain pending on Samsung.
+
+三星独立SAF用例已通过真实文件选择器选取两份自建APK，模型在自动模式下读取暂存并实际派发批量安装，无人工批准；安装随后被系统拒绝，未执行后续卸载。69条原始记录保留。空输入诊断确认本机安装命令解析器将末尾独立`-`判为未知选项；移除该参数后进入正确的标准输入读取，未安装任何文件。源码修正为已有`-S`尺寸下的隐式标准输入，并等待输出排空后保留实际异常原因，避免只显示通用异常标题。新Full与完整安装／卸载复测仍待进行，不将诊断命令当作App通过。
+
+English: The independent SAF case selected two real owned APKs and reached actual batch installation through canonical automatic approval, then stopped on package-manager failure. Its69 original records are retained. A non-installable empty-input diagnostic isolated the vendor parser rejecting a trailing standalone dash; the corrected argv reaches stdin parsing. The source removes that argument and keeps actionable errors after bounded output draining. Full APK and real install/uninstall acceptance remain pending.
