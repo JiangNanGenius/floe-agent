@@ -268,15 +268,16 @@ internal object WorkspaceDocumentPresentation {
         request.path.isNotBlank()
 
     /**
-     * The full-window editor issues its one open intent only when the same
-     * document is not already live or loading there. A rotation during the
-     * load therefore re-uses the in-flight open instead of dispatching twice.
+     * A new presentation refreshes even a retained clean tab: external/Linux
+     * edits may have changed its file. Native open preserves dirty drafts.
+     * A restored presentation reuses the live document or in-flight load.
      */
     internal fun needsReopen(
         currentPath: String?,
         documentLoading: Boolean,
         requestedPath: String,
-    ): Boolean = !documentLoading && currentPath != requestedPath
+        freshPresentation: Boolean = false,
+    ): Boolean = !documentLoading && (freshPresentation || currentPath != requestedPath)
 }
 
 /**
@@ -469,9 +470,13 @@ internal fun WorkspaceDocumentDestination(
                         )
                     } else {
                         val state by codePresenter.state.collectAsState()
+                        var openIntentApplied by rememberSaveable(request.token) { mutableStateOf(false) }
                         LaunchedEffect(request.token, request.path) {
+                            val freshPresentation = !openIntentApplied
+                            openIntentApplied = true
                             if (WorkspaceDocumentPresentation.needsReopen(
                                     state.snapshot?.relativePath, state.documentLoading, request.path,
+                                    freshPresentation = freshPresentation,
                                 )
                             ) {
                                 // Same presenter, same drafts/undo: this is an

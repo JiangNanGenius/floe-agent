@@ -250,6 +250,21 @@ class WorkspaceDocumentNavigationTest {
     }
 
     @Test
+    fun aNewPresentationRefreshesAnAlreadyOpenFileAfterExternalEditing() {
+        assertTrue(WorkspaceDocumentPresentation.needsReopen(
+            "notes/plan.md", false, "notes/plan.md", freshPresentation = true,
+        ))
+        // Restoring the same presentation must retain its viewport and undo.
+        assertFalse(WorkspaceDocumentPresentation.needsReopen(
+            "notes/plan.md", false, "notes/plan.md", freshPresentation = false,
+        ))
+        // An existing load is adopted, never restarted by this presentation.
+        assertFalse(WorkspaceDocumentPresentation.needsReopen(
+            "notes/plan.md", true, "notes/plan.md", freshPresentation = true,
+        ))
+    }
+
+    @Test
     fun closingAndReopeningTheCoverNeverDiscardsEdits() {
         val (host, presenter) = presenter()
         open(host, presenter)
