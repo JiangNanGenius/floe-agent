@@ -144,7 +144,7 @@ struct MediaV2LayerInspector: View {
             }.frame(minHeight: 44)
             if layer.contentKind == .group {
                 Picker(WorkbenchText.t("混合模式", "Blend mode"), selection: $blend) {
-                    ForEach(["normal", "multiply", "screen", "overlay", "darken", "lighten"], id: \.self) { mode in Text(blendTitle(mode)).tag(mode) }
+                    ForEach(["normal", "multiply", "screen", "overlay", "darken", "lighten", "difference", "exclusion"], id: \.self) { mode in Text(blendTitle(mode)).tag(mode) }
                 }
             }
             Button(WorkbenchText.t("应用图层属性", "Apply layer properties")) { apply() }.frame(minHeight: 44)
@@ -172,7 +172,8 @@ struct MediaV2LayerInspector: View {
     }
     private func blendTitle(_ mode: String) -> String {
         let names = ["normal": ("正常", "Normal"), "multiply": ("正片叠底", "Multiply"), "screen": ("滤色", "Screen"),
-                     "overlay": ("叠加", "Overlay"), "darken": ("变暗", "Darken"), "lighten": ("变亮", "Lighten")]
+                     "overlay": ("叠加", "Overlay"), "darken": ("变暗", "Darken"), "lighten": ("变亮", "Lighten"),
+                     "difference": ("差值", "Difference"), "exclusion": ("排除", "Exclusion")]
         let value = names[mode] ?? (mode, mode); return WorkbenchText.t(value.0, value.1)
     }
 }
@@ -220,6 +221,88 @@ struct MediaV2TextInspector: View {
     private var fontNames: [String] {
         let names = [content.fontName].compactMap { $0 } + ["HelveticaNeue", "AvenirNext-Regular", "PingFangSC-Regular", "SongtiSC-Regular", "Menlo-Regular"]
         return Array(Set(names)).filter { UIFont(name: $0, size: 16) != nil }.sorted()
+    }
+}
+
+struct MediaV2ImageExportSheet: View {
+    @Bindable var session: MediaV2Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var options: ImageExportOptions
+    @State private var lockAspect = true
+    @State private var preview: CGImage?
+    @State private var estimatedBytes: Int64?
+    @State private var error: String?
+    private struct PreviewKey: Hashable { let revision: Int64; let options: ImageExportOptions }
+    private var previewKey: PreviewKey { .init(revision: session.project.revision, options: options) }
+    init(session: MediaV2Session) {
+        self.session = session
+        _options = State(initialValue: session.imageExportOptions)
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    if let preview { Image(decorative: preview, scale: 1).resizable().scaledToFit().frame(maxHeight: 240) }
+                    else if error == nil { ProgressView().frame(maxWidth: .infinity, minHeight: 120) }
+                    if let estimatedBytes {
+                        Text(WorkbenchText.t("预计大小：", "Estimated size: ") + ByteCountFormatter.string(fromByteCount: estimatedBytes, countStyle: .file))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                }
+                Section(WorkbenchText.t("格式与质量", "Format and quality")) {
+                    Picker(WorkbenchText.t("格式", "Format"), selection: $options.format) {
+                        Text("PNG").tag(ImageExportFormat.png); Text("JPEG").tag(ImageExportFormat.jpeg); Text("HEIC").tag(ImageExportFormat.heic)
+                    }
+                    if options.format != .png {
+                        MusicValueSlider(title: WorkbenchText.t("质量", "Quality"), value: options.quality, range: 0.01...1) { options.quality = $0 }
+                    }
+                    Toggle(WorkbenchText.t("保留透明背景", "Preserve transparency"), isOn: $options.preserveTransparency).disabled(!options.format.supportsAlpha)
+                }
+                Section(WorkbenchText.t("尺寸", "Dimensions")) {
+                    HStack { Text(WorkbenchText.t("宽度", "Width")); Spacer(); TextField("px", value: dimension(width: true), format: .number).multilineTextAlignment(.trailing).keyboardType(.numberPad); Text("px") }
+                    HStack { Text(WorkbenchText.t("高度", "Height")); Spacer(); TextField("px", value: dimension(width: false), format: .number).multilineTextAlignment(.trailing).keyboardType(.numberPad); Text("px") }
+                    Toggle(WorkbenchText.t("保持比例", "Keep aspect ratio"), isOn: $lockAspect)
+                    Button(WorkbenchText.t("使用原始尺寸", "Use original dimensions")) { options.width = nil; options.height = nil }
+                }
+                Section(WorkbenchText.t("文件", "File")) {
+                    TextField(WorkbenchText.t("文件名", "File name"), text: $options.fileName)
+                    Toggle(WorkbenchText.t("移除拍摄信息", "Remove capture metadata"), isOn: $options.stripMetadata)
+                    if !options.stripMetadata { Text(WorkbenchText.t("保留底层来源图片的拍摄信息，可能包含位置。", "Keeps capture metadata from the bottom source image, which may include location.")).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            .navigationTitle(WorkbenchText.t("导出图片", "Export image"))
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button(WorkbenchText.t("取消", "Cancel")) { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(WorkbenchText.t("导出", "Export")) {
+                        session.imageExportOptions = options; session.export(options: options); dismiss()
+                    }.disabled(error != nil || preview == nil || session.rendering)
+                }
+            }
+        }
+        .onChange(of: options.format) { _, format in if !format.supportsAlpha { options.preserveTransparency = false } }
+        .task(id: previewKey) { await updatePreview() }
+    }
+    private func dimension(width: Bool) -> Binding<Int> {
+        Binding(get: { width ? options.width ?? session.project.canvas?.width ?? 1 : options.height ?? session.project.canvas?.height ?? 1 }, set: { value in
+            if width { options.width = value } else { options.height = value }
+            guard lockAspect, (1...16384).contains(value), let canvas = session.project.canvas else { return }
+            if width { options.height = max(1, Int((Double(value) * Double(canvas.height) / Double(canvas.width)).rounded())) }
+            else { options.width = max(1, Int((Double(value) * Double(canvas.width) / Double(canvas.height)).rounded())) }
+        })
+    }
+    private func updatePreview() async {
+        preview = nil; estimatedBytes = nil; error = nil
+        let key = previewKey, project = session.project, options = options
+        do {
+            try await Task.sleep(for: .milliseconds(200))
+            let assets = try session.resolvedAssets(), renderer = session.imageRenderer
+            let worker = Task.detached(priority: .userInitiated) { try await renderer.previewImageExport(project: project, options: options, resolveAsset: { assets[$0] }) }
+            let value = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+            try Task.checkCancellation(); guard key == previewKey else { return }
+            preview = value.image; estimatedBytes = value.estimatedBytes
+        } catch is CancellationError { } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }
 #endif

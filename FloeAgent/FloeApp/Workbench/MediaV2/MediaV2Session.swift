@@ -69,6 +69,9 @@ import FloeTools
     var zoom = 1.0
     private(set) var saving = false
     private(set) var preview: CGImage?
+    var colorPreview: CGImage?
+    var colorShowsOriginal = false
+    var imageExportOptions = ImageExportOptions()
     private(set) var rendering = false
     private(set) var exportProgress: Double?
     private(set) var exportedFile: URL?
@@ -296,8 +299,12 @@ import FloeTools
         } else { addLayer(.strokes(.init(strokes: [stroke])), name: WorkbenchText.t("笔迹", "Brush stroke")) }
     }
     func importFile(_ url: URL) async {
-        do { _ = try await importAuthorizedFile(url, expectedRevision: document.revision, actor: .user) }
-        catch { diagnostic = error.localizedDescription }
+        do {
+            if ["psd", "ora"].contains(url.pathExtension.lowercased()), document.kind == .image {
+                try await importLayeredFile(url)
+            } else { _ = try await importAuthorizedFile(url, expectedRevision: document.revision, actor: .user) }
+        }
+        catch is CancellationError { } catch { diagnostic = error.localizedDescription }
     }
     struct ImportedAsset { let commit: MediaPreparedCommit; let asset: MediaAssetReference }
     /// URL is supplied only by a system picker or the verified native host.
@@ -424,8 +431,9 @@ import FloeTools
             track.kind == .visual && !track.isMuted && track.clips.contains { $0.timelineRange.durationSeconds > 0 }
         }
     }
-    func export() {
-        guard !rendering else { return }
+    func export(options: ImageExportOptions? = nil) {
+        guard !rendering, !processingTool, !saving else { return }
+        let imageOptions = options ?? imageExportOptions
         rendering = true; diagnostic = nil; exportError = nil; exportProgress = nil; exportedFile = nil
         let token = PreparedVideoCancellation(); cancellation = token
         exportTask = Task { [self] in
@@ -437,11 +445,13 @@ import FloeTools
                 try await prepareVideoSourceAudio()
                 let frozen = project
                 let urls = try resolvedAssets()
-                let folder = root.appendingPathComponent("Exports")
+                let folder = root.appendingPathComponent("Exports").appendingPathComponent(UUID().uuidString)
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                let file = folder.appendingPathComponent("export-r\(frozen.revision)-\(UUID().uuidString)." + (frozen.kind == .image ? "png" : "mp4"))
+                let stem = imageOptions.fileName.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: "\\", with: "-")
+                    .components(separatedBy: .controlCharacters).joined().trimmingCharacters(in: CharacterSet(charactersIn: ". ").union(.whitespacesAndNewlines))
+                let file = folder.appendingPathComponent((frozen.kind == .image ? (stem.isEmpty ? "export" : String(stem.prefix(100))) : "export") + "." + (frozen.kind == .image ? imageOptions.format.fileExtension : "mp4"))
                 if frozen.kind == .image {
-                    _ = try await imageRenderer.exportImage(project: frozen, options: .init(format: .png), resolveAsset: { urls[$0] }, destination: file)
+                    _ = try await imageRenderer.exportImage(project: frozen, options: imageOptions, resolveAsset: { urls[$0] }, destination: file)
                 } else {
                     let canvas = frozen.canvas!
                     _ = try await videoDelivery.export(document: frozen.prepared!, assetURLs: urls,
@@ -460,7 +470,7 @@ import FloeTools
     }
     func cancelExport() { cancellation?.cancel(); exportTask?.cancel() }
     func exportAndWait() async throws -> URL {
-        guard !rendering else { throw MediaV2CommandError.exportInProgress }
+        guard !rendering, !processingTool, !saving else { throw MediaV2CommandError.exportInProgress }
         export()
         let task = exportTask, token = cancellation
         await withTaskCancellationHandler { await task?.value } onCancel: { token?.cancel(); task?.cancel() }

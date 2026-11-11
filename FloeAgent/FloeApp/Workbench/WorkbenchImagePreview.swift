@@ -541,11 +541,11 @@ enum WorkbenchPreviewColor {
 
 #if canImport(UIKit)
 /// Captures allowed drawing sources with `force` for brush/eraser strokes. The
-/// pressure is 0 for fingers/unsupported input, and the model never
+/// pressure is nil for fingers/unsupported input, and the model never
 /// synthesizes pressure where none was measured.
 struct WorkbenchPressureSurface: UIViewRepresentable {
     var fingerDrawing = false
-    var onChanged: (CGPoint, Double) -> Void
+    var onChanged: (CGPoint, Double?) -> Void
     var onEnded: () -> Void
     var onCancelled: () -> Void
 
@@ -568,7 +568,7 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
     }
 
     final class PressureTouchView: UIView {
-        var onChanged: ((CGPoint, Double) -> Void)?
+        var onChanged: ((CGPoint, Double?) -> Void)?
         var onEnded: (() -> Void)?
         var onCancelled: (() -> Void)?
         private var activeTouch: UITouch?
@@ -629,8 +629,8 @@ struct WorkbenchPressureSurface: UIViewRepresentable {
             onCancelled?()
         }
 
-        private func normalizedForce(_ touch: UITouch) -> Double {
-            guard touch.type == .pencil, touch.maximumPossibleForce > 0 else { return 0 }
+        private func normalizedForce(_ touch: UITouch) -> Double? {
+            guard touch.type == .pencil, touch.maximumPossibleForce > 0 else { return nil }
             return min(max(Double(touch.force / touch.maximumPossibleForce), 0), 1)
         }
     }

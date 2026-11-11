@@ -28,8 +28,9 @@ let package = Package(
     targets: [
         .target(name: "MediaExchangeBridge", dependencies: ["MediaExchangeCore",
             .product(name: "FloeWorkbench", package: "FloeAgent")]),
-        .target(name: "MediaExchangeCore", dependencies: [.product(name: "ZIPFoundation", package: "ZIPFoundation")],
-            resources: [.copy("Resources/ag-psd-bundle.js"), .copy("Resources/adapter.js"), .copy("Resources/THIRD_PARTY_NOTICES.md")],
+        .target(name: "MediaExchangeCore", dependencies: [.product(name: "ZIPFoundation", package: "ZIPFoundation"), .product(name: "PNG", package: "swift-png")],
+            resources: [.copy("Resources/ag-psd-bundle.js"), .copy("Resources/adapter.js"), .copy("Resources/THIRD_PARTY_NOTICES.md"),
+                .copy("Resources/LICENSE-Apache-2.0.txt"), .copy("Resources/SwiftPNG-NOTICE.txt"), .copy("Resources/H-NOTICE.txt")],
             linkerSettings: [.linkedFramework("JavaScriptCore"), .linkedFramework("ImageIO"),
                 .linkedFramework("CoreGraphics"), .linkedFramework("UniformTypeIdentifiers")]),
         .target(name: "MediaExchangeClipper", dependencies: ["MediaExchangeCore", .product(name: "Clipper2C", package: "Clipper2")]),

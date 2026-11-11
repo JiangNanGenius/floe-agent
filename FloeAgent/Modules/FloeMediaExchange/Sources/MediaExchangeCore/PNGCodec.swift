@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// Small ImageIO-backed PNG bridge. The ORA container keeps the original PNG
+// Straight-alpha PNG files use the pinned Swift PNG codec on every platform.
+// ImageIO is retained for CGImage inspection and thumbnail rendering. The ORA container keeps the original PNG
 // bytes; this codec is only used when a layer/mask must be inspected or when
 // a new merged image/thumbnail has to be rendered.
 
 import Foundation
+import PNG
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
@@ -73,6 +75,7 @@ public enum PNGCodec {
     }
 
     public static func decode(_ data: Data, maxDimension: Int = ImageLimits.maxDimension) throws -> RGBAImage {
+        try Task.checkCancellation()
         let header = try PNGHeader.parse(data)
         guard header.width <= maxDimension, header.height <= maxDimension else {
             throw ImageError.dimensionsExceedLimit(
@@ -84,21 +87,41 @@ public enum PNGCodec {
         guard header.bitDepth == 8 else {
             throw ImageError.invalidPNG("only 8-bit PNG layers are decoded in the qualification baseline")
         }
-        guard let source = CGImageSourceCreateWithData(data as CFData, [
-            kCGImageSourceShouldCache: false,
-            kCGImageSourceShouldAllowFloat: false
-        ] as CFDictionary) else {
-            throw ImageError.invalidPNG("ImageIO could not open the source")
+        _ = try ImageLimits.byteCount(width: header.width, height: header.height)
+        var source = Source(data: data)
+        let decoded: PNG.Image
+        do {
+            decoded = try PNG.Image.decompress(stream: &source)
+        } catch {
+            try Task.checkCancellation()
+            throw error
         }
-        guard let image = CGImageSourceCreateImageAtIndex(source, 0, [
-            kCGImageSourceShouldCache: false
-        ] as CFDictionary) else {
-            throw ImageError.invalidPNG("ImageIO could not decode the image")
-        }
-        guard image.width == header.width, image.height == header.height else {
+        try Task.checkCancellation()
+        guard decoded.size.x == header.width, decoded.size.y == header.height else {
             throw ImageError.invalidPNG("decoded dimensions disagree with IHDR")
         }
-        return try decode(cgImage: image)
+        let values = decoded.unpack(as: PNG.RGBA<UInt8>.self)
+        var bytes = [UInt8](); bytes.reserveCapacity(values.count * 4)
+        for value in values { bytes += [value.r, value.g, value.b, value.a] }
+        return try RGBAImage(width: header.width, height: header.height, pixels: bytes)
+    }
+
+    private struct Source: PNG.BytestreamSource {
+        let data: Data
+        var offset = 0
+        mutating func read(count: Int) -> [UInt8]? {
+            guard count >= 0, count <= data.count - offset, !Task.isCancelled else { return nil }
+            defer { offset += count }
+            let start = data.startIndex + offset
+            return Array(data[start..<(start + count)])
+        }
+    }
+    private struct Destination: PNG.BytestreamDestination {
+        var data = Data()
+        mutating func write(_ buffer: [UInt8]) -> Void? {
+            guard buffer.count <= 536_870_912 - data.count, !Task.isCancelled else { return nil }
+            data.append(contentsOf: buffer); return ()
+        }
     }
 
     public static func decode(cgImage image: CGImage) throws -> RGBAImage {
@@ -215,21 +238,23 @@ public enum PNGCodec {
     }
 
     public static func encode(_ image: RGBAImage) throws -> Data {
-        let cgImage = try makeCGImage(image)
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            output as CFMutableData,
-            UTType.png.identifier as CFString,
-            1,
-            nil
-        ) else {
-            throw ImageError.invalidPNG("could not create an ImageIO destination")
+        try Task.checkCancellation()
+        _ = try ImageLimits.byteCount(width: image.width, height: image.height)
+        var pixels = [PNG.RGBA<UInt8>](); pixels.reserveCapacity(image.width * image.height)
+        for index in stride(from: 0, to: image.pixels.count, by: 4) {
+            if index.isMultiple(of: 262_144) { try Task.checkCancellation() }
+            pixels.append(.init(image.pixels[index], image.pixels[index + 1], image.pixels[index + 2], image.pixels[index + 3]))
         }
-        CGImageDestinationAddImage(destination, cgImage, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            throw ImageError.invalidPNG("ImageIO could not finalize PNG")
+        let value = PNG.Image(packing: pixels, size: (image.width, image.height), layout: .init(format: .rgba8(palette: [], fill: nil)))
+        var destination = Destination()
+        do {
+            try value.compress(stream: &destination, level: 6)
+        } catch {
+            try Task.checkCancellation()
+            throw error
         }
-        return output as Data
+        try Task.checkCancellation()
+        return destination.data
     }
 
     public static func scaled(_ image: RGBAImage, maxDimension: Int) throws -> RGBAImage {

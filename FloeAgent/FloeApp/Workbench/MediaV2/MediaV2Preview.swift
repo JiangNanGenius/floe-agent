@@ -20,7 +20,7 @@ struct MediaV2Preview: View {
                 ZStack {
                     checkerboard
                     if let player = session.player { VideoPlayer(player: player) }
-                    else if let image = session.imageWarpPreview ?? session.preview { Image(decorative: image, scale: 1).allowedDynamicRange(session.project.kind == .video && session.document.canvas?.videoColorProfile?.isHDR == true ? .high : nil).resizable().aspectRatio(contentMode: .fit) }
+                    else if let image = session.imageWarpPreview ?? (session.colorShowsOriginal ? session.preview : session.colorPreview ?? session.preview) { Image(decorative: image, scale: 1).allowedDynamicRange(session.project.kind == .video && session.document.canvas?.videoColorProfile?.isHDR == true ? .high : nil).resizable().aspectRatio(contentMode: .fit) }
                     else if session.project.kind == .video {
                         VStack(spacing: 12) { Image(systemName: "film").font(.largeTitle); Text(WorkbenchText.t("导入素材开始剪辑", "Import media to start editing")).font(.callout) }.foregroundStyle(.secondary)
                     }
@@ -111,9 +111,11 @@ struct MediaV2Preview: View {
         // its real Pencil touch sequence even if its callback returned early.
         .overlay {
             if MediaV2Session.usesDirectStroke(session.tool) {
-                WorkbenchPressureSurface(fingerDrawing: fingerDrawing, onChanged: { point, _ in
+                WorkbenchPressureSurface(fingerDrawing: fingerDrawing, onChanged: { point, pressure in
                     if points.isEmpty { originalLayer = session.selectedLayer;strokeRevision = session.document.revision }
-                    points.append(normalized(point, size: size))
+                    var sample = normalized(point, size: size)
+                    sample.pressure = pressure
+                    points.append(sample)
                     if points.count > 10_000 { points.removeSubrange(1..<100) }
                 }, onEnded: {
                     defer { points = []; originalLayer = nil;strokeRevision = nil }

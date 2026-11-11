@@ -91,6 +91,27 @@
     };
   }
 
+  function simpleText(layer) {
+    var t = layer.text;
+    if (!t || t.orientation === 'vertical' || (t.warp && t.warp.style && t.warp.style !== 'none') ||
+        (t.shapeType && t.shapeType !== 'point') || (t.styleRuns && t.styleRuns.length > 1) ||
+        (t.paragraphStyleRuns && t.paragraphStyleRuns.length > 1)) return null;
+    var style = t.style || (t.styleRuns && t.styleRuns[0] && t.styleRuns[0].style) || {};
+    var paragraph = t.paragraphStyle || {};
+    var color = style.fillColor, matrix = t.transform || [1, 0, 0, 1, 0, 0];
+    if (!style.font || !style.font.name || !(style.fontSize > 0) || style.fontSize > 1000 ||
+        !color || typeof color.r !== 'number' || typeof color.g !== 'number' || typeof color.b !== 'number' ||
+        style.fauxBold || style.fauxItalic || style.underline || style.strikethrough ||
+        (style.tracking && style.tracking !== 0) || style.baselineShift ||
+        Math.abs(matrix[0] - 1) > 0.0001 || Math.abs(matrix[1]) > 0.0001 ||
+        Math.abs(matrix[2]) > 0.0001 || Math.abs(matrix[3] - 1) > 0.0001) return null;
+    var alignment = paragraph.justification || 'left';
+    if (['left', 'center', 'right'].indexOf(alignment) < 0 || typeof t.text !== 'string' || t.text.length > 4096) return null;
+    function hex(v) { return ('0' + Math.max(0, Math.min(255, Math.round(v))).toString(16)).slice(-2); }
+    return { text: t.text, fontName: style.font.name, fontSize: style.fontSize,
+      colorHex: '#' + hex(color.r) + hex(color.g) + hex(color.b), alignment: alignment };
+  }
+
   function layerJSON(layer, includePixels) {
     var width = layer.imageData ? layer.imageData.width : 0;
     var height = layer.imageData ? layer.imageData.height : 0;
@@ -108,6 +129,7 @@
       group: !!layer.children,
       childCount: layer.children ? layer.children.length : 0,
       hasText: !!layer.text,
+      text: simpleText(layer),
       hasPlacedLayer: !!layer.placedLayer,
       hasAdjustment: !!layer.adjustment,
       hasEffects: !!layer.effects,
@@ -119,6 +141,7 @@
         width: layer.mask.imageData ? layer.mask.imageData.width : 0,
         height: layer.mask.imageData ? layer.mask.imageData.height : 0,
         disabled: !!layer.mask.disabled,
+        defaultColor: layer.mask.defaultColor || 0,
         imageData: includePixels ? imageDataJSON(layer.mask.imageData) : null
       } : null
     };
@@ -197,11 +220,21 @@
       blendMode: json.blendMode || 'normal',
       imageData: imageData
     };
+    if (json.group) { layer.children = []; delete layer.imageData; }
+    if (json.text) {
+      var text = json.text, color = parseInt(text.colorHex.slice(1), 16);
+      layer.text = { text: text.text, transform: [1, 0, 0, 1, layer.left, layer.top + text.fontSize],
+        shapeType: 'point', antiAlias: 'smooth',
+        style: { font: { name: text.fontName }, fontSize: text.fontSize,
+          fillColor: { r: (color >> 16) & 255, g: (color >> 8) & 255, b: color & 255 } },
+        paragraphStyle: { justification: text.alignment || 'left' } };
+    }
     if (json.mask && json.mask.imageData) {
       layer.mask = {
         top: json.mask.top || 0,
         left: json.mask.left || 0,
         disabled: !!json.mask.disabled,
+        defaultColor: json.mask.defaultColor || 0,
         imageData: buildImageData(json.mask.imageData)
       };
     }
@@ -215,8 +248,13 @@
       children: []
     };
     var layers = request.layers || [];
+    var parents = [psd.children];
     for (var i = 0; i < layers.length; i += 1) {
-      psd.children.push(buildLayer(layers[i]));
+      var spec = layers[i], depth = spec.depth || 0;
+      if (depth < 0 || depth > 16 || depth >= parents.length) throw new Error('invalid layer hierarchy');
+      parents.length = depth + 1;
+      var built = buildLayer(spec); parents[depth].push(built);
+      if (spec.group) parents.push(built.children);
     }
     if (!request.composite || !request.composite.data) {
       throw new Error('a full composite imageData is required by ag-psd writePsd');

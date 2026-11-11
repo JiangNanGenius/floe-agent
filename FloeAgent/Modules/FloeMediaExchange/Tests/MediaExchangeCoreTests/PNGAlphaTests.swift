@@ -5,6 +5,15 @@ import XCTest
 @testable import MediaExchangeCore
 
 final class PNGAlphaTests: XCTestCase {
+    func testPNGDataSliceKeepsItsNonzeroStartIndex() throws {
+        let image = try RGBAImage(width: 2, height: 1, pixels: [200, 100, 50, 1, 12, 34, 56, 255])
+        var prefixed = Data(repeating: 0, count: 7)
+        prefixed.append(try PNGCodec.encode(image))
+        let slice = prefixed.dropFirst(7)
+        XCTAssertEqual(slice.startIndex, 7)
+        XCTAssertEqual(try PNGCodec.decode(slice), image)
+    }
+
     /// This is the regression that the earlier research package could not pass:
     /// alpha=1 straight RGBA must survive encode/decode without premultiplication.
     func testAlphaOneRGBAUnpremultipliedPNGRoundTripIsExact() throws {

@@ -51,6 +51,102 @@ struct WorkbenchImageRendererTests {
 
     // MARK: Tests
 
+    @Test func adjustmentMaskHonorsOpacityAndExtraGroupBlendsRender() async throws {
+        let renderer = WorkbenchImageRenderer(), canvas = MediaCanvas(width: 16, height: 16)
+        var document = try #require(try MediaPreparedUpgrade.upgrade(MediaProject(kind: .image, name: "Blend", canvas: canvas)).prepared)
+        let base = MediaPreparedLayer(name: "Base", content: .raster(.init(source: .solidColor("#000000"))))
+        let mask = ImageSelection(bitmap: try .init(width: 16, height: 16, alpha: Data(repeating: 255, count: 256)))
+        let adjustment = MediaPreparedLayer(name: "Grade", opacity: 0.5, content: .adjustment(.init(brightness: 1)), mask: .init(vector: mask))
+        document.layers = [base, adjustment]
+        let half = try MediaNativeSelection.rgba(await renderer.renderPrepared(document, canvas: .init(width: 16, height: 16), resolveAsset: { _ in nil })).pixels
+        #expect(half[0] > 80 && half[0] < 220, "a masked adjustment must keep its half opacity")
+        for mode in ["difference", "exclusion"] {
+            let white = MediaPreparedLayer(name: "White", content: .raster(.init(source: .solidColor("#FFFFFF"))))
+            let group = MediaPreparedLayer(name: "Blend", content: .group(.init(isIsolated: true, blendMode: mode)))
+            let child = MediaPreparedLayer(parentID: group.id, name: "White", content: .raster(.init(source: .solidColor("#FFFFFF"))))
+            document.layers = [white, group, child]
+            let pixels = try MediaNativeSelection.rgba(await renderer.renderPrepared(document, canvas: .init(width: 16, height: 16), resolveAsset: { _ in nil })).pixels
+            #expect(pixels[0] < 5 && pixels[1] < 5 && pixels[2] < 5)
+        }
+    }
+
+    @Test func opaqueExportFlattensPNGAndHEICOverWhite() async throws {
+        let root = try makeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let project = MediaProject(kind: .image, name: "Clear", canvas: .init(width: 16, height: 16))
+        let renderer = WorkbenchImageRenderer()
+        for format in [ImageExportFormat.png, .jpeg, .heic] {
+            let url = root.appendingPathComponent("white." + format.fileExtension)
+            _ = try await renderer.exportImage(project: project, options: .init(format: format, preserveTransparency: false), resolveAsset: { _ in nil }, destination: url)
+            let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+            let bytes = try MediaNativeSelection.rgba(#require(CGImageSourceCreateImageAtIndex(source, 0, nil))).pixels
+            #expect(bytes[0] > 245 && bytes[1] > 245 && bytes[2] > 245 && bytes[3] == 255)
+        }
+    }
+
+    @Test func preparedBrushUsesPerSamplePressureAndKeepsMouseWidthConstant() async throws {
+        let renderer = WorkbenchImageRenderer()
+        func image(_ pressure: Bool) async throws -> CGImage {
+            let points = [ImageFreehandStroke.Point(x: 0.1, y: 0.5, pressure: pressure ? 0.1 : nil),
+                          .init(x: 0.5, y: 0.5, pressure: pressure ? 0.5 : nil),
+                          .init(x: 0.9, y: 0.5, pressure: pressure ? 1 : nil)]
+            var project = MediaProject(kind: .image, name: "Pressure", canvas: .init(width: 160, height: 80))
+            project.imageLayers = [.init(kind: .freehand, name: "Ink", freehand: .init(strokes: [
+                .init(points: points, width: 30, colorHex: "#FFFFFF", hardness: 0, opacity: 1)]))]
+            project = try MediaPreparedUpgrade.upgrade(project)
+            return try await renderer.render(project: project, canvas: .init(width: 160, height: 80), resolveAsset: { _ in nil })
+        }
+        let pencil = try MediaNativeSelection.rgba(await image(true)).pixels
+        let mouse = try MediaNativeSelection.rgba(await image(false)).pixels
+        func width(_ bytes: [UInt8], _ x: Int) -> Int { (0..<80).filter { bytes[($0 * 160 + x) * 4 + 3] > 1 }.count }
+        #expect(width(pencil, 135) > width(pencil, 25) + 8)
+        #expect(abs(width(mouse, 135) - width(mouse, 25)) <= 2)
+    }
+
+    @Test func captureMetadataIsPreservedOnlyWhenRequested() async throws {
+        let root = try makeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("capture.jpg")
+        let destination = try #require(CGImageDestinationCreateWithURL(source as CFURL, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, makeImage(width: 16, height: 8, color: (0, 1, 0, 1)), [
+            kCGImagePropertyExifDictionary: [kCGImagePropertyExifDateTimeOriginal: "2026:11:11 12:00:00"],
+            kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 1.0, kCGImagePropertyGPSLatitudeRef: "N"]
+        ] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+        let asset = MediaAssetReference(kind: .image, relativePath: "capture.jpg", originalName: "capture.jpg")
+        var project = MediaProject(kind: .image, name: "Metadata", canvas: .init(width: 16, height: 8), assets: [asset])
+        project.imageLayers = [.init(kind: .image, name: "Capture", assetID: asset.id)]
+        project = try MediaPreparedUpgrade.upgrade(project)
+        let renderer = WorkbenchImageRenderer()
+        for strip in [true, false] {
+            let url = root.appendingPathComponent("metadata-\(strip).jpg")
+            _ = try await renderer.exportImage(project: project, options: .init(format: .jpeg, preserveTransparency: false, stripMetadata: strip), resolveAsset: { _ in source }, destination: url)
+            let encoded = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+            let properties = try #require(CGImageSourceCopyPropertiesAtIndex(encoded, 0, nil) as? [CFString: Any])
+            #expect((properties[kCGImagePropertyGPSDictionary] == nil) == strip)
+        }
+    }
+
+    @Test func resizedExportsKeepPixelsAndUseRequestedContainer() async throws {
+        let root = try makeRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("green.png")
+        try writePNG(makeImage(width: 80, height: 40, color: (0, 1, 0, 1)), to: source)
+        let asset = MediaAssetReference(kind: .image, relativePath: "green.png", originalName: "green.png")
+        var project = MediaProject(kind: .image, name: "Export", canvas: .init(width: 80, height: 40), assets: [asset])
+        project.imageLayers = [.init(kind: .image, name: "Green", assetID: asset.id)]
+        project = try MediaPreparedUpgrade.upgrade(project)
+        let renderer = WorkbenchImageRenderer()
+        for format in [ImageExportFormat.png, .jpeg, .heic] {
+            let options = ImageExportOptions(format: format, width: 20, height: 10, quality: 0.8, preserveTransparency: format.supportsAlpha)
+            let destination = root.appendingPathComponent("small." + format.fileExtension)
+            let receipt = try await renderer.exportImage(project: project, options: options, resolveAsset: { $0 == asset.id ? source : nil }, destination: destination)
+            #expect(receipt.width == 20 && receipt.height == 10)
+            let image = try #require(CGImageSourceCreateWithURL(destination as CFURL, nil))
+            let pixels = try MediaNativeSelection.rgba(#require(CGImageSourceCreateImageAtIndex(image, 0, nil))).pixels
+            #expect(pixels[1] > 200 && pixels[3] > 200)
+            let preview = try await renderer.previewImageExport(project: project, options: options, resolveAsset: { $0 == asset.id ? source : nil })
+            #expect(preview.image.width == 20 && preview.image.height == 10 && preview.estimatedBytes > 0)
+        }
+    }
+
     @Test func exifOrientationIsAppliedOnDecode() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

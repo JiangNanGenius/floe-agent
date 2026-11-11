@@ -26,7 +26,7 @@ XCFramework or prebuilt library is vendored.
 - Vendored runtime subset: `ag-psd-bundle.js` and the project-authored
   `adapter.js` only. Example images/brushes from the repository are not copied.
 - Bundle SHA-256: `075122c0bec86bb5d059b763f41008ed3202237b4f08dd83d04e1089c4fcefa6`
-- Adapter SHA-256: `1565ed897b40a05eed431c801c47184f173d9a2a60eb486dc2da0e610bafcc78`
+- Adapter SHA-256: `34b514bb15ebdab3e3de89a71498e8b167af3c1441715cb863be8020c3457dca`
 
 ## ZIPFoundation
 
@@ -35,6 +35,18 @@ XCFramework or prebuilt library is vendored.
 - Resolved revision: `22787ffb59de99e5dc1fbfe80b19c97a904ad48d`
 - License: MIT
 - Reused through SwiftPM; the main `FloeAgent/Package.swift` is unmodified.
+
+## Swift PNG and h
+
+- Swift PNG upstream: https://github.com/tayloraswift/swift-png
+- Version: `4.5.1`, revision `8a0bcd4df5e4b307c804937776a56dd6ecdf6396`.
+- h upstream: https://github.com/rarestype/h
+- Version: `1.0.1`, revision `aa3626829160917d4378330617971977cbd78f5b`.
+- License: Apache License 2.0 (`LICENSE-Apache-2.0.txt`), with upstream notices
+  in `SwiftPNG-NOTICE.txt` and `H-NOTICE.txt`.
+- Reused through the existing SwiftPM pins. Swift PNG's `PNG` and `LZ77`
+  targets and h's `CRC`, `Base16` and `BaseDigits` targets preserve straight
+  RGBA values during PNG layer import/export, including very low alpha.
 
 ## Clipper2
 

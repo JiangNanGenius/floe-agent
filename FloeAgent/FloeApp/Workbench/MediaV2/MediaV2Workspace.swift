@@ -27,6 +27,7 @@ struct MediaV2Workspace: View {
     @State private var paintColor: Color = .teal
     @State private var showingDiagnostic = false
     @State private var showingProviderSettings = false
+    @State private var showingImageExport = false
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 1050
@@ -79,6 +80,7 @@ struct MediaV2Workspace: View {
             }.presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showingProviderSettings) { MediaV2ProviderConfigurationView() }
+        .sheet(isPresented: $showingImageExport) { MediaV2ImageExportSheet(session: session) }
         .fullScreenCover(item:$session.compoundEditorRoute) { route in
             MediaV2CompoundEditor(rootSession:session,route:route,onAssistant:onAssistant)
         }
@@ -103,6 +105,10 @@ struct MediaV2Workspace: View {
                     Button(WorkbenchText.t("文字", "Text"), systemImage: "character.cursor.ibeam") { run("image.text") }
                     Button(WorkbenchText.t("形状", "Shape"), systemImage: "square.on.circle") { run("image.shape") }
                     Button(WorkbenchText.t("编组", "Group"), systemImage: "folder") { run("image.group-layer") }
+                    Button(WorkbenchText.t("调色调整层", "Color adjustment layer"), systemImage: "slider.horizontal.3") {
+                        session.addLayer(.adjustment(.init()), name: WorkbenchText.t("调色", "Color adjustment"))
+                        session.tool = "image.curves"
+                    }
                 } else {
                     Button(WorkbenchText.t("视频轨", "Video track")) { session.addTrack(.visual) }
                     Button(WorkbenchText.t("音频轨", "Audio track")) { session.addTrack(.audio) }
@@ -112,7 +118,9 @@ struct MediaV2Workspace: View {
             Divider().frame(height: 22).padding(.horizontal, 4)
             if wide { MusicIconButton("square.and.arrow.down", WorkbenchText.t("导入素材", "Import media")) { beginImport() } }
             Menu {
-                Button(session.project.kind == .image ? WorkbenchText.t("导出 PNG", "Export PNG") : WorkbenchText.t("导出 MP4", "Export MP4")) { session.export() }
+                if session.project.kind == .image {
+                    Button(WorkbenchText.t("导出图片…", "Export image…")) { showingImageExport = true }
+                } else { Button(WorkbenchText.t("导出 MP4", "Export MP4")) { session.export() } }
                 Button(WorkbenchText.t("完整工程包", "Complete original")) { exchange(.original) }
                 Button(WorkbenchText.t("引用工程包", "Referenced original")) { exchange(.references) }
                 if session.project.kind == .image {
@@ -124,7 +132,7 @@ struct MediaV2Workspace: View {
             } label: {
                 if wide { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
                 else { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }
-            }.accessibilityLabel(WorkbenchText.t("导出", "Export")).disabled(session.rendering)
+            }.accessibilityLabel(WorkbenchText.t("导出", "Export")).disabled(session.rendering || session.processingTool || session.saving)
             Spacer(minLength: 8)
             if wide {
                 Text(session.saving ? WorkbenchText.t("正在保存…", "Saving…") : WorkbenchText.t("已保存", "Saved"))
@@ -443,6 +451,7 @@ struct MediaV2Workspace: View {
             } else { Text(session.project.kind == .image ? WorkbenchText.t("分层原件", "Layered original") : WorkbenchText.t("多轨工程", "Multi-track project")) }
             Spacer()
             if session.rendering { ProgressView(value: session.exportProgress).frame(width: 70); Button(WorkbenchText.t("取消", "Cancel")) { session.cancelExport() } }
+            else if session.processingTool { ProgressView(); Button(WorkbenchText.t("取消", "Cancel")) { session.cancelToolProcessing() } }
             Text("\(session.document.canvas?.width ?? 0) × \(session.document.canvas?.height ?? 0)")
         }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 10).frame(minHeight: session.diagnostic == nil ? 28 : 44)
             .accessibilityIdentifier("media.v2.status")
@@ -459,7 +468,7 @@ struct MediaV2Workspace: View {
     }
     private var importContentTypes: [UTType] {
         if importingCaptions { return [.plainText, UTType(filenameExtension: "srt") ?? .plainText, UTType(filenameExtension: "vtt") ?? .plainText] }
-        return session.project.kind == .image ? [.image] : [.image, .movie, .audio]
+        return session.project.kind == .image ? [.image, UTType(filenameExtension: "psd") ?? .image, UTType(filenameExtension: "ora") ?? UTType(importedAs: "org.openraster.image")] : [.image, .movie, .audio]
     }
     private func beginImport(captions: Bool = false) { importingCaptions = captions; importing = true }
     private func objectAction(_ id: String, layer: MediaPreparedLayer, flag: Bool? = nil) {

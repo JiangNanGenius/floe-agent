@@ -34,6 +34,21 @@ public struct PSDMaskInfo: Sendable, Equatable {
     public let height: Int
     public let disabled: Bool
     public let imageData: RGBAImage?
+    public var defaultColor: UInt8 = 0
+}
+
+/// Qualified single-style point text. Rich runs, warps and paragraph boxes
+/// remain preserved-only until their native editing contracts are available.
+public struct PSDText: Codable, Sendable, Equatable {
+    public var text: String
+    public var fontName: String
+    public var fontSize: Double
+    public var colorHex: String
+    public var alignment: String
+    public init(text: String, fontName: String, fontSize: Double, colorHex: String, alignment: String = "left") {
+        self.text = text; self.fontName = fontName; self.fontSize = fontSize
+        self.colorHex = colorHex; self.alignment = alignment
+    }
 }
 
 public struct PSDLayerInfo: Sendable, Equatable {
@@ -56,6 +71,7 @@ public struct PSDLayerInfo: Sendable, Equatable {
     public let hasVectorMask: Bool
     public let depth: Int
     public let mask: PSDMaskInfo?
+    public var text: PSDText? = nil
 }
 
 public struct PSDLayerPixels: Sendable {
@@ -96,6 +112,9 @@ public struct PSDWriteLayer: Sendable {
     public var transparencyProtected: Bool
     public var blendMode: String
     public var mask: PSDMaskInfo?
+    public var group: Bool
+    public var depth: Int
+    public var text: PSDText?
 
     public init(
         name: String,
@@ -107,7 +126,7 @@ public struct PSDWriteLayer: Sendable {
         clipping: Bool = false,
         transparencyProtected: Bool = false,
         blendMode: String = "normal",
-        mask: PSDMaskInfo? = nil
+        mask: PSDMaskInfo? = nil, group: Bool = false, depth: Int = 0, text: PSDText? = nil
     ) {
         self.name = name
         self.top = top
@@ -118,7 +137,7 @@ public struct PSDWriteLayer: Sendable {
         self.clipping = clipping
         self.transparencyProtected = transparencyProtected
         self.blendMode = blendMode
-        self.mask = mask
+        self.mask = mask; self.group = group; self.depth = depth; self.text = text
     }
 }
 
@@ -220,11 +239,11 @@ public final class PSDCodec {
         guard compatibility.status == .supported else { return compatibility }
         let metadata = try read(data, includePixels: false, includeComposite: false, limits: limits)
         var reasons = compatibility.reasons
-        if metadata.layers.contains(where: { $0.info.group }) {
-            reasons.append("layer groups are not supported by the editable baseline")
+        if metadata.layers.contains(where: { $0.info.depth > 16 }) {
+            reasons.append("layer nesting exceeds 16 levels")
         }
-        if metadata.layers.contains(where: { $0.info.hasText }) {
-            reasons.append("editable text layers are not supported by the editable baseline")
+        if metadata.layers.contains(where: { $0.info.hasText && ($0.info.text == nil || $0.info.width == 0 || $0.info.height == 0) }) {
+            reasons.append("complex editable text is preserved without conversion")
         }
         if metadata.layers.contains(where: { $0.info.hasPlacedLayer }) {
             reasons.append("smart objects are not supported by the editable baseline")
@@ -303,7 +322,7 @@ public final class PSDCodec {
                     width: $0.width,
                     height: $0.height,
                     disabled: $0.disabled,
-                    imageData: maskImage
+                    imageData: maskImage, defaultColor: UInt8(clamping: $0.defaultColor ?? 0)
                 )
             }
             layerPixels.append(PSDLayerPixels(
@@ -326,7 +345,7 @@ public final class PSDCodec {
                     hasEffects: dto.hasEffects,
                     hasVectorMask: dto.hasVectorMask,
                     depth: dto.depth,
-                    mask: mask
+                    mask: mask, text: dto.text
                 ),
                 imageData: image,
                 maskImageData: maskImage
@@ -383,6 +402,7 @@ public final class PSDCodec {
                     )
                 }
                 return WriteLayerDTO(
+                    group: layer.group, depth: layer.depth, text: layer.text,
                     name: layer.name,
                     top: layer.top,
                     left: layer.left,
@@ -400,7 +420,7 @@ public final class PSDCodec {
                         WriteMaskDTO(
                             top: mask.top,
                             left: mask.left,
-                            disabled: mask.disabled,
+                            disabled: mask.disabled, defaultColor: mask.defaultColor,
                             imageData: mask.imageData.map {
                                 PixelDataDTO(
                                     width: $0.width,
@@ -544,6 +564,7 @@ private struct PixelDataDTO: Codable {
 }
 
 private struct MaskDTO: Decodable {
+    let defaultColor: Int?
     let top: Int
     let left: Int
     let width: Int
@@ -553,6 +574,7 @@ private struct MaskDTO: Decodable {
 }
 
 private struct LayerDTO: Decodable {
+    let text: PSDText?
     let name: String
     let top: Int
     let left: Int
@@ -595,6 +617,9 @@ private struct ReadResponseDTO: Decodable {
 }
 
 private struct WriteLayerDTO: Encodable {
+    let group: Bool
+    let depth: Int
+    let text: PSDText?
     let name: String
     let top: Int
     let left: Int
@@ -611,6 +636,7 @@ private struct WriteMaskDTO: Encodable {
     let top: Int
     let left: Int
     let disabled: Bool
+    let defaultColor: UInt8
     let imageData: PixelDataDTO?
 }
 

@@ -7,6 +7,14 @@ public enum MediaNativeColor {
     public static let supportedFilterIDs=["CIPhotoEffectMono","CIPhotoEffectNoir","CIPhotoEffectChrome","CIPhotoEffectFade","CIPhotoEffectInstant","CISepiaTone"]
     public static func apply(_ adjustment: ImageLayerAdjustment, to input: CIImage) throws -> CIImage {
         guard !adjustment.isIdentity else { return input }
+        if let region = adjustment.effectRegion {
+            guard let mask = ImageSelectionRasterizer.maskImage(for: region, canvas: input.extent.size) else { return input }
+            var unscoped = adjustment; unscoped.effectRegion = nil
+            let changed = try apply(unscoped, to: input)
+            return changed.applyingFilter("CIBlendWithAlphaMask", parameters: [
+                kCIInputBackgroundImageKey: input, kCIInputMaskImageKey: mask
+            ]).cropped(to: input.extent)
+        }
         var output = input
         if let temperature = adjustment.temperature, temperature.isFinite {
             let filter = CIFilter(name: "CITemperatureAndTint")!
@@ -92,6 +100,11 @@ public enum MediaNativeColor {
 
 
     public static func validateExtended(_ a:ImageLayerAdjustment) throws {
+        if let channels = a.channelCurves {
+            for curve in [channels.red, channels.green, channels.blue].compactMap({ $0 }) {
+                try validateExtended(.init(toneCurve: curve))
+            }
+        }
         if let curve=a.toneCurve{guard curve.count==5,curve.allSatisfy({$0.x.isFinite && $0.y.isFinite && (0...1).contains($0.x) && (0...1).contains($0.y)}),zip(curve,curve.dropFirst()).allSatisfy({$0.x<$1.x}) else{throw MediaPreparedCoreError.invalidOperation("tone curve needs five ordered normalized control points")}}
         if let balance=a.colorBalance{for range in [balance.shadows,balance.midtones,balance.highlights]{guard [range.red,range.green,range.blue].allSatisfy({$0.isFinite && (-1...1).contains($0)}) else{throw MediaPreparedCoreError.invalidOperation("color balance channels must be -1...1")}}}
         if let lut=a.colorLUT{try lut.validate()}
@@ -104,6 +117,10 @@ public enum MediaNativeColor {
             var parameters:[String:Any]=[:];for (i,p) in curve.enumerated(){parameters["inputPoint\(i)"]=CIVector(x:p.x,y:p.y)}
             result=result.applyingFilter("CIToneCurve",parameters:parameters)
         }
+        if let channels = a.channelCurves {
+            let lut = try channelLUT(channels)
+            result = result.applyingFilter("CIColorCube", parameters: ["inputCubeDimension": lut.dimension, "inputCubeData": lut.rgba])
+        }
         if let balance=a.colorBalance{
             let lut=try balanceLUT(balance)
             result=result.applyingFilter("CIColorCube",parameters:["inputCubeDimension":lut.dimension,"inputCubeData":lut.rgba])
@@ -114,8 +131,33 @@ public enum MediaNativeColor {
             result=result.applyingFilter("CIColorCube",parameters:["inputCubeDimension":lut.dimension,"inputCubeData":lut.rgba])
         }
         if let amount=a.noiseReduction,amount>0{result=result.applyingFilter("CINoiseReduction",parameters:["inputNoiseLevel":amount*0.1,"inputSharpness":0.4])}
-        if let region=a.effectRegion,let mask=ImageSelectionRasterizer.maskImage(for:region,canvas:input.extent.size){result=result.applyingFilter("CIBlendWithAlphaMask",parameters:[kCIInputBackgroundImageKey:input,kCIInputMaskImageKey:mask])}
+        if let region=a.effectRegion {
+            guard let mask=ImageSelectionRasterizer.maskImage(for:region,canvas:input.extent.size) else { return input }
+            result=result.applyingFilter("CIBlendWithAlphaMask",parameters:[kCIInputBackgroundImageKey:input,kCIInputMaskImageKey:mask])
+        }
         try Task.checkCancellation();return result.cropped(to:input.extent)
+    }
+    private static func channelLUT(_ curves: ImageChannelCurves) throws -> ImageColorLUT {
+        func sample(_ value: Double, _ points: [ImageFreehandStroke.Point]?) -> Float {
+            guard let points else { return Float(value) }
+            guard let first = points.first, let last = points.last else { return Float(value) }
+            if value <= first.x { return Float(first.y) }
+            if value >= last.x { return Float(last.y) }
+            for (a, b) in zip(points, points.dropFirst()) where value <= b.x {
+                return Float(a.y + (b.y - a.y) * (value - a.x) / (b.x - a.x))
+            }
+            return Float(value)
+        }
+        let dimension = 33
+        var values = [Float](); values.reserveCapacity(dimension * dimension * dimension * 4)
+        for blue in 0..<dimension {
+            try Task.checkCancellation()
+            for green in 0..<dimension { for red in 0..<dimension {
+                values += [sample(Double(red) / 32, curves.red), sample(Double(green) / 32, curves.green),
+                           sample(Double(blue) / 32, curves.blue), 1]
+            } }
+        }
+        return try .init(dimension: dimension, rgba: values.withUnsafeBytes { Data($0) })
     }
     private static func balanceLUT(_ settings:ImageColorBalance) throws -> ImageColorLUT {
         let size=16;var values:[Float]=[];values.reserveCapacity(size*size*size*4)

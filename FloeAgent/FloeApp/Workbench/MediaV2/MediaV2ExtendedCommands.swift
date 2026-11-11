@@ -29,27 +29,22 @@ extension MediaV2Session {
         }
         if ["image.curves","image.balance","image.lut","image.denoise"].contains(id) {
             guard let layer,!layer.isLocked else{throw MediaV2CommandError.missingSelection}
-            let image=try await renderedLayerImage(layer,revision:base)
             var controls=input.adjustment ?? .init()
             switch id {
-            case "image.curves":controls.toneCurve=controls.toneCurve ?? input.points ?? [.init(x:0,y:0),.init(x:0.25,y:0.25),.init(x:0.5,y:0.5),.init(x:0.75,y:0.75),.init(x:1,y:1)]
+            case "image.curves":controls.toneCurve=controls.toneCurve ?? input.points
             case "image.balance":controls.colorBalance=controls.colorBalance ?? .init(midtones:.init(red:input.number ?? 0,green:input.secondary ?? 0))
             case "image.lut":
                 if let text=input.text {
-                    if MediaNativeColor.supportedFilterIDs.contains(text){controls.filterID=text}
+                    if MediaNativeColor.supportedFilterIDs.contains(text){controls.filterID=text;controls.colorLUT=nil}
                     else{let parse=Task.detached(priority:.userInitiated){try ImageColorLUT.parseCube(text)};controls.colorLUT=try await withTaskCancellationHandler{try await parse.value}onCancel:{parse.cancel()}}
                 }
                 guard controls.colorLUT != nil || controls.filterID.map(MediaNativeColor.supportedFilterIDs.contains) == true else{throw MediaV2CommandError.invalidInput}
             default:controls.noiseReduction=controls.noiseReduction ?? input.number ?? 0.5;controls.sharpenRadius=controls.sharpenRadius ?? input.secondary ?? 20
             }
-            controls.effectRegion=nil
-            let adjustment=controls
-            let native=Task.detached(priority:.userInitiated){let source=CIImage(cgImage:image);var result=try MediaNativeColor.apply(adjustment,to:source)
-                if let region,let mask=ImageSelectionRasterizer.maskImage(for:region,canvas:CGSize(width:canvas.width,height:canvas.height)){result=result.applyingFilter("CIBlendWithAlphaMask",parameters:[kCIInputBackgroundImageKey:source,kCIInputMaskImageKey:mask])}
-                guard let output=CIContext(options:[.cacheIntermediates:false]).createCGImage(result,from:.init(x:0,y:0,width:canvas.width,height:canvas.height)) else{throw MediaV2CommandError.invalidInput};return output}
-            let output=try await withTaskCancellationHandler{try await native.value}onCancel:{native.cancel()}
+            let adjustment = try MediaImageColorEditing.merging(controls, into: MediaImageColorEditing.controls(of: layer), tool: id, selection: region)
             try Task.checkCancellation();guard selection==originalSelection else{throw MediaPreparedCoreError.documentChanged}
-            let commit=try await commitRenderedImage(output,replacing:layer,revision:base,actor:actor)
+            let action = try MediaImageColorEditing.action(layer: layer, controls: adjustment)
+            let commit = try await apply([.init(action: action)], expectedRevision: base, actor: actor)
             return .init(documentID:document.id,revision:document.revision,toolID:id,groupID:commit.groupID,selectionOnly:false)
         }
         let bitmap:ImageSelectionBitmap

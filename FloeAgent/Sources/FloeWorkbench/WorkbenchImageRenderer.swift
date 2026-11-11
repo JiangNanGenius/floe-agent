@@ -202,8 +202,9 @@ public actor WorkbenchImageRenderer {
                 cache[layer.id] = placed
                 return placed
             }
+            let sourceAdjustment = layer.adjustment.effectRegion == nil ? layer.adjustment : .init()
             var legacy = ImageLayer(id: layer.id, kind: .fill, name: layer.name,
-                transform: layer.transform, opacity: layer.opacity, adjustment: layer.adjustment)
+                transform: layer.transform, opacity: layer.opacity, adjustment: sourceAdjustment)
             var unplaced: CIImage
             switch layer.content {
             case .raster(let raster):
@@ -219,7 +220,7 @@ public actor WorkbenchImageRenderer {
                 }
                 guard let image = try unplacedLayer(legacy, canvas: canvas, resolveAsset: resolveAsset, previewMaxEdge: previewMaxEdge) else { throw WorkbenchImageError.decodeFailed("empty layer source") }
                 unplaced = image
-            case .text(let text): unplaced = try applyAdjustment(layer.adjustment, to: makeTextLayer(text, canvas: canvas))
+            case .text(let text): unplaced = try applyAdjustment(sourceAdjustment, to: makeTextLayer(text, canvas: canvas))
             case .strokes(let strokes):
                 var image = clear
                 for stroke in strokes.strokes {
@@ -227,9 +228,9 @@ public actor WorkbenchImageRenderer {
                     let cg = try MediaPreparedImageDocumentAdapter.renderStroke(stroke, sourceWidth: Int(canvas.width), sourceHeight: Int(canvas.height))
                     image = CIImage(cgImage: cg).composited(over: image)
                 }
-                unplaced = try applyAdjustment(layer.adjustment, to: image)
-            case .vectorPaths(let path): unplaced = try applyAdjustment(layer.adjustment, to: vectorImage(path, canvas: canvas))
-            case .group: unplaced = try applyAdjustment(layer.adjustment, to: compose(parent: layer.id,canvas:canvas))
+                unplaced = try applyAdjustment(sourceAdjustment, to: image)
+            case .vectorPaths(let path): unplaced = try applyAdjustment(sourceAdjustment, to: vectorImage(path, canvas: canvas))
+            case .group: unplaced = try applyAdjustment(sourceAdjustment, to: compose(parent: layer.id,canvas:canvas))
             case .adjustment: throw WorkbenchImageError.unsupportedSource("adjustment layer cannot be used as clipping base")
             }
             if let mask = layer.mask, mask.isEnabled {
@@ -240,6 +241,9 @@ public actor WorkbenchImageRenderer {
             let groupCenter=layer.contentKind == .group ? CGPoint(x:canvas.width/2,y:canvas.height/2):nil
             var placed = try place(image: unplaced, layer: legacy, canvas: canvas,imageCenter:groupCenter)
             if let space=layer.canvasSpace { placed=placed.transformed(by:space.transform.cgAffineTransform) }
+            if layer.adjustment.effectRegion != nil {
+                placed = try applyAdjustment(layer.adjustment, to: placed.cropped(to: CGRect(origin: .zero, size: parentCanvas)))
+            }
             if let clip = layer.clip, let base = document.layer(clip.baseLayerID) {
                 var alpha = try render(base,parentCanvas:parentCanvas)
                 if clip.mode == .luminance { alpha = alpha.applyingFilter("CIMaskToAlpha") }
@@ -262,12 +266,13 @@ public actor WorkbenchImageRenderer {
                         let reference=layer.canvasSpace.map{CGSize(width:$0.referenceCanvas.width,height:$0.referenceCanvas.height)} ?? canvas
                         alpha=try coverage(mask,canvas:reference)
                         if let space=layer.canvasSpace { alpha=alpha.transformed(by:space.transform.cgAffineTransform) }
+                        alpha=alpha.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: layer.opacity)])
                     }
                     result = adjusted.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: result, kCIInputMaskImageKey: alpha])
                 } else {
                     let foreground = try render(layer,parentCanvas:canvas)
                     if case .group(let group) = layer.content, let mode = group.blendMode, mode != "normal" {
-                        let modes = ["multiply": "CIMultiplyBlendMode", "screen": "CIScreenBlendMode", "overlay": "CIOverlayBlendMode", "darken": "CIDarkenBlendMode", "lighten": "CILightenBlendMode"]
+                        let modes = ["multiply": "CIMultiplyBlendMode", "screen": "CIScreenBlendMode", "overlay": "CIOverlayBlendMode", "darken": "CIDarkenBlendMode", "lighten": "CILightenBlendMode", "difference": "CIDifferenceBlendMode", "exclusion": "CIExclusionBlendMode"]
                         guard let filter = modes[mode] else { throw WorkbenchImageError.unsupportedSource("group blend mode \(mode)") }
                         result = foreground.applyingFilter(filter, parameters: [kCIInputBackgroundImageKey: result])
                     } else { result = foreground.composited(over: result) }
@@ -349,6 +354,22 @@ public actor WorkbenchImageRenderer {
             image = try applyMask(mask, to: image, canvas: canvas)
         }
         return image
+    }
+
+    public func exchangeMask(_ mask: MediaPreparedLayerMask, canvas: CGSize) throws -> CGImage {
+        let extent = CGRect(origin: .zero, size: canvas)
+        var image = CIImage(color: .white).cropped(to: extent)
+        if let vector = mask.vector { image = try applySelection(vector, to: image, canvas: canvas) }
+        if !mask.strokes.isEmpty { image = try applyMask(.init(strokes: mask.strokes), to: image, canvas: canvas) }
+        let sign: CGFloat = mask.isInverted ? -1 : 1, bias: CGFloat = mask.isInverted ? 1 : 0
+        image = image.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: 0, y: 0, z: 0, w: sign),
+            "inputGVector": CIVector(x: 0, y: 0, z: 0, w: sign),
+            "inputBVector": CIVector(x: 0, y: 0, z: 0, w: sign),
+            "inputAVector": CIVector(x: 0, y: 0, z: 0, w: 0),
+            "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 1)])
+        guard let output = context.createCGImage(image, from: extent) else { throw WorkbenchImageError.encodeFailed("mask export") }
+        return output
     }
 
     /// Measures the untransformed rendered size of a layer in canvas pixels,
@@ -539,6 +560,19 @@ public actor WorkbenchImageRenderer {
         var output = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
             .cropped(to: CGRect(origin: .zero, size: canvas))
         for stroke in content.strokes {
+            if stroke.points.contains(where: { $0.pressure != nil }) {
+                let samples = stroke.points.map {
+                    MediaPreparedBrushSample(x: $0.x, y: $0.y, pressure: $0.pressure,
+                                             pressureSource: $0.pressure == nil ? MediaPreparedPressureSource.none : .legacyUnverified)
+                }
+                let image = try MediaPreparedImageKernel.renderBrush(
+                    samples: samples, sourceWidth: Int(canvas.width), sourceHeight: Int(canvas.height),
+                    width: stroke.width, opacity: max(0, min(stroke.opacity ?? 1, 1)),
+                    hardness: 1 - max(0, min(stroke.hardness ?? 0, 1)), color: UIColorLike.cgColor(stroke.colorHex),
+                    profile: .init(usesPressureForOpacity: false), isCancelled: { Task.isCancelled })
+                output = CIImage(cgImage: image).composited(over: output)
+                continue
+            }
             let pressures = stroke.points.compactMap(\.pressure)
             let pressureScale: Double = pressures.isEmpty
                 ? 1
@@ -684,17 +718,19 @@ public actor WorkbenchImageRenderer {
             guard let bitmap = CGContext(data: nil, width: targetWidth, height: targetHeight,
                                          bitsPerComponent: 8, bytesPerRow: 0,
                                          space: CGColorSpaceCreateDeviceRGB(),
-                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-                  let resizedImage = bitmap.makeImage() else {
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
                 throw WorkbenchImageError.encodeFailed("resize context unavailable")
             }
             bitmap.interpolationQuality = .high
             bitmap.draw(full, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+            guard let resizedImage = bitmap.makeImage() else {
+                throw WorkbenchImageError.encodeFailed("resize image unavailable")
+            }
             resized = resizedImage
         } else {
             resized = full
         }
-        let data = try encode(resized, options: options)
+        let data = try encode(resized, options: options, metadata: sourceMetadata(project, options: options, resolveAsset: resolveAsset))
         try verify(data: data, expectedUTType: options.format.utType,
                    expectedWidth: targetWidth, expectedHeight: targetHeight)
         let directory = destination.deletingLastPathComponent()
@@ -710,17 +746,66 @@ public actor WorkbenchImageRenderer {
                                            format: options.format.rawValue, byteCount: Int64(data.count))
     }
 
-    private func encode(_ image: CGImage, options: ImageExportOptions) throws -> Data {
+    /// Bounded preview uses the real container encoder; file size is an
+    /// explicitly labelled estimate scaled from the encoded preview pixels.
+    public func previewImageExport(project: MediaProject, options: ImageExportOptions,
+                                   resolveAsset: @Sendable (UUID) -> URL?) throws -> (image: CGImage, estimatedBytes: Int64) {
+        guard let canvas = project.canvas else { throw WorkbenchImageError.encodeFailed("missing canvas") }
+        try MediaExportValidationCore.validateImage(options: options, canvasWidth: canvas.width, canvasHeight: canvas.height, hasTransparency: true)
+        let targetWidth = options.width ?? canvas.width, targetHeight = options.height ?? canvas.height
+        let scale = min(1, 512 / Double(max(targetWidth, targetHeight)))
+        let width = max(1, Int(Double(targetWidth) * scale)), height = max(1, Int(Double(targetHeight) * scale))
+        let rendered: CGImage
+        if let document = project.prepared {
+            rendered = try renderPrepared(document, canvas: .init(width: canvas.width, height: canvas.height), resolveAsset: resolveAsset,
+                                          previewMaxEdge: 512, outputMaxEdge: 512)
+        } else {
+            rendered = try render(project: project, canvas: .init(width: canvas.width, height: canvas.height), resolveAsset: resolveAsset, previewMaxEdge: 512)
+        }
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw WorkbenchImageError.encodeFailed("preview allocation") }
+        context.interpolationQuality = .high; context.draw(rendered, in: .init(x: 0, y: 0, width: width, height: height))
+        guard let image = context.makeImage() else { throw WorkbenchImageError.encodeFailed("preview image") }
+        let data = try encode(image, options: options)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil), let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw WorkbenchImageError.encodeFailed("preview decode") }
+        return (decoded, Int64(Double(data.count) * Double(targetWidth * targetHeight) / Double(width * height)))
+    }
+
+    private func sourceMetadata(_ project: MediaProject, options: ImageExportOptions,
+                                resolveAsset: @Sendable (UUID) -> URL?) -> [CFString: Any] {
+        guard !options.stripMetadata else { return [:] }
+        let sourceID: UUID?
+        if let document = project.prepared {
+            sourceID = document.layers.compactMap { layer -> UUID? in
+                if case .raster(let raster) = layer.content, case .asset(let id) = raster.source { return id }
+                return nil
+            }.first
+        } else { sourceID = project.imageLayers.compactMap(\.assetID).first }
+        guard let sourceID, let url = resolveAsset(sourceID), let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let original = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return [:] }
+        var result: [CFString: Any] = [:]
+        for key in [kCGImagePropertyExifDictionary, kCGImagePropertyTIFFDictionary, kCGImagePropertyGPSDictionary, kCGImagePropertyIPTCDictionary] {
+            if var values = original[key] as? [CFString: Any] {
+                values.removeValue(forKey: kCGImagePropertyExifPixelXDimension)
+                values.removeValue(forKey: kCGImagePropertyExifPixelYDimension)
+                values.removeValue(forKey: kCGImagePropertyTIFFOrientation)
+                result[key] = values
+            }
+        }
+        return result
+    }
+
+    private func encode(_ image: CGImage, options: ImageExportOptions, metadata: [CFString: Any] = [:]) throws -> Data {
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(output, options.format.utType.identifier as CFString, 1, nil) else {
             throw WorkbenchImageError.encodeFailed("no encoder for \(options.format)")
         }
-        var encodeOptions: [CFString: Any] = [:]
+        var encodeOptions = metadata
         if options.format != .png {
             encodeOptions[kCGImageDestinationLossyCompressionQuality] = options.quality
         }
-        if options.format == .jpeg && !options.preserveTransparency {
-            // Explicit flatten for JPEG when the user opted out of transparency.
+        if !options.preserveTransparency {
+            // Every container honors the user's background choice.
             let flattened = try flattenOverWhite(image)
             CGImageDestinationAddImage(destination, flattened, encodeOptions as CFDictionary)
         } else {

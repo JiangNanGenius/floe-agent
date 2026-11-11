@@ -385,7 +385,7 @@ extension MediaV2Session {
             path.fillColorHex = input.color ?? colorHex; path.strokeWidth = input.number ?? path.strokeWidth; try layerContent(.vectorPaths(path))
         case "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw":
             guard let layer else { throw MediaV2CommandError.missingSelection }
-            var adjustment = layer.adjustment
+            var adjustment = MediaImageColorEditing.controls(of: layer)
             switch id {
             case "image.exposure": adjustment.exposureEV = input.number ?? 0
             case "image.levels": adjustment.levels = .init(black: input.number ?? 0, white: input.secondary ?? 1, gamma: 1)
@@ -393,7 +393,7 @@ extension MediaV2Session {
             case "image.white-balance": adjustment.temperature = input.number ?? 6500
             default: adjustment.saturation = 0
             }
-            actions.append(.updateLayerAdjustment(id: layer.id, expectedRevision: layer.revision, adjustment: adjustment))
+            actions.append(try MediaImageColorEditing.action(layer: layer, controls: adjustment))
         case "video.srt":
             guard let text = input.text else { throw MediaV2CommandError.invalidInput }
             actions.append(contentsOf: try captionImportActions(text, offset: input.start ?? 0))

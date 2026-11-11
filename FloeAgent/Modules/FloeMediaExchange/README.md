@@ -1,18 +1,18 @@
 # MediaExchange qualification package
 
-Status: **source-ready qualification package**, not a production App feature,
-App integration, device acceptance or release. It owns only format-neutral
-exchange, geometry and project-package adapters.
+Status: format-neutral exchange, geometry and project-package adapters. The
+image bridge is wired into the native MediaV2 editor. Current source integration
+and component qualification do not imply full-App or physical-device acceptance.
 
 ## What is here
 
 | Path | Purpose |
 | --- | --- |
-| `Sources/MediaExchangeBridge` | Canonical v2 projection: basic timeline/OTIO round-trip and raster image layer import/export. Unsupported effects refuse conversion; imports retain the original exchange timeline. No second store or implicit file access. |
+| `Sources/MediaExchangeBridge` | Canonical v2 projection: basic timeline/OTIO round-trip and image layer/group/mask/plain-text import/export. Unsupported effects refuse conversion; imports retain the original exchange timeline. No second store or implicit file access. |
 | `Sources/MediaExchangeCore` | Straight-alpha RGBA/PNG bridge, PSD (ag-psd/JSCore) and ORA codecs copied from the qualified formats package, strict selection compositor, rational exchange model, OTIO adapter, packed/reference project manifest, editable Bezier geometry. |
 | `Sources/MediaExchangeClipper` | Swift value-type adapter over the project-authored C ABI. Quantization and tessellation tolerance are explicit; no CAD or document state is owned. |
 | `Sources/MediaExchangeFCPXML` | Native Foundation-XML FCPXML 1.10 adapter for the documented subset (resources, sequence/spine, asset-clip, gap, caption, marker, lane mapping). |
-| `Tests/MediaExchangeCoreTests` | 36 tests: alpha=1 PNG exactness, ORA byte preservation, unsupported PSD/ORA, selection byte invariance, rational time, OTIO, project manifest, traversal/symlink checks. |
+| `Tests/MediaExchangeCoreTests` | Tests: alpha=1 PNG exactness, ORA byte preservation, unsupported PSD/ORA, selection byte invariance, rational time, OTIO, project manifest, traversal/symlink checks. |
 | `Tests/MediaExchangeClipperTests` | 4 tests: intersection/union/difference/xor, holes, offset, explicit tolerance, source immutability. |
 | `Tests/MediaExchangeFCPXMLTests` | 6 tests: two video tracks + audio, 30000/1001 + mixed fps, captions, unsupported-effect report, missing media, traversal, unsafe XML. |
 | `Tests/MediaExchangeOpenKitTests` | 4 macOS tests: pinned OpenFCPXMLKit parses the native export, native export passes the pinned FCPXML 1.10 DTD, full timeline passes the DTD, upstream exporter output is accepted by the native importer. |
@@ -22,6 +22,8 @@ exchange, geometry and project-package adapters.
 ## Pins
 
 - ag-psd: `34.1.0`, commit `a74425db6584cc07b1cc135e370916cb4eccfb32`, MIT.
+- Swift PNG: `4.5.1`, revision `8a0bcd4df5e4b307c804937776a56dd6ecdf6396`, Apache-2.0.
+- h: `1.0.1`, revision `aa3626829160917d4378330617971977cbd78f5b`, Apache-2.0.
 - ZIPFoundation: `0.9.20`, revision `22787ffb59de99e5dc1fbfe80b19c97a904ad48d`, MIT.
 - Clipper2: commit `b496b454df168a2280354857c1cd90bd6fa7b4dd`, BSL-1.0;
   see `FloeAgent/ThirdParty/Clipper2/PIN.txt`.
@@ -32,50 +34,29 @@ exchange, geometry and project-package adapters.
 ## Run
 
 ```sh
-# First stage the exact canonical sources (required by MediaExchangeBridge).
-python3 FloeAgent/Qualification/MediaCore/Scripts/stage_sources.py
-env -u SDKROOT DEVELOPER_DIR=/Applications/Xcode-27.1.app/Contents/Developer \
+env -u SDKROOT DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 xcrun swift test \
-  --package-path FloeAgent/Qualification/MediaExchange \
-  --scratch-path "$HOME/Library/Caches/CodexBuild/FloeMediaCorePrep/media-core-prep/xcode27.1/exchange" \
-  --jobs 6
+  --package-path FloeAgent/Modules/FloeMediaExchange \
+  --scratch-path "$HOME/Library/Caches/CodexBuild/FloeAgent/media-exchange/macos" \
+  --jobs 6 --filter 'PNGAlphaTests|PSDORACompatibilityTests|BridgeTests'
 ```
 
-Executed on 2026-11-02 with Xcode 27.1 (27A9275), Swift 6.4, macOS 26
-deployment: **52 tests, 0 failures** (36 Core + 4 Clipper + 6 FCPXML + 4
-OpenKit + 2 canonical-document Bridge).
+The bridge consumes the canonical `FloeWorkbench` package directly. Use a
+separate scratch directory for each checkout. Simulator runs must follow the
+repository's canonical reused-iPad selection and device lock policy.
 
-Generic iOS device object compilation (no simulator, no App build):
-
-```sh
-# Clear the host CommandLineTools SDKROOT; pass the Xcode iPhoneOS SDK explicitly.
-IOS_SDK=$(DEVELOPER_DIR=/Applications/Xcode-27.1.app/Contents/Developer \
-  xcrun --sdk iphoneos --show-sdk-path)
-for target in MediaExchangeCore MediaExchangeClipper MediaExchangeFCPXML; do
-  env -u SDKROOT DEVELOPER_DIR=/Applications/Xcode-27.1.app/Contents/Developer \
-  xcrun swift build \
-    --package-path FloeAgent/Qualification/MediaExchange \
-    --target "$target" --triple arm64-apple-ios26.0 --sdk "$IOS_SDK" \
-    --scratch-path "$HOME/Library/Caches/CodexBuild/FloeMediaCorePrep/media-core-prep/xcode27.1/ios" \
-    --jobs 6
-done
-```
-
-All three targets built; `vtool -show-build` reports `platform IOS`,
-`minos 26.0`, `sdk 27.1` for the produced arm64 objects. Do not set `SDKROOT`
-for the SwiftPM host/manifest invocation (it would compile the manifest against
-the iPhoneOS SDK); clear it and pass `--sdk` to the target build. For an
-`xcodebuild` App build, set `SDKROOT` to the selected Xcode platform SDK and
-inspect `LC_BUILD_VERSION`/`vtool` rather than trusting the inherited value.
+Historical 2026-11-02 qualification covered 52 tests and generic iOS object
+compilation under Xcode 27.1; it is not evidence for subsequent source changes.
+Current targeted evidence is recorded separately by the integration owner.
 
 ## Interfaces
 
 - **Image exchange:** `PortableDocument` / `PortableLayer` plus
   `LayeredExchange.fromPSD/toORA/fromORA/toPSD`; unsupported features throw or
   return preserved-only compatibility.
-- **PNG bridge:** `PNGCodec.decode` reads straight-alpha provider bytes for
-  8-bit RGBA/RGB and preserves alpha=1 exactly; the premultiplied CGContext
-  path remains a documented fallback for unknown layouts.
+- **PNG bridge:** file bytes use the pinned Swift PNG codec to preserve straight
+  8-bit RGBA values, including alpha=1, on iOS and macOS. CGImage inspection
+  retains a provider fast path and a premultiplied fallback for unknown layouts.
 - **Selection:** `StrictSelectionCompositor.composite(base:patch:mask:opacity:)`;
   zero-coverage pixels are copied byte-for-byte and verified by
   `verifyOutsideUnchanged`.
@@ -102,16 +83,21 @@ inspect `LC_BUILD_VERSION`/`vtool` rather than trusting the inherited value.
 
 ## Deliberate limitations
 
-- The v2 bridge supports raster image layers and a basic video/audio track
-  subset. It rejects crop, transforms, keyframes, fades, captions and effects
-  that it cannot round-trip; the lower-level FCPXML adapter supports a broader
-  caption/marker subset. Advanced editable PSD and general NLE interoperability
-  remain pending. The host must stage imported PNGs, retain original exchange
-  files/metadata, validate granted asset locations and save via the shared store.
-- No App/UI, no renderer, no player, no simulator boot, no physical-device
-  acceptance. Native compilation is not a UI or FCP-import result.
-- PSD remains 8-bit RGB only. CMYK/16-bit/PSB/text/smart objects/effects are
-  preserved-only and explicitly rejected for editable conversion.
+- The image bridge supports raster layers, isolated groups, normal/multiply/
+  screen/overlay/darken/lighten/difference/exclusion blending, alpha clipping,
+  masks within the canonical lossless coverage budget (2048 pixels per edge),
+  and single-style point text with cached geometry. The host renders transformed
+  raster geometry for export. Live adjustments, complex text, non-adjacent
+  clipping and pass-through groups whose appearance cannot be preserved are
+  refused. Imports stage PNGs and retain the original container through the
+  shared transactional store. Missing fonts can affect editable text layout.
+- The basic video/audio bridge still rejects effects, transforms, keyframes,
+  fades and captions that it cannot round-trip. The lower-level FCPXML adapter
+  supports a broader caption/marker subset.
+- This package owns no App UI, renderer or player. Native compilation and
+  simulator component tests do not establish full-App or physical acceptance.
+- PSD remains 8-bit RGB only. CMYK/16-bit/PSB/complex text/smart objects/effects
+  stay preserved-only and are explicitly rejected for editable conversion.
 - ORA remains the 0.0.3 raster baseline; masks/clipping/nested stacks/text are
   rejected. Untouched layer PNG bytes are preserved.
 - FCPXML is a documented subset, not a complete FCP interchange implementation.

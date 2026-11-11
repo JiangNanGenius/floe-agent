@@ -375,6 +375,7 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
     /// Built-in color filter identifier (deterministic Core Image name set).
     public var filterID: String?
     public var toneCurve: [ImageFreehandStroke.Point]?
+    public var channelCurves: ImageChannelCurves?
     public var colorBalance: ImageColorBalance?
     public var colorLUT: ImageColorLUT?
     public var noiseReduction: Double?
@@ -385,7 +386,7 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
                 exposureEV: Double? = nil, blurRadius: Double? = nil, sharpenRadius: Double? = nil,
                 mosaicBlockSize: Int? = nil, filterID: String? = nil,
                 temperature: Double? = nil, hueDegrees: Double? = nil, levels: ImageLevels? = nil,
-                toneCurve: [ImageFreehandStroke.Point]? = nil, colorBalance: ImageColorBalance? = nil,
+                toneCurve: [ImageFreehandStroke.Point]? = nil, channelCurves: ImageChannelCurves? = nil, colorBalance: ImageColorBalance? = nil,
                 colorLUT: ImageColorLUT? = nil, noiseReduction: Double? = nil, effectRegion: ImageSelection? = nil) {
         self.saturation = saturation
         self.contrast = contrast
@@ -398,13 +399,13 @@ public struct ImageLayerAdjustment: Sendable, Codable, Hashable {
         self.temperature = temperature
         self.hueDegrees = hueDegrees
         self.levels = levels
-        self.toneCurve=toneCurve;self.colorBalance=colorBalance;self.colorLUT=colorLUT;self.noiseReduction=noiseReduction;self.effectRegion=effectRegion
+        self.toneCurve=toneCurve;self.channelCurves=channelCurves;self.colorBalance=colorBalance;self.colorLUT=colorLUT;self.noiseReduction=noiseReduction;self.effectRegion=effectRegion
     }
 
     public var isIdentity: Bool {
         saturation == nil && contrast == nil && brightness == nil && exposureEV == nil &&
         blurRadius == nil && sharpenRadius == nil && mosaicBlockSize == nil && filterID == nil &&
-        temperature == nil && hueDegrees == nil && levels == nil && toneCurve == nil && colorBalance == nil && colorLUT == nil && noiseReduction == nil
+        temperature == nil && hueDegrees == nil && levels == nil && toneCurve == nil && channelCurves == nil && colorBalance == nil && colorLUT == nil && noiseReduction == nil
     }
 }
 

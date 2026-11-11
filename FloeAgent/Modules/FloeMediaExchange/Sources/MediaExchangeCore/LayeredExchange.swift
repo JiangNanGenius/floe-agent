@@ -12,11 +12,13 @@ public struct PortableMask: Sendable, Equatable {
     /// Mask position relative to the owning layer's top-left.
     public var left: Int
     public var top: Int
+    public var isEnabled: Bool
+    public var defaultColor: UInt8
 
-    public init(image: RGBAImage, left: Int, top: Int) {
+    public init(image: RGBAImage, left: Int, top: Int, isEnabled: Bool = true, defaultColor: UInt8 = 0) {
         self.image = image
         self.left = left
-        self.top = top
+        self.top = top; self.isEnabled = isEnabled; self.defaultColor = defaultColor
     }
 }
 
@@ -33,6 +35,9 @@ public struct PortableLayer: Sendable, Equatable {
     public var clipping: Bool
     public var transparencyProtected: Bool
     public var mask: PortableMask?
+    public var group: Bool
+    public var depth: Int
+    public var text: PSDText?
 
     public init(
         name: String,
@@ -44,7 +49,7 @@ public struct PortableLayer: Sendable, Equatable {
         blendMode: String = "normal",
         clipping: Bool = false,
         transparencyProtected: Bool = false,
-        mask: PortableMask? = nil
+        mask: PortableMask? = nil, group: Bool = false, depth: Int = 0, text: PSDText? = nil
     ) {
         self.name = name
         self.image = image
@@ -55,7 +60,7 @@ public struct PortableLayer: Sendable, Equatable {
         self.blendMode = blendMode
         self.clipping = clipping
         self.transparencyProtected = transparencyProtected
-        self.mask = mask
+        self.mask = mask; self.group = group; self.depth = depth; self.text = text
     }
 }
 
@@ -124,15 +129,16 @@ public enum LayeredExchange {
         // ag-psd and psd_sdk both return layer records bottom-to-top.
         for layer in result.layers {
             let info = layer.info
-            if info.group { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "layer group") }
-            if info.hasText { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "editable text") }
+            if info.hasText && info.text == nil { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "complex editable text") }
             if info.hasPlacedLayer { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "smart object") }
             if info.hasAdjustment { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "adjustment layer") }
             if info.hasEffects { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "layer effects") }
             if info.hasVectorMask { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "vector mask") }
-            guard let image = layer.imageData else {
-                throw ExchangeError.missingLayerPixels(info.name)
-            }
+            guard info.depth <= 16 else { throw ExchangeError.unsupportedLayerFeature(layer: info.name, feature: "nesting depth") }
+            let image: RGBAImage
+            if info.group { image = try RGBAImage(width: 1, height: 1, pixels: [0, 0, 0, 0]) }
+            else if let pixels = layer.imageData { image = pixels }
+            else { throw ExchangeError.missingLayerPixels(info.name) }
             var portableMask: PortableMask?
             if let maskInfo = info.mask {
                 guard let maskImage = layer.maskImageData else {
@@ -141,7 +147,7 @@ public enum LayeredExchange {
                 portableMask = PortableMask(
                     image: maskImage,
                     left: maskInfo.left - info.left,
-                    top: maskInfo.top - info.top
+                    top: maskInfo.top - info.top, isEnabled: !maskInfo.disabled, defaultColor: maskInfo.defaultColor
                 )
             }
             layers.append(PortableLayer(
@@ -154,7 +160,7 @@ public enum LayeredExchange {
                 blendMode: info.blendMode,
                 clipping: info.clipping,
                 transparencyProtected: info.transparencyProtected,
-                mask: portableMask
+                mask: portableMask, group: info.group, depth: info.depth, text: info.text
             ))
         }
         return PortableDocument(width: result.width, height: result.height, layers: layers)
@@ -167,6 +173,9 @@ public enum LayeredExchange {
         guard !document.layers.isEmpty else { throw ExchangeError.emptyDocument }
         var layers: [ORALayer] = []
         for layer in document.layers {
+            if layer.group || layer.depth != 0 || layer.text != nil {
+                throw ExchangeError.unsupportedLayerFeature(layer: layer.name, feature: "editable group or text in OpenRaster")
+            }
             if layer.clipping {
                 throw ExchangeError.unsupportedLayerFeature(
                     layer: layer.name,
@@ -240,8 +249,8 @@ public enum LayeredExchange {
                     left: layer.left + mask.left,
                     width: mask.image.width,
                     height: mask.image.height,
-                    disabled: false,
-                    imageData: mask.image
+                    disabled: !mask.isEnabled,
+                    imageData: mask.image, defaultColor: mask.defaultColor
                 )
             }
             return PSDWriteLayer(
@@ -254,7 +263,7 @@ public enum LayeredExchange {
                 clipping: layer.clipping,
                 transparencyProtected: layer.transparencyProtected,
                 blendMode: layer.blendMode,
-                mask: mask
+                mask: mask, group: layer.group, depth: layer.depth, text: layer.text
             )
         }
         return try codec.write(width: document.width, height: document.height, layers: layers, composite: composite)
@@ -269,12 +278,42 @@ public enum PortableCompositor {
             throw ExchangeError.invalidDimensions(document.width, document.height)
         }
         guard !document.layers.isEmpty else { throw ExchangeError.emptyDocument }
+        if document.layers.contains(where: { $0.group || $0.depth != 0 }) {
+            var index = 0
+            func collect(_ depth: Int) throws -> [PortableLayer] {
+                guard depth <= 16 else { throw ExchangeError.layerCount(depth) }
+                var output: [PortableLayer] = []
+                while index < document.layers.count, document.layers[index].depth >= depth {
+                    var layer = document.layers[index]
+                    guard layer.depth == depth else { throw ExchangeError.unsupportedLayerFeature(layer: layer.name, feature: "invalid hierarchy") }
+                    index += 1
+                    if layer.group {
+                        let children = try collect(depth + 1)
+                        if layer.blendMode == "pass through" {
+                            guard layer.opacity == 1, layer.mask == nil, children.allSatisfy({ $0.blendMode == "normal" && !$0.clipping }) else {
+                                throw ExchangeError.unsupportedLayerFeature(layer: layer.name, feature: "pass-through group compositing")
+                            }
+                            layer.blendMode = "normal"
+                        }
+                        layer.image = children.isEmpty ? try RGBAImage(width: 1, height: 1, pixels: [0, 0, 0, 0]) :
+                            try flatten(.init(width: document.width, height: document.height, layers: children))
+                        if var mask = layer.mask { mask.left += layer.left; mask.top += layer.top; layer.mask = mask }
+                        layer.left = 0; layer.top = 0; layer.group = false
+                    }
+                    layer.depth = 0; output.append(layer)
+                }
+                return output
+            }
+            let flat = try collect(0)
+            guard index == document.layers.count else { throw ExchangeError.layerCount(document.layers.count) }
+            return try flatten(.init(width: document.width, height: document.height, layers: flat))
+        }
         let count = try ImageLimits.byteCount(width: document.width, height: document.height)
         var out = [Double](repeating: 0, count: count) // r,g,b,a
         var previousAlpha = [Double](repeating: 0, count: document.width * document.height)
         for layer in document.layers {
             guard layer.visible else {
-                previousAlpha = alphaMask(layer: layer, width: document.width, height: document.height)
+                if !layer.clipping { previousAlpha = [Double](repeating: 0, count: document.width * document.height) }
                 continue
             }
             guard layer.image.width > 0, layer.image.height > 0 else {
@@ -291,13 +330,13 @@ public enum PortableCompositor {
                         let sy = y - layer.top
                         let si = layer.image.offset(x: sx, y: sy)
                         var sa = Double(layer.image.pixels[si + 3]) / 255 * layer.opacity
-                        if let mask = layer.mask {
+                        if let mask = layer.mask, mask.isEnabled {
                             let mx = sx - mask.left
                             let my = sy - mask.top
                             if mx >= 0, my >= 0, mx < mask.image.width, my < mask.image.height {
                                 sa *= Double(mask.image.pixels[mask.image.offset(x: mx, y: my)]) / 255
                             } else {
-                                sa = 0
+                                sa *= Double(mask.defaultColor) / 255
                             }
                         }
                         if layer.clipping {
@@ -319,7 +358,7 @@ public enum PortableCompositor {
                     }
                 }
             }
-            previousAlpha = alphaMask(layer: layer, width: document.width, height: document.height)
+            if !layer.clipping { previousAlpha = alphaMask(layer: layer, width: document.width, height: document.height) }
         }
         var pixels = [UInt8](repeating: 0, count: count)
         for i in 0..<count {
@@ -339,7 +378,13 @@ public enum PortableCompositor {
             for x in x0..<x1 {
                 let sx = x - layer.left
                 let sy = y - layer.top
-                alpha[y * width + x] = Double(layer.image.pixels[layer.image.offset(x: sx, y: sy) + 3]) / 255
+                var coverage = Double(layer.image.pixels[layer.image.offset(x: sx, y: sy) + 3]) / 255 * layer.opacity
+                if let mask = layer.mask, mask.isEnabled {
+                    let mx = sx - mask.left, my = sy - mask.top
+                    let value = mx >= 0 && my >= 0 && mx < mask.image.width && my < mask.image.height ? mask.image.pixels[mask.image.offset(x: mx, y: my)] : mask.defaultColor
+                    coverage *= Double(value) / 255
+                }
+                alpha[y * width + x] = coverage
             }
         }
         return alpha

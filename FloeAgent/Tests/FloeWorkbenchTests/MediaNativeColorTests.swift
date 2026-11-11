@@ -17,6 +17,40 @@ struct MediaNativeColorTests {
         let root=URL(fileURLWithPath:dir,isDirectory:true);try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         try #require(WorkbenchPNG.encode(image)).write(to:root.appendingPathComponent(id+".png"),options:.atomic)
     }
+    @Test func redCurveLeavesOtherChannelsAndEmptySelectionUnchanged() throws {
+        let source = CIImage(color: CIColor(red: 0.3, green: 0.4, blue: 0.5)).cropped(to: .init(x: 0, y: 0, width: 16, height: 16))
+        let original = try MediaNativeSelection.rgba(render(source, .init())).pixels
+        let control = ImageLayerAdjustment(channelCurves: .init(red: points))
+        let changed = try MediaNativeSelection.rgba(render(source, control)).pixels
+        #expect(Int(changed[0]) > Int(original[0]) + 20)
+        #expect(abs(Int(changed[1]) - Int(original[1])) <= 2)
+        #expect(abs(Int(changed[2]) - Int(original[2])) <= 2)
+        var empty = control; empty.effectRegion = ImageSelection()
+        #expect(try MediaNativeSelection.rgba(render(source, empty)).pixels == original)
+        let histogram = try ImageColorHistogram.measure(render(source, .init()))
+        #expect(histogram.red.reduce(0, +) == 16 * 16)
+        #expect(histogram.green.reduce(0, +) == 16 * 16)
+    }
+
+    @Test func colorActionRetainsTypedContentAndUnrelatedControls() throws {
+        let partial = try MediaImageColorEditing.merging(.init(channelCurves: .init(red: points)),
+            into: .init(toneCurve: points, channelCurves: .init(blue: points)), tool: "image.curves", selection: nil)
+        #expect(partial.toneCurve == points && partial.channelCurves?.blue == points && partial.channelCurves?.red == points)
+        let layer = MediaPreparedLayer(name: "Text", transform: .init(centerX: 0.3, rotationDegrees: 20),
+            adjustment: .init(exposureEV: 0.5), content: .text(.init(text: "Floe")),
+            mask: .init(vector: .init(inverted: true)))
+        let controls = try MediaImageColorEditing.merging(.init(toneCurve: points, channelCurves: .init(red: points)),
+            into: layer.adjustment, tool: "image.curves", selection: nil)
+        #expect(controls.exposureEV == 0.5)
+        guard case .updateLayerAdjustment(let id, let revision, let next) = try MediaImageColorEditing.action(layer: layer, controls: controls) else { Issue.record("raster replacement is forbidden"); return }
+        #expect(id == layer.id && revision == layer.revision)
+        #expect(next.channelCurves?.red == points)
+        let adjustment = MediaPreparedLayer(name: "Grade", content: .adjustment(.init()))
+        guard case .replaceLayerContent(_, _, .adjustment(let saved)) = try MediaImageColorEditing.action(layer: adjustment, controls: controls) else { Issue.record("adjustment layer lost its typed controls"); return }
+        #expect(saved == controls)
+        #expect(try JSONDecoder().decode(ImageLayerAdjustment.self, from: JSONEncoder().encode(saved)) == controls)
+    }
+
     @Test func curveAndTonalBalanceChangeRealPixels() throws {
         let source=CIImage(color:CIColor(red:0.3,green:0.3,blue:0.3)).cropped(to:.init(x:0,y:0,width:32,height:24))
         let original=try MediaNativeSelection.rgba(render(source,.init())).pixels
