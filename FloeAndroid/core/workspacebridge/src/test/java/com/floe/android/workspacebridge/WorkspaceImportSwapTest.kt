@@ -125,7 +125,8 @@ class WorkspaceImportSwapTest {
         val preserve = File(journal, "preserve")
         assertTrue(stage.mkdirs() && preserve.mkdirs())
         val manifest = WorkspaceSyncManifest(destination.parentFile, projectID, ops)
-        val swap = WorkspaceImportSwap(destination, stage, preserve, File(journal, "swap.jsonl"), manifest, ops, onFirstAppliedChange)
+        val swap = WorkspaceImportSwap(destination, stage, preserve, File(journal, "swap.jsonl"), manifest, ops,
+            onFirstAppliedChange = onFirstAppliedChange)
         return Fixture(destination, journal, stage, preserve, manifest, swap, ops)
     }
 
