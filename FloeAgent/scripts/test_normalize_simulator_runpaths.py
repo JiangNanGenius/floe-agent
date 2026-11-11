@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import normalize_simulator_runpaths as subject
 
@@ -181,6 +182,81 @@ class RunpathContractTests(unittest.TestCase):
         (self.app / "Fixture").write_bytes(b"\xcf\xfa\xed\xfe" + bytes(3))
         with self.assertRaisesRegex(subject.InvalidBundle, "Truncated Mach-O"):
             self.check()
+
+    @unittest.skipUnless(sys.platform == "darwin" and Path("/usr/bin/codesign").exists(), "Apple Mach-O tools required")
+    def test_native_legacy_sidecars_retire_only_when_actual_bundle_is_resigned(self):
+        target = self.native_legacy_bundle()
+        old = tree_hashes(self.app)
+        before = subject.read_macho(target / "LegacyTests")
+        report = subject.normalize(self.app, self.root, seal_bundle=True)
+        self.assertTrue(report["strictBundleSignatureVerified"])
+        self.assertTrue(report["codeSectionsUnchanged"])
+        self.assertIn("PlugIns/Legacy.xctest", report["signedTargets"])
+        removed = {x["path"] for x in report["resourceChanges"] if x["afterSHA256"] is None}
+        self.assertEqual(removed, {"PlugIns/Legacy.xctest/_CodeSignature/" + name
+                                   for name in ("CodeDirectory", "CodeRequirements", "CodeSignature")})
+        self.assertTrue(all(name in old for name in removed))
+        self.assertEqual(subject.read_macho(target / "LegacyTests")[0]["codeSections"], before[0]["codeSections"])
+        self.assertEqual(subject.signature_profile(target)["identifier"], "LegacyTests")
+        stable = tree_hashes(self.app)
+        self.assertEqual(subject.normalize(self.app, self.root, seal_bundle=True)["signedTargets"], [])
+        self.assertEqual(tree_hashes(self.app), stable)
+
+    def native_legacy_bundle(self):
+        target = self.app / "PlugIns/Legacy.xctest"
+        target.mkdir(parents=True)
+        identifier = "org.floeagent.sidecar-test"
+        (target / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "LegacyTests",
+            "CFBundleIdentifier": identifier, "CFBundlePackageType": "BNDL",
+            "CFBundleSupportedPlatforms": ["iPhoneSimulator"], "DTPlatformName": "iphonesimulator"}))
+        # Apple's real generic bundle signing (before the linker publishes its
+        # executable) writes the four legacy files. No handcrafted signature.
+        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(target)],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual({x.name for x in (target / "_CodeSignature").iterdir()},
+                         {"CodeDirectory", "CodeRequirements", "CodeSignature", "CodeResources"})
+        executable = self.root / "LegacyTests"
+        macho(executable, filetype=8, rpaths=[MUTABLE])
+        # Sign outside the bundle, then publish the linker output. Signing an
+        # executable already inside its bundle converts the old seal early.
+        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none",
+                        "--identifier", "LegacyTests", "--options", "0x20000", str(executable)],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        os.replace(executable, target / "LegacyTests")
+        self.assertEqual({x.name for x in (target / "_CodeSignature").iterdir()},
+                         {"CodeDirectory", "CodeRequirements", "CodeSignature", "CodeResources"})
+        return target
+
+    @unittest.skipUnless(sys.platform == "darwin" and Path("/usr/bin/codesign").exists(), "Apple Mach-O tools required")
+    def test_native_signing_cannot_hide_fake_signature_path_or_ordinary_resource_change(self):
+        for relative in ("Resources/Unowned/_CodeSignature/CodeResources", "ordinary.txt"):
+            with self.subTest(resource=relative):
+                shutil.rmtree(self.app)
+                self.app = bundle(self.root)
+                resource = self.app / relative
+                resource.parent.mkdir(parents=True, exist_ok=True)
+                resource.write_bytes(plistlib.dumps({"files": {}, "files2": {}}) if relative.endswith("CodeResources") else b"before")
+                original_run = subject._run
+
+                def mutate_during_staging(arguments):
+                    result = original_run(arguments)
+                    if "install_name_tool" in arguments:
+                        resource.write_bytes(plistlib.dumps({"files": {"changed": b"digest"}, "files2": {}})
+                                             if relative.endswith("CodeResources") else b"ordinary resource changed")
+                    return result
+
+                # Real signing seals the changed bytes, so strict codesign
+                # passes; the independent original-resource invariant must fail.
+                with mock.patch.object(subject, "_run", side_effect=mutate_during_staging):
+                    with self.assertRaisesRegex(subject.InvalidBundle, "non-signature resource"):
+                        subject.normalize(self.app, self.root, seal_bundle=True)
+
+    @unittest.skipUnless(sys.platform == "darwin" and Path("/usr/bin/codesign").exists(), "Apple Mach-O tools required")
+    def test_native_signing_rejects_non_signature_bytes_under_exact_apple_filename(self):
+        target = self.native_legacy_bundle()
+        (target / "_CodeSignature/CodeDirectory").write_bytes(b"ordinary bytes, not an Apple CodeDirectory")
+        with self.assertRaisesRegex(subject.InvalidBundle, "non-signature resource"):
+            subject.normalize(self.app, self.root, seal_bundle=True)
 
     @unittest.skipUnless(sys.platform == "darwin" and Path("/usr/bin/codesign").exists(), "Apple Mach-O tools required")
     def test_native_edit_seal_metadata_idempotence_and_late_resource_reseal(self):

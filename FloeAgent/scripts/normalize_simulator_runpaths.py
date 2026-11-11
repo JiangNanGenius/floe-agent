@@ -388,6 +388,72 @@ def resource_hashes(app, images):
             for path in sorted(app.rglob("*")) if path.is_file() and not path.is_symlink() and path not in images}
 
 
+def _signature_file(path):
+    if (not path.is_file() or path.is_symlink() or path.parent.is_symlink()
+            or path.stat().st_nlink != 1 or path.stat().st_size > 16 * 1024 * 1024):
+        return None
+    return path.read_bytes()
+
+
+def _resource_seal(target):
+    data = _signature_file(target / "_CodeSignature/CodeResources")
+    if data is None:
+        return None
+    try:
+        value = plistlib.loads(data)
+        if (isinstance(value, dict) and any(key in value for key in ("files", "files2"))
+                and all(isinstance(value[key], dict) for key in value if key in {"files", "files2", "rules", "rules2"})):
+            return hashlib.sha256(data).hexdigest()
+    except (ValueError, plistlib.InvalidFileException):
+        pass
+    return None
+
+
+def _legacy_info_signature(target, profile, images):
+    """Recognize the complete Apple ad-hoc Info.plist sidecar form only.
+
+    Xcode can leave this legacy seal beside the eventual signed Mach-O. It
+    covers Info.plist, not that Mach-O: bind its identifier, flags and every
+    SHA256 slot before allowing codesign to retire its three old sidecars.
+    """
+    if not target.is_dir() or not profile or not profile["flags"] & 0x2:
+        return {}
+    info = _signature_file(target / "Info.plist")
+    directory = target / "_CodeSignature"
+    cd = _signature_file(directory / "CodeDirectory")
+    requirements = _signature_file(directory / "CodeRequirements")
+    cms = _signature_file(directory / "CodeSignature")
+    seal = _signature_file(directory / "CodeResources")
+    if info is None or cd is None or seal is None or len(cd) < 48 or cms != b"":
+        return {}
+    try:
+        bundle_info = plistlib.loads(info)
+        executable = bundle_info.get("CFBundleExecutable", "")
+        if not executable or Path(executable).name != executable or target / executable not in images:
+            return {}
+        magic, length, version, flags, hashes, identifier, special, slots, limit = struct.unpack_from(">9I", cd)
+        name = cd[identifier:].split(b"\0", 1)[0]
+        if (magic != 0xFADE0C02 or length != len(cd) or version != 0x20100
+                or not flags & 0x2 or flags & ~SIGNATURE_ORIGIN_FLAGS != profile["flags"] & ~SIGNATURE_ORIGIN_FLAGS
+                or identifier != 48 or name.decode("utf-8") != bundle_info.get("CFBundleIdentifier")
+                or not (profile["identifier"] == name.decode("utf-8")
+                        or (profile["flags"] & 0x20000 and profile["identifier"] == executable))
+                or special != 3 or slots != 1 or limit != len(info)
+                or cd[36:48] != bytes([32, 2, 0, 0]) + bytes(8)
+                or hashes != identifier + len(name) + 1 + 3 * 32 or len(cd) != hashes + 32
+                or requirements != struct.pack(">III", 0xFADE0C01, 12, 0)
+                or not _resource_seal(target)):
+            return {}
+        for slot, data in [(0, info), (1, info), (2, requirements), (3, seal)]:
+            start = hashes - slot * 32
+            if cd[start:start + 32] != hashlib.sha256(data).digest():
+                return {}
+        return {directory / name: hashlib.sha256(data).hexdigest()
+                for name, data in (("CodeDirectory", cd), ("CodeRequirements", requirements), ("CodeSignature", cms))}
+    except (ValueError, TypeError, struct.error, plistlib.InvalidFileException):
+        return {}
+
+
 def normalize(app, owner_root, *, check=False, seal_bundle=False):
     app, before, stats, main = inspect_bundle(app, owner_root)
     closure = dependency_closure(app, before, main)
@@ -404,6 +470,9 @@ def normalize(app, owner_root, *, check=False, seal_bundle=False):
     # install_name_tool can discard a linker signature. Capture metadata before
     # it runs; --preserve-metadata after the edit cannot recover that metadata.
     profiles = {target: signature_profile(target) for target in sorted(all_targets)}
+    seals_before = {target: _resource_seal(target) for target in all_targets if target.is_dir()}
+    legacy_before = {path: digest for target in all_targets
+                     for path, digest in _legacy_info_signature(target, profiles[target], before).items()}
     resources_before = resource_hashes(app, before)
     staged = {}
     try:
@@ -475,8 +544,21 @@ def normalize(app, owner_root, *, check=False, seal_bundle=False):
                          "afterSHA256": resources_after.get(path)}
                         for path in sorted(resources_before.keys() | resources_after.keys())
                         if resources_before.get(path) != resources_after.get(path)]
-    if any(Path(change["path"]).parts[-2:] != ("_CodeSignature", "CodeResources") for change in resource_changes):
-        raise InvalidBundle("A non-signature resource changed during normalization")
+    def signature_resource_change(change):
+        path = app / change["path"]
+        target = path.parent.parent
+        if path.parent.name != "_CodeSignature" or target not in targets or not target.is_dir():
+            return False  # A suffix in an ordinary resource directory grants no exception.
+        if path.name == "CodeResources":
+            return ((change["beforeSHA256"] is None or seals_before.get(target) == change["beforeSHA256"])
+                    and (change["afterSHA256"] is None or _resource_seal(target) == change["afterSHA256"]))
+        return (path in legacy_before and legacy_before[path] == change["beforeSHA256"] and change["afterSHA256"] is None
+                and not path.exists() and not path.is_symlink())  # Retirement, never creation/rewrite.
+
+    unexpected_resources = [change for change in resource_changes if not signature_resource_change(change)]
+    if unexpected_resources:
+        raise InvalidBundle("A non-signature resource changed during normalization: "
+                            + json.dumps(unexpected_resources, sort_keys=True))
     report["resourceChanges"] = resource_changes
     report["strictBundleSignatureVerified"] = seal_bundle
     report["codeSectionsUnchanged"] = True
