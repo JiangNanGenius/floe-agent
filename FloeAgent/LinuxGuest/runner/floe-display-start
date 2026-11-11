@@ -1,0 +1,124 @@
+#!/bin/sh
+# floe-display-start — Floe on-demand local Linux screen launcher.
+#
+# SPDX-License-Identifier: MPL-2.0
+#
+# Installed by the Linux image at /usr/local/libexec/floe-display-start.
+#
+# Host contract (LocalLinuxDisplayOwner):
+#   FLOE_DISPLAY_PASSWORD_FILE  Guest path of a transient 0600 cleartext
+#                               credential INPUT file. Encoded here with
+#                               tigervncpasswd, then unlinked immediately.
+#                               PATH ONLY — never a password value.
+#   FLOE_SERVICE_PORT / PORT    RFB TCP port (supervisor-provided).
+#   FLOE_DISPLAY_GEOMETRY       Optional geometry, default 1024x768.
+#
+# Security: the plaintext password is never echoed, logged, or passed on any
+# argv (the service supervisor encodes environment as `env KEY=VALUE` argv,
+# which is why the host sends the PATH only). After encoding, the input file
+# is destroyed and the variable is emptied/dropped before any child spawns.
+# The runtime auth file is 0600 (umask 077) and removed on exit. Xvnc binds
+# ALL guest interfaces (-localhost=0): the slirp host forward reaches the
+# guest via 10.0.2.15 — never pass -localhost/-localhost=1. X11 TCP
+# listeners stay disabled (-nolisten tcp). One xterm window only: no
+# desktop, no session manager, no eager Xvnc at boot.
+set -u
+umask 077
+
+log()  { echo "floe-display: $*"; }
+fail() { echo "floe-display: $*" >&2; exit "${2:-1}"; }
+
+port="${FLOE_SERVICE_PORT:-${PORT:-}}"
+case "$port" in ''|*[!0-9]*) fail "missing or invalid FLOE_SERVICE_PORT" 2 ;; esac
+geometry="${FLOE_DISPLAY_GEOMETRY:-1024x768}"
+display="${DISPLAY:-:0}"
+display_number="${display#:}"
+[ "$display_number" != "$display" ] || fail "invalid local DISPLAY" 2
+case "$display_number" in ''|*[!0-9]*) fail "invalid local DISPLAY" 2 ;; esac
+pw_input="${FLOE_DISPLAY_PASSWORD_FILE:-}"
+[ -n "$pw_input" ] || fail "missing FLOE_DISPLAY_PASSWORD_FILE" 2
+[ -f "$pw_input" ] || fail "credential input not found" 2
+
+xvnc=""
+for candidate in Xtigervnc Xvnc; do
+    if command -v "$candidate" >/dev/null 2>&1; then xvnc="$candidate"; break; fi
+done
+[ -n "$xvnc" ] || fail "no VNC server in this Linux image (need Xtigervnc). Update the Linux component and retry." 127
+command -v xterm >/dev/null 2>&1 || fail "no xterm in this Linux image. Update the Linux component and retry." 127
+vncpasswd_tool=""
+for candidate in tigervncpasswd vncpasswd; do
+    if command -v "$candidate" >/dev/null 2>&1; then vncpasswd_tool="$candidate"; break; fi
+done
+[ -n "$vncpasswd_tool" ] || fail "no tigervncpasswd in this Linux image. Update the Linux component and retry." 127
+
+state_dir=$(dirname "$pw_input")
+runtime_auth="$state_dir/.floe-display-$$.auth"
+xvnc_log="$state_dir/.floe-xvnc-$$.log"
+xvnc_pid=""
+xterm_pid=""
+
+cleanup() {
+    trap - EXIT TERM INT HUP
+    pids="${xvnc_pid:-} ${xterm_pid:-}"
+    for pid in $pids; do kill "$pid" 2>/dev/null; done
+    # Bounded TERM grace (<=3s): poll kill -0, never wait on a live child.
+    i=0
+    while [ "$i" -lt 6 ]; do
+        alive=""
+        for pid in $pids; do
+            [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive="$alive $pid"
+        done
+        [ -z "$alive" ] && break
+        sleep 0.5 2>/dev/null || sleep 1
+        i=$((i + 1))
+    done
+    for pid in $alive; do
+        kill -KILL "$pid" 2>/dev/null
+    done
+    # Only now reap: every remaining child is dead or was just KILLed.
+    for pid in $pids; do wait "$pid" 2>/dev/null; done
+    rm -f "$runtime_auth" "$xvnc_log"
+}
+trap cleanup EXIT TERM INT HUP
+
+# Encode the transient cleartext password into the runtime auth file, then
+# destroy the input immediately and drop the variable before any child can
+# inherit it. pw_input stays defined (empty) so this trap stays set -u safe.
+if ! "$vncpasswd_tool" -f <"$pw_input" >"$runtime_auth" 2>/dev/null; then
+    fail "failed to encode the VNC password"
+fi
+chmod 600 "$runtime_auth"
+rm -f "$pw_input"
+pw_input=''
+unset FLOE_DISPLAY_PASSWORD_FILE
+
+log "starting $xvnc on port $port ($geometry)"
+set -- "$xvnc" "$display" -geometry "$geometry" -depth 24 -rfbport "$port" \
+    -localhost=0 -SecurityTypes VncAuth -rfbauth "$runtime_auth" -AlwaysShared \
+    -nolisten tcp
+if [ -e /dev/dri/renderD128 ]; then
+    # Xvnc's GBM screen uses the system Zink loader. Normal client defaults
+    # select the private DRISW presenter; those flags must not reach Xvnc.
+    # Device selection must not connect to this X server before its loop starts.
+    # The server display is argv; only its client children inherit DISPLAY.
+    set -- /usr/bin/env -u DISPLAY -u LIBGL_DRI3_DISABLE -u LIBGL_DRI2_DISABLE \
+        -u LIBGL_KOPPER_DISABLE -u LIBGL_DRIVERS_PATH -u GALLIUM_DRIVER \
+        -u LD_LIBRARY_PATH -u __GLX_VENDOR_LIBRARY_NAME \
+        MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_KOPPER_DRI2=true \
+        "$@" -rendernode /dev/dri/renderD128
+fi
+"$@" >"$xvnc_log" 2>&1 &
+xvnc_pid=$!
+sleep 1
+if ! kill -0 "$xvnc_pid" 2>/dev/null; then
+    tail -n 5 "$xvnc_log" 2>/dev/null | sed 's/^/floe-display: xvnc: /' >&2
+    fail "Xvnc exited immediately (see log)"
+fi
+
+DISPLAY="$display" xterm -geometry "+0+0" >/dev/null 2>&1 &
+xterm_pid=$!
+log "display ready on port $port"
+
+# The launcher owns both PIDs; the service supervisor's stop kills this
+# script and the trap above reaps the children and the auth material.
+wait "$xvnc_pid" "$xterm_pid"

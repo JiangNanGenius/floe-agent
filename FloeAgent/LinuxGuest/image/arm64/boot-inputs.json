@@ -87,6 +87,30 @@
     {
       "name": "lib/modules/24-overlay.ko",
       "sha256": "59e8538d3afec61e831af1c49237dcedfb3dde045bc77711f7f93d35052eba7e"
+    },
+    {
+      "name": "lib/modules/25-virtio_mem.ko",
+      "sha256": "5d12e51cf073fdc1c2fd7daa069b92ca90d537797428f5e98d157b1ab2f2166e"
+    },
+    {
+      "name": "lib/modules/80-drm.ko",
+      "sha256": "375a6a4f430845619af40fec77b663c485c3562bc0b06f57c981ee985291e572"
+    },
+    {
+      "name": "lib/modules/81-drm_kms_helper.ko",
+      "sha256": "6b0981cfd9fc930c5ab141e7fee8e1f171a5fcbd6355b830f14312c70509c3ab"
+    },
+    {
+      "name": "lib/modules/82-drm_shmem_helper.ko",
+      "sha256": "8d788e0b82118c52ebaad35fe8defe48e9150fddab693e2eb784fb525ac32fda"
+    },
+    {
+      "name": "lib/modules/83-virtio_dma_buf.ko",
+      "sha256": "122161b1bb3183d00db7e7d5d530984a5389f089ad95b4cbea43f602b5754363"
+    },
+    {
+      "name": "lib/modules/84-virtio-gpu.ko",
+      "sha256": "a3abf452d5e9fe7cf474b29d08f1874e8fed20876f7097fca129ac3105666b66"
     }
   ]
 }

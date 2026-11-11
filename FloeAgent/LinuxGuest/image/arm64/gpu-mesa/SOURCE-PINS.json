@@ -1,0 +1,41 @@
+{
+  "purpose": "Exact verified Debian source pins for floe-gpu-mesa (public URLs + sha256).",
+  "sourcePackage": "mesa",
+  "sourceVersion": "25.0.7-2+deb13u1",
+  "suite": "trixie-security",
+  "verifiedAgainst": "Debian signed Sources index (trixie-security) via FloeAgent/LinuxGuest/image/debian-source-map.py map+fetch; on-disk sha256 re-verified",
+  "files": [
+    {
+      "file": "mesa_25.0.7-2+deb13u1.debian.tar.xz",
+      "directory": "pool/main/m/mesa",
+      "poolBase": "https://deb.debian.org/debian",
+      "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_25.0.7-2+deb13u1.debian.tar.xz",
+      "sha256": "7ea51db6f4c6a39d28269975b7f652e37333a283819557c5901cbd3eccee446a",
+      "size": 112628
+    },
+    {
+      "file": "mesa_25.0.7-2+deb13u1.dsc",
+      "directory": "pool/main/m/mesa",
+      "poolBase": "https://deb.debian.org/debian",
+      "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_25.0.7-2+deb13u1.dsc",
+      "sha256": "c3605bc68cd140db19523c1b80ecd4aa1d77d5b528f15902995ef9ddbbc8f07e",
+      "size": 6755
+    },
+    {
+      "file": "mesa_25.0.7.orig.tar.xz",
+      "directory": "pool/main/m/mesa",
+      "poolBase": "https://deb.debian.org/debian",
+      "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_25.0.7.orig.tar.xz",
+      "sha256": "592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6",
+      "size": 46849080
+    },
+    {
+      "file": "mesa_25.0.7.orig.tar.xz.asc",
+      "directory": "pool/main/m/mesa",
+      "poolBase": "https://deb.debian.org/debian",
+      "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_25.0.7.orig.tar.xz.asc",
+      "sha256": "e997b2207447a4a92167941696c1ff2818161a8ad9df373ec0f1e5407a308df0",
+      "size": 488
+    }
+  ]
+}

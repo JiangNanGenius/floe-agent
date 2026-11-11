@@ -1,0 +1,24 @@
+floe-gpu-mesa 25.0.7-1+floegpu2
+================================
+
+Private GLVND vendor (floe) and matched patched Mesa megadriver. Install
+under /usr/lib/floe-gpu. Existing system GLVND dispatches client calls to
+libGLX_floe.so.0; the server keeps the system GBM driver.
+
+Client defaults:
+  LD_LIBRARY_PATH=/usr/lib/floe-gpu
+  __GLX_VENDOR_LIBRARY_NAME=floe
+  LIBGL_DRI3_DISABLE=true
+  LIBGL_DRI2_DISABLE=true
+  LIBGL_KOPPER_DISABLE=true
+  LIBGL_KOPPER_DRI2=true
+  GALLIUM_DRIVER=zink
+  LIBGL_DRIVERS_PATH=/usr/lib/floe-gpu/dri
+
+The Xvnc server drops the client-only library/vendor flags and uses the
+system Zink/GBM path. Applications may override their own environment.
+
+Qualification requires actual process maps containing the private vendor
+AND private megadriver, followed by correct changing window pixels and
+the application's actual Zink/Venus/Apple GPU renderer. This package's
+build status alone is not graphics or iPad qualification.

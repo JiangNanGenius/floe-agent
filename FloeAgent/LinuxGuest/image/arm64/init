@@ -6,6 +6,9 @@ mount -t sysfs sysfs /sys || fail sys
 mount -t devtmpfs devtmpfs /dev || fail dev
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts || fail devpts
+if [ -w /sys/devices/system/memory/auto_online_blocks ]; then
+    echo online_kernel > /sys/devices/system/memory/auto_online_blocks || fail memory-online-policy
+fi
 for module in /lib/modules/*.ko; do echo "FLOE_INSMOD $module"; insmod "$module" || fail "$module"; done
 mount -t ext4 /dev/vda /mnt || fail disk
 mkdir -p /mnt/state
@@ -13,6 +16,8 @@ mount --bind /mnt/base /mnt/base || fail bind-base
 mount -o remount,bind,ro /mnt/base || fail readonly-base
 printf 'nameserver 10.0.2.3
 ' > /etc/resolv.conf
+export VN_PERF=no_async_mem_alloc
+export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/virtio_icd.json
 export PATH=/usr/local/bin:/bin:/usr/bin:/sbin HOME=/root TERM=dumb
 stty -F /dev/hvc0 raw -echo || fail control-tty
 echo FLOE_PROJECT_READY

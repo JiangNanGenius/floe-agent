@@ -1,0 +1,54 @@
+floe-gpu-mesa 25.0.7-1+floegpu2 build recipe
+============================================
+
+Inputs
+------
+Mesa 25.0.7 upstream archive + exact Debian mesa 25.0.7-2+deb13u1
+packaging, source pins/URLs in SOURCE-PINS.json. Apply Debian patches in
+series order, then the shipped floe-zink-sw-readback-presenter.diff.
+BUILD-INPUTS.json lists the exact 82 cross-sysroot Debian build packages,
+including libglvnd-core-dev 1.7.0-1+b2. Their size/hash identities were
+checked against the captured authenticated Debian arm64 Packages index.
+Use the existing Debian trixie ARM64 runtime as the base sysroot.
+
+Toolchain
+---------
+Apple clang 21.0.0 targeting aarch64-unknown-linux-gnu; rust-lld 22.1.8,
+GNU aarch64 binutils 15.2.0, Meson 1.6.1, Ninja 1.13.2; mako, ply,
+pyyaml and pycparser. Set the cross compiler sysroot explicitly. Inject
+-fuse-ld=lld only for links, excluding compile/preprocess-only invocations.
+
+Configuration
+-------------
+--prefix=/usr --libdir=lib/floe-gpu --buildtype=release
+-Dglx=dri -Dglx-direct=true -Dglvnd=enabled -Dglvnd-vendor-name=floe
+-Degl=disabled -Dgbm=disabled -Dplatforms=x11
+-Dgallium-drivers=softpipe,zink -Dvulkan-drivers= -Dllvm=disabled
+-Dexpat=disabled -Dzlib=disabled -Dlibunwind=disabled
+-Dlmsensors=disabled -Dvalgrind=disabled -Dbuild-tests=false
+-Dtools= -Dshared-glapi=enabled -Dshader-cache=disabled
+
+Apply -ffile-prefix-map to BOTH absolute and actual Ninja-relative source
+spellings, mapping them to /mesa; map the build root to /build and the
+cross sysroot to /. Pass each map as one compiler argument, preserving
+spaces. Verify effective host compiler options before compiling.
+
+Build / stage / package
+-----------------------
+Build with ninja -j3. Run meson install --no-rebuild into an explicit
+DESTDIR; never install cross-built libraries on the macOS build host.
+Meson installation removes build-directory rpaths. Export the matching
+libGLX_floe.so.0.0.0 and libgallium-25.0.7.so. Check ELF64 AArch64,
+DT_NEEDED, runtime search paths and absence of private developer paths.
+
+The package installs those two libraries under /usr/lib/floe-gpu,
+libGLX_floe.so.0 and .so aliases, and DRI aliases pointing to the same
+private megadriver. Include these source pins, build inputs, full license
+notices and the exact patch. Never replace a system Mesa file.
+
+Runtime / evidence
+------------------
+See README for client GLVND/default environment and the server split.
+A built package is not runtime qualification. Require the application's
+actual process maps to show both private libraries, the actual Apple GPU
+renderer, and correct changing isolated window pixels.

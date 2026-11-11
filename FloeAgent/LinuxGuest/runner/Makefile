@@ -25,9 +25,10 @@ CLOCK_CHECK_BIN := clock-arg-check
 NET_CHECK_BIN := net-plan-check
 HOST_ARCHIVE_CHECK_BIN := host-archive-check
 ENV_CHECK_BIN := env-transport-check
+SERVICE_TREE_CHECK_BIN := service-tree-check
 RUNNER_HEADERS := floe_clock.h floe_net.h floe_host_archive.h
 
-.PHONY: all host riscv64 check check-clock check-net check-host-archive check-env clean
+.PHONY: all host riscv64 check check-clock check-net check-host-archive check-env check-service-tree clean
 
 all: host
 
@@ -81,5 +82,13 @@ $(HOST_ARCHIVE_CHECK_BIN): floe_host_archive.h host_archive_check.c
 $(CLOCK_CHECK_BIN): floe_clock.h ../tests/clock_arg_check.c
 	$(CC) $(CFLAGS) -I. -o $@ ../tests/clock_arg_check.c
 
+# Real child reaping/control-handler regression plus scripted cgroup-state
+# transitions and post-reap PID signal guards. No real cgroup/VM claim.
+check-service-tree: $(SERVICE_TREE_CHECK_BIN)
+	$(abspath $(SERVICE_TREE_CHECK_BIN))
+
+$(SERVICE_TREE_CHECK_BIN): floe_exec.c $(RUNNER_HEADERS) floe_project_supervisor.h ../tests/service_tree_check.c
+	$(CC) $(CFLAGS) -I. -o $@ ../tests/service_tree_check.c
+
 clean:
-	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN) $(NET_CHECK_BIN) $(HOST_ARCHIVE_CHECK_BIN) $(ENV_CHECK_BIN)
+	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN) $(NET_CHECK_BIN) $(HOST_ARCHIVE_CHECK_BIN) $(ENV_CHECK_BIN) $(SERVICE_TREE_CHECK_BIN)

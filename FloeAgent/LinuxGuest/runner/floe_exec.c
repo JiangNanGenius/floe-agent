@@ -161,12 +161,13 @@
 #include <sched.h>
 #include <sys/mount.h>
 #include <sys/sysmacros.h>
+#include <sys/vfs.h>
 #endif
 
 #define FLOE_MARK 0x1e
 #define FLOE_CANCEL 0x03
 
-#define FLOE_RUNNER_VERSION "2.1.0"
+#define FLOE_RUNNER_VERSION "2.2.0"
 #define FLOE_PROTOCOL_VERSION 3
 
 // Last reported network state, exposed in the CAPS answer (`net=...`) so the
@@ -244,6 +245,7 @@ static floe_net_status g_net_status = FLOE_NET_DOWN;
 // definitions further down (compile fix for the 2026-11-05 draft).
 static void task_iso_kill(const char *dir);
 static void task_iso_cleanup(const char *dir);
+static const char *task_iso_service_capability(void);
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -414,13 +416,14 @@ static int emit_failed(const char *token, const char *reason) {
 
 // Capability answer to FLOE-HELLO.
 static int emit_caps(const char *token) {
-    char buf[MAX_TOKEN + 192];
+    char buf[MAX_TOKEN + sizeof(g_host_caps.value) + 256];
     int n = snprintf(buf, sizeof buf,
-                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d env=1 net=%s hostArchive=%s\x1e",
+                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d env=1 net=%s hostArchive=%s serviceTree=%s\x1e",
                      token, FLOE_RUNNER_VERSION, FLOE_PROTOCOL_VERSION,
                      MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_SESSIONS,
                      floe_net_status_text(g_net_status),
-                     g_host_caps.value[0] ? g_host_caps.value : "none");
+                     g_host_caps.value[0] ? g_host_caps.value : "none",
+                     task_iso_service_capability());
     if (n <= 0 || (size_t)n >= sizeof buf) return -1;
     if (write_all(STDOUT_FILENO, buf, (size_t)n) != 0) return -1;
     return emit_end(token, 0);
@@ -1281,6 +1284,7 @@ typedef struct {
     pid_t pid;
     // Project-mode task cgroup dir ("" when isolation is off).
     char iso_dir[TASK_ISO_DIR_MAX];
+    int leader_reaped;
 } spawned_slot;
 
 typedef struct {
@@ -1297,9 +1301,13 @@ static pending_kill g_kills[MAX_PENDING_KILLS];
 
 static int spawned_record(pid_t pid, const char *iso_dir) {
     for (int i = 0; i < MAX_SPAWNED; i++) {
+        if (g_spawned[i].used && g_spawned[i].pid == pid) return -1;
+    }
+    for (int i = 0; i < MAX_SPAWNED; i++) {
         if (!g_spawned[i].used) {
             g_spawned[i].used = 1;
             g_spawned[i].pid = pid;
+            g_spawned[i].leader_reaped = 0;
             g_spawned[i].iso_dir[0] = '\0';
             if (iso_dir) snprintf(g_spawned[i].iso_dir, sizeof g_spawned[i].iso_dir, "%s", iso_dir);
             return 0;
@@ -1322,7 +1330,36 @@ static int spawned_contains(pid_t pid) {
     return 0;
 }
 
-static void spawned_forget(pid_t pid) {
+/* The cgroup name is retained until its complete tree is empty. Read errors
+ * are unknown, never proof. A vanished cgroup could only have been removed
+ * once empty; this runner never reuses its still-owned task token. */
+static int spawned_cgroup_empty(const char *dir) {
+    char path[TASK_ISO_DIR_MAX + 32];
+    int n = snprintf(path, sizeof path, "%s/cgroup.events", dir);
+    if (n <= 0 || (size_t)n >= sizeof path) return -1;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        struct stat info;
+        return errno == ENOENT && lstat(dir, &info) < 0 && errno == ENOENT ? 1 : -1;
+    }
+    char events[256];
+    ssize_t got;
+    do { got = read(fd, events, sizeof events - 1); } while (got < 0 && errno == EINTR);
+    close(fd);
+    if (got <= 0) return -1;
+    events[got] = '\0';
+    if (strncmp(events, "populated 0\n", 12) == 0 || strstr(events, "\npopulated 0\n")) return 1;
+    if (strncmp(events, "populated 1\n", 12) == 0 || strstr(events, "\npopulated 1\n")) return 0;
+    return -1;
+}
+
+static spawned_slot *spawned_find(pid_t pid) {
+    for (int i = 0; i < MAX_SPAWNED; i++)
+        if (g_spawned[i].used && g_spawned[i].pid == pid) return &g_spawned[i];
+    return NULL;
+}
+
+static void spawned_release(pid_t pid) {
     for (int i = 0; i < MAX_SPAWNED; i++) {
         if (g_spawned[i].used && g_spawned[i].pid == pid) {
             task_iso_cleanup(g_spawned[i].iso_dir);
@@ -1334,7 +1371,33 @@ static void spawned_forget(pid_t pid) {
     }
 }
 
+static void spawned_collect_finished(void) {
+    for (int i = 0; i < MAX_SPAWNED; i++) {
+        spawned_slot *slot = &g_spawned[i];
+        if (!slot->used || !slot->leader_reaped) continue;
+        if (slot->iso_dir[0]) {
+            if (spawned_cgroup_empty(slot->iso_dir) == 1) spawned_release(slot->pid);
+        } else {
+            /* Legacy/native mode proves only this process group. Never send
+             * another signal after reaping: the positive PID may be reused. */
+            if (kill(-slot->pid, 0) < 0 && errno == ESRCH) spawned_release(slot->pid);
+        }
+    }
+}
+
+static void spawned_leader_reaped(pid_t pid) {
+    spawned_slot *slot = spawned_find(pid);
+    if (!slot) return;
+    slot->leader_reaped = 1;
+    /* Preserve the former cleanup behavior: terminate orphan descendants,
+     * but now retain ownership until cgroup.events confirms their exit. */
+    if (slot->iso_dir[0]) task_iso_kill(slot->iso_dir);
+}
+
 static int kills_schedule(pid_t pid, const char *iso_dir) {
+    for (int i = 0; i < MAX_PENDING_KILLS; i++) {
+        if (g_kills[i].used && g_kills[i].pid == pid) return 0;
+    }
     for (int i = 0; i < MAX_PENDING_KILLS; i++) {
         if (!g_kills[i].used) {
             g_kills[i].used = 1;
@@ -1356,8 +1419,12 @@ static void kills_enforce(void) {
         if (now < g_kills[i].deadline) continue;
         g_kills[i].sigkill_sent = 1;
         g_kills[i].deadline = now + CANCEL_ABANDON_MS;
-        kill(-g_kills[i].pid, SIGKILL);
-        kill(g_kills[i].pid, SIGKILL);
+        spawned_slot *slot = spawned_find(g_kills[i].pid);
+        if (!slot) continue;
+        if (!slot->leader_reaped) {
+            kill(-g_kills[i].pid, SIGKILL);
+            kill(g_kills[i].pid, SIGKILL);
+        }
         task_iso_kill(g_kills[i].iso_dir); // whole tree, incl. setsid escapees
     }
 }
@@ -1469,6 +1536,11 @@ static char **build_child_env(char **overrides, int count) {
 static int g_task_iso_active; // 0 off, 1 on, -1 configured but broken
 static char g_task_iso_root[TASK_ISO_DIR_MAX];
 
+static const char *task_iso_service_capability(void) {
+    if (g_task_iso_active > 0) return "cgroup-v1";
+    return g_task_iso_active < 0 ? "unavailable" : "process-group-v1";
+}
+
 static void task_iso_load(void) {
     g_task_iso_active = 0;
     const char *root = getenv("FLOE_CGROUP_TASKS");
@@ -1476,7 +1548,15 @@ static void task_iso_load(void) {
     if (strlen(root) >= sizeof g_task_iso_root) { g_task_iso_active = -1; return; }
     snprintf(g_task_iso_root, sizeof g_task_iso_root, "%s", root);
 #ifdef __linux__
-    if (access(g_task_iso_root, W_OK) != 0) { g_task_iso_active = -1; return; }
+    struct statfs filesystem;
+    char events[TASK_ISO_DIR_MAX + 32], kill_path[TASK_ISO_DIR_MAX + 32];
+    snprintf(events, sizeof events, "%s/cgroup.events", g_task_iso_root);
+    snprintf(kill_path, sizeof kill_path, "%s/cgroup.kill", g_task_iso_root);
+    if (statfs(g_task_iso_root, &filesystem) != 0 ||
+        (unsigned long)filesystem.f_type != 0x63677270UL ||
+        access(g_task_iso_root, W_OK) != 0 || access(events, R_OK) != 0 || access(kill_path, W_OK) != 0) {
+        g_task_iso_active = -1; return;
+    }
     g_task_iso_active = 1;
 #else
     g_task_iso_active = -1; // the native build never claims isolation
@@ -2230,9 +2310,22 @@ static void reap_all(void) {
         if (!claimed) {
             // A background service (or an orphaned grandchild): reap it and
             // drop it from the SPAWN table so ALIVE answers honestly.
-            spawned_forget(p);
+            spawned_leader_reaped(p);
         }
     }
+}
+
+static void service_lifecycle_refresh(void) {
+    reap_all();
+    spawned_collect_finished();
+    kills_enforce();
+}
+
+static int service_stop_pending(void) {
+    for (int i = 0; i < MAX_PENDING_KILLS; i++) if (g_kills[i].used) return 1;
+    for (int i = 0; i < MAX_SPAWNED; i++)
+        if (g_spawned[i].used && g_spawned[i].leader_reaped) return 1;
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -3052,6 +3145,7 @@ static void handle_frame(const unsigned char *body, size_t len) {
     }
 
     if (name_len == 4 && memcmp(body, "KILL", 4) == 0) {
+        service_lifecycle_refresh();
         char pid_buf[32];
         if (args_len == 0 || args_len >= sizeof pid_buf) return;
         memcpy(pid_buf, args, args_len);
@@ -3067,14 +3161,23 @@ static void handle_frame(const unsigned char *body, size_t len) {
             (void)emit_end(token, 3); // never signal a pid we do not own
             return;
         }
-        kill(-(pid_t)pid, SIGTERM);
-        kill((pid_t)pid, SIGTERM);
-        (void)kills_schedule((pid_t)pid, spawned_iso_dir_for(pid));
+        spawned_slot *slot = spawned_find((pid_t)pid);
+        if (!slot->leader_reaped) {
+            kill(-(pid_t)pid, SIGTERM);
+            kill((pid_t)pid, SIGTERM);
+        } else if (slot->iso_dir[0]) {
+            task_iso_kill(slot->iso_dir);
+        }
+        if (kills_schedule((pid_t)pid, spawned_iso_dir_for(pid)) != 0) {
+            (void)emit_end(token, 125);
+            return;
+        }
         (void)emit_end(token, 0);
         return;
     }
 
     if (name_len == 5 && memcmp(body, "ALIVE", 5) == 0) {
+        service_lifecycle_refresh();
         char pid_buf[32];
         if (args_len == 0 || args_len >= sizeof pid_buf) return;
         memcpy(pid_buf, args, args_len);
@@ -3203,6 +3306,9 @@ int main(void) {
     bytebuf inbound = {0};
 
     for (;;) {
+        // Console input deliberately restarts this loop after dispatch, so
+        // lifecycle work must precede poll rather than depend on its tail.
+        service_lifecycle_refresh();
         struct pollfd fds[2 + MAX_CONCURRENT_COMMANDS * 3 + MAX_CONCURRENT_SESSIONS * 2];
         poll_owner owners[2 + MAX_CONCURRENT_COMMANDS * 3 + MAX_CONCURRENT_SESSIONS * 2];
         int n = 0;
@@ -3275,7 +3381,9 @@ int main(void) {
             }
         }
 
-        int timeout = any_active ? POLL_SLICE_MS : -1;
+        // A background service has no EXEC/PTY descriptors. Its scheduled
+        // escalation and empty-tree check still need a bounded wakeup.
+        int timeout = any_active ? POLL_SLICE_MS : service_stop_pending() ? 100 : -1;
         int ready = poll(fds, (nfds_t)n, timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -3371,8 +3479,7 @@ int main(void) {
             }
         }
 
-        reap_all();
-        kills_enforce();
+        service_lifecycle_refresh();
 
         for (int c = 0; c < MAX_CONCURRENT_COMMANDS; c++) {
             command_state *cmd = &g_commands[c];

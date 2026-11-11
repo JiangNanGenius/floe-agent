@@ -1,0 +1,181 @@
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -47,6 +47,10 @@
+ #include "util/perf/u_trace.h"
+ #include "util/u_transfer_helper.h"
+ #include "util/hex.h"
++#include "util/format/u_format.h"
++#include "util/u_inlines.h"
++#include "util/u_math.h"
++#include "frontend/sw_winsys.h"
+ #include "util/xmlconfig.h"
+ 
+ #include "util/u_cpu_detect.h"
+@@ -1605,6 +1609,7 @@
+       close(screen->drm_fd);
+ 
+    slab_destroy_parent(&screen->transfer_pool);
++   simple_mtx_destroy(&screen->sw_dt_lock);
+    ralloc_free(screen);
+    glsl_type_singleton_decref();
+ }
+@@ -1803,7 +1808,102 @@
+       screen->queue_sparse = screen->queue;
+ }
+ 
++/**
++ * CPU presentation of non-swapchain frontbuffers for sw winsys (DRISW).
++ *
++ * zink renders with the hardware Vulkan backend, but when the screen was
++ * created through zink_create_screen(sw_winsys) the resources are plain
++ * textures: no swapchain exists and the kopper path cannot run. Read the
++ * rendered pixels back through the normal gallium transfer interface and
++ * hand them to the sw winsys displaytarget callbacks, which deliver them
++ * to the loader (putImage). A transient displaytarget is used per flush so
++ * resizes and drawable/resource lifetime need no persistent state.
++ */
+ static void
++zink_sw_flush_frontbuffer(struct pipe_screen *pscreen,
++                          struct pipe_context *pctx,
++                          struct pipe_resource *pres,
++                          unsigned level, unsigned layer,
++                          void *winsys_drawable_handle,
++                          unsigned nboxes,
++                          struct pipe_box *sub_box)
++{
++   struct zink_screen *screen = zink_screen(pscreen);
++   struct sw_winsys *winsys = screen->sw_winsys;
++   struct sw_displaytarget *dt;
++   struct pipe_transfer *transfer = NULL;
++   void *src, *dst;
++   unsigned width, height;
++   size_t row_bytes;
++
++   if (!winsys || !pctx || pres->target == PIPE_BUFFER)
++      return;
++
++   level = MIN2(level, pres->last_level);
++   width = u_minify(pres->width0, level);
++   height = u_minify(pres->height0, level);
++   if (!width || !height)
++      return;
++
++   simple_mtx_lock(&screen->sw_dt_lock);
++
++   unsigned dt_stride = 0;
++   dt = winsys->displaytarget_create(winsys, pres->bind, pres->format,
++                                     width, height, 64, NULL, &dt_stride);
++   if (!dt) {
++      mesa_loge("ZINK: sw present: failed to create displaytarget %ux%u\n",
++                width, height);
++      goto out;
++   }
++
++   src = pipe_texture_map(pctx, pres, level, layer, PIPE_MAP_READ,
++                          0, 0, width, height, &transfer);
++   if (!src) {
++      mesa_loge("ZINK: sw present: texture_map failed\n");
++      goto out_destroy_dt;
++   }
++
++   dst = winsys->displaytarget_map(winsys, dt, PIPE_MAP_WRITE);
++   if (!dst) {
++      mesa_loge("ZINK: sw present: displaytarget_map failed\n");
++      pctx->texture_unmap(pctx, transfer);
++      goto out_destroy_dt;
++   }
++
++   row_bytes = util_format_get_stride(pres->format, width);
++   if (row_bytes > (size_t)transfer->stride || row_bytes > (size_t)dt_stride) {
++      /* never claim successful output with a mismatched layout */
++      mesa_loge("ZINK: sw present: stride mismatch (row %zu map %d dt %u)\n",
++                row_bytes, transfer->stride, dt_stride);
++      winsys->displaytarget_unmap(winsys, dt);
++      pctx->texture_unmap(pctx, transfer);
++      goto out_destroy_dt;
++   }
++
++   if ((size_t)transfer->stride == (size_t)dt_stride &&
++       (size_t)transfer->stride == row_bytes) {
++      memcpy(dst, src, row_bytes * height);
++   } else {
++      for (unsigned y = 0; y < height; y++) {
++         memcpy((uint8_t *)dst + (size_t)y * dt_stride,
++                (const uint8_t *)src + (size_t)y * transfer->stride,
++                row_bytes);
++      }
++   }
++
++   winsys->displaytarget_unmap(winsys, dt);
++   pctx->texture_unmap(pctx, transfer);
++
++   winsys->displaytarget_display(winsys, dt, winsys_drawable_handle,
++                                 nboxes, sub_box);
++
++out_destroy_dt:
++   winsys->displaytarget_destroy(winsys, dt);
++out:
++   simple_mtx_unlock(&screen->sw_dt_lock);
++}
++
++static void
+ zink_flush_frontbuffer(struct pipe_screen *pscreen,
+                        struct pipe_context *pctx,
+                        struct pipe_resource *pres,
+@@ -1816,9 +1916,13 @@
+    struct zink_resource *res = zink_resource(pres);
+    struct zink_context *ctx = zink_context(pctx);
+ 
+-   /* if the surface is no longer a swapchain, this is a no-op */
+-   if (!zink_is_swapchain(res))
++   /* if the surface is no longer a swapchain, present it through the
++    * sw winsys (CPU readback) when available */
++   if (!zink_is_swapchain(res)) {
++      zink_sw_flush_frontbuffer(pscreen, pctx, pres, level, layer,
++                                winsys_drawable_handle, nboxes, sub_box);
+       return;
++   }
+ 
+    ctx = zink_tc_context_unwrap(pctx);
+ 
+@@ -3292,6 +3396,8 @@
+ 
+    screen->driver_name_is_inferred = config && config->driver_name_is_inferred;
+    screen->drm_fd = -1;
++   screen->sw_winsys = NULL;
++   simple_mtx_init(&screen->sw_dt_lock, mtx_plain);
+ 
+    glsl_type_singleton_init_or_ref();
+    zink_debug = debug_get_option_zink_debug();
+@@ -3747,6 +3853,7 @@
+    struct zink_screen *ret = zink_internal_create_screen(config, -1, -1, 0);
+    if (ret) {
+       ret->drm_fd = -1;
++      ret->sw_winsys = winsys;
+    }
+ 
+    return &ret->base;
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -64,6 +64,9 @@
+ #include "vk_dispatch_table.h"
+ 
+ #include "renderdoc_app.h"
++
++struct sw_displaytarget;
++struct sw_winsys;
+ 
+ /* the descriptor binding id for fbfetch/input attachment */
+ #define ZINK_FBFETCH_BINDING 5
+@@ -1420,6 +1423,11 @@
+ 
+    struct hash_table dts;
+    simple_mtx_t dt_lock;
++
++   /* retained sw winsys for CPU presentation of non-swapchain frontbuffers
++    * (set only by zink_create_screen). */
++   struct sw_winsys *sw_winsys;
++   simple_mtx_t sw_dt_lock;
+ 
+    bool device_lost;
+    int drm_fd;

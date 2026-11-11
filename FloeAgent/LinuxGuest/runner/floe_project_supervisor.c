@@ -919,6 +919,39 @@ static int verify_roots(void) {
 // mounted inside the project view.
 // ---------------------------------------------------------------------------
 
+static int render_driver_matches(const char *path) {
+    char driver[512];
+    ssize_t length = readlink(path, driver, sizeof driver - 1);
+    if (length <= 0 || (size_t)length >= sizeof driver - 1) return 0;
+    driver[length] = '\0';
+    const char *name = strrchr(driver, '/');
+    return strcmp(name ? name + 1 : driver, "virtio_gpu") == 0;
+}
+
+static int render_node_is_virtio_gpu(void) {
+    const char *device = "/sys/class/drm/renderD128/device";
+    if (render_driver_matches("/sys/class/drm/renderD128/device/driver")) return 1;
+
+    // On the pinned MMIO kernel DRM's parent is the platform transport,
+    // whose driver is virtio-mmio. Verify its actual virtio child instead
+    // of accepting every MMIO device or rejecting this real GPU.
+    DIR *directory = opendir(device);
+    if (!directory) return 0;
+    int matched = 0;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (strncmp(entry->d_name, "virtio", 6) != 0) continue;
+        char path[768];
+        int count = snprintf(path, sizeof path, "%s/%s/driver", device, entry->d_name);
+        if (count > 0 && (size_t)count < sizeof path && render_driver_matches(path)) {
+            matched = 1;
+            break;
+        }
+    }
+    closedir(directory);
+    return matched;
+}
+
 static int project_rootfs_mount(floe_project *p) {
     char upper[512], work[512], options[1600];
     if (path_join(upper, sizeof upper, p->dir, "upper") != 0) return -1;
@@ -995,6 +1028,23 @@ static int project_rootfs_mount(floe_project *p) {
             return -1;
         }
     }
+    /* Only the guest's virtio-GPU render node belongs in a project. A full
+     * devtmpfs would also expose sibling console/control devices. The host
+     * GPU remains behind the fixed virtio protocol; this creates no host
+     * device-node passthrough. Older CPU-only images simply have no node. */
+    struct stat render;
+    if (lstat("/dev/dri/renderD128", &render) == 0 && S_ISCHR(render.st_mode) &&
+        render_node_is_virtio_gpu()) {
+        char node[768];
+        if (path_join(target, sizeof target, p->root, "dev/dri") != 0 ||
+            mkdir_p(target, 0755) != 0 ||
+            path_join(node, sizeof node, target, "renderD128") != 0) return -1;
+        if (mknod(node, S_IFCHR | 0660, render.st_rdev) != 0) {
+            diag("floe-supervisor: project %s: virtual render node: %s\n",
+                 p->id, strerror(errno));
+            return -1;
+        }
+    }
     if (path_join(target, sizeof target, p->root, "dev/pts") != 0) return -1;
     if (mkdir_p(target, 0755) != 0) return -1;
     if (mount("devpts", target, "devpts", MS_NOSUID,
@@ -1029,7 +1079,7 @@ static int project_rootfs_mount(floe_project *p) {
     snprintf(ws_tag, sizeof ws_tag, "floe-ws-%d", p->console_index - 1);
     if (path_join(target, sizeof target, p->root, "workspace") != 0) return -1;
     if (mount(ws_tag, target, "9p", MS_NOSUID | MS_NODEV,
-              "trans=virtio,version=9p2000.L,access=client") != 0) {
+              "trans=virtio,version=9p2000.L,access=client,msize=524288") != 0) {
         diag("floe-supervisor: project %s: workspace share %s unavailable: %s\n",
              p->id, ws_tag, strerror(errno));
         return -1;
@@ -1044,7 +1094,7 @@ static int project_rootfs_mount(floe_project *p) {
         if (path_join(target, sizeof target, p->root, "floe/env") != 0 ||
             mkdir_p(target, 0755) != 0 ||
             mount(ws_tag, target, "9p", MS_NOSUID | MS_NODEV,
-                  "trans=virtio,version=9p2000.L,access=client") != 0) return -1;
+                  "trans=virtio,version=9p2000.L,access=client,msize=524288") != 0) return -1;
     }
     if (p->cache_shared) {
         // One virtio-9p transport accepts one client mount. Mount the shared
@@ -1053,7 +1103,7 @@ static int project_rootfs_mount(floe_project *p) {
         if (!g_cache_ready) {
             if (mkdir_p("/floe-shared-cache", 0755) != 0 ||
                 mount("floe-ws-16", "/floe-shared-cache", "9p", MS_RDONLY | MS_NOSUID | MS_NODEV,
-                      "trans=virtio,version=9p2000.L,access=client") != 0) return -1;
+                      "trans=virtio,version=9p2000.L,access=client,msize=524288") != 0) return -1;
             g_cache_ready = 1;
         }
         if (path_join(target, sizeof target, p->root, "floe/cache") != 0 ||
@@ -1210,7 +1260,7 @@ static int spawn_project_runner(floe_project *p) {
             _exit(126);
         }
 
-        char env_cgroup[768], env_project[96], env_generation[64], env_network[64];
+        char env_cgroup[768], env_project[96], env_generation[64], env_network[64], env_display[32];
         // The project's cgroup subtree is bound at /sys/fs/cgroup inside
         // the chroot, so this in-project absolute path is the real one the
         // runner uses for every task cgroup write.
@@ -1218,6 +1268,23 @@ static int spawn_project_runner(floe_project *p) {
         snprintf(env_project, sizeof env_project, "FLOE_PROJECT_ID=%s", p->id);
         snprintf(env_generation, sizeof env_generation, "FLOE_PROJECT_GENERATION=%s", p->generation);
         snprintf(env_network, sizeof env_network, "FLOE_PROJECT_NETWORK=%s", floe_net_status_text(g_net_status));
+        // Task-private /tmp mounts cannot share filesystem X11 sockets.
+        // The local abstract socket uses a distinct display per live
+        // project slot, so independent project commands reach their own
+        // screen without using another project's default :0.
+        snprintf(env_display, sizeof env_display, "DISPLAY=:%d", p->console_index - 1);
+        // The /init exports VN_PERF/VK_DRIVER_FILES are dropped here because
+        // this child_env is the complete post-chroot environment. Mesa's
+        // async allocator can abort against the stock virtio quota, and the
+        // Venus ICD must be forced so Lavapipe cannot fake a hardware pass.
+        // Both defaults are added ONLY when the project chroot actually has
+        // the virtio_gpu render node; CPU-only images keep the plain env.
+        int has_gpu = access("/dev/dri/renderD128", F_OK) == 0;
+        // The private driver presents hardware-rendered pixels through the
+        // DRISW loader. Older images retain their existing loader default.
+        int has_gpu_presenter = has_gpu &&
+            access("/usr/lib/floe-gpu/dri/zink_dri.so", R_OK) == 0 &&
+            access("/usr/lib/floe-gpu/libGLX_floe.so.0", R_OK) == 0;
         char *child_env[] = {
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "HOME=/root",
@@ -1229,8 +1296,31 @@ static int spawn_project_runner(floe_project *p) {
             env_project,
             env_generation,
             env_network,
+            has_gpu ? "VN_PERF=no_async_mem_alloc" : NULL,
+            has_gpu ? "VK_DRIVER_FILES=/usr/share/vulkan/icd.d/virtio_icd.json" : NULL,
+            has_gpu && !has_gpu_presenter ? "MESA_LOADER_DRIVER_OVERRIDE=zink" : NULL,
+            has_gpu ? "LIBGL_KOPPER_DRI2=true" : NULL,
+            has_gpu_presenter ? "LIBGL_DRI3_DISABLE=true" : NULL,
+            has_gpu_presenter ? "LIBGL_DRI2_DISABLE=true" : NULL,
+            has_gpu_presenter ? "LIBGL_KOPPER_DISABLE=true" : NULL,
+            has_gpu_presenter ? "GALLIUM_DRIVER=zink" : NULL,
+            has_gpu_presenter ? "LIBGL_DRIVERS_PATH=/usr/lib/floe-gpu/dri" : NULL,
+            has_gpu_presenter ? "LD_LIBRARY_PATH=/usr/lib/floe-gpu" : NULL,
+            has_gpu_presenter ? "__GLX_VENDOR_LIBRARY_NAME=floe" : NULL,
+            // Standard GUI usability default: GL/X11 clients inside a GPU
+            // project chroot can find the on-demand screen. This does NOT
+            // start any screen; headless compute still runs no Xvnc, and a
+            // per-command DISPLAY override still wins through floe_exec.
+            has_gpu ? env_display : NULL,
             NULL,
         };
+        // Optional defaults may leave holes; execve requires one compact
+        // NULL-terminated list, including each later applicable default.
+        size_t env_count = 0;
+        for (size_t i = 0; i + 1 < sizeof child_env / sizeof child_env[0]; i++) {
+            if (child_env[i]) child_env[env_count++] = child_env[i];
+        }
+        child_env[env_count] = NULL;
         char *argv[] = { (char *)"/usr/local/bin/floe-exec", NULL };
         // Successful exec closes the CLOEXEC pipe. A pre-exec "ready"
         // byte would incorrectly acknowledge a missing/broken runner.
