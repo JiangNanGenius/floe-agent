@@ -866,8 +866,8 @@ fun FloePlainFormField(
 
 /**
  * Capsule text action used in sheet chrome (Cancel leading, Save trailing in
- * the provider editor; Done in the model manager): white capsule, hairline,
- * ≥48dp target, accent or label text. Matches the reference sheet chips.
+ * the provider editor; Done in the model manager): quiet capsule fill with
+ * an optional outline, ≥48dp target, and accent or label text.
  */
 @Composable
 fun FloeCapsuleAction(
@@ -876,7 +876,7 @@ fun FloeCapsuleAction(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     tint: Color? = null,
-    showHairline: Boolean = true,
+    showHairline: Boolean = false,
 ) {
     val colors = Floe.colors
     val shape = FloeLayout.SidebarSelectionShape

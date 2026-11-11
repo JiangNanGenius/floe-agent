@@ -1,10 +1,10 @@
 # Android Alpha80 / code106
 
-## Source preparation / 源码准备
+## Delivery / 交付
 
-本中间版准备自行分发的 Full ARM64 包，未在此检查点宣称已构建、已发布或已通过全轮验收。仅发行 Full，不推进 Play；最终 1.0.0 等 N01–N08 的既定收尾完成后再提升。
+[Alpha80/code106 已公开](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.80)，固定 App 源码 `ee2057c91872abd31044bd3e0b9e4be38fcd9f85`。仅分发 Full ARM64，Android 预发布不替换 iOS Latest；1.0.0 等整轮既定功能验收后再提升。该标签与已发布安装包保持不变。
 
-This intermediate candidate prepares the independently distributed Full ARM64 APK. This source checkpoint is not a build, publication or whole-round acceptance claim. Play remains discontinued; final1.0.0 follows the agreed N01–N08 closure.
+Alpha80/code106 is public from the immutable source above. Only Full ARM64 is distributed, preserving the iOS Latest pointer. Final1.0.0 still follows the agreed whole-round verification; this tag/package is unchanged.
 
 ## Changes / 改动
 
@@ -26,8 +26,20 @@ ADB app management retains existing authorization and selected targets, with kee
 
 These private code105 candidates provide actual system-app restoration, Linux-to-APK installation/removal, UID-mode restoration and same-PTY hot-resource evidence. Their exact sources/bytes remain distinct from code106. C2's missing summary fields are a retained follow-up; R4's end-marker formatting is separately recorded from its exact guide-content proof.
 
+## Production and physical delivery / 生产及实机交付
+
+- 实际 Full 构建通过（4分20秒）；精确复用 native40，58项原生封装、ARM64/16KiB、API28/29签名和对应源码／许可校验通过。源码绑定清单原先仍指向79的失败保留，已修正匹配80后正常生产，未放宽校验。
+- 79→80增量真实重建通过；七附件的匿名下载字节、不可变标签、新生产客户端及保留的65客户端更新发现分别读回通过。App／运行组件实际符号与native40未裁剪库保存，公开附件维持一个APK和必要组件／校验／更新／源码文件。
+- 三星由code105工程候选经App的GH-Proxy完整包更新至106，主App与Linux运行组件的实际安装摘要、原UID均匹配。该工程基包与公开79不同，不冒充手机增量重建；主机增量证据单列。两项系统确认和运行组件的系统扫描均完成，可选Office/CAD旧split按提示退役，用户文档保留。
+- 原5条任务、2个项目保留；手机设置的状态／动作同行、详情折叠及APK二级页实际可达，打开摘要后完成移除并回到父页的0项状态。复用保存的配对启动服务，实际显示UID2000；AS与Root保持关闭，未设置解锁凭据。这不是全应用视觉或UID修改的新包验收。
+- 本轮7条自建任务、下载目录5个自建APK和5项暂存清理完毕；后者包含3个校验后删除并确认路径消失的共享暂存文件，以及2个已退役A6任务的工作区引用，未从相对引用推定设备路径。清理6处完成产物，保存8份生产回执；当前／必要回滚、符号、原失败、SDK/AVD及下一明确用途缓存保留。未启动模拟器。
+
+Actual Full production, exact native40/package/source/signature checks,79-to80 host reconstruction and all seven anonymous download bytes passed. Current and retained65 clients discover80. Samsung completed the real engineering105-to-public106 in-App joint full update, preserving exact main/runtime bytes, UIDs, five original tasks and two projects. Optional preview splits reinstall on demand. Compact Phone controls, the staged-APK child page, details/removal/parent return and saved-pairing service startup were observed. This is not an on-device delta, whole-App visual or new UID-mutation claim. Owned task/download/staging residue and six completed output areas were retired; required artifacts, symbols and original failures remain.
+
 ## Remaining / 仍待完成
 
-本版新UI、摘要字段、code106生产包、真实升级和公开附件／发现读回仍待执行。R4冷启动命令准备约57秒，未宣称解决首命令性能。自动解锁／结束重锁、跨App编辑保存、其余定时／恢复组合和整体UI精修继续按原编号推进；本中间版不关闭总目标。保留当前／回滚包、原失败及符号，发布保持当时的iOS Latest。
+自动解锁／结束重锁、跨App编辑保存、Linux图形与文件接力及其余定时／恢复组合继续。冷启动准备仍可能约57秒。新的ADB服务会话虽显示UID2000，UID范围权限提示仍要求重启，继续核对实时能力刷新与实际通路，不销账为平台不支持。新摘要字段已编译，但不倒填C2旧回执合同通过。
 
-The new UI/summary fields, actual code106 package, upgrade and public read-back remain pending. R4 still measured roughly57 seconds of cold command preparation; no startup-performance fix is claimed. Unlock/relock, cross-app saves, remaining scheduling/recovery combinations and broader visual refinement remain open. Preserve recovery/evidence/symbols and the contemporaneous iOS Latest.
+用户已确认保留当前整体美术和布局，界面后续仅做局部修整。完成／圆形工具按钮默认外圈描边已在后续主线取消，实际设计系统Release编译通过；底色、形状、语义及48dp点击范围保持。该小修尚不在已冻结80包中，随下一批APK交付，不为它重跑未改组件矩阵。N01–N08总目标继续。
+
+Unlock/relock, cross-App saves, Linux graphics/file return and remaining schedule/recovery combinations stay open, as does roughly57-second cold preparation. The fresh ADB session's UID capability hint needs live-peer/refresh verification; no missing implementation is called unsupported. The new summary fields are compiled, without backfilling C2's old contract. The user approved the overall visual direction: keep it and make small refinements. A subsequent source-only change removes default sheet-action/round-button outlines while retaining fills, shapes, semantics and48dp targets; its real Release design-system compilation passes. It is not in frozen80 and will ship with the next coherent batch. The whole goal remains active.

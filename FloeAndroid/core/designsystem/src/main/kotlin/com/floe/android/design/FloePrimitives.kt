@@ -106,7 +106,7 @@ fun FloeCircleButton(
     iconSize: Dp = 22.dp,
     background: Color = Floe.colors.chromeSurface,
     tint: Color = if (enabled) Floe.colors.label else Floe.colors.tertiaryLabel,
-    hairline: Boolean = true,
+    hairline: Boolean = false,
     /** Opt into the shared Haze chrome material; null keeps the opaque circle. */
     materialLevel: FloeMaterialLevel? = null,
 ) {

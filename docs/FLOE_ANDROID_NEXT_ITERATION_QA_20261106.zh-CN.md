@@ -1077,3 +1077,16 @@ E2系统应用移除／恢复、A6任务Linux安装工具至APK暂存／安装�
 下一空闲中间版本准备为0.1.0-alpha.80，Full-only；实际编译、UI、升级及公开发现待执行。1.0.0仍待整轮剩余验收。详见[Alpha80准备记录](releases/ANDROID_ALPHA80_DELIVERY.md)。
 
 English: Samsung evidence closes real system-app restoration, the Linux-to-APK path, UID-mode restoration and same-PTY hot loading for this batch. Retained receipt/formatting/startup limits remain distinct. Alpha80/code106 combines the summary and compact-settings changes; its actual build, UI, upgrade and publication are pending, and final1.0.0 still follows whole-round closure.
+
+
+## 2026-11-11 Alpha80交付与按钮局部修整
+
+[Alpha80/code106已公开](releases/ANDROID_ALPHA80_DELIVERY.md)，固定源`ee2057c91872abd31044bd3e0b9e4be38fcd9f85`；Full实际构建、native40精确复用、58项原生封装、ARM64/16KiB、API28/29签名、对应源码许可、79→80主机重建及七附件匿名字节通过。新生产客户端与保留的65客户端均发现80，Android保持prerelease/latest=false，不覆盖iOS指针。未重跑未改模块矩阵。
+
+三星由105工程候选经App GH-Proxy真实联合安装106，主／运行组件公开字节及原UID通过，原5任务2项目保留。工程基包与公开79不同，手机不计作增量重建。手机设置、APK二级页的打开详情／移除／回到父页0项，以及复用配对启动UID2000服务可达。新会话UID能力提示仍待核对，摘要新字段不倒填旧C2合同。自动解锁／重锁、跨App成果保存、Linux图形与文件接力、其余定时／恢复组合及冷启动耗时继续按原编号推进，不以中间版关闭总目标。
+
+**用户界面方向追加：** 整体美观和风格已认可，后续只做按钮外圈、对齐和少量间距等小修。保留必要的导航／遮挡修复，不另做整体美术改版或将其新增为1.0.0等待门。两处公共按钮默认描边已取消，实际设计系统Release编译通过；原底色、形状、语义和48dp点击范围保持。后续源码小修不在已冻结80包中，随下一批连贯修复统一交付。
+
+清理本轮7个自建任务、5个下载APK、3个共享暂存文件及2个已退役任务的暂存引用，保留原任务／项目和原失败。清理6处完成构件并保存8份生产回执；当前／必要回滚、符号、SDK/AVD和下一明确用途缓存保持。AS／Root关闭且无解锁凭据；常亮、无线调试及已选高级范围明确交给紧接的N02排查，结束再恢复。无模拟器启动或删除。
+
+English: Public80 passes exact production/package/source/update/public-byte checks and both current/retained-client discovery. Samsung's real in-App engineering105-to-public106 full joint update preserves bytes, UIDs and baseline data. The child staging page and saved pairing work; fresh UID capability refresh, unlock/relock, cross-App saves and scheduling/recovery remain open. The user approves the overall UI; only small refinements remain. The following default-outline change passes actual Release design-system compilation and ships in the next batch, without changing frozen80 or expanding verification. Owned residue/completed outputs were retired; required recovery and original evidence survive. The existing whole goal stays active.
