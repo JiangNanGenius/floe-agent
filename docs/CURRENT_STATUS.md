@@ -3,9 +3,21 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近已交付版本为 1.8.8（330），内部 TestFlight 可安装，GitHub／Feather 已核验；330 未提交公开 TestFlight。** 冻结源为 `b5bf026b16e734a6a1923c2416a687ee274fce41`；后续 main 修改不属于该安装包。1.9.0（327）和 1.9.1（328）仍属未交付尝试。 / **The latest delivered build is 1.8.8 (330), available through internal TestFlight with verified GitHub/Feather delivery. Build330 was not submitted to public TestFlight.** Its source is frozen; later mainline changes are outside the artifact. Builds 327 and 328 remain undelivered attempts.
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近已交付为1.8.9（331），内部TestFlight可安装，GitHub／Feather已核验。用户随后要求撤回331公测，重点修好后另发新构建；331的外部测试访问及审核均已撤回。** 冻结源 `8dcf7c38f77d43a76575e10f96be72807c1c6f47`／`v1.8.9`；后续源码不属于此包。327／328仍是未交付尝试。 / **The latest delivered build is1.8.9 (331), available internally with verified GitHub/Feather delivery. The user subsequently withdrew public331 and requested priority fixes before a new public build; external access and beta review for331 have been withdrawn.** Later source changes are outside the immutable artifact.
 
-## 2026-11-11 iOS 1.8.8（330）渠道核对 / iOS delivery snapshot
+## 2026-11-11 iOS 1.8.9（331）渠道核对 / iOS delivery snapshot
+
+详见[331交付记录](releases/builds/FLOE_1.8.9_BUILD331_DELIVERY.md)。 / See the build-specific delivery record.
+
+| 渠道 / Channel | 已核实结果 / Observed result | 来源与边界 / Source and limits |
+| --- | --- | --- |
+| 内部TestFlight / Internal TestFlight | `VALID`、未过期，Floe QA `IN_BETA_TESTING` | [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43011242406)通过；撤外测后保留内部组。 / Available internally; retained after external withdrawal. |
+| GitHub／Feather | [v1.8.9 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.9)及实时安装源已核验 | [正常发布及awaited下游](https://github.com/JiangNanGenius/floe-agent/actions/runs/43011548978)通过；未签名IPA需自行签名。 / Strict publication and awaited feed passed; your signing is required. |
+| 公开TestFlight / Public TestFlight | 按新指令撤回331公开访问及审核 | 撤回后独立GET为 `READY_FOR_BETA_SUBMISSION`、无审核提交，保留内部组；新公测等待重点修复后的新构建。 / Independent GET confirms review withdrawal and internal access retained; a new public build waits for priority fixes. |
+
+重点后续：编辑器助手与普通聊天严格隔离、统一刷新，录音转写／说话人／离开确认，以及服务进度、水平仪、AR、路由跳点、暗色图标、计时界面和扫码。实际实现与验收分别更新；不把它们写进331。 / Follow-up covers editor-assistant isolation and refresh, recording, service progress and Toolbox defects. These are outside331.
+
+## 2026-11-11 iOS 1.8.8（330）先前渠道快照 / Earlier iOS delivery snapshot
 
 日期按悉尼时间；[330交付记录](releases/builds/FLOE_1.8.8_BUILD330_DELIVERY.md)保存不可变源码、实际包摘要及各渠道边界。 / Dates use Sydney time; the build-specific record preserves immutable source, package digests and channel limits.
 
@@ -16,7 +28,7 @@
 | Feather | [安装源](https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json)与330实际 IPA一致 | 同次 awaited Feather 成功，版本、源码、下载地址、大小及 SHA-256 匹配。 / The awaited workflow passed and the live feed matched the exact artifact. |
 | 公开 TestFlight / Public TestFlight | 330 未提交 / Build330 not submitted | 不能据内部可安装或 GitHub 公开下载推定公开 TestFlight 可用。 / Internal availability and public unsigned downloads do not establish public TestFlight availability. |
 
-**下一阶段：先修复传感器、计时器、化学文件删除及生物回收站清理，再尽快交付中间内测，不等 GPU／新增 Linux 视频硬件解码。** 暂选 **1.8.9（331）**，尚未冻结或交付；后续支持硬解的完整版本再推进公开 TestFlight。330 用户反馈仍在修复和实际 App 验证中，不能视为330已解决这些问题。 / **Next: fix sensors, timers, Chemistry file deletion and Biology Trash cleanup, then deliver an intermediate internal beta without waiting for GPU or new Linux hardware video decoding.** Proposed 1.8.9 (331) is not frozen or delivered. Public TestFlight is deferred to the later complete hardware-decoding build; these reported issues are not claimed fixed in Build330.
+以上保留330交付时的读回；当时报告的传感器、计时、化学删除及生物回收站问题已进入331修复。此前等待硬解再公测的安排已被后续用户指令覆盖，不能据本段历史安排继续发布。 / This retains the dated330 snapshot. Its reported defects were addressed in331; subsequent user directions supersede the earlier release sequencing.
 
 正式 App Store 构建315及既有安排未修改。 / Build315's formal App Store arrangements remain unchanged.
 
