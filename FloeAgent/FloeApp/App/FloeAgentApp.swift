@@ -874,7 +874,7 @@ struct RootView: View {
                 ConversationSearchView()
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("common.done") { showsConversationSearch = false }
+                            Button("action.done") { showsConversationSearch = false }
                         }
                     }
             }

@@ -23,7 +23,7 @@ struct LocalLinuxDisplayView: View {
                 Divider()
                 content
             }
-            .background(Color.black)
+            .background(Color(uiColor: .systemBackground))
             .navigationTitle(IDELanguageRunText.t("屏幕", "Screen"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }

@@ -449,7 +449,7 @@ struct VoiceConversationView: View {
             .sheet(isPresented: $showsSettings) {
                 NavigationStack {
                     TTSSettingsView()
-                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("common.done") { showsSettings = false } } }
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("action.done") { showsSettings = false } } }
                 }
                 .environmentObject(environment)
                 .environmentObject(environment.ttsSettingsService)
