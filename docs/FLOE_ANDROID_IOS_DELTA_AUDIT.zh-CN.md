@@ -424,3 +424,11 @@ iOS baseline remains `4b72b1ba510f5bffd19d46ac1a0b0ba81d55c322` (1.7.65/306), wi
 这是固定 Git 对象的有限静态检查，未运行 iOS 编译、模拟器或新增提供商调用。iOS 当前独立稳定性工作及新的重型编辑器不会不断扩大本轮 Android 范围；不能由本登记推定整段 2,889 路径均通过 Android 验收。
 
 English: This bounded registration compares the last complete iOS anchor0ed1af723 through immutable332 source22f8c31e7 against Android96d700a1. The path guard itself is unchanged. Additive receipt hardening, question deadlines/custom-answer fields, verified-output imports, live speaker transcription and heavy workbenches remain subsequent maintenance or enhancements. Existing task/device acceptance uses original Android evidence. No iOS/device/provider runtime acceptance or exhaustive file audit is claimed.
+
+## 2026-11-12 1.0.0 发行收尾增量
+
+对固定iOS锚点`22f8c31e7cbe86febe150c24284d9fd2fdf50ee8`之后至实际main`9225285c8`的FloeAgent路径作增量核对，共21条，全部属于帮助内容、目录合同、生成脚本与配套测试。Android不加载iOS签名帮助包或混合平台目录；网站已提供Android／shared的中英文四项目录，原生文档入口归独立下一维护包，不替换已冻结的1.0.0。
+
+Android1.0.0冻结源为`9230fc6485aabfb8542058121d43bd7da2efc3d6`。本文上方较大区间中登记的回执、提问、持续转录及重型编辑器差异仍保留；本轮未读取其他任务未提交源码，也未新增iOS编译／设备验证。原视觉参照和各功能编号继续沿用，下一次从本次main固定锚点以后增量比较。
+
+English: The post332-source delta through main9225285c8 contains21 FloeAgent help/content/catalog/build-test paths. Android consumes its own four-entry shared/Android catalog in a subsequent native-help package rather than the iOS signed package. Frozen Android1.0.0 is unchanged. Earlier additive differences and original identities remain; unrelated uncommitted iOS work was not imported or treated as accepted.

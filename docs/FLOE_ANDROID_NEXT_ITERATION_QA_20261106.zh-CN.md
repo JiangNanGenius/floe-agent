@@ -1,9 +1,9 @@
 # Android 下一轮：外部应用与 ARM64 Linux 工作台
 
 
-日期：2026-11-06，实测更新至2026-11-12。当前：[Alpha81/code107已公开](releases/ANDROID_ALPHA81_DELIVERY.md)，固定源`fd37a3ca5998dff5800cc5ae76583ba05c203dc2`。实际Full与ARM64生产、91项聚焦检查、58项封装／签名、80→81主机重建、七附件匿名字节及当前／保留旧客户端发现通过；iOS Latest保持。三星精确107已验证`device.observe`／`device.act`、实际计算成果及任务结束自然重锁；保留模型最初误选及独立用例的原始阻塞，不记作无误操作。自己的任务、设备导出、临时凭据和授权已在该轮恢复，原5任务／2项目保持。后续实测发现后台定时归属、工作区删除同步两个断点；软件占用／卸载和会话停止已验证，详见文末。整轮N01–N08尚未结束，最终1.0.0仍待约定功能验证完成。
+日期：2026-11-06，实测更新至2026-11-12。当前：[1.0.0/code108已公开并完成发行验收](releases/ANDROID_1_0_0_VERIFIED.md)，不可变源`9230fc6485aabfb8542058121d43bd7da2efc3d6`，Full ARM64预发布，保留iOS Latest。五附件匿名字节、当前／保留旧客户端发现、实际三星App内完整107→108联合升级、安装字节／原UID／原数据及升级后Linux执行通过。独立S2已完成未打开对话的定时解锁／计算器／自然重锁，G4首次返回保留标签读取Linux修改，原生删除未回流。135项相关检查、Full／ARM64实际编译及58项封装检查分别留证，未改组件复用既有证据；历史失败不倒填。测试遗留与临时敏感设置已恢复。本轮功能和交付收口按文末记录，具体硬件未验与独立新需求继续明确保留。
 
-以下保留此前Alpha77–80的故障与修复过程；是否完成以文末逐版实测及上方当前交付为准。
+以下保留此前Alpha77–81的故障与修复过程；是否完成以文末逐版实测及上方当前交付为准。
 
 **后续实测与源码更新：** 三星新独立用例已真实自动解锁，`phone.observe`在2653ms内成功返回受保护页面的导航状态；随后启动已授权计算器却误触发“用户正在使用手机”的确认，计算器及任务结束重锁仍未通过。原始41条记录保留，临时解锁凭据、控制范围及权限已恢复，自建任务和设备导出已清。后来的能力撤销回执来自收尾撤权，不另算成最初故障。连续控制修复单独推进，旧用例不恢复。
 
@@ -1135,3 +1135,15 @@ English: Fresh unseen scheduled S2 passes real Samsung lock/unlock, canonical de
 补充实机结果：`6b9855a72`／native43的独立 G4 首次返回保留的干净标签页即显示 Linux 新内容，无关闭标签、刷新或重试。其自建文件已从原生和新 Linux 会话确认移除，已结束会话标签已清；电源设置恢复，三星自然锁屏，原5任务／2项目保留。原 G3 故障不改写。既定功能验证后，按用户要求将待发行元数据提升为1.0.0／108并同步对应源码入口；实际108构建、在线更新和公开读回仍须完成后才称交付。
 
 English: Independent G4 on6b9855a72/native43 displays the Linux update on the first return to the retained clean tab, without a tab-close, reload or retry. Owned native/guest files and ended tabs are removed and the device is restored. The user-authorized1.0.0/code108 metadata and source offer follow functional verification; final108 packaging, online update and public byte readback are still pending.
+
+## 2026-11-12 1.0.0 实际发行与本轮收口
+
+既定功能验证后已将版本提升为1.0.0/code108，以`9230fc6485aabfb8542058121d43bd7da2efc3d6`冻结并公开。Full实际构建、原生／签名／16 KiB、对应源码与许可、五个公开附件完整字节及当前／保留旧客户端更新发现分别通过；iOS Latest保持。手机和平板的工具注册、执行、审批、等待恢复、脱敏和指南均为`device`，旧名只作历史兼容。
+
+三星通过App内保存的GH-Proxy下载完整更新，经正常主包／运行环境系统确认及Play Protect检查实际107→108。两包108精确字节、原UID、5任务2项目和原文件保持；App显示已安装，升级后真实终端执行标记、读取原报告并以0退出。跨Alpha→1.0按用户要求直接完整包，不制作或要求跨版本增量；同系列增量和失败回退保留，未改代码复用原证据。可选预览拆分需重新下载的提示在安装前展示，用户文档没有删除。
+
+本轮按原N01–N08身份完成已约定功能、相关编译、实机修复和这次交付；本次末端S2／G4及升级证据分别收口，不宣称所有机型和全部组合已穷尽测试。旧S1、G3等原失败及对应源码／产物不重写。自己创建的任务、文件、结束会话、导出和敏感设置已清理／恢复，三星自然锁屏后释放给独立录制任务；后者临时授权与设置由其独立恢复。完成的测试与打包暂存退役，当前／必要回退、原失败、符号、源码及有下一用途的缓存保留。
+
+后续维护继续沿原编号接收真实反馈，并处理已登记的iOS增量。网站Android／共享帮助目录现已就绪，新增App原生文档页另作下一维护包，未进入这个不可变APK。真实笔、射频、USB配件、厂商Root与不同锁屏方式保持未验边界，不将硬件不足改称缺实现已通过。详见[1.0.0发行验收](releases/ANDROID_1_0_0_VERIFIED.md)。
+
+English: The agreed N01–N08 implementation and this delivery close with immutable1.0.0/code108. Exact public bytes, compiled legacy/current discovery and a real Samsung in-App full107→108 update pass, preserving UIDs and baseline data; Linux execution and report readback pass after upgrading. Cross-version delivery uses the full package by design. S2, G4, prior faults, device restoration and output retirement remain separately evidenced. This is bounded acceptance rather than every hardware/combination claim. New App documentation and additive iOS differences are independent subsequent maintenance, not changes to this frozen APK.

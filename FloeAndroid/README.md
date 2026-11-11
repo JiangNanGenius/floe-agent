@@ -4,7 +4,15 @@
 
 Distribution policy (2026-11-10): Android is independently distributed as the Full APK. The Google Play line is discontinued and is no longer a development, build, qualification or publication target. Keep GitHub/in-App full-package, delta and mirror updates; historical Play source and evidence remain archival, while retired installers and variant-only outputs are removed.
 
-## Current delivery — Android Alpha79 (2026-11-10)
+## Current delivery — Android 1.0.0 (2026-11-12)
+
+[1.0.0/code108](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.0) is downloadable as a Full ARM64 prerelease from immutable source `9230fc6485aabfb8542058121d43bd7da2efc3d6`; iOS Latest is preserved. All five canonical assets pass complete anonymous byte verification, and compiled current/retained clients discover the complete update. See the [verified delivery record](../docs/releases/ANDROID_1_0_0_VERIFIED.md).
+
+三星实际通过 App 内镜像完整包107→108联合升级，主包／运行组件精确字节、原UID、5任务2项目及原文件保持，升级后Linux终端和报告读取成功。后台定时的独立S2用例完成未打开对话→自动解锁→计算器9→自然重锁；G4首次返回保留标签直接读到Linux修改。手机和平板工具链统一为 `device.observe`／`device.act`／`device.screenshot`，历史别名不重复展示。原始失败、硬件未验范围及独立后续文档页均在发行记录中区分；测试遗留已清理。
+
+Samsung completed the real in-App mirror/full update and retained installed bytes, UIDs and baseline data; Linux execution/readback succeeds after upgrading. Fresh scheduled S2 and retained-editor G4 close their specific faults. Phone/tablet tools use the device namespace throughout. Focused checks and actual device evidence are recorded separately; original failures and hardware limitations remain honest.
+
+## Previous delivery — Android Alpha79 (2026-11-10)
 
 [Alpha79/code105](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.79) is public from immutable source `3eb408bfb43a786b1df3bf79aeea9308e945fc6a`. It adds post-unlock observation readiness and exact scheduled-run navigation, plus compact voice/search/model settings.35 unique focused checks, actual Full-only production, native/signature/delta binding, all seven anonymous assets and current/legacy production update discovery passed. See the [delivery record](../docs/releases/ANDROID_ALPHA79_DELIVERY.md).
 
