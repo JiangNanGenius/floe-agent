@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-11-11 -->
+<!-- docs-updated: 2026-11-12 -->
 # Space and specialist workbenches
 
 [简体中文](WORKSPACES_GUIDE.zh-CN.md) · [User manual](USER_GUIDE.md) · [Quickstart](QUICKSTART.md)
@@ -97,7 +97,7 @@ Machining and printing open from a CAD document's **Manufacturing** entry.
 
 ## 6. Network toolbox — **1.8.5**
 
-Space → Toolbox gathers network utilities that run on your device (the Android alpha ships a related workbench under More → Network).
+Space → Toolbox gathers network utilities that run on your device.
 
 - **Diagnostics:** ping, traceroute, DNS, port checks, LAN discovery, Wi-Fi information and roaming checks. Wi-Fi names and BSSIDs are read only with system authorization; nothing scans until you start it.
 - **Connections and sessions:** HTTP, WebSocket and MQTT clients, a serial assistant (TCP, UDP or Bluetooth; USB needs a supported iPad and drivers not yet shipped), plus terminal and VNC remote workspaces.

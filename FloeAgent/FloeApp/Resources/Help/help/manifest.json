@@ -1,7 +1,14 @@
 {
   "schemaVersion": 1,
+  "platform": "ios",
+  "sourceAudiences": {
+    "shared-basics": "shared",
+    "quickstart": "ios",
+    "user-manual": "ios",
+    "workspaces": "ios"
+  },
   "id": "floe.help.quickstart",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "sourceRevision": "",
   "title": {
     "en": "Floe Help",
@@ -27,14 +34,20 @@
     {
       "path": "help/articles/en/quickstart.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 9068,
-      "sha256": "3f2668b5fb8ab426f2342a5d595130010d784588b40d7258d8ff13133bf4b358"
+      "byteCount": 7666,
+      "sha256": "83ac47658dddc0f8b072724f006b0aceb61fca8b2e4afb31b20bbcfa2371ec3d"
+    },
+    {
+      "path": "help/articles/en/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 4973,
+      "sha256": "4e0d9bd085883805b69dfbe719bef3573693fe2be38cccadf92ed5136060fc11"
     },
     {
       "path": "help/articles/en/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 112062,
-      "sha256": "4ea137ef37d854b41d456acaea2617e0fb4e8e77f62abb2923539225bc646f60"
+      "byteCount": 109754,
+      "sha256": "d7bc9ad5426454a328d610a35ad7ac186d11f8a0cebdd0fce527dcccd1490812"
     },
     {
       "path": "help/articles/en/voice.output.html",
@@ -45,8 +58,8 @@
     {
       "path": "help/articles/en/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 17453,
-      "sha256": "8ff1e318319c75177b25292309e49fc6a3987b62954f21c45abab3aa460a7a8f"
+      "byteCount": 17384,
+      "sha256": "ab0853a549388ad3099a7b709bc764081c8a779f2a807662f69d64a5097657b7"
     },
     {
       "path": "help/articles/zh-Hans/environment.memory.html",
@@ -63,14 +76,20 @@
     {
       "path": "help/articles/zh-Hans/quickstart.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 8450,
-      "sha256": "8d83ae7696f570973176249d2341857cc45d667b5eb5f9bea4689e21da2a1487"
+      "byteCount": 7155,
+      "sha256": "0d088cced328de627bebd9a8206c2f482b5884141ea5a6044546d13da5cdcbfa"
+    },
+    {
+      "path": "help/articles/zh-Hans/shared-basics.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 4438,
+      "sha256": "50655f6336a71386042c2c10ef817ba1f2f6302061993aa28e9a5cfc962ca921"
     },
     {
       "path": "help/articles/zh-Hans/user-manual.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 104281,
-      "sha256": "df7c30b1a7a4837ea93456d82194e241e287d797d21f12c7ab49b2e5dea2bd13"
+      "byteCount": 102113,
+      "sha256": "5cff6919cfb08e0da898b6998126fff58a964d505e6aa0047394eff72e34339b"
     },
     {
       "path": "help/articles/zh-Hans/voice.output.html",
@@ -81,8 +100,8 @@
     {
       "path": "help/articles/zh-Hans/workspaces.html",
       "mimeType": "text/html; charset=utf-8",
-      "byteCount": 15587,
-      "sha256": "31567b3bc38cdb4ea95b34b3442cd003e56a1b2ce374e99c058e50f304229627"
+      "byteCount": 15514,
+      "sha256": "b74548fbc4a40ce469da1fde809465c8f83b1da2e3ed7b2221a29c28fcadbd33"
     },
     {
       "path": "help/assets/guide/canvas-current.webp",
@@ -111,14 +130,14 @@
     {
       "path": "help/index/en.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 131258,
-      "sha256": "1290ad101d5847b88dd4677d64da0d5ee443475e115abd385e512a57b8a5f433"
+      "byteCount": 133050,
+      "sha256": "820e1348313a769bd905964468a4c1fed209ce42a0497365611c6e4c7cc4b06b"
     },
     {
       "path": "help/index/zh-Hans.json",
       "mimeType": "application/json; charset=utf-8",
-      "byteCount": 122418,
-      "sha256": "25298cf14ee11e646b2998193f95be577ebc777dfd28fb9ffb5e59efdd3197c6"
+      "byteCount": 123745,
+      "sha256": "c00df6342c6026e0a4e09fc75bf391a9ca316a9e740799dd49757bc739ef9b59"
     },
     {
       "path": "help/styles/help.css",
@@ -129,14 +148,14 @@
     {
       "path": "index.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 2625,
-      "sha256": "8ea65b5e02db1d8a7e4995f154876e266a6e94ffbd11da8283c655d8060f084b"
+      "byteCount": 3037,
+      "sha256": "afbccf88049a2ff7ac6247a116b6fa80732b538b8af13a52e5f6e9ce462cf740"
     },
     {
       "path": "index.zh-Hans.md",
       "mimeType": "text/markdown; charset=utf-8",
-      "byteCount": 2698,
-      "sha256": "ad7d138a262d7f99b0494125c4af150689e63533e15769864af2a5cf8a3115fa"
+      "byteCount": 2981,
+      "sha256": "10c086f16e9b1e065b95a9a06304188fab508bf4dae58702fa28cd225a6082b9"
     }
   ]
 }

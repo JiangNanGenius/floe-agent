@@ -93,7 +93,9 @@ Recorded on iOS; the Android alpha already includes chat, Office, files, termina
 | Looking for | Start here |
 | --- | --- |
 | How to use Floe | [Illustrated user manual](docs/USER_GUIDE.md) · [中文手册](docs/USER_GUIDE.zh-CN.md) |
-| Android setup & features | [Android guide](docs/ANDROID_GUIDE.md) · [Read online](https://www.floe-agent.com/docs/android-en.html?utm_source=github&utm_medium=referral&utm_campaign=android_guide_readme_en) — legacy USB activation, self-ADB, phone control and on-device Linux |
+| Shared workflows | [Models, tasks and files](docs/SHARED_GUIDE.md) — one shared guide for both platforms |
+| iOS / iPadOS guides | [Platform index](https://www.floe-agent.com/docs/ios/en.html?utm_source=github&utm_medium=referral&utm_campaign=ios_docs_readme_en) · [Full manual](docs/USER_GUIDE.md) |
+| Android setup & features | [Android guide](docs/ANDROID_GUIDE.md) · [Platform index](https://www.floe-agent.com/docs/android/en.html?utm_source=github&utm_medium=referral&utm_campaign=android_guide_readme_en) — legacy USB activation, self-ADB, device control and on-device Linux |
 | A topic | [Documentation hub](docs/README.md) |
 | Installation & versions | [Channel status](docs/CURRENT_STATUS.md) · [Sources](docs/FEATHER_SOURCE.md) · [Release records](docs/releases/README.md) |
 | Help & feedback | [Troubleshooting](docs/USER_GUIDE.md#20-troubleshooting) · [Support](SUPPORT.md) |

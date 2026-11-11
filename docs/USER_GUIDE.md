@@ -1,13 +1,14 @@
-<!-- docs-updated: 2026-11-11 -->
+<!-- docs-updated: 2026-11-12 -->
 
-> This guide primarily describes iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). App Store, GitHub/Feather and TestFlight versions are tracked with verification dates in [channel status](CURRENT_STATUS.md). GitHub IPAs require your own signing; TestFlight availability follows your group. See the [workspace guide](WORKSPACES_GUIDE.md) for build-specific features. Android is a separate public alpha using your cloud model configuration, without local-model inference; follow its [selected release notes](https://www.floe-agent.com/en/releases?platform=android).
+> This guide covers iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). App Store, GitHub/Feather and TestFlight versions are tracked with verification dates in [channel status](CURRENT_STATUS.md). GitHub IPAs require your own signing; TestFlight availability follows your group. See the [workspace guide](WORKSPACES_GUIDE.md) for build-specific features.
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 
+See the [shared guide](SHARED_GUIDE.md) for model connections, first tasks, saving and feedback. This manual covers this platform’s interface and capabilities.
+
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
-For Android, start with the [Android guide and self-ADB setup](ANDROID_GUIDE.md): Android 9/10 USB activation, Android 11+ wireless pairing, phone control, system access, Linux and network tools.
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
@@ -388,12 +389,6 @@ Diagnose in order: reachability, DNS, port, authentication, then command/directo
 
 Bluetooth initializes only when you explicitly scan or connect. A GATT UUID must be 4 or 8 hexadecimal digits, or a standard 128-bit UUID; malformed input returns an error before the system Bluetooth API.
 
-### Android network workbench
-
-In Android, terminal file changes appear in **Workspace Files** after the terminal session ends. **Close Session** finishes it; closing only the panel keeps the session running. After a successful close, the file list refreshes without replacing open drafts.
-
-The Android workbench under **More → Network** keeps measurements on the phone and needs neither Linux nor Root. **LAN discovery** lists DNS-SD services on Android 13 or later; on Android 9–12L it offers an explicit RFC1918 /24–/30 TCP subnet scan instead. Nothing is scanned until you start it, and results distinguish found, unresolved and lost entries. **Speed test** measures download, upload or both against an HTTPS endpoint you control, with a 1–32 MiB data cap and a 1–15 s budget per direction; redirects are not followed, upload sends generated data only, and a metered network is refused unless you explicitly allow it. **Monitoring** runs for 1 minute to 1 hour at 5–300 s intervals for connection status, Ping or TCP, shows a foreground notification with **Stop**, keeps at most 720 checks and never restarts by itself. **Report** creates a private JSON+Markdown pair; identifiers are redacted unless you choose the detailed option, and export writes only the file you select. One transfer or probe measures one endpoint and path, not your maximum bandwidth or coverage; monitoring does not use background location. First-time Linux terminal preparation in a new task is unchanged. On iOS, the related network toolbox lives in Space (see §22) in newer builds.
-
 [↑ Back to contents](#contents)
 
 <!-- doc-anchor: section-17 -->
@@ -473,7 +468,7 @@ never squeezed into a strip.
 
 ### 3D models: one unified workbench
 
-The native 3D editor is available on iOS and iPadOS. Modeling, editing, rendering and saving run on-device; assistant actions use your selected local model or cloud provider. Android offers CAD/3D file previews through an optional component; see the [Android files and preview guide](ANDROID_GUIDE.md#7-files-and-external-editors).
+The native 3D editor is available on iOS and iPadOS. Modeling, editing, rendering and saving run on-device; assistant actions use your selected local model or cloud provider.
 
 Within a canvas, Floe has one 3D creation entry: open the bottom insertion menu (**+ ▸ 3D Model (unified workbench)**). It creates a native `.floecad` node owned by the canvas and opens the same full-screen workbench used by File Preview. **3D Panorama** stays a separate viewer node for panoramic images.
 

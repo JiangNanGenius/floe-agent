@@ -5,12 +5,19 @@
 <a id="任务式快速开始--guided-quickstart"></a>
 ## 使用手册 / User manuals
 
-[从安装到第一个成果](QUICKSTART.zh-CN.md) · [English quickstart](QUICKSTART.md) · [中文图文手册](USER_GUIDE.zh-CN.md) · [English illustrated manual](USER_GUIDE.md) · [官网中文](https://www.floe-agent.com/docs/zh.html) · [Website English](https://www.floe-agent.com/docs/en.html)
+先选择平台；共通操作维护一份，平台差异各自维护。App 文档来源由 [DOCUMENTATION_CATALOG.json](DOCUMENTATION_CATALOG.json) 明确分类，详见[维护约定](DOCUMENTATION_MAINTENANCE.md)。 / Choose a platform. Shared workflows have one source; platform differences stay in each platform's guide. App help uses the explicit catalog rather than the mixed documentation index.
+
+| 文档范围 / Scope | 简体中文 | English |
+| --- | --- | --- |
+| 两端共通 / Shared | [模型、任务与文件](SHARED_GUIDE.zh-CN.md) | [Models, tasks and files](SHARED_GUIDE.md) |
+| iOS / iPadOS | [官网目录](https://www.floe-agent.com/docs/ios/zh.html) · [快速开始](QUICKSTART.zh-CN.md) · [完整手册](USER_GUIDE.zh-CN.md) | [Website index](https://www.floe-agent.com/docs/ios/en.html) · [Quickstart](QUICKSTART.md) · [Full manual](USER_GUIDE.md) |
+| Android | [官网目录](https://www.floe-agent.com/docs/android/zh.html) · [使用与本机 ADB](ANDROID_GUIDE.zh-CN.md) | [Website index](https://www.floe-agent.com/docs/android/en.html) · [Guide and self-ADB](ANDROID_GUIDE.md) |
+
+下表为 iOS/iPadOS 专题；Android 以其专用指南为准。 / The topics below cover iOS/iPadOS; use the separate Android guide for Android workflows.
 
 | 阅读主题 / Topic | 简体中文 | English |
 | --- | --- | --- |
 | 安装与模型 / Install & models | [阅读](USER_GUIDE.zh-CN.md#1-安装与首次使用) | [Read](USER_GUIDE.md#1-installation-and-first-use) |
-| Android：本机 ADB 与专用功能 / Android self-ADB & features | [Android 使用指南](ANDROID_GUIDE.zh-CN.md) | [Android guide](ANDROID_GUIDE.md) |
 | 任务与文件 / Tasks & files | [阅读](USER_GUIDE.zh-CN.md#3-新建任务与选择工作区) | [Read](USER_GUIDE.md#3-tasks-and-workspace-ownership) |
 | 手记与阅读 / Notes & reading | [阅读](USER_GUIDE.zh-CN.md#7-手记导入搜索与书写) | [Read](USER_GUIDE.md#7-notes-import-search-and-handwriting) |
 | Office | [阅读](USER_GUIDE.zh-CN.md#8-office编辑批注保存和重新打开) | [Read](USER_GUIDE.md#8-office-edit-annotate-save-and-reopen) |

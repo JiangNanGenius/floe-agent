@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.help.quickstart",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "kind": "help",
   "minimumAppVersion": "1.7.0",
   "sourceRevision": "",
@@ -9,8 +9,8 @@
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "en": "First built-in help center package: bilingual guides, search index, bounded images and three settings how-tos.",
-    "zh-Hans": "首个内置帮助中心包：双语指南、搜索索引、有界图片和三篇设置说明。"
+    "en": "Separate iOS/iPadOS help from Android, and reuse one shared guide for models, tasks and files. Keeps bilingual offline search, images and settings how-tos.",
+    "zh-Hans": "分离 iOS/iPadOS 与 Android 教程，共用模型、任务与文件指南；保留双语离线搜索、图片和设置说明。"
   },
   "title": {
     "en": "Floe Help",

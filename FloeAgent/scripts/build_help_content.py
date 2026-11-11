@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: MPL-2.0
 """Deterministic builder for the built-in Floe help package.
 
-Compiles the six maintained bilingual guides (QUICKSTART / USER_GUIDE /
-WORKSPACES_GUIDE, English and Simplified Chinese), four real local
+Compiles the explicitly selected shared + iOS bilingual guides from
+docs/DOCUMENTATION_CATALOG.json, four real local
 screenshots, and three short settings how-tos into the offline help package
-`floe.help.quickstart` version 1.1.0:
+`floe.help.quickstart` version 1.2.0:
 
   * per-locale search indexes and categories (HelpIndex JSON)
   * stable, language-independent section anchors
@@ -42,9 +42,11 @@ import unicodedata
 import posixpath
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
+from documentation_catalog import load_catalog, select_documents
 
 PACKAGE_ID = "floe.help.quickstart"
-PACKAGE_VERSION = "1.1.0"
+PACKAGE_VERSION = "1.2.0"
+PLATFORM = "ios"
 MANIFEST_PATH = "help/manifest.json"
 MAX_FILE_BYTES = 1_048_576
 MAX_MANIFEST_BYTES = 262_144
@@ -66,6 +68,28 @@ GUIDE_SOURCES = {
     "user-manual": "USER_GUIDE",
     "workspaces": "WORKSPACES_GUIDE",
 }
+GUIDE_AUDIENCES: Dict[str, str] = {}
+
+
+def configure_guide_sources() -> None:
+    """Fail closed on missing classification; never scan all Markdown files."""
+    global GUIDE_SOURCES, GUIDE_AUDIENCES
+    try:
+        catalog = load_catalog(os.path.join(DOCS_DIR, "DOCUMENTATION_CATALOG.json"))
+        selected = select_documents(catalog, PLATFORM, help_only=True)
+    except (OSError, ValueError) as error:
+        raise BuildError(f"invalid documentation catalog: {error}") from error
+    sources = {}
+    for entry in selected:
+        en = entry["sources"]["en"]
+        stem = en.removesuffix(".md")
+        if entry["sources"]["zh-Hans"] != stem + ".zh-CN.md":
+            raise BuildError(f"help source locale naming mismatch: {entry['id']}")
+        sources[entry["id"]] = stem
+    if not {"shared-basics", "quickstart", "user-manual", "workspaces"} <= set(sources):
+        raise BuildError("missing required iOS/shared help guides")
+    GUIDE_SOURCES = sources
+    GUIDE_AUDIENCES = {entry["id"]: entry["audience"] for entry in selected}
 
 PUBLIC_BLOB_BASE = "https://github.com/JiangNanGenius/floe-agent/blob/main"
 
@@ -188,6 +212,7 @@ CATEGORY_DEFS = [
 CATEGORY_ENTRIES = {
     "getting-started": [
         ("quickstart", None),
+        ("shared-basics", None),
         ("user-manual", "section-1"),
         ("user-manual", "section-2"),
     ],
@@ -855,6 +880,7 @@ footer { margin-top: 3rem; font-size: 0.8rem; color: #6c6c70; }
 def article_to_json(article: Article, locale: str, html_path: str) -> dict:
     return {
         "id": article.id,
+        "audience": GUIDE_AUDIENCES.get(article.id, "ios"),
         "title": article.title,
         "summary": article.summary,
         "htmlPath": html_path,
@@ -898,13 +924,13 @@ def index_document(articles: Dict[str, Article], locale: str) -> dict:
                     "summary": article.summary,
                 })
         categories.append({"id": category_id, "title": titles[locale], "entries": entries})
-    order = ["quickstart", "user-manual", "workspaces"] + list(HOWTO_ARTICLE_ORDER)
+    order = ["quickstart", "shared-basics", "user-manual", "workspaces"] + list(HOWTO_ARTICLE_ORDER)
     article_docs = []
     for article_id in order:
         article = by_id[article_id]
         html_path = f"help/articles/{locale}/{article_id}.html"
         article_docs.append(article_to_json(article, locale, html_path))
-    return {"schemaVersion": 1, "locale": locale,
+    return {"schemaVersion": 1, "locale": locale, "platform": PLATFORM,
             "categories": categories, "articles": article_docs}
 
 
@@ -920,7 +946,7 @@ def legacy_document(articles: Dict[str, Article], locale: str, source_revision: 
     else:
         lines += ["This is the offline document package for the built-in Floe help center. Read it in the App under Settings > Help with contents, search and images.",
                   ""]
-    order = ["quickstart", "user-manual", "workspaces"] + list(HOWTO_ARTICLE_ORDER)
+    order = ["quickstart", "shared-basics", "user-manual", "workspaces"] + list(HOWTO_ARTICLE_ORDER)
     for article_id in order:
         article = articles[article_id]
         lines.append(f"## {article.title}")
@@ -956,8 +982,8 @@ def content_json(source_revision: str) -> dict:
         "requiredCapabilities": [],
         "dependencies": [],
         "releaseNotes": {
-            "en": "First built-in help center package: bilingual guides, search index, bounded images and three settings how-tos.",
-            "zh-Hans": "首个内置帮助中心包：双语指南、搜索索引、有界图片和三篇设置说明。",
+            "en": "Separate iOS/iPadOS help from Android, and reuse one shared guide for models, tasks and files. Keeps bilingual offline search, images and settings how-tos.",
+            "zh-Hans": "分离 iOS/iPadOS 与 Android 教程，共用模型、任务与文件指南；保留双语离线搜索、图片和设置说明。",
         },
         "title": {"en": "Floe Help", "zh-Hans": "Floe 帮助中心"},
         "documents": {"en": "index.md", "zh-Hans": "index.zh-Hans.md"},
@@ -968,6 +994,8 @@ def content_json(source_revision: str) -> dict:
 def manifest_json(source_revision: str, resources: List[dict]) -> dict:
     return {
         "schemaVersion": 1,
+        "platform": PLATFORM,
+        "sourceAudiences": GUIDE_AUDIENCES,
         "id": PACKAGE_ID,
         "version": PACKAGE_VERSION,
         "sourceRevision": source_revision,
@@ -1037,6 +1065,7 @@ def temp_scratch() -> str:
 def build_package(source_revision: str, *, with_images: bool = True) -> Dict[str, bytes]:
     """Build the complete package as a {relative path: bytes} mapping."""
     validate_source_revision(source_revision)
+    configure_guide_sources()
     files: Dict[str, bytes] = {}
 
     # Parse guides once per locale; verify anchor parity across locales.
@@ -1180,6 +1209,8 @@ def validate_package_constraints(files: Dict[str, bytes]) -> None:
     manifest = json.loads(files[MANIFEST_PATH].decode("utf-8"))
     if manifest["id"] != PACKAGE_ID or manifest["version"] != PACKAGE_VERSION:
         raise BuildError("manifest identity mismatch")
+    if manifest.get("platform") != PLATFORM or set(manifest.get("sourceAudiences", {}).values()) - {"shared", PLATFORM}:
+        raise BuildError("wrong platform in iOS help package")
     if manifest["sourceRevision"] != content["sourceRevision"]:
         raise BuildError("manifest/content.json sourceRevision mismatch")
     if set(manifest["indexPaths"]) != set(LOCALES):
@@ -1200,8 +1231,12 @@ def validate_package_constraints(files: Dict[str, bytes]) -> None:
         index = json.loads(files[manifest["indexPaths"][locale]].decode("utf-8"))
         if index["locale"] != locale:
             raise BuildError(f"index locale mismatch: {locale}")
+        if index.get("platform") != PLATFORM:
+            raise BuildError(f"index platform mismatch: {locale}")
         seen = set()
         for article in index["articles"]:
+            if article.get("audience") not in ("shared", PLATFORM):
+                raise BuildError(f"wrong article audience: {article.get('id')}")
             for key in ("id",):
                 value = article[key]
                 if not IDENTIFIER_OK(value):

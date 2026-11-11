@@ -13,7 +13,7 @@ public enum HelpLanguage: String, Codable, CaseIterable, Sendable {
 
 public enum HelpBundleMetadata {
     public static let packageID = "floe.help.quickstart"
-    public static let bundledVersion = "1.1.0"
+    public static let bundledVersion = "1.2.0"
     public static let manifestPath = "help/manifest.json"
     public static let maximumFileBytes = 1_048_576
     public static let maximumManifestBytes = 262_144

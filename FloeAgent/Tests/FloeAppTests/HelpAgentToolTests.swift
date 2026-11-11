@@ -109,7 +109,7 @@ struct HelpAgentToolTests {
             let object = try output(result)
             joined += try #require(object["text"] as? String)
             let identity = try #require(object["snapshot"] as? [String: Any])
-            #expect(identity["version"] as? String == "1.1.0")
+            #expect(identity["version"] as? String == oldSnapshot.manifest.version)
             #expect(identity["sourceRevision"] as? String == String(repeating: "a", count: 40))
             guard let next = object["nextOffset"] as? Int else {
                 #expect(object["isTruncated"] as? Bool == false)
@@ -121,7 +121,7 @@ struct HelpAgentToolTests {
             if offset >= 2_000 { break }
         } while true
         #expect(joined == (try oldSnapshot.read(reference).text))
-        #expect(joined.contains("1.1.0"))
+        #expect(joined.contains(oldSnapshot.manifest.version))
         #expect(!joined.contains("2.0.0"))
         let unavailable = try HelpReferenceLink.url(for: HelpReference(version: "9.0.0", language: .english, articleID: "input.keyboard")).absoluteString
         await #expect(throws: (any Error).self) {
@@ -173,7 +173,7 @@ struct HelpAgentToolTests {
         let registry = ToolRunnerRegistry()
         registerHelpAgentTools(center: fixture.center, presentation: coordinator, registry: registry)
         let runner = try #require(registry.runner(named: "help.present"))
-        let link = try HelpReferenceLink.url(for: HelpReference(version: "1.1.0", language: .english, articleID: "input.keyboard")).absoluteString
+        let link = try HelpReferenceLink.url(for: HelpReference(version: HelpBundleMetadata.bundledVersion, language: .english, articleID: "input.keyboard")).absoluteString
         let payload = try JSONSerialization.data(withJSONObject: ["reference": link])
         let main = context(name: "help.present")
         var forged = main
@@ -217,7 +217,7 @@ struct HelpAgentToolTests {
         let main = context(name: "help.present", cancellation: token)
         let hostID = coordinator.registerHost(sceneID: "current-scene", currentConversationID: main.conversationID,
             currentRunID: main.runID, isActive: true)
-        let reference = HelpReference(version: "1.1.0", language: .english, articleID: "input.keyboard")
+        let reference = HelpReference(version: HelpBundleMetadata.bundledVersion, language: .english, articleID: "input.keyboard")
         let payload = try JSONSerialization.data(withJSONObject: ["reference": HelpReferenceLink.url(for: reference).absoluteString])
         let call = Task { try await runner.run(payload, main) }
         let request = try await waitForPresentation(coordinator)
@@ -255,7 +255,7 @@ private final class HelpToolFixture {
         digest: { FloeDigest.sha256Hex($0) })
 
     init(installedVersion: String? = nil) throws {
-        bundled = try Self.files(version: "1.1.0")
+        bundled = try Self.files(version: HelpBundleMetadata.bundledVersion)
         initialInstalled = try installedVersion.map { HelpContentPackage(version: $0, files: try Self.files(version: $0)) }
     }
 

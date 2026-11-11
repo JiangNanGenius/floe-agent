@@ -1,13 +1,13 @@
-<!-- docs-updated: 2026-11-10 -->
+<!-- docs-updated: 2026-11-12 -->
 
-> This guide covers Floe for Android (the Android edition of Floe Agent) and its actual shipped workflows, with a focus on self-ADB activation on older Android versions. The current public release is 0.1.0-alpha.79 (versionCode 105), distributed only as the standalone Full APK; the Google Play line was discontinued on 2026-11-10. Requires Android 9 (API 28) or later on an ARM64 device. Tasks use your own cloud model configuration; there is no on-device model inference. For iOS/iPadOS, see the [user manual](USER_GUIDE.md).
+> This guide covers Floe for Android (the Android edition of Floe Agent) and its actual shipped workflows, with a focus on self-ADB activation on older Android versions. This guide follows 1.0.0 (versionCode 108); as of 2026-11-12, GitHub marks it as a prerelease — check the release centre for channel status, distributed only as the standalone Full APK; the Google Play line was discontinued on 2026-11-10. Requires Android 9 (API 28) or later on an ARM64 device. Tasks use your own cloud model configuration; there is no on-device model inference.
 
 <!-- doc-anchor: section-1 -->
 # Floe for Android User Guide
 
 [简体中文](ANDROID_GUIDE.zh-CN.md) · [Documentation](README.md) · [Release centre](https://www.floe-agent.com/en/releases?platform=android) · [GitHub Releases](https://github.com/JiangNanGenius/floe-agent/releases)
 
-Floe for Android turns your phone into a lightweight agent workbench: cloud-model tasks, project files, phone control, a project-scoped ARM64 Linux terminal and graphical applications, network tools and scheduled tasks. This guide follows the actual published interface and wording; menu labels may differ slightly between versions — trust the interface of the build you installed.
+Floe for Android turns your phone into a lightweight agent workbench: cloud-model tasks, project files, device control, a project-scoped ARM64 Linux terminal and graphical applications, network tools and scheduled tasks. This guide follows the actual published interface and wording; menu labels may differ slightly between versions — trust the interface of the build you installed.
 
 ## Contents
 
@@ -17,7 +17,7 @@ Floe for Android turns your phone into a lightweight agent workbench: cloud-mode
 - [2. Your first cloud model and task](#2-your-first-cloud-model-and-task)
 - [3. Self-ADB: embedded ADB access](#3-self-adb-embedded-adb-access)
 - [4. Root access (optional)](#4-root-access-optional)
-- [5. Phone control (Accessibility)](#5-phone-control-accessibility)
+- [5. Device control (Accessibility)](#5-phone-control-accessibility)
 
 **Workspace and tools**
 
@@ -52,6 +52,8 @@ If the in-app update fails on a very old client, download the latest full APK fr
 
 ## 2. Your first cloud model and task
 
+See [Models, tasks and files (shared)](SHARED_GUIDE.md) for provider setup, useful instructions, checking results and feedback. The steps below cover the Android menus and workflow.
+
 Floe for Android has no on-device model inference; tasks use the cloud model service you configure.
 
 ### 2.1 Configure a model provider
@@ -76,9 +78,9 @@ First, keep the three different kinds of access apart and enable only what you n
 
 | Capability | Entry | What it does |
 | --- | --- | --- |
-| Phone control (Accessibility) | Settings → Phone → Phone control (Accessibility) | Observes and operates the apps you select (see §5) |
-| Embedded ADB access | Settings → Phone → Embedded ADB access | Shell-level files, read-only system folders, app management (this section) |
-| Root access | Settings → Phone → Root access | Highest-privilege operations with an existing root grant (see §4) |
+| Device control (Accessibility) | Settings → Device → Device control (Accessibility) | Observes and operates the apps you select (see §5) |
+| Embedded ADB access | Settings → Device → Embedded ADB access | Shell-level files, read-only system folders, app management (this section) |
+| Root access | Settings → Device → Root access | Highest-privilege operations with an existing root grant (see §4) |
 
 Merely “connecting adb from a computer” gives Floe no capability at all. You must complete the pairing or bootstrap below so that Floe's own service is running.
 
@@ -93,7 +95,7 @@ Once embedded ADB is on, you can configure as needed:
 
 Android 11+ uses the system's Wireless debugging for pairing — everything happens on the phone, no computer needed:
 
-1. Open **Settings → Phone → Embedded ADB access**, turn on **Embedded ADB**, and tap **Pair with Android**. Floe opens the system's Developer options.
+1. Open **Settings → Device → Embedded ADB access**, turn on **Embedded ADB**, and tap **Pair with Android**. Floe opens the system's Developer options.
 2. Turn on **Wireless debugging** in system settings, then tap **Pair device with pairing code**. The screen shows a 6-digit pairing code and a **pairing port**. The pairing port is used only for this pairing step — it is not the port the service connects through later.
 3. Enter the 6-digit code in Floe's **pairing notification** (keeping Android's pairing screen in front). If notifications are off, follow the prompt to allow pairing notifications; you can also use split screen and enter the code directly in Floe. Floe looks up this device's pairing port automatically; if it cannot, enter the port manually as prompted.
 4. After pairing succeeds, return to Floe and tap **Start service**. Floe connects to this same phone's debugging service through the loopback address (127.0.0.1) at the **current actual connection port** — the port shown as “IP address & Port” on the Wireless debugging main page, which differs from the pairing port. The status shows **Service running** with the shell identity (UID 2000) when it succeeds.
@@ -110,7 +112,7 @@ Android 9/10 have no system wireless pairing, so a computer performs a one-time 
 
 1. Install [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) on the computer (see the official [Android Debug Bridge documentation](https://developer.android.com/tools/adb)).
 2. Enable **Developer options** and **USB debugging** on the phone, connect it over USB, and allow this computer's debugging authorization on the phone.
-3. On the phone, open **Settings → Phone → Embedded ADB access**, turn on **Embedded ADB**, then tap **Copy USB setup command**. The command is copied to the clipboard.
+3. On the phone, open **Settings → Device → Embedded ADB access**, turn on **Embedded ADB**, then tap **Copy USB setup command**. The command is copied to the clipboard.
 4. First make sure the computer sees the phone. Run in a terminal:
 
    ```bash
@@ -128,7 +130,7 @@ About this command:
 
 ### 3.3 Verify, revoke and troubleshoot
 
-- **Verify**: Settings → Phone → Embedded ADB access. **Service running** means the service is live.
+- **Verify**: Settings → Device → Embedded ADB access. **Service running** means the service is live.
 - **Pause**: tap **Stop service**. **Forget pairing** removes the saved pairing and stops the Floe service first (other apps are unaffected). Turning off the **Embedded ADB** switch disables the whole feature.
 - **After a restart**: on Android 11+, turn Wireless debugging on and start the service again; on Android 9/10, run the USB setup command from the computer once more.
 - **Common prompts**: if Wireless debugging is not found, make sure it is enabled in Developer options, then start the service again. If the pairing code is not accepted, check the current code on Android's pairing screen and retry. If pairing was removed in Android settings, pair again to restore access.
@@ -137,25 +139,26 @@ About this command:
 
 Root access is **off by default** and uses a root grant this device **already has**. Floe never roots a phone and never promotes ADB to root.
 
-1. Open **Settings → Phone → Root access**.
+1. Open **Settings → Device → Root access**.
 2. Tap **Check root grant** and confirm the prompt to use the device's existing root grant. A successful check can enable root access; otherwise Floe reports that no grant was found.
 3. Once enabled, only operations you start run as root, and you can turn it off again at any time.
 
 Embedded ADB and Root have at most one active backend: when Root owns the transport, a live ADB service reports as paired standby, and vice versa.
 
-## 5. Phone control (Accessibility)
+<!-- doc-anchor: 5-phone-control-accessibility -->
+## 5. Device control (Accessibility)
 
-Phone control lets a task observe screens and act **inside the apps you select**, using Android's Accessibility service.
+Device control lets a task observe screens and act **inside the apps you select**, using Android's Accessibility service.
 
 ### 5.1 Enable it and choose apps
 
-1. Open **Settings → Phone → Phone control (Accessibility)** and tap **Open Accessibility settings** to enable Floe's phone-control service. If Android blocks it, follow the prompt to allow restricted settings in App info, then enable the service again.
+1. Open **Settings → Device → Device control (Accessibility)** and tap **Open Accessibility settings** to enable Floe's phone-control service. If Android blocks it, follow the prompt to allow restricted settings in App info, then enable the service again.
 2. Under **Apps the Agent may control**, tap **Choose apps**: only the apps you select can be observed or controlled. There is no all-apps grant; switching to a different foreground app is refused.
 3. Under **Screen content**, choose when the active task may see the screen: **Off / This task / Until stopped**. Nothing is recorded continuously; a screenshot is captured only when the task asks for the observed page.
 
 ### 5.2 Use in a task, take over, stop
 
-- Each task must explicitly **allow phone control for this task**; the Agent cannot arm it itself.
+- Each task must explicitly **allow device control for this task**; the Agent cannot arm it itself.
 - While running, the task shows its state (Running / Waiting for you / Taken over / Stopping); you can **Take over** or **Stop** at any time. Taking over blocks new actions and leaves the task for your review.
 - While you are using the phone, execution pauses and waits for your confirmation.
 - Boundaries: only the visible page of the active task is observed; actions are read back after they run and gestures are not replayed blindly; secure windows and the lock screen stay protected by the system.

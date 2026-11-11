@@ -1,13 +1,14 @@
-<!-- docs-updated: 2026-11-11 -->
+<!-- docs-updated: 2026-11-12 -->
 
-> 本指南主要介绍 iOS/iPadOS。[从安装到第一个成果](QUICKSTART.zh-CN.md)提供任务式教程。App Store、GitHub／Feather 与 TestFlight 的版本及核实日期统一见[渠道状态](CURRENT_STATUS.md)。GitHub IPA 需要自行签名，TestFlight 可用性以实际测试组为准。各工作台的适用版本见[空间与专用工作台教程](WORKSPACES_GUIDE.zh-CN.md)。Android 是独立公开测试版：使用自备云端模型、不提供本地模型推理，能力按[所选发布说明](https://www.floe-agent.com/releases?platform=android)核对。
+> 本指南主要介绍 iOS/iPadOS。[从安装到第一个成果](QUICKSTART.zh-CN.md)提供任务式教程。App Store、GitHub／Feather 与 TestFlight 的版本及核实日期统一见[渠道状态](CURRENT_STATUS.md)。GitHub IPA 需要自行签名，TestFlight 可用性以实际测试组为准。各工作台的适用版本见[空间与专用工作台教程](WORKSPACES_GUIDE.zh-CN.md)。
 
 <!-- doc-anchor: section-1 -->
 # Floe Agent 使用手册
 
+模型连接、首次任务、文件保存和问题反馈的通用步骤见[共通指南](SHARED_GUIDE.zh-CN.md)；本手册说明本平台的界面与能力。
+
 [English](USER_GUIDE.md) · [文档目录](README.md) · [官网文档](https://www.floe-agent.com/docs/zh.html)
 
-Android 用户请先看[Android 使用与本机 ADB 激活指南](ANDROID_GUIDE.zh-CN.md)：分别介绍 Android 9/10 的 USB 初始化、Android 11+ 无线配对，以及手机控制、系统访问、Linux 和网络工具。
 
 本手册介绍 Floe 的 AI 任务、手记、Office、图纸助手、画布与媒体，以及本地和远程开发功能。Floe 面向 iPad 设计，也支持 iPhone；需要 iOS/iPadOS 26 或更高版本。
 
@@ -427,12 +428,6 @@ Mac 原版技能与 Linux 适配版分别保留文件和版本。工作区、任
 
 蓝牙仅在明确扫描或连接时初始化。GATT UUID 应为 4 位、8 位十六进制数，或标准 128 位 UUID；无效输入会在调用系统蓝牙 API 前返回错误。
 
-### 安卓网络工作台
-
-安卓终端中的文件改动会在会话结束后出现在**工作区文件**中。选择**关闭会话**来结束终端；只关闭面板会让会话继续运行。正常关闭后，文件列表会刷新，并保留已打开的编辑草稿。
-
-安卓的 **更多 → 网络** 在手机上完成测量，不需要 Linux 或 Root。**局域网发现**在 Android 13 或更高版本列出 DNS-SD 服务；Android 9–12L 改为明确的 RFC1918 /24–/30 TCP 子网扫描。只有你点“开始”才会扫描，结果区分已发现、未解析与已丢失。**测速**对你自己控制的 HTTPS 端点测量下载、上传或双向，每方向有 1–32 MiB 数据上限和 1–15 秒时间预算；不跟随重定向，上传只发送生成的数据，计量网络默认拒绝，必须明确允许才传输。**持续监测**可运行 1 分钟–1 小时、每 5–300 秒检查连接状态、Ping 或 TCP，显示带“停止”的前台通知，最多保留 720 次检查，不会自行重启。**报告**生成私有的 JSON＋Markdown 对；默认脱敏，只有选择详细模式才包含网络标识，导出只写入你选择的文件。一次传输或探测只代表一个端点和路径，不等于最大带宽或覆盖；监测不使用后台定位。新任务首次准备 Linux 终端的环境成本不变。iOS 上相关的网络工具箱位于空间内（见 §22，较新构建）。
-
 [↑ 返回目录](#目录)
 
 <!-- doc-anchor: section-20 -->
@@ -511,7 +506,7 @@ iPad 使用标签栏切换网页，iPhone 使用标签概览。任务浏览器�
 
 ### 3D 模型：统一工作台
 
-原生 3D 编辑器在 iOS 和 iPadOS 上提供。建模、编辑、渲染与保存均在设备端进行；助手使用你选择的本地模型或云端供应商。Android 通过按需安装的组件提供 CAD/三维文件预览，具体步骤见[Android 文件与预览教程](ANDROID_GUIDE.zh-CN.md#7-文件与外部编辑器)。
+原生 3D 编辑器在 iOS 和 iPadOS 上提供。建模、编辑、渲染与保存均在设备端进行；助手使用你选择的本地模型或云端供应商。
 
 在画布内，Floe 只有一个 3D 建模创建入口：打开底部插入菜单（**+ ▸ 3D 模型（统一工作台）**）。它会创建一个由画布持有的原生 `.floecad` 节点，并打开与文件预览相同的全屏工作台。**3D 全景** 仍是独立的全景图片查看节点。
 

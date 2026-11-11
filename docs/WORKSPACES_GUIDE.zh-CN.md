@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-11-11 -->
+<!-- docs-updated: 2026-11-12 -->
 # 空间与专用工作台
 
 [English](WORKSPACES_GUIDE.md) · [使用手册](USER_GUIDE.zh-CN.md) · [快速开始](QUICKSTART.zh-CN.md)
@@ -97,7 +97,7 @@ Floe 的各安装渠道包含的功能不同。下方版本标注表示相应工
 
 ## 6. 网络工具箱 — **1.8.5**
 
-空间 → 工具箱汇集了在设备上运行的网络工具（Android 测试版在“更多 → 网络”下提供相关工作台）。
+空间 → 工具箱汇集了在设备上运行的网络工具。
 
 - **诊断：** Ping、路由追踪、DNS、端口检查、局域网发现、Wi-Fi 信息和漫游检查。Wi-Fi 名称与 BSSID 仅在系统授权后读取；不开始就不会扫描。
 - **连接与会话：** HTTP、WebSocket 和 MQTT 客户端，串口助手（TCP、UDP 或蓝牙；USB 需要受支持的 iPad 与尚未随包的驱动），以及终端和 VNC 远程工作区。

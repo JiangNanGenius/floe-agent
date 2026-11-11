@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """Tests for FloeAgent/scripts/build_help_content.py.
 
-Fixture inputs live in the private help snapshot so the suite is independent
-of live guide edits; the snapshot is a test fixture, not an App resource.
+Builds from the maintained public guides and tests platform isolation with
+synthetic catalogs. No private snapshot is required by CI.
 """
 import hashlib
 import json
@@ -17,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "FloeAgent" / "scripts" / "build_help_content.py"
-SNAPSHOT_DOCS = ROOT / "Local" / "Private" / "help-implementation-20261111" / "content" / "inputs-snapshot" / "docs"
+SNAPSHOT_DOCS = ROOT / "docs"
 
 sys.path.insert(0, str(SCRIPT.parent))
 import build_help_content as bhc  # noqa: E402
@@ -67,7 +67,7 @@ class GeneratorFixtureTests(unittest.TestCase):
     # -- Package shape -------------------------------------------------
 
     def test_package_shape_and_bounds(self):
-        self.assertEqual(len(self.files), 23)
+        self.assertEqual(len(self.files), 25)
         for relative, data in self.files.items():
             if relative in ("content.json", "help/manifest.json"):
                 self.assertLessEqual(len(data), 262_144, relative)
@@ -83,7 +83,7 @@ class GeneratorFixtureTests(unittest.TestCase):
         ids = [article["id"] for article in index["articles"]]
         self.assertEqual(
             ids,
-            ["quickstart", "user-manual", "workspaces",
+            ["quickstart", "shared-basics", "user-manual", "workspaces",
              "input.keyboard", "voice.output", "environment.memory"],
         )
         for article in index["articles"]:
@@ -238,7 +238,7 @@ class GeneratorFixtureTests(unittest.TestCase):
         manifest = self.load_json("help/manifest.json")
         self.assertEqual(content["schemaVersion"], 1)
         self.assertEqual(content["id"], "floe.help.quickstart")
-        self.assertEqual(content["version"], "1.1.0")
+        self.assertEqual(content["version"], "1.2.0")
         self.assertEqual(content["kind"], "help")
         self.assertEqual(content["helpManifest"], "help/manifest.json")
         self.assertEqual(content["sourceRevision"], "")

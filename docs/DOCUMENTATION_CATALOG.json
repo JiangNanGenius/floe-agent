@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "documents": [
+    {"id": "shared-basics", "audience": "shared", "help": true, "sources": {"en": "SHARED_GUIDE.md", "zh-Hans": "SHARED_GUIDE.zh-CN.md"}},
+    {"id": "quickstart", "audience": "ios", "help": true, "sources": {"en": "QUICKSTART.md", "zh-Hans": "QUICKSTART.zh-CN.md"}},
+    {"id": "user-manual", "audience": "ios", "help": true, "sources": {"en": "USER_GUIDE.md", "zh-Hans": "USER_GUIDE.zh-CN.md"}},
+    {"id": "workspaces", "audience": "ios", "help": true, "sources": {"en": "WORKSPACES_GUIDE.md", "zh-Hans": "WORKSPACES_GUIDE.zh-CN.md"}},
+    {"id": "android-guide", "audience": "android", "help": true, "sources": {"en": "ANDROID_GUIDE.md", "zh-Hans": "ANDROID_GUIDE.zh-CN.md"}},
+    {"id": "disclaimer", "audience": "shared", "help": false, "sources": {"en": "DISCLAIMER.md", "zh-Hans": "DISCLAIMER.zh-CN.md"}},
+    {"id": "channel-status", "audience": "shared", "help": false, "sources": {"zh-Hans": "CURRENT_STATUS.md"}},
+    {"id": "creative-tools-history", "audience": "ios", "help": false, "sources": {"zh-Hans": "FLOE_1_7_24_CREATIVE_TOOLS.md"}},
+    {"id": "design-workflow", "audience": "ios", "help": false, "sources": {"en": "FLOE_DESIGN_WORKFLOW.md", "zh-Hans": "FLOE_DESIGN_WORKFLOW.zh-CN.md"}},
+    {"id": "storage", "audience": "ios", "help": false, "sources": {"en": "FLOE_STORAGE_DIAGNOSTICS.md", "zh-Hans": "FLOE_STORAGE_DIAGNOSTICS.zh-CN.md"}},
+    {"id": "unified-design", "audience": "ios", "help": false, "sources": {"en": "FLOE_UNIFIED_DESIGN_MIGRATION.md", "zh-Hans": "FLOE_UNIFIED_DESIGN_MIGRATION.zh-CN.md"}}
+  ]
+}

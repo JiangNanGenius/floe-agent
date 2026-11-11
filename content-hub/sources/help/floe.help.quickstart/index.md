@@ -1,10 +1,10 @@
-# Floe Help (floe.help.quickstart 1.1.0)
+# Floe Help (floe.help.quickstart 1.2.0)
 
 This is the offline document package for the built-in Floe help center. Read it in the App under Settings > Help with contents, search and images.
 
 ## From installation to your first result
 
-This guide focuses on iOS / iPadOS and calls out Android differences. Check the selected release for its actual capabilities.
+This guide covers iOS / iPadOS. Check the selected release for its actual capabilities. See the shared guide for models, tasks and files.
 
 - Overview
 - Choose an installation channel
@@ -15,9 +15,20 @@ This guide focuses on iOS / iPadOS and calls out Android differences. Check the 
 - Choose the right Bridge
 - Save, recover and get help
 
+## Models, tasks and files
+
+These workflows apply to both editions of Floe. Installation, menu locations, device access, local models and editors are covered by each platform's own guide. A shared workflow does not mean every platform has the same 
+
+- Overview
+- 1. Connect a cloud model
+- 2. Ask for a useful result
+- 3. Keep files and changes safe
+- 4. Use tools with context
+- 5. Report an issue
+
 ## Floe Agent User Manual
 
-This guide primarily describes iOS/iPadOS. Start with From installation to your first result. App Store, GitHub/Feather and TestFlight versions are tracked with verification dates in channel status. GitHub IPAs require y
+This guide covers iOS/iPadOS. Start with From installation to your first result. App Store, GitHub/Feather and TestFlight versions are tracked with verification dates in channel status. GitHub IPAs require your own signi
 
 - Overview
 - 1. Installation and first use
