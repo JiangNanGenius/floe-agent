@@ -24,6 +24,10 @@ object WorkspaceFileModes {
  */
 interface WorkspaceSwapOps {
     fun kind(path: File): SwapKind
+    /** Raw symlink target text WITHOUT following the leaf; null when the
+     *  entry is absent, unreadable or not a symlink. Implementations must
+     *  never follow the final component. */
+    fun readLink(path: File): String? = null
     fun size(path: File): Long
     fun rename(from: File, to: File): Boolean
     /** Live-input operations must fail closed unless the backend implements

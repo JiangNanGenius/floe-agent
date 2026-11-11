@@ -352,6 +352,8 @@ public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
     public var preservedUnsynced: Int
     public var unchanged: Int
     public var appliedBytes: Int
+    public var retiredSynced: Int = 0
+    public var retiredModified: Int = 0
     public var preserved: [LinuxShellRecoveryCopy]
     public var preservedTruncated: Bool
     public var preservedDroppedForBudget: Bool
@@ -375,6 +377,8 @@ public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
     /// synced export, or an import that preserved diverged bytes.
     public var hasActionableEvidence: Bool {
         exportResult != "synced" || exportFailureCode != nil || preservedUnsynced > 0
+            || retiredModified > 0 || !conflictPaths.isEmpty
+            || conflictsTruncated || conflictsDroppedForBudget
     }
 
     private static let digestPattern = "^[0-9a-f]{64}$"
@@ -424,6 +428,9 @@ public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
         guard let created = counter("created"), let replacedSynced = counter("replacedSynced"),
               let preservedUnsynced = counter("preservedUnsynced"), let unchanged = counter("unchanged"),
               let appliedBytes = counter("appliedBytes") else { return nil }
+        let retiredSynced = section["retiredSynced"] == nil ? 0 : counter("retiredSynced")
+        let retiredModified = section["retiredModified"] == nil ? 0 : counter("retiredModified")
+        guard let retiredSynced, let retiredModified else { return nil }
         var preserved: [LinuxShellRecoveryCopy] = []
         if let array = section["preserved"] as? [Any] {
             guard array.count <= 16 else { return nil }
@@ -486,6 +493,7 @@ public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
             sessionKey: sessionKey, runID: runID, importOutcome: outcome,
             created: created, replacedSynced: replacedSynced, preservedUnsynced: preservedUnsynced,
             unchanged: unchanged, appliedBytes: appliedBytes,
+            retiredSynced: retiredSynced, retiredModified: retiredModified,
             preserved: preserved,
             preservedTruncated: section["preservedTruncated"] as? Bool ?? false,
             preservedDroppedForBudget: section["preservedDroppedForBudget"] as? Bool ?? false,
@@ -505,9 +513,13 @@ public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
     /// (no host paths, no implementation jargon). Returns nil when there is
     /// nothing honest to add beyond the existing status/recovery sentence.
     public var recoverableSummary: String? {
-        preservedUnsynced > 0
-            ? "Unsaved changes were preserved and remain recoverable."
-            : nil
+        if retiredModified > 0 {
+            return Locale.current.identifier.lowercased().hasPrefix("zh")
+                ? "已删除文件的修改已保留，可恢复。"
+                : "Changes to deleted files were preserved and remain recoverable."
+        }
+        return preservedUnsynced > 0
+            ? "Unsaved changes were preserved and remain recoverable." : nil
     }
 
     /// Bounded technical evidence (explicitly-opened tool detail only).
@@ -529,7 +541,9 @@ public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
         }
         push("recovery-evidence session=\(sessionKey)\(runID.map { " run=\($0)" } ?? "")")
         push("import: outcome=\(importOutcome) created=\(created) replacedSynced=\(replacedSynced)"
-             + " preservedUnsynced=\(preservedUnsynced) unchanged=\(unchanged) appliedBytes=\(appliedBytes)")
+             + " preservedUnsynced=\(preservedUnsynced) unchanged=\(unchanged) appliedBytes=\(appliedBytes)"
+             + (retiredSynced > 0 || retiredModified > 0
+                ? " retiredSynced=\(retiredSynced) retiredModified=\(retiredModified)" : ""))
         var exportLine = "export:"
         if let exportResult { exportLine += " result=\(exportResult)" }
         if let exportFailureCode { exportLine += " failure=\(exportFailureCode)" }

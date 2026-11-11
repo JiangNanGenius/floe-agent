@@ -622,7 +622,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 // success stays success, no failure is fabricated, no reader
                 // authority is added, and unobserved metadata stays absent.
                 if page.workspaceStatus == "synced",
-                   let evidence = page.workspaceRecovery, evidence.preservedUnsynced > 0,
+                   let evidence = page.workspaceRecovery, evidence.hasActionableEvidence,
                    let detail = evidence.evidenceText {
                     let note = "[recovery-evidence]\n" + detail
                     metaErr = metaErr.isEmpty ? note : metaErr + "\n" + note

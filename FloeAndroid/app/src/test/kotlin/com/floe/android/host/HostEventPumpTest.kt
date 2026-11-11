@@ -164,4 +164,30 @@ class HostEventPumpTest {
         })
     }
 
+    @Test
+    fun chatAndDeviceObserversOfSameRunRetainIndependentLifecycle() {
+        val exchange = ScriptedExchange { raw -> page(correlationOf(raw), "attached", 0) }
+        val client = client(exchange)
+        val chatFailures = CopyOnWriteArrayList<HostPumpFailure>()
+        val deviceFailures = CopyOnWriteArrayList<HostPumpFailure>()
+        val chat = client.openRunEventStream(taskID, runID, null, null,
+            onEvent = {}, onLiveHint = {}, onFailure = chatFailures::add)
+        val device = client.openRunEventStream(taskID, runID, null, null,
+            onEvent = {}, onLiveHint = {}, onFailure = deviceFailures::add)
+        try {
+            assertEquals(2, client.activePumpCounts().second)
+            chat.close()
+            assertEquals(1, client.activePumpCounts().second)
+            assertTrue(chatFailures.isEmpty())
+            assertTrue(deviceFailures.isEmpty())
+            client.bumpGeneration()
+            assertEquals(0, client.activePumpCounts().second)
+            assertEquals(listOf(HostPumpFailure.Superseded), deviceFailures.toList())
+            assertTrue(chatFailures.isEmpty())
+        } finally {
+            chat.close()
+            device.close()
+        }
+    }
+
 }

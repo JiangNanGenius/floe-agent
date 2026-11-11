@@ -78,9 +78,10 @@ class RuntimeHostCommandClient internal constructor(
 
     private val pendingCorrelations = ConcurrentHashMap<String, PendingCorrelation>()
 
-    /** One pump per polled operation receipt (effects) or run (events). */
+    /** Effects have one owner per receipt. Independent run observers each
+     * retain their own cursor and lifecycle (chat, queue, device control). */
     private val effectPumps = ConcurrentHashMap<String, EffectPumpHandle>()
-    private val eventPumps = ConcurrentHashMap<String, EventPumpHandle>()
+    private val eventPumps = ConcurrentHashMap.newKeySet<EventPumpHandle>()
 
     fun bumpGeneration() {
         synchronized(stateLock) {
@@ -89,7 +90,7 @@ class RuntimeHostCommandClient internal constructor(
         }
         // Dispose matching collectors only; foreign replies were never ours.
         effectPumps.values.forEach { it.disposeIfGeneration(currentGeneration) }
-        eventPumps.values.forEach { it.disposeIfGeneration(currentGeneration) }
+        eventPumps.forEach { it.disposeIfGeneration(currentGeneration) }
     }
 
     fun generation(): Long = generation.value
@@ -299,8 +300,8 @@ class RuntimeHostCommandClient internal constructor(
         effectPumps.remove(receipt, handle)
     }
 
-    internal fun removeEventPump(runID: String, handle: EventPumpHandle) {
-        eventPumps.remove(runID, handle)
+    internal fun removeEventPump(handle: EventPumpHandle) {
+        eventPumps.remove(handle)
     }
 
     // ------------------------------------------------------------- event pump
@@ -356,7 +357,7 @@ class RuntimeHostCommandClient internal constructor(
             initialSequence = startSequence,
             onDurableResync = onDurableResync,
         )
-        eventPumps[runID] = handle
+        eventPumps.add(handle)
         handle.job = scope.launch(ioDispatcher) { handle.run() }
         return handle
     }
@@ -610,8 +611,9 @@ class EffectPumpHandle internal constructor(
         var resyncStreak = 0
         try {
             while (!disposed.get()) {
-                if (client.generation() != generationAtOpen) {
-                    onFailure(HostPumpFailure.Superseded)
+                val currentGeneration = client.generation()
+                if (currentGeneration != generationAtOpen) {
+                    disposeIfGeneration(currentGeneration)
                     return
                 }
                 val correlation = client.correlationID("fx")
@@ -932,7 +934,7 @@ class EventPumpHandle internal constructor(
     fun close() {
         if (disposed.compareAndSet(false, true)) {
             job?.cancel()
-            client.removeEventPump(runID, this)
+            client.removeEventPump(this)
         }
     }
 

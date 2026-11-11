@@ -92,6 +92,15 @@ data class WorkspaceImportReceipt(
     val preservedCopiesTruncated: Boolean = false,
     /** Live-input mode intentionally retained these existing entries in place. */
     val retainedExistingCount: Int = 0,
+    /** Previously synced entries ABSENT from the new Core snapshot whose
+     *  current representation still exactly matched a durable import/export
+     *  proof: the authoritative native deletion was applied to the guest
+     *  copy (the identical synced copy had no independent value). */
+    val retiredSyncedCount: Int = 0,
+    /** Previously synced entries ABSENT from the new snapshot whose bytes or
+     *  link target DIVERGED from every proof: moved to the owner-marked
+     *  preserve tree and named in `conflictPaths`; never re-exported. */
+    val retiredModifiedCount: Int = 0,
 )
 
 data class WorkspaceConflictRecord(val path: String, val kind: String, val hasArtifact: Boolean)

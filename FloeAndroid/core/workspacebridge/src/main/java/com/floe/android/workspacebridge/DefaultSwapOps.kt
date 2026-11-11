@@ -17,6 +17,12 @@ import java.security.MessageDigest
 class DefaultSwapOps(
     private val atomicInputMove: (File, Int, String) -> Int,
 ) : WorkspaceSwapOps {
+    override fun readLink(path: File): String? = try {
+        Os.readlink(path.absolutePath)
+    } catch (_: Exception) {
+        null
+    }
+
     override fun kind(path: File): SwapKind = try {
         val stat = Os.lstat(path.absolutePath)
         when {

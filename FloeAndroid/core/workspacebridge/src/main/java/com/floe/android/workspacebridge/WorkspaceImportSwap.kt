@@ -17,8 +17,9 @@ import java.io.FileOutputStream
  *
  *   stage (journal-owned, outside the destination) → per-entry compare →
  *   move-aside previous bytes to an OWNER-MARKED backup → swap staged file
- *   into place → acknowledge → prune ONLY previous copies proven already
- *   synced to Core.
+ *   into place → retire ONLY durable-proof-synced paths the fresh Core
+ *   snapshot no longer owns (authoritative native deletion) → acknowledge →
+ *   prune ONLY previous copies proven already synced to Core.
  *
  * Guarantees:
  *  * cancellation/failure DURING SWAP restores the prior workspace exactly
@@ -27,6 +28,12 @@ import java.io.FileOutputStream
  *    its bytes move to the owner-marked preserve tree and stay recoverable
  *    (reported counts; the sync manifest only licenses pruning copies the
  *    Core baseline already proved synced);
+ *  * a path ABSENT from the fresh snapshot is retired ONLY when a durable
+ *    import manifest / successful-export ledger proves it was previously
+ *    synced AND the current destination still matches the proven
+ *    representation. Exact unchanged copies are pruned after acknowledge;
+ *    diverged bytes are preserved and reported as conflicts. Unproven
+ *    paths are never touched by absence;
  *  * independent, unmarked existing data that no snapshot path collides
  *    with is never touched at all (later exports may legitimately sync it);
  *  * no guessed scratch directories: everything lives under the caller's
@@ -83,6 +90,9 @@ class WorkspaceImportSwap(
     private val journalFile: File,
     private val manifest: WorkspaceSyncManifest?,
     private val ops: WorkspaceSwapOps,
+    /** Latest authoritative generation; null preserves legacy callers.
+     * Empty explicitly forbids pruning from a stale/unavailable proof. */
+    private val priorProofs: Map<String, List<WorkspaceSyncedProof>>? = null,
     /** Observational finite phase only; never controls admission or cancellation. */
     private val onFirstAppliedChange: () -> Unit = {},
 ) {
@@ -99,6 +109,17 @@ class WorkspaceImportSwap(
         val preserved: List<SwappedCopy> = emptyList(),
         val retainedExisting: Int = 0,
         val createdBytes: Long = 0,
+        /** Previously synced entries ABSENT from the new Core snapshot whose
+         *  current destination representation still EXACTLY matched a
+         *  durable import/export proof. The authoritative native deletion
+         *  won; the identical synced copy had no independent value and its
+         *  journaled backup is pruned on acknowledge. */
+        val retiredSynced: Int = 0,
+        /** Previously synced entries ABSENT from the new Core snapshot whose
+         *  current bytes/target DIVERGED from every proof. They were moved
+         *  into the owner-marked preserve tree and their paths are reported
+         *  as recoverable conflicts; they are never re-exported. */
+        val retiredModified: Int = 0,
     )
 
     /** Applies every staged entry atomically. `shouldCancel` is checked
@@ -225,6 +246,143 @@ class WorkspaceImportSwap(
         return SwapOutcome(created, 0, 0, 0, conflicts, retainedExisting = retained, createdBytes = bytes)
     }
 
+    /**
+     * Retire destination entries whose authoritative Core entry was deleted
+     * NATIVELY, while never treating mere absence as permission to delete.
+     *
+     * Called INSIDE the same import transaction, after the fresh snapshot was
+     * applied, with [proofs] built from the DURABLE import manifest plus the
+     * last FAILED-SAFE export ledger. Only a path absent from the new
+     * snapshot AND previously proven synced is considered:
+     *
+     *  * current file/symlink matching every recorded kind+digest/size or
+     *    link target -> `retiredSynced` (move aside, prune after the Core
+     *    baseline finish); the native deletion wins over the identical
+     *    synced copy;
+     *  * current file/symlink that diverged -> `retiredModified` (move aside
+     *    to the owner-marked preserve tree, report a recoverable conflict);
+     *  * proven directory, empty after proven children -> removed; a
+     *    directory retaining unproven guest-only children is left intact and
+     *    those children remain ordinary additions;
+     *  * a non-empty directory replacing a proven file/symlink is reported
+     *    as a conflict WITHOUT touching its guest data.
+     *
+     * Unproven paths, special files, unreadable entries and any path whose
+     * ancestor chain is not made of real directories are never followed,
+     * renamed or deleted. Every effect is journaled; [restoreDetailed]
+     * reverses it. Any effect failure throws so the caller preserves the
+     * prior workspace and never exports a half-retired mirror.
+     */
+    fun retireAbsent(proofs: Map<String, List<WorkspaceSyncedProof>>,
+                     livePaths: Set<String>,
+                     allowSyncedPrune: Boolean = true,
+                     shouldCancel: () -> Boolean): SwapOutcome {
+        var retiredSynced = 0
+        var retiredModified = 0
+        val conflicts = mutableListOf<String>()
+        val ordered = proofs.keys.asSequence()
+            .filter { it !in livePaths }
+            .sortedWith(compareByDescending<String> { it.count { character -> character == '/' } }
+                .thenByDescending { it })
+            .toList()
+        for ((ordinal, path) in ordered.withIndex()) {
+            if (shouldCancel()) {
+                appendJournal(JSONObject().put("record", "cancel").put("i", ordinal))
+                throw WorkspaceSwapException("swapCancelled")
+            }
+            val components = WorkspaceRelativeValidation.validate(path) ?: continue
+            val candidates = proofs[path] ?: continue
+            if (!realParentDirectories(components)) continue
+            val target = File(destination, path)
+            when (ops.kind(target)) {
+                SwapKind.FILE -> {
+                    val measured = ops.streamDigest(target)
+                    val synced = allowSyncedPrune && (measured?.let { value ->
+                        candidates.any { proof ->
+                            proof.kind == "file" && proof.size == value.second &&
+                                proof.digest == value.first
+                        }
+                    } ?: false)
+                    if (!moveAside(target, path)) throw WorkspaceSwapException("retireBlocked")
+                    val action = if (synced) "retiredSynced" else "retiredModified"
+                    appendJournal(retirementRecord(ordinal, path, "file", action, path,
+                        measured?.first, measured?.second ?: 0L))
+                    if (synced) {
+                        retiredSynced += 1
+                    } else {
+                        retiredModified += 1
+                        conflicts.add(path)
+                    }
+                }
+                SwapKind.SYMLINK -> {
+                    val currentTarget = ops.readLink(target)
+                    val synced = allowSyncedPrune && (currentTarget?.let { value ->
+                        candidates.any { proof ->
+                            proof.kind == "symlink" && proof.linkTarget == value
+                        }
+                    } ?: false)
+                    if (!moveAside(target, path)) throw WorkspaceSwapException("retireBlocked")
+                    val action = if (synced) "retiredSynced" else "retiredModified"
+                    appendJournal(retirementRecord(ordinal, path, "symlink", action, path, null, 0L))
+                    if (synced) {
+                        retiredSynced += 1
+                    } else {
+                        retiredModified += 1
+                        conflicts.add(path)
+                    }
+                }
+                SwapKind.DIRECTORY -> {
+                    val provenDirectory = candidates.any { it.kind == "directory" }
+                    val children = target.list()
+                    if (children == null) continue
+                    if (children.isNotEmpty()) {
+                        // Guest-only descendants are independent data. Keep
+                        // them (and their container), but surface a kind
+                        // replacement of a proven file/symlink as a conflict.
+                        if (!provenDirectory) {
+                            appendJournal(JSONObject().put("record", "s").put("i", ordinal)
+                                .put("path", path).put("kind", "directory")
+                                .put("action", "conflict").put("preservedRel", JSONObject.NULL))
+                            conflicts.add(path)
+                        }
+                        continue
+                    }
+                    if (!ops.rmdir(target)) throw WorkspaceSwapException("retireBlocked")
+                    val action = if (provenDirectory) "retiredSyncedDirectory" else "retiredModifiedDirectory"
+                    appendJournal(retirementRecord(ordinal, path, "directory", action, null, null, 0L))
+                    if (provenDirectory) {
+                        retiredSynced += 1
+                    } else {
+                        retiredModified += 1
+                        conflicts.add(path)
+                    }
+                }
+                else -> Unit // MISSING/OTHER/UNREADABLE: never guessed or followed
+            }
+        }
+        ops.fsyncDirectory(destination)
+        return SwapOutcome(0, 0, 0, 0, conflicts,
+            retiredSynced = retiredSynced, retiredModified = retiredModified)
+    }
+
+    private fun realParentDirectories(components: List<String>): Boolean {
+        var cursor = destination
+        for (index in 0 until components.size - 1) {
+            cursor = File(cursor, components[index])
+            if (ops.kind(cursor) != SwapKind.DIRECTORY) return false
+        }
+        return true
+    }
+
+    private fun retirementRecord(index: Int, path: String, kind: String, action: String,
+                                 preservedRel: String?, digest: String?, size: Long): JSONObject {
+        val record = JSONObject().put("record", "s").put("i", index)
+            .put("path", path).put("kind", kind).put("action", action)
+            .put("preservedRel", preservedRel ?: JSONObject.NULL)
+        if (digest != null) record.put("preservedSha256", digest).put("preservedBytes", size)
+        return record
+    }
+
     private fun swapFile(index: Int, entry: StagedEntry, target: File): Pair<String, SwappedCopy?> {
         val stage = File(stageRoot, entry.path)
         return when (ops.kind(target)) {
@@ -242,7 +400,11 @@ class WorkspaceImportSwap(
                     appendJournal(swapRecord(index, entry, "unchanged", null))
                     return "unchanged" to null
                 }
-                val syncedPrevious = manifest?.let { it.lookup(entry.path)?.digest == current.first } == true
+                val syncedPrevious = if (priorProofs != null) {
+                    priorProofs[entry.path]?.any {
+                        it.kind == "file" && it.digest == current.first && it.size == current.second
+                    } == true
+                } else manifest?.let { it.lookup(entry.path)?.digest == current.first } == true
                 val preservedRel = if (syncedPrevious) entry.path else entry.path
                 if (!moveAside(target, preservedRel)) return "conflict" to null
                 if (!ops.rename(stage, target)) {
@@ -428,12 +590,32 @@ class WorkspaceImportSwap(
                     if (ops.unlink(target)) counters[2] += 1 else counters[0] += 1
                 }
             }
-            "swappedSynced", "swappedPreserved" -> {
+            "swappedSynced", "swappedPreserved", "retiredSynced", "retiredModified" -> {
                 val currentKind = ops.kind(target)
                 if (currentKind == SwapKind.FILE || currentKind == SwapKind.SYMLINK) ops.unlink(target)
                 val preserved = preservedRel?.let { File(preserveRoot, it) }
-                if (preserved != null && ops.kind(preserved) != SwapKind.MISSING) {
-                    if (ops.rename(preserved, target)) counters[1] += 1 else counters[0] += 1
+                if (preserved == null || ops.kind(preserved) == SwapKind.MISSING) {
+                    // The prior bytes are no longer recoverable from this
+                    // journal: report the failure instead of pretending the
+                    // retired entry was restored.
+                    counters[0] += 1
+                } else if (ops.rename(preserved, target)) {
+                    counters[1] += 1
+                } else {
+                    counters[0] += 1
+                }
+            }
+            "retiredSyncedDirectory", "retiredModifiedDirectory" -> {
+                when (ops.kind(target)) {
+                    SwapKind.MISSING -> {
+                        if (ops.mkdir(target)) counters[1] += 1 else counters[0] += 1
+                    }
+                    // A concurrent owner may already have recreated the
+                    // directory; the prior state is genuinely present.
+                    SwapKind.DIRECTORY -> {
+                        counters[1] += 1
+                    }
+                    else -> counters[0] += 1
                 }
             }
             "unchanged", "conflict" -> Unit
@@ -442,15 +624,19 @@ class WorkspaceImportSwap(
 
     // MARK: - Acknowledge (after the Core FINISH receipt)
 
-    /** Prunes ONLY previous copies whose bytes the manifest proved already
-     *  synced to Core, commits the new sync manifest, and marks the journal
-     *  acknowledged. Un-synced preserves remain recoverable indefinitely. */
+    /** Prunes ONLY previous copies whose bytes the manifest/ledger proved
+     *  already synced to Core (including unchanged copies retired by an
+     *  authoritative native deletion), commits the new sync manifest, and
+     *  marks the journal acknowledged. Un-synced/modified preserves remain
+     *  recoverable indefinitely. */
     fun acknowledge(entries: List<StagedEntry>): Int {
         val lines = runCatching { journalFile.readLines() }.getOrDefault(emptyList())
         var pruned = 0
         for (line in lines) {
             val record = runCatching { JSONObject(line) }.getOrNull() ?: continue
-            if (record.optString("record") != "s" || record.optString("action") != "swappedSynced") continue
+            if (record.optString("record") != "s") continue
+            val action = record.optString("action")
+            if (action != "swappedSynced" && action != "retiredSynced") continue
             val preservedRel = if (record.isNull("preservedRel")) null else record.optString("preservedRel")
             if (preservedRel.isNullOrEmpty()) continue
             val file = File(preserveRoot, preservedRel)
@@ -496,9 +682,12 @@ class WorkspaceImportSwap(
 }
 
 /** Workspace-stable sync manifest (sibling of the destination, OUTSIDE it):
- *  path → last ACKed staged digest/size. It ONLY licenses pruning prior
- *  copies whose current bytes match it exactly; unknown paths default to
- *  un-synced (preserve). */
+ *  path → the representation the last ACKed Core baseline installed. It
+ *  licenses pruning prior copies whose current bytes match it exactly, and
+ *  is one of the two durable inputs to native-deletion retirement (the other
+ *  is [WorkspaceSyncedLedger]). Unknown paths default to un-synced
+ *  (preserve). Directory/symlink lines are additive; legacy file-only lines
+ *  keep their original meaning. */
 class WorkspaceSyncManifest(
     private val journalParent: File,
     projectID: String,
@@ -507,32 +696,106 @@ class WorkspaceSyncManifest(
     data class SyncRecord(val digest: String, val size: Long)
 
     private val directory = File(journalParent, ".floe-ws-" + projectID.lowercase())
-    private val file = File(directory, "manifest.jsonl")
+    private val file = File(directory, FILE_NAME)
 
-    fun lookup(path: String): SyncRecord? {
-        val lines = runCatching { file.readLines() }.getOrDefault(emptyList())
-        for (line in lines) {
-            val record = runCatching { JSONObject(line) }.getOrNull() ?: continue
-            if (record.optString("path") == path) {
-                return SyncRecord(record.optString("digest"), record.optLong("size", -1))
+    /** A new ACKed import starts a distinct proof generation, even when its
+     * bytes happen to equal an older baseline. Legacy manifests have none. */
+    fun generation(): String? {
+        if (ops.kind(directory) != SwapKind.DIRECTORY || ops.kind(file) != SwapKind.FILE) return null
+        return runCatching {
+            file.bufferedReader().use { reader ->
+                val header = JSONObject(reader.readLine() ?: return@use null)
+                if (header.optString("record") != "baseline") return@use null
+                java.util.UUID.fromString(header.getString("generation")).toString()
             }
-        }
-        return null
+        }.getOrNull()
     }
 
-    /** Atomic full rewrite: tmp + fsync + rename. */
-    fun commit(entries: List<StagedEntry>) {
-        if (!directory.isDirectory) ops.mkdir(directory)
-        val temp = File(directory, "manifest.tmp")
-        FileOutputStream(temp, false).use { stream ->
-            for (entry in entries.filter { it.kind == "file" }) {
-                val record = JSONObject().put("path", entry.path).put("digest", entry.digest).put("size", entry.size)
-                stream.write((record.toString() + "\n").toByteArray(Charsets.UTF_8))
+    /** All durable imported-baseline proofs, bounded by the transfer entry
+     *  budget. A malformed line is ignored (it can only make retirement more
+     *  conservative). */
+    fun snapshot(): List<WorkspaceSyncedProof> {
+        if (ops.kind(directory) != SwapKind.DIRECTORY || ops.kind(file) != SwapKind.FILE) {
+            return emptyList()
+        }
+        val result = mutableListOf<WorkspaceSyncedProof>()
+        runCatching {
+            file.forEachLine { line ->
+                if (result.size >= MAX_ENTRIES) return@forEachLine
+                val record = runCatching { JSONObject(line) }.getOrNull() ?: return@forEachLine
+                val path = record.optString("path", "")
+                val kind = record.optString("kind", "file")
+                val target = if (record.isNull("linkTarget")) null
+                else record.optString("linkTarget", "").takeIf { it.isNotEmpty() }
+                val proof = WorkspaceSyncedProof(
+                    path, kind, record.optLong("size", -1), record.optString("digest", ""), target,
+                )
+                if (validSyncedProof(proof)) result.add(proof)
             }
-            stream.flush()
-            stream.fd.sync()
+        }
+        return result
+    }
+
+    fun lookup(path: String): SyncRecord? {
+        if (ops.kind(directory) != SwapKind.DIRECTORY || ops.kind(file) != SwapKind.FILE) {
+            return null
+        }
+        var found: SyncRecord? = null
+        runCatching {
+            file.forEachLine { line ->
+                if (found != null) return@forEachLine
+                val record = runCatching { JSONObject(line) }.getOrNull() ?: return@forEachLine
+                if (record.optString("path") != path) return@forEachLine
+                if (record.optString("kind", "file") != "file") return@forEachLine
+                val digest = record.optString("digest", "")
+                if (!digest.matches(SYNCED_PROOF_DIGEST)) return@forEachLine
+                found = SyncRecord(digest, record.optLong("size", -1))
+            }
+        }
+        return found
+    }
+
+    /** Atomic full rewrite: tmp + fsync + rename. Only representations that
+     *  can be proven are written; the caller passes the entries the swap
+     *  ACTUALLY installed (conflict paths are excluded). */
+    fun commit(entries: List<StagedEntry>) {
+        when (ops.kind(directory)) {
+            SwapKind.MISSING -> if (!ops.mkdir(directory)) return
+            SwapKind.DIRECTORY -> Unit
+            else -> return
+        }
+        val temp = File(directory, TEMP_NAME)
+        if (ops.kind(temp) != SwapKind.MISSING && !ops.unlink(temp)) return
+        if (ops.kind(temp) != SwapKind.MISSING) return
+        try {
+            FileOutputStream(temp, false).use { stream ->
+                val header = JSONObject().put("record", "baseline")
+                    .put("generation", java.util.UUID.randomUUID().toString())
+                stream.write((header.toString() + "\n").toByteArray(Charsets.UTF_8))
+                for (entry in entries) {
+                    val proof = syncedProofFor(entry) ?: continue
+                    val record = JSONObject()
+                        .put("path", proof.path)
+                        .put("kind", proof.kind)
+                        .put("size", proof.size)
+                        .put("digest", proof.digest)
+                    if (proof.linkTarget != null) record.put("linkTarget", proof.linkTarget)
+                    stream.write((record.toString() + "\n").toByteArray(Charsets.UTF_8))
+                }
+                stream.flush()
+                stream.fd.sync()
+            }
+        } catch (_: Exception) {
+            return
         }
         if (!ops.rename(temp, file)) runCatching { temp.delete() }
+        else ops.fsyncDirectory(directory)
+    }
+
+    private companion object {
+        const val FILE_NAME = "manifest.jsonl"
+        const val TEMP_NAME = "manifest.tmp"
+        const val MAX_ENTRIES = 100_000
     }
 }
 

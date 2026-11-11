@@ -120,6 +120,36 @@ final class LinuxShellWorkspaceRecoveryTests: XCTestCase {
         XCTAssertNil(recovery.recoverableSummary)
     }
 
+    func testRetiredModifiedIsVisibleEvenAfterASuccessfulExport() throws {
+        var raw = try XCTUnwrap(object(valid))
+        var imported = try XCTUnwrap(raw["import"] as? [String: Any])
+        imported["preservedUnsynced"] = 0
+        imported["preserved"] = []
+        imported["retiredModified"] = 1
+        imported["conflicts"] = ["deleted.txt"]
+        raw["import"] = imported
+        raw["export"] = ["result": "synced", "source": "core-export-finish"]
+        let recovery = try XCTUnwrap(LinuxShellWorkspaceRecovery.parse(raw))
+        XCTAssertEqual(recovery.retiredModified, 1)
+        XCTAssertTrue(recovery.hasActionableEvidence)
+        XCTAssertNotNil(recovery.recoverableSummary)
+        XCTAssertTrue(try XCTUnwrap(recovery.evidenceText).contains("retiredModified=1"))
+        XCTAssertTrue(try XCTUnwrap(recovery.evidenceText).contains("deleted.txt"))
+    }
+
+    func testRetirementCountersRemainStrictOptionalFacts() throws {
+        for invalid in [true, -1, 1.5] as [Any] {
+            var raw = try XCTUnwrap(object(valid))
+            var imported = try XCTUnwrap(raw["import"] as? [String: Any])
+            imported["retiredModified"] = invalid
+            raw["import"] = imported
+            XCTAssertNil(LinuxShellWorkspaceRecovery.parse(raw))
+        }
+        let legacy = try XCTUnwrap(LinuxShellWorkspaceRecovery.parse(object(valid)))
+        XCTAssertEqual(legacy.retiredModified, 0)
+        XCTAssertEqual(legacy.retiredSynced, 0)
+    }
+
     func testFailureWithoutEvidenceStillActionableButQuietSummary() throws {
         let text = """
         {"sessionKey":"\(Self.key32)",

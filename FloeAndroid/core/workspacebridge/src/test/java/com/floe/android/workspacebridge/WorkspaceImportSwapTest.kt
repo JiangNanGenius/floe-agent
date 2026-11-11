@@ -32,6 +32,12 @@ class JvmSwapOps : WorkspaceSwapOps {
         else SwapKind.UNREADABLE
     }
 
+    override fun readLink(path: File): String? = try {
+        Files.readSymbolicLink(path.toPath()).toString()
+    } catch (_: Exception) {
+        null
+    }
+
     override fun size(path: File): Long = try {
         Files.readAttributes(path.toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS).size()
     } catch (_: Exception) {

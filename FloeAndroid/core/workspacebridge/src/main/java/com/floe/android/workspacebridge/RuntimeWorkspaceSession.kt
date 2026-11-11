@@ -32,6 +32,11 @@ import java.util.concurrent.ConcurrentHashMap
  *    transactional (journal-owned staging outside the destination + atomic
  *    move-aside/swap; cancel restores the prior workspace; un-synced prior
  *    bytes stay recoverable; independent unmarked data is never touched).
+ *    After the fresh snapshot lands, paths ABSENT from it but proven
+ *    previously synced (durable import manifest + successful-export ledger)
+ *    are retired through the same journal: an exact unchanged copy follows
+ *    the authoritative native deletion, while diverged bytes move to the
+ *    owner-marked preserve tree and are reported as recoverable conflicts.
  *  * `exportAfterQuiescence` — AFTER the supervisor's whole-UID stop proof
  *    and BEFORE lease release/result completion (no output sync while Linux
  *    descendants can still mutate the workspace).
@@ -64,6 +69,9 @@ class RuntimeWorkspaceSession(
      *  recorded from the same staged entries that were swapped into the
      *  destination. Memory-only, session-scoped, never a second pipeline. */
     private val importedBaseline = HashMap<String, WorkspaceMirrorEntry>()
+    /** Complete latest successful-export proof, bound to the ACKed import
+     * generation; null for additions-only transfers (they never export). */
+    private var syncedLedger: WorkspaceSyncedLedger? = null
 
     init {
         val packages = RuntimePackages.forRuntime(context.packageName)
@@ -105,6 +113,10 @@ class RuntimeWorkspaceSession(
             "inputBaselineAdoptionFailed")
         if (result.optString("state") != "adopted") throw WorkspaceBridgeException("inputBaselineAdoptionUncertain")
         importedBaseline[entry.path] = WorkspaceMirrorEntry(entry.kind, entry.size, entry.linkTarget, entry.digest)
+        // The Core baseline adopted these EXACT bytes; prove it durably now,
+        // before a later export can replace the ledger. A ledger failure
+        // never changes the already-committed adoption.
+        runCatching { syncedProofFor(entry)?.let { proof -> syncedLedger?.merge(proof) } }
     }
 
     private fun importSnapshot(cancel: WorkspaceCancelSignal, newInputsOnly: Boolean,
@@ -141,10 +153,21 @@ class RuntimeWorkspaceSession(
             throw WorkspaceBridgeException("journalUnavailable")
         }
         val ops = DefaultSwapOps(atomicInputMove)
-        val manifest = WorkspaceSyncManifest(destination.parentFile ?: throw WorkspaceBridgeException("destinationRootInvalid"),
-                                            expectedProjectID, ops)
+        val journalParent = destination.parentFile ?: throw WorkspaceBridgeException("destinationRootInvalid")
+        val manifest = WorkspaceSyncManifest(journalParent, expectedProjectID, ops)
+        // Additions-only transfers have no export baseline and must never
+        // prune: they neither read nor write the project export ledger.
+        val ledger = if (newInputsOnly) null else WorkspaceSyncedLedger(journalParent, expectedProjectID, ops)
+        syncedLedger = ledger
+        // Read prior facts before any ACK rewrites the import manifest. A
+        // complete latest export replaces, rather than unions, old versions.
+        val proofs = if (newInputsOnly) emptyMap() else
+            mergeSyncedProofs(emptyList(), ledger?.snapshotOrNull() ?: manifest.snapshot())
+        val allowSyncedPrune = manifest.generation() != null
         val swap = WorkspaceImportSwap(destination, stageRoot, preserveRoot, File(journal, "swap.jsonl"),
-                                       manifest, ops, onFirstAppliedChange = {
+                                       manifest, ops,
+                                       priorProofs = if (allowSyncedPrune) proofs else emptyMap(),
+                                       onFirstAppliedChange = {
             com.floe.android.runtimeipc.RuntimeExecutionTrace.mark(
                 com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage.WORKSPACE_IMPORT_FIRST_CHANGE_APPLIED)
         })
@@ -239,12 +262,34 @@ class RuntimeWorkspaceSession(
                 index += 1
             }
 
-            // Phase 2: atomic swap into the STABLE destination.
+            // Every path the new snapshot owns, including implicit ancestor
+            // directories, is LIVE and can never be retired by absence.
+            val livePaths = HashSet<String>(staged.size * 2)
+            for (entry in staged) {
+                livePaths.add(entry.path)
+                var slash = entry.path.indexOf('/')
+                while (slash > 0) {
+                    livePaths.add(entry.path.substring(0, slash))
+                    slash = entry.path.indexOf('/', slash + 1)
+                }
+            }
+            // Phase 2: atomic swap into the STABLE destination, then retire
+            // ONLY previously proven entries absent from this snapshot.
             swapOutcome = try {
                 if (newInputsOnly) swap.applyMissingOnly(staged, onCreated = { entry ->
                     checkNotNull(onCreated).invoke(key, checkNotNull(sourceIndices[entry.path]), entry)
                 }) { cancel.shouldCancel() || !grant.alive() }
-                else swap.apply(staged) { cancel.shouldCancel() || !grant.alive() }
+                else {
+                    val applied = swap.apply(staged) { cancel.shouldCancel() || !grant.alive() }
+                    val retired = swap.retireAbsent(proofs, livePaths, allowSyncedPrune) {
+                        cancel.shouldCancel() || !grant.alive()
+                    }
+                    applied.copy(
+                        conflicts = applied.conflicts + retired.conflicts,
+                        retiredSynced = retired.retiredSynced,
+                        retiredModified = retired.retiredModified,
+                    )
+                }
             } catch (failure: WorkspaceSwapException) {
                 if (newInputsOnly) throw WorkspaceBridgeException(failure.code, failure)
                 val restore = swap.restoreDetailed()
@@ -310,7 +355,13 @@ class RuntimeWorkspaceSession(
                     ).first,
                     "finishUnavailable",
                 )
-                swap.acknowledge(staged)
+                val settled = requireNotNull(swapOutcome) { "swap outcome missing before acknowledge" }
+                // A conflict path was NOT installed from the snapshot (its
+                // staged copy was stashed instead), so it must never become
+                // a durable import proof. Retirement paths are absent from
+                // `staged` and therefore unaffected.
+                val conflictSet = settled.conflicts.toSet()
+                swap.acknowledge(staged.filter { it.path !in conflictSet })
                 markJournalAcknowledged(journal, key)
             }
         } catch (failure: Exception) {
@@ -363,17 +414,26 @@ class RuntimeWorkspaceSession(
                                        fact.installedSha256, fact.installedBytes)
             },
             preservedCopiesTruncated = verifiedPreserved.size > RECOVERY_MAX_ENTRIES,
+            retiredSyncedCount = outcome.retiredSynced,
+            retiredModifiedCount = outcome.retiredModified,
         )
     }
 
     private fun outcomeConflicts(swap: WorkspaceImportSwap, journal: File): List<String> {
         // Conflicts are recorded as swap journal "conflict" lines (both sides
-        // preserved: destination intact, staged copy moved to preserve).
+        // preserved: destination intact, staged copy moved to preserve) and
+        // as retirement lines whose divergent prior bytes were moved to the
+        // owner-marked preserve tree. A non-empty directory replacing a
+        // proven file/symlink is journaled as "conflict" without mutation.
         return runCatching {
             File(journal, "swap.jsonl").readLines().mapNotNull { line ->
                 val record = runCatching { JSONObject(line) }.getOrNull()
-                if (record?.optString("action") == "conflict") record.optString("path") else null
-            }
+                when (record?.optString("action")) {
+                    "conflict", "retiredModified", "retiredModifiedDirectory" ->
+                        record.optString("path").takeIf { it.isNotEmpty() }
+                    else -> null
+                }
+            }.distinct()
         }.getOrDefault(emptyList())
     }
 
@@ -415,12 +475,18 @@ class RuntimeWorkspaceSession(
             }
             prewalked = walked
         }
+        // Durable uncertainty precedes any Core export mutation. A lost
+        // receipt/ledger write must not leave older versions licensed for
+        // deletion. Failure preserves the guest copy without starting export.
+        if (syncedLedger?.beginExport() != true)
+            return WorkspaceExportOutcome.RecoverableFailure("exportProofUnavailable", true, key)
         try {
             requireOk(transact(WorkspaceBridgeWire.EXPORT_BEGIN, JSONObject()).first, "exportBeginUnavailable")
         } catch (failure: WorkspaceBridgeException) {
             return WorkspaceExportOutcome.RecoverableFailure(failure.code, true, key)
         }
         var sequence = 0L
+        val exportedProofs = mutableListOf<WorkspaceSyncedProof>()
         try {
             val entries = prewalked ?: run {
                 walkGuestTree(view) ?: run {
@@ -453,23 +519,48 @@ class RuntimeWorkspaceSession(
                         null
                     }
                     val reply = transact(WorkspaceBridgeWire.EXPORT_STAGE, header, descriptor)
-                    requireOk(reply.first, "stageUnavailable")
+                    val staged = requireOk(reply.first, "stageUnavailable")
+                    if (staged.optString("state") != "staged")
+                        throw WorkspaceBridgeException("stageRefused")
+                    // Reuse the Core stream's ACTUAL digest/byte receipt.
+                    // This covers edited baseline files as well as creations,
+                    // without rehashing the workspace after every command.
+                    val proof = WorkspaceSyncedProof(entry.path, entry.kind,
+                        if (entry.kind == "file") staged.optLong("recordedSize", -1) else 0L,
+                        if (entry.kind == "file") staged.optString("recordedDigest", "") else "",
+                        entry.linkTarget)
+                    if (!validSyncedProof(proof)) throw WorkspaceBridgeException("stageProofUnavailable")
+                    exportedProofs.add(proof)
                 } finally {
                     descriptor?.close()
                 }
                 sequence += 1
             }
         } catch (failure: WorkspaceBridgeException) {
-            if (failure.code == "transportUncertain") {
-                return readFinishReceiptOnce(key)
-            }
+            // An uncertain STAGE is not permission to FINISH a partial tree.
+            // Uncertain FINISH receipts are re-read only after the full loop.
             abortOnce(failure.code)
             return WorkspaceExportOutcome.RecoverableFailure(failure.code, true, key)
         } catch (failure: Exception) {
             abortOnce("exportStagingFailed")
             return WorkspaceExportOutcome.RecoverableFailure("exportStagingFailed", true, key)
         }
-        return readFinishReceiptOnce(key)
+        return finishExport(key, exportedProofs)
+    }
+
+    /** Read the terminal receipt and, ONLY for a complete zero-refusal sync,
+     *  durably record what this export actually committed beyond the import
+     *  baseline. A failed/partial/refused export never becomes a deletion
+     *  proof. This is deliberately best-effort: the Core commit already
+     *  settled, so a private-ledger write failure must not rewrite success —
+     *  it only leaves the next deletion conservatively unproven (preserve,
+     *  never delete). */
+    private fun finishExport(key: String, proofs: List<WorkspaceSyncedProof>): WorkspaceExportOutcome {
+        val outcome = readFinishReceiptOnce(key)
+        if (outcome is WorkspaceExportOutcome.Synced && outcome.stagedRefusals == 0) {
+            runCatching { syncedLedger?.commit(proofs) }
+        }
+        return outcome
     }
 
     private fun readFinishReceiptOnce(key: String): WorkspaceExportOutcome {
@@ -834,6 +925,16 @@ class RuntimeWorkspaceSession(
                 .put("preservedUnsynced", receipt.preservedUnsyncedCount.toLong())
                 .put("unchanged", receipt.unchangedCount.toLong())
                 .put("appliedBytes", receipt.appliedBytes)
+            // OPTIONAL additive facts: a native deletion was applied to
+            // previously proven-synced guest entries. `retiredModified`
+            // paths are also present in `conflicts` below; the count makes
+            // the distinction from ordinary staged conflicts explicit.
+            if (receipt.retiredSyncedCount > 0) {
+                importSection.put("retiredSynced", receipt.retiredSyncedCount.toLong())
+            }
+            if (receipt.retiredModifiedCount > 0) {
+                importSection.put("retiredModified", receipt.retiredModifiedCount.toLong())
+            }
             val copies = importCopies(receipt)
             if (copies.isNotEmpty()) {
                 importSection.put("preserved", org.json.JSONArray().apply { copies.forEach { put(it) } })
