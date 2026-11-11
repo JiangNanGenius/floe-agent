@@ -430,7 +430,9 @@ struct ArchivedConversationsView: View {
     private func load() async {
         conversations = ((try? await center.environment.conversationStore
             .conversations(includeArchived: true)) ?? [])
-            .filter { $0.archivedAt != nil }
+            .filter {
+                $0.archivedAt != nil && !center.unavailableFileAssistantConversationIDs.contains($0.id)
+            }
             .sorted { ($0.archivedAt ?? $0.updatedAt) > ($1.archivedAt ?? $1.updatedAt) }
         selection.formIntersection(Set(conversations.map(\.id)))
     }

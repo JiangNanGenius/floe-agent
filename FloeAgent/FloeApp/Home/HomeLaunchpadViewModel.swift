@@ -141,8 +141,21 @@ final class HomeLaunchpadViewModel: ObservableObject {
 
     // MARK: - Overview state (iPad second column)
 
-    /// Conversations with at least one non-terminal run.
+    /// Conversations with at least one non-terminal run. This is the MERGED
+    /// global running bucket: ordinary active rows plus running file tasks,
+    /// so an active file task is reachable without expanding the file area.
     @Published private(set) var activeTasks: [ConversationRecord] = []
+    /// Document-bound file assistants: the persisted, default-collapsed
+    /// file-task area of the task center (idle/finished, newest first).
+    @Published private(set) var fileAssistantTasks: [ConversationRecord] = []
+    /// Display metadata only. Opening revalidates the binding and original.
+    @Published private(set) var fileAssistantFiles: [UUID: PersonalContentRecord] = [:]
+    /// MERGED global failed/interrupted bucket (ordinary + file tasks that
+    /// stopped mid-work and still need attention).
+    @Published private(set) var failedTasks: [ConversationRecord] = []
+    /// Ordinary completed rows only. Completed file tasks stay in the file
+    /// area so long finished lists never duplicate across sections.
+    @Published private(set) var completedTasks: [ConversationRecord] = []
     /// Recent conversations for the overview (capped by the view).
     @Published private(set) var recentConversations: [ConversationRecord] = []
     /// Latest run state per conversation (overview status pills).
@@ -291,24 +304,45 @@ final class HomeLaunchpadViewModel: ObservableObject {
         // project happens to be open in another task or inspector.
 
         var states: [UUID: String] = [:]
-        var active: [ConversationRecord] = []
         var newestRun: (date: Date, modelID: UUID)?
-        for conversation in center.conversations {
-            let runs = (try? await environment.runStore.runs(conversationID: conversation.id)) ?? []
-            guard let latest = runs.sorted(by: { $0.startedAt > $1.startedAt }).first else { continue }
+        // Ordinary rows and bound file assistants share one run-state pass.
+        // The projection splits them: bound conversations never render twice
+        // in the task center, and running/failed file tasks stay globally
+        // visible alongside the ordinary buckets.
+        let boundIDs = Set(center.fileAssistantConversations.map(\.id))
+        var seenIDs: Set<UUID> = []
+        let records = (center.conversations + center.fileAssistantConversations)
+            .filter { seenIDs.insert($0.id).inserted }
+        for conversation in records {
+            let recent = (try? await environment.runStore.recentRuns(conversationID: conversation.id, limit: 1)) ?? []
+            guard let latest = recent.first else { continue }
             states[conversation.id] = latest.state
-            if !RunStateLocalizer.isTerminal(latest.state) {
-                active.append(conversation)
-            }
             if let modelID = latest.modelID,
                newestRun == nil || latest.startedAt > newestRun!.date {
                 newestRun = (latest.startedAt, modelID)
             }
         }
+        let sections = FileAssistantTaskProjection.sections(
+            records: records,
+            boundConversationIDs: boundIDs,
+            latestRunState: { states[$0] }
+        )
         recentModelID = newestRun?.modelID
         latestRunStates = states
-        activeTasks = active
-        recentConversations = center.conversations
+        activeTasks = sections.running
+        failedTasks = sections.failed
+        completedTasks = sections.completed
+        fileAssistantTasks = sections.fileArea.map(\.conversation)
+        var fileMetadata: [UUID: PersonalContentRecord] = [:]
+        if let library = try? await PersonalContentService.shared.library(),
+           let originals = try? await library.records() {
+            let byID = Dictionary(originals.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for binding in await environment.studioCoordinator.assistantBindings() {
+                if let file = byID[binding.projectID] { fileMetadata[binding.conversationID] = file }
+            }
+        }
+        fileAssistantFiles = fileMetadata
+        recentConversations = sections.ordinary
         reconcileModelSelection()
         await refreshShortcutInboxCount()
     }

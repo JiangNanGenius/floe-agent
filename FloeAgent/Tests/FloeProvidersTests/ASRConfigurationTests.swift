@@ -10,6 +10,34 @@ import FloeCore
 
 @Suite("Cloud ASR configuration")
 struct ASRConfigurationTests {
+    @Test("Old capability data defaults speaker attribution to unavailable")
+    func legacySpeakerCapabilityCodable() throws {
+        let caps = ASRModelCapabilityCatalog.capabilities(for: .volcengine, modelID: "bigmodel")
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(caps)) as? [String: Any])
+        json.removeValue(forKey: "supportsSpeakerAttribution")
+        let legacy = try JSONDecoder().decode(ASRModelCapabilities.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        #expect(!legacy.supportsSpeakerAttribution)
+        #expect(legacy.maximumFileBytes == caps.maximumFileBytes)
+        #expect(legacy.timing == caps.timing)
+        #expect(legacy.supportsFileTranscription == caps.supportsFileTranscription)
+    }
+
+    @Test("Speaker request provenance is optional in old data and survives roundtrip")
+    func speakerRequestProvenanceCodable() throws {
+        let old = Data(#"{"start":0,"end":1,"text":"old","speaker":"1"}"#.utf8)
+        let legacy = try JSONDecoder().decode(ASRTranscriptionSegment.self, from: old)
+        #expect(legacy.recognitionRequestID == nil)
+        #expect(legacy.speaker == "1")
+        let requestID = UUID()
+        let segment = ASRTranscriptionSegment(start: 0, end: 1, text: "new", speaker: "1",
+                                              recognitionRequestID: requestID)
+        let restored = try JSONDecoder().decode(ASRTranscriptionSegment.self,
+                                                from: JSONEncoder().encode(segment))
+        #expect(restored == segment)
+        #expect(restored.recognitionRequestID == requestID)
+    }
+
     @Test("Provider route matrix is explicit and has no availability gate")
     func providerRoutes() {
         #expect(ASRProviderKind.openaiCompatible.supportedBillingRoutes == [.payAsYouGo])
@@ -206,4 +234,29 @@ struct ASRConfigurationTests {
     }
     let explicit = ASRProfile.openAICompatible(fileEndpoint: "https://relay.example/v1", liveEndpoint: "wss://live.example/v1/realtime")
     #expect(explicit.resolvedLiveEndpoint == "wss://live.example/v1/realtime")
+}
+
+// MARK: - W7 continuous live events
+
+@Test func liveFinalUtterancesAreOptionalAndDistinguishing() throws {
+    let turn = UUID()
+    let legacy = ASRLiveEvent.final(
+        turnID: turn, itemID: "item", transcript: "hello", sequence: 1)
+    #expect(legacy.utterances == nil, "legacy adapters keep the nil payload")
+    let separated = ASRLiveEvent.final(
+        turnID: turn, itemID: "item", transcript: "hello", speaker: nil,
+        utterances: [
+            ASRLiveUtterance(startMilliseconds: 0, endMilliseconds: 900,
+                             text: "hello", speaker: "1"),
+            ASRLiveUtterance(startMilliseconds: 800, endMilliseconds: 1_800,
+                             text: "world", speaker: "2"),
+        ],
+        sequence: 2)
+    #expect(separated.utterances?.count == 2)
+    #expect(separated.utterances?[0].speaker == "1")
+    #expect(separated.utterances?[1].endMilliseconds == 1_800)
+    #expect(separated != legacy, "utterance separation participates in identity")
+    let partial = ASRLiveEvent.partial(turnID: turn, itemID: "item", delta: "he", sequence: 3)
+    #expect(partial.utterances == nil)
+    #expect(partial.speaker == nil)
 }

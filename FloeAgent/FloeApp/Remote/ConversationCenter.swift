@@ -25,11 +25,17 @@ import FloeSkills
 import FloeSync
 import FloeTools
 import FloeExecution
+import GRDB
 import FloeLaTeXHostAdapter
 import FloeWorkspace
 #if canImport(NaturalLanguage)
 import NaturalLanguage
 #endif
+
+@MainActor private final class FileAssistantStopAttempt {
+    var finished = false
+    var error: Error?
+}
 
 private enum AuxiliaryVisionStreamResult: Sendable {
     case response(String)
@@ -466,7 +472,7 @@ extension ConversationCenter {
     /// requires the dedicated execution mode (which only the trusted ingress
     /// writes). The caller decides retention/retirement separately.
     nonisolated static func isInternalNoticeDelivery(_ input: PendingUserInput) -> Bool {
-        if input.executionMode == ConversationRunService.taskCoordinationExecutionMode { return true }
+        if [ConversationRunService.taskCoordinationExecutionMode, ConversationRunService.taskWaitCompletionExecutionMode].contains(input.executionMode) { return true }
         if input.executionMode == DesignConfirmationNoticeProjection.deliveryExecutionMode,
            DesignConfirmationNoticeProjection.parse(input.content) != nil {
             return true
@@ -497,7 +503,7 @@ extension ConversationCenter {
               mirror.role == "system",
               mirror.content == input.content
         else { return false }
-        if input.executionMode == ConversationRunService.taskCoordinationExecutionMode {
+        if [ConversationRunService.taskCoordinationExecutionMode, ConversationRunService.taskWaitCompletionExecutionMode].contains(input.executionMode) {
             return input.targetRunID != nil && mirror.runID == input.targetRunID
         }
         if input.executionMode == DesignConfirmationNoticeProjection.deliveryExecutionMode {
@@ -1176,6 +1182,7 @@ final class ConversationCenter: ObservableObject {
         return Set(available.filter {
             $0.hasPrefix("ssh.") || $0.hasPrefix("vnc.")
                 || $0.hasPrefix("network.")
+                || $0 == "help.search" || $0 == "help.read" || $0 == "help.present"
         })
     }
 
@@ -1259,6 +1266,12 @@ final class ConversationCenter: ObservableObject {
 
     /// Conversations in deterministic recency order.
     @Published private(set) var conversations: [ConversationRecord] = []
+    /// Document-bound file assistants, keyed by the durable
+    /// `document_assistants` binding — never by title or archive flag.
+    /// These persist with their document and are grouped separately in the
+    /// task center; a running file task also appears in `conversations`
+    /// driven surfaces through the ordinary list after migration.
+    @Published private(set) var fileAssistantConversations: [ConversationRecord] = []
     /// Live runs keyed by run ID, refreshed from snapshots.
     @Published private(set) var activeRuns: [UUID: RunRecord] = [:]
     @Published private(set) var goalPresentationRevision = 0
@@ -1387,6 +1400,9 @@ final class ConversationCenter: ObservableObject {
     /// production.
     var providerAdapterTestOverride: (@Sendable (ProviderProfile, UUID?) -> any ProviderAdapter)?
     private var deletingConversationIDs: Set<UUID> = []
+    private var fileAssistantStopTokens: [UUID: UUID] = [:]
+    var fileAssistantStopTimeout: Duration = .seconds(15)
+    private(set) var unavailableFileAssistantConversationIDs: Set<UUID> = []
     private var isClearingHistory = false
     private var didReconcileInterruptedRuns = false
     /// Conversations whose queued internal-notice rows were already reconciled
@@ -1403,6 +1419,8 @@ final class ConversationCenter: ObservableObject {
     /// deferred provider service is still assembling history or images.
     private let launchRecoveryCutoff: Date
     private var attemptedForegroundRecovery: Set<UUID> = []
+    // Existing run-owned recovery workers, not view-owned timers/scheduled tasks.
+    private var runtimeWaitRecoveryTasks: [UUID: (generation: UUID, conversationID: UUID, cancellation: CancellationToken, task: Task<Void, Never>)] = [:]
     private let adapterFactory = ProviderAdapterFactory()
 
     /// Semantic compaction for cloud runs (settings-gated; local models keep
@@ -1546,6 +1564,11 @@ final class ConversationCenter: ObservableObject {
     #if DEBUG
     var localModelDiscoveryOverrideForTesting: (@MainActor () async -> Void)?
     func finishLocalModelRefreshForTesting() async { await localModelConfigurationRefresh?.value }
+    /// Test seam: substitute the document-assistant binding source so
+    /// binding-dependent behavior is testable without the real
+    /// StudioAuthority store.
+    var studioAssistantBindingsOverride: [StudioAssistantBinding]?
+    var studioAssistantUnavailableOverride: Set<UUID>?
     #endif
 
     /// Reloads conversations, providers and models from the stores.
@@ -1554,8 +1577,15 @@ final class ConversationCenter: ObservableObject {
         // history first so that work is immediately navigable while it runs.
         do {
             try await NotesRepository.shared.reconcileAssistantOwnership(database: environment.database)
+            await environment.studioCoordinator.reconcileFileAssistantLifecycles()
+            // Run the binding reconcile BEFORE reading the ordinary list:
+            // a legacy archived bound assistant must become persistent first
+            // so this same reload already projects it everywhere.
+            await reconcileFileAssistantOwnership()
             conversations = ConversationListOrdering.sorted(
-                try await environment.conversationStore.conversations())
+                try await environment.conversationStore.conversations().filter {
+                    !unavailableFileAssistantConversationIDs.contains($0.id)
+                })
             // Entry state derives from DURABLE binding/envelope truth, so a
             // relaunch/restore republishes it without opening any page.
             await environment.designEntryState.refreshAll(
@@ -1817,10 +1847,69 @@ final class ConversationCenter: ObservableObject {
         await refreshConversationInList(conversationID)
     }
 
+    /// Publishes the bound file-assistant rows and completes the one-way
+    /// migration away from force-archived assistants: a bound conversation
+    /// still carrying `archived_at` becomes persistent again, while ordinary
+    /// archived chats are never touched. Idempotent — the unarchive write
+    /// fires only while the legacy flag is present, so steady-state reloads
+    /// never churn `updated_at`.
+    private func reconcileFileAssistantOwnership() async {
+        #if DEBUG
+        // `??` cannot carry an async right-hand side; branch explicitly.
+        let bindings: [StudioAssistantBinding]
+        if let override = studioAssistantBindingsOverride {
+            bindings = override
+        } else {
+            bindings = await environment.studioCoordinator.assistantBindings()
+        }
+        #else
+        let bindings = await environment.studioCoordinator.assistantBindings()
+        #endif
+        #if DEBUG
+        if studioAssistantBindingsOverride != nil {
+            unavailableFileAssistantConversationIDs = studioAssistantUnavailableOverride ?? []
+        } else {
+            unavailableFileAssistantConversationIDs = await environment.studioCoordinator.unavailableAssistantConversationIDs(bindings: bindings)
+        }
+        #else
+        unavailableFileAssistantConversationIDs = await environment.studioCoordinator.unavailableAssistantConversationIDs(bindings: bindings)
+        #endif
+        var records: [ConversationRecord] = []
+        for binding in bindings where !unavailableFileAssistantConversationIDs.contains(binding.conversationID) {
+            guard var record = try? await environment.conversationStore
+                .conversation(id: binding.conversationID),
+                  record.purpose == .ordinary else { continue }
+            if record.archivedAt != nil {
+                try? await environment.conversationStore.setArchived(id: record.id, archived: false)
+                record.archivedAt = nil
+            }
+            records.append(record)
+        }
+        fileAssistantConversations = ConversationListOrdering.sorted(records)
+    }
+
+    /// True when the conversation is a document-bound file assistant.
+    func isFileAssistantConversation(_ conversationID: UUID) -> Bool {
+        fileAssistantConversations.contains { $0.id == conversationID }
+    }
+
     private func refreshConversationInList(_ conversationID: UUID) async {
         // Temporary conversations never enter the saved list projection.
         guard !isTemporaryConversation(conversationID) else { return }
+        do { try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID) }
+        catch {
+            conversations.removeAll { $0.id == conversationID }
+            fileAssistantConversations.removeAll { $0.id == conversationID }
+            return
+        }
         guard let fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
+        // Bound assistants live in the file-assistant projection. Keep that
+        // list fresh (reopen/title edits) without pushing the row into the
+        // ordinary task sections.
+        if let index = fileAssistantConversations.firstIndex(where: { $0.id == conversationID }) {
+            fileAssistantConversations[index] = fresh
+            ConversationListOrdering.sort(&fileAssistantConversations)
+        }
         guard fresh.isVisibleInOrdinaryList else {
             conversations.removeAll { $0.id == conversationID }
             return
@@ -1875,6 +1964,7 @@ final class ConversationCenter: ObservableObject {
                 )
         }
         await reconcilePendingToolCaptureCleanup()
+        await refreshRuntimeWaitRecovery()
     }
 
     /// Reattempts capture-directory removals whose conversation deletion
@@ -1971,15 +2061,28 @@ final class ConversationCenter: ObservableObject {
     /// Restarts only provider-stage failures that have never requested a
     /// tool. Once any tool was requested, replaying the whole prompt could
     /// duplicate an external side effect and therefore remains manual.
+    /// Candidates come from BOTH the ordinary list and the bound
+    /// file-assistant projection — recovery discovers document-bound tasks
+    /// by real ownership, never by the visible sidebar list.
     func resumeSafeRunsAfterForeground() async {
+        await refreshRuntimeWaitRecovery()
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
-        for conversation in conversations {
+        // De-duplicated by id: a migrated assistant can appear in both lists.
+        var seen: Set<UUID> = []
+        let candidates = (conversations + fileAssistantConversations).filter {
+            seen.insert($0.id).inserted
+        }
+        for conversation in candidates {
+            guard !unavailableFileAssistantConversationIDs.contains(conversation.id),
+                  !deletingConversationIDs.contains(conversation.id) else { continue }
             guard let loadedRuns = try? await environment.runStore.recentRuns(
                     conversationID: conversation.id, limit: 1
                   ),
                   let run = loadedRuns.first,
-                  ["failed", "interrupted", "checkpointed"].contains(run.state),
-                  attemptedForegroundRecovery.insert(run.id).inserted else { continue }
+                  ["failed", "interrupted", "checkpointed"].contains(run.state) else { continue }
+            // A run still owned by a live service/task is not a recovery
+            // candidate; retrying it would duplicate an in-flight owner.
+            guard !hasLiveOwner(runID: run.id) else { continue }
             let errors = (try? await environment.runStore.errors(runID: run.id)) ?? []
             if run.state == "failed", errors.last?.recoverable != true { continue }
             let events = (try? await environment.runStore.events(runID: run.id)) ?? []
@@ -1987,13 +2090,21 @@ final class ConversationCenter: ObservableObject {
             let policy = (try? await workspaceStore.taskPolicy(conversationID: conversation.id))
                 ?? TaskPolicy(conversationID: conversation.id)
             guard policy.recoveryPolicy == .safePoint || policy.recoveryPolicy == .alwaysRetry else { continue }
+            guard attemptedForegroundRecovery.insert(run.id).inserted else { continue }
             // Resume the existing durable run with its recorded provider and
             // model. Creating a fresh run here duplicated the user turn and
             // made every foreground transition look like another task.
-            _ = try? await retry(
-                runID: run.id,
-                startOrigin: .foregroundRecovery
-            )
+            do {
+                _ = try await retry(
+                    runID: run.id,
+                    startOrigin: .foregroundRecovery
+                )
+            } catch {
+                // A start failure (the network may still be down) must not
+                // poison later foreground transitions: leave the run
+                // retryable instead of remembering a never-started attempt.
+                attemptedForegroundRecovery.remove(run.id)
+            }
         }
     }
 
@@ -4300,6 +4411,7 @@ final class ConversationCenter: ObservableObject {
                     dependencies: runDependencyStore,
                     jobs: jobServiceForRun)
             },
+            agentWaitNativeTimerBridge: environment.agentWaitNativeTimerBridge,
             userQuestionRecovery: environment.userQuestions.coordinator,
             currentToolAvailability: { [weak environment] in
                 guard let environment else { return [] }
@@ -4982,6 +5094,10 @@ final class ConversationCenter: ObservableObject {
         }
         let preparationID = beginLaunch(conversationID: conversationID)
         defer { finishLaunch(preparationID) }
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID)
+        guard !deletingConversationIDs.contains(conversationID), launchPreparations.mayExecute(preparationID) else {
+            throw CancellationError()
+        }
         // A durable run parked waiting on required background work is NOT
         // finished. A send while it waits resumes the SAME run with the new
         // message instead of creating a second run; this holds regardless of
@@ -5913,6 +6029,11 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode,
         attachments: [AttachmentRef]
     ) async throws {
+        guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else { throw CancellationError() }
+        let preparationID = beginLaunch(conversationID: conversationID)
+        defer { finishLaunch(preparationID) }
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID)
+        guard !deletingConversationIDs.contains(conversationID) else { throw CancellationError() }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw FloeError.validationFailed("Input must not be empty")
@@ -5927,6 +6048,9 @@ final class ConversationCenter: ObservableObject {
         let temporary = isTemporaryConversation(conversationID)
         if !temporary { try await captureIngressSecrets(ingress.captures, owner: .conversation(conversationID)) }
         let inputID = UUID()
+        guard !deletingConversationIDs.contains(conversationID) else { throw CancellationError() }
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID)
+        guard !deletingConversationIDs.contains(conversationID), launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         do {
             try modelInputProjection(for: expectedRunID, conversationID: conversationID).register(id: inputID, safe: ingress.sanitizedText,
                 live: trimmed, captures: ingress.captures)
@@ -5972,6 +6096,27 @@ final class ConversationCenter: ObservableObject {
         if let value { publishSession(value.conversationID) }
     }
 
+    /// Moves a steer that has NOT been consumed back to the ordinary queue.
+    /// The three-dot menu offers this next to "convert to steer" so a pending
+    /// message's mode migrates both ways. The boundary stays honest: once
+    /// the runtime consumed the steer this throws instead of disguising a
+    /// sent message as a withdrawal.
+    func demoteSteerToQueued(id: UUID) async throws {
+        let store = await runningInputStore(containingInput: id)
+        guard let input = try await store.input(id: id) else {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "找不到这条消息，请刷新后重试。", "This message is unavailable. Refresh and try again."))
+        }
+        guard input.status == .steerPending else {
+            throw FloeError.validationFailed(
+                input.status == .consumed
+                    ? FloeL10n.l("remote.conversation_center.this_steer_has_already_started_sending")
+                    : IDELanguageRunText.t("这条消息已改变，请刷新后重试。", "This message changed. Refresh and try again."))
+        }
+        try await withdrawPendingGuidance(input)
+        publishSession(input.conversationID)
+    }
+
     private func withdrawPendingGuidance(_ input: PendingUserInput) async throws {
         guard input.status == .steerPending else { return }
         if let runID = input.targetRunID, let service = runServices[runID] {
@@ -6014,6 +6159,191 @@ final class ConversationCenter: ObservableObject {
         guard let checkpoint = try? await environment.checkpointStore.load(runID: runID),
               case .checkpointed(let reference) = checkpoint.state else { return false }
         return (reference.reason ?? "").hasPrefix(FloeAgentRuntime.dependencyWaitReasonPrefix)
+    }
+
+    /// Re-arm real saved waits on launch/foreground, independently of sidebar
+    /// visibility. The canonical query already excludes a replacement run;
+    /// delivery repeats all run/file/generation checks after every suspension.
+    func refreshRuntimeWaitRecovery() async {
+        let checkpoints: [AgentCheckpoint]
+        do { checkpoints = try await environment.checkpointStore.pendingRuntimeWaitCheckpoints() }
+        catch {
+            FloeLogger(category: .runtime).warning("runtimeWaitRecoveryReadFailed")
+            return
+        }
+        let pendingIDs = Set(checkpoints.map(\.runID))
+        for (runID, reservation) in runtimeWaitRecoveryTasks where !pendingIDs.contains(runID) {
+            reservation.cancellation.cancel(); reservation.task.cancel()
+        }
+        for checkpoint in checkpoints {
+            let runID = checkpoint.runID
+            guard runtimeWaitRecoveryTasks[runID] == nil, !hasLiveOwner(runID: runID),
+                  !isTemporaryConversation(checkpoint.conversationID), !isClearingHistory,
+                  !deletingConversationIDs.contains(checkpoint.conversationID),
+                  !unavailableFileAssistantConversationIDs.contains(checkpoint.conversationID) else { continue }
+            let generation = UUID()
+            let cancellation = CancellationToken()
+            // Register the WHOLE work item before its first suspension:
+            // file stop/drain sees pending require/CAS work as well as a
+            // started native observer. Cancellation keeps the entry until
+            // this exact task actually finishes, so join remains truthful.
+            let task = Task { [weak self] in
+                defer {
+                    if self?.runtimeWaitRecoveryTasks[runID]?.generation == generation {
+                        self?.runtimeWaitRecoveryTasks[runID] = nil
+                    }
+                }
+                do {
+                    guard let self else { throw CancellationError() }
+                    try cancellation.throwIfCancelled(); try Task.checkCancellation()
+                    try await self.environment.studioCoordinator.requireAssistantAvailable(conversationID: checkpoint.conversationID)
+                    guard self.runtimeWaitRecoveryTasks[runID]?.generation == generation,
+                          !self.hasLiveOwner(runID: runID), !self.isClearingHistory,
+                          !self.deletingConversationIDs.contains(checkpoint.conversationID),
+                          !self.unavailableFileAssistantConversationIDs.contains(checkpoint.conversationID) else {
+                        throw CancellationError()
+                    }
+                    guard try await self.environment.checkpointStore.parkRuntimeWaitIfCurrent(checkpoint, cancellation: cancellation) else { return }
+                    try cancellation.throwIfCancelled(); try Task.checkCancellation()
+                    guard self.runtimeWaitRecoveryTasks[runID]?.generation == generation,
+                          !self.hasLiveOwner(runID: runID),
+                          !self.deletingConversationIDs.contains(checkpoint.conversationID) else { throw CancellationError() }
+                    let bridge = self.environment.agentWaitNativeTimerBridge
+                    for try await wake in AgentWaitRecovery.wakes(in: checkpoint, native: bridge) {
+                        try cancellation.throwIfCancelled(); try Task.checkCancellation()
+                        guard self.runtimeWaitRecoveryTasks[runID]?.generation == generation else { return }
+                        try await self.deliverRuntimeWaitWake(wake, monitorGeneration: generation)
+                    }
+                } catch is CancellationError {
+                    // Exact Stop/deletion/replacement cancellation, no delivery.
+                } catch let error as FloeError where error == .cancelled {
+                    // Native reservation token was cancelled before a CAS.
+                } catch {
+                    FloeLogger(category: .runtime).warning("runtimeWaitRecoveryPending")
+                }
+            }
+            // No await between creating the owned task and registering it.
+            runtimeWaitRecoveryTasks[runID] = (generation, checkpoint.conversationID, cancellation, task)
+        }
+    }
+
+    private func deliverRuntimeWaitWake(_ wake: AgentWaitWake, monitorGeneration: UUID) async throws {
+        let runID = wake.owner.runID
+        let conversationID = wake.owner.conversationID
+        guard wake.receipt.status == .completed,
+              runtimeWaitRecoveryTasks[runID]?.generation == monitorGeneration,
+              runtimeWaitRecoveryTasks[runID]?.task.isCancelled == false,
+              runtimeWaitRecoveryTasks[runID]?.cancellation.isCancelled == false,
+              !hasLiveOwner(runID: runID), !isClearingHistory,
+              !deletingConversationIDs.contains(conversationID),
+              !unavailableFileAssistantConversationIDs.contains(conversationID) else { throw CancellationError() }
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID)
+        guard let record = try await environment.runStore.run(id: runID), record.conversationID == conversationID,
+              !["completed", "failed", "cancelled"].contains(record.state),
+              let latest = try await environment.runStore.recentRuns(conversationID: conversationID, limit: 1).first,
+              latest.id == runID,
+              let checkpoint = try await environment.checkpointStore.load(runID: runID),
+              AgentWaitRecovery.hasWaitingMarker(checkpoint),
+              AgentWaitRecovery.pending(in: checkpoint).contains(where: {
+                  $0.waitID == wake.waitID && $0.continuationInputID == wake.inputID && $0.owner == wake.owner
+              }) else { throw CancellationError() }
+        let content = FloeL10n.isChinese ? "等待条件已满足，请核实后继续当前任务。" : "The wait condition was observed. Verify it and continue this task."
+        let store = runningInputStore(for: conversationID)
+        let mode = ConversationRunService.taskWaitCompletionExecutionMode
+        var input: PendingUserInput
+        if let existing = try await store.input(id: wake.inputID) {
+            guard existing.conversationID == conversationID, existing.targetRunID == runID,
+                  existing.executionMode == mode, existing.mode == .steer,
+                  existing.status != .cancelled,
+                  existing.consumedRunID == nil || existing.consumedRunID == runID else { throw AgentWaitError.identityChanged }
+            input = existing
+        } else {
+            input = try await store.enqueue(PendingUserInput(id: wake.inputID, conversationID: conversationID,
+                targetRunID: runID, content: content, mode: .steer, executionMode: mode))
+        }
+        if input.status == .queued {
+            guard let claimed = try await store.beginSteerPromotion(id: input.id, expectedRunID: runID) else {
+                throw CancellationError()
+            }
+            input = claimed
+        }
+        guard [.promoting, .steerPending, .consumed].contains(input.status) else { throw CancellationError() }
+        let messages = try await environment.conversationStore.messages(conversationID: conversationID)
+        if let mirror = messages.first(where: { $0.id == input.id }) {
+            guard mirror.role == "system", mirror.runID == runID, mirror.content == input.content else {
+                throw AgentWaitError.identityChanged
+            }
+        } else {
+            try await environment.conversationStore.appendMessage(PersistedMessage(id: input.id,
+                conversationID: conversationID, role: "system", content: input.content,
+                createdAt: input.createdAt, parts: [MessagePart(messageID: input.id,
+                    partIndex: 0, kind: .text, text: input.content)], runID: runID))
+        }
+        if input.status == .promoting { try await store.markSteerAccepted(id: input.id, runID: runID) }
+        let pair: (ProviderProfile, ModelProfile)
+        if let modelID = record.modelID, let resolved = providerAndModel(modelID: modelID) { pair = resolved }
+        else { pair = try await resolveProviderAndModel() }
+        // Final await ordering is intentional: after every prior native,
+        // provider, message and checkpoint await, reread the terminal/latest
+        // run immediately before entering the existing resume ownership path.
+        guard let current = try await environment.checkpointStore.load(runID: runID),
+              AgentWaitRecovery.hasWaitingMarker(current),
+              AgentWaitRecovery.pending(in: current).contains(where: {
+                  $0.waitID == wake.waitID && $0.continuationInputID == input.id && $0.owner == wake.owner
+              }) else { throw CancellationError() }
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID)
+        guard let latest = try await environment.runStore.recentRuns(conversationID: conversationID, limit: 1).first,
+              latest.id == runID, latest.conversationID == conversationID,
+              latest.state == "checkpointed", latest.endedAt == nil,
+              runtimeWaitRecoveryTasks[runID]?.generation == monitorGeneration,
+              runtimeWaitRecoveryTasks[runID]?.task.isCancelled == false,
+              runtimeWaitRecoveryTasks[runID]?.cancellation.isCancelled == false,
+              !hasLiveOwner(runID: runID), !isClearingHistory,
+              !deletingConversationIDs.contains(conversationID),
+              !unavailableFileAssistantConversationIDs.contains(conversationID) else { throw CancellationError() }
+        try Task.checkCancellation()
+        // Caller checks alone do NOT cover resumeExistingRun's first await.
+        // Root also adds Task.checkCancellation immediately after its initial
+        // requireAssistantAvailable and before claimRunInvocation. This same
+        // owned monitor Task carries cancellation across that await; existing
+        // preparation/invocation/environment fences remain authoritative.
+        _ = try await resumeExistingRun(latest, provider: pair.0, model: pair.1, startOrigin: .foregroundRecovery,
+            resumption: RuntimeSteerInput(id: input.id, content: input.content, createdAt: input.createdAt,
+                origin: .waitCompletion(waitID: wake.waitID)))
+    }
+
+    /// The file lifecycle captures these exact generations before stopping.
+    /// Cancellation keeps the entries until their owned subscription/sleep
+    /// tasks really finish; callers can join them without stopping a new owner.
+    func runtimeWaitRecoveryWork(conversationID: UUID) -> [UUID: UUID] {
+        Dictionary(uniqueKeysWithValues: runtimeWaitRecoveryTasks.compactMap { key, value in
+            value.conversationID == conversationID ? (key, value.generation) : nil
+        })
+    }
+    func stopRuntimeWaitRecovery(_ work: [UUID: UUID]) async {
+        let tasks = work.compactMap { runID, generation -> Task<Void, Never>? in
+            guard let value = runtimeWaitRecoveryTasks[runID], value.generation == generation else { return nil }
+            value.cancellation.cancel(); value.task.cancel(); return value.task
+        }
+        for task in tasks { await task.value }
+    }
+    func cancelParkedRuntimeWait(runID: UUID) async throws {
+        if let monitor = runtimeWaitRecoveryTasks[runID] {
+            monitor.cancellation.cancel(); monitor.task.cancel(); await monitor.task.value
+        }
+        guard !hasLiveOwner(runID: runID),
+              let checkpoint = try await environment.checkpointStore.load(runID: runID),
+              AgentWaitRecovery.hasWaitingMarker(checkpoint),
+              !hasLiveOwner(runID: runID) else { return }
+        // Reserve this run across the save. A simultaneous Continue cannot
+        // replace the checkpoint underneath a suspended Stop operation.
+        let reservation = try claimRunInvocation(runID, conversationID: checkpoint.conversationID)
+        defer { finishRunInvocation(reservation) }
+        try await environment.checkpointStore.save(AgentWaitRecovery.cancelling(checkpoint))
+        if let record = try await environment.runStore.run(id: runID),
+           !["completed", "failed", "cancelled"].contains(record.state) {
+            try await environment.runStore.updateRunState(id: runID, state: "cancelled", endedAt: Date())
+        }
     }
 
     /// The newest parked-awaiting-dependency run of a conversation, if any.
@@ -6143,6 +6473,9 @@ final class ConversationCenter: ObservableObject {
     }
 
     private func launchNextQueuedInput(conversationID: UUID) async {
+        guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else { return }
+        do { try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID) }
+        catch { return }
         for service in runServices.values where service.conversationID == conversationID {
             guard await service.snapshot().isTerminal else { return }
         }
@@ -6150,6 +6483,7 @@ final class ConversationCenter: ObservableObject {
         // Bounded by the number of pending rows so a preserved internal notice
         // can never spin the loop.
         for _ in 0..<SQLiteRunningInputStore.maximumPendingPerConversation {
+            guard !deletingConversationIDs.contains(conversationID) else { return }
             guard let input = try? await inputStore.claimNextQueued(
                 conversationID: conversationID
             ) else { return }
@@ -7353,6 +7687,12 @@ final class ConversationCenter: ObservableObject {
 
     /// Cancels a live run. The runtime owns the terminal transition.
     func cancel(runID: UUID) async {
+        // Fence cold wait recovery synchronously, including a reservation
+        // still resolving file availability or the parking transaction.
+        if let monitor = runtimeWaitRecoveryTasks[runID] {
+            monitor.cancellation.cancel()
+            monitor.task.cancel()
+        }
         runInvocationOwnership.cancel(runID)
         // An explicit cancel releases this run's persistent local-device input
         // ownership immediately. If it was the only Bridge user the native
@@ -7372,6 +7712,8 @@ final class ConversationCenter: ObservableObject {
             await service.cancel()
         }
         await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
+        do { try await cancelParkedRuntimeWait(runID: runID) }
+        catch { FloeLogger(category: .runtime).warning("runtimeWaitStopPending") }
     }
 
     func sendTaskCoordination(_ request: ConversationCoordinationRequest,
@@ -7397,6 +7739,154 @@ final class ConversationCenter: ObservableObject {
         return result.sorted { $0.runID.uuidString < $1.runID.uuidString }
     }
 
+    /// Holds exact conversation launch fences and waits for real task cleanup.
+    /// Durable historical runs alone are not live owners. Background processors
+    /// must report terminal AFTER their cleanup; timeout keeps the file intact.
+    func stopFileAssistants(_ bindings: [StudioAssistantBinding]) async throws -> PersonalFileAssistantStopLease {
+        let ids = Set(bindings.map(\.conversationID))
+        guard !isClearingHistory, deletingConversationIDs.isDisjoint(with: ids) else {
+            throw PersonalFileAssistantLifecycleError.stopping
+        }
+        let token = UUID()
+        deletingConversationIDs.formUnion(ids)
+        for id in ids { fileAssistantStopTokens[id] = token; launchFence.invalidate(scope: id) }
+        let lease = PersonalFileAssistantStopLease(id: token) { [weak self] in
+            guard let self else { return }
+            for id in ids where self.fileAssistantStopTokens[id] == token {
+                self.fileAssistantStopTokens[id] = nil
+                self.deletingConversationIDs.remove(id)
+            }
+        }
+        var succeeded = false
+        defer { if !succeeded { lease.finish() } }
+        let snapshots = bindings.map {
+            documentAssistantWork(documentID: $0.projectID, conversationID: $0.conversationID, title: "")
+        }
+        for snapshot in snapshots { requestStopDocumentAssistantWork(snapshot) }
+        // Capture exact cold-wait generations under the file deletion fence.
+        // Pending monitor setup belongs to the same stop/join proof.
+        var waitWork: [UUID: UUID] = [:]
+        for id in ids { waitWork.merge(runtimeWaitRecoveryWork(conversationID: id)) { first, _ in first } }
+        for (runID, generation) in waitWork {
+            guard let monitor = runtimeWaitRecoveryTasks[runID], monitor.generation == generation else { continue }
+            monitor.cancellation.cancel(); monitor.task.cancel()
+        }
+        var waitIDs = Set(waitWork.keys)
+        // A cold checkpoint can belong to this file before foreground
+        // recovery has registered any monitor. Stop those saved waits too.
+        let savedWaits = try await environment.checkpointStore.pendingRuntimeWaitCheckpoints()
+        waitIDs.formUnion(savedWaits.filter { ids.contains($0.conversationID) }.map(\.runID))
+        var runIDs = waitIDs
+        for id in ids { runIDs.formUnion(try await environment.runStore.runs(conversationID: id).map(\.id)) }
+        let services = runServices.values.filter { ids.contains($0.conversationID) }
+        runIDs.formUnion(services.map(\.runID))
+        var attempts: [FileAssistantStopAttempt] = []
+        var watchers: [Task<Void, Never>] = []
+        defer { for watcher in watchers { watcher.cancel() } }
+        for runID in runIDs {
+            if let task = runTasks[runID] {
+                let joined = FileAssistantStopAttempt(); attempts.append(joined)
+                watchers.append(Task { @MainActor in _ = await task.value; joined.finished = true })
+            }
+            let cancelled = FileAssistantStopAttempt(); attempts.append(cancelled)
+            watchers.append(Task { @MainActor [weak self] in
+                await self?.cancel(runID: runID); cancelled.finished = true
+            })
+            if let tracking = snapshotTasks[runID] {
+                tracking.cancel()
+                let joined = FileAssistantStopAttempt(); attempts.append(joined)
+                watchers.append(Task { @MainActor in _ = await tracking.value; joined.finished = true })
+            }
+        }
+        let clock = ContinuousClock(), deadline = ContinuousClock.now.advanced(by: fileAssistantStopTimeout)
+        var requestedJobs: Set<UUID> = []
+        let jobStore = BackgroundJobStore(database: environment.database)
+        while true {
+            try Task.checkCancellation()
+            // Store APIs have display-page limits. This native deletion read
+            // asks only for this owner's ACTIVE IDs, so older jobs cannot fall
+            // beyond a history page and keep writing after file deletion.
+            var activeJobs: Set<UUID> = []
+            for id in ids {
+                let owned = try await environment.database.reader { db in
+                    try String.fetchAll(db, sql: "SELECT id FROM background_jobs WHERE conversation_id=? AND state IN ('queued','running')",
+                        arguments: [id.uuidString]).compactMap(UUID.init(uuidString:))
+                }
+                activeJobs.formUnion(owned)
+            }
+            for jobID in activeJobs.subtracting(requestedJobs) {
+                guard let jobs = environment.backgroundJobService,
+                      let job = try await jobStore.job(id: jobID), ids.contains(job.conversationID) else {
+                    throw PersonalFileAssistantLifecycleError.stopping
+                }
+                requestedJobs.insert(jobID)
+                let cancelled = FileAssistantStopAttempt(); attempts.append(cancelled)
+                watchers.append(Task { @MainActor in
+                    do { _ = try await jobs.cancel(id: jobID) } catch { cancelled.error = error }
+                    cancelled.finished = true
+                })
+            }
+            if let error = attempts.compactMap(\.error).first { throw error }
+            let preparing = snapshots.contains { documentAssistantWorkIsOutstanding($0) }
+            var liveService = false
+            for service in services { if !(await service.snapshot().isTerminal) { liveService = true } }
+            if !preparing, !liveService, activeJobs.isEmpty, attempts.allSatisfy(\.finished) {
+                for service in services where runServices[service.runID] === service { runServices[service.runID] = nil }
+                for runID in runIDs {
+                    // Every captured task/tracker above was joined. The
+                    // launch fence excludes a replacement generation here.
+                    runTasks[runID] = nil; snapshotTasks[runID] = nil
+                    activeRuns[runID] = nil
+                }
+                // A process-lost durable run has no task to cancel. Only
+                // after the actual owner/preparation/job proof above may it
+                // become stopped, so domain cleanup does not read a stale
+                // nil endedAt as an unfinished submission forever.
+                for id in ids {
+                    for run in try await environment.runStore.runs(conversationID: id)
+                        where run.endedAt == nil && run.state != "completed" {
+                        try await environment.runStore.updateRunState(id: run.id, state: "cancelled", endedAt: Date())
+                    }
+                }
+                // Unlike the UI Stop entry, deletion must propagate a failed
+                // checkpoint settlement so the original file stays intact.
+                for runID in waitIDs { try await cancelParkedRuntimeWait(runID: runID) }
+                succeeded = true
+                return lease
+            }
+            guard clock.now < deadline else { throw PersonalFileAssistantLifecycleError.stopping }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Called only after the file commit with its stop lease still held. Keep
+    /// transcript/error/output history; retire pending inputs and old recovery
+    /// candidates so Restore never means "run the old work again".
+    func retireStoppedFileAssistantExecution(_ bindings: [StudioAssistantBinding]) async throws {
+        for binding in bindings {
+            let id = binding.conversationID
+            guard fileAssistantStopTokens[id] != nil, deletingConversationIDs.contains(id) else {
+                throw PersonalFileAssistantLifecycleError.stopping
+            }
+            let runs = try await environment.runStore.runs(conversationID: id)
+            for run in runs {
+                guard !hasLiveOwner(runID: run.id) else { throw PersonalFileAssistantLifecycleError.stopping }
+                if run.state != "completed", run.state != "cancelled", run.state != "canceled" {
+                    try await environment.runStore.updateRunState(id: run.id, state: "cancelled", endedAt: run.endedAt ?? Date())
+                }
+                activeRuns[run.id] = nil
+            }
+            let store = runningInputStore(for: id)
+            for input in try await store.pending(conversationID: id) {
+                if input.status != .queued { try await store.restoreQueued(id: input.id) }
+                try await store.cancel(id: input.id)
+            }
+            pendingApprovals.removeAll { $0.conversationID == id }
+            approvalCards.removeAll(conversationIDs: [id])
+            publishSession(id)
+        }
+    }
+
     /// A Notes restart retains every message and run, but stops the old owner before
     /// its document grant is replaced. The launch fence also covers preprocessing.
     func stopNotesAssistant(conversationID: UUID) async throws {
@@ -7418,12 +7908,13 @@ final class ConversationCenter: ObservableObject {
     /// The only conversation deletion path used by the UI. It closes the
     /// conversation to new launches, lets an in-flight launch transaction
     /// settle, then cancels and awaits provider work before the FK cascade.
-    func deleteConversation(id: UUID) async throws {
-        guard deletingConversationIDs.insert(id).inserted else {
+    func deleteConversation(id: UUID, fileLifecycleToken: UUID? = nil) async throws {
+        let heldByFileLifecycle = fileLifecycleToken != nil && fileAssistantStopTokens[id] == fileLifecycleToken
+        guard heldByFileLifecycle || deletingConversationIDs.insert(id).inserted else {
             throw FloeError.validationFailed("Conversation deletion is already in progress")
         }
         launchFence.invalidate(scope: id)
-        defer { deletingConversationIDs.remove(id) }
+        defer { if !heldByFileLifecycle { deletingConversationIDs.remove(id) } }
         let removedConversation = conversations.first(where: { $0.id == id })
         conversations.removeAll { $0.id == id }
         environment.designEntryState.clear(conversationID: id)
@@ -7520,6 +8011,7 @@ final class ConversationCenter: ObservableObject {
     }
 
     func restoreConversation(id: UUID) async throws {
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: id)
         try await environment.conversationStore.setArchived(id: id, archived: false)
         await reload()
         publishSession(id)
@@ -7918,6 +8410,10 @@ final class ConversationCenter: ObservableObject {
         }
         launchPreparations.bind(preparationID, conversationID: record.conversationID)
         guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: record.conversationID)
+        guard !deletingConversationIDs.contains(record.conversationID), launchPreparations.mayExecute(preparationID) else {
+            throw CancellationError()
+        }
         // Continue must not bypass the dependency wait: a run parked on
         // required background work is not finished, and resuming it here
         // would start a provider turn without the awaited result. A user
@@ -8025,6 +8521,12 @@ final class ConversationCenter: ObservableObject {
         resumption: RuntimeSteerInput? = nil
     ) async throws -> StartedConversationRun {
         try Task.checkCancellation()
+        guard !isClearingHistory, !deletingConversationIDs.contains(record.conversationID) else { throw CancellationError() }
+        try await environment.studioCoordinator.requireAssistantAvailable(conversationID: record.conversationID)
+        // A wait recovery is the same owned Task through this first await.
+        // Honor its Stop before claiming a new invocation reservation.
+        try Task.checkCancellation()
+        guard !deletingConversationIDs.contains(record.conversationID) else { throw CancellationError() }
         let isTemporary = isTemporaryConversation(record.conversationID)
         let routedRunStore = self.runStore(for: record.conversationID)
         let routedConversationStore = self.conversationStore(for: record.conversationID)
@@ -9220,6 +9722,10 @@ final class ConversationCenter: ObservableObject {
                 case .reasoningDelta:
                     // Reasoning tokens are model work but not user-visible
                     // output; the surface speed tracks answer text only.
+                    await self.receiveCurrentRuntimeActivity(service)
+                case .nativeToolDiagnostic:
+                    // The task view observes hop rows directly from the service.
+                    // Keep activity alive without persisting each observation.
                     await self.receiveCurrentRuntimeActivity(service)
                 case .usageChanged(let usage):
                     await self.receiveCurrentRuntimeActivity(service, tokensPerSecond: usage.tokensPerSecond)

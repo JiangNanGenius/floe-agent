@@ -17,6 +17,7 @@
 #if canImport(UIKit) && canImport(AlarmKit)
 import Foundation
 import FloeCore
+import FloeModels
 import FloeTools
 import FloePersistence
 import AlarmKit
@@ -24,8 +25,12 @@ import AlarmKit
 // MARK: - Shared output
 
 enum SystemAlarmOutput {
-    static func make(_ summary: String, exitStatus: Int32? = 0) -> ToolExecutionOutput {
-        ToolExecutionOutput(digesting: summary, exitStatus: exitStatus)
+    static func make(
+        _ summary: String,
+        exitStatus: Int32? = 0,
+        artifacts: [ToolArtifactReference] = []
+    ) -> ToolExecutionOutput {
+        ToolExecutionOutput(digesting: summary, exitStatus: exitStatus, artifacts: artifacts)
     }
 
     static func iso(_ date: Date) -> String { SystemAlarmDateCoding.encode(date) }
@@ -145,11 +150,11 @@ struct AppleAlarmScheduleTool: AgentTool {
             return SystemAlarmOutput.make(
                 "status=unavailable capability=alarm reason=temporaryChat", exitStatus: 75)
         }
-        guard await isForeground() else {
-            return SystemAlarmOutput.make(
-                "status=foregroundRequired capability=alarm message=Bring the app to the foreground to authorize and schedule an alarm.",
-                exitStatus: 77)
-        }
+        // No unconditional foreground gate here: AlarmKit authorization only
+        // needs the foreground for the FIRST system prompt (enforced inside
+        // SystemAlarmService.authorization), and an already-authorized app may
+        // schedule timers while backgrounded. Approval/effect checks and the
+        // temporary-chat ceiling above remain authoritative.
         let plan = try Self.plan(args)
         let owner = SystemAlarmOwner(context: context)
 
@@ -174,8 +179,17 @@ struct AppleAlarmScheduleTool: AgentTool {
             )
             switch record.state {
             case .created:
+                // A confirmed timer also yields the immutable inline binding
+                // artifact for the assistant-body live card. Produced ONLY
+                // here, after the durable native readback confirmed creation.
+                let artifacts = plan.kind == .timer
+                    ? (try? Self.timerBindingArtifact(
+                        record: record, label: plan.label,
+                        duration: plan.duration ?? 0, context: context)).map { [$0] } ?? []
+                    : []
                 return SystemAlarmOutput.make(
-                    "status=ok capability=alarm \(SystemAlarmOutput.render(record))")
+                    "status=ok capability=alarm \(SystemAlarmOutput.render(record))",
+                    artifacts: artifacts)
             case .unknown:
                 // Schedule returned but could not be verified; typed pending
                 // verification, not a fabricated success.
@@ -215,10 +229,22 @@ struct AppleAlarmScheduleTool: AgentTool {
             throw FloeError.validationFailed("kind must be 'alarm' or 'timer'")
         }
 
-        // Timezone is required so the intended wall clock is unambiguous.
+        // A relative countdown has no wall-clock intent, so a timer may omit
+        // the timezone and default to the device zone; a wall-clock alarm
+        // still requires the explicit IANA identifier (its digest, identity
+        // and weekly rules all depend on the intended zone).
         let tzIdentifier = (args.timezone ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !tzIdentifier.isEmpty, let timezone = TimeZone(identifier: tzIdentifier) else {
-            throw FloeError.validationFailed("timezone must be a valid IANA identifier")
+        let timezone: TimeZone
+        if tzIdentifier.isEmpty {
+            guard kind == .timer else {
+                throw FloeError.validationFailed("timezone must be a valid IANA identifier")
+            }
+            timezone = deviceTimeZone
+        } else {
+            guard let resolved = TimeZone(identifier: tzIdentifier) else {
+                throw FloeError.validationFailed("timezone must be a valid IANA identifier")
+            }
+            timezone = resolved
         }
 
         let repeatRule = try parseRepeat(args.repeat)
@@ -304,6 +330,43 @@ struct AppleAlarmScheduleTool: AgentTool {
             throw FloeError.validationFailed("label must be at most 64 characters without control characters")
         }
         return trimmed.isEmpty ? "Floe Alarm" : trimmed
+    }
+
+    // MARK: - Inline timer binding artifact
+
+    /// Writes the immutable `NativeTimerBinding` JSON into the app artifact
+    /// store and returns its digest-addressed reference. Only a confirmed
+    /// `.created` timer record reaches this; any encoding/write failure is a
+    /// swallowed optional (the schedule itself already succeeded and is
+    /// reported on its own evidence — the card is additive, never a second
+    /// authority).
+    static func timerBindingArtifact(
+        record: SystemAlarmRecord,
+        label: String,
+        duration: TimeInterval,
+        context: ToolContext
+    ) throws -> ToolArtifactReference? {
+        guard let binding = NativeTimerBinding(record: record, label: label, duration: duration),
+              binding.version == NativeTimerBinding.currentVersion else { return nil }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(binding)
+        guard data.count <= NativeTimerBinding.maximumBytes else { return nil }
+        let digest = FloeDigest.sha256Hex(data)
+        let id = UUID()
+        let directory = "\(NativeTimerBinding.artifactDirectory)/\(context.runID.uuidString)"
+        let root = try FloeArtifactStore.root().standardizedFileURL
+        let folder = root.appendingPathComponent(directory, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let fileName = "\(id.uuidString)\(NativeTimerBinding.artifactSuffix)"
+        try data.write(to: folder.appendingPathComponent(fileName), options: [.atomic])
+        return ToolArtifactReference(
+            id: id,
+            relativePath: "\(directory)/\(fileName)",
+            mimeType: NativeTimerBinding.mimeType,
+            byteCount: data.count,
+            sha256: digest
+        )
     }
 }
 

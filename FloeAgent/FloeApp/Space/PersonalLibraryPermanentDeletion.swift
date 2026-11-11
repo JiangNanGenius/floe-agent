@@ -560,6 +560,12 @@ nonisolated enum PersonalLibraryPurgeIO {
             var updated = try trash(fd)
             guard affected(updated, entry: plan.entry) == plan.coveredEntries else { try fail() }
             let removed = Set(plan.coveredEntries.map(\.id)); updated.entries.removeAll { removed.contains($0.id) }
+            var proofs = updated.assistantPurgeReceipts ?? []
+            proofs.removeAll { $0.entryID == plan.id }
+            proofs.append(.init(entryID: plan.id, relativePath: plan.entry.relativePath,
+                projectIDs: plan.members.map(\.id).sorted { $0.uuidString < $1.uuidString }))
+            guard proofs.count <= 10_000 else { throw PersonalContentError.storageUnavailable }
+            updated.assistantPurgeReceipts = proofs
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
             let bytes = try encoder.encode(updated)
             guard bytes.count <= 4 * 1_024 * 1_024 else { throw PersonalContentError.storageUnavailable }

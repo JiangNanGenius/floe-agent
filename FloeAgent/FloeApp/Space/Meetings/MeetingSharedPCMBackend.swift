@@ -16,6 +16,20 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
     private var writer: MeetingPCMChunkRecorder?
     private var pump: Task<Void, Never>?
     private var sink: (@Sendable (CaptureEvent) -> Void)?
+    /// Second consumer of the same copied frames (the continuous live-ASR
+    /// coordinator). Called synchronously from the pump after the recorder;
+    /// the closure itself is non-blocking, so a slow or absent recognizer can
+    /// never backpressure the microphone, the lossless original or the chunks.
+    private var asrFeed: (@Sendable (MeetingPCMFrame) -> Void)?
+
+    func setASRFeed(_ feed: (@Sendable (MeetingPCMFrame) -> Void)?) {
+        asrFeed = feed
+    }
+
+    private func feedASR(_ frame: MeetingPCMFrame) {
+        asrFeed?(frame)
+    }
+
     func begin(session: CaptureSessionID, configuration: CaptureConfiguration,
                sink: @escaping @Sendable (CaptureEvent) -> Void) async throws {
         guard self.session == nil else { throw MeetingError.captureAlreadyActive(self.session!) }
@@ -35,6 +49,7 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
                 for await frame in channel.stream {
                     try Task.checkCancellation()
                     if let chunk = try await writer.append(frame) { await self?.deliver(chunk, generation: generation) }
+                    await self?.feedASR(frame)
                 }
             } catch { await self?.fail(error.localizedDescription, generation: generation) }
         }
@@ -75,7 +90,7 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
         capturer?.stop(); await tap?.cancelAudio(); await writer?.cancel()
         sink?(.failed(session: old, message: reason)); clear()
     }
-    private func clear() { session = nil; sink = nil; capturer = nil; tap = nil; writer = nil; pump = nil }
+    private func clear() { session = nil; sink = nil; capturer = nil; tap = nil; writer = nil; pump = nil; asrFeed = nil }
 }
 
 private final class MeetingPCMStreamTap: SpeechTranscribing, @unchecked Sendable {

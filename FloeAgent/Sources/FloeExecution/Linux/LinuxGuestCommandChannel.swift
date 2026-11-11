@@ -552,6 +552,15 @@ enum LinuxGuestFraming {
         return capabilities.split(separator: " ").contains("env=1")
     }
 
+    /// Leader-PID and process-group liveness cannot prove that descendants
+    /// have ended. Only this negotiated runner contract retains the owned
+    /// SPAWN slot until its cgroup is empty, including after leader reap.
+    static func supportsWholeServiceTree(capabilities: String?) -> Bool {
+        guard let capabilities else { return false }
+        let fields = capabilities.split(separator: " ").filter { $0.hasPrefix("serviceTree=") }
+        return fields.count == 1 && fields[0] == "serviceTree=cgroup-v1"
+    }
+
     static func sessionInputLine(sessionID: String, bytes: Data) -> Data {
         controlLine("IN", token: sessionID, arguments: [bytes.base64EncodedString()])
     }
@@ -1990,6 +1999,26 @@ public actor LinuxGuestCommandChannel {
         !legacySerialMode && LinuxGuestFraming.supportsEnvironmentDelivery(capabilities: negotiatedCapabilities)
     }
 
+    /// Captured by the registry with the SPAWN's session/channel identity.
+    /// A reset or legacy transition must never lend a later runner's proof
+    /// to a process created by an earlier one.
+    var serviceControlGeneration: UInt64 { routerGeneration }
+
+    private func requireServiceTreeProof(generation: UInt64) async throws {
+        try Task.checkCancellation()
+        guard !closed, !poisoned, routerGeneration == generation else {
+            throw LinuxGuestError.consoleUnavailable("the service's original guest channel is no longer available")
+        }
+        try await ensureNegotiated()
+        guard !closed, !poisoned, routerGeneration == generation else {
+            throw LinuxGuestError.consoleUnavailable("the service's original guest channel changed during negotiation")
+        }
+        guard !legacySerialMode,
+              LinuxGuestFraming.supportsWholeServiceTree(capabilities: negotiatedCapabilities) else {
+            throw LinuxGuestError.runnerUpgradeRequired(required: "serviceTree=cgroup-v1", found: negotiatedCapabilities)
+        }
+    }
+
     // MARK: token routing
 
     /// Reserves one routing token for `stream`.
@@ -2760,6 +2789,14 @@ public actor LinuxGuestCommandChannel {
                 "service start command exceeds the \(limits.maxCommandBytes)-byte guest command envelope; start a short launcher that runs a script file already present in the workspace"
             )
         }
+        // Refuse before dispatch: an old runner must not create a service
+        // whose whole-tree termination this App can never confirm.
+        do {
+            try await requireServiceTreeProof(generation: routerGeneration)
+        } catch LinuxGuestError.runnerUpgradeRequired(_, _) {
+            throw FloeError.validationFailed(NSLocalizedString("linux_service.update_required", bundle: .main,
+                value: "Update the Linux component, then try again.", comment: "Guest service supervision requires an updated Linux component"))
+        }
         let outcome = try await performControl(
             name: "SPAWN",
             payload: payload,
@@ -2775,8 +2812,10 @@ public actor LinuxGuestCommandChannel {
         return pid
     }
 
-    /// Kills one pid the guest runner itself spawned. Returns false when the
-    /// guest reports that pid unknown (it already exited).
+    /// Requests termination of one owned PID. True is acceptance only, never
+    /// proof that its descendants ended; use killServiceAndJoin for release.
+    /// False is the runner's unknown-slot reply, also not a terminal proof on
+    /// its own.
     public func killService(
         pid: Int32,
         timeout: TimeInterval? = nil,
@@ -2823,6 +2862,43 @@ public actor LinuxGuestCommandChannel {
         default:
             let detail = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
             throw LinuxGuestError.startFailed(detail.isEmpty ? "guest rejected ALIVE \(pid) (exit \(outcome.exit))" : detail)
+        }
+    }
+
+    /// Same owned SPAWN tree, not merely its leader. Old/unknown runner
+    /// capabilities fail closed instead of interpreting their ALIVE 3 as a
+    /// whole-tree terminal receipt.
+    func serviceTreeAlive(pid: Int32, generation: UInt64, timeout: TimeInterval) async throws -> Bool {
+        try await requireServiceTreeProof(generation: generation)
+        let alive = try await serviceAlive(pid: pid, timeout: timeout)
+        try await requireServiceTreeProof(generation: generation)
+        return alive
+    }
+
+    /// KILL 0 is only acceptance; even KILL 3 needs the same runner's ALIVE
+    /// terminal proof. Cancellation, timeout and failed queries throw without
+    /// releasing the caller's process, forward or authentication ownership.
+    func killServiceAndJoin(pid: Int32, generation: UInt64, timeout: TimeInterval) async throws -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(limits.clampedTimeout(timeout)))
+        func remaining() throws -> TimeInterval {
+            try Task.checkCancellation()
+            let duration = clock.now.duration(to: deadline).components
+            let seconds = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
+            guard seconds > 0 else {
+                throw LinuxGuestError.consoleUnavailable("the owned guest service tree has not confirmed termination; retry stop")
+            }
+            return seconds
+        }
+        try await requireServiceTreeProof(generation: generation)
+        _ = try await killService(pid: pid, timeout: try remaining())
+        try await requireServiceTreeProof(generation: generation)
+        while true {
+            if try await !serviceTreeAlive(pid: pid, generation: generation, timeout: remaining()) {
+                return true
+            }
+            let pause = min(0.05, try remaining())
+            try await Task.sleep(for: .seconds(pause))
         }
     }
 

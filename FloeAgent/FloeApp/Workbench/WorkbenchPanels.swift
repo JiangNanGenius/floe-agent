@@ -416,8 +416,12 @@ struct WorkbenchAssetsPanel: View {
     @ViewBuilder
     private func brushControls(isEraser: Bool) -> some View {
         VStack(alignment: .leading) {
-            Text(WorkbenchText.t("粗细", "Size") + " \(Int(center.brushWidth))")
-                .font(.caption)
+            HStack {
+                Text(WorkbenchText.t("粗细", "Size") + " \(Int(center.brushWidth))")
+                    .font(.caption)
+                Spacer()
+                MediaDrawingInputMenu()
+            }
             Slider(value: $center.brushWidth, in: 1...120)
                 .accessibilityIdentifier("workbench.brush.width")
         }

@@ -119,7 +119,8 @@ public actor ShellSessionCenter {
         forTerminal: Bool = false,
         toolEnvironment: ToolEnvironment? = nil,
         clientSessionID: String? = nil,
-        skillConfiguration: SkillProcessConfiguration? = nil
+        skillConfiguration: SkillProcessConfiguration? = nil,
+        conversationID: UUID? = nil
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         try skillConfiguration?.validateOverrides(environment)
@@ -140,7 +141,10 @@ public actor ShellSessionCenter {
         pendingOpens += 1
         defer { pendingOpens -= 1 }
         let sessionID = UUID().uuidString.lowercased()
-        let lease = try await ToolEnvironmentRouting.shared.acquire(ToolContext(runID: runID, workspaceRootURL: rootURL, cancellation: cancellation ?? CancellationToken(), environmentID: toolEnvironment?.id, environment: toolEnvironment))
+        let lease = try await ToolEnvironmentRouting.shared.acquire(ToolContext(runID: runID,
+            workspaceRootURL: rootURL, cancellation: cancellation ?? CancellationToken(),
+            environmentID: toolEnvironment?.id, conversationID: conversationID,
+            environment: toolEnvironment))
         do {
             try await skillConfiguration?.revalidate()
             try cancellation?.throwIfCancelled()

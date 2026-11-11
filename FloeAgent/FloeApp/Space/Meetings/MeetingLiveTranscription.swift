@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import AVFoundation
+import CoreMedia
 import Observation
 import FloeMeetings
 import FloeMeetingsAV
@@ -18,6 +20,11 @@ struct MeetingLiveChunk: Codable, Identifiable {
     var serviceID: String?
     var error: String?
     var busyRetries: Int?
+    /// Identity of the actual ASR request that produced `decoded`. A fresh
+    /// key is minted every time the chunk is sent to the provider, because a
+    /// retried chunk is a new independent request whose speaker numbering
+    /// must never be merged with the previous attempt's.
+    var requestKey: UUID?
 }
 
 struct MeetingChunkTranscript: Sendable {
@@ -44,6 +51,31 @@ struct MeetingChunkTranscript: Sendable {
     private var worker: Task<Void, Never>?
     private var generation = UUID()
     private var selectedServiceID: String?
+    /// Continuous live-ASR gate, supplied by the meeting session. While the
+    /// gate reports active and the capture is still running, chunks whose
+    /// ranges the live domain has not fully covered yet WAIT instead of
+    /// paying for a duplicate transcription; on stop/degradation everything
+    /// pending becomes eligible and the coverage filters prevent duplicates.
+    var liveGate: (@MainActor @Sendable () -> (active: Bool, coverage: [MediaTimeRange]))?
+    var liveCaptureFinished = false
+
+    /// Snapshot of what the live domain has already committed, queried on the
+    /// MainActor when the coordinator reports a change.
+    private var liveCoverage: [MediaTimeRange] {
+        liveGate?().coverage ?? []
+    }
+
+    private func liveCovers(_ range: MediaTimeRange) -> Bool {
+        let epsilon = 0.001
+        var cursor = range.start
+        for interval in liveCoverage.sorted(by: { $0.start < $1.start }) {
+            if interval.end + epsilon < cursor { continue }
+            if interval.start > cursor + epsilon { return false }
+            cursor = max(cursor, interval.end)
+            if cursor + epsilon >= range.end { return true }
+        }
+        return false
+    }
 
     convenience init(meetingID: MeetingID, root: URL, service: MeetingService, audio: AssistantAudioService,
                      onChange: @escaping @MainActor @Sendable () async -> Void) throws {
@@ -58,7 +90,11 @@ struct MeetingChunkTranscript: Sendable {
                 route = AssistantAudioService.ID.transcriptionEnhanced
             }
             do {
-                let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route, requiresTiming: true)
+                // Meetings opt in to provider speaker separation; adapters
+                // only send the diarization flag for engines that support it,
+                // and local engines honestly return no labels.
+                let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route,
+                                                        requiresTiming: true, enableSpeakerAttribution: true)
                 return MeetingChunkTranscript(segments: result.segments, language: result.language)
             } catch AssistantAudioError.noSpeechRecognized {
                 // Silence is a completed observation, not a broken recording.
@@ -138,8 +174,26 @@ struct MeetingChunkTranscript: Sendable {
         await previous?.value
     }
     func waitUntilIdle() async { await worker?.value }
+
+    /// The live domain committed new coverage (or the capture ended): pending
+    /// chunks may have become eligible. Cheap re-entry; the worker guards.
+    func reevaluate() {
+        startWorker()
+    }
+
+    private func firstEligibleChunkIndex() -> Int? {
+        chunks.firstIndex { chunk in
+            guard [.pending, .decoded].contains(chunk.state) else { return false }
+            guard let gate = liveGate?(), gate.active, !liveCaptureFinished else { return true }
+            // Live is healthy and the capture is running: wait until the live
+            // domain fully covers this chunk (or the capture stops). Fully
+            // covered chunks are eligible and complete without a request.
+            return liveCovers(chunk.range)
+        }
+    }
+
     private func startWorker() {
-        guard enabled, !requiresRetry, worker == nil, chunks.contains(where: { [.pending, .decoded].contains($0.state) }) else { return }
+        guard enabled, !requiresRetry, worker == nil, firstEligibleChunkIndex() != nil else { return }
         generation = UUID(); let epoch = generation
         isWorking = true
         worker = Task { [weak self] in
@@ -148,7 +202,7 @@ struct MeetingChunkTranscript: Sendable {
                 if self.generation == epoch { self.worker = nil; self.isWorking = false; self.waitingForService = false }
             }
             while !Task.isCancelled, self.generation == epoch,
-                  let index = self.chunks.firstIndex(where: { [.pending, .decoded].contains($0.state) }) {
+                  let index = self.firstEligibleChunkIndex() {
                 let id = self.chunks[index].id
                 do {
                     try await self.process(id: id, generation: epoch)
@@ -186,41 +240,119 @@ struct MeetingChunkTranscript: Sendable {
             }
         }
     }
+    /// Process one chunk against the real coverage of ITS original:
+    /// - fully covered (live rows, file rows, or live coverage) → complete
+    ///   with no provider request;
+    /// - fully uncovered → one ordinary request for the chunk file;
+    /// - partially covered → one request per REAL uncovered audio interval
+    ///   (decoded from the chunk), never a proportionally cut sentence.
     private func process(id: UUID, generation epoch: UUID) async throws {
         guard var index = chunks.firstIndex(where: { $0.id == id }) else { throw CancellationError() }
+        let plan = try await fallbackPlan(for: chunks[index])
+        guard !plan.requests.isEmpty else {
+            chunks[index].state = .complete
+            chunks[index].error = nil
+            try save()
+            return
+        }
+        let whole = plan.requests.count == 1
+            && abs(plan.requests[0].range.start - chunks[index].range.start) < 0.001
+            && abs(plan.requests[0].range.end - chunks[index].range.end) < 0.001
         let file = root.appendingPathComponent(chunks[index].file).standardizedFileURL.resolvingSymlinksInPath()
         guard file.path.hasPrefix(root.resolvingSymlinksInPath().path + "/") else { throw PersonalContentError.outsideLibrary }
         if chunks[index].analysisSessionID == nil {
             let existing = try await service.sessions(meeting: meetingID).first { $0.sourceFile == file.path && $0.kind == .importedAudio }
             let imported = if let existing { existing.id } else {
-                try await service.importFile(meeting: meetingID, file: file, kind: .importedAudio, duration: AudioFileProbe.durationRange)
+                // The analysis session is explicitly linked to its original:
+                // the trusted lineage that scopes all duplicate detection.
+                try await service.importFile(meeting: meetingID, file: file, kind: .importedAudio,
+                    origin: chunks[index].originalSessionID, duration: AudioFileProbe.durationRange)
             }
             try check(epoch)
             index = chunks.firstIndex(where: { $0.id == id })!
             chunks[index].analysisSessionID = imported; try save()
         }
-        if chunks[index].decoded == nil {
-            chunks[index].state = .transcribing
-            chunks[index].serviceID = selectedServiceID ?? AssistantAudioService.ID.transcriptionEnhanced
-            try save()
-            let result = try await transcribeChunk(file, selectedServiceID)
-            try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
-            chunks[index].decoded = result.segments; chunks[index].language = result.language
-            chunks[index].state = .decoded; try save() // Persist real provider output BEFORE committing segments.
+        if whole {
+            if chunks[index].decoded == nil {
+                chunks[index].state = .transcribing
+                chunks[index].serviceID = selectedServiceID ?? AssistantAudioService.ID.transcriptionEnhanced
+                // A new provider request begins here: mint its binding scope
+                // now so this attempt's speaker labels live in their own
+                // domain even when a previous attempt of the same chunk ran.
+                chunks[index].requestKey = UUID()
+                try save()
+                let result = try await transcribeChunk(file, selectedServiceID)
+                try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
+                chunks[index].decoded = result.segments; chunks[index].language = result.language
+                chunks[index].state = .decoded; try save() // Persist real provider output BEFORE committing segments.
+            }
         }
         let item = chunks[index]
-        guard let analysis = item.analysisSessionID, let decoded = item.decoded else { throw PersonalContentError.invalidProject }
-        var existing = try await service.transcript(meeting: meetingID).filter { $0.sessionID == analysis }
-        for segment in decoded {
-            try check(epoch)
-            let start = item.range.start + max(0, segment.start)
-            let end = min(item.range.end, item.range.start + segment.end)
-            guard start.isFinite, end.isFinite, end > start, !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let range = try MediaTimeRange(start: start, end: end)
-            // Reopen/retry never duplicates an already committed segment or
-            // overwrites a later user correction.
-            if existing.contains(where: { abs($0.range.start - start) < 0.00001 && abs($0.range.end - end) < 0.00001 }) { continue }
-            existing.append(try await service.appendFinal(meeting: meetingID, session: analysis, text: segment.text, range: range, language: item.language))
+        guard let analysis = item.analysisSessionID else { throw PersonalContentError.invalidProject }
+        // Duplicate fence scoped to THIS original's lineage (never the whole
+        // meeting): an overlapping range is already durable — live coverage,
+        // a completed chunk, or a user-corrected row — and is never
+        // duplicated or overwritten here.
+        let lineageRows = try await service.committedSegments(meeting: meetingID, original: item.originalSessionID)
+        let coverage = liveCoverage
+        func overlapsCommitted(_ start: Double, _ end: Double) -> Bool {
+            let epsilon = 0.001
+            return lineageRows.contains { $0.range.end > start + epsilon && $0.range.start < end - epsilon }
+                || coverage.contains { $0.end > start + epsilon && $0.start < end - epsilon }
+        }
+        if whole {
+            guard let decoded = item.decoded else { throw PersonalContentError.invalidProject }
+            for segment in decoded {
+                try check(epoch)
+                let start = item.range.start + max(0, segment.start)
+                let end = min(item.range.end, item.range.start + segment.end)
+                guard start.isFinite, end.isFinite, end > start,
+                      !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let range = try MediaTimeRange(start: start, end: end)
+                if overlapsCommitted(start, end) { continue }
+                // Provider speaker labels restart on every request. Bind them
+                // in THIS request's domain only: the same number from another
+                // chunk or a retry is a different person until the user merges.
+                let scope = segment.recognitionRequestID?.uuidString ?? item.requestKey?.uuidString ?? analysis.description
+                let speaker = try await service.resolveEngineSpeaker(
+                    meeting: meetingID, scope: scope, label: segment.speaker)
+                _ = try await service.appendFinal(meeting: meetingID, session: analysis, text: segment.text, range: range, speaker: speaker, language: item.language)
+            }
+        } else {
+            // Partial coverage: request only the real uncovered audio. A
+            // retry after a failure naturally shrinks to the still-open gaps
+            // because committed rows join the reserved map.
+            for request in plan.requests {
+                try check(epoch)
+                index = chunks.firstIndex(where: { $0.id == id })!
+                chunks[index].state = .transcribing
+                chunks[index].serviceID = selectedServiceID ?? AssistantAudioService.ID.transcriptionEnhanced
+                chunks[index].requestKey = UUID()
+                try save()
+                let result: MeetingChunkTranscript
+                do {
+                    result = try await transcribeChunk(request.url, selectedServiceID)
+                } catch {
+                    try? FileManager.default.removeItem(at: request.url)
+                    throw error
+                }
+                try? FileManager.default.removeItem(at: request.url)
+                try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
+                for segment in result.segments {
+                    let start = request.range.start + max(0, segment.start)
+                    let end = min(request.range.end, request.range.start + segment.end)
+                    guard start.isFinite, end.isFinite, end > start,
+                          !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                    let range = try MediaTimeRange(start: start, end: end)
+                    if overlapsCommitted(start, end) { continue }
+                    let scope = segment.recognitionRequestID?.uuidString ?? chunks[index].requestKey?.uuidString ?? analysis.description
+                    let speaker = try await service.resolveEngineSpeaker(
+                        meeting: meetingID, scope: scope, label: segment.speaker)
+                    _ = try await service.appendFinal(meeting: meetingID, session: analysis, text: segment.text, range: range, speaker: speaker, language: result.language)
+                }
+            }
+            index = chunks.firstIndex(where: { $0.id == id })!
+            chunks[index].decoded = nil
         }
         try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
         chunks[index].state = .complete; chunks[index].error = nil; try save()
@@ -230,10 +362,110 @@ struct MeetingChunkTranscript: Sendable {
         try Task.checkCancellation()
         guard generation == epoch, FileManager.default.fileExists(atPath: root.appendingPathComponent("meeting.sqlite").path) else { throw CancellationError() }
     }
+}
+/// One file entry in the chunk queue: the file at `url` is a bounded WAV of
+/// the exact uncovered media interval `range` (a partial-coverage fallback
+/// request), never proportional text cutting.
+private struct MeetingSubrangeRequest {
+    let url: URL
+    let range: MediaTimeRange
+}
+
+/// Fallback work item for one gap of one chunk.
+private struct MeetingChunkTranscriptPlan {
+    /// Requests in media order; a single request equal to the whole chunk
+    /// range when nothing is covered.
+    let requests: [MeetingSubrangeRequest]
+}
+
+extension MeetingLiveTranscription {
     private func save() throws {
         let data = try JSONEncoder().encode(chunks)
         guard data.count <= 8 * 1_024 * 1_024 else { throw PersonalContentError.invalidProject }
         try data.write(to: root.appendingPathComponent("live-chunks.json"), options: [.atomic, .completeFileProtectionUnlessOpen])
+    }
+
+    /// Real fallback plan: the chunk's range minus everything already durable
+    /// for THIS original (committed rows of its lineage plus live coverage).
+    /// Only real uncovered audio is ever requested; text is never cut.
+    private func fallbackPlan(for item: MeetingLiveChunk) async throws -> MeetingChunkTranscriptPlan {
+        let lineageRows = try await service.committedSegments(meeting: meetingID, original: item.originalSessionID)
+        var reserved = MeetingCoverageMap()
+        for row in lineageRows { try? reserved.commit(row.range) }
+        for span in liveCoverage { try? reserved.commit(span) }
+        let gaps = reserved.uncoveredSubranges(of: item.range)
+        guard !gaps.isEmpty else { return MeetingChunkTranscriptPlan(requests: []) }
+        if gaps.count == 1, abs(gaps[0].start - item.range.start) < 0.001,
+           abs(gaps[0].end - item.range.end) < 0.001 {
+            let file = root.appendingPathComponent(item.file).standardizedFileURL.resolvingSymlinksInPath()
+            return MeetingChunkTranscriptPlan(requests: [MeetingSubrangeRequest(url: file, range: item.range)])
+        }
+        // Sub-range requests against the real uncovered audio.
+        var requests: [MeetingSubrangeRequest] = []
+        let directory = root.appendingPathComponent(".live-subranges")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for gap in gaps where gap.duration >= 0.3 {
+            let target = directory.appendingPathComponent("\(item.id.uuidString)-\(Int(gap.start * 1000))-\(Int(gap.end * 1000)).wav")
+            do {
+                // Chunk files start at local zero; the request retains its
+                // original media coordinate for adopting provider timings.
+                let local = try MediaTimeRange(
+                    start: gap.start - item.range.start,
+                    end: gap.end - item.range.start)
+                try await MeetingChunkSubrangeExtractor.extractWAV(
+                    file: root.appendingPathComponent(item.file), range: local, to: target)
+                requests.append(MeetingSubrangeRequest(url: target, range: gap))
+            } catch {
+                try? FileManager.default.removeItem(at: target)
+                for request in requests { try? FileManager.default.removeItem(at: request.url) }
+                // Propagate into the existing queue failure/retry path.
+                // An extraction failure never means the real gap is covered.
+                throw error
+            }
+        }
+        return MeetingChunkTranscriptPlan(requests: requests)
+    }
+}
+
+/// Decode one chunk's audio track and write the exact [range) media span as
+/// a bounded 16 kHz mono PCM WAV — the audio-level complement of the
+/// coverage map: partial coverage produces a request for the real uncovered
+/// samples, never a proportionally cut sentence.
+enum MeetingChunkSubrangeExtractor {
+    static func extractWAV(file: URL, range: MediaTimeRange, to output: URL) async throws {
+        let asset = AVURLAsset(url: file)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        guard let track = tracks.first else { throw PersonalContentError.invalidProject }
+        let reader = try AVAssetReader(asset: asset)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+        let readerOutput = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+        guard reader.canAdd(readerOutput) else { throw PersonalContentError.invalidProject }
+        reader.add(readerOutput)
+        guard reader.startReading() else { throw PersonalContentError.invalidProject }
+        defer { reader.cancelReading() }
+        var pcm = Data()
+        let startByte = Int(range.start * 16_000) * 2
+        let endByte = Int(range.end * 16_000) * 2
+        var offset = 0
+        while reader.status == .reading {
+            guard let sample = readerOutput.copyNextSampleBuffer() else { break }
+            defer { CMSampleBufferInvalidate(sample) }
+            let data = try CloudASRAudioExtractor.pcm16Data(from: sample)
+            let sliceStart = max(0, startByte - offset)
+            let sliceEnd = min(data.count, endByte - offset)
+            if sliceEnd > sliceStart { pcm.append(data[sliceStart..<sliceEnd]) }
+            offset += data.count
+            if offset >= endByte { break }
+        }
+        guard reader.status != .failed, pcm.count >= 2 else { throw PersonalContentError.invalidProject }
+        try CloudPCMCodec.wav(pcm16: pcm, sampleRate: 16_000).write(to: output, options: .atomic)
     }
 }
 #endif

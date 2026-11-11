@@ -45569,6 +45569,10 @@ northing meters` + mgrsString;
   function featureCollection2(features = []) {
     return { type: "FeatureCollection", features };
   }
+  function layerEvidence(layer, index2) {
+    let evidence = { id: layer.id, name: layer.name, kind: layer.kind, crs: layer.crs, index: index2, visible: layer.visible !== !1, locked: !!layer.locked, opacity: layer.opacity ?? 1 };
+    return layer.kind === "vector" ? evidence.featureCount = layer.data.features.length : layer.kind === "raster" ? (evidence.width = layer.width, evidence.height = layer.height, evidence.bandCount = layer.bands?.length) : layer.kind === "tiles" && (evidence.tileCount = layer.tileCount), evidence;
+  }
   function vectorLayer(name, features = [], crs = "EPSG:4326") {
     return features = features.map(normalizeFeature), deduplicateIDs(features), { id: uid(), name, kind: "vector", crs: defineCRS(crs), visible: !0, locked: !1, opacity: 1, group: "", style: { color: "#2879c7", fill: "#2879c7", fillOpacity: 0.2, width: 2, radius: 5, label: "", mode: "single", field: "", classes: 5 }, fields: inferFields(features), data: featureCollection2(features) };
   }
@@ -61821,6 +61825,14 @@ northing meters` + mgrsString;
     return (value || row.length) && (row.push(value), rows.push(row)), rows;
   }
   var csvCell = (value) => '"' + String(value ?? "").replace(/"/g, '""') + '"';
+  function csvCoordinateKind(source) {
+    let [columns] = parseCSV(String(source).replace(/^\uFEFF/, ""));
+    if (!columns) return "unknown";
+    let lower = columns.map((n2) => String(n2).trim().toLowerCase());
+    if (lower.some((n2) => ["wkt", "geometry"].includes(n2))) return "wkt";
+    let x3 = lower.findIndex((n2) => ["x", "lon", "lng", "longitude", "easting"].includes(n2)), y3 = lower.findIndex((n2) => ["y", "lat", "latitude", "northing"].includes(n2));
+    return x3 < 0 || y3 < 0 ? "unknown" : ["x", "easting"].includes(lower[x3]) || ["y", "northing"].includes(lower[y3]) ? "projected" : "geographic";
+  }
   function csvFeatures(source) {
     let [columns, ...rows] = parseCSV(source.replace(/^\uFEFF/, "")), names38 = required(columns, "CSV header is missing").map((n2) => n2.trim()), lower = names38.map((n2) => n2.toLowerCase());
     if (names38.some((n2) => !n2) || new Set(names38).size !== names38.length) throw new Error("CSV headers must be nonempty and unique");
@@ -61981,7 +61993,7 @@ northing meters` + mgrsString;
   async function readGeoPackage(bytes) {
     let SQL = await sql(), db = new SQL.Database(bytes), layers = [];
     try {
-      let contents = db.exec("SELECT c.table_name,c.identifier,g.column_name,g.srs_id FROM gpkg_contents c JOIN gpkg_geometry_columns g ON c.table_name=g.table_name WHERE c.data_type='features'")[0];
+      let contents = db.exec("SELECT c.table_name,c.identifier,g.column_name,g.srs_id FROM gpkg_contents c JOIN gpkg_geometry_columns g ON c.table_name=g.table_name WHERE c.data_type='features' ORDER BY c.table_name")[0];
       if (!contents) throw new Error("No feature tables in GeoPackage");
       let hasMetadata = !!db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='floe_gis_metadata'").length;
       for (let [table, name, geometryColumn, srs] of contents.values) {
@@ -62282,8 +62294,25 @@ NODATA_value ${layer.nodata}
     }
     return zipSync(files);
   }
+  function zipWorldFileEntry(names38, entry) {
+    let stem = String(entry).replace(/\.[^.]+$/, ""), ext = String(entry).split(".").at(-1).toLowerCase(), candidates = { png: ["pgw", "pngw"], jpg: ["jgw", "jpgw"], jpeg: ["jgw", "jpgw"], webp: ["wld"], tif: ["tfw"], tiff: ["tfw"] }[ext] ?? ["wld"];
+    for (let candidate of candidates) {
+      let found = names38.find((n2) => n2.toLowerCase() === (stem + "." + candidate).toLowerCase());
+      if (found) return found;
+    }
+  }
+  function zipSidecarEntry(names38, entry, extension) {
+    let stem = String(entry).replace(/\.[^.]+$/, ""), suffix = "." + extension;
+    return names38.find((n2) => n2.slice(0, -suffix.length) === stem && n2.slice(-suffix.length).toLowerCase() === suffix);
+  }
+  function archiveImageCRS(names38, entry, crs) {
+    let prj = zipSidecarEntry(names38, entry, "prj");
+    if (prj) return { prj };
+    if (crs) return { crs };
+    throw new Error(t3("\u538B\u7F29\u5305\u4E2D\u7684\u5F71\u50CF\u5E26\u6709\u4E16\u754C\u6587\u4EF6\u4F46\u7F3A\u5C11\u5750\u6807\u7CFB\uFF1B\u8BF7\u653E\u5165\u540C\u540D .prj \u6587\u4EF6\uFF0C\u6216\u901A\u8FC7\u5BFC\u5165\u53C2\u6570\u660E\u786E\u6307\u5B9A crs\u3002", "The archived image has a world file but no coordinate system. Add a matching .prj file or pass an explicit crs import argument."));
+  }
   async function importGIS(e2, args) {
-    let name = String(args.name ?? "import"), extension = name.split(".").at(-1).toLowerCase(), bytes = from64(args.base64), source = () => text2(bytes), layers = [];
+    let name = String(args.name ?? "import"), extension = name.split(".").at(-1).toLowerCase(), bytes = from64(args.base64), source = () => text2(bytes), crs = String(args.crs ?? "").trim() || void 0, layers = [];
     if (["floegis", "json", "geojson"].includes(extension)) {
       let value = JSON.parse(source());
       if (extension === "floegis" || value.kind === "gis" || value.data?.layers || value.layers) {
@@ -62292,48 +62321,77 @@ NODATA_value ${layer.nodata}
         let history = value.content?.history ?? value.history;
         return history && Array.isArray(history.past) && Array.isArray(history.future) && (e2.payload.history = clone2(history)), e2.liveView = null, e2.selection = { layer: e2.state.layers[0]?.id ?? null, features: [] }, { project: !0 };
       }
-      let features = value.type === "FeatureCollection" ? value.features : value.type === "Feature" ? [value] : [{ type: "Feature", geometry: value, properties: {} }], crs = args.crs ?? value.crs?.properties?.name ?? "EPSG:4326";
-      layers = [vectorLayer(safeStem(name), features, crs.replace("urn:ogc:def:crs:EPSG::", "EPSG:"))];
-    } else if (extension === "csv") layers = [vectorLayer(safeStem(name), csvFeatures(source()), args.crs ?? "EPSG:4326")];
-    else if (extension === "gpx" || extension === "kml") {
+      let features = value.type === "FeatureCollection" ? value.features : value.type === "Feature" ? [value] : [{ type: "Feature", geometry: value, properties: {} }], sourceCRS = crs ?? value.crs?.properties?.name ?? "EPSG:4326";
+      layers = [vectorLayer(safeStem(name), features, sourceCRS.replace("urn:ogc:def:crs:EPSG::", "EPSG:"))];
+    } else if (extension === "csv") {
+      let raw = source(), features = csvFeatures(raw);
+      if (!crs && csvCoordinateKind(raw) === "projected") throw new Error(t3("CSV \u4F7F\u7528\u6295\u5F71\u5750\u6807\u5217\uFF08x\uFF0Fy \u6216 easting\uFF0Fnorthing\uFF09\uFF1B\u8BF7\u901A\u8FC7\u5BFC\u5165\u53C2\u6570\u660E\u786E\u6307\u5B9A\u5750\u6807\u7CFB\uFF0C\u4E0D\u4F1A\u9ED8\u8BA4\u6309\u7ECF\u7EAC\u5EA6\u8BFB\u53D6\u3002", "This CSV uses projected coordinate columns (x/y or easting/northing). Pass an explicit crs import argument; they are never assumed to be degrees."));
+      layers = [vectorLayer(safeStem(name), features, crs ?? "EPSG:4326")];
+    } else if (extension === "gpx" || extension === "kml") {
       if (/<!DOCTYPE|<!ENTITY/i.test(source())) throw new Error("External XML definitions are not supported");
       let reader = extension === "gpx" ? new GPX_default() : new KML_default({ extractStyles: !1 });
       layers = [vectorLayer(safeStem(name), reader.readFeatures(source(), { dataProjection: "EPSG:4326", featureProjection: "EPSG:4326" }).map((f3) => geojson.writeFeatureObject(f3)))];
     } else if (extension === "kmz") {
       let files = unzipSync(bytes), key2 = Object.keys(files).find((k2) => /\.kml$/i.test(k2));
       if (!key2) throw new Error("KMZ has no KML");
-      return importGIS(e2, { name: key2, base64: bytes64(files[key2]) });
+      return importGIS(e2, { ...args, name: key2, base64: bytes64(files[key2]) });
     } else if (extension === "gpkg") layers = await readGeoPackage(bytes);
     else if (extension === "tif" || extension === "tiff") layers = [await readGeoTIFF(bytes, name)];
     else if (["png", "jpg", "jpeg", "webp"].includes(extension)) layers = [await readImage(bytes, name, args)];
     else if (extension === "asc") {
       let layer = readASCIIGrid(source(), name);
-      args.crs && (layer.crs = defineCRS(args.crs)), layers = [layer];
+      crs && (layer.crs = defineCRS(crs)), layers = [layer];
     } else if (extension === "mbtiles") layers = [await readMBTiles(bytes, name)];
     else if (extension === "zip") {
-      let files = unzipSync(bytes), shapefiles = Object.keys(files).filter((k2) => /\.shp$/i.test(k2));
-      if (!shapefiles.length) throw new Error("ZIP has no Shapefile; import image and world file separately");
-      let result = await lib_default2(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-      layers = (Array.isArray(result) ? result : [result]).map((fc, i4) => {
-        let prefix = fc.fileName ?? shapefiles[i4].replace(/\.shp$/i, ""), metaKey = Object.keys(files).find((k2) => k2.toLowerCase() === (prefix + ".floe-fields.json").toLowerCase()), metadata = metaKey ? JSON.parse(strFromU8(files[metaKey])) : null;
-        metadata && fc.features.forEach((feature2, n2) => {
-          let properties = {};
-          for (let field2 of metadata.fields) {
-            let v5 = feature2.properties[field2.short];
-            if (v5 != null && field2.type === "json") try {
-              v5 = JSON.parse(v5);
-            } catch {
+      let files = unzipSync(bytes), names38 = Object.keys(files).filter((k2) => !k2.startsWith("__MACOSX/") && !k2.endsWith("/")), shapefiles = names38.filter((k2) => /\.shp$/i.test(k2));
+      if (shapefiles.length) {
+        let result = await lib_default2(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+        layers = (Array.isArray(result) ? result : [result]).map((fc, i4) => {
+          let prefix = fc.fileName ?? shapefiles[i4].replace(/\.shp$/i, ""), metaKey = names38.find((k2) => k2.toLowerCase() === (prefix + ".floe-fields.json").toLowerCase()), metadata = metaKey ? JSON.parse(strFromU8(files[metaKey])) : null, hasPRJ = !!zipSidecarEntry(names38, prefix, "prj");
+          if (!hasPRJ && !crs) throw new Error(t3("\u538B\u7F29\u5305\u4E2D\u7684 Shapefile\uFF08" + prefix.split("/").at(-1) + "\uFF09\u7F3A\u5C11 .prj \u5750\u6807\u6587\u4EF6\uFF1B\u8BF7\u901A\u8FC7\u5BFC\u5165\u53C2\u6570\u660E\u786E\u6307\u5B9A crs\u3002", "The Shapefile (" + prefix.split("/").at(-1) + ") in this archive has no .prj coordinate file. Pass an explicit crs import argument."));
+          metadata && fc.features.forEach((feature2, n2) => {
+            let properties = {};
+            for (let field2 of metadata.fields) {
+              let v5 = feature2.properties[field2.short];
+              if (v5 != null && field2.type === "json") try {
+                v5 = JSON.parse(v5);
+              } catch {
+              }
+              properties[field2.name] = metadata.nulls?.[n2]?.includes(field2.name) ? null : v5;
             }
-            properties[field2.name] = metadata.nulls?.[n2]?.includes(field2.name) ? null : v5;
-          }
-          for (let key2 of metadata.missing?.[n2] ?? []) delete properties[key2];
-          feature2.properties = properties, feature2.id = metadata.ids[n2] ?? uid();
+            for (let key2 of metadata.missing?.[n2] ?? []) delete properties[key2];
+            feature2.properties = properties, feature2.id = metadata.ids[n2] ?? uid();
+          });
+          let layer = vectorLayer(prefix.split("/").at(-1), fc.features, hasPRJ ? "EPSG:4326" : crs);
+          return metadata && (layer.fields = metadata.fields.map(({ name: name2, type }) => ({ name: name2, type, nullable: !0 }))), layer;
         });
-        let layer = vectorLayer(prefix.split("/").at(-1), fc.features);
-        return metadata && (layer.fields = metadata.fields.map(({ name: name2, type }) => ({ name: name2, type, nullable: !0 }))), layer;
-      });
-    } else if (extension === "shp") layers = [vectorLayer(safeStem(name), _parseShp(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)).map((geometry) => ({ type: "Feature", geometry, properties: {} })), args.crs ?? "EPSG:4326")];
-    else if (extension === "dbf") {
+      } else {
+        let project = names38.find((k2) => /\.floegis$/i.test(k2)) ?? names38.find((k2) => {
+          if (!/\.(json|geojson)$/i.test(k2)) return !1;
+          try {
+            let value = JSON.parse(strFromU8(files[k2]));
+            return value.kind === "gis" || !!value.data?.layers || !!value.layers;
+          } catch {
+            return !1;
+          }
+        });
+        if (project) return importGIS(e2, { ...args, name: project.split("/").at(-1), base64: bytes64(files[project]) });
+        let image = names38.find((k2) => /\.(png|jpe?g|webp)$/i.test(k2) && zipWorldFileEntry(names38, k2));
+        if (image) {
+          let world = names38.find((n2) => n2.toLowerCase() === zipWorldFileEntry(names38, image).toLowerCase()), resolved = archiveImageCRS(names38, image, crs), imageCRS = resolved.crs;
+          resolved.prj && (imageCRS = "CUSTOM:" + uid().toUpperCase(), defineCRS(imageCRS, strFromU8(files[resolved.prj])), e2.state.definitions[imageCRS] = strFromU8(files[resolved.prj]));
+          let layer = await readImage(files[image], image.split("/").at(-1), { crs: imageCRS });
+          layer.bounds = readWorldFile(strFromU8(files[world]), layer.width, layer.height), layer.source = { ...layer.source, georeferenced: !0 }, layers = [layer];
+        } else {
+          let data = names38.find((k2) => /\.(geojson|json|csv|gpx|kml|gpkg|tif|tiff|asc|mbtiles)$/i.test(k2));
+          if (data) return importGIS(e2, { ...args, name: data.split("/").at(-1), base64: bytes64(files[data]) });
+          throw new Error(t3("\u538B\u7F29\u5305\u91CC\u6CA1\u6709\u53EF\u5BFC\u5165\u7684\u5730\u56FE\u6570\u636E\u3002\u652F\u6301 Shapefile \u5957\u4EF6\u3001\u5E26\u4E16\u754C\u6587\u4EF6\u7684\u5F71\u50CF\u3001GeoPackage\u3001GeoJSON\u3001CSV\u3001GPX\u3001KML\u3001GeoTIFF\u3001ASCII Grid\u3001MBTiles \u6216 .floegis \u5DE5\u7A0B\u3002", "The archive contains no importable map data. Supported: a Shapefile set, an image with its world file, GeoPackage, GeoJSON, CSV, GPX, KML, GeoTIFF, ASCII grid, MBTiles or a .floegis project."));
+        }
+      }
+    } else if (extension === "shp") {
+      if (!crs) throw new Error(t3("\u5355\u72EC\u7684 SHP \u6587\u4EF6\u4E0D\u5E26\u5750\u6807\u7CFB\uFF1B\u8BF7\u901A\u8FC7\u5BFC\u5165\u53C2\u6570\u660E\u786E\u6307\u5B9A crs\uFF0C\u6216\u6539\u7528\u5305\u542B .prj \u7684 ZIP \u5BFC\u5165\u3002", "A standalone SHP file carries no coordinate system. Pass an explicit crs import argument, or import a ZIP that includes its .prj."));
+      layers = [vectorLayer(safeStem(name), _parseShp(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)).map((geometry) => ({ type: "Feature", geometry, properties: {} })), crs)];
+    } else if (extension === "dbf") {
       let attrs = _parseDbf(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), args.encoding ?? "UTF-8"), layer = required(e2.state.layers.find((l4) => l4.name === safeStem(name) && l4.kind === "vector"), "Import matching SHP first");
       if (attrs.length !== layer.data.features.length) throw new Error("DBF and SHP record counts differ");
       return attrs.forEach((p5, i4) => layer.data.features[i4].properties = p5), layer.fields = inferFields(layer.data.features), { attributes: attrs.length };
@@ -62342,14 +62400,45 @@ NODATA_value ${layer.nodata}
       return defineCRS(code, source()), e2.state.definitions[code] = source(), layer.crs = code, { crs: code };
     } else if (["pgw", "jgw", "tfw", "wld", "pngw", "jpgw"].includes(extension)) {
       let layer = required(e2.state.layers.find((l4) => l4.kind === "raster" && (l4.name === safeStem(name) || safeStem(l4.source?.name) === safeStem(name))), "Import matching image first");
-      return layer.bounds = readWorldFile(source(), layer.width, layer.height), layer.source = { ...layer.source, georeferenced: !0 }, { bounds: layer.bounds };
+      return layer.bounds = readWorldFile(source(), layer.width, layer.height), crs && (layer.crs = defineCRS(crs)), layer.source = { ...layer.source, georeferenced: !0 }, { bounds: layer.bounds, crs: layer.crs };
     } else if (extension === "shx" || extension === "cpg") {
       let layer = required(e2.state.layers.find((l4) => l4.name === safeStem(name)), "Import matching SHP first");
       return layer.source = { ...layer.source, [extension]: extension === "cpg" ? source() : { bytes: bytes.length } }, { sidecar: extension };
     } else throw new Error(t3("\u4E0D\u652F\u6301\u8FD9\u4E2A\u6587\u4EF6\u683C\u5F0F\u3002", "Unsupported file format."));
     for (let layer of layers)
       layer.source = { ...layer.source, name, format: layer.source?.format ?? extension }, layer.source.definition && !["EPSG:4326", "EPSG:3857"].includes(layer.crs) && (e2.state.definitions[layer.crs] = layer.source.definition);
-    return e2.state.layers.push(...layers), layers[0] && (e2.selection = { layer: layers[0].id, features: [] }), { layers: layers.map((l4) => ({ id: l4.id, name: l4.name, kind: l4.kind })) };
+    if (layers.some((l4) => l4.kind === "vector") && layers.every((l4) => l4.kind !== "vector" || !l4.data.features.length)) throw new Error(t3("\u6587\u4EF6\u91CC\u6CA1\u6709\u53EF\u5BFC\u5165\u7684\u77E2\u91CF\u8981\u7D20\u3002", "This file contains no importable vector features."));
+    if (e2.state.layers.push(...layers), layers[0] && (e2.selection = { layer: layers[0].id, features: [] }), layers.length && (args.fit === !0 || pristineProjectView(e2.liveView ?? e2.state.view)))
+      try {
+        let box = importedGeographicBounds(layers);
+        box && (e2.liveView = { center: [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], zoom: 2, extent: projectedBounds(box, "EPSG:4326", "EPSG:3857"), extentCRS: "EPSG:3857", fit: !0 });
+      } catch {
+      }
+    return { layers: layers.map((layer, offset) => layerEvidence(layer, e2.state.layers.length - layers.length + offset)) };
+  }
+  function pristineProjectView(view2) {
+    return Array.isArray(view2?.center) && view2.center.length === 2 && view2.center[0] === 0 && view2.center[1] === 20 && (view2.zoom ?? 2) === 2 && !view2.extent;
+  }
+  function importedGeographicBounds(layers) {
+    let box = null, merge2 = (b3) => {
+      !Array.isArray(b3) || b3.length !== 4 || !b3.every(Number.isFinite) || (box = box ? [Math.min(box[0], b3[0]), Math.min(box[1], b3[1]), Math.max(box[2], b3[2]), Math.max(box[3], b3[3])] : b3.slice());
+    };
+    for (let layer of layers)
+      if (layer.kind === "vector") {
+        let located = layer.data.features.filter((f3) => f3.geometry);
+        located.length && merge2(layer.crs === "EPSG:4326" ? geometryBounds(featureCollection2(located)) : projectedBounds(geometryBounds(featureCollection2(located)), layer.crs, "EPSG:4326"));
+      } else layer.kind === "raster" ? merge2(layer.crs === "EPSG:4326" ? layer.bounds : projectedBounds(layer.bounds, layer.crs, "EPSG:4326")) : layer.kind === "tiles" && merge2(layer.bounds);
+    if (box) {
+      if (!(box[0] < box[2])) {
+        let mid = (box[0] + box[2]) / 2;
+        box[0] = mid - 5e-4, box[2] = mid + 5e-4;
+      }
+      if (!(box[1] < box[3])) {
+        let mid = (box[1] + box[3]) / 2;
+        box[1] = mid - 5e-4, box[3] = mid + 5e-4;
+      }
+    }
+    return box && box[0] < box[2] && box[1] < box[3] ? box : null;
   }
   async function exportGIS(e2, args, signal) {
     let format2 = args.format ?? "geojson";
@@ -62425,7 +62514,7 @@ NODATA_value ${layer.nodata}
     }
   }
   function registerFormats(e2) {
-    e2.register({ id: "file.import", title: t3("\u5BFC\u5165\u6587\u4EF6", "Import file"), group: t3("\u6587\u4EF6", "Files"), access: "importFile", fields: [], hidden: !0 }, (a3) => importGIS(e2, a3)), e2.register({ id: "file.export", title: t3("\u5BFC\u51FA\u6570\u636E\uFF0F\u5DE5\u7A0B", "Export data / project"), group: t3("\u6587\u4EF6", "Files"), access: "exportFile", fields: [layerField(), field("format", t3("\u683C\u5F0F", "Format"), "select", { options: ["floegis", "geojson", "gpkg", "shp", "csv", "gpx", "kml", "tif", "asc", "png", "mbtiles"], default: "geojson" }), field("name", t3("\u6587\u4EF6\u540D", "File name")), field("crs", t3("\u5BFC\u51FA\u5750\u6807\u7CFB\uFF08\u53EF\u7559\u7A7A\uFF09", "Output CRS (optional)")), field("all", t3("\u5305\u542B\u6240\u6709\u77E2\u91CF\u56FE\u5C42", "Include all vector layers"), "checkbox"), field("minZoom", t3("\u74E6\u7247\u6700\u4F4E\u7EA7\u522B", "Minimum tile zoom"), "number", { default: 0, min: 0, max: 22 }), field("maxZoom", t3("\u74E6\u7247\u6700\u9AD8\u7EA7\u522B", "Maximum tile zoom"), "number", { default: 12, min: 0, max: 22 })] }, (a3, signal) => exportGIS(e2, a3, signal)), e2.register({ id: "query.sql", title: t3("SQL \u5C5E\u6027\u67E5\u8BE2", "SQL attribute query"), group: t3("\u67E5\u8BE2", "Query"), access: "read", fields: [layerField(), field("sql", t3("\u67E5\u8BE2 features \u8868", "Query the features table"), "textarea", { default: "SELECT * FROM features LIMIT 100" })] }, (a3) => querySQL(e2, a3));
+    e2.register({ id: "file.import", title: t3("\u5BFC\u5165\u6587\u4EF6", "Import file"), group: t3("\u6587\u4EF6", "Files"), access: "importFile", fields: [field("crs", t3("\u5750\u6807\u7CFB\uFF08SHP \u6216\u4E16\u754C\u6587\u4EF6\u5F71\u50CF\u7F3A\u5C11 .prj \u65F6\u5FC5\u586B\uFF09", "CRS (required for SHP or world-file images without a .prj)"), "text", { default: "" }), field("fit", t3("\u5BFC\u5165\u540E\u7F29\u653E\u81F3\u5185\u5BB9", "Fit to imported content"), "checkbox", { default: !1 })], hidden: !0 }, (a3) => importGIS(e2, a3)), e2.register({ id: "file.export", title: t3("\u5BFC\u51FA\u6570\u636E\uFF0F\u5DE5\u7A0B", "Export data / project"), group: t3("\u6587\u4EF6", "Files"), access: "exportFile", fields: [layerField(), field("format", t3("\u683C\u5F0F", "Format"), "select", { options: ["floegis", "geojson", "gpkg", "shp", "csv", "gpx", "kml", "tif", "asc", "png", "mbtiles"], default: "geojson" }), field("name", t3("\u6587\u4EF6\u540D", "File name")), field("crs", t3("\u5BFC\u51FA\u5750\u6807\u7CFB\uFF08\u53EF\u7559\u7A7A\uFF09", "Output CRS (optional)")), field("all", t3("\u5305\u542B\u6240\u6709\u77E2\u91CF\u56FE\u5C42", "Include all vector layers"), "checkbox"), field("minZoom", t3("\u74E6\u7247\u6700\u4F4E\u7EA7\u522B", "Minimum tile zoom"), "number", { default: 0, min: 0, max: 22 }), field("maxZoom", t3("\u74E6\u7247\u6700\u9AD8\u7EA7\u522B", "Maximum tile zoom"), "number", { default: 12, min: 0, max: 22 })] }, (a3, signal) => exportGIS(e2, a3, signal)), e2.register({ id: "query.sql", title: t3("SQL \u5C5E\u6027\u67E5\u8BE2", "SQL attribute query"), group: t3("\u67E5\u8BE2", "Query"), access: "read", fields: [layerField(), field("sql", t3("\u67E5\u8BE2 features \u8868", "Query the features table"), "textarea", { default: "SELECT * FROM features LIMIT 100" })] }, (a3) => querySQL(e2, a3));
   }
 
   // FloeAgent/Modules/FloeGISKit/Web/analysis.js
@@ -107559,51 +107648,56 @@ void main() {
       db.close();
     }
   }
-  async function makeMapSVG(e2, { width, height } = {}) {
+  async function drawStackSVG(stack, { projection: projection2, extent, point: point2, left, top, w: w3, h: h3, zoom, selection = null }) {
+    let pathFor = (coordinates2) => coordinates2.map((c5, i4) => `${i4 ? "L" : "M"}${point2(c5).map((v5) => v5.toFixed(3)).join(" ")}`).join(""), content = "";
+    for (let layer of stack) {
+      if (layer.kind === "raster" || layer.kind === "tiles") {
+        let rw = Math.max(1, Math.round(w3)), rh = Math.max(1, Math.round(h3)), png;
+        if (layer.kind === "raster") {
+          let warped = await resampleRaster(layer, { width: rw, height: rh, bounds: extent, crs: projection2, method: layer.style?.palette === "classes" ? "nearest" : "bilinear" });
+          png = encodePNG(rasterRGBA(warped), rw, rh);
+        } else png = await printedTiles(layer, extent, projection2, rw, rh, zoom);
+        content += `<image x="${left}" y="${top}" width="${w3}" height="${h3}" href="data:image/png;base64,${bytes64(png)}" opacity="${layer.opacity}"/>`;
+        continue;
+      }
+      if (layer.kind !== "vector") continue;
+      let highlighted = selection && selection.layerID === layer.id ? selection.ids : null;
+      content += `<g opacity="${layer.opacity}">`;
+      for (let feature2 of layer.data.features) {
+        if (!feature2.geometry) continue;
+        let geometry = transformGeometry(unwrapGeometry(transformGeometry(feature2.geometry, layer.crs, "EPSG:4326")), "EPSG:4326", projection2), color = escapeXML(vectorColor(layer, feature2.properties)), highlight = !!highlighted?.has(String(feature2.id)), lineWidth = Math.max(0, finite(layer.style?.width, 2)) + (highlight ? 2 : 0), fill = highlight ? "#ffb22b66" : vectorFill(layer, color), anchor, draw = (g2) => {
+          if (g2)
+            if (g2.type === "Point") {
+              let p5 = point2(g2.coordinates);
+              anchor = p5, content += `<circle cx="${p5[0]}" cy="${p5[1]}" r="${Math.max(1, finite(layer.style?.radius, 5)) + (highlight ? 2 : 0)}" fill="${highlight ? "#ffb22b" : color}" stroke="${highlight ? "#ffb22b" : "white"}" stroke-width="2"/>`;
+            } else if (g2.type === "LineString")
+              content += `<path d="${pathFor(g2.coordinates)}" fill="none" stroke="${highlight ? "#e28a00" : color}" stroke-width="${lineWidth}"/>`, anchor = point2(g2.coordinates[Math.floor(g2.coordinates.length / 2)]);
+            else if (g2.type === "Polygon")
+              content += `<path d="${g2.coordinates.map((r2) => pathFor(r2) + "Z").join("")}" fill="${escapeXML(fill)}" fill-rule="evenodd" stroke="${highlight ? "#e28a00" : color}" stroke-width="${lineWidth}"/>`, anchor = point2(turf.pointOnFeature({ type: "Feature", geometry: g2, properties: {} }).geometry.coordinates);
+            else if (g2.type === "GeometryCollection") g2.geometries.forEach(draw);
+            else {
+              let type = { MultiPoint: "Point", MultiLineString: "LineString", MultiPolygon: "Polygon" }[g2.type];
+              g2.coordinates.forEach((c5) => draw({ type, coordinates: c5 }));
+            }
+        };
+        draw(geometry), anchor && layer.style?.label && (content += `<text x="${anchor[0] + 8}" y="${anchor[1] - 8}" font-family="sans-serif" font-size="13" fill="#20252e" stroke="white" stroke-width="3" paint-order="stroke">${escapeXML(feature2.properties[layer.style.label] ?? "")}</text>`);
+      }
+      content += "</g>";
+    }
+    return content;
+  }
+  async function makeMapSVG(e2, { width, height, layers = null } = {}) {
     let page = paperSize(e2.state.layout);
     if (width = Math.round(width ?? page[0] * 96 / 25.4), height = Math.round(height ?? page[1] * 96 / 25.4), !Number.isFinite(width) || !Number.isFinite(height) || width < 200 || height < 200 || width * height > 16777216) throw new Error("Choose a map size from 200 pixels and up to 16.7 million pixels");
-    let layout = e2.state.layout ?? {}, { projection: projection2, extent } = layoutExtent(e2, width, height), left = 50, top = 80, w3 = width - 100, h3 = height - 150, cx = (extent[0] + extent[2]) / 2, world = projection2 === "EPSG:3857" ? WEB_HALF * 2 : projection2 === "EPSG:4326" ? 360 : null, point2 = (c5) => {
+    let layout = e2.state.layout ?? {}, { projection: projection2, extent } = layoutExtent(e2, width, height), left = 50, top = 80, w3 = width - 100, h3 = height - 150, cx = (extent[0] + extent[2]) / 2, world = projection2 === "EPSG:3857" ? WEB_HALF * 2 : projection2 === "EPSG:4326" ? 360 : null, stack = (Array.isArray(layers) ? layers : e2.state.layers).filter((layer) => Array.isArray(layers) || layer.visible), point2 = (c5) => {
       let p5 = c5.slice(0, 2);
       if (world) {
         for (; p5[0] - cx > world / 2; ) p5[0] -= world;
         for (; p5[0] - cx < -world / 2; ) p5[0] += world;
       }
       return [left + (p5[0] - extent[0]) / (extent[2] - extent[0]) * w3, top + h3 - (p5[1] - extent[1]) / (extent[3] - extent[1]) * h3];
-    }, pathFor = (coordinates2) => coordinates2.map((c5, i4) => `${i4 ? "L" : "M"}${point2(c5).map((v5) => v5.toFixed(3)).join(" ")}`).join(""), content = `<defs><clipPath id="map-clip"><rect x="${left}" y="${top}" width="${w3}" height="${h3}"/></clipPath></defs><rect width="100%" height="100%" fill="white"/><text x="50" y="44" font-size="26" font-family="sans-serif">${escapeXML(layout.title || e2.state.title)}</text><g clip-path="url(#map-clip)"><rect x="${left}" y="${top}" width="${w3}" height="${h3}" fill="#f3f7fa"/>`;
-    for (let layer of e2.state.layers.filter((l4) => l4.visible)) {
-      if (layer.kind === "raster" || layer.kind === "tiles") {
-        let rw = Math.max(1, Math.round(w3)), rh = Math.max(1, Math.round(h3)), png;
-        if (layer.kind === "raster") {
-          let warped = await resampleRaster(layer, { width: rw, height: rh, bounds: extent, crs: projection2, method: layer.style?.palette === "classes" ? "nearest" : "bilinear" });
-          png = encodePNG(rasterRGBA(warped), rw, rh);
-        } else png = await printedTiles(layer, extent, projection2, rw, rh, e2.liveView?.zoom ?? e2.state.view.zoom);
-        content += `<image x="${left}" y="${top}" width="${w3}" height="${h3}" href="data:image/png;base64,${bytes64(png)}" opacity="${layer.opacity}"/>`;
-        continue;
-      }
-      if (layer.kind === "vector") {
-        content += `<g opacity="${layer.opacity}">`;
-        for (let feature2 of layer.data.features) {
-          if (!feature2.geometry) continue;
-          let geometry = transformGeometry(unwrapGeometry(transformGeometry(feature2.geometry, layer.crs, "EPSG:4326")), "EPSG:4326", projection2), color = escapeXML(vectorColor(layer, feature2.properties)), lineWidth = Math.max(0, finite(layer.style?.width, 2)), fill = vectorFill(layer, color), anchor, draw = (g2) => {
-            if (g2)
-              if (g2.type === "Point") {
-                let p5 = point2(g2.coordinates);
-                anchor = p5, content += `<circle cx="${p5[0]}" cy="${p5[1]}" r="${Math.max(1, finite(layer.style?.radius, 5))}" fill="${color}" stroke="white" stroke-width="2"/>`;
-              } else if (g2.type === "LineString")
-                content += `<path d="${pathFor(g2.coordinates)}" fill="none" stroke="${color}" stroke-width="${lineWidth}"/>`, anchor = point2(g2.coordinates[Math.floor(g2.coordinates.length / 2)]);
-              else if (g2.type === "Polygon")
-                content += `<path d="${g2.coordinates.map((r2) => pathFor(r2) + "Z").join("")}" fill="${escapeXML(fill)}" fill-rule="evenodd" stroke="${color}" stroke-width="${lineWidth}"/>`, anchor = point2(turf.pointOnFeature({ type: "Feature", geometry: g2, properties: {} }).geometry.coordinates);
-              else if (g2.type === "GeometryCollection") g2.geometries.forEach(draw);
-              else {
-                let type = { MultiPoint: "Point", MultiLineString: "LineString", MultiPolygon: "Polygon" }[g2.type];
-                g2.coordinates.forEach((c5) => draw({ type, coordinates: c5 }));
-              }
-          };
-          draw(geometry), anchor && layer.style?.label && (content += `<text x="${anchor[0] + 8}" y="${anchor[1] - 8}" font-family="sans-serif" font-size="13" fill="#20252e" stroke="white" stroke-width="3" paint-order="stroke">${escapeXML(feature2.properties[layer.style.label] ?? "")}</text>`);
-        }
-        content += "</g>";
-      }
-    }
+    }, content = `<defs><clipPath id="map-clip"><rect x="${left}" y="${top}" width="${w3}" height="${h3}"/></clipPath></defs><rect width="100%" height="100%" fill="white"/><text x="50" y="44" font-size="26" font-family="sans-serif">${escapeXML(layout.title || e2.state.title)}</text><g clip-path="url(#map-clip)"><rect x="${left}" y="${top}" width="${w3}" height="${h3}" fill="#f3f7fa"/>`;
+    content += await drawStackSVG(stack, { projection: projection2, extent, point: point2, left, top, w: w3, h: h3, zoom: e2.liveView?.zoom ?? e2.state.view.zoom });
     for (let annotation of layout.annotations ?? []) {
       let p5 = point2(transformPosition([annotation.x, annotation.y], annotation.crs ?? "EPSG:4326", projection2));
       content += `<text x="${p5[0]}" y="${p5[1]}" font-family="sans-serif" font-size="${Math.max(8, Math.min(72, finite(annotation.size, 16)))}" fill="#20252e" stroke="white" stroke-width="3" paint-order="stroke">${escapeXML(annotation.text)}</text>`;
@@ -107618,7 +107712,7 @@ void main() {
     }
     if (layout.legend !== !1) {
       let y3 = 110;
-      for (let layer of e2.state.layers.filter((l4) => l4.visible)) {
+      for (let layer of stack) {
         let entries2 = legendEntries(layer);
         for (let item of entries2) {
           if (y3 > height - 90) {
@@ -107631,8 +107725,64 @@ void main() {
     }
     return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-crs="${escapeXML(projection2)}" data-extent="${extent.join(",")}">${content}</svg>`;
   }
+  function viewportExtent(e2, width, height, view2) {
+    let projection2 = defineCRS(e2.state.crs), extent;
+    if (view2.extent?.length === 4 && view2.extent.every(Number.isFinite)) extent = projectedBounds(view2.extent, view2.extentCRS ?? "EPSG:3857", projection2);
+    else {
+      let resolution = 2 * WEB_HALF / (256 * 2 ** (view2.zoom ?? 2)), web = transformPosition(view2.center ?? [0, 20], "EPSG:4326", "EPSG:3857");
+      extent = projectedBounds([web[0] - resolution * width / 2, web[1] - resolution * height / 2, web[0] + resolution * width / 2, web[1] + resolution * height / 2], "EPSG:3857", projection2);
+    }
+    let cx = (extent[0] + extent[2]) / 2, cy = (extent[1] + extent[3]) / 2, dx = extent[2] - extent[0], dy = extent[3] - extent[1];
+    if (!(dx > 0 && dy > 0)) throw new Error(t3("\u5730\u56FE\u8303\u56F4\u4E3A\u7A7A\uFF0C\u65E0\u6CD5\u89C2\u5BDF\u3002", "The map extent is empty; there is nothing to observe."));
+    return dx / dy > width / height ? dy = dx * height / width : dx = dy * width / height, { projection: projection2, extent: [cx - dx / 2, cy - dy / 2, cx + dx / 2, cy + dy / 2] };
+  }
+  async function makeViewportMapSVG(e2, { width, height, layers = null, view: view2 = null, selection = null } = {}) {
+    if (width = Math.round(width ?? 1024), height = Math.round(height ?? 768), !Number.isFinite(width) || !Number.isFinite(height) || width < 200 || height < 200 || width * height > 16777216) throw new Error("Choose a map size from 200 pixels and up to 16.7 million pixels");
+    let frozen = view2 ?? e2.liveView ?? e2.state.view, { projection: projection2, extent } = viewportExtent(e2, width, height, frozen), cx = (extent[0] + extent[2]) / 2, world = projection2 === "EPSG:3857" ? WEB_HALF * 2 : projection2 === "EPSG:4326" ? 360 : null, stack = (Array.isArray(layers) ? layers : e2.state.layers).filter((layer) => Array.isArray(layers) || layer.visible), content = '<rect width="100%" height="100%" fill="#f3f7fa"/>' + await drawStackSVG(stack, { projection: projection2, extent, point: (c5) => {
+      let p5 = c5.slice(0, 2);
+      if (world) {
+        for (; p5[0] - cx > world / 2; ) p5[0] -= world;
+        for (; p5[0] - cx < -world / 2; ) p5[0] += world;
+      }
+      return [(p5[0] - extent[0]) / (extent[2] - extent[0]) * width, height - (p5[1] - extent[1]) / (extent[3] - extent[1]) * height];
+    }, left: 0, top: 0, w: width, h: height, zoom: frozen.zoom ?? 2, selection });
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-crs="${escapeXML(projection2)}" data-extent="${extent.join(",")}">${content}</svg>`, extent, projection: projection2 };
+  }
+  var OBSERVE_IMAGE_BUDGET = 288 * 1024;
+  function mapObservationEvidence(e2, stack, selection = e2.selection) {
+    let features = selection?.features ?? [];
+    return {
+      layers: stack.map((layer) => layerEvidence(layer, e2.state.layers.indexOf(layer))),
+      selection: { layerID: selection?.layer ?? null, featureIDs: features.slice(0, 64).map(String), count: features.length }
+    };
+  }
+  async function rasterizeMapObservation(svg2, width, height, signal) {
+    if (typeof document > "u" || typeof Image > "u" || typeof URL > "u" || !URL.createObjectURL) throw new Error(t3("\u5F53\u524D\u73AF\u5883\u65E0\u6CD5\u6E32\u67D3\u5730\u56FE\u56FE\u50CF\u3002", "This environment cannot render the map image."));
+    let url = URL.createObjectURL(new Blob([svg2], { type: "image/svg+xml" }));
+    try {
+      let image = await new Promise((resolve, reject) => {
+        let img = new Image();
+        img.onload = () => resolve(img), img.onerror = () => reject(new Error(t3("\u65E0\u6CD5\u6E32\u67D3\u5730\u56FE\u56FE\u50CF\u3002", "Unable to render the map image."))), img.src = url;
+      });
+      for (let scale7 = 1; ; scale7 *= 0.7) {
+        if (signal?.aborted) throw new Error(t3("\u5DF2\u53D6\u6D88\u3002", "Cancelled."));
+        let pixelWidth = Math.max(1, Math.round(width * scale7)), pixelHeight = Math.max(1, Math.round(height * scale7)), canvas = document.createElement("canvas");
+        canvas.width = pixelWidth, canvas.height = pixelHeight, canvas.getContext("2d").drawImage(image, 0, 0, pixelWidth, pixelHeight);
+        let blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        if (!blob) throw new Error(t3("\u65E0\u6CD5\u7F16\u7801\u5730\u56FE\u56FE\u50CF\u3002", "Unable to encode the map image."));
+        if (blob.size <= OBSERVE_IMAGE_BUDGET) return { mediaType: "image/png", base64: bytes64(new Uint8Array(await blob.arrayBuffer())), pixelWidth, pixelHeight };
+        if (pixelWidth <= 480) throw new Error(t3("\u5730\u56FE\u56FE\u50CF\u8D85\u8FC7\u5927\u5C0F\u9884\u7B97\uFF0C\u4E14\u5DF2\u7F29\u81F3\u6700\u5C0F\u53EF\u7528\u5C3A\u5BF8\u3002", "The map image exceeds the size budget at the smallest usable size."));
+      }
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
   function registerViewCommands(e2) {
-    e2.register({ id: "raster.style", title: t3("\u6805\u683C\u6837\u5F0F", "Raster style"), group: t3("\u6805\u683C\u4E0E\u5730\u5F62", "Raster & terrain"), access: "edit", fields: [layerField(), field("palette", t3("\u8272\u5E26", "Palette"), "select", { options: ["terrain", "gray", "classes", "rgb"], default: "terrain" }), field("band", t3("\u6CE2\u6BB5\u7D22\u5F15\uFF08\u4ECE0\u8D77\uFF09", "Band index (from 0)"), "number", { default: 0, min: 0 }), field("min", t3("\u663E\u793A\u6700\u5C0F\u503C\uFF08\u53EF\u7559\u7A7A\uFF09", "Display minimum (optional)")), field("max", t3("\u663E\u793A\u6700\u5927\u503C\uFF08\u53EF\u7559\u7A7A\uFF09", "Display maximum (optional)"))] }, (a3) => {
+    e2.register({ id: "project.observe", title: t3("\u89C2\u5BDF\u5F53\u524D\u5730\u56FE", "Observe the current map"), group: t3("\u67E5\u8BE2", "Query"), access: "read", fields: [field("layer", t3("\u53EA\u770B\u5355\u4E2A\u56FE\u5C42\uFF08\u53EF\u7559\u7A7A\uFF09", "Only this layer (optional)"), "select", { options: layerOptions }), field("width", t3("\u5BBD\u5EA6\uFF08\u50CF\u7D20\uFF09", "Width (pixels)"), "number", { default: 1024, min: 200, max: 1600 }), field("height", t3("\u9AD8\u5EA6\uFF08\u50CF\u7D20\uFF09", "Height (pixels)"), "number", { default: 768, min: 200, max: 1600 })] }, async (a3, signal) => {
+      let width = Math.max(200, Math.min(1600, Math.trunc(finite(a3.width, 1024)))), height = Math.max(200, Math.min(1600, Math.trunc(finite(a3.height, 768)))), single = a3.layer ? getLayer(e2, a3.layer) : null, revision = e2.revision, view2 = clone2(e2.liveView ?? e2.state.view), selection = clone2(e2.selection ?? null), layerCount = e2.state.layers.length, stack = (single ? [single] : e2.state.layers.filter((l4) => l4.visible)).slice(), indexes = stack.map((layer) => e2.state.layers.indexOf(layer)), rendered = await makeViewportMapSVG(e2, { width, height, layers: stack, view: view2, selection: selection?.layer ? { layerID: selection.layer, ids: new Set((selection.features ?? []).map(String)) } : null }), image = await rasterizeMapObservation(rendered.svg, width, height, signal);
+      if (e2.revision !== revision || e2.state.layers.length !== layerCount || stack.some((layer, index2) => e2.state.layers[indexes[index2]] !== layer)) throw new Error(t3("\u89C2\u5BDF\u671F\u95F4\u5730\u56FE\u5DF2\u6539\u53D8\uFF0C\u8BF7\u91CD\u65B0\u89C2\u5BDF\u3002", "The map changed during observation. Observe again."));
+      return { revision, crs: rendered.projection, extent: rendered.extent, width: image.pixelWidth, height: image.pixelHeight, view: { center: view2.center ?? null, zoom: view2.zoom ?? null }, ...mapObservationEvidence(e2, stack, selection), image: { mediaType: image.mediaType, base64: image.base64 } };
+    }), e2.register({ id: "raster.style", title: t3("\u6805\u683C\u6837\u5F0F", "Raster style"), group: t3("\u6805\u683C\u4E0E\u5730\u5F62", "Raster & terrain"), access: "edit", fields: [layerField(), field("palette", t3("\u8272\u5E26", "Palette"), "select", { options: ["terrain", "gray", "classes", "rgb"], default: "terrain" }), field("band", t3("\u6CE2\u6BB5\u7D22\u5F15\uFF08\u4ECE0\u8D77\uFF09", "Band index (from 0)"), "number", { default: 0, min: 0 }), field("min", t3("\u663E\u793A\u6700\u5C0F\u503C\uFF08\u53EF\u7559\u7A7A\uFF09", "Display minimum (optional)")), field("max", t3("\u663E\u793A\u6700\u5927\u503C\uFF08\u53EF\u7559\u7A7A\uFF09", "Display maximum (optional)"))] }, (a3) => {
       let layer = editable(getLayer(e2, a3.layer, "raster")), min = a3.min === "" || a3.min === void 0 ? null : Number(a3.min), max2 = a3.max === "" || a3.max === void 0 ? null : Number(a3.max);
       if (min !== null && !Number.isFinite(min) || max2 !== null && !Number.isFinite(max2) || min !== null && max2 !== null && min >= max2) throw new Error("Choose a valid display range");
       layer.style = { ...layer.style, palette: a3.palette, band: Math.max(0, Math.min(layer.bands.length - 1, Math.trunc(finite(a3.band)))), min, max: max2 };

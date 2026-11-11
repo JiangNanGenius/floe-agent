@@ -381,7 +381,7 @@ struct ToolPaletteView: View {
                  icon: "trash",
                  enabled: viewModel.mode.isSketching
                     ? (!viewModel.selectedSketchEntityIDs.isEmpty || viewModel.hasSketchGlyphSelection)
-                    : (!viewModel.selection.isEmpty || viewModel.selectedImage != nil
+                    : (!viewModel.selection.isEmpty || viewModel.selectedImage != nil || viewModel.selectedPlane != nil
 
                        || !viewModel.selectedSketchEntityIDs.isEmpty),
                  accessibilityID: "DeleteButton", run: { viewModel.deleteSelection() })

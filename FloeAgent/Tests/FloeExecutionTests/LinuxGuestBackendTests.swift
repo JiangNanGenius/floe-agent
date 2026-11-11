@@ -1823,6 +1823,30 @@ final class FakeServiceHost: LinuxGuestLocalServiceHosting, @unchecked Sendable 
     func guestRemoveForward(environmentID: String, forward: LinuxGuestServiceForward) async {
         lock.withLock { forwards.removeAll { $0 == forward } }
     }
+    // Explicit scripted whole-tree backend. The production protocol default
+    // refuses these operations; this fixture owns its simulated lifecycle.
+    func guestSpawnOwnedService(environmentID: String, argv: [String], workingDirectory: String?, logPath: String,
+        timeout: TimeInterval, cancellation: CancellationToken?) async throws -> LinuxGuestServiceProcessReceipt {
+        let pid = try await guestSpawn(environmentID: environmentID, argv: argv, workingDirectory: workingDirectory,
+            logPath: logPath, timeout: timeout, cancellation: cancellation)
+        return LinuxGuestServiceProcessReceipt(environmentID: environmentID, generation: 1, pid: pid)
+    }
+    func guestOwnedServiceState(_ process: LinuxGuestServiceProcessReceipt, timeout: TimeInterval) async throws -> LinuxGuestServiceProcessState {
+        if !(await supports(environmentID: process.environmentID)) { return .environmentGone }
+        return try await guestServiceAlive(environmentID: process.environmentID, pid: process.pid, timeout: timeout) ? .running : .exited
+    }
+    func guestStopOwnedService(_ process: LinuxGuestServiceProcessReceipt, timeout: TimeInterval) async throws -> Bool {
+        _ = try await guestKillService(environmentID: process.environmentID, pid: process.pid, timeout: timeout)
+        return try await !guestServiceAlive(environmentID: process.environmentID, pid: process.pid, timeout: timeout)
+    }
+    func guestEnsureOwnedServiceForward(_ process: LinuxGuestServiceProcessReceipt, forward: LinuxGuestServiceForward) async throws {
+        try await guestEnsureForward(environmentID: process.environmentID, forward: forward)
+    }
+    func guestReleaseOwnedService(_ process: LinuxGuestServiceProcessReceipt, forward: LinuxGuestServiceForward) async -> Bool {
+        await guestRemoveForward(environmentID: process.environmentID, forward: forward)
+        return true
+    }
+
 }
 
 final class LinuxGuestLocalServiceSupervisorTests: XCTestCase {

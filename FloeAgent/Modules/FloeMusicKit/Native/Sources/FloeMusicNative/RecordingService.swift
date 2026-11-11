@@ -66,9 +66,22 @@ public actor MusicRecordingService {
         guard var take = active, take.handle == handle else { throw MusicNativeError.staleOwner }
         guard take.frames > 0 else { throw MusicNativeError.invalid("empty take") }
         try take.lease.validate(document: take.document)
-        take.writer = nil; active = nil
-        try musicSynchronize(take.partial)
-        try take.lease.commit(staged: take.partial, destination: take.destination)
+        // Close the WAV header, then commit. The take stays `active` until
+        // the commit outcome is known: a failed synchronize/commit keeps the
+        // same handle recoverable through cancel(), and a successful one
+        // clears the slot exactly once (a second finish is a stale owner).
+        take.writer = nil
+        // Release the actor's old copy of the writer before synchronizing
+        // the final WAV header, while retaining the same recovery handle.
+        active = take
+        do {
+            try musicSynchronize(take.partial)
+            try take.lease.commit(staged: take.partial, destination: take.destination)
+        } catch {
+            active = take
+            throw error
+        }
+        active = nil
         return MusicCapturedTake(handle: handle, file: take.destination, frames: take.frames)
     }
 

@@ -23,9 +23,20 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
     @State private var resetToken=0
     @State private var error:String?
     private var atoms:[StructureAtom]{structure.atoms.filter{$0.model==modelNumber && (chain.isEmpty || $0.chain==chain)}}
+    /// Proteins trace Cα; nucleic acids trace phosphate; mixed deposits keep
+    /// both classes. Deposits with no backbone trace open in the atoms view.
+    private var trace:[StructureAtom]?{atoms.backboneTrace}
     private var alphaCount:Int{atoms.filter{$0.name=="CA" && !$0.hetero}.count}
-    private var displayedCount:Int{representation=="ribbon" ? alphaCount:min(5000,representation=="atoms" ? atoms.count:alphaCount)}
-    private var countUnit:String{representation=="ribbon" ? biologyText("residues","个残基"):representation=="backbone" ? biologyText("Cα atoms","个 Cα 原子"):biologyText("atoms","个原子")}
+    private var phosphateCount:Int{atoms.filter{$0.name=="P" && !$0.hetero}.count}
+    private var mixedBackbone:Bool{alphaCount>0 && phosphateCount>0}
+    private var shownRepresentation:String{representation=="backbone" && trace==nil ? "atoms":representation}
+    private var displayedCount:Int{shownRepresentation=="ribbon" ? alphaCount:min(5000,shownRepresentation=="atoms" ? atoms.count:(trace?.count ?? atoms.count))}
+    private var countUnit:String{
+        if shownRepresentation=="ribbon" {return biologyText("residues","个残基")}
+        if shownRepresentation=="atoms" {return biologyText("atoms","个原子")}
+        if mixedBackbone {return biologyText("backbone atoms","个主链原子")}
+        return phosphateCount>0 && alphaCount==0 ? biologyText("P atoms","个磷酸原子"):biologyText("Cα atoms","个 Cα 原子")
+    }
     var body:some View {
         VStack(alignment:.leading,spacing:8) {
             HStack(spacing:12) {
@@ -49,12 +60,16 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
                 HStack(spacing:16){countLabel;if representation=="ribbon"{ribbonLegend};Spacer(minLength:8);selectionLabel}.fixedSize(horizontal:true,vertical:false).frame(maxWidth:.infinity,alignment:.leading)
                 VStack(alignment:.leading,spacing:6){HStack{countLabel;Spacer();selectionLabel};if representation=="ribbon"{ribbonLegend}}
             }
-            if representation != "ribbon",(representation=="atoms" ? atoms.count:alphaCount)>5000{BiologyViewFootnote(text:biologyText("Showing the first 5,000 atoms. Select a chain to narrow the view.","显示前 5,000 个原子，可选择链缩小范围。"))}
+            if shownRepresentation != "ribbon",(shownRepresentation=="atoms" ? atoms.count:(trace?.count ?? atoms.count))>5000{BiologyViewFootnote(text:biologyText("Showing the first 5,000 atoms. Select a chain to narrow the view.","显示前 5,000 个原子，可选择链缩小范围。"))}
         }.padding(12).background(BiologyStyle.background)
         .task(id:"\(asset.id):\(asset.revision):\(modelNumber):\(chain):\(representation)") {
             scene=nil;error=nil
             do {
-                if representation=="ribbon" {
+                // Nucleic deposits trace phosphate; mixed deposits keep both
+                // backbone classes; structures with no backbone trace open
+                // directly in the atoms view.
+                let shown=shownRepresentation
+                if shown=="ribbon" {
                     let structure=structure,model=modelNumber,chain=chain,data=asset.originalData,format=asset.originalFormat
                     let mesh=try await biologyViewCompute{
                         let deposited=try ["cif","mmcif"].contains(format) ? BiologyImporter.cifSecondaryClasses(String(decoding:data,as:UTF8.self)):BiologyProteinRibbon.depositedClasses(pdb:data)
@@ -63,8 +78,7 @@ func biologyViewCompute<T:Sendable>(_ body:@escaping @Sendable ()throws->T) asyn
                     guard !mesh.vertices.isEmpty else{throw BiologyError.unavailable(biologyText("No ribbon in this model. Choose Atoms.","这个模型没有可显示的带状结构，请选择原子视图。"))}
                     scene=BiologyMeshScene.makeScene(mesh)
                 }else{
-                    if representation=="backbone",!atoms.contains(where:{$0.name=="CA" && !$0.hetero}){throw BiologyError.unavailable(biologyText("No Cα atoms in this model. Choose Atoms.","这个模型没有 Cα 原子，请选择原子视图。"))}
-                    scene=BiologySceneFactory.molecule(atoms,backbone:representation=="backbone")
+                    scene=BiologySceneFactory.molecule(atoms,backboneTrace:shown=="backbone" ? trace:nil)
                 }
             }catch is CancellationError{}catch{self.error=error.localizedDescription}
         }

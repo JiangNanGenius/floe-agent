@@ -150,6 +150,7 @@ final class ContentUpdateCenter: ObservableObject {
     nonisolated static let providerPackageID = "floe.providers.compatibility"
     nonisolated static let providerCatalogPath = "ProviderCatalog.json"
     nonisolated static let promptsPackageID = "floe.prompts.core"
+    nonisolated static let helpPackageID = HelpBundleMetadata.packageID
 
     /// Independently versioned signed search-provider catalog. It reuses the
     /// existing `providers` content kind, signature root and install
@@ -180,6 +181,7 @@ final class ContentUpdateCenter: ObservableObject {
     nonisolated static let builtInBaselines: [String: String] = [
         providerPackageID: "1.1.5",
         promptsPackageID: builtInPromptsVersion,
+        helpPackageID: HelpBundleMetadata.bundledVersion,
         searchProviderPackageID: builtInSearchProvidersVersion
     ].merging(EDALibraryContent.builtInVersions) { current, _ in current }
 
@@ -213,6 +215,7 @@ final class ContentUpdateCenter: ObservableObject {
     private let store: ContentUpdateStore?
     private let storageError: String?
     private var didLoad = false
+    private var initialLoadTask: Task<Void, Never>?
     private var state: ContentUpdateState?
     private var feedSnapshot: FeedSnapshot?
     private var installInFlight: Set<String> = []
@@ -226,6 +229,33 @@ final class ContentUpdateCenter: ObservableObject {
     private var searchProviderCatalogCache: SearchProviderCatalogIndex?
     private var promptSectionCache: [ContentPackageCodec.PromptSection] = []
     private var helpFileCache: [String: [String: Data]] = [:]
+    private var _helpCenter: HelpContentCenter?
+
+    /// Both UI and model tools consume this same versioned offline source.
+    /// Download, persistence and signature verification remain in the store.
+    var helpCenter: HelpContentCenter {
+        if let _helpCenter { return _helpCenter }
+        let root = Bundle.main.url(forResource: "Help", withExtension: nil)
+        let center = HelpContentCenter(
+            bundledFiles: { try HelpContentCenter.readBundledFiles(at: root) },
+            installedPackage: { [weak self] in
+                guard let self,
+                      let record = self.installed[Self.helpPackageID],
+                      record.kind == SignedContentKind.help.rawValue,
+                      let files = self.helpFileCache[Self.helpPackageID] else { return nil }
+                return HelpContentPackage(version: record.version, files: files)
+            },
+            awaitInitialLoad: { [weak self] in await self?.initialLoadTask?.value },
+            compareVersions: { lhs, rhs in
+                let left = try SignedContentVersion(lhs)
+                let right = try SignedContentVersion(rhs)
+                return left < right ? .orderedAscending : (left == right ? .orderedSame : .orderedDescending)
+            },
+            digest: { FloeDigest.sha256Hex($0) }
+        )
+        _helpCenter = center
+        return center
+    }
 
     private let networkMonitor = NWPathMonitor()
     /// Unknown until the monitor reports its first update. Conservative for
@@ -303,6 +333,9 @@ final class ContentUpdateCenter: ObservableObject {
         if let resolvedError {
             errorMessage = resolvedError
         }
+        // Local state belongs to this service's lifecycle. Help reads only
+        // join this task; they cannot start migration, indexing or downloads.
+        load()
     }
 
     deinit {
@@ -320,14 +353,12 @@ final class ContentUpdateCenter: ObservableObject {
     func load() {
         guard !didLoad else { return }
         didLoad = true
-        Task { await refreshFromStore() }
+        initialLoadTask = Task { await refreshFromStore() }
     }
 
     private func ensureLoaded() async {
-        if !didLoad {
-            didLoad = true
-            await refreshFromStore()
-        }
+        load()
+        await initialLoadTask?.value
     }
 
     private func refreshFromStore() async {
@@ -422,6 +453,7 @@ final class ContentUpdateCenter: ObservableObject {
             }
         }
         helpFileCache = helpCache
+        _helpCenter?.reload()
         await ElectronicsLibraryService.applySignedContent(from: self)
     }
 

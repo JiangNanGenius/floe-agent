@@ -279,6 +279,8 @@ enum NotesAssistantToolCatalog {
         "conversation.search", "conversation.read", "conversation.list",
         "checklist.readPlan", "checklist.updatePlan", "memory.recall",
         "user.ask", "chat.present", "chat.content.list", "document.presentation.createInline", "document.presentation.chartContract",
+        "help.search", "help.read", "help.present",
+        "task.wait",
         "github.readLink",
         "tools.search", "tools.list"
     ]

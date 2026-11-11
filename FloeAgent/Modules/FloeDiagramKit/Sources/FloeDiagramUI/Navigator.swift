@@ -72,6 +72,13 @@ struct DiagramNavigator: View {
                             Button(DL("聚焦分支", "Focus branch")) { model.focus(row.id); model.selectMode(.canvas); model.focus(row.id) }
                             Button(DL("添加子主题", "Add child")) { model.select(row.id); model.addElement() }
                             Button(DL("复制", "Copy")) { model.select(row.id); model.copySelection() }
+                            Button(DL("删除分支", "Delete branch"), role: .destructive) {
+                                let pageID = model.pageID
+                                model.perform(DL("删除分支", "Delete branch")) { _ in
+                                    [.deleteElements(pageID: pageID, ids: [row.id], includeDescendants: true)]
+                                }
+                                model.select(nil)
+                            }
                         }
                         .draggable(row.id.uuidString)
                         .dropDestination(for: String.self) { values, _ in

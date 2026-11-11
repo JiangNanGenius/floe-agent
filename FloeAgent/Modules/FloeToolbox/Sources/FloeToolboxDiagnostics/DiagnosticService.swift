@@ -21,7 +21,14 @@ public enum DiagnosticError: Error, Equatable, Sendable {
 }
 final class CancellationToken: @unchecked Sendable {
     private let lock = NSLock(); private var cancelled = false
-    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    private let externalCancellation: @Sendable () -> Bool
+    init(externalCancellation: @escaping @Sendable () -> Bool = { false }) {
+        self.externalCancellation = externalCancellation
+    }
+    var isCancelled: Bool {
+        let local = lock.withLock { cancelled }
+        return local || externalCancellation()
+    }
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }
     func throwIfCancelled() throws { if isCancelled || Task.isCancelled { throw CancellationError() } }
 }
@@ -89,6 +96,11 @@ public struct PingObservation: Equatable, Sendable {
 public struct TraceHop: Equatable, Sendable {
     public enum Status: Equatable, Sendable { case reached, intermediate, timeout, unreachable }
     public let ttl: Int; public let address: String?; public let milliseconds: [Double]; public let status: Status
+    public let reason: String?
+    public init(ttl: Int, address: String?, milliseconds: [Double], status: Status, reason: String? = nil) {
+        self.ttl = ttl; self.address = address; self.milliseconds = milliseconds
+        self.status = status; self.reason = reason.map { String($0.prefix(256)) }
+    }
 }
 public struct PortObservation: Equatable, Sendable {
     public enum Status: Sendable { case open, failed }
@@ -200,7 +212,19 @@ public actor DiagnosticService {
     private var stopped = false
     private var generation = UUID()
     private var tokens: [UUID:CancellationToken] = [:]
-    public init(lease: SessionLease, authorize: @escaping DiagnosticAuthorizer, lanProbe: LANDiscoveryProbe? = nil) { self.lease = lease; self.authorize = authorize; self.lanProbe = lanProbe }
+    private var traceWorkers: [UUID: Task<DeviceTracerouteReport, any Error>] = [:]
+    typealias TraceProbe = @Sendable (String, Int, Int, CancellationToken, UUID, TracerouteObserver?) async throws -> DeviceTracerouteReport
+    private let traceProbe: TraceProbe
+    public init(lease: SessionLease, authorize: @escaping DiagnosticAuthorizer, lanProbe: LANDiscoveryProbe? = nil) {
+        self.lease = lease; self.authorize = authorize; self.lanProbe = lanProbe
+        self.traceProbe = { target, hops, timeout, token, id, observer in
+            try await DeviceICMPTraceroute.run(target: target, maxHops: hops, waitSeconds: timeout,
+                cancellation: token, requestID: id, onObservation: observer)
+        }
+    }
+    init(lease: SessionLease, authorize: @escaping DiagnosticAuthorizer, traceProbe: @escaping TraceProbe) {
+        self.lease = lease; self.authorize = authorize; self.lanProbe = nil; self.traceProbe = traceProbe
+    }
     private func permit(_ target: String, _ operation: DiagnosticOperation) async throws -> UUID {
         guard !stopped, !Task.isCancelled, !target.isEmpty, target.utf8.count <= 253,
               !target.unicodeScalars.contains(where:{ CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }),
@@ -222,19 +246,39 @@ public actor DiagnosticService {
         }
     }
     public func traceroute(target: String, maximumHops: Int = 30, timeoutSeconds: Int = 1) async throws -> [TraceHop] {
-        guard (1...30).contains(maximumHops), (1...5).contains(timeoutSeconds) else { throw DiagnosticError.invalid("trace bounds") }
-        let run = try await permit(target,.traceroute), id = UUID(), token = CancellationToken(); tokens[id] = token; defer { tokens.removeValue(forKey:id) }
-        let result = try await withTaskCancellationHandler { try await DeviceICMPTraceroute.run(target:target,maxHops:maximumHops,waitSeconds:timeoutSeconds,cancellation:token) } onCancel: { token.cancel() }
-        try check(run)
-        return result.hops.map { hop in
-            switch hop.status {
-            case .reached(let rtts): TraceHop(ttl:hop.ttl,address:result.resolvedAddress,milliseconds:rtts,status:.reached)
-            case .timeExceeded(let address,let rtts): TraceHop(ttl:hop.ttl,address:address,milliseconds:rtts,status:.intermediate)
-            case .timeout: TraceHop(ttl:hop.ttl,address:nil,milliseconds:[],status:.timeout)
-            case .unreachable: TraceHop(ttl:hop.ttl,address:nil,milliseconds:[],status:.unreachable)
-            }
-        }
+        try await traceroute(target: target, maximumHops: maximumHops, timeoutSeconds: timeoutSeconds,
+                             requestID: UUID(), onObservation: nil)
     }
+    public func traceroute(target: String, maximumHops: Int, timeoutSeconds: Int,
+                           requestID: UUID, onObservation: TracerouteObserver?) async throws -> [TraceHop] {
+        guard (1...30).contains(maximumHops), (1...5).contains(timeoutSeconds) else { throw DiagnosticError.invalid("trace bounds") }
+        let run = try await permit(target, .traceroute)
+        // One owned socket worker per service, including its cancellation drain.
+        guard traceWorkers.isEmpty else { throw DiagnosticError.busy }
+        let id = UUID(), token = CancellationToken()
+        tokens[id] = token
+        let probe = traceProbe
+        let worker = Task {
+            try await probe(target, maximumHops, timeoutSeconds, token, requestID,
+                { [weak self] event in
+                    guard let self else { return }
+                    await self.deliverTrace(event, run: run, workerID: id, to: onObservation)
+                })
+        }
+        traceWorkers[id] = worker
+        defer { tokens.removeValue(forKey: id); traceWorkers.removeValue(forKey: id) }
+        let result = try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: { token.cancel(); worker.cancel() }
+        try check(run)
+        return result.hops.map { $0.observation(resolvedAddress: result.resolvedAddress) }
+    }
+    private func deliverTrace(_ event: TracerouteObservation, run: UUID, workerID: UUID,
+                              to observer: TracerouteObserver?) async {
+        guard generation == run, !stopped, tokens[workerID]?.isCancelled == false else { return }
+        if let observer { await observer(event) }
+    }
+
     public func dns(name: String, type: DNSRecordType = .a, timeout: Double = 5) async throws -> [DNSRecord] {
         guard timeout.isFinite, (0.1...30).contains(timeout) else { throw DiagnosticError.invalid("DNS timeout") }
         let run = try await permit(name,.dns), result = try await DNSQuery().run(name:name,type:type,timeout:timeout)
@@ -284,5 +328,14 @@ public actor DiagnosticService {
             probe: lanProbe, onEvent: onEvent)
         try check(run); return report
     }
-    public func stop() { stopped = true; generation = UUID(); for token in tokens.values { token.cancel() }; tokens.removeAll() }
+    public func stop() async {
+        stopped = true; generation = UUID()
+        for token in tokens.values { token.cancel() }
+        let workers = Array(traceWorkers.values)
+        for worker in workers { worker.cancel() }
+        for worker in workers { _ = await worker.result }
+        // Trace entries are normally removed by their original defer. Never
+        // release a worker/socket record merely because cancellation was sent.
+        tokens.removeAll()
+    }
 }

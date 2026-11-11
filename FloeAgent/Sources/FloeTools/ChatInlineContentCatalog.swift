@@ -33,6 +33,16 @@ public enum ChatInlineContentCatalog {
                 && path[0] == "ChangeArtifacts" && path[1] == Substring(runID.uuidString)
                 && path[2] == Substring(artifact.sha256.lowercased() + suffix)
         }
+        if tool == "apple.alarm.schedule" {
+            // The trusted native AlarmKit schedule tool's immutable inline
+            // timer binding. Written only after durable native readback
+            // confirmed creation; the card never trusts model text for time.
+            return path.count == 3 && path[0] == "TimerArtifacts"
+                && path[1] == Substring(runID.uuidString)
+                && path[2] == Substring(artifact.id.uuidString + ".timer.json")
+                && artifact.mimeType == "application/vnd.floe.native-timer+json"
+                && artifact.byteCount <= 16 * 1_024
+        }
         if tool == "document.presentation.createInline" {
             let suffix: String
             switch artifact.mimeType {
@@ -123,6 +133,7 @@ public enum ChatInlineContentCatalog {
             switch artifact.mimeType {
             case "application/vnd.floe.chart+json": title = "Chart"
             case "application/vnd.floe.table+json": title = "Table"
+            case "application/vnd.floe.native-timer+json": title = "Timer"
             case "text/html": title = tool == "audio.synthesize" ? "Audio preview" : "Interactive preview"
             case "text/x-diff": title = "File changes"
             case "application/vnd.floe.file-preview+json": title = "Saved file preview"

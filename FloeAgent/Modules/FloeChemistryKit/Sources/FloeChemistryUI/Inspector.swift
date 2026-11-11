@@ -37,6 +37,7 @@ struct ChemistryTextDocument: FileDocument {
     @State private var scene = ChemistryScene()
     @State private var sceneGeneration:UInt64=0
     @State private var advancedOptions = "{}"
+    @State private var confirmingRemoval = false
     var body: some View {
         Form {
             if let object = state.selected {
@@ -138,6 +139,11 @@ struct ChemistryTextDocument: FileDocument {
                         } }
                     }
                 }
+                Section {
+                    Button(chemistryText("Remove this object", "移除此对象"), systemImage: "trash", role: .destructive) {
+                        confirmingRemoval = true
+                    }.accessibilityIdentifier("chemistry.object.remove.confirm")
+                }
                 if let error = state.error { Section(chemistryText("Operation incomplete · details", "操作未完成 · 详情")) { Text(error).font(.caption).foregroundStyle(.red) } }
             }
         }
@@ -148,6 +154,19 @@ struct ChemistryTextDocument: FileDocument {
         }
         .fileExporter(isPresented: $exporting, document: exportDocument, contentType: .plainText, defaultFilename: (state.selected?.title ?? "structure") + "." + exportFormat) { result in
             if case .failure(let error) = result { state.error = error.localizedDescription }
+        }
+        .confirmationDialog(chemistryText("Remove this object?", "移除这个对象？"), isPresented: $confirmingRemoval) {
+            Button(chemistryText("Remove", "移除"), role: .destructive) {
+                guard let object = state.selected else { return }
+                Task { await state.removeObject(object.id) }
+            }
+            Button(chemistryText("Cancel", "取消"), role: .cancel) {}
+        } message: {
+            if let object = state.selected, state.hasUnsavedEdits(for: object.id) {
+                Text(chemistryText("“\(object.title)” has unsaved edits that will be discarded. Content already saved can be restored from History.", "“\(object.title)”有未保存的修改，移除后会丢弃这些修改；已保存的内容可在历史版本中恢复。"))
+            } else if let object = state.selected {
+                Text(chemistryText("“\(object.title)” will be removed. Content already saved can be restored from History.", "将移除“\(object.title)”。已保存的内容可在历史版本中恢复。"))
+            }
         }
         .task { await state.refreshCapabilities() }
         .onChange(of: environments) { _, _ in selectAvailableMethod() }

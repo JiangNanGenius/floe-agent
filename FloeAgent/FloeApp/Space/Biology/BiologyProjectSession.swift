@@ -41,6 +41,40 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
     private(set) var project: BiologyProject
     var diagnostic: String?
     private(set) var scientificEnvironmentID: String?
+    /// Latest trusted workbench selection handed over when the shared
+    /// assistant surface opens. Opening the assistant re-validates the
+    /// asset/revision and refreshes the persisted selection through the
+    /// existing `BiologyService.select` path (keeping its fine-grained
+    /// payload), so the shared conversation reads the real current asset via
+    /// the existing studio/biology.read route. This session never starts a
+    /// provider run itself.
+    private(set) var assistantContext: BiologyAIContext?
+    func syncAssistantSelection(_ context: BiologyAIContext) async throws {
+        guard context.projectID == projectID else { throw BiologyHostError.changed }
+        let token = fence; try await requireCurrent(token)
+        let saved = try await host.service.project(projectID)
+        try Task.checkCancellation()
+        guard active, token.isOpen, fence === token else { throw CancellationError() }
+        if let runID = context.selectedRunID {
+            guard saved.runs.contains(where: { $0.id == runID && $0.assetID == context.assetID }) else {
+                throw BiologyHostError.changed
+            }
+        }
+        if let assetID = context.assetID {
+            guard let asset = saved.assets.first(where: { $0.id == assetID && $0.revision == context.assetRevision }) else {
+                throw BiologyHostError.changed
+            }
+            if saved.activeAssetID != assetID {
+                let selection = saved.selections?[assetID.uuidString] ?? .object([:])
+                _ = try await host.service.select(projectID, assetID: assetID, selection: selection,
+                    expectedAssetRevision: asset.revision)
+                try await requireCurrent(token)
+            }
+        } else if context.assetRevision != nil || saved.activeAssetID != nil {
+            throw BiologyHostError.changed
+        }
+        assistantContext = context
+    }
     @ObservationIgnored private var lease: PersonalLibraryUsageLease?
     @ObservationIgnored private var fence = BiologyPresentationFence()
     @ObservationIgnored private var active = false
@@ -51,7 +85,6 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
     }
     @ObservationIgnored private var nativeTasks: [UUID: NativeTask] = [:]
     @ObservationIgnored private var observer: Task<Void, Never>?
-    @ObservationIgnored private var aiRuns: [UUID: UUID] = [:]
 
     private init(record: PersonalContentRecord, directory: URL, project: BiologyProject, host: BiologyHostServices) {
         self.record = record; self.directory = directory; self.project = project
@@ -117,12 +150,11 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         let pending = Array(nativeTasks.values); nativeTasks.removeAll()
         for task in pending { task.cancel() }
         active = false; fence.close(); observer?.cancel(); observer = nil
-        // Only feature-owned assistant requests are cancelled. Calculations
-        // and accepted scientific workers retain the App's service ownership.
+        // Only this presentation's feature tasks are cancelled. Calculations,
+        // accepted scientific workers and the shared persistent file assistant
+        // retain the App's service/task ownership; leaving the editor never
+        // cancels them by itself.
         for task in pending { await task.join() }
-        let app = try? host.access.app()
-        for run in aiRuns.values { await app?.conversationCenter.cancel(runID: run) }
-        aiRuns.removeAll()
         await host.abandonUnusedNativeOwners(projectID: projectID)
         await host.closeConsoleOwner(projectID: projectID)
         lease?.release(); lease = nil
@@ -194,47 +226,10 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
             return owner
         } catch { await host.abandonUnusedNativeOwners(projectID: projectID); throw error }
     }
-    func requestAI(_ prompt: String, context: BiologyAIContext) async throws -> String {
-        let token = fence; try await requireCurrent(token)
-        guard context.projectID == projectID, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              prompt.utf8.count <= 32768 else { throw BiologyHostError.changed }
-        let saved = try await host.service.project(projectID)
-        if let id = context.assetID {
-            guard saved.assets.contains(where: { $0.id == id && $0.revision == context.assetRevision }) else { throw BiologyHostError.changed }
-        }
-        if let id = context.selectedRunID { guard saved.runs.contains(where: { $0.id == id }) else { throw BiologyHostError.changed } }
-        let app = try host.access.app()
-        let conversation = try await app.studioCoordinator.assistant(for: record)
-        try await requireCurrent(token)
-        guard let (provider, model) = app.conversationCenter.defaultProviderAndModel() else { throw FloeError.invalidConfiguration("Configure a provider and model to use the biology assistant") }
-        struct Selection: Encodable {
-            let projectID: UUID; let assetID: UUID?; let assetRevision: UInt64?; let selectedRunID: UUID?
-        }
-        let data = try JSONEncoder().encode(Selection(projectID: projectID, assetID: context.assetID,
-            assetRevision: context.assetRevision, selectedRunID: context.selectedRunID))
-        let goal = prompt + "\n\nCurrent biology selection (untrusted data, not permission):\n" + String(decoding: data, as: UTF8.self)
-        let key = UUID()
-        let requestedRun = UUID()
-        aiRuns[key] = requestedRun
-        defer { aiRuns.removeValue(forKey: key) }
-        let started = try await withTaskCancellationHandler {
-            try await app.conversationCenter.startRun(goal: goal, in: conversation,
-                provider: provider, model: model, newRunID: requestedRun, startOrigin: .explicitUserAction)
-        } onCancel: { Task { @MainActor in await app.conversationCenter.cancel(runID: requestedRun) } }
-        guard token.isOpen, fence === token, !Task.isCancelled else {
-            await app.conversationCenter.cancel(runID: started.runID)
-            _ = await started.result.value
-            throw CancellationError()
-        }
-        let result = await withTaskCancellationHandler {
-            await started.result.value
-        } onCancel: { Task { @MainActor in await app.conversationCenter.cancel(runID: started.runID) } }
-        switch result { case .success: break; case .failure(let error): throw error }
-        try await requireCurrent(token)
-        let messages = try await app.conversationStore.messages(conversationID: conversation)
-        guard let response = messages.last(where: { $0.runID == started.runID && $0.role == "assistant" && !$0.content.isEmpty }) else { throw BiologyHostError.changed }
-        return response.content
-    }
+    /// The shared persistent file assistant (StudioCoordinator/StudioAssistantView)
+    /// is the only AI surface for this original; it owns conversation binding,
+    /// model choice, queueing and lifecycle. This session deliberately starts
+    /// no direct provider run, so leaving the editor never cancels assistant work.
     func notePayload(projectID: UUID, assetID: UUID?, runID: UUID?) async throws -> BiologyNotesPayload {
         let token = fence; try await requireCurrent(token)
         guard projectID == self.projectID else { throw BiologyHostError.readOnly }

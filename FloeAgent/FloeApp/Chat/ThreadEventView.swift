@@ -56,6 +56,7 @@ struct ThreadEventView: View {
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.nativeToolDiagnostics) private var nativeDiagnostics
 
     private var payload: [String: String] {
         ConversationCenter.decodePayload(event.payloadJSON)
@@ -190,7 +191,7 @@ struct ThreadEventView: View {
         case .assistantText:
             AssistantMessageView(
                 text: payload["text"] ?? "",
-                isStreaming: isLive, allowsReadAloud: false
+                isStreaming: isLive, allowsReadAloud: false, helpRunID: event.runID
             )
 
         case .reasoning:
@@ -222,7 +223,9 @@ struct ThreadEventView: View {
                     outputFiles: outputFiles(from: toolRequestResultPayload),
                     outputContext: outputContext(from: toolRequestResultPayload),
                     outcomeUnknown: toolRequestResultPayload["outcomeUnknown"] == "true",
-                    gitHubSource: gitHubSource
+                    gitHubSource: gitHubSource,
+                    diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
+                        runID: event.runID, callID: payload["callID"] ?? payload["id"])
                 )
             }
 
@@ -254,7 +257,9 @@ struct ThreadEventView: View {
                     outputFiles: outputFiles(from: payload),
                     outputContext: outputContext(from: payload),
                     outcomeUnknown: payload["outcomeUnknown"] == "true",
-                    gitHubSource: gitHubSource
+                    gitHubSource: gitHubSource,
+                    diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
+                        runID: event.runID, callID: payload["callID"] ?? payload["id"])
                 )
             }
 

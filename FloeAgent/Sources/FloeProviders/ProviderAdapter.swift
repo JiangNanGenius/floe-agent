@@ -917,16 +917,18 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
         let request = request.refreshingRuntimeClock()
+        let requestID = UUID().uuidString
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
-                    let body = try ProviderWireEncoder.encode(buildBody(from: request))
-                    urlRequest.httpBody = body
+                    let prepared = try prepareBody(from: request)
+                    urlRequest.httpBody = prepared.data
                     let host = request.provider.baseURL.host ?? "unknown"
                     logger.info(
-                        "providerRequestStarted protocol=chat provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
+                        "providerRequestStarted protocol=chat requestID=\(requestID) provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(prepared.data.count)"
                     )
+                    logger.info("providerRequestShape protocol=chat requestID=\(requestID) \(prepared.diagnosticSummary)")
                     let pump = SSEBytePump(
                         urlRequest: urlRequest,
                         session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
@@ -949,7 +951,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                             if case .error(let error) = errorEvent {
                                 let status = error.httpStatus.map(String.init) ?? "none"
                                 logger.warning(
-                                    "providerRequestRejected protocol=chat provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(request.ephemeralTransport ? "redacted" : String(error.providerMessage.prefix(500)))"
+                                    "providerRequestRejected protocol=chat requestID=\(requestID) stage=http provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) \(ChatRequestContract.rejectionFields(error.providerMessage)) \(prepared.diagnosticSummary)"
                                 )
                             }
                             continuation.yield(errorEvent)
@@ -1002,6 +1004,14 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                         continuation.yield(.completed(deferredCompletion))
                     }
                     continuation.finish()
+                } catch let violation as ChatRequestContract.Violation {
+                    if !Task.isCancelled {
+                        logger.warning("providerRequestRejected protocol=chat requestID=\(requestID) stage=wireValidation code=\(violation.code.rawValue) path=\(violation.path)")
+                        continuation.yield(.error(.init(kind: .malformed, providerMessage: FloeL10n.isChinese
+                            ? "此轮请求格式不完整，无法发送。对话和工具结果已保留，请查看诊断详情。"
+                            : "This request is incomplete and could not be sent. Conversation and tool results are retained; see diagnostics for details.")))
+                    }
+                    continuation.finish()
                 } catch {
                     if Task.isCancelled {
                         continuation.finish()
@@ -1041,6 +1051,20 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             urlRequest.setValue(value, forHTTPHeaderField: field)
         }
         return urlRequest
+    }
+
+    struct PreparedBody: Sendable {
+        var data: Data
+        var diagnosticSummary: String
+    }
+
+    /// This is the encoding boundary used by the real network path. Invalid
+    /// local shape is terminal before a pump/session or HTTP retry starts.
+    func prepareBody(from request: ProviderStreamRequest) throws -> PreparedBody {
+        let body = buildBody(from: request)
+        try ChatRequestContract.validate(body)
+        return PreparedBody(data: try ProviderWireEncoder.encode(body),
+            diagnosticSummary: ChatRequestContract.diagnosticSummary(body))
     }
 
     func buildBody(from request: ProviderStreamRequest) -> ChatRequest {

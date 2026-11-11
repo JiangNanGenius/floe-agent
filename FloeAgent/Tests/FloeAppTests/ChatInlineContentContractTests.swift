@@ -144,5 +144,109 @@ struct ChatInlineContentContractTests {
             try await ChatInlineContentResolver.resolve(wrong, scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs)
         }
     }
+
+    #if canImport(AlarmKit)
+    // MARK: - Native timer binding receipts (forged producer / foreign owner / missing receipt / reopen)
+
+    private func timerArtifact(runID: UUID) -> ToolArtifactReference {
+        let id = UUID()
+        let bytes = Data("{\"version\":1}".utf8)
+        return .init(id: id,
+            relativePath: "TimerArtifacts/\(runID.uuidString)/\(id.uuidString).timer.json",
+            mimeType: "application/vnd.floe.native-timer+json",
+            byteCount: bytes.count, sha256: FloeDigest.sha256Hex(bytes))
+    }
+
+    private func timerEventPayload(_ artifact: ToolArtifactReference, tool: String = "apple.alarm.schedule",
+                                   status: String = "ok") throws -> String {
+        let fields = ["tool": tool, "artifactRefsJSON": String(decoding: try JSONEncoder().encode([artifact]), as: UTF8.self),
+                      "id": "timer-call", "summary": "timer scheduled", "status": status]
+        return String(decoding: try JSONSerialization.data(withJSONObject: fields, options: []), as: UTF8.self)
+    }
+
+    @Test func timerBindingResolvesAndSurvivesStoreReopen() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("timer-chat.sqlite")
+        let database = try DatabaseManager(path: databaseURL); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)
+        let task = UUID(), run = UUID()
+        try await conversations.saveConversation(.init(id: task, title: "Timer", createdAt: Date(), updatedAt: Date()))
+        try await runs.saveRun(.init(id: run, conversationID: task, state: "completed", goal: "Tea", startedAt: Date(), endedAt: Date()))
+        let ref = timerArtifact(runID: run)
+        _ = try await runs.appendEvent(runID: run, kind: .toolResult, payloadJSON: timerEventPayload(ref))
+        let file = root.appendingPathComponent(ref.relativePath)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{\"version\":1}".utf8).write(to: file)
+
+        let uri = try #require(ChatContentReference(kind: .artifact, ownerID: run, contentID: ref.id.uuidString))
+        let reopened = try DatabaseManager(path: databaseURL)
+        let resolved = try await ChatInlineContentResolver.resolve(uri,
+            scope: .init(conversationID: task, isTemporary: false),
+            conversations: SQLiteConversationStore(database: reopened), runs: SQLiteRunStore(database: reopened))
+        #expect(resolved == .artifact(ref, runID: run, tool: "apple.alarm.schedule"))
+        let loaded = try VerifiedChatInlineArtifact.load(ref, runID: run, tool: "apple.alarm.schedule", root: root)
+        #expect(loaded.data == Data("{\"version\":1}".utf8))
+    }
+
+    @Test func forgedTimerProducerNeverResolves() async throws {
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)
+        let task = UUID(), run = UUID()
+        try await conversations.saveConversation(.init(id: task, title: "Forged", createdAt: Date(), updatedAt: Date()))
+        try await runs.saveRun(.init(id: run, conversationID: task, state: "completed", goal: "T", startedAt: Date()))
+        // Same path/mime bytes, but the receipt claims an untrusted producer.
+        let ref = timerArtifact(runID: run)
+        _ = try await runs.appendEvent(runID: run, kind: .toolResult, payloadJSON: timerEventPayload(ref, tool: "mcp.untrusted.timer"))
+        let uri = try #require(ChatContentReference(kind: .artifact, ownerID: run, contentID: ref.id.uuidString))
+        await #expect(throws: ChatInlineContentResolutionError.unavailable) {
+            try await ChatInlineContentResolver.resolve(uri, scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs)
+        }
+        // Wrong path shape (directory spoof) is rejected by the catalog itself.
+        #expect(!ChatInlineContentCatalog.accepts(.init(id: ref.id,
+            relativePath: "OtherArtifacts/\(run.uuidString)/\(ref.id.uuidString).timer.json",
+            mimeType: ref.mimeType, byteCount: ref.byteCount, sha256: ref.sha256), runID: run, tool: "apple.alarm.schedule"))
+        #expect(!ChatInlineContentCatalog.accepts(.init(id: ref.id,
+            relativePath: "TimerArtifacts/\(run.uuidString)/\(ref.id.uuidString).timer.json",
+            mimeType: "text/plain", byteCount: ref.byteCount, sha256: ref.sha256), runID: run, tool: "apple.alarm.schedule"))
+    }
+
+    @Test func foreignConversationCannotAdoptATimerReceipt() async throws {
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)
+        let task = UUID(), other = UUID(), run = UUID()
+        for id in [task, other] { try await conversations.saveConversation(.init(id: id, title: "Owner", createdAt: Date(), updatedAt: Date())) }
+        try await runs.saveRun(.init(id: run, conversationID: task, state: "completed", goal: "T", startedAt: Date()))
+        let ref = timerArtifact(runID: run)
+        _ = try await runs.appendEvent(runID: run, kind: .toolResult, payloadJSON: timerEventPayload(ref))
+        let uri = try #require(ChatContentReference(kind: .artifact, ownerID: run, contentID: ref.id.uuidString))
+        await #expect(throws: ChatInlineContentResolutionError.wrongOwner) {
+            try await ChatInlineContentResolver.resolve(uri, scope: .init(conversationID: other, isTemporary: false), conversations: conversations, runs: runs)
+        }
+        await #expect(throws: ChatInlineContentResolutionError.wrongOwner) {
+            try await ChatInlineContentResolver.resolve(uri, scope: .init(conversationID: task, isTemporary: true), conversations: conversations, runs: runs)
+        }
+    }
+
+    @Test func missingOrFailedTimerReceiptNeverResolves() async throws {
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)
+        let task = UUID(), run = UUID()
+        try await conversations.saveConversation(.init(id: task, title: "Missing", createdAt: Date(), updatedAt: Date()))
+        try await runs.saveRun(.init(id: run, conversationID: task, state: "completed", goal: "T", startedAt: Date()))
+        // Receipt exists on disk bytes shape but no toolResult event at all.
+        let orphan = timerArtifact(runID: run)
+        let orphanURI = try #require(ChatContentReference(kind: .artifact, ownerID: run, contentID: orphan.id.uuidString))
+        await #expect(throws: ChatInlineContentResolutionError.unavailable) {
+            try await ChatInlineContentResolver.resolve(orphanURI, scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs)
+        }
+        // Failed schedule receipt is equally unusable.
+        let failed = timerArtifact(runID: run)
+        _ = try await runs.appendEvent(runID: run, kind: .toolResult, payloadJSON: timerEventPayload(failed, status: "failed"))
+        let failedURI = try #require(ChatContentReference(kind: .artifact, ownerID: run, contentID: failed.id.uuidString))
+        await #expect(throws: ChatInlineContentResolutionError.unavailable) {
+            try await ChatInlineContentResolver.resolve(failedURI, scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs)
+        }
+    }
+    #endif
 }
 #endif

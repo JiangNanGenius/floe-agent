@@ -18,7 +18,7 @@ import { register } from 'ol/proj/proj4.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { element, t, finite, clone, from64, bytes64, escapeXML } from '../../FloeHeavyEditorSupport/Web/runtime.js';
-import { proj4, turf, getLayer, editable, gridSample, transformGeometry, transformPosition, projectedBounds, unwrapGeometry, field, layerField, WEB_HALF, defineCRS } from './model.js';
+import { proj4, turf, getLayer, editable, gridSample, transformGeometry, transformPosition, projectedBounds, unwrapGeometry, field, layerField, layerOptions, WEB_HALF, defineCRS, layerEvidence } from './model.js';
 import { rasterStatistics, resampleRaster } from './analysis.js';
 import { sql, encodePNG, geometryBounds, readImage } from './formats.js';
 import { gisUI } from './native.js';
@@ -165,31 +165,108 @@ async function printedTiles(layer,extent,projection,width,height,zoom){
     const pixels=new Uint8Array(width*height*4);for(let row=0;row<height;row++){if(row%32===0)await new Promise(resolve=>setTimeout(resolve,0));for(let col=0;col<width;col++){const p=transformPosition([extent[0]+(col+.5)/width*(extent[2]-extent[0]),extent[3]-(row+.5)/height*(extent[3]-extent[1])],projection,'EPSG:3857'),tx=(p[0]+WEB_HALF)/(2*WEB_HALF)*n,ty=(WEB_HALF-p[1])/(2*WEB_HALF)*n,x=Math.floor(tx),y=Math.floor(ty),tile=tiles.get(x+','+y);if(tile){const c=Math.min(tile.width-1,Math.max(0,Math.floor((tx-x)*tile.width))),r=Math.min(tile.height-1,Math.max(0,Math.floor((ty-y)*tile.height))),i=r*tile.width+c;pixels.set(tile.bands.map(b=>b[i]),(row*width+col)*4);}}}return encodePNG(pixels,width,height);
   }finally{db.close();}
 }
-export async function makeMapSVG(e,{width,height}={}) {
-  const page=paperSize(e.state.layout);width=Math.round(width??page[0]*96/25.4);height=Math.round(height??page[1]*96/25.4);if(!Number.isFinite(width)||!Number.isFinite(height)||width<200||height<200||width*height>16_777_216)throw new Error('Choose a map size from 200 pixels and up to 16.7 million pixels');
-  const layout=e.state.layout??{},{projection,extent}=layoutExtent(e,width,height),left=50,top=80,w=width-100,h=height-150,cx=(extent[0]+extent[2])/2,world=projection==='EPSG:3857'?WEB_HALF*2:projection==='EPSG:4326'?360:null;
-  const point=c=>{const p=c.slice(0,2);if(world){while(p[0]-cx>world/2)p[0]-=world;while(p[0]-cx< -world/2)p[0]+=world;}return [left+(p[0]-extent[0])/(extent[2]-extent[0])*w,top+h-(p[1]-extent[1])/(extent[3]-extent[1])*h];},pathFor=coordinates=>coordinates.map((c,i)=>`${i?'L':'M'}${point(c).map(v=>v.toFixed(3)).join(' ')}`).join('');
-  let content=`<defs><clipPath id="map-clip"><rect x="${left}" y="${top}" width="${w}" height="${h}"/></clipPath></defs><rect width="100%" height="100%" fill="white"/><text x="50" y="44" font-size="26" font-family="sans-serif">${escapeXML(layout.title||e.state.title)}</text><g clip-path="url(#map-clip)"><rect x="${left}" y="${top}" width="${w}" height="${h}" fill="#f3f7fa"/>`;
-  for(const layer of e.state.layers.filter(l=>l.visible)){
+// Shared per-layer drawing for the print layout and the live observation:
+// identical stack order, symbology and opacity. A non-null selection highlights
+// the selected vector features exactly like the interactive map; print passes null.
+async function drawStackSVG(stack,{projection,extent,point,left,top,w,h,zoom,selection=null}){
+  const pathFor=coordinates=>coordinates.map((c,i)=>`${i?'L':'M'}${point(c).map(v=>v.toFixed(3)).join(' ')}`).join('');
+  let content='';
+  for(const layer of stack){
     if(layer.kind==='raster'||layer.kind==='tiles'){
       const rw=Math.max(1,Math.round(w)),rh=Math.max(1,Math.round(h));let png;
       if(layer.kind==='raster'){const warped=await resampleRaster(layer,{width:rw,height:rh,bounds:extent,crs:projection,method:layer.style?.palette==='classes'?'nearest':'bilinear'});png=encodePNG(rasterRGBA(warped),rw,rh);}
-      else png=await printedTiles(layer,extent,projection,rw,rh,e.liveView?.zoom??e.state.view.zoom);
+      else png=await printedTiles(layer,extent,projection,rw,rh,zoom);
       content+=`<image x="${left}" y="${top}" width="${w}" height="${h}" href="data:image/png;base64,${bytes64(png)}" opacity="${layer.opacity}"/>`;continue;
     }if(layer.kind!=='vector')continue;
-    content+=`<g opacity="${layer.opacity}">`;for(const feature of layer.data.features){if(!feature.geometry)continue;const geometry=transformGeometry(unwrapGeometry(transformGeometry(feature.geometry,layer.crs,'EPSG:4326')),'EPSG:4326',projection),color=escapeXML(vectorColor(layer,feature.properties)),lineWidth=Math.max(0,finite(layer.style?.width,2)),fill=vectorFill(layer,color);let anchor;
-      const draw=g=>{if(!g)return;if(g.type==='Point'){const p=point(g.coordinates);anchor=p;content+=`<circle cx="${p[0]}" cy="${p[1]}" r="${Math.max(1,finite(layer.style?.radius,5))}" fill="${color}" stroke="white" stroke-width="2"/>`;}else if(g.type==='LineString'){content+=`<path d="${pathFor(g.coordinates)}" fill="none" stroke="${color}" stroke-width="${lineWidth}"/>`;anchor=point(g.coordinates[Math.floor(g.coordinates.length/2)]);}else if(g.type==='Polygon'){content+=`<path d="${g.coordinates.map(r=>pathFor(r)+'Z').join('')}" fill="${escapeXML(fill)}" fill-rule="evenodd" stroke="${color}" stroke-width="${lineWidth}"/>`;anchor=point(turf.pointOnFeature({type:'Feature',geometry:g,properties:{}}).geometry.coordinates);}else if(g.type==='GeometryCollection')g.geometries.forEach(draw);else {const type={MultiPoint:'Point',MultiLineString:'LineString',MultiPolygon:'Polygon'}[g.type];g.coordinates.forEach(c=>draw({type,coordinates:c}));}};draw(geometry);
+    const highlighted=selection&&selection.layerID===layer.id?selection.ids:null;
+    content+=`<g opacity="${layer.opacity}">`;for(const feature of layer.data.features){if(!feature.geometry)continue;const geometry=transformGeometry(unwrapGeometry(transformGeometry(feature.geometry,layer.crs,'EPSG:4326')),'EPSG:4326',projection),color=escapeXML(vectorColor(layer,feature.properties)),highlight=Boolean(highlighted?.has(String(feature.id))),lineWidth=Math.max(0,finite(layer.style?.width,2))+(highlight?2:0),fill=highlight?'#ffb22b66':vectorFill(layer,color);let anchor;
+      const draw=g=>{if(!g)return;if(g.type==='Point'){const p=point(g.coordinates);anchor=p;content+=`<circle cx="${p[0]}" cy="${p[1]}" r="${Math.max(1,finite(layer.style?.radius,5))+(highlight?2:0)}" fill="${highlight?'#ffb22b':color}" stroke="${highlight?'#ffb22b':'white'}" stroke-width="2"/>`;}else if(g.type==='LineString'){content+=`<path d="${pathFor(g.coordinates)}" fill="none" stroke="${highlight?'#e28a00':color}" stroke-width="${lineWidth}"/>`;anchor=point(g.coordinates[Math.floor(g.coordinates.length/2)]);}else if(g.type==='Polygon'){content+=`<path d="${g.coordinates.map(r=>pathFor(r)+'Z').join('')}" fill="${escapeXML(fill)}" fill-rule="evenodd" stroke="${highlight?'#e28a00':color}" stroke-width="${lineWidth}"/>`;anchor=point(turf.pointOnFeature({type:'Feature',geometry:g,properties:{}}).geometry.coordinates);}else if(g.type==='GeometryCollection')g.geometries.forEach(draw);else {const type={MultiPoint:'Point',MultiLineString:'LineString',MultiPolygon:'Polygon'}[g.type];g.coordinates.forEach(c=>draw({type,coordinates:c}));}};draw(geometry);
       if(anchor&&layer.style?.label)content+=`<text x="${anchor[0]+8}" y="${anchor[1]-8}" font-family="sans-serif" font-size="13" fill="#20252e" stroke="white" stroke-width="3" paint-order="stroke">${escapeXML(feature.properties[layer.style.label]??'')}</text>`;
     }content+='</g>';
   }
+  return content;
+}
+export async function makeMapSVG(e,{width,height,layers=null}={}) {
+  const page=paperSize(e.state.layout);width=Math.round(width??page[0]*96/25.4);height=Math.round(height??page[1]*96/25.4);if(!Number.isFinite(width)||!Number.isFinite(height)||width<200||height<200||width*height>16_777_216)throw new Error('Choose a map size from 200 pixels and up to 16.7 million pixels');
+  const layout=e.state.layout??{},{projection,extent}=layoutExtent(e,width,height),left=50,top=80,w=width-100,h=height-150,cx=(extent[0]+extent[2])/2,world=projection==='EPSG:3857'?WEB_HALF*2:projection==='EPSG:4326'?360:null;
+  // An explicit stack renders exactly those layers; the default stack is the
+  // project's visible layers in draw order.
+  const stack=(Array.isArray(layers)?layers:e.state.layers).filter(layer=>Array.isArray(layers)||layer.visible);
+  const point=c=>{const p=c.slice(0,2);if(world){while(p[0]-cx>world/2)p[0]-=world;while(p[0]-cx< -world/2)p[0]+=world;}return [left+(p[0]-extent[0])/(extent[2]-extent[0])*w,top+h-(p[1]-extent[1])/(extent[3]-extent[1])*h];};
+  let content=`<defs><clipPath id="map-clip"><rect x="${left}" y="${top}" width="${w}" height="${h}"/></clipPath></defs><rect width="100%" height="100%" fill="white"/><text x="50" y="44" font-size="26" font-family="sans-serif">${escapeXML(layout.title||e.state.title)}</text><g clip-path="url(#map-clip)"><rect x="${left}" y="${top}" width="${w}" height="${h}" fill="#f3f7fa"/>`;
+  content+=await drawStackSVG(stack,{projection,extent,point,left,top,w,h,zoom:e.liveView?.zoom??e.state.view.zoom});
   for(const annotation of layout.annotations??[]){const p=point(transformPosition([annotation.x,annotation.y],annotation.crs??'EPSG:4326',projection));content+=`<text x="${p[0]}" y="${p[1]}" font-family="sans-serif" font-size="${Math.max(8,Math.min(72,finite(annotation.size,16)))}" fill="#20252e" stroke="white" stroke-width="3" paint-order="stroke">${escapeXML(annotation.text)}</text>`;}
   content+='</g>';
   if(layout.north!==false){const center=transformPosition([cx,(extent[1]+extent[3])/2],projection,'EPSG:4326'),north=transformPosition([center[0],Math.min(89.99,center[1]+.001)],'EPSG:4326',projection),p=point([cx,(extent[1]+extent[3])/2]),q=point(north),angle=Math.atan2(q[0]-p[0],p[1]-q[1])*180/Math.PI;content+=`<g transform="translate(${width-90},105) rotate(${angle})"><path d="M0 0L-10 35L0 27L10 35Z" fill="#20252e"/><text x="0" y="-8" text-anchor="middle" font-size="16">N</text></g>`;}
   if(layout.scale!==false){const cy=(extent[1]+extent[3])/2,a=transformPosition([extent[0],cy],projection,'EPSG:4326'),b=transformPosition([extent[0]+(extent[2]-extent[0])*150/w,cy],projection,'EPSG:4326'),meters=turf.distance(a,b,{units:'meters'});content+=`<path d="M65 ${height-45}h150m-150 -5v10m150 -10v10" stroke="#20252e" stroke-width="2"/><text x="65" y="${height-57}" font-size="13" font-family="sans-serif">${meters>=1000?(meters/1000).toFixed(2)+' km':meters.toFixed(0)+' m'}</text>`;}
-  if(layout.legend!==false){let y=110;for(const layer of e.state.layers.filter(l=>l.visible)){const entries=legendEntries(layer);for(const item of entries){if(y>height-90){content+=`<text x="85" y="${y}" font-size="13">…</text>`;break;}content+=`<rect x="65" y="${y-9}" width="14" height="10" fill="${escapeXML(item.color)}"/><text x="85" y="${y}" font-family="sans-serif" font-size="13" fill="#20252e">${escapeXML(layer.style?.mode==='single'||layer.kind!=='vector'?item.label:layer.name+' · '+item.label)}</text>`;y+=22;}}}
+  if(layout.legend!==false){let y=110;for(const layer of stack){const entries=legendEntries(layer);for(const item of entries){if(y>height-90){content+=`<text x="85" y="${y}" font-size="13">…</text>`;break;}content+=`<rect x="65" y="${y-9}" width="14" height="10" fill="${escapeXML(item.color)}"/><text x="85" y="${y}" font-family="sans-serif" font-size="13" fill="#20252e">${escapeXML(layer.style?.mode==='single'||layer.kind!=='vector'?item.label:layer.name+' · '+item.label)}</text>`;y+=22;}}}
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-crs="${escapeXML(projection)}" data-extent="${extent.join(',')}">${content}</svg>`;
 }
+// The ACTUAL current viewport for AI observation: the frozen live/saved view
+// extent fitted to the requested frame. Unlike the print layout there is no
+// scale denominator, margins, title, legend or north arrow — only the real
+// visible extent, stack order and symbology the user sees.
+export function viewportExtent(e,width,height,view){
+  const projection=defineCRS(e.state.crs);
+  let extent;if(view.extent?.length===4&&view.extent.every(Number.isFinite))extent=projectedBounds(view.extent,view.extentCRS??'EPSG:3857',projection);
+  else{const resolution=2*WEB_HALF/(256*2**(view.zoom??2)),web=transformPosition(view.center??[0,20],'EPSG:4326','EPSG:3857');extent=projectedBounds([web[0]-resolution*width/2,web[1]-resolution*height/2,web[0]+resolution*width/2,web[1]+resolution*height/2],'EPSG:3857',projection);}
+  let cx=(extent[0]+extent[2])/2,cy=(extent[1]+extent[3])/2,dx=extent[2]-extent[0],dy=extent[3]-extent[1];
+  if(!(dx>0&&dy>0))throw new Error(t('地图范围为空，无法观察。','The map extent is empty; there is nothing to observe.'));
+  if(dx/dy>width/height)dy=dx*height/width;else dx=dy*width/height;
+  return {projection,extent:[cx-dx/2,cy-dy/2,cx+dx/2,cy+dy/2]};
+}
+export async function makeViewportMapSVG(e,{width,height,layers=null,view=null,selection=null}={}) {
+  width=Math.round(width??1024);height=Math.round(height??768);if(!Number.isFinite(width)||!Number.isFinite(height)||width<200||height<200||width*height>16_777_216)throw new Error('Choose a map size from 200 pixels and up to 16.7 million pixels');
+  const frozen=view??e.liveView??e.state.view,{projection,extent}=viewportExtent(e,width,height,frozen),cx=(extent[0]+extent[2])/2,world=projection==='EPSG:3857'?WEB_HALF*2:projection==='EPSG:4326'?360:null;
+  const stack=(Array.isArray(layers)?layers:e.state.layers).filter(layer=>Array.isArray(layers)||layer.visible);
+  const point=c=>{const p=c.slice(0,2);if(world){while(p[0]-cx>world/2)p[0]-=world;while(p[0]-cx< -world/2)p[0]+=world;}return [(p[0]-extent[0])/(extent[2]-extent[0])*width,height-(p[1]-extent[1])/(extent[3]-extent[1])*height];};
+  const content=`<rect width="100%" height="100%" fill="#f3f7fa"/>`+await drawStackSVG(stack,{projection,extent,point,left:0,top:0,w:width,h:height,zoom:frozen.zoom??2,selection});
+  return {svg:`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" data-crs="${escapeXML(projection)}" data-extent="${extent.join(',')}">${content}</svg>`,extent,projection};
+}
+// One bounded, revision-bound map observation of the ACTUAL viewport. The
+// command freezes revision, view, stack and selection at the command boundary,
+// re-verifies the document is untouched after the rasterizing awaits, and only
+// then labels the render with that exact revision — never a stale image wearing
+// a newer revision or fresher layer metadata.
+export const OBSERVE_IMAGE_BUDGET=288*1024;
+export function mapObservationEvidence(e,stack,selection=e.selection){
+  const features=selection?.features??[];
+  return {layers:stack.map(layer=>layerEvidence(layer,e.state.layers.indexOf(layer))),
+    selection:{layerID:selection?.layer??null,featureIDs:features.slice(0,64).map(String),count:features.length}};
+}
+async function rasterizeMapObservation(svg,width,height,signal){
+  if(typeof document==='undefined'||typeof Image==='undefined'||typeof URL==='undefined'||!URL.createObjectURL)throw new Error(t('当前环境无法渲染地图图像。','This environment cannot render the map image.'));
+  const url=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));
+  try{
+    const image=await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error(t('无法渲染地图图像。','Unable to render the map image.')));img.src=url;});
+    for(let scale=1;;scale*=0.7){
+      if(signal?.aborted)throw new Error(t('已取消。','Cancelled.'));
+      const pixelWidth=Math.max(1,Math.round(width*scale)),pixelHeight=Math.max(1,Math.round(height*scale));
+      const canvas=document.createElement('canvas');canvas.width=pixelWidth;canvas.height=pixelHeight;
+      canvas.getContext('2d').drawImage(image,0,0,pixelWidth,pixelHeight);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+      if(!blob)throw new Error(t('无法编码地图图像。','Unable to encode the map image.'));
+      // Hard budget: only an in-budget PNG returns, at its ACTUAL pixel size.
+      // Reaching the smallest usable size still over budget fails explicitly.
+      if(blob.size<=OBSERVE_IMAGE_BUDGET)return {mediaType:'image/png',base64:bytes64(new Uint8Array(await blob.arrayBuffer())),pixelWidth,pixelHeight};
+      if(pixelWidth<=480)throw new Error(t('地图图像超过大小预算，且已缩至最小可用尺寸。','The map image exceeds the size budget at the smallest usable size.'));
+    }
+  }finally{URL.revokeObjectURL(url);}
+}
 export function registerViewCommands(e){
+  // Read-only visual observation for the model: the actual current viewport at
+  // the frozen revision, never a title-based guess about overlap.
+  e.register({id:'project.observe',title:t('观察当前地图','Observe the current map'),group:t('查询','Query'),access:'read',fields:[field('layer',t('只看单个图层（可留空）','Only this layer (optional)'),'select',{options:layerOptions}),field('width',t('宽度（像素）','Width (pixels)'),'number',{default:1024,min:200,max:1600}),field('height',t('高度（像素）','Height (pixels)'),'number',{default:768,min:200,max:1600})]},async(a,signal)=>{
+    const width=Math.max(200,Math.min(1600,Math.trunc(finite(a.width,1024)))),height=Math.max(200,Math.min(1600,Math.trunc(finite(a.height,768)))),single=a.layer?getLayer(e,a.layer):null;
+    // Freeze revision, view, stack and selection at the real command boundary;
+    // the rasterizing awaits below never re-read them, and the tail re-verifies
+    // the document is untouched before this render may carry that revision.
+    const revision=e.revision,view=clone(e.liveView??e.state.view),selection=clone(e.selection??null),layerCount=e.state.layers.length,stack=(single?[single]:e.state.layers.filter(l=>l.visible)).slice(),indexes=stack.map(layer=>e.state.layers.indexOf(layer));
+    const rendered=await makeViewportMapSVG(e,{width,height,layers:stack,view,selection:selection?.layer?{layerID:selection.layer,ids:new Set((selection.features??[]).map(String))}:null});
+    const image=await rasterizeMapObservation(rendered.svg,width,height,signal);
+    if(e.revision!==revision||e.state.layers.length!==layerCount||stack.some((layer,index)=>e.state.layers[indexes[index]]!==layer))throw new Error(t('观察期间地图已改变，请重新观察。','The map changed during observation. Observe again.'));
+    return {revision,crs:rendered.projection,extent:rendered.extent,width:image.pixelWidth,height:image.pixelHeight,view:{center:view.center??null,zoom:view.zoom??null},...mapObservationEvidence(e,stack,selection),image:{mediaType:image.mediaType,base64:image.base64}};
+  });
   e.register({id:'raster.style',title:t('栅格样式','Raster style'),group:t('栅格与地形','Raster & terrain'),access:'edit',fields:[layerField(),field('palette',t('色带','Palette'),'select',{options:['terrain','gray','classes','rgb'],default:'terrain'}),field('band',t('波段索引（从0起）','Band index (from 0)'),'number',{default:0,min:0}),field('min',t('显示最小值（可留空）','Display minimum (optional)')),field('max',t('显示最大值（可留空）','Display maximum (optional)'))]},a=>{const layer=editable(getLayer(e,a.layer,'raster')),min=a.min===''||a.min===undefined?null:Number(a.min),max=a.max===''||a.max===undefined?null:Number(a.max);if(min!==null&&!Number.isFinite(min)||max!==null&&!Number.isFinite(max)||min!==null&&max!==null&&min>=max)throw new Error('Choose a valid display range');layer.style={...layer.style,palette:a.palette,band:Math.max(0,Math.min(layer.bands.length-1,Math.trunc(finite(a.band)))),min,max};});
   e.register({id:'layout.settings',title:t('制图设置','Map layout'),group:t('制图','Layout'),access:'edit',fields:[field('title',t('标题','Title')),field('paper',t('纸张','Paper'),'select',{options:['A4','A3','Letter'],default:'A4'}),field('orientation',t('方向','Orientation'),'select',{options:['landscape','portrait'],default:'landscape'}),field('scaleDenominator',t('固定比例尺分母（0为适合范围）','Fixed scale denominator (0 fits extent)'),'number',{default:0,min:0}),field('legend',t('图例','Legend'),'checkbox',{default:true}),field('north',t('指北针','North arrow'),'checkbox',{default:true}),field('scale',t('比例尺','Scale bar'),'checkbox',{default:true})]},a=>{e.state.layout={...e.state.layout,...a};});
   e.register({id:'layout.annotation',title:t('添加地图标注','Add map annotation'),group:t('制图','Layout'),access:'edit',fields:[field('text',t('文字','Text')),field('x',t('经度','Longitude'),'number'),field('y',t('纬度','Latitude'),'number'),field('size',t('字号','Font size'),'number',{default:16,min:8,max:72})]},a=>{e.state.layout.annotations??=[];e.state.layout.annotations.push({text:String(a.text),x:finite(a.x),y:finite(a.y),size:finite(a.size,16),crs:'EPSG:4326'});return {count:e.state.layout.annotations.length};});

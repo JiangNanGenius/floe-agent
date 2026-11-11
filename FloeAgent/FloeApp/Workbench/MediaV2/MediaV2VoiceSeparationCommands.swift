@@ -170,7 +170,7 @@ extension MediaV2Session {
                     limitations: limitations))
         } catch {
             try? await coordinator.stop(work.instruction)
-            if let durable = try? await coordinator.loadDocument(id: id) { scope.retainReferenced(durable.assets) }
+            if let durable = try? await coordinator.loadProjectSnapshot(id: id) { scope.retainReferenced(in: durable) }
             throw error
         }
     }
@@ -252,7 +252,7 @@ extension MediaV2Session {
                         limitations: stems.limitations))
             } catch {
                 try? await coordinator.stop(work.instruction)
-                if let durable = try? await coordinator.loadDocument(id: id) { scope.retainReferenced(durable.assets) }
+                if let durable = try? await coordinator.loadProjectSnapshot(id: id) { scope.retainReferenced(in: durable) }
                 throw error
             }
         }

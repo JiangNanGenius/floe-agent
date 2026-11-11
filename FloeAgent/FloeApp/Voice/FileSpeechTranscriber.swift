@@ -12,6 +12,21 @@ struct TimedSpeechSegment: Sendable, Codable {
     let end: Double
     let text: String
     let words: [Word]
+    /// Provider attribution label (cloud diarization). Local engines
+    /// (WhisperKit/Apple Speech) never separate speakers, so their segments
+    /// honestly carry nil instead of a fabricated "Speaker 1".
+    let speaker: String?
+    let recognitionRequestID: UUID?
+
+    init(start: Double, end: Double, text: String, words: [Word], speaker: String? = nil,
+         recognitionRequestID: UUID? = nil) {
+        self.start = start
+        self.end = end
+        self.text = text
+        self.words = words
+        self.speaker = speaker
+        self.recognitionRequestID = recognitionRequestID
+    }
 }
 
 enum FileSpeechEngine: String, Sendable, Equatable {

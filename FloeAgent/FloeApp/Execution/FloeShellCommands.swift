@@ -213,6 +213,60 @@ extension NetworkTracerouteTool: ShellDefaultConstructibleTool {}
 extension NetworkDNSLookupTool: ShellDefaultConstructibleTool {}
 extension NetworkTCPProbeTool: ShellDefaultConstructibleTool {}
 
+
+/// Only the command invocation owns this stream. Ordered observer delivery is
+/// drained before execute returns; the duplicate descriptor closes on release.
+private final class NativeTracerouteShellProgress: TaskProgressReporting, @unchecked Sendable {
+    private let descriptor: Int32
+    private let target: String
+    private let maximumHops: Int
+    private let lock = NSLock()
+    private var requestID: UUID?
+    private var nextTTL = 1
+    private var didStart = false
+    private var writeFailed = false
+    init(stream: UnsafeMutablePointer<FILE>?, target: String, maximumHops: Int) {
+        if let stream { fflush(stream); descriptor = dup(fileno(stream)) } else { descriptor = -1 }
+        self.target = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.maximumHops = maximumHops
+    }
+    deinit { if descriptor >= 0 { Darwin.close(descriptor) } }
+    var started: Bool { lock.withLock { didStart } }
+    var failed: Bool { lock.withLock { writeFailed } }
+    func report(_ update: TaskProgressUpdate) async {
+        guard let observation = update.diagnostic else { return }
+        lock.withLock {
+            if observation.status == .resolved, !didStart, let address = observation.address {
+                requestID = observation.requestID; didStart = true
+                writeLocked("executionTarget=device\nmethod=icmpTraceroute target=\(target) resolved=\(address) maxHops=\(maximumHops)\n")
+            } else if observation.requestID == requestID, observation.ttl == nextTTL,
+                      let line = observation.hopText {
+                nextTTL += 1; writeLocked(line + "\n")
+            }
+        }
+    }
+    func finish(summary: String) {
+        lock.withLock {
+            if let footer = summary.split(separator: "\n").last(where: { $0.hasPrefix("summary hops=") }) {
+                writeLocked(String(footer) + "\n")
+            } else { writeFailed = true }
+        }
+    }
+    private func writeLocked(_ text: String) {
+        guard descriptor >= 0, text.utf8.count <= 1024 else { writeFailed = true; return }
+        let bytes = Array(text.utf8)
+        bytes.withUnsafeBytes { raw in
+            var position = 0
+            while position < raw.count {
+                let written = Darwin.write(descriptor, raw.baseAddress!.advanced(by: position), raw.count - position)
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else { writeFailed = true; return }
+                position += written
+            }
+        }
+    }
+}
+
 private enum ShellCommandResult {
     case success(String)
     case failure(String)
@@ -504,7 +558,13 @@ enum FloeShellCommands {
                 FloeShellWrite(stderr, "usage: traceroute [-m maxHops] host\n")
                 return 2
             }
-            let result = await invokeTool(NetworkTracerouteTool.self, arguments: ["target": target, "maxHops": parsed.count ?? 20])
+            let progress = NativeTracerouteShellProgress(stream: stdout, target: target, maximumHops: parsed.count ?? 20)
+            let result = await invokeTool(NetworkTracerouteTool.self,
+                arguments: ["target": target, "maxHops": parsed.count ?? 20], taskProgress: progress)
+            if progress.started, case .success(let summary) = result {
+                progress.finish(summary: summary)
+                return progress.failed ? 1 : 0
+            }
             return emit(result, label: "traceroute", stdout: stdout, stderr: stderr)
         }
         for name in ["dig", "nslookup", "host"] {
@@ -569,7 +629,8 @@ enum FloeShellCommands {
 
     private static func invokeTool<T: ShellDefaultConstructibleTool>(
         _ type: T.Type,
-        arguments: [String: Any]
+        arguments: [String: Any],
+        taskProgress: (any TaskProgressReporting)? = nil
     ) async -> ShellCommandResult {
         guard let context = FloeShellCommandRegistry.shared.context else {
             return .failure("no workspace is attached")
@@ -582,7 +643,8 @@ enum FloeShellCommands {
                 toolCallID: "shell.command.\(T.name)",
                 scope: .local,
                 workspaceRootURL: context.rootURL,
-                cancellation: context.cancellation
+                cancellation: context.cancellation,
+                taskProgress: taskProgress
             )
             let tool = type.init()
             try tool.validate(decoded)

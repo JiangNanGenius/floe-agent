@@ -236,7 +236,7 @@ import FloeCore
     #expect(headerValue(transport.lastRequest!, "X-Api-Key") == "plan-key")
 
     connection.inbox.push(.data(volcErrorFrame(45_000_002)))
-    let events = try await collectEvents(session, count: 1)
+    let events = try await collectEventsThroughFinal(session)
     let failed = try #require(events.first)
     #expect(failed.kind == .failed)
     #expect(failed.failure == .emptyResult)
@@ -505,4 +505,197 @@ import FloeCore
     }
     #expect(transport.connectCount == 1)
     #expect(connection.cancelCount.read() >= 1)
+}
+
+// MARK: - Speaker separation (W7)
+
+@Test func volcengineSpeakerFlagIsOptInPerRequest() throws {
+    let audio = ASRVendorAudioInput(data: Data(), format: .pcm, sampleRate: 16_000,
+                                   channelCount: 1, durationSeconds: nil, mimeType: "audio/L16")
+    let plain = try VolcengineASRAdapter.configuration(modelID: "doubao-seed-asr-2.0", input: audio, live: true)
+    let plainRequest = try #require(try JSONSerialization.jsonObject(with: plain) as? [String: Any])
+    let plainObject = try #require(plainRequest["request"] as? [String: Any])
+    #expect(plainObject["enable_speaker_info"] == nil,
+            "ordinary caption/file requests keep the previous wire behavior")
+
+    let optedIn = try VolcengineASRAdapter.configuration(
+        modelID: "doubao-seed-asr-2.0", input: audio, live: true, enableSpeakerAttribution: true)
+    let optedRoot = try #require(try JSONSerialization.jsonObject(with: optedIn) as? [String: Any])
+    let optedRequest = try #require(optedRoot["request"] as? [String: Any])
+    #expect(optedRequest["enable_speaker_info"] as? Bool == true)
+    #expect(optedRequest["show_utterances"] as? Bool == true,
+            "the docs require show_utterances together with enable_speaker_info")
+}
+
+@Test func volcengineFileUtterancesCarrySpeakerLabelsWhenSeparationRequested() async throws {
+    let connection = FakeWebSocketConnection()
+    let transport = FakeWebSocketTransport(connection: connection)
+    let sawSpeakerFlag = LockedBox(false)
+    connection.onSend = { message in
+        guard case .data(let data) = message, data.count > 2 else { return }
+        // v3 frame header: byte 1 is message type (high nibble) | flags
+        // (low nibble); see VolcengineASRFrame decoding.
+        if data[1] & 0xf0 == 0x10, let config = try? ASRVendorGzip.decompress(
+            data.subdata(in: 8..<data.count), limit: 16_384),
+           let root = try? JSONSerialization.jsonObject(with: config) as? [String: Any],
+           let request = root["request"] as? [String: Any] {
+            sawSpeakerFlag.write(request["enable_speaker_info"] as? Bool == true)
+        }
+        guard data[1] & 0xf0 == 0x20 else { return }
+        let result: [String: Any] = [
+            "result": [
+                "text": "你好世界",
+                "utterances": [
+                    ["start_time": 0, "end_time": 1_500, "text": "你好", "speaker_id": 1],
+                    ["start_time": 2_000, "end_time": 3_500, "text": "世界", "speaker_id": 2],
+                ],
+            ],
+        ]
+        if let frame = try? volcServerFrame(result, isFinal: true, sequence: -3) {
+            connection.inbox.push(.data(frame))
+        }
+    }
+    let adapter = VolcengineASRAdapter(
+        webSocketTransport: transport,
+        replayDelayNanoseconds: 0,
+        fileFinishTimeoutSeconds: 2)
+    let request = ASRFileTranscriptionRequest(
+        profile: ASRProfile.volcengine(billingRoute: .payAsYouGo),
+        audio: makeWAV(),
+        filename: "clip.wav",
+        mimeType: "audio/wav",
+        sourceDurationSeconds: 3.5,
+        enableSpeakerAttribution: true)
+    let result = try await adapter.transcribe(request, credential: "file-key")
+    #expect(sawSpeakerFlag.read())
+    #expect(result.segments.map(\.text) == ["你好", "世界"])
+    #expect(result.segments.map(\.speaker) == ["1", "2"],
+            "documented integer speaker_id normalizes to a stable string label")
+}
+
+@Test func volcengineLiveFinalCarriesSpeakerOnlyWhenUtterancesAgree() async throws {
+    let connection = FakeWebSocketConnection()
+    let transport = FakeWebSocketTransport(connection: connection)
+    let adapter = VolcengineASRAdapter(webSocketTransport: transport)
+    let request = ASRLiveSessionRequest(
+        profile: .volcengine(billingRoute: .agentPlan),
+        inputSampleRate: 16_000,
+        enableSpeakerAttribution: true)
+    let session = try await adapter.startLiveSession(request, credential: "synthetic-plan-key")
+    try await session.feed(Data(repeating: 0x5a, count: 6_400))
+    try await session.endUtterance()
+    connection.inbox.push(.data(try volcServerFrame(
+        ["result": ["text": "This is a streaming.",
+          "utterances": [["start_time": 0, "end_time": 1_800, "text": "This is a streaming.", "speaker_id": 2]]]],
+        isFinal: true, sequence: -4)))
+    let events = try await collectEventsThroughFinal(session)
+    let final = try #require(events.first { $0.kind == .final })
+    #expect(final.speaker == "2")
+    try await session.finish()
+
+    let mixed = FakeWebSocketConnection()
+    let mixedTransport = FakeWebSocketTransport(connection: mixed)
+    let mixedAdapter = VolcengineASRAdapter(webSocketTransport: mixedTransport)
+    let mixedSession = try await mixedAdapter.startLiveSession(request, credential: "synthetic-plan-key")
+    try await mixedSession.feed(Data(repeating: 0x5a, count: 6_400))
+    try await mixedSession.endUtterance()
+    mixed.inbox.push(.data(try volcServerFrame(
+        ["result": ["text": "overlap words",
+          "utterances": [
+            ["start_time": 0, "end_time": 900, "text": "overlap", "speaker_id": 1],
+            ["start_time": 800, "end_time": 1_800, "text": "words", "speaker_id": 2]]]],
+        isFinal: true, sequence: -4)))
+    let mixedEvents = try await collectEventsThroughFinal(mixedSession)
+    let mixedFinal = try #require(mixedEvents.first { $0.kind == .final })
+    #expect(mixedFinal.speaker == nil,
+            "a mixed-speaker commit is unattributed rather than guessed")
+    try await mixedSession.finish()
+}
+
+/// W7 continuous meetings: the committed final must carry the REAL per-
+/// utterance separation — each utterance keeps its own time (relative to this
+/// request's fed audio) and speaker, and utterances streamed across earlier
+/// result messages accumulate instead of being lost.
+@Test func volcengineLiveFinalPreservesPerUtteranceSeparation() async throws {
+    let connection = FakeWebSocketConnection()
+    let transport = FakeWebSocketTransport(connection: connection)
+    let adapter = VolcengineASRAdapter(webSocketTransport: transport)
+    let request = ASRLiveSessionRequest(
+        profile: .volcengine(billingRoute: .agentPlan),
+        inputSampleRate: 16_000,
+        enableSpeakerAttribution: true)
+    let session = try await adapter.startLiveSession(request, credential: "synthetic-plan-key")
+    try await session.feed(Data(repeating: 0x5a, count: 6_400))
+    // Cumulative result messages: the first carries one separated utterance;
+    // the final packet repeats that span with a REVISED text (the protocol's
+    // utterance identity is its time span) and adds the second utterance.
+    connection.inbox.push(.data(try volcServerFrame(
+        ["result": ["text": "overlap",
+          "utterances": [["start_time": 0, "end_time": 900, "text": "overlap", "speaker_id": 1]]]],
+        isFinal: false, sequence: -2)))
+    connection.inbox.push(.data(try volcServerFrame(
+        ["result": ["text": "overlap words",
+          "utterances": [
+            ["start_time": 0, "end_time": 900, "text": "overlap revised", "speaker_id": 1],
+            ["start_time": 800, "end_time": 1_800, "text": "words", "speaker_id": 2]]]],
+        isFinal: true, sequence: -4)))
+    let events = try await collectEventsThroughFinal(session)
+    let final = try #require(events.first { $0.kind == .final })
+    #expect(final.speaker == nil, "utterances disagree, so the top level stays unattributed")
+    let utterances = try #require(final.utterances)
+    #expect(utterances.count == 2, "cumulative lists stay linear: one latest entry per span")
+    #expect(utterances[0].text == "overlap revised", "a revision replaces its span instead of duplicating it")
+    #expect(utterances[0].startMilliseconds == 0)
+    #expect(utterances[0].endMilliseconds == 900)
+    #expect(utterances[0].speaker == "1")
+    #expect(utterances[1].text == "words")
+    #expect(utterances[1].startMilliseconds == 800)
+    #expect(utterances[1].endMilliseconds == 1_800)
+    #expect(utterances[1].speaker == "2")
+    try await session.finish()
+
+    // A single-speaker request still reports its one utterance with the
+    // agreeing top-level speaker.
+    let single = FakeWebSocketConnection()
+    let singleAdapter = VolcengineASRAdapter(
+        webSocketTransport: FakeWebSocketTransport(connection: single))
+    let singleSession = try await singleAdapter.startLiveSession(request, credential: "synthetic-plan-key")
+    try await singleSession.feed(Data(repeating: 0x5a, count: 6_400))
+    try await singleSession.endUtterance()
+    single.inbox.push(.data(try volcServerFrame(
+        ["result": ["text": "solo speech",
+          "utterances": [["start_time": 100, "end_time": 1_200, "text": "solo speech", "speaker_id": 3]]]],
+        isFinal: true, sequence: -4)))
+    let singleEvents = try await collectEventsThroughFinal(singleSession)
+    let singleFinal = try #require(singleEvents.first { $0.kind == .final })
+    #expect(singleFinal.speaker == "3")
+    let singleUtterances = try #require(singleFinal.utterances)
+    #expect(singleUtterances.count == 1)
+    #expect(singleUtterances[0].speaker == "3")
+    #expect(singleUtterances[0].startMilliseconds == 100)
+    #expect(singleUtterances[0].endMilliseconds == 1_200)
+    try await singleSession.finish()
+}
+
+/// Engines that never separate speakers keep the legacy nil payload, so the
+/// meeting coordinator falls back to a single span only when a top-level
+/// speaker exists.
+@Test func volcengineLiveFinalWithoutUtterancesKeepsNilPayload() async throws {
+    let connection = FakeWebSocketConnection()
+    let adapter = VolcengineASRAdapter(
+        webSocketTransport: FakeWebSocketTransport(connection: connection))
+    let request = ASRLiveSessionRequest(
+        profile: .volcengine(billingRoute: .agentPlan),
+        inputSampleRate: 16_000)
+    let session = try await adapter.startLiveSession(request, credential: "synthetic-plan-key")
+    try await session.feed(Data(repeating: 0x5a, count: 6_400))
+    try await session.endUtterance()
+    connection.inbox.push(.data(try volcServerFrame(
+        ["result": ["text": "no separation here"]],
+        isFinal: true, sequence: -4)))
+    let events = try await collectEventsThroughFinal(session)
+    let final = try #require(events.first { $0.kind == .final })
+    #expect(final.utterances == nil)
+    #expect(final.speaker == nil)
+    try await session.finish()
 }

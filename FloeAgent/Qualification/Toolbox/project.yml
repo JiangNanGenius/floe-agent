@@ -1,0 +1,95 @@
+name: FloeToolboxQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: '6.0'
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+packages:
+  FloeToolbox:
+    path: ../../Modules/FloeToolbox
+targets:
+  FloeLocationCoreContract:
+    type: framework
+    platform: iOS
+    sources:
+      - ../../Sources/FloeCore/FloeError.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.toolbox.corecontract
+        PRODUCT_MODULE_NAME: FloeCore
+        PRODUCT_NAME: FloeCore
+  FloeToolboxQualification:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - ../../FloeApp/Platform/LocationServicesCenter.swift
+    dependencies:
+      - target: FloeLocationCoreContract
+      - package: FloeToolbox
+        product: FloeToolboxUI
+      - package: FloeToolbox
+        product: FloeToolboxWorkbenches
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.toolbox.qualification
+        TARGETED_DEVICE_FAMILY: '1,2'
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: '$(inherited) DEBUG $(TOOLBOX_QUALIFICATION_FLAGS)'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleLocalizations: [en, zh-Hans]
+        NSLocationWhenInUseUsageDescription: This qualification host displays location only when Locate is selected.
+        NSMotionUsageDescription: This qualification host reads motion sensors for the selected instrument.
+        NSCameraUsageDescription: This qualification host uses the camera when you start a measurement.
+        NSMicrophoneUsageDescription: This qualification host uses the microphone only when you start sound analysis.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+  ToolboxUnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - UnitTests
+      - Timekeeping/UnitTests/TimekeepingServiceTests.swift
+      - Timekeeping/UnitTests/ClockNativeReconciliationTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/ToolboxLocationTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/InstrumentMathTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/EverydayToolsTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/SpatialMeasurementTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/PhotoMeasurementTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/EnvironmentalSignalTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/OpticsRecognitionTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/ToolboxTimekeepingTests.swift
+    dependencies:
+      - target: FloeToolboxQualification
+      - package: FloeToolbox
+        product: FloeToolboxUtilities
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.toolbox.qualification.tests
+  ToolboxUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: FloeToolboxQualification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.toolbox.qualification.uitests
+schemes:
+  FloeToolboxQualification:
+    build:
+      targets:
+        FloeToolboxQualification: all
+        ToolboxUnitTests: [test]
+        ToolboxUITests: [test]
+    test:
+      targets: [ToolboxUnitTests, ToolboxUITests]

@@ -3,7 +3,12 @@ import Foundation
 
 /// Original accepted107-entry menu. Usability still requires a real host route.
 public enum MediaPreparedBundledCatalog {
-    private static let cached = Result { try MediaPreparedToolCatalog(data: Data(json.utf8)) }
+    private static let cached = Result { try MediaPreparedToolCatalog(data: Data(json.utf8), additionalEntries: assetRemovalEntries) }
+    private static let assetRemovalEntries: [MediaPreparedToolDescriptor] = [MediaPreparedToolDescriptor.Kind.image, .video].map { kind in
+        .init(id: "\(kind.rawValue).remove-asset", kind: kind, category: "assets", title: "移出工程", titleEnglish: "Remove from project", icon: "trash", sourceState: .sourcePresent,
+              existingCommand: "removeAsset", modelBackend: nil, scope: "asset", transaction: "instructionGroup", saveContract: "projectRevisionAndJournal",
+              acceptance: ["referencesProtected", "undoPreservesSourceBytes", "saveReopen"])
+    }
     public static func load() throws -> MediaPreparedToolCatalog {
         try cached.get()
     }

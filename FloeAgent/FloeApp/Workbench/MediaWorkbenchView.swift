@@ -692,6 +692,12 @@ struct WorkbenchFullscreenPreview: View {
             VStack {
                 HStack {
                     Spacer()
+                    if center.project?.kind != .video,
+                       center.imageTool == .brush || center.imageTool == .eraser {
+                        MediaDrawingInputMenu()
+                            .foregroundStyle(.white)
+                            .background(.black.opacity(0.4), in: Circle())
+                    }
                     Button {
                         center.isFullscreenPreview = false
                     } label: {

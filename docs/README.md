@@ -48,7 +48,7 @@
 
 | 范围 / Scope | 跟踪入口 / Tracking entry |
 | --- | --- |
-| App 接入与本轮修整 / App integration & usability | [预研接入](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md) · [引擎与可用性计划](FLOE_NEXT_ROUND_ENGINES_AND_USABILITY_PLAN.zh-CN.md) · [需求问答](FLOE_NEXT_ROUND_REQUIREMENTS_QA_20261109.zh-CN.md) |
+| App 接入与本轮修整 / App integration & usability | [预研接入](FLOE_PREDEVELOPMENT_APP_INTEGRATION.zh-CN.md) · [引擎与可用性计划](FLOE_NEXT_ROUND_ENGINES_AND_USABILITY_PLAN.zh-CN.md) · [11/9 需求问答](FLOE_NEXT_ROUND_REQUIREMENTS_QA_20261109.zh-CN.md) · [11/11 iOS QA 与预研发](FLOE_IOS_NEXT_UPDATE_QA_20261111.zh-CN.md) |
 | 3D、物理与仿真 / 3D, physics & simulation | [CAD 实施进展](FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.zh-CN.md) · [物理与 CAE 计划](FLOE_3D_PHYSICS_CAE_ANIMATION_PREDEVELOPMENT_PLAN.zh-CN.md) · [实施状态](FLOE_3D_SIMULATION_IMPLEMENTATION_STATUS.zh-CN.md) |
 | 专用编辑器 / Specialist editors | [GIS／制谱／字体](FLOE_GIS_SCORE_FONT_PREDEVELOPMENT.zh-CN.md) · [LaTeX](FLOE_LATEX_PREDEVELOPMENT_PLAN.zh-CN.md) · [PCB](FLOE_PCB_EDITOR_IMPLEMENTATION_PLAN.zh-CN.md) · [引擎缺口](FLOE_NATIVE_ENGINE_GAPS.zh-CN.md) / [English](FLOE_NATIVE_ENGINE_GAPS.md) |
 | 科学与工具箱 / Science & toolbox | [生物学](FLOE_BIOLOGY_PREDEVELOPMENT_QA_PLAN.zh-CN.md) · [化学](FLOE_CHEMISTRY_PREDEVELOPMENT_QA_PLAN.zh-CN.md) · [工具箱](FLOE_TOOLBOX_PREDEVELOPMENT_QA_PLAN.zh-CN.md) |

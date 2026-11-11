@@ -155,6 +155,7 @@ struct GeneralSettingsView: View {
                     Text("settings.general.keyboard.return.send").tag(ComposerHardwareReturnBehavior.send.rawValue)
                 }
                 .accessibilityIdentifier("settings.general.hardwareReturn")
+                .helpSettingsControlAnchor("settings.general.hardwareReturn")
             } header: {
                 Text("settings.general.hardware_keyboard")
             } footer: {

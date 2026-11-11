@@ -206,6 +206,24 @@ public actor ChemistryService {
         }
         return object
     }
+    /// Remove one object together with the document blocks that reference it.
+    /// Frozen calculation runs keep their saved input snapshot; a result can
+    /// no longer be applied to a removed object. Revision-checked like every
+    /// other mutation, so a changed object cannot be removed accidentally.
+    @discardableResult
+    public func removeObject(_ id: UUID, objectID: UUID, expectedObjectRevision: UInt64) async throws -> ChemistryProject {
+        try await access(id, .edit)
+        return try await mutate(id) { p in
+            guard let index = p.objects.firstIndex(where: { $0.id == objectID }) else {
+                throw ChemistryError.invalid("Object not found.")
+            }
+            guard p.objects[index].revision == expectedObjectRevision else {
+                throw ChemistryError.conflict(expected: expectedObjectRevision, actual: p.objects[index].revision)
+            }
+            p.objects.remove(at: index)
+            p.blocks.removeAll { $0.objectID == objectID }
+        }
+    }
     public func replaceObject(_ id: UUID, objectID: UUID, expectedObjectRevision: UInt64,
                               format: String, source: String) async throws -> ChemicalObject {
         try await replace(id, objectID: objectID, expectedObjectRevision: expectedObjectRevision,

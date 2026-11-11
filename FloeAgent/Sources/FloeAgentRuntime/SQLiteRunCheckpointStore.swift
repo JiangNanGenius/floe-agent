@@ -19,6 +19,7 @@ import Foundation
 import GRDB
 import FloeCore
 import FloeModels
+import FloeTools
 import FloePersistence
 
 public actor SQLiteRunCheckpointStore: CheckpointStore {
@@ -34,6 +35,83 @@ public actor SQLiteRunCheckpointStore: CheckpointStore {
     }
 
     // MARK: - CheckpointStore
+
+    /// Recover only an original task's latest run with a real saved wait.
+    /// Each load reuses canonical binding validation; stopped/deleted/replaced
+    /// runs never become native wake candidates through an alarm-id lookup.
+    public func pendingRuntimeWaitCheckpoints() async throws -> [AgentCheckpoint] {
+        let runIDs = try await database.reader { db in
+            try String.fetchAll(db, sql: """
+                SELECT c.run_id FROM checkpoints c
+                JOIN runs r ON r.id = c.run_id AND r.conversation_id = c.conversation_id
+                JOIN conversations t ON t.id = r.conversation_id
+                WHERE c.state = 'checkpointed'
+                  AND r.state IN ('preparing', 'executingTool', 'checkpointed', 'interrupted')
+                  AND (r.ended_at IS NULL OR r.state = 'interrupted')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM runs newer WHERE newer.conversation_id = r.conversation_id
+                      AND (newer.started_at > r.started_at
+                        OR (newer.started_at = r.started_at AND newer.id > r.id))
+                  )
+                ORDER BY r.started_at, r.id
+                """)
+        }
+        var waits: [AgentCheckpoint] = []
+        for id in runIDs {
+            guard let runID = UUID(uuidString: id), let checkpoint = try await load(runID: runID),
+                  AgentWaitRecovery.hasWaitingMarker(checkpoint),
+                  !AgentWaitRecovery.pending(in: checkpoint).isEmpty else { continue }
+            _ = try AgentWaitRecovery.validatedRecords(in: checkpoint, runID: checkpoint.runID,
+                                                       conversationID: checkpoint.conversationID)
+            waits.append(checkpoint)
+        }
+        return waits
+    }
+
+
+    /// Atomically parks only the CURRENT original run and unchanged saved
+    /// wait. Root reserves/cancels/joins its generation before calling this;
+    /// its token is checked inside this same SQLite writer transaction.
+    /// A previous query is never authority to revive a stopped/replaced row.
+    public func parkRuntimeWaitIfCurrent(_ checkpoint: AgentCheckpoint, cancellation: CancellationToken) async throws -> Bool {
+        guard AgentWaitRecovery.hasWaitingMarker(checkpoint) else { return false }
+        _ = try AgentWaitRecovery.validatedRecords(in: checkpoint, runID: checkpoint.runID,
+                                                   conversationID: checkpoint.conversationID)
+        let expected = Set(AgentWaitRecovery.pending(in: checkpoint))
+        guard !expected.isEmpty else { return false }
+        return try await database.writer { db in
+            try cancellation.throwIfCancelled()
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT r.state AS run_state, r.ended_at, r.execution_binding_json, c.body_json
+                FROM runs r JOIN checkpoints c ON c.run_id = r.id AND c.conversation_id = r.conversation_id
+                JOIN conversations t ON t.id = r.conversation_id
+                WHERE r.id = ? AND r.conversation_id = ? AND c.state = 'checkpointed'
+                  AND r.state IN ('preparing', 'executingTool', 'checkpointed', 'interrupted')
+                  AND (r.ended_at IS NULL OR r.state = 'interrupted')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM runs newer WHERE newer.conversation_id = r.conversation_id
+                      AND (newer.started_at > r.started_at
+                        OR (newer.started_at = r.started_at AND newer.id > r.id))
+                  )
+                """, arguments: [checkpoint.runID.uuidString, checkpoint.conversationID.uuidString]) else { return false }
+            let body: String = row["body_json"]
+            let current = try AgentCheckpoint.decoded(from: Data(body.utf8))
+            guard AgentWaitRecovery.hasWaitingMarker(current),
+                  current.executionBinding == checkpoint.executionBinding else { return false }
+            _ = try AgentWaitRecovery.validatedRecords(in: current, runID: checkpoint.runID,
+                                                       conversationID: checkpoint.conversationID)
+            guard Set(AgentWaitRecovery.pending(in: current)) == expected else { return false }
+            let trusted = try Self.decodeBinding(row["execution_binding_json"] as String?)
+            try Self.requireCanonicalPin(current.executionBinding, matches: trusted)
+            try cancellation.throwIfCancelled()
+            let currentState: String = row["run_state"]
+            // DatabaseManager.writer is one GRDB transaction. No writer can
+            // change latest/state/checkpoint between this read and the CAS.
+            try db.execute(sql: "UPDATE runs SET state = 'checkpointed', ended_at = NULL WHERE id = ? AND state = ?",
+                           arguments: [checkpoint.runID.uuidString, currentState])
+            return db.changesCount == 1
+        }
+    }
 
     /// Persists the canonical checkpoint for `checkpoint.runID`.
     ///

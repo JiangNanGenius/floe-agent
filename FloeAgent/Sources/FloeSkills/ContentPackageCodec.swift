@@ -30,6 +30,10 @@ public struct ContentPackageCodec: Sendable {
     public static let maximumDocuments = 32
     public static let maximumSections = 64
     public static let maximumDocumentBytes = 1_048_576
+    /// The format's first version is fixed even when a later App bundles a
+    /// newer guide. Raising the bundled baseline must not reopen legacy-only
+    /// validation for an already structured help version.
+    public static let firstStructuredHelpVersion = "1.1.0"
 
     /// Stable identity of the signed search-provider catalog package. Kept in
     /// sync with `SearchProviderCatalog.packageID` (FloeExecution); the app
@@ -93,6 +97,24 @@ public struct ContentPackageCodec: Sendable {
             try validatePrompts(object)
         case .help:
             try validateReferencedFiles(object, keys: ["documents"], files: files)
+            if entry.id == HelpBundleMetadata.packageID {
+                let version = try SignedContentVersion(entry.version)
+                let typedBaseline = try SignedContentVersion(Self.firstStructuredHelpVersion)
+                if object["helpManifest"] != nil || version >= typedBaseline {
+                    guard object["helpManifest"] as? String == HelpBundleMetadata.manifestPath else {
+                        throw ContentPackageError.invalidContent("help packages require their versioned help manifest")
+                    }
+                    do {
+                        try HelpLibrarySnapshot.validatePackage(files: files, digest: { FloeDigest.sha256Hex($0) })
+                        let manifest = try JSONDecoder().decode(HelpPackageManifest.self, from: files[HelpBundleMetadata.manifestPath] ?? Data())
+                        guard manifest.id == entry.id, manifest.version == entry.version,
+                              manifest.sourceRevision == entry.sourceRevision else {
+                            throw ContentPackageError.invalidContent("help manifest identity must match the signed entry")
+                        }
+                    } catch let error as ContentPackageError { throw error }
+                    catch { throw ContentPackageError.invalidContent("help manifest or resources are invalid: \(error.localizedDescription)") }
+                }
+            }
         case .templates:
             try validateReferencedFiles(object, keys: ["template"], files: files)
         case .providers:

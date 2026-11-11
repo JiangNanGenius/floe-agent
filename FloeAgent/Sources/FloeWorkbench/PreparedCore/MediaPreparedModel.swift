@@ -881,6 +881,8 @@ public enum MediaPreparedAction: Sendable, Codable, Hashable {
     case setLayerCanvasSpace(id:UUID,expectedRevision:UInt64,space:MediaLayerCanvasSpace?)
     case setCaptionStyle(expectedRevision: UInt64, style: CaptionStyle?)
     case insertAsset(MediaAssetReference)
+    /// Logical removal only; active references refuse and historical bytes stay.
+    case removeAsset(expected: MediaAssetReference, expectedRevision: UInt64)
     case replaceAsset(expected: MediaAssetReference, expectedRevision: UInt64, replacement: MediaAssetReference)
     // Layers
     case insertLayer(layer: MediaPreparedLayer, parentID: UUID?, index: Int?)

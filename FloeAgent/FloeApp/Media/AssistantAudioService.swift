@@ -213,6 +213,18 @@ struct AssistantAudioTranscriptionResult: Sendable {
     let language: String?
 }
 
+/// One continuous live-recognition route for the meetings feature. Resolved
+/// once per recording from the user's SELECTED transcription service; nil
+/// (local engines, missing live route, missing speaker separation, missing
+/// credential) keeps the meeting on the existing file-chunk queue. Nothing
+/// here switches providers, uploads to a different account or fabricates a
+/// capability.
+struct MeetingLiveTranscriptionRoute: Sendable {
+    let profile: ASRProfile
+    let credential: String
+    let adapter: any ASRLiveTranscribing
+}
+
 struct AssistantAudioSynthesisResult: Sendable {
     let outputURL: URL
     let byteCount: Int
@@ -480,6 +492,7 @@ final class AssistantAudioService: ObservableObject {
         language: VoiceRecognitionLanguage,
         serviceID: String? = nil,
         requiresTiming: Bool = false,
+        enableSpeakerAttribution: Bool = false,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> AssistantAudioTranscriptionResult {
         await refreshAvailability()
@@ -545,7 +558,9 @@ final class AssistantAudioService: ObservableObject {
                 || cloudASRSettings.profile(forServiceID: descriptor.id) != nil {
                 return try await transcribeCloud(
                     fileURL: fileURL, language: language, descriptor: descriptor,
-                    requiresTiming: requiresTiming, progress: progress)
+                    requiresTiming: requiresTiming,
+                    enableSpeakerAttribution: enableSpeakerAttribution,
+                    progress: progress)
             }
             throw AssistantAudioError.serviceUnavailable(descriptor.id)
         }
@@ -556,6 +571,7 @@ final class AssistantAudioService: ObservableObject {
         language: VoiceRecognitionLanguage,
         descriptor: AssistantAudioServiceDescriptor,
         requiresTiming: Bool,
+        enableSpeakerAttribution: Bool,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssistantAudioTranscriptionResult {
         guard let profile = cloudASRSettings.profile(forServiceID: descriptor.id) else {
@@ -586,6 +602,7 @@ final class AssistantAudioService: ObservableObject {
                 credential: credential,
                 language: language,
                 requiresTiming: requiresTiming,
+                enableSpeakerAttribution: enableSpeakerAttribution,
                 progress: progress)
             // A text-only model cannot be turned into caption alignment. Use
             // the local timed model for this request when it is installed;
@@ -607,7 +624,8 @@ final class AssistantAudioService: ObservableObject {
             return AssistantAudioTranscriptionResult(
                 text: result.text,
                 segments: result.segments.map {
-                    TimedSpeechSegment(start: $0.start, end: $0.end, text: $0.text, words: [])
+                    TimedSpeechSegment(start: $0.start, end: $0.end, text: $0.text, words: [],
+                                       speaker: $0.speaker, recognitionRequestID: $0.recognitionRequestID)
                 },
                 service: descriptor,
                 engine: "cloud",
@@ -855,6 +873,36 @@ final class AssistantAudioService: ObservableObject {
             return try cloudASRSettings.credential(for: primary)
         }
         throw AssistantAudioError.credentialMissing
+    }
+
+    // MARK: - Meeting continuous live route
+
+    /// Resolve the selected transcription service to a live speaker-separation
+    /// route for continuous meeting recognition. Returns nil for local
+    /// engines and for cloud profiles without a live route that supports
+    /// speaker attribution, so the caller keeps the file-chunk queue and its
+    /// honest capability copy. A configured profile is callable as-is; any
+    /// provider error surfaces through the ordinary request path.
+    func liveTranscriptionRoute(serviceID: String?) async -> MeetingLiveTranscriptionRoute? {
+        await refreshAvailability()
+        guard let descriptor = service(id: serviceID, for: .transcription)
+                ?? automaticService(for: .transcription) else { return nil }
+        let profile: ASRProfile?
+        if descriptor.id == ID.transcriptionCloud {
+            profile = cloudASRSettings.readyProfiles.first
+        } else {
+            profile = cloudASRSettings.profile(forServiceID: descriptor.id)
+        }
+        guard let profile, cloudASRSettings.isReady(profile),
+              let capabilities = profile.liveCapabilities,
+              capabilities.supportsLiveTranscription,
+              capabilities.supportsSpeakerAttribution,
+              let adapter = try? ASRAdapterFactory.liveAdapter(for: profile),
+              let credential = try? cloudASRSettings.credential(for: profile) else {
+            return nil
+        }
+        return MeetingLiveTranscriptionRoute(
+            profile: profile, credential: credential, adapter: adapter)
     }
 
     private func persist() {

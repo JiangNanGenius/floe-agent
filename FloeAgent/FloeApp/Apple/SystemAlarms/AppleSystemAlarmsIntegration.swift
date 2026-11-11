@@ -85,7 +85,12 @@ func registerAppleAlarmTools(
 
     // Begin native observation without blocking the synchronous bootstrap;
     // the observation task is service-owned and torn down by `stop()`.
-    Task { await service.start() }
+    Task {
+        await SystemAlarmIntentHooks.shared.installBeforeStop { alarmID in
+            _ = try? await service.preserveAlertingBeforeStop(alarmID: alarmID)
+        }
+        await service.start()
+    }
     return service
 }
 #endif

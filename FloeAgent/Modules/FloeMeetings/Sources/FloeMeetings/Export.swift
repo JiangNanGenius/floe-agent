@@ -72,7 +72,9 @@ public enum MeetingExport {
         return Data(text.utf8)
     }
 
-    /// Plain-text / Markdown transcript export with speaker labels.
+    /// Plain-text / Markdown transcript export with speaker labels. Segments
+    /// the engine never attributed keep their timestamp and text with NO
+    /// fabricated "unknown speaker" identity.
     public static func documentData(
         segments: [TranscriptSegment],
         speakers: [Speaker],
@@ -81,15 +83,17 @@ public enum MeetingExport {
     ) throws -> Data {
         let cues = try cues(segments: segments)
         let resolved = Dictionary(uniqueKeysWithValues: speakers.map { ($0.id, $0) })
-        func label(for id: SpeakerID?) -> String {
-            guard let id else { return MeetingStrings.text("Unknown speaker", "未知发言人") }
+        func label(for id: SpeakerID?) -> String? {
+            guard let id else { return nil }
             var current = id
             var seen: Set<SpeakerID> = []
             while let speaker = resolved[current], let next = speaker.mergedInto, !seen.contains(current) {
                 seen.insert(current)
                 current = next
             }
-            return resolved[current]?.label ?? MeetingStrings.text("Unknown speaker", "未知发言人")
+            let value = resolved[current]?.label ?? ""
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
         var lines: [String] = []
         if format == .markdown {
@@ -102,7 +106,11 @@ public enum MeetingExport {
         for cue in cues {
             let stamp = timestamp(cue.range.start, srtStyle: false)
             let segment = segments.first { $0.id == cue.segmentID }
-            lines.append("[\(stamp)] \(label(for: segment?.speakerID)): \(cue.text)")
+            if let label = label(for: segment?.speakerID) {
+                lines.append("[\(stamp)] \(label): \(cue.text)")
+            } else {
+                lines.append("[\(stamp)] \(cue.text)")
+            }
         }
         return Data((lines.joined(separator: "\n") + "\n").utf8)
     }

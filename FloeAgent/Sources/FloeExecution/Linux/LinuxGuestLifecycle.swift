@@ -46,12 +46,26 @@ import FloeTools
 public struct LinuxGuestLifecycleConfig: Sendable, Equatable, Codable {
     /// Explicit online vCPU count (1...4). nil preserves the shared selection.
     public var vcpus: Int?
-    /// Explicit guest RAM in MiB (the 256…2048 ladder). nil preserves the environment selection.
+    /// Explicit guest RAM in MiB. nil preserves the environment selection.
     public var memoryMB: Int?
+    /// Optional for backward-compatible saved preferences; nil means 1 GiB.
+    public var gpuMemoryMB: Int?
+    public var resolvedGPUMemoryMB: Int { gpuMemoryMB ?? 1024 }
 
-    public init(vcpus: Int? = nil, memoryMB: Int? = nil) {
+    public init(vcpus: Int? = nil, memoryMB: Int? = nil, gpuMemoryMB: Int? = nil) {
         self.vcpus = vcpus
         self.memoryMB = memoryMB
+        self.gpuMemoryMB = gpuMemoryMB
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.vcpus == rhs.vcpus && lhs.memoryMB == rhs.memoryMB
+            && lhs.resolvedGPUMemoryMB == rhs.resolvedGPUMemoryMB
+    }
+
+    func updating(vcpus: Int? = nil, memoryMB: Int? = nil, gpuMemoryMB: Int? = nil) -> Self {
+        .init(vcpus: vcpus ?? self.vcpus, memoryMB: memoryMB ?? self.memoryMB,
+              gpuMemoryMB: gpuMemoryMB ?? self.gpuMemoryMB)
     }
 
     /// Stored with the environment, outside the App bundle and writable guest
@@ -61,7 +75,8 @@ public struct LinuxGuestLifecycleConfig: Sendable, Equatable, Codable {
               let data = try? Data(contentsOf: directory.appendingPathComponent("guest-launch-shape.json")),
               let value = try? JSONDecoder().decode(Self.self, from: data),
               let cores = value.vcpus, (1...4).contains(cores),
-              let memory = value.memoryMB, [256, 512, 768, 1024, 1536, 2048].contains(memory)
+              let memory = value.memoryMB, [256, 512, 768, 1024, 1536, 2048].contains(memory),
+              [256, 512, 768, 1024, 1536, 2048].contains(value.resolvedGPUMemoryMB)
         else { return nil }
         return value
     }

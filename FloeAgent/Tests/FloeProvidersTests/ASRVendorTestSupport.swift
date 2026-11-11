@@ -239,6 +239,34 @@ func eventFailure(
     }
 }
 
+/// Collect live events until a terminal final/failed arrives (or the bounded
+/// timeout elapses). SAUC emits the growing hypothesis as partial deltas
+/// before the committed final, so a fixed `count: 1` can grab the partial.
+func collectEventsThroughFinal(
+    _ session: any ASRLiveSession,
+    timeout: Double = 3
+) async throws -> [ASRLiveEvent] {
+    try await withThrowingTaskGroup(of: [ASRLiveEvent].self) { group in
+        group.addTask {
+            var iterator = session.events.makeAsyncIterator()
+            var events: [ASRLiveEvent] = []
+            while let event = try await iterator.next() {
+                events.append(event)
+                if event.kind == .final || event.kind == .failed { break }
+            }
+            return events
+        }
+        group.addTask {
+            try await Task.sleep(
+                nanoseconds: UInt64(max(0.05, timeout) * 1_000_000_000))
+            throw TestTimeout()
+        }
+        let first = try await group.next()!
+        group.cancelAll()
+        return first
+    }
+}
+
 // MARK: - Fixtures
 
 extension Data {

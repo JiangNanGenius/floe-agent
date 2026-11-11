@@ -8,7 +8,14 @@ typealias PhoneSidebarAction = @MainActor @Sendable () -> Void
 private struct PhoneSidebarActionKey: EnvironmentKey {
     static let defaultValue: PhoneSidebarAction? = nil
 }
+private struct PhoneSidebarVisibleKey: EnvironmentKey {
+    static let defaultValue = false
+}
 extension EnvironmentValues {
+    var phoneSidebarIsVisible: Bool {
+        get { self[PhoneSidebarVisibleKey.self] }
+        set { self[PhoneSidebarVisibleKey.self] = newValue }
+    }
     var phoneSidebarAction: PhoneSidebarAction? {
         get { self[PhoneSidebarActionKey.self] }
         set { self[PhoneSidebarActionKey.self] = newValue }
@@ -17,14 +24,18 @@ extension EnvironmentValues {
 
 struct PhoneSidebarButton: View {
     @Environment(\.phoneSidebarAction) private var openSidebar
+    @Environment(\.phoneSidebarIsVisible) private var sidebarVisible
+    private var actionLabel: LocalizedStringKey {
+        sidebarVisible ? "app.floe_agent_app.collapse_task_list" : "app.floe_agent_app.open_task_list"
+    }
     var body: some View {
         if let openSidebar {
             Button(action: openSidebar) {
-                Label("app.floe_agent_app.open_task_list", systemImage: "sidebar.left")
+                Label(actionLabel, systemImage: "sidebar.left")
                     .labelStyle(.iconOnly)
             }
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
-            .accessibilityLabel("app.floe_agent_app.open_task_list")
+            .accessibilityLabel(actionLabel)
             .accessibilityIdentifier("phone.sidebar.open")
         }
     }

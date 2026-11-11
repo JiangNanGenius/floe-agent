@@ -627,7 +627,7 @@ public actor MediaPreparedCoordinator {
             case .setLayerCanvasSpace(let id,_,_): target(.layer,id)
             case .setCaptionStyle: target(.captionStyle, document.id)
             case .insertAsset(let asset): introduced(.asset, asset.id)
-            case .replaceAsset(let expected, _, _): target(.asset, expected.id)
+            case .replaceAsset(let expected, _, _), .removeAsset(let expected, _): target(.asset, expected.id)
             case .insertLayer(let layer, let parentID, _):
                 if let parentID { target(.layer, parentID) }
                 introduced(.layer, layer.id)

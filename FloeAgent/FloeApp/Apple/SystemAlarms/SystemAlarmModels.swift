@@ -39,6 +39,18 @@ struct SystemAlarmOwner: Sendable, Equatable {
         self.idempotencyKey = context.toolIdempotencyKey
     }
 
+    /// Reconstruct the owner from a durable, already-verified ledger row.
+    /// Used ONLY by surfaces that proved the record belongs to the current
+    /// task through `timerStatus` (a forged or foreign record never reaches
+    /// this initializer). The provenance stays the runtime-stamped one
+    /// recorded at schedule time — never a model-authored identity.
+    init(record: SystemAlarmRecord) {
+        self.taskID = record.ownerTaskID
+        self.runID = record.ownerRunID
+        self.operationID = record.operationID
+        self.idempotencyKey = record.idempotencyKey
+    }
+
     /// Two owners are the same task iff they share the durable conversation,
     /// or (conversation-less) the same run. The per-call identity is NOT
     /// part of owner equality — one task legitimately makes many calls; it is
@@ -285,6 +297,10 @@ enum SystemAlarmError: Error, Sendable, Equatable {
     case cancelledBeforeCommit
     /// The durable intent row could not be persisted before the mutation.
     case intentPersistenceFailed
+    /// A timer control carried an expected revision that no longer matches
+    /// the durable/native state (the timer changed after the UI read it).
+    /// The caller must re-read `timerStatus` and retry from fresh state.
+    case staleControlRevision
 
     var exitStatus: Int32 {
         switch self {
@@ -295,7 +311,68 @@ enum SystemAlarmError: Error, Sendable, Equatable {
         case .native: return 1
         case .cancelledBeforeCommit: return 130
         case .intentPersistenceFailed: return 1
+        case .staleControlRevision: return 78
         }
+    }
+}
+
+// MARK: - Native timer binding (immutable inline-card identity)
+
+/// The immutable identity binding between an inline assistant-body timer
+/// card and the exact durable/native alarm that produced it. Created by the
+/// trusted `apple.alarm.schedule` tool ONLY after the schedule was confirmed
+/// by a real native readback (`record.state == .created`). It binds the
+/// artifact to the ledger row (timer id, owner task/run, producer call,
+/// creation receipt, incarnation) and freezes the creation-time display
+/// facts (label, total duration). It NEVER carries mutable remaining/state —
+/// live time always comes from the native service at display time, and the
+/// card fails closed when the binding does not match the durable ledger.
+struct NativeTimerBinding: Codable, Sendable, Equatable {
+    /// Schema version of the binding JSON.
+    static let currentVersion = 1
+    /// Exact MIME the allowlisted catalog and receipt checks require.
+    static let mimeType = "application/vnd.floe.native-timer+json"
+    /// Artifact path shape: `TimerArtifacts/<runUUID>/<artifactUUID>.timer.json`.
+    static let artifactDirectory = "TimerArtifacts"
+    static let artifactSuffix = ".timer.json"
+    /// Byte ceiling for the small binding JSON.
+    static let maximumBytes = 16 * 1_024
+
+    var version: Int
+    /// The stable app-owned native alarm id (also the ledger row id).
+    var timerID: UUID
+    /// Durable conversation that owns the timer.
+    var ownerTaskID: UUID?
+    /// Run that produced the timer.
+    var producerRunID: UUID
+    /// Provider tool-call id of the exact approved schedule call.
+    var producerCallID: String
+    /// Durable operation receipt of the schedule mutation.
+    var creationReceiptID: UUID
+    /// `sha256("v1|<timerID>|<payloadDigest>")`, prefix-24 — re-derived and
+    /// compared at card resolve time so a tampered or stale artifact cannot
+    /// bind to a different ledger row.
+    var incarnation: String
+    /// Bounded display label frozen at creation.
+    var label: String
+    /// Total authored countdown duration (immutable).
+    var duration: TimeInterval
+
+    static func incarnation(timerID: UUID, payloadDigest: String) -> String {
+        String(FloeDigest.sha256Hex(Data("v1|\(timerID.uuidString)|\(payloadDigest)".utf8)).prefix(24))
+    }
+
+    init?(record: SystemAlarmRecord, label: String, duration: TimeInterval) {
+        guard record.kind == .timer, record.state == .created else { return nil }
+        self.version = Self.currentVersion
+        self.timerID = record.id
+        self.ownerTaskID = record.ownerTaskID
+        self.producerRunID = record.ownerRunID
+        self.producerCallID = record.operationID
+        self.creationReceiptID = record.operationReceiptID
+        self.incarnation = Self.incarnation(timerID: record.id, payloadDigest: record.payloadDigest)
+        self.label = String(label.prefix(64))
+        self.duration = duration
     }
 }
 
@@ -326,13 +403,100 @@ protocol SystemAlarmNativeManaging: Sendable {
     /// addresses an id this app never scheduled must surface an error, not be
     /// adopted silently.
     func cancel(id: UUID) async throws
-    /// Observe native alarm-set changes (service-owned, bounded).
+    /// Pause a counting-down timer natively. Addressing an id this app never
+    /// scheduled (or one not in countdown) surfaces an error.
+    func pause(id: UUID) async throws
+    /// Resume a paused timer natively.
+    func resume(id: UUID) async throws
+    /// Observe native alarm-set changes (service-owned, bounded). Emits for
+    /// AlarmKit alarm changes AND for Live Activity timeline (mode) changes,
+    /// so a countdown that starts later than the initial manager snapshot
+    /// still converges instead of staying unverified indefinitely.
     var alarmUpdates: AsyncStream<[SystemAlarmNativeSnapshot]> { get async }
 }
 
 /// Read-only native alarm snapshot used by the service and fakes.
+///
+/// `id`/`state` are the long-standing identity fields; every timeline field
+/// is optional with a default so existing fakes keep compiling and a manager
+/// without Live Activity data produces the same id/state-only snapshot it
+/// always did. Timeline values come ONLY from the real
+/// `Activity<FloeSystemAlarmActivityAttributes>` content state — never from
+/// a createdAt+duration computation.
 struct SystemAlarmNativeSnapshot: Sendable, Equatable {
     var id: UUID
     var state: String
+    /// User-facing label resolved from the activity presentation (best
+    /// effort; nil when no Live Activity data is available yet).
+    var title: String? = nil
+    /// Countdown/Paused mode: total authored countdown duration.
+    var totalDuration: TimeInterval? = nil
+    /// Countdown/Paused mode: elapsed duration before the current segment.
+    var previousElapsed: TimeInterval? = nil
+    /// Countdown mode: when the current countdown segment started.
+    var startDate: Date? = nil
+    /// Countdown mode: the absolute fire instant (nil while paused).
+    var fireDate: Date? = nil
+    /// Digest of the timeline payload; changes whenever any timeline field
+    /// changes. Input to the optimistic control revision.
+    var timelineFingerprint: String? = nil
+}
+
+// MARK: - Timer controls
+
+/// User-facing control actions for one owned countdown timer. Distinct from
+/// the schedule/cancel tool arguments: these are trusted UI actions applied
+/// to an already-verified owned native alarm.
+enum SystemAlarmTimerAction: String, Sendable, Codable, CaseIterable {
+    case pause
+    case resume
+    case cancel
+}
+
+/// Authoritative state of one owned timer: the durable ledger record, the
+/// optional native timeline snapshot, and the optimistic control revision.
+struct SystemAlarmTimerStatus: Sendable, Equatable {
+    var record: SystemAlarmRecord
+    var snapshot: SystemAlarmNativeSnapshot?
+    /// Fingerprint of (record state, native state, timeline) at read time.
+    /// `controlTimer` rejects an action whose expected revision no longer
+    /// matches, so a control based on stale UI state is refused instead of
+    /// landing on a silently changed timer.
+    var revision: UInt64
+}
+
+/// Deterministic optimistic-revision fingerprint for timer controls. Derived
+/// purely from durable/native facts — never from wall-clock reads — so the
+/// same state always fingerprints the same way across processes.
+enum SystemAlarmControlRevision {
+    static func fingerprint(
+        record: SystemAlarmRecord,
+        snapshot: SystemAlarmNativeSnapshot?
+    ) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325 // FNV-1a offset basis
+        func mix(_ text: String) {
+            for byte in text.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 0x0000_0100_0000_01b3
+            }
+            hash ^= 0xff // field separator
+            hash &*= 0x0000_0100_0000_01b3
+        }
+        mix(record.id.uuidString)
+        mix(record.operationReceiptID.uuidString)
+        mix(record.payloadDigest)
+        mix(record.state.rawValue)
+        mix(record.nativeState ?? "")
+        mix(snapshot?.state ?? "")
+        mix(snapshot?.timelineFingerprint ?? "")
+        mix(snapshot?.fireDate.map { $0.timeIntervalSince1970.exactString } ?? "")
+        return hash
+    }
+}
+
+extension TimeInterval {
+    /// Exact decimal rendering (no locale, no rounding drift) for fingerprint
+    /// mixing; stored dates already carry fixed-precision codecs.
+    fileprivate var exactString: String { String(format: "%.6f", self) }
 }
 #endif

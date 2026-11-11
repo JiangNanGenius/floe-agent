@@ -7,7 +7,7 @@ extension BiologyToolSession {
         [
             .init(name:"biology.describe",description:"Read complete structured-edit parameter schemas, coordinate conventions, file formats and the full biology workflow. Call before editing a new domain."),
             .init(name:"biology.projects",description:"List only projects authorized to this task."),
-            .init(name:"biology.update",description:"Validated, revision-checked edits for every domain. Supported operations: project rename/notes/chemistry link; asset rename/delete/typed replacement; annotation upsert/remove; image calibration; matrix subset as a new dataset; typed network replacement; rigid structure transformation. Originals are retained."),
+            .init(name:"biology.update",description:"Validated, revision-checked edits for every domain. Supported operations: project rename/notes/chemistry link; blank asset create (sequence with optional first annotation, starter network); asset rename/delete/typed replacement; annotation upsert/remove; image calibration; matrix subset as a new dataset; typed network replacement; rigid structure transformation. Originals are retained."),
             .init(name:"biology.select",description:"Persist a dataset/range/atom/plane/region/gene/cell selection for the native workbench without changing source data."),
             .init(name:"biology.status",description:"Read a current task-owned calculation's actual state without waiting."),
             .init(name:"biology.stop",description:"Stop this task's calculation and wait for an actual owned-worker stop acknowledgement."),

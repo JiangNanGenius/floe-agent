@@ -31,9 +31,10 @@ public struct TranscriptSegment: Sendable, Codable, Identifiable, Hashable {
     public let id: TranscriptSegmentID
     public let meetingID: MeetingID
     public let sessionID: CaptureSessionID
-    /// Speaker as attributed by the engine; may be nil when attribution is
-    /// unavailable. Look up via `MeetingService.resolveSpeaker` for merges.
-    public let speakerID: SpeakerID?
+    /// Speaker as attributed by the engine (or corrected by the user); may be
+    /// nil when attribution is unavailable. Look up via
+    /// `MeetingService.resolveSpeaker` for merges.
+    public private(set) var speakerID: SpeakerID?
     /// Position in the original recording, seconds from session start.
     public let range: MediaTimeRange
     /// Current text. After a user correction this holds the corrected text.
@@ -41,6 +42,10 @@ public struct TranscriptSegment: Sendable, Codable, Identifiable, Hashable {
     /// Text before the user correction; nil while uncorrected.
     public private(set) var originalText: String?
     public private(set) var correctedBy: CorrectionAuthor?
+    /// True once the USER corrected this segment's speaker attribution
+    /// (reassign/clear). A later canonical transcription pass adopts better
+    /// engine results everywhere except here.
+    public private(set) var speakerCorrected: Bool
     public let language: String?
     public let source: SourceReference
     /// Insertion sequence within the session (for stable tie-break ordering).
@@ -65,6 +70,7 @@ public struct TranscriptSegment: Sendable, Codable, Identifiable, Hashable {
         self.language = language
         self.source = .recording(session: sessionID, range: range)
         self.ordinal = ordinal
+        self.speakerCorrected = false
     }
 
     /// User correction. Keeps the original engine text and the segment id, so
@@ -75,9 +81,36 @@ public struct TranscriptSegment: Sendable, Codable, Identifiable, Hashable {
         correctedBy = .user
     }
 
+    /// User speaker correction; wins over any later engine attribution.
+    public mutating func applyUserSpeakerCorrection(_ speaker: SpeakerID?) {
+        speakerID = speaker
+        speakerCorrected = true
+    }
+
     /// Restores persisted correction state after decoding from storage.
-    mutating func setStored(originalText: String?, correctedBy: CorrectionAuthor?) {
+    mutating func setStored(originalText: String?, correctedBy: CorrectionAuthor?, speakerCorrected: Bool) {
         self.originalText = originalText
         self.correctedBy = correctedBy
+        self.speakerCorrected = speakerCorrected
     }
+    private enum CodingKeys: String, CodingKey {
+        case id, meetingID, sessionID, speakerID, range, text, originalText, correctedBy, speakerCorrected, language, source, ordinal
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(TranscriptSegmentID.self, forKey: .id)
+        self.meetingID = try c.decode(MeetingID.self, forKey: .meetingID)
+        self.sessionID = try c.decode(CaptureSessionID.self, forKey: .sessionID)
+        self.speakerID = try c.decodeIfPresent(SpeakerID.self, forKey: .speakerID)
+        self.range = try c.decode(MediaTimeRange.self, forKey: .range)
+        self.text = try c.decode(String.self, forKey: .text)
+        self.originalText = try c.decodeIfPresent(String.self, forKey: .originalText)
+        self.correctedBy = try c.decodeIfPresent(CorrectionAuthor.self, forKey: .correctedBy)
+        self.speakerCorrected = try c.decodeIfPresent(Bool.self, forKey: .speakerCorrected) ?? false
+        self.language = try c.decodeIfPresent(String.self, forKey: .language)
+        self.source = try c.decode(SourceReference.self, forKey: .source)
+        self.ordinal = try c.decode(Int.self, forKey: .ordinal)
+    }
+
 }

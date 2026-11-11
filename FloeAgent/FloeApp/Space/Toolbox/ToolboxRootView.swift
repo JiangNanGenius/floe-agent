@@ -95,6 +95,24 @@ struct ToolboxRootView: View {
         case .hash: ChecksumWorkbenchView(model: center.checksum)
         case .terminal, .vnc: ToolboxRemoteWorkspace(kind: tool == .terminal ? .terminal : .vnc)
         case .browser: ToolboxBrowserWorkspace()
+        case .level: ToolboxLevelView()
+        case .motion: ToolboxMotionView()
+        case .compass: ToolboxCompassView()
+        case .ruler: ToolboxRulerView()
+        case .measure: ToolboxSpatialMeasurementView()
+        case .calculator: ToolboxCalculatorView()
+        case .location: ToolboxLocationPage()
+        case .photoMeasure: ToolboxPhotoMeasureView(importImage: { try await files.image() }, exportImage: { save($0, extension: "png") })
+        case .barometer: ToolboxPressureView()
+        case .sound: ToolboxSoundPage(environment: environment)
+        case .magnifier: ToolboxMagnifierView()
+        case .scanner: ToolboxScannerView(importImage: { try await files.image() }, exportArtifact: { data, suffix in
+            guard ["png", "pdf", "txt"].contains(suffix) else { exportFailed = true; return }
+            save(data, extension: suffix)
+        }, saveNote: { text in
+            try await ToolboxNotesExport.save(title: IDELanguageRunText.t("扫描记录", "Scan record"), text: text)
+        })
+        case .timer: ToolboxTimerPage()
         }
     }
     private func useDiagnosticEndpoint(_ tool: ToolboxTool, _ host: String, _ port: UInt16?) {
@@ -389,6 +407,7 @@ private struct ToolboxConnectionPage: View {
 }
 
 private struct ToolboxDiagnosticPage: View {
+    @EnvironmentObject private var environment: AppEnvironment
     let tool: ToolboxTool
     @ObservedObject var center: ToolboxDiagnosticsCenter
     var onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)? = nil
@@ -401,7 +420,9 @@ private struct ToolboxDiagnosticPage: View {
                     onUseEndpoint:onUseEndpoint,onOpenSettings:{
                         guard let url = URL(string:UIApplication.openSettingsURLString) else { return }
                         UIApplication.shared.open(url)
-                    })
+                    }, ipInformationSettings: tool == .traceroute ? AnyView(
+                        IPInformationSettingsShell(owner: environment.toolboxIPInformation)
+                    ) : nil)
             }
             else if failed { ContentUnavailableView(IDELanguageRunText.t("暂时无法打开", "Unable to open"), systemImage: "network.slash") }
             else { ProgressView() }
@@ -413,8 +434,8 @@ private struct ToolboxDiagnosticHistory: View {
     @ObservedObject var model: DiagnosticWorkbenchModel
     @ObservedObject var history: ToolboxHistoryStore
     var body: some View {
-        ToolboxHistorySection(tool: model.tool, history: history, runsImmediately: true, busy: model.running) { configuration in
-            guard !model.running else { return }
+        ToolboxHistorySection(tool: model.tool, history: history, runsImmediately: true, busy: model.running || model.stopping) { configuration in
+            guard !model.running, !model.stopping else { return }
             configuration.apply(to: model); model.run()
         }
     }

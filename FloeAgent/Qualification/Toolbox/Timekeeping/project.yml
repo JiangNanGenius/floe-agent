@@ -1,0 +1,149 @@
+name: FloeTimekeepingQualification
+options:
+  deploymentTarget: {iOS: '26.0'}
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: '6.0'
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    CURRENT_PROJECT_VERSION: '1'
+    MARKETING_VERSION: '1.0'
+packages:
+  FloeRuntime:
+    path: ../../..
+targets:
+  TimekeepingData:
+    type: framework
+    platform: iOS
+    sources: [../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/ToolboxTimekeeping.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.timekeeping.data
+        PRODUCT_NAME: FloeToolboxUtilities
+        PRODUCT_MODULE_NAME: FloeToolboxUtilities
+  TimekeepingUI:
+    type: framework
+    platform: iOS
+    sources:
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/ToolboxTimekeepingService.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/ToolboxTimekeepingView.swift
+      - Contracts/WorkbenchText.swift
+    dependencies: [target: TimekeepingData]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.timekeeping.ui
+        PRODUCT_NAME: FloeToolboxWorkbenches
+        PRODUCT_MODULE_NAME: FloeToolboxWorkbenches
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) TOOLBOX_CLOCK_DIAGNOSTICS
+  FloeTimekeepingQualification:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - ../../../FloeApp/Space/Toolbox/ToolboxTimerPage.swift
+      - ../../../FloeApp/Space/Toolbox/ToolboxTimerReminders.swift
+      - ../../../FloeApp/Apple/SystemAlarms/SystemAlarmModels.swift
+      - ../../../FloeApp/Apple/SystemAlarms/AlarmKitNativeManager.swift
+      - ../../../FloeApp/Apple/SystemAlarms/SystemAlarmService.swift
+      - ../../../FloeApp/Apple/SystemAlarms/SystemAlarmTool.swift
+      - ../../../FloeApp/Apple/SystemAlarms/AppleSystemAlarmsIntegration.swift
+      - Contracts/ChatInlineScope.swift
+      - ../../../FloeApp/Chat/Render/InlineTimerCard.swift
+      - ../../../FloeApp/Chat/Render/InlineTimerBodyProjection.swift
+      - ../../../FloeWidgets/FloeSystemAlarmControlIntents.swift
+      - ../../../FloeApp/Resources/Localizable.xcstrings
+    dependencies:
+      - target: TimekeepingUI
+      - target: TimekeepingAlarmWidget
+        embed: true
+      - package: FloeRuntime
+        product: FloeCore
+      - package: FloeRuntime
+        product: FloePersistence
+      - package: FloeRuntime
+        product: FloeTools
+      - package: FloeRuntime
+        product: FloeModels
+      - package: FloeRuntime
+        product: FloeMarkdown
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.timekeeping.qualification
+        PRODUCT_MODULE_NAME: FloeApp
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/Info.plist
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleLocalizations: [en, zh-Hans]
+        CFBundleShortVersionString: '1.0'
+        CFBundleVersion: '1'
+        NSSupportsLiveActivities: true
+        NSAlarmKitUsageDescription: This app uses system timers for countdowns you explicitly start.
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+  TimekeepingAlarmWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widget
+      - ../../../FloeWidgets/FloeSystemAlarmLiveActivity.swift
+      - ../../../FloeWidgets/FloeSystemAlarmControlIntents.swift
+      - ../../../FloeWidgets/Localizable.xcstrings
+    dependencies:
+      - package: FloeRuntime
+        product: FloeCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.timekeeping.qualification.widget
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Widget/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: Widget/Info.plist
+      properties:
+        CFBundleDisplayName: Floe Timer Qualification
+        CFBundleShortVersionString: '1.0'
+        CFBundleVersion: '1'
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  TimekeepingUnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - UnitTests
+      - ../../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/ToolboxTimekeepingTests.swift
+      - ../../../Tests/FloeAppTests/ToolboxTimerAlarmTests.swift
+      - ../../../Tests/FloeAppTests/SystemAlarmToolsTests.swift
+      - ../../../Tests/FloeAppTests/InlineTimerTests.swift
+    dependencies:
+      - target: FloeTimekeepingQualification
+      - target: TimekeepingUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.timekeeping.tests
+  TimekeepingUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies: [target: FloeTimekeepingQualification]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.timekeeping.uitests
+schemes:
+  TimekeepingComponent:
+    build:
+      targets:
+        TimekeepingUI: all
+  FloeTimekeepingQualification:
+    build:
+      targets:
+        FloeTimekeepingQualification: all
+        TimekeepingUnitTests: [test]
+        TimekeepingUITests: [test]
+    test:
+      targets: [TimekeepingUnitTests, TimekeepingUITests]

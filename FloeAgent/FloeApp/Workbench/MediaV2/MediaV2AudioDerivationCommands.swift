@@ -153,7 +153,7 @@ extension MediaV2Session {
             try? await coordinator.stop(work.instruction)
             // A late reload/lease error must not delete an already committed
             // file. The durable document decides which staged files survive.
-            if let durable = try? await coordinator.loadDocument(id: id) { scope.retainReferenced(durable.assets) }
+            if let durable = try? await coordinator.loadProjectSnapshot(id: id) { scope.retainReferenced(in: durable) }
             throw error
         }
     }

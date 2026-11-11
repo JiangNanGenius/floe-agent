@@ -17,9 +17,6 @@ struct MediaV2AnimationInspector: View {
             if session.tool == "video.motion-path" {
                 Text(WorkbenchText.t("在预览画面上画出片段中心的运动路线。", "Draw the clip center's route on the preview."))
                     .font(.caption).foregroundStyle(.secondary)
-                MediaFingerDrawingToggle()
-                Text(WorkbenchText.t("鼠标和 Apple Pencil 可直接绘制。", "Mouse and Apple Pencil draw directly."))
-                    .font(.caption2).foregroundStyle(.secondary)
                 Button(WorkbenchText.t("清除运动路径", "Clear motion path")) {
                     guard let selected = session.selectedClip else { return }
                     let keys = selected.clip.keyframeTracks.filter { !["centerX","centerY"].contains($0.property.replacingOccurrences(of:"transform.",with:"")) }

@@ -71,9 +71,11 @@ private func makeJournal(_ lease: SessionLease, root: URL) throws -> CaptureJour
     #expect(await connection.sent.count == 1)
 }
 @Test func catalogPreservesOriginalToolsAndAppNavigation() {
-    #expect(ToolboxTool.allCases.count == 18)
+    #expect(ToolboxTool.allCases.count == 31)
     #expect(ToolboxSpacePage.allCases == [.overview,.notes,.files,.toolbox])
     #expect(!ToolboxTool.vnc.hasAssistant)
     #expect([ToolboxTool.serialAssistant,.http,.webSocket,.mqtt].allSatisfy { $0.hasAssistant })
     #expect(ToolboxTool.roaming.group == .diagnostics)
+    #expect([ToolboxTool.level, .motion, .compass, .ruler, .measure, .location].allSatisfy { $0.group == .instruments })
+    #expect(ToolboxTool.calculator.group == .utilities)
 }

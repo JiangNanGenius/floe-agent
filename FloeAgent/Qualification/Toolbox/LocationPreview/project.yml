@@ -1,0 +1,76 @@
+name: FloeLocationPreview
+options:
+  deploymentTarget:
+    iOS: '26.0'
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: '6.0'
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  LocationData:
+    type: framework
+    platform: iOS
+    sources: [../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/ToolboxLocationData.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.location.preview.data
+        PRODUCT_NAME: FloeToolboxUtilities
+        PRODUCT_MODULE_NAME: FloeToolboxUtilities
+  LocationUI:
+    type: framework
+    platform: iOS
+    sources: [../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/ToolboxLocationWorkbench.swift]
+    dependencies: [target: LocationData]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.location.preview.ui
+        PRODUCT_NAME: FloeToolboxWorkbenches
+        PRODUCT_MODULE_NAME: FloeToolboxWorkbenches
+  CoreContract:
+    type: framework
+    platform: iOS
+    sources: [../../../Sources/FloeCore/FloeError.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.location.preview.core
+        PRODUCT_NAME: FloeCore
+        PRODUCT_MODULE_NAME: FloeCore
+  FloeLocationPreview:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - ../../../FloeApp/Platform/LocationServicesCenter.swift
+    dependencies:
+      - target: LocationUI
+      - target: CoreContract
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.location.preview
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleLocalizations: [en, zh-Hans]
+        NSLocationWhenInUseUsageDescription: This preview uses location only when you select Locate.
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+  LocationPreviewUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [../UITests/ToolboxLocationUITests.swift]
+    dependencies: [target: FloeLocationPreview]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.location.preview.uitests
+schemes:
+  FloeLocationPreview:
+    build:
+      targets:
+        FloeLocationPreview: all
+        LocationPreviewUITests: [test]
+    test:
+      targets: [LocationPreviewUITests]

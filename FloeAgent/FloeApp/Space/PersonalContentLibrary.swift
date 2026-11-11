@@ -49,6 +49,20 @@ actor PersonalContentLibrary {
     private let decoder = JSONDecoder()
     private let fileManager = FileManager.default
     private let manifestName = "FloeProject.json"
+    // Native compound lifecycles (including Biology) still call softDelete
+    // through this actor. Pin their event before the first await so the same
+    // durable assistant intent also identifies that exact tombstone.
+    private var fileAssistantTrashEvents: [UUID: UUID] = [:]
+
+    func prepareFileAssistantTrashEvent(projectIDs: Set<UUID>, eventID: UUID) throws {
+        guard projectIDs.allSatisfy({ fileAssistantTrashEvents[$0] == nil || fileAssistantTrashEvents[$0] == eventID }) else {
+            throw PersonalFileAssistantLifecycleError.pending
+        }
+        for id in projectIDs { fileAssistantTrashEvents[id] = eventID }
+    }
+    func releaseFileAssistantTrashEvent(projectIDs: Set<UUID>, eventID: UUID) {
+        for id in projectIDs where fileAssistantTrashEvents[id] == eventID { fileAssistantTrashEvents[id] = nil }
+    }
 
     init(root: URL) {
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
@@ -299,8 +313,9 @@ extension PersonalContentLibrary {
     }
 
     @discardableResult
-    func softDelete(_ selection: PersonalContentRecord) throws -> PersonalLibraryTrashEntry {
+    func softDelete(_ selection: PersonalContentRecord, eventID suppliedEventID: UUID? = nil) throws -> PersonalLibraryTrashEntry {
         try PersonalLibraryTrashStore.locked(root: root) {
+            let eventID = suppliedEventID ?? fileAssistantTrashEvents[selection.id] ?? UUID()
             let value = try resolve(selection.id)
             guard value.record.relativePath == selection.relativePath, value.record.kind == selection.kind,
                   value.record.modifiedAt == selection.modifiedAt else { throw PersonalContentError.changedDocument }
@@ -308,7 +323,9 @@ extension PersonalContentLibrary {
             let info = try value.url.appendingPathComponent(manifestName).resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard info.isRegularFile == true, info.isSymbolicLink != true else { throw PersonalContentError.changedDocument }
             var state = try PersonalLibraryTrashStore.read(root: root)
-            let entry = PersonalLibraryTrashEntry(kind: .work, title: value.record.title, relativePath: value.record.relativePath,
+            guard !state.entries.contains(where: { $0.id == eventID }),
+                  state.assistantPurgeReceipts?.contains(where: { $0.entryID == eventID }) != true else { throw PersonalContentError.changedDocument }
+            let entry = PersonalLibraryTrashEntry(id: eventID, kind: .work, title: value.record.title, relativePath: value.record.relativePath,
                 projectID: value.record.id, contentKind: value.record.kind,
                 resourceIdentity: try PersonalLibraryPurgeIO.resourceIdentity(root: root, path: value.record.relativePath))
             state.entries.append(entry)
@@ -318,7 +335,7 @@ extension PersonalContentLibrary {
     }
 
     @discardableResult
-    func softDeleteFolder(_ selection: PersonalLibraryFolder, expectedProjectIDs: Set<UUID>) throws -> PersonalLibraryTrashEntry {
+    func softDeleteFolder(_ selection: PersonalLibraryFolder, expectedProjectIDs: Set<UUID>, eventID: UUID = UUID()) throws -> PersonalLibraryTrashEntry {
         try PersonalLibraryTrashStore.locked(root: root) {
             let value = try PersonalLibraryTrashStore.folder(root: root, components: selection.components)
             guard value.identity == selection.resourceIdentity else { throw PersonalContentError.changedDocument }
@@ -326,7 +343,9 @@ extension PersonalContentLibrary {
             let members = try records(includingDeleted: true).filter { $0.folders.starts(with: selection.components) }
             guard Set(members.map(\.id)) == expectedProjectIDs else { throw PersonalContentError.changedDocument }
             var state = try PersonalLibraryTrashStore.read(root: root)
-            let entry = PersonalLibraryTrashEntry(kind: .folder, title: selection.name, relativePath: selection.relativePath,
+            guard !state.entries.contains(where: { $0.id == eventID }),
+                  state.assistantPurgeReceipts?.contains(where: { $0.entryID == eventID }) != true else { throw PersonalContentError.changedDocument }
+            let entry = PersonalLibraryTrashEntry(id: eventID, kind: .folder, title: selection.name, relativePath: selection.relativePath,
                 folderID: try PersonalLibraryTrashStore.marker(at: value.url, create: true),
                 resourceIdentity: try PersonalLibraryPurgeIO.resourceIdentity(root: root, path: selection.relativePath))
             state.entries.append(entry)

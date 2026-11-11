@@ -62,6 +62,31 @@ public struct LinuxGuestLocalServiceRequest: Sendable {
     }
 }
 
+/// An opaque reference to the registry's existing session/channel/handle and
+/// launch generation. A PID alone cannot identify an owner after restart.
+public struct LinuxGuestServiceProcessReceipt: Sendable, Equatable {
+    public let reference: UUID
+    public let environmentID: String
+    public let generation: UInt64
+    public let pid: Int32
+
+    public init(reference: UUID = UUID(), environmentID: String, generation: UInt64, pid: Int32) {
+        self.reference = reference
+        self.environmentID = environmentID
+        self.generation = generation
+        self.pid = pid
+    }
+}
+
+public enum LinuxGuestServiceProcessState: Sendable, Equatable {
+    case running
+    /// The original runner confirmed its owned cgroup is empty.
+    case exited
+    /// The captured runtime handle has really ended, independently of work
+    /// admission or whether the current environment still has a descriptor.
+    case environmentGone
+}
+
 public struct LinuxGuestLocalServiceHandle: Sendable, Equatable {
     public var token: String
     public var environmentID: String
@@ -97,7 +122,7 @@ public struct LinuxGuestLocalServiceHandle: Sendable, Equatable {
 }
 
 public struct LinuxGuestLocalServiceSnapshot: Sendable, Equatable {
-    /// starting | running | stopped | failed | unavailable | notFound
+    /// starting | running | stopping | stopped | failed | unavailable | notFound
     ///
     /// `unavailable` is the honest answer when the supervision probe itself
     /// failed: the process is NOT confirmed dead (a transient guest/console
@@ -155,10 +180,33 @@ public protocol LinuxGuestLocalServiceHosting: LinuxCommandRunning {
     /// an observed end that no consumer acknowledged yet survives an app
     /// relaunch and is replayed instead of being lost.
     var localServiceTerminalStoreDirectory: URL? { get }
+    func guestSpawnOwnedService(environmentID: String, argv: [String], workingDirectory: String?, logPath: String,
+        timeout: TimeInterval, cancellation: CancellationToken?) async throws -> LinuxGuestServiceProcessReceipt
+    func guestOwnedServiceState(_ process: LinuxGuestServiceProcessReceipt, timeout: TimeInterval) async throws -> LinuxGuestServiceProcessState
+    /// True only after this receipt's same runner confirms whole-tree end.
+    func guestStopOwnedService(_ process: LinuxGuestServiceProcessReceipt, timeout: TimeInterval) async throws -> Bool
+    func guestEnsureOwnedServiceForward(_ process: LinuxGuestServiceProcessReceipt, forward: LinuxGuestServiceForward) async throws
+    /// Releases only the captured receipt's forward, after terminal proof.
+    func guestReleaseOwnedService(_ process: LinuxGuestServiceProcessReceipt, forward: LinuxGuestServiceForward) async -> Bool
 }
 
 public extension LinuxGuestLocalServiceHosting {
     var localServiceTerminalStoreDirectory: URL? { nil }
+
+    // Source-compatible but deliberately conservative: old implementations
+    // of PID-only operations do not acquire whole-tree semantics by default.
+    func guestSpawnOwnedService(environmentID: String, argv: [String], workingDirectory: String?, logPath: String,
+        timeout: TimeInterval, cancellation: CancellationToken?) async throws -> LinuxGuestServiceProcessReceipt {
+        throw LinuxGuestError.consoleUnavailable("owned guest service supervision is unavailable")
+    }
+    func guestOwnedServiceState(_ process: LinuxGuestServiceProcessReceipt, timeout: TimeInterval) async throws -> LinuxGuestServiceProcessState {
+        throw LinuxGuestError.consoleUnavailable("owned guest service termination cannot be verified")
+    }
+    func guestStopOwnedService(_ process: LinuxGuestServiceProcessReceipt, timeout: TimeInterval) async throws -> Bool { false }
+    func guestEnsureOwnedServiceForward(_ process: LinuxGuestServiceProcessReceipt, forward: LinuxGuestServiceForward) async throws {
+        throw LinuxGuestError.consoleUnavailable("the original service's guest forward is unavailable")
+    }
+    func guestReleaseOwnedService(_ process: LinuxGuestServiceProcessReceipt, forward: LinuxGuestServiceForward) async -> Bool { false }
 }
 
 /// Why a supervised guest service is no longer running, exactly as the host
@@ -291,6 +339,24 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
     private let limits: LinuxGuestLimits
     private let maxLogTailBytes: Int
     private var active: [String: LinuxGuestLocalServiceHandle] = [:]
+    private var ownedProcesses: [String: LinuxGuestServiceProcessReceipt] = [:]
+    private var unpublishedServices: Set<String> = []
+    private var stopRequested: Set<String> = []
+    private var stopsInFlight: Set<String> = []
+    private var stopErrors: [String: String] = [:]
+
+    private static var stopUnconfirmedMessage: String {
+        NSLocalizedString("linux_service.stop_unconfirmed", bundle: .main,
+            value: "Unable to confirm the service stopped. Try again.", comment: "Guest service stop has not been confirmed")
+    }
+
+    private static func stopMessage(for error: Error) -> String {
+        if let guestError = error as? LinuxGuestError, case .runnerUpgradeRequired = guestError {
+            return NSLocalizedString("linux_service.update_required", bundle: .main,
+                value: "Update the Linux component, then try again.", comment: "Guest service supervision requires an updated Linux component")
+        }
+        return stopUnconfirmedMessage
+    }
     private var lifecycleObservers: [UUID: LifecycleObservation] = [:]
     private var lifecycleDeliveryTasks: [UUID: Task<Void, Never>] = [:]
     /// One parked delivery wait per observer (ack, new pending event, removal).
@@ -646,15 +712,13 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
     /// process is killed and the just-published forward is withdrawn before
     /// the start fails. A forward that was never added is removed idempotently.
     private func abandonSpawnedService(
-        environmentID: String,
-        pid: Int32,
-        forward: LinuxGuestServiceForward
-    ) async {
-        _ = try? await host.guestKillService(environmentID: environmentID, pid: pid, timeout: 10)
-        await host.guestRemoveForward(environmentID: environmentID, forward: forward)
+        _ handle: LinuxGuestLocalServiceHandle
+    ) async -> Bool {
+        await stopLocalService(handle)
         FloeLogger(category: .tools).info(
-            "Linux guest service start abandoned environment=\(environmentID) pid=\(pid) reason=environmentStopped"
+            "Linux guest service start abandoned environment=\(handle.environmentID) pid=\(handle.pid) reason=environmentStopped"
         )
+        return active[handle.token] == nil
     }
 
     public func startLocalService(
@@ -750,7 +814,7 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         // guest that is gone.
         try requireServiceStartEpoch(environmentID: environmentID, epoch: startEpoch)
 
-        let pid = try await host.guestSpawn(
+        let process = try await host.guestSpawnOwnedService(
             environmentID: environmentID,
             argv: command,
             workingDirectory: workingGuest,
@@ -764,11 +828,31 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
             hostPort: UInt16(request.port),
             guestPort: UInt16(request.port)
         )
+        let handle = LinuxGuestLocalServiceHandle(
+            token: UUID().uuidString,
+            environmentID: environmentID,
+            runtime: request.runtime,
+            pid: process.pid,
+            port: request.port,
+            forward: forward,
+            logHostPath: request.logFile.path,
+            logGuestPath: logGuest,
+            startedAt: Date()
+        )
+        // Publish ownership before another await. A failed/invalidated start
+        // must still return this retryable handle if cleanup is unconfirmed;
+        // throwing and losing it would let the caller discard auth/lease data.
+        active[handle.token] = handle
+        ownedProcesses[handle.token] = process
+        unpublishedServices.insert(handle.token)
         do {
-            try await host.guestEnsureForward(environmentID: environmentID, forward: forward)
+            try await host.guestEnsureOwnedServiceForward(process, forward: forward)
         } catch {
-            // A service nobody can reach is a leak: kill it before reporting.
-            _ = try? await host.guestKillService(environmentID: environmentID, pid: pid, timeout: 10)
+            await stopLocalService(handle)
+            if active[handle.token] == handle {
+                unpublishedServices.remove(handle.token)
+                return handle
+            }
             throw error
         }
 
@@ -776,132 +860,114 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         // that claimed this environment while the start crossed its awaits
         // wins. The spawned process and the just-published forward are cleaned
         // up so the stop leaves no orphan behind, and no handle is published.
-        guard serviceStartEpochs[environmentID, default: 0] == startEpoch else {
-            await abandonSpawnedService(environmentID: environmentID, pid: pid, forward: forward)
+        guard serviceStartEpochs[environmentID, default: 0] == startEpoch,
+              !Task.isCancelled, cancellation?.isCancelled != true else {
+            if !(await abandonSpawnedService(handle)) {
+                unpublishedServices.remove(handle.token)
+                return handle
+            }
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
-
-        let handle = LinuxGuestLocalServiceHandle(
-            token: UUID().uuidString,
-            environmentID: environmentID,
-            runtime: request.runtime,
-            pid: pid,
-            port: request.port,
-            forward: forward,
-            logHostPath: request.logFile.path,
-            logGuestPath: logGuest,
-            startedAt: Date()
-        )
-        active[handle.token] = handle
+        unpublishedServices.remove(handle.token)
         FloeLogger(category: .tools).info(
-            "Linux guest service started environment=\(environmentID) pid=\(pid) port=\(request.port) runtime=\(request.runtime.rawValue)"
+            "Linux guest service started environment=\(environmentID) pid=\(process.pid) port=\(request.port) runtime=\(request.runtime.rawValue)"
         )
         return handle
     }
 
     public func localServiceSnapshot(_ handle: LinuxGuestLocalServiceHandle) async -> LinuxGuestLocalServiceSnapshot {
-        guard active[handle.token] != nil else {
+        guard let owned = active[handle.token] else {
             return LinuxGuestLocalServiceSnapshot(state: "notFound", pid: handle.pid)
         }
-        // A stopped guest takes its services with it; report that as stopped
-        // instead of an error so the job can finish honestly.
-        guard await host.supports(environmentID: handle.environmentID) else {
-            // Revalidate after the await: an explicit stop may have claimed
-            // this handle while the guest state was being read. A handle the
-            // host already stopped is not an unexpected end.
-            guard active.removeValue(forKey: handle.token) != nil else {
-                let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
-                return LinuxGuestLocalServiceSnapshot(
-                    state: "stopped",
-                    pid: handle.pid,
-                    alive: false,
-                    stdout: tail.text,
-                    truncated: tail.truncated,
-                    logBytes: tail.bytes
-                )
-            }
-            // The environment went away without a stop routed through this
-            // supervisor. Surface it once with the real identity; the cause
-            // stays "the environment is gone" because the guest is not
-            // readable any more.
-            await host.guestRemoveForward(environmentID: handle.environmentID, forward: handle.forward)
-            emitLifecycleEvent(handle: handle, reason: .environmentGone)
-            let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
-            return LinuxGuestLocalServiceSnapshot(
-                state: "stopped",
-                pid: handle.pid,
-                alive: false,
-                stdout: tail.text,
-                truncated: tail.truncated,
-                logBytes: tail.bytes,
-                lastError: LinuxGuestError.notRunning(environmentID: handle.environmentID).localizedDescription
-            )
+        guard owned == handle, let process = ownedProcesses[handle.token] else {
+            return LinuxGuestLocalServiceSnapshot(state: "unavailable", pid: handle.pid,
+                lastError: Self.stopUnconfirmedMessage)
         }
-        let alive: Bool
+        let state: LinuxGuestServiceProcessState
         do {
-            alive = try await host.guestServiceAlive(environmentID: handle.environmentID, pid: handle.pid, timeout: 10)
+            // supports() is work admission, not runtime death. Busy/stopping
+            // and descriptor errors must never clear a still-owned service.
+            state = try await host.guestOwnedServiceState(process, timeout: 10)
         } catch {
-            // Could not verify liveness. A transient console/guest error is
-            // NOT a confirmed exit: keep the handle owned so a later probe
-            // can decide, and answer "unavailable" instead of claiming the
-            // process failed. No lifecycle event is emitted.
-            return LinuxGuestLocalServiceSnapshot(
-                state: "unavailable",
-                pid: handle.pid,
-                alive: false,
-                lastError: error.localizedDescription
-            )
-        }
-        if !alive {
-            // Revalidate after the await: an explicit stop that landed while
-            // the probe was in flight owns this end, and a stale probe result
-            // must never emit a failure event.
-            guard active.removeValue(forKey: handle.token) != nil else {
-                let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
-                return LinuxGuestLocalServiceSnapshot(
-                    state: "stopped",
-                    pid: handle.pid,
-                    alive: false,
-                    stdout: tail.text,
-                    truncated: tail.truncated,
-                    logBytes: tail.bytes
-                )
+            if active[handle.token] == nil {
+                return serviceLogSnapshot(handle, state: "stopped", alive: false)
             }
-            // Confirmed exit: drop the published port forward first so a dead
-            // service is not reachable, then report the end exactly once.
-            await host.guestRemoveForward(environmentID: handle.environmentID, forward: handle.forward)
-            emitLifecycleEvent(handle: handle, reason: .processExited)
-            let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
-            return LinuxGuestLocalServiceSnapshot(
-                state: "stopped",
-                pid: handle.pid,
-                alive: false,
-                stdout: tail.text,
-                truncated: tail.truncated,
-                logBytes: tail.bytes
-            )
+            return LinuxGuestLocalServiceSnapshot(state: "unavailable", pid: handle.pid,
+                lastError: Self.stopMessage(for: error))
         }
+        guard active[handle.token] == handle else {
+            return serviceLogSnapshot(handle, state: "stopped", alive: false)
+        }
+        switch state {
+        case .running:
+            return serviceLogSnapshot(handle, state: stopRequested.contains(handle.token) ? "stopping" : "running",
+                alive: true, error: stopErrors[handle.token])
+        case .exited, .environmentGone:
+            let reason: LinuxGuestLocalServiceStopReason = state == .environmentGone ? .environmentGone : .processExited
+            guard await finishService(handle, reason: reason) else {
+                return serviceLogSnapshot(handle, state: "unavailable", alive: false,
+                    error: stopErrors[handle.token] ?? Self.stopUnconfirmedMessage)
+            }
+            return serviceLogSnapshot(handle, state: "stopped", alive: false)
+        }
+    }
+
+    private func serviceLogSnapshot(_ handle: LinuxGuestLocalServiceHandle, state: String, alive: Bool,
+        error: String? = nil) -> LinuxGuestLocalServiceSnapshot {
         let tail = Self.readLogTail(handle.logHostPath, maxBytes: maxLogTailBytes)
-        return LinuxGuestLocalServiceSnapshot(
-            state: "running",
-            pid: handle.pid,
-            alive: true,
-            stdout: tail.text,
-            truncated: tail.truncated,
-            logBytes: tail.bytes
-        )
+        return LinuxGuestLocalServiceSnapshot(state: state, pid: handle.pid, alive: alive,
+            stdout: tail.text, truncated: tail.truncated, logBytes: tail.bytes, lastError: error)
+    }
+
+    /// This helper is reachable only after whole-tree/runtime terminal proof.
+    /// Keep active ownership through forward release; emit once, after the
+    /// final await, and let any explicit stop racing a monitor own the reason.
+    private func finishService(_ handle: LinuxGuestLocalServiceHandle,
+        reason: LinuxGuestLocalServiceStopReason) async -> Bool {
+        guard active[handle.token] == handle, let process = ownedProcesses[handle.token] else {
+            return active[handle.token] == nil
+        }
+        guard await host.guestReleaseOwnedService(process, forward: handle.forward) else {
+            if active[handle.token] == handle {
+                stopErrors[handle.token] = Self.stopUnconfirmedMessage
+            }
+            return false
+        }
+        guard active[handle.token] == handle else { return active[handle.token] == nil }
+        let observedReason = stopRequested.contains(handle.token) ? .hostStopRequested : reason
+        let published = unpublishedServices.remove(handle.token) == nil
+        active[handle.token] = nil
+        ownedProcesses[handle.token] = nil
+        stopRequested.remove(handle.token)
+        stopErrors[handle.token] = nil
+        if published { emitLifecycleEvent(handle: handle, reason: observedReason) }
+        return true
     }
 
     public func stopLocalService(_ handle: LinuxGuestLocalServiceHandle) async {
-        // Explicit stop: the handle only produces a lifecycle event when this
-        // supervisor still owned it. Killing is still attempted for a handle
-        // that was already released (idempotent guest KILL).
-        let wasOwned = active.removeValue(forKey: handle.token) != nil
-        if wasOwned {
-            emitLifecycleEvent(handle: handle, reason: .hostStopRequested)
+        // A released/forged handle never sends KILL to a possibly recycled PID.
+        guard active[handle.token] == handle, let process = ownedProcesses[handle.token] else { return }
+        stopRequested.insert(handle.token)
+        guard !stopsInFlight.contains(handle.token) else { return }
+        guard !Task.isCancelled else {
+            stopErrors[handle.token] = Self.stopUnconfirmedMessage
+            return
         }
-        _ = try? await host.guestKillService(environmentID: handle.environmentID, pid: handle.pid, timeout: 15)
-        await host.guestRemoveForward(environmentID: handle.environmentID, forward: handle.forward)
+        stopsInFlight.insert(handle.token)
+        defer { stopsInFlight.remove(handle.token) }
+        do {
+            guard try await host.guestStopOwnedService(process, timeout: 15) else {
+                if active[handle.token] == handle {
+                    stopErrors[handle.token] = Self.stopUnconfirmedMessage
+                }
+                return
+            }
+            _ = await finishService(handle, reason: .hostStopRequested)
+        } catch {
+            if active[handle.token] == handle {
+                stopErrors[handle.token] = Self.stopMessage(for: error)
+            }
+        }
     }
 
     public func stopLocalServices(environmentID: String) async {
@@ -930,7 +996,10 @@ public actor LinuxGuestLocalServiceSupervisor: LinuxGuestLocalServiceControlling
         await waitForPendingServiceStarts(environmentID: environmentID)
         let owned = active.values.filter { $0.environmentID == environmentID }
         for handle in owned {
-            await stopLocalService(handle)
+            stopRequested.insert(handle.token)
+            // The registry may have quarantined a VM that refused to stop.
+            // Only the captured handle's actual end can force-release it.
+            _ = await localServiceSnapshot(handle)
         }
         await stopOAuthPrivateWorkers(environmentID: environmentID)
     }

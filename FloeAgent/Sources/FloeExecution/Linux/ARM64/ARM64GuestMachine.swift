@@ -1,5 +1,5 @@
 // ARM64GuestMachine.swift — the native Swift machine adapter for the
-// embedded ARM64 C ABI (floe_arm64emu.h, ABI v2).
+// embedded ARM64 C ABI (floe_arm64emu.h, ABI v3).
 //
 // Lifecycle contract implemented here:
 //   * One worker thread owns create → slice loop → wait_event → destroy.
@@ -97,6 +97,26 @@ public struct ARM64ShareInfo: Sendable, Equatable {
     public var guestUID: UInt32
     public var guestGID: UInt32
     public var mountTag: String
+}
+
+/// Online memory budget snapshot (floe_ae_mem_info). Three quantities stay
+/// deliberately distinct: the caller's `targetMiB`, the guest's true
+/// `pluggedMiB`, and the engine envelope (snapshot.ramBytes). During a
+/// shrink with busy pages the guest keeps memory plugged, so `pluggedMiB`
+/// can sit above `targetMiB` until the guest finishes — the adapter reports
+/// the real value and never substitutes the target.
+public struct ARM64MemoryBudget: Sendable, Equatable {
+    /// The machine carries the virtio-mem device (ABI 3 create with online
+    /// memory enabled). False on older engine shapes.
+    public var present: Bool
+    /// Guest-visible boot RAM.
+    public var bootMiB: UInt32
+    /// Configured total budget (what the host last requested).
+    public var targetMiB: UInt32
+    /// What the guest driver has actually plugged so far.
+    public var pluggedMiB: UInt32
+    /// Hard ceiling (boot RAM + managed region).
+    public var maxMiB: UInt32
 }
 
 /// Worker-exclusive progress. Cancellation is carried by ResumeOnce's lock;
@@ -371,6 +391,108 @@ public final class ARM64GuestMachine: @unchecked Sendable {
                 txFrames: info.tx_frames,
                 rxRefused: info.rx_refused
             ))
+        }
+    }
+
+    /// Set the total memory budget while the machine runs (256...1024 MiB on
+    /// the standard ladder). The engine updates the virtio-mem requested_size
+    /// and wakes the guest; the guest driver plugs/unplugs asynchronously, so
+    /// the returned snapshot's `pluggedMiB` is the actual state at return
+    /// time and may differ from `targetMiB` (grow is usually immediate;
+    /// shrink with busy pages stays pending until the guest migrates them).
+    /// The machine is never restarted to satisfy the request.
+    ///
+    /// - Throws: `ARM64MachineError.invalidConfiguration` when the machine
+    ///   carries no virtio-mem device (engine UNSUPPORTED) — a budget change
+    ///   is never silently accepted on a machine that cannot apply it.
+    @discardableResult
+    public func setMemoryBudget(_ totalMiB: Int) async throws -> ARM64MemoryBudget {
+        guard totalMiB >= 256 && totalMiB <= 1024 else {
+            throw ARM64MachineError.invalidConfiguration(
+                "memory budget must be 256...1024 MiB, got \(totalMiB)")
+        }
+        let before = try await memoryBudget()
+        guard before.present else {
+            throw ARM64MachineError.invalidConfiguration("Online memory is unavailable on this machine")
+        }
+        let additional = max(0, totalMiB - max(Int(before.targetMiB), Int(before.pluggedMiB)))
+        if additional > 0, let available = headroomProbe(),
+           available < RuntimeProcessHeadroom.requiredBytes(guestRAMMiB: additional,
+               hostOverheadMiB: 0, futureReserveMiB: 256) {
+            throw ARM64MachineError.createFailed(code: Int32(FLOE_AE_NOMEM),
+                detail: String(localized: "execution.shared.memory_headroom"))
+        }
+        let _: Void = try await enqueueOperation { handle, token in
+            let code = floe_ae_mem_resize(handle, UInt32(totalMiB))
+            guard code == FLOE_AE_OK else {
+                // UNSUPPORTED is a failure here: the machine has no online
+                // memory device, so the requested budget was NOT applied.
+                token.resume(throwing: ARM64MachineError.invalidConfiguration(
+                    "online memory is unavailable on this machine (mem_resize: \(ARM64EngineCode.name(code)))"))
+                return
+            }
+            token.resume()
+        }
+        return try await memoryBudget()
+    }
+
+    /// Read-only online memory snapshot; safe while running.
+    public func memoryBudget() async throws -> ARM64MemoryBudget {
+        try await enqueueOperation { handle, token in
+            var info = floe_ae_mem_info()
+            memset(&info, 0, MemoryLayout<floe_ae_mem_info>.size)
+            info.struct_size = UInt32(MemoryLayout<floe_ae_mem_info>.size)
+            let code = floe_ae_mem_get_info(handle, &info)
+            guard code == FLOE_AE_OK else {
+                token.resume(throwing: ARM64MachineError.engineBusy("mem_get_info: \(ARM64EngineCode.name(code))"))
+                return
+            }
+            token.resume(returning: ARM64MemoryBudget(
+                present: info.present != 0,
+                bootMiB: info.boot_mib,
+                targetMiB: info.target_mib,
+                pluggedMiB: info.plugged_mib,
+                maxMiB: info.max_mib
+            ))
+        }
+    }
+
+    /// Change the optional GPU's allocation budget between interpreter slices.
+    /// A lower target preserves existing allocations and may remain pending.
+    @discardableResult
+    public func setGPUBudget(_ mebibytes: Int) async throws -> ARM64GPUBudget {
+        guard (1...2048).contains(mebibytes) else {
+            throw ARM64MachineError.invalidConfiguration("GPU budget must be 1...2048 MiB")
+        }
+        let _: Void = try await enqueueOperation { handle, token in
+            let code = floe_ae_gpu_set_budget(handle, UInt64(mebibytes) * 1_048_576)
+            guard code == FLOE_AE_OK else {
+                token.resume(throwing: ARM64MachineError.invalidConfiguration(
+                    "GPU budget is unavailable (\(ARM64EngineCode.name(code)))"))
+                return
+            }
+            token.resume()
+        }
+        return try await gpuBudget()
+    }
+
+    public func gpuBudget() async throws -> ARM64GPUBudget {
+        try await enqueueOperation { handle, token in
+            var info = floe_ae_gpu_info()
+            info.struct_size = UInt32(MemoryLayout<floe_ae_gpu_info>.size)
+            let code = floe_ae_gpu_get_info(handle, &info)
+            guard code == FLOE_AE_OK else {
+                token.resume(throwing: ARM64MachineError.engineBusy(
+                    "gpu_get_info: \(ARM64EngineCode.name(code))"))
+                return
+            }
+            token.resume(returning: ARM64GPUBudget(
+                present: info.present != 0,
+                requestedBytes: info.requested_bytes, effectiveBytes: info.effective_bytes,
+                targetBytes: info.target_bytes, hostBlobBytes: info.host_blob_bytes,
+                hostInternalBytes: info.host_internal_bytes,
+                logicalResourceBytes: info.logical_resource_bytes, mappedAliasBytes: info.mapped_alias_bytes,
+                pending: info.pending != 0, clamped: info.clamped != 0, needsReset: info.needs_reset != 0))
         }
     }
 

@@ -37,6 +37,15 @@ struct HomeOverviewView: View {
     @State private var presentsTaskManagement = false
     @State private var managementFilter: ConversationBatchManagementView.Filter = .active
     @State private var restoreFailure: String?
+    /// The file-task area is a quiet, persistent home for document-bound
+    /// assistants; it starts collapsed so many finished file tasks never
+    /// inflate the ordinary sections. Running file tasks remain globally
+    /// visible in the running section above.
+    @State private var fileTasksExpanded = false
+    @State private var fileTaskKind: PersonalContentKind?
+    @State private var openingFileTask: PersonalContentRecord?
+    @State private var fileTaskOpen: Task<Void, Never>?
+    @State private var fileTaskOpenID: UUID?
     /// Long-press multi-select in this overview (no management sheet; bulk
     /// archive/delete run through the existing task bulk engine). The
     /// dedicated archived-management page keeps its own restore surface.
@@ -81,10 +90,43 @@ struct HomeOverviewView: View {
                         .frame(minHeight: FloeTheme.minimumTarget)
                         .accessibilityLabel(
                             String(localized: "approval.required")
-                                + " " + approval.toolCall.toolName
+                            + " " + approval.toolCall.toolName
                         )
                     }
                 }
+            }
+            if !viewModel.fileAssistantTasks.isEmpty {
+                Section {
+                    DisclosureGroup(isExpanded: $fileTasksExpanded) {
+                        Picker(scheduleText(zh: "文件类型", en: "File type"), selection: $fileTaskKind) {
+                            Text(scheduleText(zh: "全部类型", en: "All types")).tag(nil as PersonalContentKind?)
+                            ForEach(fileTaskKinds, id: \.self) { kind in
+                                Text(kind.title).tag(Optional(kind))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityIdentifier("taskCenter.fileTasks.kind")
+                        ForEach(fileTasks) { conversation in
+                            overviewRow(conversation, showsState: true)
+                        }
+                        if fileTasks.isEmpty {
+                            Text(scheduleText(zh: "没有匹配的文件任务", en: "No matching file tasks"))
+                                .foregroundStyle(.secondary)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Label(scheduleText(zh: "文件任务", en: "File Tasks"),
+                                  systemImage: "doc.text.magnifyingglass")
+                            Spacer(minLength: 4)
+                            Text("\(fileTasks.count)")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                        .accessibilityIdentifier("taskCenter.fileTasks.header")
+                    }
+                }
+                .accessibilityIdentifier("taskCenter.fileTasks")
             }
             if !failedTasks.isEmpty {
                 Section("home.home_overview_view.failed_or_interrupted") {
@@ -363,6 +405,13 @@ struct HomeOverviewView: View {
             // never leave an invisible pending selection behind.
             selection.pruneInvisible(Set(ids))
         }
+        .onChange(of: fileTaskKinds) { _, kinds in
+            if let fileTaskKind, !kinds.contains(fileTaskKind) { self.fileTaskKind = nil }
+        }
+        .onChange(of: selection.isActive) { _, active in
+            if active { cancelFileTaskOpen() }
+        }
+        .onDisappear { cancelFileTaskOpen() }
         // The canonical management surface, shared with Settings > Data
         // Management: selection, archive/restore and delete all run here
         // through the existing lifecycle commands. Reached from the
@@ -371,6 +420,10 @@ struct HomeOverviewView: View {
         .sheet(isPresented: $presentsTaskManagement) {
             ConversationBatchManagementView(center: center, initialFilter: managementFilter)
                 .id(managementFilter)
+        }
+        .fullScreenCover(item: $openingFileTask, onDismiss: { Task { await load() } }) { record in
+            PersonalContentEditor(record: record, opensAssistantOnLoad: true)
+                .environmentObject(viewModel.environment)
         }
         .sheet(isPresented: $showingSchedule) {
             TaskScheduleSheet {
@@ -428,35 +481,47 @@ struct HomeOverviewView: View {
             && viewModel.pendingApprovals.isEmpty
             && failedTasks.isEmpty
             && completedTasks.isEmpty
+            && viewModel.fileAssistantTasks.isEmpty
             && schedules.isEmpty
             && cleanupReminders.isEmpty
             && authoring.taskCenterRecords.isEmpty
             && archivedTasks.isEmpty
     }
 
-    private var filteredConversations: [ConversationRecord] {
-        guard !searchText.isEmpty else { return viewModel.recentConversations }
-        return viewModel.recentConversations.filter {
-            $0.title.localizedCaseInsensitiveContains(searchText)
+    /// Idle/finished file tasks. Running and attention rows remain outside.
+    private var fileTasks: [ConversationRecord] {
+        searchFiltered(viewModel.fileAssistantTasks).filter { conversation in
+            fileTaskKind == nil || viewModel.fileAssistantFiles[conversation.id]?.kind == fileTaskKind
         }
     }
 
+    private var fileTaskKinds: [PersonalContentKind] {
+        Set(viewModel.fileAssistantTasks.compactMap { viewModel.fileAssistantFiles[$0.id]?.kind })
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// Merged global running bucket (ordinary + running file tasks),
+    /// title-filtered by the overview search.
     private var runningTasks: [ConversationRecord] {
-        filteredConversations.filter {
-            guard let state = viewModel.latestRunStates[$0.id] else { return false }
-            return !RunStateLocalizer.isTerminal(state) && state != "waitingApproval"
-        }
+        searchFiltered(viewModel.activeTasks)
     }
 
+    /// Merged global failed/interrupted bucket; completed file tasks live
+    /// only in the collapsed file area.
     private var failedTasks: [ConversationRecord] {
-        filteredConversations.filter {
-            guard let state = viewModel.latestRunStates[$0.id] else { return false }
-            return ["failed", "interrupted", "checkpointed"].contains(state)
-        }
+        searchFiltered(viewModel.failedTasks)
     }
 
     private var completedTasks: [ConversationRecord] {
-        filteredConversations.filter { viewModel.latestRunStates[$0.id] == "completed" }
+        searchFiltered(viewModel.completedTasks)
+    }
+
+    private func searchFiltered(_ records: [ConversationRecord]) -> [ConversationRecord] {
+        guard !searchText.isEmpty else { return records }
+        return records.filter {
+            $0.title.localizedCaseInsensitiveContains(searchText)
+                || viewModel.fileAssistantFiles[$0.id]?.title.localizedCaseInsensitiveContains(searchText) == true
+        }
     }
 
     /// Inline bilingual fallback for strings whose central catalog entry has
@@ -518,7 +583,10 @@ struct HomeOverviewView: View {
         let pending = (try? await store.pendingOccurrences(limit: 200)) ?? []
         pendingOccurrenceScheduleIDs = Set(pending.map(\.scheduleID))
         archivedTasks = ((try? await viewModel.environment.conversationStore
-            .conversations(includeArchived: true)) ?? []).filter { $0.archivedAt != nil }
+            .conversations(includeArchived: true)) ?? []).filter {
+                $0.archivedAt != nil && !viewModel.environment.conversationCenter
+                    .unavailableFileAssistantConversationIDs.contains($0.id)
+            }
     }
 
     // MARK: - Work session row (foreground start/stop; honest counts only)
@@ -683,12 +751,61 @@ struct HomeOverviewView: View {
         }
     }
 
+    @MainActor private func cancelFileTaskOpen() {
+        fileTaskOpen?.cancel()
+        fileTaskOpen = nil
+        fileTaskOpenID = nil
+    }
+
+    @MainActor private func openTask(_ conversation: ConversationRecord) {
+        cancelFileTaskOpen()
+        guard center.isFileAssistantConversation(conversation.id)
+                || viewModel.fileAssistantFiles[conversation.id] != nil else {
+            router.openThreadFromHome(conversation.id)
+            return
+        }
+        let requestID = UUID()
+        fileTaskOpenID = requestID
+        fileTaskOpen = Task { @MainActor in
+            defer {
+                if fileTaskOpenID == requestID {
+                    fileTaskOpenID = nil
+                    fileTaskOpen = nil
+                }
+            }
+            do {
+                let authority = try viewModel.environment.studioCoordinator.access.get()
+                guard let projectID = try await authority.assistantProject(conversationID: conversation.id) else {
+                    throw PersonalContentError.changedDocument
+                }
+                let library = try await PersonalContentService.shared.library()
+                let location = try await library.resolve(projectID)
+                guard try await authority.assistant(projectID: projectID) == conversation.id else {
+                    throw PersonalContentError.changedDocument
+                }
+                try Task.checkCancellation()
+                guard fileTaskOpenID == requestID else { return }
+                openingFileTask = location.record
+            } catch is CancellationError {
+            } catch {
+                guard !Task.isCancelled, fileTaskOpenID == requestID else { return }
+                if case PersonalContentError.missingDocument = error {
+                    restoreFailure = scheduleText(
+                        zh: "请到空间检查此文件；如在最近删除中，请恢复后再打开。",
+                        en: "Check this file in Space. If it is in Recently Deleted, restore it before opening.")
+                } else {
+                    restoreFailure = ConversationTaskBulkService.failureText(for: error)
+                }
+            }
+        }
+    }
+
     private func overviewRow(_ conversation: ConversationRecord, showsState: Bool) -> some View {
         Button {
             if selection.isActive {
                 selection.toggle(conversation.id)
             } else {
-                router.openThreadFromHome(conversation.id)
+                openTask(conversation)
             }
         } label: {
             HStack(spacing: 10) {
@@ -699,9 +816,9 @@ struct HomeOverviewView: View {
                     )
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(conversation.title.isEmpty
+                    Text(viewModel.fileAssistantFiles[conversation.id]?.title ?? (conversation.title.isEmpty
                          ? String(localized: "chat.untitled")
-                         : conversation.title)
+                         : conversation.title))
                         .font(FloeTheme.Typography.body.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -747,18 +864,21 @@ struct HomeOverviewView: View {
     }
 
     private var visibleTaskIDList: [UUID] {
-        var ids: [UUID] = []
-        ids.append(contentsOf: runningTasks.map(\.id))
-        ids.append(contentsOf: failedTasks.map(\.id))
-        ids.append(contentsOf: completedTasks.map(\.id))
-        return ids
+        // A running/failed file task appears both in its global bucket and
+        // in the collapsed file area: selection identity stays unique.
+        var seen: Set<UUID> = []
+        return (runningTasks + failedTasks + completedTasks + fileTasks)
+            .filter { seen.insert($0.id).inserted }
+            .map(\.id)
     }
 
     /// Selected visible task rows with visible titles, frozen by the
     /// confirmation dialog.
     private var selectedTaskItems: [TaskBulkItem] {
-        (runningTasks + failedTasks + completedTasks)
+        var seen: Set<UUID> = []
+        return (runningTasks + failedTasks + completedTasks + fileTasks)
             .filter { selection.selectedIDs.contains($0.id) }
+            .filter { seen.insert($0.id).inserted }
             .map { TaskBulkItem(id: $0.id, title: InlineSelectionCopy.untitled($0.title)) }
     }
 }

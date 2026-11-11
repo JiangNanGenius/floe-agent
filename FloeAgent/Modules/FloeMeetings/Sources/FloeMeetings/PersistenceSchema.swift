@@ -41,6 +41,9 @@ struct CaptureSessionRecord: Codable, FetchableRecord, PersistableRecord {
     var startedAt: Date?
     var endedAt: Date?
     var stopReason: String?
+    /// Analysis sessions imported from one original capture record that
+    /// original's id here (trusted lineage; nil for standalone imports).
+    var originSessionID: String? = nil
 }
 
 // MARK: - Speakers
@@ -52,6 +55,19 @@ struct SpeakerRecord: Codable, FetchableRecord, PersistableRecord {
     var label: String
     var userNamed: Bool
     var mergedInto: String?
+}
+
+/// One engine-label → stable speaker mapping, scoped to ONE real recognition
+/// request. Providers restart their speaker numbering on every new request or
+/// reconnect, so a "1" from an independent request must never be assumed to
+/// be the same person; the scope is the identity of the actual ASR request
+/// (one live-chunk attempt's request key, or one whole-file analysis session).
+struct SpeakerBindingRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "speaker_bindings"
+    var meetingID: String
+    var scope: String
+    var providerLabel: String
+    var speakerID: String
 }
 
 // MARK: - Transcript
@@ -68,6 +84,12 @@ struct TranscriptSegmentRecord: Codable, FetchableRecord, PersistableRecord {
     var text: String
     var originalText: String?
     var correctedBy: String?
+    var speakerCorrected: Bool
+    // Keep superseded engine rows for existing segment references.
+    var superseded: Bool = false
+    /// Stable identity of one utterance within ONE live request domain
+    /// (`<scope UUID>|<start ms>|<end ms>`); nil for file/canonical rows.
+    var liveKey: String? = nil
     var language: String?
     var sourceJSON: String
 }
@@ -135,6 +157,9 @@ struct SummaryRecordRow: Codable, FetchableRecord, PersistableRecord {
 /// mid-write cannot produce a half-committed meeting.
 public actor MeetingDatabase {
     let pool: DatabasePool
+    /// Internal deterministic test seam, always awaited before acquiring the
+    /// commit permit. Production leaves it nil; revocation never waits on it.
+    var beforeLiveTranscriptCommit: (@Sendable () async -> Void)?
 
     public init(path: String) throws {
         do {
@@ -246,6 +271,49 @@ public actor MeetingDatabase {
             try db.alter(table: "capture_sessions") { table in
                 table.add(column: "durationSeconds", .double)
             }
+        }
+        migrator.registerMigration("v3-speaker-bindings") { db in
+            try db.create(table: "speaker_bindings") { table in
+                table.column("meetingID", .text).notNull().indexed()
+                    .references("meetings", onDelete: .cascade)
+                table.column("scope", .text).notNull().indexed()
+                table.column("providerLabel", .text).notNull()
+                table.column("speakerID", .text).notNull().indexed()
+                table.primaryKey(["meetingID", "scope", "providerLabel"])
+            }
+        }
+        migrator.registerMigration("v4-segment-speaker-correction") { db in
+            // 1 = the user corrected this segment's speaker attribution; a
+            // later canonical transcription pass must not overwrite it.
+            try db.alter(table: "transcript_segments") { table in
+                table.add(column: "speakerCorrected", .boolean).notNull().defaults(to: false)
+            }
+        }
+        migrator.registerMigration("v5-canonical-transcript-history") { db in
+            try db.alter(table: "transcript_segments") { table in
+                table.add(column: "superseded", .boolean).notNull().defaults(to: false)
+            }
+        }
+        // W7 continuous live recognition. Both columns are additive and
+        // nullable; every pre-existing row keeps NULL and behaves exactly as
+        // before. `originSessionID` records, at import time, which original
+        // capture an analysis session belongs to — the trusted lineage that
+        // scopes duplicate detection to ONE original recording (two originals
+        // of one meeting may share time ranges without ever deduping each
+        // other). `liveKey` is the stable identity of one utterance inside
+        // ONE live request domain (`<scope UUID>|<start ms>|<end ms>`); a
+        // re-commit of the same key adopts revised text/speaker in the same
+        // write transaction unless the user corrected that field, while an
+        // overlapping range from a DIFFERENT key stays a no-op.
+        migrator.registerMigration("v6-continuous-live-lineage") { db in
+            try db.alter(table: "capture_sessions") { table in
+                table.add(column: "originSessionID", .text)
+            }
+            try db.create(index: "capture_sessions_origin", on: "capture_sessions", columns: ["originSessionID"])
+            try db.alter(table: "transcript_segments") { table in
+                table.add(column: "liveKey", .text)
+            }
+            try db.create(index: "transcript_segments_livekey", on: "transcript_segments", columns: ["meetingID", "liveKey"])
         }
         try migrator.migrate(pool)
     }

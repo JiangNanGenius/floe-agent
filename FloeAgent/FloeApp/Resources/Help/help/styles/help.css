@@ -1,0 +1,54 @@
+/* Floe help articles: controlled static styling, no scripts. */
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem 4rem;
+  max-width: 46rem;
+  font: -apple-system-body;
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", sans-serif;
+  line-height: 1.6;
+  color: #1c1c1e;
+  background: #ffffff;
+}
+h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 1rem; }
+h2 { font-size: 1.3rem; margin: 2rem 0 0.6rem; }
+h3 { font-size: 1.1rem; margin: 1.4rem 0 0.4rem; }
+p, li { margin: 0.5rem 0; }
+a { color: #0a64c2; word-break: break-word; }
+a.external::after { content: " \2197"; font-size: 0.8em; }
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.92em;
+  background: rgba(127,127,127,0.14);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  word-break: break-word;
+}
+blockquote {
+  margin: 0.8rem 0;
+  padding: 0.6rem 0.9rem;
+  border-left: 3px solid #0a64c2;
+  background: rgba(127,127,127,0.08);
+  border-radius: 0 8px 8px 0;
+}
+img { display: block; max-width: 100%; height: auto; margin: 1rem 0; border-radius: 10px; }
+ul, ol { padding-left: 1.4rem; }
+.table-wrap { overflow-x: auto; margin: 0.8rem 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { border: 1px solid rgba(127,127,127,0.35); padding: 0.35rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: rgba(127,127,127,0.12); }
+.toc { margin: 1.2rem 0; padding: 0.8rem 1rem; border: 1px solid rgba(127,127,127,0.25); border-radius: 10px; }
+.toc h2 { font-size: 1rem; margin: 0 0 0.4rem; }
+.toc ul { list-style: none; margin: 0; padding: 0; }
+.toc li { margin: 0.25rem 0; }
+.toc li.lv3 { padding-left: 1.2rem; }
+footer { margin-top: 3rem; font-size: 0.8rem; color: #6c6c70; }
+@media (prefers-color-scheme: dark) {
+  body { color: #e5e5ea; background: #1c1c1e; }
+  a { color: #5aa9ff; }
+  th { background: rgba(127,127,127,0.18); }
+}
+@media (min-width: 48rem) {
+  body { font-size: 1.06rem; }
+}

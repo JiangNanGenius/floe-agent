@@ -1,6 +1,7 @@
 import Foundation
 import FloeCore
 import FloeTools
+import FloeToolboxDiagnostics
 import Darwin
 import Network
 
@@ -132,6 +133,13 @@ public struct NetworkPingTool: AgentTool {
     }
 }
 
+private final class TracerouteObservationLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = true
+    func close() { lock.withLock { active = false } }
+    var isActive: Bool { lock.withLock { active } }
+}
+
 public struct NetworkTracerouteTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var target: String
@@ -145,12 +153,26 @@ public struct NetworkTracerouteTool: AgentTool {
     public static let isSideEffecting = false
     public static let toolEffect: ToolEffect = .readOnly
     public static let requiresHostScope = false
-    private let deviceTracer: DeviceTracerouteHandler
+    private let deviceTracer: DeviceTracerouteObserverHandler
     public init() {
         self.init(deviceTracer: nil)
     }
     init(deviceTracer: DeviceTracerouteHandler?) {
-        self.deviceTracer = deviceTracer ?? DeviceICMPTraceroute.run
+        if let deviceTracer {
+            // A legacy injected backend has no live observations. Never replay
+            // its completed array as fabricated streaming progress.
+            self.deviceTracer = { target, hops, wait, token, _, _ in
+                try await deviceTracer(target, hops, wait, token)
+            }
+        } else {
+            self.deviceTracer = { target, hops, wait, token, requestID, observer in
+                try await DeviceICMPTraceroute.observe(target: target, maxHops: hops,
+                    waitSeconds: wait, cancellation: token, requestID: requestID, onObservation: observer)
+            }
+        }
+    }
+    init(observingDeviceTracer: @escaping DeviceTracerouteObserverHandler) {
+        self.deviceTracer = observingDeviceTracer
     }
     public func validate(_ args: Arguments) throws {
         _ = try NetworkDiagnosticSupport.target(args.target)
@@ -162,11 +184,37 @@ public struct NetworkTracerouteTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let target = try NetworkDiagnosticSupport.target(args.target)
         try context.cancellation.throwIfCancelled()
+        let requestID = UUID(), observationLifetime = TracerouteObservationLifetime()
+        defer { observationLifetime.close() }
         let report = try await deviceTracer(
             target,
             args.maxHops ?? 20,
             args.timeoutSeconds ?? 2,
-            context.cancellation
+            context.cancellation,
+            requestID,
+            { event in
+                guard observationLifetime.isActive, event.requestID == requestID,
+                      !context.cancellation.isCancelled, !Task.isCancelled,
+                      let reporter = context.taskProgress else { return }
+                let data: TaskDiagnosticProgress?
+                switch event.value {
+                case .resolved(let address):
+                    data = .init(requestID: event.requestID, status: .resolved, address: address)
+                case .hop(let hop):
+                    let status: TaskDiagnosticProgress.Status
+                    switch hop.status {
+                    case .reached: status = .reached
+                    case .intermediate: status = .intermediate
+                    case .timeout: status = .timeout
+                    case .unreachable: status = .unreachable
+                    }
+                    data = .init(requestID: event.requestID, status: status, ttl: hop.ttl,
+                        address: hop.address, milliseconds: hop.milliseconds, reason: hop.reason)
+                }
+                guard let data else { return }
+                await reporter.report(.init(stage: "running", phase: "traceroute",
+                    completedUnits: data.ttl, totalUnits: nil, diagnostic: data))
+            }
         )
         try context.cancellation.throwIfCancelled()
         return NetworkDiagnosticSupport.localOutput(report.summaryText())

@@ -9,7 +9,7 @@ import { fromArrayBuffer, writeArrayBuffer } from 'geotiff';
 import { sql } from './sqlite.js';
 export { sql } from './sqlite.js';
 import { artifact, bytes64, from64, text, clone, uid, t, required } from '../../FloeHeavyEditorSupport/Web/runtime.js';
-import { vectorLayer, rasterLayer, getLayer, layerField, field, featureCollection, transformGeometry, inGeographic, defineCRS, gridSample, transformPosition, WEB_HALF, normalizeGIS, inferFields, validateGeometry } from './model.js';
+import { vectorLayer, rasterLayer, getLayer, layerField, field, featureCollection, transformGeometry, inGeographic, defineCRS, gridSample, transformPosition, projectedBounds, WEB_HALF, normalizeGIS, inferFields, validateGeometry, layerEvidence } from './model.js';
 
 import { rasterPixel, rasterRange } from './symbology.js';
 
@@ -26,6 +26,18 @@ export function parseCSV(source) {
   if(quoted)throw new Error('Unclosed CSV quote');if(value||row.length){row.push(value);rows.push(row);}return rows;
 }
 const csvCell=value=>'"'+String(value??'').replace(/"/g,'""')+'"';
+// 'geographic' headers name degrees, 'projected' headers name planar units and
+// 'wkt' carries no columns to classify. Projected columns are never silently
+// read as EPSG:4326: the import demands an explicit crs argument instead.
+export function csvCoordinateKind(source) {
+  const [columns]=parseCSV(String(source).replace(/^\uFEFF/,''));
+  if(!columns)return 'unknown';
+  const lower=columns.map(n=>String(n).trim().toLowerCase());
+  if(lower.some(n=>['wkt','geometry'].includes(n)))return 'wkt';
+  const x=lower.findIndex(n=>['x','lon','lng','longitude','easting'].includes(n)),y=lower.findIndex(n=>['y','lat','latitude','northing'].includes(n));
+  if(x<0||y<0)return 'unknown';
+  return ['x','easting'].includes(lower[x])||['y','northing'].includes(lower[y])?'projected':'geographic';
+}
 function csvFeatures(source) {
   const [columns,...rows]=parseCSV(source.replace(/^\uFEFF/,'')),names=required(columns,'CSV header is missing').map(n=>n.trim()),lower=names.map(n=>n.toLowerCase());
   if(names.some(n=>!n)||new Set(names).size!==names.length)throw new Error('CSV headers must be nonempty and unique');
@@ -113,7 +125,7 @@ export function geometryBounds(collection){let minX=Infinity,minY=Infinity,maxX=
 export async function readGeoPackage(bytes) {
   const SQL=await sql(),db=new SQL.Database(bytes),layers=[];
   try {
-    const contents=db.exec("SELECT c.table_name,c.identifier,g.column_name,g.srs_id FROM gpkg_contents c JOIN gpkg_geometry_columns g ON c.table_name=g.table_name WHERE c.data_type='features'")[0];
+    const contents=db.exec("SELECT c.table_name,c.identifier,g.column_name,g.srs_id FROM gpkg_contents c JOIN gpkg_geometry_columns g ON c.table_name=g.table_name WHERE c.data_type='features' ORDER BY c.table_name")[0];
     if(!contents)throw new Error('No feature tables in GeoPackage');
     const hasMetadata=Boolean(db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='floe_gis_metadata'").length);
     for(const [table,name,geometryColumn,srs] of contents.values) {
@@ -228,39 +240,89 @@ export function writeShapefile(collection,stem,prj=wgs84){
     files[name+'.shp']=shpBytes;files[name+'.shx']=shxBytes;files[name+'.dbf']=dbf;files[name+'.prj']=strToU8(prj);files[name+'.cpg']=strToU8('UTF-8');files[name+'.floe-fields.json']=strToU8(JSON.stringify({fields,ids:features.map(f=>f.id),nulls:features.map(f=>Object.keys(f.properties).filter(k=>f.properties[k]===null)),missing:features.map(f=>fields.map(field=>field.name).filter(k=>!(k in f.properties)))}));
   }return zipSync(files);
 }
+// Matches an image entry to its world-file sidecar inside an archive by stem
+// and the conventional extension pairs (png→pgw/pngw, jpg→jgw/jpgw, …).
+export function zipWorldFileEntry(names,entry){const stem=String(entry).replace(/\.[^.]+$/,''),ext=String(entry).split('.').at(-1).toLowerCase(),candidates={png:['pgw','pngw'],jpg:['jgw','jpgw'],jpeg:['jgw','jpgw'],webp:['wld'],tif:['tfw'],tiff:['tfw']}[ext]??['wld'];for(const candidate of candidates){const found=names.find(n=>n.toLowerCase()===(stem+'.'+candidate).toLowerCase());if(found)return found;}return undefined;}
+// Same-stem sidecar lookup with a case-sensitive stem (mirrors how shpjs pairs
+// a .prj with its .shp) and a case-insensitive extension.
+export function zipSidecarEntry(names,entry,extension){const stem=String(entry).replace(/\.[^.]+$/,''),suffix='.'+extension;return names.find(n=>n.slice(0,-suffix.length)===stem&&n.slice(-suffix.length).toLowerCase()===suffix);}
+// CRS decision for an archived image with a world file: a matching .prj wins,
+// an explicit import argument is honored, and silence is an error — a world
+// file carries only an affine transform, never a coordinate system.
+export function archiveImageCRS(names,entry,crs){const prj=zipSidecarEntry(names,entry,'prj');if(prj)return {prj};if(crs)return {crs};throw new Error(t('压缩包中的影像带有世界文件但缺少坐标系；请放入同名 .prj 文件，或通过导入参数明确指定 crs。','The archived image has a world file but no coordinate system. Add a matching .prj file or pass an explicit crs import argument.'));}
 export async function importGIS(e,args) {
-  const name=String(args.name??'import'),extension=name.split('.').at(-1).toLowerCase(),bytes=from64(args.base64),source=()=>text(bytes);let layers=[];
+  const name=String(args.name??'import'),extension=name.split('.').at(-1).toLowerCase(),bytes=from64(args.base64),source=()=>text(bytes),crs=String(args.crs??'').trim()||undefined;let layers=[];
   if(['floegis','json','geojson'].includes(extension)) {
     const value=JSON.parse(source());
     if(extension==='floegis'||value.kind==='gis'||value.data?.layers||value.layers){const state=value.content?.data??value.content??value.data??value;normalizeGIS(state);e.state=e.payload.data=clone(state);const history=value.content?.history??value.history;if(history&&Array.isArray(history.past)&&Array.isArray(history.future))e.payload.history=clone(history);e.liveView=null;e.selection={layer:e.state.layers[0]?.id??null,features:[]};return {project:true};}
-    const features=value.type==='FeatureCollection'?value.features:value.type==='Feature'?[value]:[{type:'Feature',geometry:value,properties:{}}],crs=args.crs??value.crs?.properties?.name??'EPSG:4326';layers=[vectorLayer(safeStem(name),features,crs.replace('urn:ogc:def:crs:EPSG::','EPSG:'))];
-  }else if(extension==='csv')layers=[vectorLayer(safeStem(name),csvFeatures(source()),args.crs??'EPSG:4326')];
+    const features=value.type==='FeatureCollection'?value.features:value.type==='Feature'?[value]:[{type:'Feature',geometry:value,properties:{}}],sourceCRS=crs??value.crs?.properties?.name??'EPSG:4326';layers=[vectorLayer(safeStem(name),features,sourceCRS.replace('urn:ogc:def:crs:EPSG::','EPSG:'))];
+  }else if(extension==='csv'){const raw=source(),features=csvFeatures(raw);if(!crs&&csvCoordinateKind(raw)==='projected')throw new Error(t('CSV 使用投影坐标列（x／y 或 easting／northing）；请通过导入参数明确指定坐标系，不会默认按经纬度读取。','This CSV uses projected coordinate columns (x/y or easting/northing). Pass an explicit crs import argument; they are never assumed to be degrees.'));layers=[vectorLayer(safeStem(name),features,crs??'EPSG:4326')];}
   else if(extension==='gpx'||extension==='kml') {
     if(/<!DOCTYPE|<!ENTITY/i.test(source()))throw new Error('External XML definitions are not supported');
     const reader=extension==='gpx'?new GPX():new KML({extractStyles:false});layers=[vectorLayer(safeStem(name),reader.readFeatures(source(),{dataProjection:'EPSG:4326',featureProjection:'EPSG:4326'}).map(f=>geojson.writeFeatureObject(f)))];
-  }else if(extension==='kmz'){const files=unzipSync(bytes),key=Object.keys(files).find(k=>/\.kml$/i.test(k));if(!key)throw new Error('KMZ has no KML');return importGIS(e,{name:key,base64:bytes64(files[key])});}
+  }else if(extension==='kmz'){const files=unzipSync(bytes),key=Object.keys(files).find(k=>/\.kml$/i.test(k));if(!key)throw new Error('KMZ has no KML');return importGIS(e,{...args,name:key,base64:bytes64(files[key])});}
   else if(extension==='gpkg')layers=await readGeoPackage(bytes);
   else if(extension==='tif'||extension==='tiff')layers=[await readGeoTIFF(bytes,name)];
   else if(['png','jpg','jpeg','webp'].includes(extension))layers=[await readImage(bytes,name,args)];
-  else if(extension==='asc'){const layer=readASCIIGrid(source(),name);if(args.crs)layer.crs=defineCRS(args.crs);layers=[layer];}
+  else if(extension==='asc'){const layer=readASCIIGrid(source(),name);if(crs)layer.crs=defineCRS(crs);layers=[layer];}
   else if(extension==='mbtiles')layers=[await readMBTiles(bytes,name)];
   else if(extension==='zip') {
-    const files=unzipSync(bytes),shapefiles=Object.keys(files).filter(k=>/\.shp$/i.test(k));if(!shapefiles.length)throw new Error('ZIP has no Shapefile; import image and world file separately');
-    const result=await shp.default(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength));
-    layers=(Array.isArray(result)?result:[result]).map((fc,i)=>{const prefix=fc.fileName??shapefiles[i].replace(/\.shp$/i,''),metaKey=Object.keys(files).find(k=>k.toLowerCase()===(prefix+'.floe-fields.json').toLowerCase()),metadata=metaKey?JSON.parse(strFromU8(files[metaKey])):null;
-      if(metadata)fc.features.forEach((feature,n)=>{const properties={};for(const field of metadata.fields){let v=feature.properties[field.short];if(v!=null&&field.type==='json')try{v=JSON.parse(v);}catch{}properties[field.name]=metadata.nulls?.[n]?.includes(field.name)?null:v;}for(const key of metadata.missing?.[n]??[])delete properties[key];feature.properties=properties;feature.id=metadata.ids[n]??uid();});
-      const layer=vectorLayer(prefix.split('/').at(-1),fc.features);if(metadata)layer.fields=metadata.fields.map(({name,type})=>({name,type,nullable:true}));return layer;});
-  }else if(extension==='shp')layers=[vectorLayer(safeStem(name),shp.parseShp(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength)).map(geometry=>({type:'Feature',geometry,properties:{}})),args.crs??'EPSG:4326')];
+    const files=unzipSync(bytes),names=Object.keys(files).filter(k=>!k.startsWith('__MACOSX/')&&!k.endsWith('/')),shapefiles=names.filter(k=>/\.shp$/i.test(k));
+    if(shapefiles.length){
+      const result=await shp.default(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength));
+      layers=(Array.isArray(result)?result:[result]).map((fc,i)=>{const prefix=fc.fileName??shapefiles[i].replace(/\.shp$/i,''),metaKey=names.find(k=>k.toLowerCase()===(prefix+'.floe-fields.json').toLowerCase()),metadata=metaKey?JSON.parse(strFromU8(files[metaKey])):null;
+        // shpjs transforms coordinates to WGS84 only when the matching .prj is
+        // present; raw coordinates otherwise. An explicit crs is honored only
+        // for the raw case — silence is an error, never an assumed EPSG:4326.
+        const hasPRJ=Boolean(zipSidecarEntry(names,prefix,'prj'));
+        if(!hasPRJ&&!crs)throw new Error(t('压缩包中的 Shapefile（'+prefix.split('/').at(-1)+'）缺少 .prj 坐标文件；请通过导入参数明确指定 crs。','The Shapefile ('+prefix.split('/').at(-1)+') in this archive has no .prj coordinate file. Pass an explicit crs import argument.'));
+        if(metadata)fc.features.forEach((feature,n)=>{const properties={};for(const field of metadata.fields){let v=feature.properties[field.short];if(v!=null&&field.type==='json')try{v=JSON.parse(v);}catch{}properties[field.name]=metadata.nulls?.[n]?.includes(field.name)?null:v;}for(const key of metadata.missing?.[n]??[])delete properties[key];feature.properties=properties;feature.id=metadata.ids[n]??uid();});
+        const layer=vectorLayer(prefix.split('/').at(-1),fc.features,hasPRJ?'EPSG:4326':crs);if(metadata)layer.fields=metadata.fields.map(({name,type})=>({name,type,nullable:true}));return layer;});
+    }else{
+      // Companion archives: one project file, one georeferenced image pair, or
+      // one recognizable data file. Anything else fails naming what was found.
+      const project=names.find(k=>/\.floegis$/i.test(k))??names.find(k=>{if(!/\.(json|geojson)$/i.test(k))return false;try{const value=JSON.parse(strFromU8(files[k]));return value.kind==='gis'||Boolean(value.data?.layers)||Boolean(value.layers);}catch{return false;}});
+      if(project)return importGIS(e,{...args,name:project.split('/').at(-1),base64:bytes64(files[project])});
+      const image=names.find(k=>/\.(png|jpe?g|webp)$/i.test(k)&&zipWorldFileEntry(names,k));
+      if(image){const world=names.find(n=>n.toLowerCase()===zipWorldFileEntry(names,image).toLowerCase()),resolved=archiveImageCRS(names,image,crs);let imageCRS=resolved.crs;
+        if(resolved.prj){imageCRS='CUSTOM:'+uid().toUpperCase();defineCRS(imageCRS,strFromU8(files[resolved.prj]));e.state.definitions[imageCRS]=strFromU8(files[resolved.prj]);}
+        const layer=await readImage(files[image],image.split('/').at(-1),{crs:imageCRS});layer.bounds=readWorldFile(strFromU8(files[world]),layer.width,layer.height);layer.source={...layer.source,georeferenced:true};layers=[layer];}
+      else{const data=names.find(k=>/\.(geojson|json|csv|gpx|kml|gpkg|tif|tiff|asc|mbtiles)$/i.test(k));if(data)return importGIS(e,{...args,name:data.split('/').at(-1),base64:bytes64(files[data])});throw new Error(t('压缩包里没有可导入的地图数据。支持 Shapefile 套件、带世界文件的影像、GeoPackage、GeoJSON、CSV、GPX、KML、GeoTIFF、ASCII Grid、MBTiles 或 .floegis 工程。','The archive contains no importable map data. Supported: a Shapefile set, an image with its world file, GeoPackage, GeoJSON, CSV, GPX, KML, GeoTIFF, ASCII grid, MBTiles or a .floegis project.'));}
+    }
+  }else if(extension==='shp'){if(!crs)throw new Error(t('单独的 SHP 文件不带坐标系；请通过导入参数明确指定 crs，或改用包含 .prj 的 ZIP 导入。','A standalone SHP file carries no coordinate system. Pass an explicit crs import argument, or import a ZIP that includes its .prj.'));layers=[vectorLayer(safeStem(name),shp.parseShp(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength)).map(geometry=>({type:'Feature',geometry,properties:{}})),crs)];}
   else if(extension==='dbf') {
     const attrs=shp.parseDbf(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),args.encoding??'UTF-8'),layer=required(e.state.layers.find(l=>l.name===safeStem(name)&&l.kind==='vector'),'Import matching SHP first');if(attrs.length!==layer.data.features.length)throw new Error('DBF and SHP record counts differ');attrs.forEach((p,i)=>layer.data.features[i].properties=p);layer.fields=inferFields(layer.data.features);return {attributes:attrs.length};
   }else if(extension==='prj'){const layer=required(e.state.layers.find(l=>l.name===safeStem(name)||safeStem(l.source?.name)===safeStem(name)),'Import matching layer first'),code='CUSTOM:'+layer.id.toUpperCase();defineCRS(code,source());e.state.definitions[code]=source();layer.crs=code;return {crs:code};}
   else if(['pgw','jgw','tfw','wld','pngw','jpgw'].includes(extension)){
-    const layer=required(e.state.layers.find(l=>l.kind==='raster'&&(l.name===safeStem(name)||safeStem(l.source?.name)===safeStem(name))),'Import matching image first');layer.bounds=readWorldFile(source(),layer.width,layer.height);layer.source={...layer.source,georeferenced:true};return {bounds:layer.bounds};
+    const layer=required(e.state.layers.find(l=>l.kind==='raster'&&(l.name===safeStem(name)||safeStem(l.source?.name)===safeStem(name))),'Import matching image first');layer.bounds=readWorldFile(source(),layer.width,layer.height);if(crs)layer.crs=defineCRS(crs);layer.source={...layer.source,georeferenced:true};return {bounds:layer.bounds,crs:layer.crs};
   }else if(extension==='shx'||extension==='cpg'){
     const layer=required(e.state.layers.find(l=>l.name===safeStem(name)),'Import matching SHP first');layer.source={...layer.source,[extension]:extension==='cpg'?source():{bytes:bytes.length}};return {sidecar:extension};
   }else throw new Error(t('不支持这个文件格式。','Unsupported file format.'));
   for(const layer of layers){layer.source={...layer.source,name,format:layer.source?.format??extension};if(layer.source.definition&&!['EPSG:4326','EPSG:3857'].includes(layer.crs))e.state.definitions[layer.crs]=layer.source.definition;}
-  e.state.layers.push(...layers);if(layers[0])e.selection={layer:layers[0].id,features:[]};return {layers:layers.map(l=>({id:l.id,name:l.name,kind:l.kind}))};
+  // A file import that yields no vector features is a failure, not a silent
+  // empty layer: the receipt names the actual outcome. Intentional empty
+  // layers come from layer.create, never from an import.
+  if(layers.some(l=>l.kind==='vector')&&layers.every(l=>l.kind!=='vector'||!l.data.features.length))throw new Error(t('文件里没有可导入的矢量要素。','This file contains no importable vector features.'));
+  e.state.layers.push(...layers);
+  if(layers[0])e.selection={layer:layers[0].id,features:[]};
+  // Fit to the imported content only on request or while the project still
+  // shows its pristine world view. A fit never touches layer visibility.
+  if(layers.length&&(args.fit===true||pristineProjectView(e.liveView??e.state.view))){try{const box=importedGeographicBounds(layers);if(box)e.liveView={center:[(box[0]+box[2])/2,(box[1]+box[3])/2],zoom:2,extent:projectedBounds(box,'EPSG:4326','EPSG:3857'),extentCRS:'EPSG:3857',fit:true};}catch{/* A fit is optional; the import itself already succeeded. */}}
+  return {layers:layers.map((layer,offset)=>layerEvidence(layer,e.state.layers.length-layers.length+offset))};
+}
+function pristineProjectView(view){return Array.isArray(view?.center)&&view.center.length===2&&view.center[0]===0&&view.center[1]===20&&(view.zoom??2)===2&&!view.extent;}
+function importedGeographicBounds(layers){
+  let box=null;
+  const merge=b=>{if(!Array.isArray(b)||b.length!==4||!b.every(Number.isFinite))return;box=box?[Math.min(box[0],b[0]),Math.min(box[1],b[1]),Math.max(box[2],b[2]),Math.max(box[3],b[3])]:b.slice();};
+  for(const layer of layers){
+    if(layer.kind==='vector'){const located=layer.data.features.filter(f=>f.geometry);if(located.length)merge(layer.crs==='EPSG:4326'?geometryBounds(featureCollection(located)):projectedBounds(geometryBounds(featureCollection(located)),layer.crs,'EPSG:4326'));}
+    else if(layer.kind==='raster')merge(layer.crs==='EPSG:4326'?layer.bounds:projectedBounds(layer.bounds,layer.crs,'EPSG:4326'));
+    else if(layer.kind==='tiles')merge(layer.bounds);
+  }
+  // Degenerate axes (a single point or a vertical/horizontal line) pad to a
+  // small neighborhood so the fit still frames the imported content.
+  if(box){if(!(box[0]<box[2])){const mid=(box[0]+box[2])/2;box[0]=mid-0.0005;box[2]=mid+0.0005;}if(!(box[1]<box[3])){const mid=(box[1]+box[3])/2;box[1]=mid-0.0005;box[3]=mid+0.0005;}}
+  return box&&box[0]<box[2]&&box[1]<box[3]?box:null;
 }
 export async function exportGIS(e,args,signal) {
   const format=args.format??'geojson';
@@ -296,7 +358,7 @@ export async function querySQL(e,args){
   }finally{db.close();}
 }
 export function registerFormats(e) {
-  e.register({id:'file.import',title:t('导入文件','Import file'),group:t('文件','Files'),access:'importFile',fields:[],hidden:true},a=>importGIS(e,a));
+  e.register({id:'file.import',title:t('导入文件','Import file'),group:t('文件','Files'),access:'importFile',fields:[field('crs',t('坐标系（SHP 或世界文件影像缺少 .prj 时必填）','CRS (required for SHP or world-file images without a .prj)'),'text',{default:''}),field('fit',t('导入后缩放至内容','Fit to imported content'),'checkbox',{default:false})],hidden:true},a=>importGIS(e,a));
   e.register({id:'file.export',title:t('导出数据／工程','Export data / project'),group:t('文件','Files'),access:'exportFile',fields:[layerField(),field('format',t('格式','Format'),'select',{options:['floegis','geojson','gpkg','shp','csv','gpx','kml','tif','asc','png','mbtiles'],default:'geojson'}),field('name',t('文件名','File name')),field('crs',t('导出坐标系（可留空）','Output CRS (optional)')),field('all',t('包含所有矢量图层','Include all vector layers'),'checkbox'),field('minZoom',t('瓦片最低级别','Minimum tile zoom'),'number',{default:0,min:0,max:22}),field('maxZoom',t('瓦片最高级别','Maximum tile zoom'),'number',{default:12,min:0,max:22})]},(a,signal)=>exportGIS(e,a,signal));
   e.register({id:'query.sql',title:t('SQL 属性查询','SQL attribute query'),group:t('查询','Query'),access:'read',fields:[layerField(),field('sql',t('查询 features 表','Query the features table'),'textarea',{default:'SELECT * FROM features LIMIT 100'})]},a=>querySQL(e,a));
 }

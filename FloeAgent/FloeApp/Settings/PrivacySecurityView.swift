@@ -42,7 +42,7 @@ struct PrivacySecurityView: View {
 
                 let configured = center.credentialStatus.values.filter { $0 }.count
                 LabeledContent("settings.privacy.apikeys") {
-                    Text("settings.privacy.apikeys.count \(configured)")
+                    Text(verbatim: FloeL10n.l("settings.privacy.apikeys.count", configured))
                         .foregroundStyle(.secondary)
                 }
                 .frame(minHeight: FloeTheme.minimumTarget)
@@ -138,10 +138,10 @@ struct PrivacySecurityView: View {
     @ViewBuilder
     private func capabilityText(_ state: CapabilityState) -> some View {
         switch state {
-        case .available(let version):
-            Text(version).foregroundStyle(FloeTheme.success)
-        case .unavailable(let reason):
-            Text(reason).foregroundStyle(.secondary)
+        case .available:
+            Text("settings.privacy.keychain.available").foregroundStyle(FloeTheme.success)
+        case .unavailable:
+            Text("settings.privacy.keychain.read_unavailable").foregroundStyle(.secondary)
         case .unknown:
             Text("settings.capability.unknown").foregroundStyle(FloeTheme.unknown)
         }

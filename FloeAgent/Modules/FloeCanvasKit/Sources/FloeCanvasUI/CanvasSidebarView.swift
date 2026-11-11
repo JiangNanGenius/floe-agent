@@ -29,6 +29,11 @@ public struct CanvasSidebarView: View {
                                 Label(scene.name, systemImage: "viewfinder")
                             }
                             .accessibilityIdentifier(sceneAccessibilityID(scene))
+                            .contextMenu {
+                                Button(strings[.toolbarDelete], role: .destructive) {
+                                    Task { await store.apply(.removeScene(scene.id)) }
+                                }
+                            }
                         }
                     }
                 }
@@ -36,6 +41,12 @@ public struct CanvasSidebarView: View {
                     ForEach(store.snapshot.pages) { page in
                         pageRow(page)
                             .id(page.id)
+                            .contextMenu {
+                                Button(strings[.toolbarDelete], role: .destructive) {
+                                    Task { await store.apply(.deletePage(page.id)) }
+                                }
+                                .disabled(store.snapshot.pages.count <= 1)
+                            }
                     }
                     .onDelete { offsets in
                         // Deletion reorders through the store; offsets map

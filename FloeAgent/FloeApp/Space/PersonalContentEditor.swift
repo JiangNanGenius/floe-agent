@@ -15,6 +15,7 @@ import FloeElectronicsUI
 
 struct PersonalContentEditor: View {
     let record: PersonalContentRecord
+    var opensAssistantOnLoad = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.isPresented) private var isPresented
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -23,6 +24,7 @@ struct PersonalContentEditor: View {
     @State private var content: LoadedContent?
     @State private var error: String?
     @State private var showingAssistant = false
+    @State private var openedInitialAssistant = false
     @State private var childWork: PersonalContentRecord?
     @State private var sourceNote: NoteDocument?
     @State private var sourceNotes = NotesSession()
@@ -121,7 +123,14 @@ struct PersonalContentEditor: View {
                 navigationContent
             }
         }
-        .task { await load() }
+        .task {
+            let generation = presentationGeneration
+            await load()
+            guard !Task.isCancelled, isPresented, presentationGeneration == generation,
+                  content != nil, opensAssistantOnLoad, !openedInitialAssistant else { return }
+            openedInitialAssistant = true
+            showingAssistant = true
+        }
         .interactiveDismissDisabled()
         .documentAssistantLeavePresentation(assistantLeave)
         .environment(\.documentAssistantLeaveIntent, DocumentAssistantLeaveIntent(authorize: {
@@ -160,6 +169,7 @@ struct PersonalContentEditor: View {
             editorOwnsTextInput = false
             biologyNotesReturn.cancel()
             showingAssistant = false
+            openedInitialAssistant = false
             printPreparation = nil; chemistryNotesRequest = nil; chemistryEpoch = UUID()
             cadImportRequest = nil; importedCADRecord = nil
         }

@@ -700,10 +700,24 @@ public enum LinuxGuestImageDistributionCatalog {
     /// Shared ARM64 Linux. Real four-core hotplug, project separation, process-
     /// tree cancellation, loopback forwarding and initial-state restore passed.
     /// Legacy RISC-V images are not executable candidates for this backend.
-    public static let defaultImageID = "floe-debian13-arm64-basic-resident-20261108-v3"
+    public static let defaultImageID = "floe-debian13-arm64-gpu-resident-20261111-v8"
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,
+            archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-20261111.1/floe-linux-guest-floe-debian13-arm64-gpu-resident-20261111-v8.zip")!,
+            mirrors: [],
+            archiveSHA512: "637b9f58fa5dbeabe85a276325e0f929cf65e0f9d633adcc3880bcf7b1da591f598ef4c164e4d6c312985946a2f3751795f541b0d54b3c28dbd3fe5b236e810e",
+            assetPin: LinuxGuestImageAssetPin(githubAssetID: 734081259, bytes: 392272148,
+                sha256: "003462aaf6d505f87117c69f5cb8dc804afd74b7126bfca39fa3fd6a795b821c"),
+            provenance: LinuxGuestImageProvenance(
+                sourceURL: "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261111.1",
+                buildConfigurationURL: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-20261111.1/floe-linux-arm64-v8-source-recipe-20261111.zip",
+                license: "Floe MPL-2.0; musl MIT; EDK2 per-file BSD/MIT; Linux/BusyBox GPL-2.0; static glibc LGPL-2.1; Mesa/libglvnd MIT/X11 and per-file notices; Debian per-package notices and exact corresponding sources retained.",
+                distributionAllowed: true
+            )
+        ),
+        LinuxGuestTrustedImage(
+            id: "floe-debian13-arm64-basic-resident-20261108-v3",
             archiveURL: URL(string: "https://github.com/JiangNanGenius/floe-agent/releases/download/floe-linux-arm64-20261109.3/floe-linux-guest-floe-debian13-arm64-basic-resident-20261108-v3.zip")!,
             mirrors: [],
             archiveSHA512: "37cd7dfb33bda66312db26fe5299b6f3a12f9980b947da39da48e571eaa6dc12e66e9622b5fa2b54d19d20233af94b4fd565007d833d16e15126473429f8b0ca",

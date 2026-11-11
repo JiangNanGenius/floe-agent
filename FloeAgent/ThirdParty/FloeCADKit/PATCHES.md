@@ -228,3 +228,7 @@ effects are checked separately; a tessellated result never claims exact BRep.
 ## UV authoring integration
 
 New XAtlasShim wraps byte-exact qualified xatlas archives; original algorithms and scheduler assertions remain untouched. Body-owned `uvData` stores the original mesh digest, seams and up to eight sets. Native generate/repack is off-main, one native atlas at a time, input-budgeted and cooperatively cancellable. Every result rechecks live document/body identity before one existing undo command. UV-only splitting preserves triangle order and exact BRep; geometry changes retain stale records and require explicit re-unwrapping. Existing Material UI/AI services, RenderMesh.texcoords, bounded image decoder, viewport capture, native save/merge and GLB TEXCOORD_0 are reused. Actual UV authoring intent uses the coordinated unreleased format-7 writer floor; absent/ordinary documents do not advance. This source packet does not claim App compilation, native bridge execution, complex-surface UI acceptance or release readiness.
+
+## 2026-11-11: selected construction-plane deletion
+
+The context-sensitive palette enables its existing Delete action for a selected construction plane, matching EditorViewModel.deleteSelection. The existing deleteItem/DocumentSession dependency and undo path remains authoritative; geometry binaries and upstream pins are unchanged.

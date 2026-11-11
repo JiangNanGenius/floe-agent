@@ -204,6 +204,25 @@ enum ASRVendorJSON {
         }
         return nil
     }
+
+    /// A provider speaker label arrives as a string or a number (Volcengine
+    /// `speaker_id` is documented as an integer). Normalize to a trimmed
+    /// string; anything else means "no attribution" and stays nil.
+    static func normalizedSpeaker(_ value: Any?) -> String? {
+        let raw: String?
+        if let text = value as? String {
+            raw = text
+        } else if let number = value as? NSNumber {
+            raw = number.stringValue
+        } else if let double = value as? Double, double.rounded() == double {
+            raw = String(Int(double))
+        } else {
+            raw = nil
+        }
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 // MARK: - Audio input inspection
@@ -599,7 +618,8 @@ struct ASRVendorSegmentBuilder {
     mutating func add(
         startMilliseconds: Double?,
         endMilliseconds: Double?,
-        text rawText: String
+        text rawText: String,
+        speaker: String? = nil
     ) throws {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -616,12 +636,13 @@ struct ASRVendorSegmentBuilder {
         guard entries.count < Self.maximumSegments else {
             throw ASRTranscriptionError.responseTooLarge
         }
-        let key = "\(start)|\(end)|\(text)"
+        let key = "\(start)|\(end)|\(text)|\(speaker ?? "")"
         guard keys.insert(key).inserted else { return }
         entries.append(ASRTranscriptionSegment(
             start: start / 1_000,
             end: end / 1_000,
-            text: text))
+            text: text,
+            speaker: speaker))
     }
 
     /// Parse a provider `words` array. Word timing is bounded and validated;

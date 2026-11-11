@@ -27,6 +27,7 @@ struct FloeSystemAlarmStopIntent: LiveActivityIntent {
         guard let id = UUID(uuidString: alarmID) else {
             throw FloeSystemAlarmControlError.invalidIdentifier
         }
+        await SystemAlarmIntentHooks.shared.preserveBeforeStop(alarmID: id)
         try AlarmManager.shared.stop(id: id)
         return .result()
     }

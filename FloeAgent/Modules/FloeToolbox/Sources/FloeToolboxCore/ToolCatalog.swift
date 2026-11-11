@@ -1,14 +1,17 @@
 import Foundation
 
 public enum ToolboxSpacePage: String, CaseIterable, Sendable { case overview, notes, files, toolbox }
-public enum ToolboxGroup: String, CaseIterable, Sendable { case connections, diagnostics, communication, utilities }
+public enum ToolboxGroup: String, CaseIterable, Sendable { case instruments, connections, diagnostics, communication, utilities }
 public enum ToolboxTool: String, CaseIterable, Sendable, Identifiable {
     case terminal, vnc, browser, ping, traceroute, dns, port, lan, wifi, roaming
     case serialAssistant, http, webSocket, mqtt
     case hash, json, encoding, qr
+    case level, motion, compass, ruler, measure, calculator, location
+    case photoMeasure, barometer, sound, magnifier, scanner, timer
     public var id: String { rawValue }
     public var group: ToolboxGroup {
         switch self {
+        case .level, .motion, .compass, .ruler, .measure, .location, .photoMeasure, .barometer, .sound: .instruments
         case .terminal, .vnc, .browser: .connections
         case .ping, .traceroute, .dns, .port, .lan, .wifi, .roaming: .diagnostics
         case .serialAssistant, .http, .webSocket, .mqtt: .communication

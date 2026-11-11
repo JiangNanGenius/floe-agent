@@ -25,12 +25,21 @@ struct PersonalLibraryTrashEntry: Codable, Hashable, Identifiable, Sendable {
     var resourceIdentity: String?
 }
 
+/// Positive, same-index commit proof for companion assistant cleanup after a
+/// crash. Missing files alone never authorize deleting a saved conversation.
+struct PersonalLibraryAssistantPurgeReceipt: Codable, Hashable, Sendable {
+    let entryID: UUID
+    let relativePath: String
+    let projectIDs: [UUID]
+}
+
 /// One atomic metadata file hides originals in place. It grants no filesystem
 /// authority, and cannot move, unlink or rewrite any document/asset/history.
 enum PersonalLibraryTrashStore {
     struct State: Codable {
         var version = 1
         var entries: [PersonalLibraryTrashEntry] = []
+        var assistantPurgeReceipts: [PersonalLibraryAssistantPurgeReceipt]?
         func deletionDate(projectID: UUID?, path: String) -> Date? {
             let components = path.split(separator: "/").map(String.init)
             return entries.filter { entry in
@@ -65,7 +74,15 @@ enum PersonalLibraryTrashStore {
         guard bytes.count <= 4 * 1_024 * 1_024 else { throw PersonalContentError.invalidProject }
         let value = try JSONDecoder().decode(State.self, from: bytes)
         guard value.version == 1, value.entries.count <= 10_000,
+              (value.assistantPurgeReceipts?.count ?? 0) <= 10_000,
               Set(value.entries.map(\.id)).count == value.entries.count else { throw PersonalContentError.invalidProject }
+        let receiptIDs = (value.assistantPurgeReceipts ?? []).map(\.entryID)
+        guard Set(receiptIDs).count == receiptIDs.count,
+              Set(receiptIDs).isDisjoint(with: value.entries.map(\.id)) else { throw PersonalContentError.invalidProject }
+        for receipt in value.assistantPurgeReceipts ?? [] {
+            _ = try components(receipt.relativePath)
+            guard Set(receipt.projectIDs).count == receipt.projectIDs.count else { throw PersonalContentError.invalidProject }
+        }
         for entry in value.entries {
             let path = try components(entry.relativePath)
             guard entry.title.utf8.count <= 1_024, entry.deletedAt.timeIntervalSince1970.isFinite else { throw PersonalContentError.invalidProject }
@@ -86,7 +103,8 @@ enum PersonalLibraryTrashStore {
     static func write(_ state: State, root: URL) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let bytes = try encoder.encode(state)
-        guard bytes.count <= 4 * 1_024 * 1_024, state.entries.count <= 10_000 else { throw PersonalContentError.storageUnavailable }
+        guard bytes.count <= 4 * 1_024 * 1_024, state.entries.count <= 10_000,
+              (state.assistantPurgeReceipts?.count ?? 0) <= 10_000 else { throw PersonalContentError.storageUnavailable }
         try bytes.write(to: root.appendingPathComponent(fileName), options: .atomic)
     }
     static func locked<T>(root: URL, _ operation: () throws -> T) throws -> T {

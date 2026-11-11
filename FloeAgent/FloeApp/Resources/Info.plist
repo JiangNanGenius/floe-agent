@@ -139,7 +139,7 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Floe accesses calendars only when you ask the agent to read or edit events.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Floe opens the camera only when you choose to capture an image for a task.</string>
+	<string>Floe opens the camera when you capture an image or use measurement, magnifier, or scanning tools.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Floe reads the contacts you ask it to find.</string>
 	<key>NSFaceIDUsageDescription</key>
@@ -153,9 +153,11 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Floe discovers nearby devices only when you start a local-network check or ask the assistant to do so.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Floe uses your location for requested weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.</string>
+	<string>Floe uses your location when you open the location toolbox or request weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Floe uses the microphone when you dictate, record music, or record a meeting.</string>
+	<string>Floe uses the microphone when you dictate, record music or meetings, or start sound analysis.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Floe uses motion and pressure sensors when you open the corresponding instruments in the toolbox.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Floe saves generated or edited images only when you ask it to save them to Photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

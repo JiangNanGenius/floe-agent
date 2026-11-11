@@ -136,31 +136,37 @@ struct MediaV2Workspace: View {
         }.padding(.horizontal, 10).background(Color(uiColor: .secondarySystemBackground))
     }
     private var toolCategories: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(categories, id: \.self) { category in
-                    Menu {
-                        ForEach(session.applicableTools.filter { $0.category == category }) { tool in
-                            Button { session.tool = tool.id; inspectorVisible = true } label: {
-                                Text(tool.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en"))
-                                if session.tool == tool.id { Image(systemName: "checkmark") }
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(categories, id: \.self) { category in
+                        Menu {
+                            ForEach(session.applicableTools.filter { $0.category == category }) { tool in
+                                Button { session.tool = tool.id; inspectorVisible = true } label: {
+                                    Text(tool.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en"))
+                                    if session.tool == tool.id { Image(systemName: "checkmark") }
+                                }
                             }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(categoryTitle(category)).font(.callout)
+                                Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                            }.foregroundStyle(.primary).frame(minHeight: 44).padding(.horizontal, 10)
+                                .background(session.applicableTools.first(where: { $0.id == session.tool })?.category == category ? Color.primary.opacity(0.07) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 6))
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(categoryTitle(category)).font(.callout)
-                            Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
-                        }.foregroundStyle(.primary).frame(minHeight: 44).padding(.horizontal, 10)
-                            .background(session.applicableTools.first(where: { $0.id == session.tool })?.category == category ? Color.primary.opacity(0.07) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 6))
                     }
-                }
-            }.padding(.horizontal, 6)
+                }.padding(.horizontal, 6)
+            }
+            if MediaDrawingInputPolicy.isStrokeTool(session.tool) || session.tool == "video.motion-path" {
+                Divider().frame(height: 22)
+                MediaDrawingInputMenu()
+            }
         }.accessibilityIdentifier("media.v2.toolbox")
     }
     private var categories: [String] {
         var values: [String] = []
-        for tool in session.applicableTools where !values.contains(tool.category) { values.append(tool.category) }
+        for tool in session.applicableTools where tool.category != "assets" && !values.contains(tool.category) { values.append(tool.category) }
         return values
     }
     private func categoryTitle(_ category: String) -> String {
@@ -246,6 +252,7 @@ struct MediaV2Workspace: View {
                                     Image(systemName: "plus.circle").font(.caption)
                                 }.frame(minHeight: 44)
                             }.buttonStyle(.plain).help(WorkbenchText.t("加入当前工程", "Insert into project"))
+                            MediaV2AssetActions(session: session, asset: asset)
                         }.padding(.horizontal, 8).padding(.vertical, 3)
                     }
                 }
@@ -407,9 +414,6 @@ struct MediaV2Workspace: View {
     }
     private var previewControls: some View {
         VStack(spacing: 0) {
-            if session.project.kind == .image, MediaDrawingInputPolicy.isStrokeTool(session.tool) {
-                HStack { MediaFingerDrawingToggle(); Spacer() }.padding(.horizontal, 10)
-            }
             HStack(spacing: 8) {
             if session.project.kind == .video {
                 Button {

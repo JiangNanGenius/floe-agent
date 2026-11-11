@@ -159,7 +159,8 @@ struct MusicWorkbenchView: View {
                             .contentShape(Circle())
                     }.buttonStyle(MusicTransportPlayStyle())
                         .accessibilityLabel(session.playbackIsActive ? WorkbenchText.t("停止", "Stop") : WorkbenchText.t("播放", "Play"))
-                        .disabled(session.isRendering || session.isRecording).accessibilityIdentifier("music.play")
+                        .disabled(session.isRendering || session.isRecording || session.isMIDIRecording)
+                        .accessibilityIdentifier("music.play")
                     Menu {
                         Button(session.isMIDIRecording ? WorkbenchText.t("结束演奏录制", "Finish performance")
                             : session.currentTrack?.kind == .midi ? WorkbenchText.t("录制键盘演奏", "Record keyboard")
@@ -169,6 +170,23 @@ struct MusicWorkbenchView: View {
                         }
                         Button(session.isRecording ? WorkbenchText.t("结束麦克风录音", "Finish microphone recording") : WorkbenchText.t("麦克风录音", "Record microphone")) {
                             Task { if session.isRecording { await session.stopMicrophone() } else { await session.startMicrophone() } }
+                        }
+                        if session.currentTrack?.kind == .audio {
+                            Toggle(WorkbenchText.t("输入监听", "Input monitoring"), isOn: Binding(
+                                get: { session.currentTrack?.strip.inputMonitoring ?? false },
+                                set: { value in
+                                    guard let id = session.selectedTrack else { return }
+                                    session.updateStrip(id) { $0.inputMonitoring = value }
+                                }))
+                        }
+                        if let clip = session.currentClip, !session.takes(for: clip).isEmpty {
+                            Menu(WorkbenchText.t("选择录制版本", "Choose take")) {
+                                ForEach(session.takes(for: clip), id: \.id) { take in
+                                    Button((session.currentTakeID(for: clip) == take.assetID ? "✓ " : "") + take.name) {
+                                        Task { await session.selectTake(take, for: clip.id) }
+                                    }
+                                }
+                            }
                         }
                     } label: {
                         Image(systemName: session.isRecording || session.isMIDIRecording ? "stop.circle.fill" : "record.circle")

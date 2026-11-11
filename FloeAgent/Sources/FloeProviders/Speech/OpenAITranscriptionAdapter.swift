@@ -406,8 +406,17 @@ public struct OpenAITranscriptionAdapter: ASRTranscribing {
                       let segmentText = string(item["text"]) else { continue }
                 let trimmed = segmentText.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
+                // A diarization-capable relay may attach a speaker label to a
+                // verbose-JSON segment. It is passed through verbatim when
+                // present; standard OpenAI models never send one.
+                var speaker = string(item["speaker"])
+                if speaker == nil, let number = item["speaker"] as? NSNumber {
+                    speaker = number.stringValue
+                }
+                speaker = speaker?.trimmingCharacters(in: .whitespacesAndNewlines)
                 segments.append(ASRTranscriptionSegment(
-                    start: start, end: end, text: trimmed))
+                    start: start, end: end, text: trimmed,
+                    speaker: speaker?.isEmpty == false ? speaker : nil))
             }
         }
         if text.isEmpty {

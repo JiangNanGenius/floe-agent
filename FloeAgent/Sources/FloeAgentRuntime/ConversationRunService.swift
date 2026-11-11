@@ -60,6 +60,8 @@ public actor ConversationRunService {
         /// resolves the exact finished call instead of guessing from its
         /// status text. Never read by the runtime's loop guards.
         public var recentToolOutcomes: [ToolOutcomeClassification]
+        /// RAM-only native observations, keyed within this exact run.
+        public var nativeToolDiagnostics: [String: [TaskDiagnosticProgress]]
 
         public var lastToolOutcome: ToolOutcomeClassification? {
             recentToolOutcomes.last
@@ -87,7 +89,8 @@ public actor ConversationRunService {
             pendingUserQuestion: UserQuestionWaitingSnapshot? = nil,
             checkpointReason: String? = nil,
             contextCompression: ContextCompressionSnapshot? = nil,
-            recentToolOutcomes: [ToolOutcomeClassification] = []
+            recentToolOutcomes: [ToolOutcomeClassification] = [],
+            nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:]
         ) {
             self.runID = runID
             self.conversationID = conversationID
@@ -103,6 +106,7 @@ public actor ConversationRunService {
             self.checkpointReason = checkpointReason
             self.contextCompression = contextCompression
             self.recentToolOutcomes = recentToolOutcomes
+            self.nativeToolDiagnostics = nativeToolDiagnostics
         }
     }
 
@@ -188,7 +192,29 @@ public actor ConversationRunService {
     /// Set when a completion-critical write still fails after bounded retry.
     /// The runtime may already have reached `.completed`, but the service
     /// projects a recoverable failure instead of publishing a false success.
+    /// Never cleared by a later checkpoint: these are real durable-timeline
+    /// gaps (a missing final answer, terminal event, tool result or run
+    /// state) that a recovery snapshot cannot repair.
     private var durabilityFailure: String?
+    /// A latched recovery-point (checkpoint) save failure with its evidence.
+    /// Unlike a terminal write failure this one is clearable: checkpoints
+    /// are cumulative, so a later successful save whose capture generation
+    /// is NEWER provably covers the failed boundary's state. When the run
+    /// still completes with every terminal commit verified, the stale
+    /// recovery metadata is recorded as a limitation instead of failing the
+    /// delivered work.
+    private struct RecoveryPointFailure: Sendable {
+        var message: String
+        var boundary: String
+        var generation: Int
+        var errorIdentity: String
+    }
+    private var recoveryPointFailure: RecoveryPointFailure?
+    /// Newest checkpoint capture generation observed saved. A failure at or
+    /// below this generation is already covered by newer durable state and
+    /// must not latch (an older snapshot's outcome never overrides a newer
+    /// verified boundary).
+    private var lastCoveredCheckpointGeneration = 0
     private var hasProviderActivity = false
     private var liveness = AgentLivenessSnapshot(
         phase: .preparing,
@@ -209,6 +235,8 @@ public actor ConversationRunService {
     /// Presentation and diagnostics only; the runtime's loop and authority
     /// decisions never read this value.
     private var recentToolOutcomes: [ToolOutcomeClassification] = []
+    private var nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:]
+    private var nativeDiagnosticCallOrder: [String] = []
     private static let recentToolOutcomeLimit = 32
     /// Set only while handling the provider's terminal event, after the final
     /// assistant/outbox boundary and terminal event have both flushed. The
@@ -441,6 +469,9 @@ public actor ConversationRunService {
         forwarder.onToolFinish = { [weak self] call, stamp in
             await self?.handleToolFinish(callID: call.id, at: stamp)
         }
+        forwarder.onNativeDiagnostic = { [weak self] callID, observation in
+            await self?.handleNativeDiagnostic(observation, callID: callID)
+        }
         forwarder.onLiveness = { [weak self] snapshot in
             await self?.handleLiveness(snapshot)
         }
@@ -508,7 +539,8 @@ public actor ConversationRunService {
             pendingUserQuestion: pendingUserQuestion,
             checkpointReason: checkpointReason,
             contextCompression: contextCompression,
-            recentToolOutcomes: recentToolOutcomes
+            recentToolOutcomes: recentToolOutcomes,
+            nativeToolDiagnostics: nativeToolDiagnostics
         )
     }
 
@@ -563,6 +595,8 @@ public actor ConversationRunService {
         if case .waitingUserQuestion = state { return "waitingUserQuestion" }
         if isReviewingApproval { return "reviewingApproval" }
         switch liveness.phase {
+        case .waitingTool:
+            return "waitingTool"
         case .preparingToolCall:
             if case .streamingModel = state { return "preparingToolCall" }
             return state.name
@@ -694,7 +728,7 @@ public actor ConversationRunService {
                 images: resumption.images
             ))
         }
-        try await runtime.resume(from: restored)
+        try await runtime.resume(from: restored, resumptionInput: resumption)
     }
 
     /// Cancels the run. The runtime owns the terminal transition; persistence
@@ -883,11 +917,12 @@ public actor ConversationRunService {
     /// same value and a regression test locks the two literals together.
     public static let proposalDecisionExecutionMode = "proposalDecision"
     public static let taskCoordinationExecutionMode = "taskCoordination"
+    public static let taskWaitCompletionExecutionMode = "taskWaitCompletion"
 
     /// Every dedicated internal delivery mode the runtime treats as
     /// fail-closed. A persisted row without one of these stays ordinary.
     static let internalDeliveryExecutionModes: Set<String> = [
-        designConfirmationExecutionMode, proposalDecisionExecutionMode, taskCoordinationExecutionMode,
+        designConfirmationExecutionMode, proposalDecisionExecutionMode, taskCoordinationExecutionMode, taskWaitCompletionExecutionMode,
     ]
 
     /// Recoverable-failure text for a dedicated internal delivery whose
@@ -945,9 +980,11 @@ public actor ConversationRunService {
             logger.error("internalDeliveryLinkageInvalid run=\(runID.uuidString) input=\(input.id.uuidString)")
             return
         case .ordinary:
-            if case .taskCoordination = input.origin {
+            switch input.origin {
+            case .taskCoordination, .waitCompletion:
                 durabilityFailure = Self.invalidInternalDeliveryMessage
                 return
+            case .user: break
             }
             break
         }
@@ -1180,6 +1217,14 @@ public actor ConversationRunService {
                 completionCritical: false
             )
         }
+        if case .completed = projectedState, statePersisted, recoveryPointFailure != nil {
+            // Every terminal commit is now durably verified (final answer,
+            // terminal event, run state). The only outstanding issue was a
+            // stale recovery point, already recorded as a limitation notice
+            // ahead of the terminal marker; clear the latch so a later
+            // callback cannot re-read a covered failure.
+            recoveryPointFailure = nil
+        }
         latestState = projectedState
         switch projectedState {
         case .completed, .failed, .cancelling:
@@ -1275,6 +1320,30 @@ public actor ConversationRunService {
         toolCompletedAt[callID] = stamp.monotonic
     }
 
+    private func handleNativeDiagnostic(_ observation: TaskDiagnosticProgress, callID: String) {
+        if case .cancelling = latestState { return }
+        guard !isTerminal(latestState), toolNames[callID] == "network.traceroute",
+              toolRequestedAt[callID] != nil, toolCompletedAt[callID] == nil else { return }
+        var values = nativeToolDiagnostics[callID] ?? []
+        if observation.status == .resolved {
+            guard values.isEmpty else { return }
+        } else {
+            guard values.first?.requestID == observation.requestID,
+                  observation.ttl == (values.compactMap(\.ttl).last ?? 0) + 1 else { return }
+        }
+        guard values.count < 31 else { return }
+        if values.isEmpty {
+            nativeDiagnosticCallOrder.append(callID)
+            if nativeDiagnosticCallOrder.count > 64 {
+                nativeToolDiagnostics[nativeDiagnosticCallOrder.removeFirst()] = nil
+            }
+        }
+        values.append(observation); nativeToolDiagnostics[callID] = values
+        // A bounded cumulative value repairs UI buffer drops without polling
+        // or adding provider/DB events. Final toolResult remains authoritative.
+        eventChannel.yield(.nativeToolDiagnostic(callID: callID, observations: values))
+    }
+
     private func handleEvent(_ event: AgentEvent) async {
         hasProviderActivity = true
         if case .reasoningSummary = event {
@@ -1338,6 +1407,8 @@ public actor ConversationRunService {
                 }
             }
             eventChannel.yield(.toolLifecycle(.requested(call)))
+            nativeToolDiagnostics[call.id] = nil
+            nativeDiagnosticCallOrder.removeAll { $0 == call.id }
             toolNames[call.id] = call.toolName
             toolRequestedAt[call.id] = ContinuousClock.now
             // Explicit Cookie/Authorization argument values are scrubbed
@@ -1623,6 +1694,33 @@ public actor ConversationRunService {
                 )
             }
             if durabilityFailure == nil {
+                if let recoveryFailure = recoveryPointFailure {
+                    // Prefer the runtime's authoritative persisted boundary:
+                    // a newer checkpoint (for example a dispatch boundary)
+                    // may already cover the failed save.
+                    let persistedGeneration = await runtime.latestPersistedCheckpointGeneration()
+                    if persistedGeneration > recoveryFailure.generation {
+                        recoveryPointFailure = nil
+                    } else {
+                        // The final answer and every artifact receipt are
+                        // already durable; only the recovery metadata may be
+                        // stale. Record the limitation ahead of the terminal
+                        // marker (the terminal event must stay last) instead
+                        // of failing the delivered work.
+                        _ = await appendEventReliably(
+                            runID: runID,
+                            kind: .notice,
+                            payloadJSON: Self.jsonPayload([
+                                "message": "recoveryMetadataLimited",
+                                "boundary": recoveryFailure.boundary,
+                                "generation": String(recoveryFailure.generation),
+                                "error": recoveryFailure.errorIdentity
+                            ]),
+                            boundary: "recoveryLimitation",
+                            completionCritical: false
+                        )
+                    }
+                }
                 var terminalPayload: [String: String] = [
                     "stopReason": completion.stopReason.rawValue
                 ]
@@ -1899,29 +1997,81 @@ public actor ConversationRunService {
     /// Recovery points protect already-committed provider/tool progress. A
     /// failed save is therefore a visible durability failure, never a silent
     /// best-effort optimization that can later make a task appear stuck or
-    /// replay completed work.
+    /// replay completed work. Checkpoints are cumulative snapshots: a later
+    /// successful save whose capture generation is NEWER provably covers
+    /// the failed boundary's state, so the latched failure clears only then
+    /// (verified state, never a blind boolean reset). An older-generation
+    /// failure that lands after a newer successful save is already covered
+    /// and never latches.
     private func persistRecoveryPointReliably(boundary: String) async {
         var lastError: Error?
+        var lastGeneration = 0
+        var lastIdentity = "unknown"
         for attempt in 1...3 {
             do {
-                try await runtime.persistRecoveryPoint()
+                let snapshot = try await runtime.persistRecoveryPoint()
+                if snapshot.persisted {
+                    lastCoveredCheckpointGeneration = max(lastCoveredCheckpointGeneration, snapshot.generation)
+                    if let failure = recoveryPointFailure, failure.generation < snapshot.generation {
+                        recoveryPointFailure = nil
+                        logger.info(
+                            "recoveryPointCovered run=\(runID.uuidString) boundary=\(boundary) generation=\(snapshot.generation) coveredFailureGeneration=\(failure.generation) state=\(snapshot.stateName) pendingCalls=\(snapshot.pendingCallCount) pendingResults=\(snapshot.pendingResultCount)"
+                        )
+                        _ = await appendEventReliably(
+                            runID: runID,
+                            kind: .notice,
+                            payloadJSON: Self.jsonPayload([
+                                "message": "recoveryPointRecovered",
+                                "boundary": boundary,
+                                "generation": String(snapshot.generation)
+                            ]),
+                            boundary: "recoveryPointRecovered",
+                            completionCritical: false
+                        )
+                    }
+                }
                 return
+            } catch let writeError as CheckpointWriteError {
+                lastError = writeError.underlying
+                lastGeneration = writeError.generation
+                lastIdentity = writeError.errorIdentity
+                if attempt < 3 {
+                    try? await Task.sleep(for: .milliseconds(25 * attempt))
+                }
             } catch {
                 lastError = error
+                lastIdentity = PersistenceErrorIdentity.render(error)
                 if attempt < 3 {
                     try? await Task.sleep(for: .milliseconds(25 * attempt))
                 }
             }
         }
+        // A failure at or below an already-covered generation cannot limit
+        // recovery: a newer checkpoint is durable. Log it, never latch.
+        if lastGeneration > 0, lastGeneration <= lastCoveredCheckpointGeneration {
+            logger.error(
+                "recoveryPointFailedCovered run=\(runID.uuidString) boundary=\(boundary) generation=\(lastGeneration) coveredBy=\(lastCoveredCheckpointGeneration) error=\(lastIdentity)"
+            )
+            return
+        }
         let detail = "Unable to persist \(boundary) after retry: \(lastError?.localizedDescription ?? "unknown persistence error")"
-        logger.error("recoveryPointFailed run=\(runID.uuidString) boundary=\(boundary)")
-        durabilityFailure = detail
+        logger.error(
+            "recoveryPointFailed run=\(runID.uuidString) boundary=\(boundary) generation=\(lastGeneration) error=\(lastIdentity)"
+        )
+        recoveryPointFailure = RecoveryPointFailure(
+            message: detail,
+            boundary: boundary,
+            generation: lastGeneration,
+            errorIdentity: lastIdentity
+        )
         _ = await appendEventReliably(
             runID: runID,
             kind: .error,
             payloadJSON: Self.jsonPayload([
                 "message": "recoveryPointPersistenceFailed",
-                "boundary": boundary
+                "boundary": boundary,
+                "generation": String(lastGeneration),
+                "error": lastIdentity
             ]),
             boundary: "recoveryPointFailureEvent",
             completionCritical: false
@@ -2656,6 +2806,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
     var onToolDispatch: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
     var onToolFinish: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
+    var onNativeDiagnostic: (@Sendable (String, TaskDiagnosticProgress) async -> Void)?
     var onContextCompression: (@Sendable (ContextCompressionSnapshot) async -> Void)?
     var onToolOutcome: (@Sendable (ToolOutcomeClassification) async -> Void)?
 
@@ -2678,6 +2829,10 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
         at stamp: ToolTimingStamp
     ) async {
         await onToolFinish?(call, stamp)
+    }
+
+    func agentRuntime(_ runtime: FloeAgentRuntime, didObserveNativeDiagnostic observation: TaskDiagnosticProgress, callID: String) async {
+        await onNativeDiagnostic?(callID, observation)
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {

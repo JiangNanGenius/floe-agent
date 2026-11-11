@@ -7,6 +7,31 @@ public struct CaptureSessionOutcome: Sendable {
     public let stopReason: CaptureStopReason?
 }
 
+/// One whole-file ASR observation for the post-record correction pass.
+public struct CanonicalTranscriptInput: Sendable {
+    public let startSeconds: Double
+    public let endSeconds: Double
+    public let text: String
+    public let speakerID: SpeakerID?
+
+    public init(startSeconds: Double, endSeconds: Double, text: String, speakerID: SpeakerID? = nil) {
+        self.startSeconds = startSeconds
+        self.endSeconds = endSeconds
+        self.text = text
+        self.speakerID = speakerID
+    }
+}
+
+/// Result of adopting a whole-original transcription into the live transcript.
+public struct TranscriptReconciliation: Sendable, Equatable {
+    /// Engine rows upgraded to the canonical text/speaker.
+    public let adopted: Int
+    /// Canonical rows with no time-corresponding existing segment.
+    public let appended: Int
+    /// Existing rows left untouched because the user corrected them.
+    public let preserved: Int
+}
+
 /// In-progress (not yet finalized) transcript text. Partials live in memory
 /// only; they are never persisted and are discarded when their session ends.
 public struct PartialTranscript: Sendable, Codable, Identifiable, Hashable {
@@ -16,7 +41,6 @@ public struct PartialTranscript: Sendable, Codable, Identifiable, Hashable {
     public var text: String
     public var language: String?
 }
-
 /// Facade over the meeting core: capture lifecycle, transcript ordering and
 /// revisions, notes/markers, todos, decisions and summary input. All state is
 /// persisted through `MeetingDatabase` (GRDB); every finalized mutation is
@@ -132,6 +156,9 @@ public actor MeetingService {
     /// Fence old recognizer results before awaiting hardware or persistence.
     @discardableResult
     public func cancelCapture() async throws -> CaptureSessionID? {
+        // Fence every issued generation before the epoch changes or the
+        // first await, including draining leases when capture.cancel is nil.
+        for state in liveLeases.values { state.permit.revoke() }
         startEpoch += 1
         if let reservation = startReservation { closedSessions.insert(reservation.session) }
         for session in activeMeetings.keys { closedSessions.insert(session) }
@@ -145,6 +172,7 @@ public actor MeetingService {
     private func persistTerminal(_ outcome: MeetingCaptureController.Outcome) async throws {
         guard let meeting = activeMeetings[outcome.session] else { return }
         closedSessions.insert(outcome.session)
+        fenceLiveLeases(forSession: outcome.session, outcome: outcome.state)
         let removed = partials[meeting]?.values.filter { $0.sessionID == outcome.session }.map(\.id) ?? []
         for id in removed { partials[meeting]?[id] = nil }
         partialOrder[meeting]?.removeAll { removed.contains($0) }
@@ -192,6 +220,7 @@ public actor MeetingService {
         meeting id: MeetingID,
         file: URL,
         kind: CaptureKind,
+        origin: CaptureSessionID? = nil,
         duration: @Sendable (URL) async throws -> MediaTimeRange
     ) async throws -> CaptureSessionID {
         _ = try await self.meeting(id)
@@ -210,7 +239,7 @@ public actor MeetingService {
             endedAt: Date(),
             stopReason: .finished
         )
-        try await database.insertSession(session)
+        try await database.insertSession(session, origin: origin?.description)
         return session.id
     }
 
@@ -298,9 +327,237 @@ public actor MeetingService {
         return try await database.insertSegment(segment)
     }
 
+    // MARK: - Continuous live-recognition lease
+    //
+    // One lease authorizes one continuous live-ASR coordinator to commit the
+    // per-utterance finals of ONE live capture, including the genuine finish
+    // tail after a normal stop. This is deliberately not a relaxation of the
+    // ordinary fencing: the lease is validated on this actor (which also owns
+    // every capture-state transition), is bound to one capture-session id, is
+    // revoked by cancel/failure/epoch bumps/replacement. A shared synchronous
+    // permit linearizes revocation with the final database transaction,
+    // which accepts capturing OR stopped live sessions and fences overlaps.
+
+    private struct LiveLeaseState: Sendable {
+        enum Phase: Sendable {
+            /// Capture is running: partials and finals are accepted.
+            case capturing
+            /// Normal stop delivered: only tail finals are accepted, until
+            /// the coordinator closes the lease.
+            case draining
+            /// Terminal: any further commit throws `.leaseRevoked`.
+            case closed
+        }
+        let meeting: MeetingID
+        let session: CaptureSessionID
+        let epoch: Int
+        let permit: LiveTranscriptionCommitPermit
+        var phase: Phase
+        var partialID: TranscriptSegmentID?
+    }
+
+    private var liveLeases: [UUID: LiveLeaseState] = [:]
+    private var liveLeaseBySession: [CaptureSessionID: UUID] = [:]
+
+    /// Register the continuous live-ASR domain of one live capture. A second
+    /// registration for the same session revokes the previous lease, so a
+    /// replaced coordinator generation can never write after its successor
+    /// starts. The capture must be actively recording.
+    @discardableResult
+    public func beginLiveTranscription(
+        meeting: MeetingID,
+        session: CaptureSessionID
+    ) async throws -> LiveTranscriptionLease {
+        let epoch = startEpoch
+        _ = try await self.meeting(meeting)
+        let snapshot = try await database.sessions(meeting: meeting)
+            .first(where: { $0.id == session })
+        guard let snapshot, snapshot.meetingID == meeting,
+              snapshot.kind == .liveRecording, snapshot.state == .capturing,
+              activeMeetings[session] == meeting, !closedSessions.contains(session),
+              epoch == startEpoch else {
+            throw LiveTranscriptionError.invalidSession
+        }
+        if let previous = liveLeaseBySession[session], let state = liveLeases[previous] {
+            state.permit.revoke()
+            clearLivePartial(state)
+            liveLeases[previous] = nil
+        }
+        let lease = LiveTranscriptionLease(meeting: meeting, session: session)
+        liveLeases[lease.id] = LiveLeaseState(
+            meeting: meeting, session: session, epoch: startEpoch,
+            permit: LiveTranscriptionCommitPermit(lease: lease, epoch: startEpoch),
+            phase: .capturing, partialID: nil)
+        liveLeaseBySession[session] = lease.id
+        return lease
+    }
+
+    /// Create or update the single in-memory partial of a live lease. Empty
+    /// text clears it. Updates stop flowing once the capture stops through
+    /// the existing partial fencing.
+    public func updateLivePartial(
+        _ leaseID: LiveTranscriptionLease,
+        text: String,
+        language: String? = nil
+    ) async throws {
+        let state = try validatedLease(leaseID, allowDraining: false)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            if let partialID = state.partialID {
+                partials[state.meeting]?[partialID] = nil
+                partialOrder[state.meeting]?.removeAll { $0 == partialID }
+                liveLeases[leaseID.id]?.partialID = nil
+            }
+            return
+        }
+        if let partialID = state.partialID {
+            await updatePartial(partialID, meeting: state.meeting, text: trimmed)
+        } else {
+            let id = try await beginPartial(
+                meeting: state.meeting, session: state.session,
+                text: trimmed, language: language)
+            liveLeases[leaseID.id]?.partialID = id
+        }
+    }
+
+    /// Commit one finalized utterance of the live domain.
+    ///
+    /// Actor calls may suspend after validation. The generation's trusted
+    /// permit therefore guards the whole final database transaction with the
+    /// same synchronous lock used by every revocation; no stale generation
+    /// can start a write after it has been revoked.
+    /// `utteranceKey` is the stable identity of this utterance inside ONE
+    /// trusted request domain (`<scope UUID>|<start ms>|<end ms>`): a
+    /// re-commit of the same key ADOPTS revised text/speaker in the same
+    /// transaction on fields the user has not corrected; an overlapping range
+    /// from a DIFFERENT key returns nil (the utterance was rejected) and
+    /// never overwrites anything. Only returned rows prove durable coverage.
+    /// Allowed while capturing and during the normal-
+    /// stop tail; throws after cancel/failure or lease replacement.
+    @discardableResult
+    public func commitLiveFinal(
+        _ leaseID: LiveTranscriptionLease,
+        text: String,
+        range: MediaTimeRange,
+        speaker: SpeakerID? = nil,
+        language: String? = nil,
+        utteranceKey: String? = nil
+    ) async throws -> TranscriptSegment? {
+        let state = try validatedLease(leaseID, allowDraining: true)
+        guard range.start.isFinite, range.end.isFinite, range.end > range.start else {
+            throw LiveTranscriptionError.invalidRange
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let segment = TranscriptSegment(
+            meetingID: state.meeting,
+            sessionID: state.session,
+            speakerID: speaker,
+            range: range,
+            text: trimmed,
+            language: language,
+            ordinal: 0
+        )
+        let key = utteranceKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outcome = try await database.upsertLiveTranscriptSegment(
+            segment, liveKey: key?.isEmpty == false ? key : nil, permit: state.permit)
+        // A final supersedes the visible partial even when overlap rejects
+        // its insertion. Rejection does not imply the whole range is durable.
+        lockPartialSupersede(leaseID: leaseID, meeting: state.meeting)
+        return outcome.segment
+    }
+
+    /// Clearing the lease partial is synchronous in-memory work on this
+    /// actor; the committed final replaces the visible partial.
+    private func lockPartialSupersede(leaseID: LiveTranscriptionLease, meeting: MeetingID) {
+        if let partialID = liveLeases[leaseID.id]?.partialID {
+            partials[meeting]?[partialID] = nil
+            partialOrder[meeting]?.removeAll { $0 == partialID }
+            liveLeases[leaseID.id]?.partialID = nil
+        }
+    }
+
+    /// Rows already committed for one original's lineage, for the App-side
+    /// reserved-range computation (file fallback transcribes only real gaps).
+    public func committedSegments(
+        meeting: MeetingID,
+        original: CaptureSessionID
+    ) async throws -> [TranscriptSegment] {
+        let lineage = try await database.analysisLineage(meeting: meeting, original: original)
+        return try await database.segments(inLineage: meeting, lineage: lineage)
+    }
+
+    /// Close the lease and drop its partial. Idempotent.
+    public func endLiveTranscription(_ leaseID: LiveTranscriptionLease) async {
+        guard let state = liveLeases[leaseID.id] else { return }
+        state.permit.revoke()
+        clearLivePartial(state)
+        liveLeases[leaseID.id] = nil
+        if liveLeaseBySession[state.session] == leaseID.id {
+            liveLeaseBySession[state.session] = nil
+        }
+    }
+
+    private func validatedLease(
+        _ leaseID: LiveTranscriptionLease,
+        allowDraining: Bool
+    ) throws -> LiveLeaseState {
+        guard let state = liveLeases[leaseID.id],
+              state.meeting == leaseID.meeting, state.session == leaseID.session else {
+            throw LiveTranscriptionError.unknownLease
+        }
+        guard state.epoch == startEpoch, state.permit.epoch == state.epoch else {
+            throw LiveTranscriptionError.leaseRevoked
+        }
+        switch state.phase {
+        case .capturing:
+            return state
+        case .draining:
+            if allowDraining { return state }
+            throw LiveTranscriptionError.leaseRevoked
+        case .closed:
+            throw LiveTranscriptionError.leaseRevoked
+        }
+    }
+
+    private func clearLivePartial(_ state: LiveLeaseState) {
+        guard let partialID = state.partialID else { return }
+        partials[state.meeting]?[partialID] = nil
+        partialOrder[state.meeting]?.removeAll { $0 == partialID }
+    }
+
+    /// Terminal capture outcomes fence the leases of that session: a normal
+    /// stop keeps them open for the genuine tail (bounded by the coordinator
+    /// closing them); cancel/failure revokes immediately.
+    private func fenceLiveLeases(forSession session: CaptureSessionID, outcome: CaptureSessionState) {
+        guard let leaseID = liveLeaseBySession[session],
+              let state = liveLeases[leaseID], state.session == session else { return }
+        switch outcome {
+        case .stopped:
+            if case .capturing = state.phase {
+                liveLeases[leaseID]?.phase = .draining
+            }
+        case .cancelled, .failed:
+            state.permit.revoke()
+            clearLivePartial(state)
+            liveLeases[leaseID]?.phase = .closed
+        default:
+            break
+        }
+    }
+
     /// Final segments by recording session, media time, then insertion.
     public func transcript(meeting: MeetingID) async throws -> [TranscriptSegment] {
         try await database.segments(meeting: meeting)
+    }
+
+    /// Resolve note/marker/summary sources, including superseded transcript
+    /// history. This is read-only; stale mutation IDs remain rejected.
+    public func sourceSegments(meeting: MeetingID, ids: Set<TranscriptSegmentID>) async throws -> [TranscriptSegment] {
+        try Task.checkCancellation()
+        let values = try await database.sourceSegments(meeting: meeting, ids: ids)
+        try Task.checkCancellation()
+        return values
     }
 
     /// User correction of a final segment. Original engine text is kept.
@@ -343,11 +600,75 @@ public actor MeetingService {
 
     /// Merge two speakers. Segments keep pointing at the merged id; reads
     /// resolve through the merge chain, preserving their source references.
+    /// Engine bindings that pointed at the merged speaker are re-pointed at
+    /// the target, so recognition that arrives after the merge still commits
+    /// into the merged identity.
     public func mergeSpeaker(_ id: SpeakerID, into target: SpeakerID, meeting: MeetingID) async throws {
         guard id != target else { return }
         var speaker = try await loadSpeaker(id, meeting: meeting)
-        speaker.mergedInto = try await resolveSpeaker(target, meeting: meeting)
+        let resolved = try await resolveSpeaker(target, meeting: meeting)
+        speaker.mergedInto = resolved
         try await database.updateSpeaker(speaker, meeting: meeting)
+        try await database.rebindSpeaker(meeting: meeting, from: id, to: resolved)
+    }
+
+    /// Map one engine attribution label to a stable meeting speaker. The
+    /// mapping is scoped to ONE real recognition request (`scope` identifies
+    /// that request): providers restart their speaker numbering on every new
+    /// request or reconnect, so a "1" from an independent request is never
+    /// assumed to be the same person and is not merged across requests.
+    /// The first sight of a label inside a request creates an anonymous
+    /// speaker (`Speaker N`, `userNamed == false`); later segments with the
+    /// same label in the SAME request reuse it, including after app restarts.
+    /// Get-or-create runs in one database transaction, so concurrent
+    /// resolutions cannot duplicate speakers for one label. A nil/empty
+    /// label returns nil and never fabricates a speaker.
+    @discardableResult
+    public func resolveEngineSpeaker(
+        meeting: MeetingID,
+        scope: String,
+        label: String?
+    ) async throws -> SpeakerID? {
+        guard let raw = label?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        guard try await database.meeting(meeting) != nil else { throw MeetingError.meetingNotFound(meeting) }
+        let bound = try await database.resolveSpeakerBinding(
+            meeting: meeting, scope: scope, providerLabel: raw)
+        return try await resolveSpeaker(bound, meeting: meeting)
+    }
+
+    /// User correction of one segment's speaker attribution. Durable before
+    /// return and marked as user-corrected, so the post-record canonical pass
+    /// never overwrites it.
+    @discardableResult
+    public func reassignSegmentSpeaker(
+        _ id: TranscriptSegmentID,
+        meeting: MeetingID,
+        speaker: SpeakerID?
+    ) async throws -> TranscriptSegment {
+        _ = try await loadSegment(id, meeting: meeting)
+        try await database.updateSegmentSpeaker(id, meeting: meeting, speaker: speaker)
+        return try await loadSegment(id, meeting: meeting)
+    }
+
+    /// Post-record correction pass: adopt the whole-original transcription
+    /// into the existing transcript of one original recording by time
+    /// correspondence. Engine rows adopt canonical segmentation, retaining
+    /// existing identities where they overlap. Superseded rows remain as
+    /// reference history; visible output contains one transcript. Manual
+    /// corrections anchor their existing segmentation. Runs in one transaction.
+    @discardableResult
+    public func reconcileCanonicalTranscription(
+        meeting: MeetingID,
+        analysisSessions: Set<CaptureSessionID>,
+        target: CaptureSessionID,
+        inputs: [CanonicalTranscriptInput]
+    ) async throws -> TranscriptReconciliation {
+        try await database.reconcileCanonicalTranscript(
+            meeting: meeting,
+            analysisSessions: Set(analysisSessions.map(\.description)),
+            target: target,
+            inputs: inputs)
     }
 
     /// Resolve a speaker id through merge chains to its current identity.

@@ -5,7 +5,10 @@
 // File transcription is a bounded replay of the supported audio container over
 // the same v3 SAUC WebSocket used for live input; live transcription streams
 // PCM16 mono 16 kHz in ~200 ms packets and commits one utterance with the
-// documented final (negative) packet. Pay-as-you-go and Agent Plan have
+// documented final (negative) packet. The committed final also carries the
+// per-utterance separation (times relative to this request's fed audio, plus
+// each utterance's own speaker) so multi-speaker commits are never collapsed
+// to a guessed single label. Pay-as-you-go and Agent Plan have
 // separate hosts/paths and credentials; a plan key is never sent to the
 // pay-as-you-go endpoint (or the reverse). New-console `X-Api-Key` is the
 // primary credential; legacy `legacy:<appId>:<accessToken>` is accepted only
@@ -87,7 +90,8 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
             mimeType: request.mimeType,
             languages: languages,
             sourceDurationSeconds: request.durationSeconds,
-            streamsResponse: false)
+            streamsResponse: false,
+            enableSpeakerAttribution: request.enableSpeakerAttribution)
         return try await transcribe(fileRequest, credential: credential)
     }
 
@@ -135,7 +139,9 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
         let configuration = try Self.configuration(
             modelID: modelID,
             input: input,
-            live: false)
+            live: false,
+            enableSpeakerAttribution: request.enableSpeakerAttribution
+                && capabilities.supportsSpeakerAttribution)
         let session = VolcengineFileSession(
             connection: connection,
             configuration: configuration,
@@ -194,7 +200,9 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
         let configuration = try Self.configuration(
             modelID: liveModel,
             input: liveInput,
-            live: true)
+            live: true,
+            enableSpeakerAttribution: request.enableSpeakerAttribution
+                && capabilities.supportsSpeakerAttribution)
         let session = VolcengineLiveSession(
             connection: connection,
             request: request,
@@ -287,7 +295,8 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
     static func configuration(
         modelID: String,
         input: ASRVendorAudioInput,
-        live: Bool
+        live: Bool,
+        enableSpeakerAttribution: Bool = false
     ) throws -> Data {
         let format: String
         var codec: String?
@@ -310,7 +319,7 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
             "channel": live ? 1 : (input.channelCount ?? 1),
         ]
         if let codec { audio["codec"] = codec }
-        let request: [String: Any] = [
+        var request: [String: Any] = [
             // The catalogue's product name is not the SAUC protocol's model
             // selector. Both official 2.0 names use `bigmodel` with the 2.0
             // resource header; preserve explicitly configured custom names.
@@ -320,6 +329,13 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
             "enable_punc": true,
             "enable_ddc": false,
         ]
+        // Speaker separation is opt-in per request: the docs require
+        // `enable_speaker_info` together with `show_utterances`, after which
+        // each utterance carries a `speaker_id`. Both the file replay and the
+        // live `bigmodel_async` stream use the same request shape.
+        if enableSpeakerAttribution {
+            request["enable_speaker_info"] = true
+        }
         let root: [String: Any] = [
             "user": ["uid": "floe-ios", "platform": "iOS"],
             "audio": audio,
@@ -658,7 +674,9 @@ private final class VolcengineFileSession: @unchecked Sendable {
                             try builder.add(
                                 startMilliseconds: start,
                                 endMilliseconds: end,
-                                text: ASRVendorJSON.string(utterance["text"]) ?? "")
+                                text: ASRVendorJSON.string(utterance["text"]) ?? "",
+                                speaker: ASRVendorJSON.normalizedSpeaker(
+                                    utterance["speaker_id"] ?? utterance["speaker"]))
                         }
                     }
                 }
@@ -723,6 +741,22 @@ actor VolcengineLiveSession: ASRLiveSession {
     private var receivedMessages = 0
     private var streamError: ASRTranscriptionError?
     private var receiveTask: Task<Void, Never>?
+    /// Speaker-separated utterances accumulate across result messages (some
+    /// deployments only attach the complete `utterances` array to the final
+    /// packet, others stream it incrementally). The array is keyed by the
+    /// utterance's (start, end) span — the provider's stable per-utterance
+    /// identity inside this request — so cumulative lists stay linear and a
+    /// revised utterance REPLACES its earlier text/speaker instead of
+    /// appending a second copy. The committed final reports the latest state
+    /// per span, keeping every real per-utterance time/speaker of a
+    /// mixed-speaker commit instead of collapsing to a guessed label.
+    private struct SeparatedUtterance: Sendable {
+        var startMilliseconds: Double
+        var endMilliseconds: Double
+        var text: String
+        var speaker: String?
+    }
+    private var separatedUtterances: [SeparatedUtterance] = []
 
     init(
         connection: any ASRWebSocketConnection,
@@ -893,7 +927,7 @@ actor VolcengineLiveSession: ASRLiveSession {
             try await fail(error: VolcengineASRAdapter.mapProviderError(code))
         case .json(let payload, let isFinal, _):
             let object = try VolcengineASRAdapter.parseObject(payload)
-            var utteranceBuilder = ASRVendorSegmentBuilder()
+            var wordSpanHelper = ASRVendorSegmentBuilder()
             if let result = ASRVendorJSON.resultObject(object["result"]) {
                 if let newText = ASRVendorJSON.string(result["text"]) {
                     let trimmed = newText.trimmingCharacters(
@@ -929,22 +963,30 @@ actor VolcengineLiveSession: ASRLiveSession {
                         var start = ASRVendorJSON.double(utterance["start_time"])
                         var end = ASRVendorJSON.double(utterance["end_time"])
                         if start == nil || end == nil,
-                           let span = utteranceBuilder.spanFromWords(utterance["words"]) {
+                           let span = wordSpanHelper.spanFromWords(utterance["words"]) {
                             if start == nil { start = span.start }
                             if end == nil { end = span.end }
                         }
-                        try utteranceBuilder.add(
+                        let speaker = ASRVendorJSON.normalizedSpeaker(
+                            utterance["speaker_id"] ?? utterance["speaker"])
+                        try recordSeparatedUtterance(
                             startMilliseconds: start,
                             endMilliseconds: end,
-                            text: ASRVendorJSON.string(utterance["text"]) ?? "")
+                            text: ASRVendorJSON.string(utterance["text"]) ?? "",
+                            speaker: speaker)
                     }
                 }
             }
             if isFinal {
+                let separated = separatedUtterances.sorted {
+                    $0.startMilliseconds == $1.startMilliseconds
+                        ? $0.endMilliseconds < $1.endMilliseconds
+                        : $0.startMilliseconds < $1.startMilliseconds
+                }
                 var finalText = partialText.trimmingCharacters(
                     in: .whitespacesAndNewlines)
                 if finalText.isEmpty {
-                    finalText = utteranceBuilder.segments()
+                    finalText = separated
                         .map(\.text).joined(separator: "")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                 }
@@ -952,11 +994,30 @@ actor VolcengineLiveSession: ASRLiveSession {
                     try await fail(error: .emptyResult)
                     return
                 }
+                // One committed utterance carries its speaker only when every
+                // separated utterance agrees; a mixed-speaker commit stays
+                // unattributed at the top level instead of guessing, and the
+                // per-utterance payload below preserves the real separation.
+                let finalSpeakers = Set(separated.compactMap(\.speaker))
+                let finalSpeaker = finalSpeakers.count == 1
+                    ? finalSpeakers.first
+                    : nil
+                let finalUtterances: [ASRLiveUtterance]? = separated.isEmpty
+                    ? nil
+                    : separated.map {
+                        ASRLiveUtterance(
+                            startMilliseconds: $0.startMilliseconds,
+                            endMilliseconds: $0.endMilliseconds,
+                            text: $0.text,
+                            speaker: $0.speaker)
+                    }
                 sequence += 1
                 try await events.send(.final(
                     turnID: turnID,
                     itemID: requestID,
                     transcript: finalText,
+                    speaker: finalSpeaker,
+                    utterances: finalUtterances,
                     sequence: sequence))
                 events.finish()
                 state = .terminal
@@ -972,6 +1033,38 @@ actor VolcengineLiveSession: ASRLiveSession {
             itemID: requestID,
             delta: delta,
             sequence: sequence))
+    }
+
+    /// Latest-wins-per-span utterance state for this request (actor-isolated).
+    private func recordSeparatedUtterance(
+        startMilliseconds: Double?,
+        endMilliseconds: Double?,
+        text rawText: String,
+        speaker: String?
+    ) throws {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard text.count <= VolcengineASRAdapter.maximumTranscriptCharacters else {
+            throw ASRTranscriptionError.responseTooLarge
+        }
+        guard let start = startMilliseconds, let end = endMilliseconds,
+              start.isFinite, end.isFinite, start >= 0, end > start,
+              start <= ASRVendorSegmentBuilder.maximumMediaSeconds * 1_000,
+              end <= ASRVendorSegmentBuilder.maximumMediaSeconds * 1_000 else {
+            return
+        }
+        if let index = separatedUtterances.firstIndex(where: {
+            $0.startMilliseconds == start && $0.endMilliseconds == end
+        }) {
+            separatedUtterances[index].text = text
+            separatedUtterances[index].speaker = speaker
+            return
+        }
+        guard separatedUtterances.count < ASRVendorSegmentBuilder.maximumSegments else {
+            throw ASRTranscriptionError.responseTooLarge
+        }
+        separatedUtterances.append(SeparatedUtterance(
+            startMilliseconds: start, endMilliseconds: end, text: text, speaker: speaker))
     }
 
     private func fail(error: ASRTranscriptionError) async throws {

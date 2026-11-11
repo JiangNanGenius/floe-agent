@@ -37,7 +37,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private static var sessions: [UUID: MusicProjectSession] = [:]
     static func requireIdleForDeletion(id: UUID) throws {
         guard let value = sessions[id] else { return }
-        guard value.notation?.isBusy != true, !value.notationImporting, !value.notationRestoring, !value.saving, !value.isRendering, !value.isLive, value.previewPresetIndex == nil, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording, !value.djIsActive, !value.djLoading, !value.djCaptureBusy, value.djAnalysisTasks.isEmpty else { throw PersonalFileActionError.busy }
+        guard value.notation?.isBusy != true, !value.notationImporting, !value.notationRestoring, !value.saving, !value.isRendering, !value.isLive, value.previewPresetIndex == nil, value.player?.isPlaying != true, !value.isRecording, !value.isMIDIRecording, !value.micStarting, !value.djIsActive, !value.djLoading, !value.djCaptureBusy, value.djAnalysisTasks.isEmpty else { throw PersonalFileActionError.busy }
         value.stopDJ() // Release this idle graph's file handles before deletion.
     }
 
@@ -78,8 +78,6 @@ private nonisolated struct MusicImportDirectory: Sendable {
     private var previewResumeTrack: MusicTrackID?
     private(set) var previewPresetIndex: Int?
     private var player: AVAudioPlayer?
-    private var recorder: AVAudioRecorder?
-    private var microphoneFile: URL?
     private var handle: MusicSessionHandle
     private var lease: MusicRenderLease?
     private var renderTask: Task<Void, Never>?
@@ -130,11 +128,31 @@ private nonisolated struct MusicImportDirectory: Sendable {
     var diagnostic: String?
     var preset: String { String(currentTrack?.instrument?.presetIndex ?? 0) }
     private var midiStart: UInt64?
+    /// Service-owned accompaniment transport active during a MIDI take. Its
+    /// output clock is also the recording clock, so the visible playhead and
+    /// saved note offsets cannot drift apart.
+    private var recordTransport: MusicArrangementTransport?
+    private var recordTransportToken: String?
+    private var recordTransportStartSample: Int64 = 0
     private var heldNotes: [String: (PerformanceNote, Int64)] = [:]
     private var capturedNotes: [MusicMIDINote] = []
     private var capturedControllers: [String: MusicMIDIControllerPoint] = [:]
     private var midiCaptureTempo: MusicTempoMap?
     private var midiCaptureOffset: Int64 = 0
+    /// Loop frozen for the current recording run (nil = linear take).
+    private var recordLoop: MusicLoopRange?
+    /// Identity of the current recording run; take assets carry it in their
+    /// locator so the take list is a pure function of the committed document.
+    private var recordRunID = UUID()
+    private var lastRecordPass: Int64 = 0
+    private var midiPassTakes: [[MusicMIDINote]] = []
+    private var midiPassControllers: [[MusicMIDIControllerPoint]] = []
+    private var passMonitor: Task<Void, Never>?
+    private var micRecordTrackID: MusicTrackID?
+    /// Set from the moment a microphone recording is asked for until it
+    /// starts or fails: project deletion must stay blocked across the
+    /// permission prompt, not only while `isRecording` is true.
+    private var micStarting = false
     private let renderer = MusicOfflineRenderer()
     private let mp3 = MusicMP3Exporter()
 
@@ -217,7 +235,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
     }
 
     func apply(_ operations: [MusicEditOp], expectedRevision: Int64? = nil) async throws {
-        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { throw MusicError.invalidBatch(reason: "finish the current recording or save before editing the arrangement") }
+        guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy, !isRecording, !isMIDIRecording else { throw MusicError.invalidBatch(reason: "finish the current recording or save before editing the arrangement") }
         if let expectedRevision, expectedRevision != document.revision {
             throw MusicError.staleRevision(expected: expectedRevision, actual: document.revision)
         }
@@ -550,32 +568,189 @@ private nonisolated struct MusicImportDirectory: Sendable {
     func startMIDIRecording() {
         guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
         guard !isRecording, midiStart == nil else { return }
+        // One transport owner at a time: decks, score preview and rendered
+        // file playback end before the recording transport starts.
+        stopPlayback()
         startLive()
         guard isLive else { return }
         capturedNotes = []; capturedControllers = [:]; heldNotes = [:]
+        midiPassTakes = []; midiPassControllers = []
         midiCaptureTempo = document.tempoMap
         midiCaptureOffset = Int64(min(9.0e15, max(0, playheadSeconds * Double(document.tempoMap.sampleRate))))
+        recordRunID = UUID()
+        lastRecordPass = 0
         midiStart = mach_absolute_time()
+        let loop = frozenRecordLoop(start: midiCaptureOffset)
+        startRecordTransport(at: midiCaptureOffset, loop: loop)
+        if loop != nil { startPassMonitor() }
     }
+    /// Loop passes sealed so far for the active MIDI run (each with the
+    /// controllers captured during that pass).
+    private var sealedPasses: Int { midiPassTakes.count }
     var isMIDIRecording: Bool { midiStart != nil }
+    /// Accompaniment during a take: the arrangement's audible tracks play from
+    /// the current playhead through one service-owned engine. Failure never
+    /// blocks the take; recording falls back to the monotonic host clock.
+    /// `loop` freezes the recording boundaries for every pass of a loop take.
+    private func startRecordTransport(at offset: Int64, loop: MusicLoopRange? = nil) {
+        let token = handle.ownerToken + ":record-transport"
+        do {
+            // Only sources referenced by audible clips are resolved: an
+            // unused or mute/solo-excluded asset must never silence the
+            // accompaniment, while a genuinely required source still throws.
+            var sources: [ResolvedMusicSource] = []
+            var seen = Set<MusicAssetID>()
+            for track in document.audibleTracks {
+                for clip in track.clips {
+                    guard case .audio(let payload) = clip.body,
+                          seen.insert(payload.assetID).inserted,
+                          let asset = document.assets.first(where: { $0.id == payload.assetID }) else { continue }
+                    sources.append(.init(asset: asset, url: try repository.resolvedURL(for: asset)))
+                }
+            }
+            let transport = try MusicArrangementTransport(ownerToken: token, authority: audio,
+                                                          document: document, sources: sources)
+            try transport.start(atSample: offset, loop: loop, ownerToken: token)
+            try transport.markRecording(true, ownerToken: token)
+            recordTransport = transport; recordTransportToken = token; recordTransportStartSample = offset
+            recordLoop = loop
+        } catch {
+            recordTransport = nil; recordTransportToken = nil; recordLoop = nil
+            diagnostic = IDELanguageRunText.t("伴奏未能开始，录制仍将继续。", "Accompaniment could not start. Recording continues without it.")
+        }
+    }
+
+    /// Freezes the loop region for a recording run: from the playhead to the
+    /// end of the audible content. Empty or degenerate projects record a
+    /// single linear take instead, with an explanatory notice.
+    private func frozenRecordLoop(start: Int64) -> MusicLoopRange? {
+        guard looping else { return nil }
+        let end = document.contentEndSample.value
+        guard end > start, let loop = try? MusicLoopRange(startSample: start, endSample: end) else {
+            diagnostic = IDELanguageRunText.t("内容太短，已改为单次录制。", "The project is too short, so a single take was recorded instead.")
+            return nil
+        }
+        return loop
+    }
+
+    /// Polls the trusted transport clock while a loop recording runs and
+    /// seals each finished pass the moment the clock crosses its boundary.
+    /// Display may tick; take boundaries never wait for a UI event.
+    private func startPassMonitor() {
+        stopPassMonitor()
+        let identity = UUID()
+        passMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, !self.closedPassMonitor(identity) else { return }
+                if self.isMIDIRecording { self.sealFinishedPasses() }
+                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+            }
+        }
+    }
+    private var passMonitorIdentity = UUID()
+    private func closedPassMonitor(_ identity: UUID) -> Bool { identity != passMonitorIdentity }
+    private func stopPassMonitor() { passMonitorIdentity = UUID(); passMonitor?.cancel(); passMonitor = nil }
+    @discardableResult
+    private func stopRecordTransport() -> Int64? {
+        guard let transport = recordTransport, let token = recordTransportToken else { recordLoop = nil; return nil }
+        recordTransport = nil; recordTransportToken = nil
+        let position = (try? transport.absolutePosition(ownerToken: token)) ?? recordTransportStartSample
+        try? transport.stop(ownerToken: token)
+        try? transport.close(ownerToken: token)
+        recordLoop = nil
+        return position
+    }
     private func recordingTick() throws -> Int64 {
-        guard let start = midiStart else { return 0 }
-        let seconds = AVAudioTime.seconds(forHostTime: mach_absolute_time() - start)
         let map = midiCaptureTempo ?? document.tempoMap
-        let samples = min(Double(Int64.max / 2), seconds * Double(map.sampleRate))
-        let absolute = Int64(samples.rounded()) + midiCaptureOffset
+        // The transport clock is already absolute (start sample + elapsed);
+        // only the host-clock fallback adds the capture offset below. While a
+        // recording loop wraps, the musical position is used so every pass is
+        // stamped inside the frozen loop region.
+        let absolute: Int64
+        if let transport = recordTransport, let token = recordTransportToken, transport.isRunning {
+            if transport.loopRange != nil {
+                absolute = try transport.musicalPosition(ownerToken: token)
+            } else {
+                absolute = try transport.absolutePosition(ownerToken: token)
+            }
+        } else {
+            guard let start = midiStart else { return 0 }
+            let seconds = AVAudioTime.seconds(forHostTime: mach_absolute_time() - start)
+            let samples = min(Double(Int64.max / 2), seconds * Double(map.sampleRate))
+            absolute = Int64(samples.rounded()) + midiCaptureOffset
+        }
         return try map.tick(atSample: .init(absolute)).value - map.tick(atSample: .init(midiCaptureOffset)).value
+    }
+    /// Seals every loop pass the trusted clock has fully crossed since the
+    /// last check. Held notes close at the loop end and reopen at tick 0 of
+    /// the new pass; a held pedal is written explicitly at both sides of the
+    /// boundary so each take stays self-contained.
+    private func sealFinishedPasses() {
+        guard midiStart != nil, let transport = recordTransport, let token = recordTransportToken,
+              transport.isRunning, let loop = transport.loopRange else { return }
+        let pass: Int64
+        do { pass = try transport.passIndex(ownerToken: token) } catch { return }
+        guard pass > lastRecordPass else { return }
+        lastRecordPass = pass
+        sealCurrentPass(passEndTick: loopEndRelativeTick(loop: loop, tempo: midiCaptureTempo ?? document.tempoMap))
+    }
+    private func loopEndRelativeTick(loop: MusicLoopRange, tempo: MusicTempoMap) -> Int64 {
+        ((try? tempo.tick(atSample: .init(loop.endSample)).value) ?? 0) - ((try? tempo.tick(atSample: .init(loop.startSample)).value) ?? 0)
+    }
+    /// Closes the in-progress pass (held notes and pedal at `passEndTick`),
+    /// archives it as a take, and opens the next pass with carried state.
+    private func sealCurrentPass(passEndTick: Int64) {
+        let end = max(1, passEndTick)
+        for (_, value) in heldNotes {
+            if let note = try? MusicMIDINote(pitch: Int(value.0.note), startTick: .init(value.1),
+                                             durationTicks: max(1, end - value.1), velocity: max(1, Int(value.0.velocity)),
+                                             channel: Int(value.0.channel)) {
+                capturedNotes.append(note)
+            }
+        }
+        heldNotes = [:]
+        midiPassTakes.append(capturedNotes)
+        midiPassControllers.append(capturedControllers.values.sorted { ($0.controller, $0.channel, $0.tick.value) < ($1.controller, $1.channel, $1.tick.value) })
+        capturedNotes = []
+        capturedControllers = [:]
+        // Carry a held pedal into the new pass so accompaniment and take stay
+        // aligned across the boundary.
+        if let pedal = midiPassControllers.last?.last(where: { $0.controller == 64 }), pedal.value >= 64 {
+            capturedControllers["64:0:0"] = (try? .init(controller: 64, tick: .init(0), value: pedal.value, channel: 0)) ?? pedal
+        }
     }
     func stopMIDIRecording() async {
         guard midiStart != nil else { return }
+        stopPassMonitor()
+        // The take's final tick comes from the same clock that drove the
+        // playhead; the transport then stops and the playhead rests at the end
+        // of the recorded region.
+        let end = max(1, (try? recordingTick()) ?? 1)
+        let loop = recordLoop
+        let finalPosition = stopRecordTransport()
+        midiStart = nil
+        if let finalPosition {
+            playheadSeconds = min(9.0e9, Double(finalPosition) / Double(document.tempoMap.sampleRate))
+        }
         do {
-            let end = max(1, try recordingTick())
             for (_, value) in heldNotes {
                 capturedNotes.append(try .init(pitch: Int(value.0.note), startTick: .init(value.1),
                     durationTicks: max(1, end - value.1), velocity: max(1, Int(value.0.velocity)), channel: Int(value.0.channel)))
             }
-            heldNotes = [:]; midiStart = nil
-            guard !capturedNotes.isEmpty || !capturedControllers.isEmpty else { return }
+            heldNotes = [:]
+            // Archive the final (possibly partial) pass with the others; the
+            // committed clip carries the last pass, every pass is preserved
+            // as a validated .mid take asset.
+            if loop != nil {
+                sealCurrentPass(passEndTick: end)
+            } else {
+                midiPassTakes = [capturedNotes]
+                midiPassControllers = [capturedControllers.values.sorted { ($0.controller, $0.channel, $0.tick.value) < ($1.controller, $1.channel, $1.tick.value) }]
+            }
+            capturedNotes = []; capturedControllers = [:]
+            let passes = midiPassTakes, passPoints = midiPassControllers
+            midiPassTakes = []; midiPassControllers = []
+            guard passes.contains(where: { !$0.isEmpty }) || passPoints.contains(where: { !$0.isEmpty }) else { return }
             guard midiCaptureTempo == document.tempoMap else { throw MusicError.invalidMIDI(reason: "tempo changed during the MIDI take; captured events were retained") }
             var operations: [MusicEditOp] = []
             let track: FloeMusicCore.MusicTrack
@@ -585,14 +760,208 @@ private nonisolated struct MusicImportDirectory: Sendable {
                     instrument: .init(pluginID: MusicNativeBuiltins.synth, presetIndex: Int(preset) ?? 0))
                 operations.append(.insertTrack(track))
             }
-            let points = capturedControllers.values.sorted { ($0.controller, $0.channel, $0.tick.value) < ($1.controller, $1.channel, $1.tick.value) }
-            let length = max(end, capturedNotes.map { $0.startTick.value + $0.durationTicks }.max() ?? end)
+            // Every pass becomes a durable, hash-validated take asset; the
+            // audible clip is the last pass (complete or explicitly partial).
+            let passLengthSamples = loop?.lengthSamples ?? 0
+            var takeAssets: [MusicAsset] = []
+            for (index, notes) in passes.enumerated() {
+                let lengthTicks = max(1, midiClipLengthTicks(notes: notes, points: passPoints[index], fallbackTick: end))
+                let asset = try await archivedMIDITake(runID: recordRunID, passIndex: index,
+                                                       notes: notes, controllers: passPoints[index],
+                                                       durationTicks: lengthTicks,
+                                                       lengthSamples: passLengthSamples > 0 && index < passes.count - 1 ? passLengthSamples : 0)
+                takeAssets.append(asset)
+                operations.append(.insertAsset(asset))
+            }
+            let lastIndex = passes.count - 1
+            let lastNotes = passes[lastIndex]
+            let lastPoints = passPoints[lastIndex]
+            let length = max(1, midiClipLengthTicks(notes: lastNotes, points: lastPoints, fallbackTick: end))
             let clip = try MusicClip(name: IDELanguageRunText.t("录制片段", "Recorded clip"), trackID: track.id,
-                offset: .init(midiCaptureOffset), body: .midi(.init(durationTicks: max(1, length), notes: capturedNotes, controllerPoints: points)))
+                offset: .init(midiCaptureOffset), body: .midi(.init(durationTicks: length, notes: lastNotes, controllerPoints: lastPoints)))
             operations.append(.insertClip(clip))
             try await apply(operations)
-            selectedTrack = track.id; selectedClip = clip.id; capturedNotes = []; capturedControllers = [:]; midiCaptureTempo = nil
+            selectedTrack = track.id; selectedClip = clip.id; midiCaptureTempo = nil
         } catch { midiStart = nil; diagnostic = error.localizedDescription }
+    }
+    private func midiClipLengthTicks(notes: [MusicMIDINote], points: [MusicMIDIControllerPoint], fallbackTick: Int64) -> Int64 {
+        max(fallbackTick, notes.map { $0.startTick.value + $0.durationTicks }.max() ?? 0,
+            points.map(\.tick.value).max() ?? 0)
+    }
+    /// Serializes one MIDI pass as a standard MIDI file and stages it as a
+    /// hash-validated immutable asset whose locator carries the run, pass
+    /// index and sample span, so the take list is derivable from the
+    /// committed document alone.
+    private func archivedMIDITake(runID: UUID, passIndex: Int, notes: [MusicMIDINote],
+                                  controllers: [MusicMIDIControllerPoint], durationTicks: Int64,
+                                  lengthSamples: Int64) async throws -> MusicAsset {
+        let tempo = midiCaptureTempo ?? document.tempoMap
+        let trackID = MusicTrackID()
+        let clip = try MusicClip(name: "Take \(passIndex + 1)", trackID: trackID,
+                                 offset: .init(0), body: .midi(.init(durationTicks: durationTicks, notes: notes, controllerPoints: controllers)))
+        let track = try FloeMusicCore.MusicTrack(id: trackID, name: "Take", kind: .midi, clips: [clip])
+        let archive = try MusicDocument(name: "Take \(passIndex + 1)", tempoMap: tempo, tracks: [track])
+        let bytes = try await Task.detached(priority: .utility) { try MusicMIDIFileExchange.write(archive) }.value
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let start = midiCaptureOffset
+        let asset = try MusicAsset(sourceLocator: "music-take/\(runID.uuidString)/pass/\(passIndex)/\(start)/\(lengthSamples)",
+                                   contentHash: digest, kind: .midiFile,
+                                   durationSamples: .init(lengthSamples),
+                                   name: IDELanguageRunText.t("镜头", "Take") + " \(passIndex + 1)",
+                                   provenance: "music-take/\(runID.uuidString)/pass/\(passIndex)")
+        try await repository.stageAsset(.init(asset: asset, bytes: bytes))
+        return asset
+    }
+
+    // MARK: - Recorded takes
+
+    /// One preserved pass of a recording run, derived from the committed
+    /// document (never from session RAM): the take assets carry the run id,
+    /// pass index and sample span in their immutable source locator.
+    struct MusicRecordedTake: Sendable, Identifiable, Hashable {
+        let runID: UUID
+        let passIndex: Int
+        let assetID: MusicAssetID
+        let startSample: Int64
+        let lengthSamples: Int64
+        let name: String
+        var id: String { "\(runID.uuidString)-\(passIndex)" }
+    }
+    private static let takePrefix = "music-take/"
+    /// Takes of the recording run whose audible clip is `clip` (audio clips
+    /// reference the active take asset directly; MIDI takes match the clip's
+    /// frozen span on its track).
+    func takes(for clip: MusicClip) -> [MusicRecordedTake] {
+        let spanStart = clip.offset.value
+        let spanEnd = (try? clip.endSample(tempoMap: document.tempoMap).value) ?? spanStart
+        var runs: [String: [MusicRecordedTake]] = [:]
+        for asset in document.assets where asset.provenance.hasPrefix(Self.takePrefix) {
+            guard let take = Self.parsedTake(asset) else { continue }
+            if case .audio(let payload) = clip.body {
+                guard payload.assetID == take.assetID || (take.startSample == spanStart && take.lengthSamples == spanEnd - spanStart) else { continue }
+            } else {
+                guard take.startSample == spanStart, take.lengthSamples == spanEnd - spanStart || take.lengthSamples == 0 else { continue }
+            }
+            runs[take.runID.uuidString, default: []].append(take)
+        }
+        guard let best = runs.max(by: { $0.value.count < $1.value.count })?.value else { return [] }
+        return best.sorted { $0.passIndex < $1.passIndex }
+    }
+    static func parsedTake(_ asset: MusicAsset) -> MusicRecordedTake? {
+        // music-take/<runUUID>/pass/<index>/<startSample>/<lengthSamples>
+        let parts = asset.sourceLocator.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count == 6, parts[0] == "music-take", parts[2] == "pass",
+              let runID = UUID(uuidString: parts[1]), let passIndex = Int(parts[3]),
+              let start = Int64(parts[4]), let length = Int64(parts[5]) else { return nil }
+        return MusicRecordedTake(runID: runID, passIndex: passIndex, assetID: asset.id,
+                                 startSample: start, lengthSamples: length, name: asset.name)
+    }
+    /// Asset of the take a clip currently plays: direct for audio clips;
+    /// nil for MIDI clips (their notes are inline, takes are archives).
+    func currentTakeID(for clip: MusicClip) -> MusicAssetID? {
+        guard case .audio(let payload) = clip.body else { return nil }
+        return document.assets.contains(where: { $0.id == payload.assetID && $0.provenance.hasPrefix(Self.takePrefix) }) ? payload.assetID : nil
+    }
+    /// Makes an earlier pass the audible one. Audio swaps the clip's asset;
+    /// MIDI re-imports the archived pass. Both go through the normal store
+    /// commit, so undo/redo and reopen keep working and takes never stack.
+    func selectTake(_ take: MusicRecordedTake, for clipID: MusicClipID) async {
+        do {
+            guard let clip = document.tracks.flatMap(\.clips).first(where: { $0.id == clipID }) else { return }
+            guard clip.offset.value == take.startSample else { return }
+            guard let asset = document.assets.first(where: { $0.id == take.assetID }) else { return }
+            var updated = clip
+            switch clip.body {
+            case .audio:
+                guard case .audio(var payload) = clip.body else { return }
+                guard asset.contentHashAlgorithm == "sha256" else { return }
+                payload.assetID = asset.id
+                payload.durationSamples = take.lengthSamples > 0 ? take.lengthSamples : asset.durationSamples.value
+                payload.trimStartSamples = 0
+                updated.body = .audio(payload)
+            case .midi:
+                let url = try await repository.resolvedURL(for: asset)
+                let bytes = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: url, options: .mappedIfSafe) }.value
+                let imported = try MusicMIDIFileExchange.read(bytes, sampleRate: document.tempoMap.sampleRate,
+                                                              ticksPerQuarter: document.tempoMap.ticksPerQuarter)
+                guard let track = imported.tracks.first, let archived = track.clips.first,
+                      case .midi(let payload) = archived.body else {
+                    throw MusicError.invalidMIDI(reason: "take archive did not import")
+                }
+                var length = payload.durationTicks
+                if take.lengthSamples > 0 {
+                    let startTick = try document.tempoMap.tick(atSample: .init(take.startSample)).value
+                    let endTick = try document.tempoMap.tick(atSample: .init(take.startSample + take.lengthSamples)).value
+                    length = max(1, endTick - startTick)
+                }
+                updated.body = .midi(try .init(durationTicks: length, notes: payload.notes, controllerPoints: payload.controllerPoints, programChanges: payload.programChanges))
+            }
+            try await apply([.updateClip(updated)], expectedRevision: document.revision)
+            selectedClip = updated.id
+        } catch { diagnostic = error.localizedDescription }
+    }
+
+    // MARK: - Captured microphone takes
+
+    /// Cuts the captured linear take into per-pass WAV files (frame ranges
+    /// from the trusted tap stamps), stages every pass as a hash-validated
+    /// asset, and commits them plus the last pass as the audible clip in one
+    /// store batch. Any failure leaves the source take and staged blobs on
+    /// disk; nothing partial is attached to the project.
+    private func commitCapturedTakes(file: URL, totalFrames: Int64, passBoundaries: [Int64],
+                                     firstLinearSample: Int64, trackID: MusicTrackID) async throws {
+        let map = document.tempoMap
+        let rate = map.sampleRate
+        var ranges: [(start: Int64, end: Int64)] = [(0, totalFrames)]
+        for boundary in passBoundaries where boundary > 0 && boundary < totalFrames {
+            if let last = ranges.last { ranges[ranges.count - 1].end = boundary }
+            ranges.append((boundary, totalFrames))
+        }
+        let directory = file.deletingLastPathComponent()
+        let runID = recordRunID
+        var operations: [MusicEditOp] = []
+        var lastClip: MusicClip?
+        for (index, range) in ranges.enumerated() where range.end > range.start {
+            let takeFile = directory.appendingPathComponent("mic-take-\(runID.uuidString)-pass\(index).wav")
+            try await trimAudioFile(source: file, destination: takeFile, range: range)
+            let lengthSamples = range.end - range.start
+            var asset = try await Task.detached(priority: .utility) {
+                try MusicAudioPreparation.inspect(url: takeFile, projectSampleRate: rate)
+            }.value
+            asset.name = IDELanguageRunText.t("镜头", "Take") + " \(index + 1)"
+            asset.sourceLocator = "music-take/\(runID.uuidString)/pass/\(index)/\(recordTransportStartSample)/\(lengthSamples)"
+            asset.provenance = "music-take/\(runID.uuidString)/pass/\(index)"
+            guard asset.contentHash == (try? MusicAudioPreparation.hashFile(takeFile)) else { throw PersonalContentError.changedDocument }
+            try await repository.stageAssetFile(asset, source: takeFile)
+            operations.append(.insertAsset(asset))
+            let payload = try MusicAudioClipPayload(assetID: asset.id, trimStartSamples: 0, durationSamples: lengthSamples)
+            lastClip = try MusicClip(name: IDELanguageRunText.t("录制片段", "Recorded clip"), trackID: trackID,
+                                     offset: .init(firstLinearSample), body: .audio(payload))
+        }
+        guard let clip = lastClip else { throw MusicNativeError.invalid("empty take") }
+        operations.append(.insertClip(clip))
+        try await apply(operations)
+        selectedTrack = trackID
+        selectedClip = clip.id
+    }
+    /// Copies one frame range of a PCM file into a fresh interleaved WAV.
+    private func trimAudioFile(source: URL, destination: URL, range: (start: Int64, end: Int64)) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let input = try AVAudioFile(forReading: source)
+            let format = input.processingFormat
+            guard range.start >= 0, range.end > range.start, range.end <= input.length else { throw MusicNativeError.invalid("take range") }
+            var settings = format.settings
+            settings[AVLinearPCMIsNonInterleaved] = false
+            let output = try AVAudioFile(forWriting: destination, settings: settings)
+            input.framePosition = range.start
+            let capacity: AVAudioFrameCount = 16_384
+            while input.framePosition < range.end {
+                let count = min(capacity, AVAudioFrameCount(range.end - input.framePosition))
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count) else { throw MusicNativeError.invalid("take buffer") }
+                try input.read(into: buffer, frameCount: count)
+                try output.write(from: buffer)
+            }
+        }.value
     }
     private func receive(_ event: KeyboardPerformanceEvent) {
         do {
@@ -642,7 +1011,7 @@ private nonisolated struct MusicImportDirectory: Sendable {
         capturedControllers["\(controller):0:\(tick)"] = try MusicMIDIControllerPoint(controller: controller, tick: .init(tick), value: value, channel: 0)
     }
     func render(asMP3: Bool, play: Bool = false, tailFrames: Int64 = 48_000) {
-        guard !isRendering, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
+        guard !isRendering, !notationRestoring, !notationImporting, !djCaptureBusy, !isRecording, !isMIDIRecording else { return }
         do { try validateRenderTail(tailFrames) }
         catch { renderError = error; diagnostic = error.localizedDescription; return }
         stopPresetPreview()
@@ -714,26 +1083,119 @@ private nonisolated struct MusicImportDirectory: Sendable {
         player?.stop(); player = nil; isPlaying = false
         if owned { audio.releasePlayback() }
     }
+    /// Microphone recording shares the trusted transport: the arrangement
+    /// accompanies from the playhead, input monitoring is a separate branch,
+    /// and the input tap stamps frames against the same output clock the
+    /// playhead runs on. Loop recording freezes [playhead, content end).
     func startMicrophone() async {
         guard !saving, !notationRestoring, !notationImporting, !djCaptureBusy else { return }
-        guard !isRecording, !isLive, !isPlaying else { return }
+        guard !isRecording, !isMIDIRecording, !isLive, !isPlaying, !micStarting else { return }
         stopPresetPreview()
+        micStarting = true
         do {
             guard await AVAudioApplication.requestRecordPermission() else { throw MusicNativeError.invalid("microphone permission denied") }
+            // The permission prompt can run long: the project may have been
+            // closed, replaced or deleted meanwhile. Re-validate the real
+            // file/generation fences before any engine or capture starts.
             guard !djCaptureBusy, !saving, !notationRestoring, !notationImporting, !isRecording, !isMIDIRecording else { throw MusicNativeError.invalid("another recording or save started") }
+            let permissionGuard = try MusicImportDirectory(root)
+            try permissionGuard.validate()
+            guard Self.sessions[id] === self else { throw PersonalContentError.changedDocument }
+            // Record onto the selected audio track, or create one. Track
+            // identity is ephemeral session state; the take truth lives in
+            // the committed take assets.
+            let targetID: MusicTrackID
+            if let id = selectedTrack, document.tracks.contains(where: { $0.id == id && $0.kind == .audio }) {
+                targetID = id
+            } else {
+                let track = try FloeMusicCore.MusicTrack(name: IDELanguageRunText.t("麦克风", "Microphone"), kind: .audio,
+                                                         strip: try MusicStripSettings(recordArmed: true))
+                try await apply([.insertTrack(track)], expectedRevision: document.revision)
+                targetID = track.id
+            }
+            micRecordTrackID = targetID
+            let start = Int64(min(9.0e15, max(0, playheadSeconds * Double(document.tempoMap.sampleRate))))
+            let loop = frozenRecordLoop(start: start)
             try audio.acquireRecording()
-            let directory = root.appendingPathComponent("Recordings")
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let file = directory.appendingPathComponent(UUID().uuidString + ".m4a")
-            let recorder = try AVAudioRecorder(url: file, settings: [AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: document.tempoMap.sampleRate, AVNumberOfChannelsKey: 1])
-            guard recorder.record() else { throw MusicNativeError.invalid("recording did not start") }
-            microphoneFile = file; self.recorder = recorder; isRecording = true
+            do {
+                startRecordTransport(at: start, loop: loop)
+                guard let transport = recordTransport, let token = recordTransportToken else {
+                    throw MusicNativeError.invalid("accompaniment transport did not start")
+                }
+                let directory = root.appendingPathComponent("Recordings")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                _ = try MusicImportDirectory(directory)
+                let lease = try MusicRenderLease(document: document, ownerToken: handle.ownerToken)
+                let destination = directory.appendingPathComponent("mic-take-\(UUID().uuidString).wav")
+                let monitoring = document.tracks.first(where: { $0.id == targetID })?.strip.inputMonitoring ?? false
+                try await transport.startCapture(destination: destination, service: MusicRecordingService(), lease: lease,
+                                                 monitoring: monitoring, ownerToken: token)
+                // The capture start crossed an actor suspension; only adopt it
+                // when this session still owns the same live transport/token.
+                guard recordTransport === transport, recordTransportToken == token else {
+                    throw PersonalContentError.changedDocument
+                }
+                isRecording = true
+                startPassMonitor()
+            } catch {
+                _ = stopRecordTransport()
+                audio.releasePlayback()
+                micRecordTrackID = nil
+                throw error
+            }
         } catch { audio.releasePlayback(); diagnostic = error.localizedDescription }
+        micStarting = false
     }
+    /// Stops capture, finalizes the take files and commits every pass as a
+    /// validated asset plus the last pass as the audible clip. Failures keep
+    /// recoverable bytes (recovery file + staged blobs) and never attach a
+    /// partial take silently.
     func stopMicrophone() async {
-        recorder?.stop(); recorder = nil; isRecording = false; audio.releasePlayback()
-        if let file = microphoneFile { microphoneFile = nil; await importFile(file) }
+        guard isRecording else { return }
+        isRecording = false
+        stopPassMonitor()
+        let transport = recordTransport, token = recordTransportToken
+        var captured = MusicCapturedInput(take: nil, totalFrames: 0, passBoundaries: [], firstLinearSample: 0,
+                                          status: MusicCaptureHealth())
+        var captureError: (any Error)?
+        do {
+            captured = try await transport?.stopCapture(finish: true, ownerToken: token ?? "") ?? captured
+        } catch {
+            captureError = error
+            captured = (try? await transport?.stopCapture(finish: false, ownerToken: token ?? "")) ?? captured
+        }
+        let finalPosition = stopRecordTransport()
+        audio.releasePlayback()
+        let recordTrack = micRecordTrackID
+        micRecordTrackID = nil
+        if let finalPosition {
+            playheadSeconds = min(9.0e9, Double(finalPosition) / Double(document.tempoMap.sampleRate))
+        }
+        // Overload, lost timestamps or failed delivery compromise the take.
+        // The recorded bytes stay recoverable, but a known-incomplete
+        // recording never enters the normal commit path.
+        let compromised = captured.status.overflowed || captured.status.misaligned || captured.status.deliveryFailed || captureError != nil
+        guard !compromised else {
+            if let file = captured.take?.file {
+                exportedFile = file
+                exportedFiles = [file]
+            }
+            diagnostic = (captureError as? MusicNativeError) != nil
+                ? captureError!.localizedDescription
+                : IDELanguageRunText.t("录音数据不完整，已保留原始音频，未保存到工程。", "The recording is incomplete. The original audio was kept, but was not saved to the project.")
+            return
+        }
+        guard let take = captured.take, take.frames > 0, let trackID = recordTrack ?? selectedTrack else {
+            if captured.take != nil { diagnostic = IDELanguageRunText.t("没有录到声音。", "No audio was recorded.") }
+            return
+        }
+        do {
+            try await commitCapturedTakes(file: take.file, totalFrames: captured.totalFrames,
+                                          passBoundaries: captured.passBoundaries,
+                                          firstLinearSample: captured.firstLinearSample, trackID: trackID)
+        } catch {
+            diagnostic = IDELanguageRunText.t("录音已保留，保存未完成。", "The recording was retained, but saving did not finish.")
+        }
     }
 
     var currentTrack: FloeMusicCore.MusicTrack? { document.tracks.first { $0.id == selectedTrack } }
@@ -742,9 +1204,26 @@ private nonisolated struct MusicImportDirectory: Sendable {
         let last = document.tracks.flatMap(\.clips).compactMap { try? $0.endSample(tempoMap: document.tempoMap).value }.max() ?? 0
         return Double(last) / Double(document.tempoMap.sampleRate)
     }
-    var playbackPosition: Double { player?.isPlaying == true ? player?.currentTime ?? playheadSeconds : playheadSeconds }
-    var playbackIsActive: Bool { player?.isPlaying == true || djIsActive }
+    var playbackPosition: Double {
+        // The transport reports an absolute project-sample playhead; adding
+        // the start offset again would double-count a nonzero start. While a
+        // recording loop wraps, the musical position is the visible playhead.
+        if isMIDIRecording || isRecording, let transport = recordTransport, let token = recordTransportToken, transport.isRunning {
+            let sample = (try? (transport.loopRange != nil
+                ? transport.musicalPosition(ownerToken: token)
+                : transport.absolutePosition(ownerToken: token)))
+                ?? Int64(min(9.0e15, max(0, playheadSeconds * Double(document.tempoMap.sampleRate))))
+            return Double(sample) / Double(document.tempoMap.sampleRate)
+        }
+        return player?.isPlaying == true ? player?.currentTime ?? playheadSeconds : playheadSeconds
+    }
+    var playbackIsActive: Bool { player?.isPlaying == true || djIsActive || isMIDIRecordingTransportRunning }
+    private var isMIDIRecordingTransportRunning: Bool { recordTransport?.isRunning == true }
     func seek(to seconds: Double) {
+        guard !isMIDIRecording else {
+            diagnostic = IDELanguageRunText.t("结束录制后再移动播放头。", "Finish recording before moving the playhead.")
+            return
+        }
         guard let position = MusicTimelineEditing.cursor(seconds: seconds, sampleRate: document.tempoMap.sampleRate) else { return }
         playheadSeconds = position
         if let player {

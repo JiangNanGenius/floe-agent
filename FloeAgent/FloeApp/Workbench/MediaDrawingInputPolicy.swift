@@ -42,15 +42,24 @@ struct MediaStrokeInputGate {
     mutating func cancel() { source = nil; revoked = false }
 }
 
-struct MediaFingerDrawingToggle: View {
+struct MediaDrawingInputMenu: View {
     @AppStorage(MediaDrawingInputPolicy.preferenceKey) private var enabled = false
     var body: some View {
-        Toggle(isOn: $enabled) {
-            Label(WorkbenchText.t("手指绘图", "Draw with Finger"), systemImage: "hand.point.up.left")
+        Menu {
+            Toggle(isOn: $enabled) {
+                Label(WorkbenchText.t("手指绘图", "Draw with Finger"), systemImage: "hand.draw")
+            }
+            .accessibilityIdentifier("media.fingerDrawing.toggle")
+        } label: {
+            Image(systemName: enabled ? "hand.draw.fill" : "hand.draw")
+                .frame(width: 44, height: 44)
         }
-        .fixedSize()
-        .frame(minHeight: 44)
-        .accessibilityIdentifier("media.fingerDrawing.toggle")
+        .accessibilityLabel(WorkbenchText.t("绘图输入", "Drawing input"))
+        .accessibilityValue(enabled
+            ? WorkbenchText.t("手指绘图已开启", "Finger drawing on")
+            : WorkbenchText.t("手指绘图已关闭", "Finger drawing off"))
+        .accessibilityIdentifier("media.drawingInput.menu")
+        .help(WorkbenchText.t("绘图输入", "Drawing input"))
     }
 }
 #endif

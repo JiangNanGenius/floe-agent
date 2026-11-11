@@ -10,7 +10,6 @@ struct BiologyEditorSurface: View {
     var onInsertIntoNotes: BiologyNotesInsertion?
     var body: some View {
         BiologyWorkbench(service: session.host.service, projectID: session.projectID,
-            onAI: { prompt, context in try await session.requestAI(prompt, context: context) },
             onInsertInNotes: { project, asset, run in
                 guard let onInsertIntoNotes else { throw BiologyHostError.unavailable }
                 let payload = try await session.notePayload(projectID: project, assetID: asset, runID: run)
@@ -22,7 +21,16 @@ struct BiologyEditorSurface: View {
             onRunAnalysis: { intent in try await session.runAnalysis(intent) },
             onImportFile: { project, url in try await session.importFile(project, url: url) },
             onAuthorizeFile: { project, asset, revision in try await session.authorizeFile(project, assetID: asset, revision: revision) },
-            scientificEnvironmentID: session.scientificEnvironmentID)
+            scientificEnvironmentID: session.scientificEnvironmentID,
+            // The same persistent, shared file assistant as every other editor:
+            // streaming/history/tool feedback and queue semantics live there.
+            // Opening it validates the current asset/revision and refreshes the
+            // persisted real selection through the existing service path, so the
+            // shared conversation reads the same current asset via biology.read.
+            assistantContent: { _ in
+                AnyView(StudioAssistantView(record: session.record, embedded: true))
+            },
+            prepareAssistant: { context in try await session.syncAssistantSelection(context) })
         .accessibilityIdentifier("biology.personalEditor")
         .task { await session.prepareExecutionLocation() }
     }

@@ -69,7 +69,7 @@ extension MeetingProjectSession {
                 ?? IDELanguageRunText.t("现场录音 \(number)", "Recording \(number)")
             return "\(name) · \(meetingTime(range.start))–\(meetingTime(range.end))"
         case .segment(let id):
-            guard let segment = transcript.first(where: { $0.id == id }) else { return nil }
+            guard let segment = sourceSegment(id) else { return nil }
             return sourceDescription(.recording(session: segment.sessionID, range: segment.range))
         case .importedFile(let file, let range):
             let name = URL(fileURLWithPath: file).lastPathComponent
@@ -135,9 +135,15 @@ extension MeetingProjectSession {
             return .init(sessionID: original.rawValue, displayName: source.sourceFile.map { URL(fileURLWithPath: $0).lastPathComponent }
                 ?? t("现场录音 \(number)", "Recording \(number)"), fileName: actualFile)
         }
+        // Include only historical rows referenced by notes/markers/summaries;
+        // the visible transcript section above stays canonical and single-copy.
+        var indexedSegments = transcript
+        let visibleIDs = Set(transcript.map(\.id))
+        let history = sourceReferences.values.filter { !visibleIDs.contains($0.id) }
+        indexedSegments.append(contentsOf: history.sorted { $0.id.description < $1.id.description })
         let index = MeetingSourceIndex(schemaVersion: 1, meetingID: id, title: meeting.title, capturedAt: capturedAt,
             selectedTemplate: minutesTemplate.rawValue, personalNoteID: saved.id, personalNoteRevision: saved.revision,
-            media: media, segments: transcript.map { .init(segmentID: $0.id.rawValue,
+            media: media, segments: indexedSegments.map { .init(segmentID: $0.id.rawValue,
                 originalSessionID: originalCaptureSession(for: $0.sessionID).rawValue, start: $0.range.start,
                 end: $0.range.end, speaker: speakerLabel($0.speakerID), text: $0.text) },
             notes: notes.map { .init(id: $0.id.rawValue, text: $0.body, source: normalizedSource($0.source)) },

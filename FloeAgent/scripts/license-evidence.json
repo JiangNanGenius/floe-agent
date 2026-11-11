@@ -78,7 +78,7 @@
     {
       "identity": "libgit2",
       "license": "GPL-2.0 WITH libgit2 linking exception",
-      "evidence": ".build/checkouts/libgit2/COPYING",
+      "evidence": "ThirdParty/FloeNativeGit/libgit2/COPYING",
       "sha256": "330f7f86a0f7fa88f7763b6ef0aba06dec33bf5b1ea8c304b76e883d73471f95",
       "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f",
       "source": "https://github.com/ibrahimcetin/libgit2.git"
@@ -196,14 +196,6 @@
       "source": "https://github.com/apple/swift-collections.git"
     },
     {
-      "identity": "swift-crypto",
-      "license": "Apache-2.0",
-      "evidence": ".build/checkouts/swift-crypto/LICENSE.txt",
-      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-      "revision": "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
-      "source": "https://github.com/apple/swift-crypto.git"
-    },
-    {
       "identity": "swift-huggingface",
       "license": "Apache-2.0",
       "evidence": ".build/checkouts/swift-huggingface/LICENSE",
@@ -294,7 +286,7 @@
     {
       "identity": "swiftgitx",
       "license": "MIT",
-      "evidence": ".build/checkouts/swiftgitx/LICENSE",
+      "evidence": "ThirdParty/FloeNativeGit/SwiftGitX/LICENSE",
       "sha256": "9de5d708c401c993b7a82fbbc4ad5df67958e3c53ac98ed3872026d6a4277f79",
       "revision": "fcfb71e3dcbbaa70d120b98b7477ce173074aec3",
       "source": "https://github.com/ibrahimcetin/SwiftGitX.git"

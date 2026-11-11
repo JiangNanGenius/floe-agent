@@ -18,7 +18,7 @@ struct InteractiveAnswerView: View {
                 if let document = part.document {
                     InteractiveHostSurface(document: document, host: environment.interactiveHostCenter, onContinue: onContinue)
                 } else if let text = part.text, !text.isEmpty {
-                    AssistantMessageView(text: text, isStreaming: false, allowsReadAloud: false, onSaveToNotes: onSaveToNotes)
+                    AssistantMessageView(text: text, isStreaming: false, allowsReadAloud: false, onSaveToNotes: onSaveToNotes, helpRunID: message.runID)
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)

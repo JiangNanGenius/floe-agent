@@ -68,6 +68,19 @@
   ],
   "documents": [
     {
+      "id": "libmaxminddb",
+      "repositoryPath": "FloeApp/Resources/Licenses/libmaxminddb-LICENSES.txt",
+      "bundlePath": "Licenses/libmaxminddb-LICENSES.txt",
+      "titleKey": "settings.licenses.document.libmaxminddb.title",
+      "titleFallback": "libmaxminddb — offline IP database reader",
+      "titleArgument": null,
+      "license": "Apache-2.0; BSD-2-Clause; BSD-3-Clause",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
       "id": "floe-tex-native-xdv",
       "repositoryPath": "FloeApp/Resources/Licenses/FloeTeXNativeXDV-NOTICES.txt",
       "bundlePath": "Licenses/FloeTeXNativeXDV-NOTICES.txt",
@@ -218,6 +231,19 @@
       "titleFallback": "Floe ARM64 engine — licenses and notices",
       "titleArgument": null,
       "license": "Apache-2.0 / MPL-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "engines",
+      "noteKey": null
+    },
+    {
+      "id": "floe-gpu",
+      "repositoryPath": "FloeApp/Resources/Licenses/FloeGPU-LICENSES.txt",
+      "bundlePath": "Licenses/FloeGPU-LICENSES.txt",
+      "titleKey": "settings.licenses.document.gpu.title",
+      "titleFallback": "FloeGPU — licenses and notices",
+      "titleArgument": null,
+      "license": "MIT; Apache-2.0; BSD notices",
       "kindKey": "settings.licenses.kind.full_text",
       "required": true,
       "section": "engines",
@@ -735,6 +761,19 @@
       "section": "fonts"
     },
     {
+      "id": "swiftgitx",
+      "repositoryPath": "FloeApp/Resources/Licenses/SwiftGitX-LICENSE.txt",
+      "bundlePath": "Licenses/SwiftGitX-LICENSE.txt",
+      "titleKey": "settings.licenses.document.swiftgitx.title",
+      "titleFallback": "SwiftGitX",
+      "titleArgument": null,
+      "license": "MIT",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": "settings.licenses.note.swiftgitx_native"
+    },
+    {
       "id": "clipper2",
       "repositoryPath": "FloeApp/Resources/Licenses/Clipper2-LICENSE.txt",
       "bundlePath": "Licenses/Clipper2-LICENSE.txt",
@@ -908,15 +947,6 @@
       "evidence": ".build/checkouts/h/LICENSE"
     },
     {
-      "name": "libgit2",
-      "version": "1.9.2",
-      "license": "GPL-2.0 WITH libgit2 linking exception",
-      "source": "https://github.com/ibrahimcetin/libgit2.git",
-      "section": "swift",
-      "noteKey": "settings.licenses.note.libgit2",
-      "evidence": ".build/checkouts/libgit2/COPYING"
-    },
-    {
       "name": "mlx-swift",
       "version": "ab924c82ead3b970caaa1c0ac11171de23f0305a",
       "license": "MIT",
@@ -987,15 +1017,6 @@
       "section": "swift",
       "noteKey": null,
       "evidence": ".build/checkouts/swift-collections/LICENSE.txt"
-    },
-    {
-      "name": "swift-crypto",
-      "version": "3.15.1",
-      "license": "Apache-2.0",
-      "source": "https://github.com/apple/swift-crypto.git",
-      "section": "swift",
-      "noteKey": null,
-      "evidence": ".build/checkouts/swift-crypto/LICENSE.txt"
     },
     {
       "name": "swift-huggingface",
@@ -1097,15 +1118,6 @@
       "evidence": ".build/checkouts/swift-transformers/LICENSE"
     },
     {
-      "name": "swiftgitx",
-      "version": "0.4.0",
-      "license": "MIT",
-      "source": "https://github.com/ibrahimcetin/SwiftGitX.git",
-      "section": "swift",
-      "noteKey": null,
-      "evidence": ".build/checkouts/swiftgitx/LICENSE"
-    },
-    {
       "name": "swiftterm",
       "version": "1.10.0",
       "license": "MIT",
@@ -1140,6 +1152,24 @@
       "section": "swift",
       "noteKey": null,
       "evidence": ".build/checkouts/zipfoundation/LICENSE"
+    },
+    {
+      "name": "libgit2",
+      "version": "1.9.2",
+      "license": "GPL-2.0 WITH libgit2 linking exception",
+      "source": "https://github.com/ibrahimcetin/libgit2/tree/52287b0914f300f916b58fec80e13d8dd8f6824f",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.libgit2",
+      "evidence": "ThirdParty/FloeNativeGit/libgit2/COPYING"
+    },
+    {
+      "name": "swiftgitx",
+      "version": "0.4.0",
+      "license": "MIT",
+      "source": "https://github.com/ibrahimcetin/SwiftGitX/tree/fcfb71e3dcbbaa70d120b98b7477ce173074aec3",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.swiftgitx_native",
+      "evidence": "ThirdParty/FloeNativeGit/SwiftGitX/LICENSE"
     },
     {
       "name": "clipper2",
@@ -1223,6 +1253,15 @@
       "evidence": "FloeApp/Resources/Licenses/OpenShape3D-LICENSE.txt"
     },
     {
+      "name": "libmaxminddb (offline IP database reader)",
+      "version": "1.14.1",
+      "license": "Apache-2.0; BSD-2-Clause; BSD-3-Clause",
+      "source": "https://github.com/maxmind/libmaxminddb/tree/4a3d17a621c0ebcb81498fd34d313f67fd940ab5",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "Modules/FloeToolbox/ThirdParty/IPInformation/PROVENANCE.json pins libmaxminddb 1.14.1 at 4a3d17a621c0ebcb81498fd34d313f67fd940ab5 and the retained source hashes. Complete Apache-2.0 LICENSE, upstream NOTICE and the embedded BSD-2-Clause/BSD-3-Clause copyright notices from upstream/src/maxminddb-compat-util.h ship in FloeApp/Resources/Licenses/libmaxminddb-LICENSES.txt."
+    },
+    {
       "name": "FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)",
       "version": "0.17.0-cg2",
       "license": "MPL-2.0; MIT; CPL-1.0; FTL; Unicode-3.0; libpng-2.0; Apache-2.0 and retained notices",
@@ -1284,6 +1323,15 @@
       "section": "engines",
       "noteKey": "settings.licenses.note.slirp",
       "evidence": "FloeAgent/Vendor/FloeSlirp/PROVENANCE.json (pinned tarballs, patches, build scripts, delivered slice digests; license members proven byte-equal to the pinned archives); bundled notices FloeApp/Resources/Licenses/FloeSlirp-LICENSES.txt, FloeSlirp-GLib-LGPL.txt, FloeSlirp-ProxyLibintl-LGPL.txt and the relink record FloeSlirp-SOURCE-OFFER.txt"
+    },
+    {
+      "name": "FloeGPU (Venus renderer and MoltenVK)",
+      "version": "virglrenderer b6c4d36 + Floe accounting patch; MoltenVK 1.4.2",
+      "license": "MIT; Apache-2.0; embedded dependency notices",
+      "source": "https://github.com/utmapp/virglrenderer/tree/b6c4d36e12409fa92eeef4d40322c75292f10bb9",
+      "section": "engines",
+      "noteKey": null,
+      "evidence": "Vendor/FloeGPU/PROVENANCE.json binds the renderer commit, Floe patch, official MoltenVK archive, embedded dependency notice revisions and all delivered static archives/headers. Full notices ship in FloeApp/Resources/Licenses/FloeGPU-LICENSES.txt."
     },
     {
       "name": "Floe shared Linux component (Debian 13 ARM64)",
@@ -3120,6 +3168,16 @@
       "fallback": "Every Swift package license was read from the resolved checkout at the exact revision declared in the lock; scripts/license-evidence.json records the file, its sha256 and the pin revision+source, and this generator re-verifies them whenever a checkout is present."
     },
     {
+      "id": "libgit2",
+      "textKey": "settings.licenses.note.libgit2",
+      "fallback": "libgit2 is licensed under GPL-2.0 with a linking exception that explicitly permits linking it into this application. The complete GPL-2.0 text ships in this app as Licenses/libgit2-COPYING.txt, and libgit2's source is the pinned repository in the component list."
+    },
+    {
+      "id": "swiftgitx_native",
+      "textKey": "settings.licenses.note.swiftgitx_native",
+      "fallback": "SwiftGitX 0.4.0 retains its pinned upstream source and original MIT notice in FloeNativeGit; its native Git transport is provided by the separately declared libgit2 component."
+    },
+    {
       "id": "clipper2_vendor",
       "textKey": "settings.licenses.note.clipper2_vendor",
       "fallback": "Clipper2 2.0.1 supplies polygon clipping and offsetting for PCB geometry and media exchange. The pinned upstream source and full Boost Software License 1.0 are retained; Floe's C adapter is separate."
@@ -3141,8 +3199,8 @@
     }
   ],
   "counts": {
-    "components": 246,
-    "documents": 61,
-    "pins": 41
+    "components": 247,
+    "documents": 64,
+    "pins": 40
   }
 }

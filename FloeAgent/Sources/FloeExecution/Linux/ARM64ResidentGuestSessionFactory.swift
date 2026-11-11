@@ -4,6 +4,37 @@ import FloeCore
 import Darwin
 #endif
 
+/// Whether the image's initrd carries the virtio_mem module plus the explicit
+/// auto-online policy — the capability that makes a live memory budget change
+/// real (plugged blocks actually onlined, MemTotal grows). Images without the
+/// declared capability keep the historical fixed-RAM behavior, and
+/// floe_ae_mem_resize honestly answers UNSUPPORTED on them (an old initrd
+/// without the module would otherwise show only the 256 MiB boot RAM and
+/// never plug up to the requested budget). The capability is the image
+/// manifest's explicit field; absent (older images) means disabled. Never
+/// gate on an imageID prefix.
+func imageSupportsOnlineMemory(_ image: LinuxGuestImage) -> Bool {
+    image.deviceCapabilities?.onlineMemory == true
+}
+
+/// The conservative online-memory decision for a live budget change. Pure and
+/// total so the policy is unit-testable without a machine.
+enum SharedMemoryChange: Equatable {
+    /// Grow (or any change with no active project): apply online now.
+    case applyOnline
+    /// Shrink while project leases are alive: persist the target, hold the
+    /// native request, retry when the final project closes.
+    case pendingShrink
+    /// No virtio-mem device on this machine: refuse honestly.
+    case unsupported
+}
+
+func planSharedMemoryChange(currentMiB: Int, newMiB: Int, projectsAlive: Bool, devicePresent: Bool) -> SharedMemoryChange {
+    guard devicePresent else { return .unsupported }
+    if newMiB >= currentMiB || !projectsAlive { return .applyOnline }
+    return .pendingShrink
+}
+
 /// Production session seam: eight independently owned project runners on one
 /// physical ARM64 Linux. The existing registry retains command/PTY/job policy.
 public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, Sendable {
@@ -46,6 +77,8 @@ public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, 
 
     public func shutdown() async { await resident.shutdown() }
     public func sharedMachinePhase() async -> LinuxSharedMachinePhase? { await resident.machinePhase() }
+    public func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? { await resident.memoryStatus() }
+    public func sharedGPUStatus() async -> ARM64GPUBudget? { await resident.gpuStatus() }
     public func powerOffSharedMachine() async throws { try await resident.powerOff() }
     public func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
         try await resident.configure(configuration)
@@ -102,21 +135,141 @@ private actor ARM64ResidentGuestOwner {
     private var capacity = 0
     private var lifecycleLocked = false
     private var lifecycleWaiters: [(UUID, CheckedContinuation<Void, Error>)] = []
+    /// A persisted lower memory target (MiB) that is deliberately NOT applied
+    /// to the running machine because project leases are still alive. It is
+    /// retried when the final project closes while the resident guest is
+    /// still alive. nil when no shrink is pending.
+    private var pendingMemoryTarget: Int?
 
     init(root: URL) { self.root = root }
 
-    func configure(_ configuration: LinuxGuestLifecycleConfig) async throws {
-        guard let cores = configuration.vcpus, (1...4).contains(cores),
-              let memory = configuration.memoryMB, [256, 512, 768, 1024].contains(memory) else {
-            throw LinuxGuestError.invalidConfiguration("Choose 1–4 CPUs and 256–1024 MiB of memory")
+    func configure(_ request: LinuxGuestLifecycleConfig) async throws {
+        guard let cores = request.vcpus, (1...4).contains(cores),
+              let memory = request.memoryMB, [256, 512, 768, 1024].contains(memory),
+              request.gpuMemoryMB == nil || [256, 512, 768, 1024, 1536, 2048].contains(request.resolvedGPUMemoryMB) else {
+            throw LinuxGuestError.invalidConfiguration("Choose 1–4 CPUs, 256–1024 MiB RAM and 256–2048 MiB GPU memory")
         }
         try await acquireLifecycle()
         defer { releaseLifecycle() }
+        let previousGPU = LinuxGuestLifecycleConfig.load(from: root)?.resolvedGPUMemoryMB
+            ?? shape?.resolvedGPUMemoryMB ?? 1024
+        let configuration = request.updating(gpuMemoryMB: request.gpuMemoryMB ?? previousGPU)
+        var gpuAttempted = false
+        do {
+            try await configureCPUAndMemoryUnlocked(configuration)
+            if let machine, machine.state == .running {
+                let before = try await machine.gpuBudget()
+                if before.present && (before.clamped || before.requestedBytes != UInt64(configuration.resolvedGPUMemoryMB) * 1_048_576) {
+                    gpuAttempted = true
+                    _ = try await machine.setGPUBudget(configuration.resolvedGPUMemoryMB)
+                }
+            }
+            // A legacy image can save a GPU preference for its next capable image;
+            // its live snapshot continues to report present=false.
+            shape?.gpuMemoryMB = configuration.resolvedGPUMemoryMB
+        } catch {
+            // CPU/RAM may have applied before a later operation failed. Preserve
+            // their recorded state and reconcile only the GPU preference.
+            var gpuToKeep = previousGPU
+            if gpuAttempted, let machine, machine.state == .running {
+                if let actual = try? await machine.gpuBudget(), actual.present {
+                    gpuToKeep = Int(actual.requestedBytes / 1_048_576)
+                } else {
+                    gpuToKeep = configuration.resolvedGPUMemoryMB
+                }
+            }
+            if let saved = LinuxGuestLifecycleConfig.load(from: root) {
+                try? saved.updating(gpuMemoryMB: gpuToKeep).save(to: root)
+            }
+            shape?.gpuMemoryMB = gpuToKeep
+            throw error
+        }
+    }
+
+    /// Lifecycle lock is held by configure; CPU and RAM policy retain their
+    /// own partial-success record before the independent GPU operation.
+    private func configureCPUAndMemoryUnlocked(_ configuration: LinuxGuestLifecycleConfig) async throws {
+        guard let cores = configuration.vcpus, let memory = configuration.memoryMB else {
+            throw LinuxGuestError.invalidConfiguration("Missing shared runtime resources")
+        }
         if let machine, machine.state == .running {
-            guard let current = shape, current.memoryMB == memory else {
+            guard let current = shape, let currentMemory = current.memoryMB else {
                 throw LinuxGuestError.invalidConfiguration("Stop active projects before changing memory; CPU changes do not require a restart")
             }
-            if current.vcpus == cores { return }
+            if current.memoryMB != memory {
+                /* Live memory budget change with the ABI v3 virtio-mem device.
+                 * GROW (and any change with no active project) applies online:
+                 * the engine raises the guest's requested size and the driver
+                 * plugs/unplugs asynchronously — no project is stopped, files
+                 * and machine identity are untouched, and the guest reports
+                 * its true plugged size (never the target). A SHRINK while
+                 * any project lease is alive is persisted as the desired
+                 * target but stays PENDING: the native requested size is not
+                 * lowered under active projects, and the owner retries it when
+                 * the final project closes while the resident guest is still
+                 * alive (see closeUnlocked). Until then a new project open is
+                 * refused by the shape check: the runtime is transitioning to
+                 * the smaller shape and a new lease would defeat the shrink.
+                 * Without the device the historical stop-first rule applies. */
+                let budget = try await machine.memoryBudget()
+                switch planSharedMemoryChange(currentMiB: currentMemory, newMiB: memory,
+                                              projectsAlive: !projects.isEmpty, devicePresent: budget.present) {
+                case .unsupported:
+                    throw LinuxGuestError.invalidConfiguration("Stop active projects before changing memory; CPU changes do not require a restart")
+                case .pendingShrink:
+                    // Persist the desired target now; the native request stays
+                    // at the current effective size until the last project
+                    // closes. CPU changes still apply online.
+                    try configuration.save(to: root)
+                    pendingMemoryTarget = memory
+                    shape = current.updating(vcpus: cores, gpuMemoryMB: configuration.resolvedGPUMemoryMB)
+                    if current.vcpus != cores {
+                        guard let supervisor else { throw ARM64MachineError.notRunning }
+                        do { try await supervisor.setOnlineCPUs(cores) }
+                        catch {
+                            // CPU failed; the RAM target is persisted but
+                            // unapplied (hardware RAM unchanged), so keep the
+                            // new target with the previous vCPU count rather
+                            // than restoring a stale combined shape.
+                            try? current.updating(memoryMB: memory, gpuMemoryMB: configuration.resolvedGPUMemoryMB).save(to: root)
+                            shape = current.updating(gpuMemoryMB: configuration.resolvedGPUMemoryMB)
+                            throw error
+                        }
+                    }
+                    return
+                case .applyOnline:
+                    // Grow (or shrink with no active project): apply online now.
+                    try configuration.save(to: root)
+                    do {
+                        let budget = try await machine.setMemoryBudget(memory)
+                        noteMemoryReservation(budget)
+                    }
+                    catch { try? current.save(to: root); throw error }
+                    pendingMemoryTarget = nil
+                    shape = configuration
+                    if current.vcpus == cores { return }
+                    guard let supervisor else { throw ARM64MachineError.notRunning }
+                    do { try await supervisor.setOnlineCPUs(cores) }
+                    catch {
+                        // The RAM budget already changed in hardware; persist the
+                        // new RAM with the previous vCPU count instead of
+                        // restoring the old RAM preference (which no longer
+                        // matches the machine).
+                        try? current.updating(memoryMB: memory, gpuMemoryMB: configuration.resolvedGPUMemoryMB).save(to: root)
+                        shape = current.updating(memoryMB: memory, gpuMemoryMB: configuration.resolvedGPUMemoryMB)
+                        throw error
+                    }
+                    shape = configuration
+                    return
+                }
+            }
+            // Choosing the existing RAM budget cancels an earlier held shrink.
+            pendingMemoryTarget = nil
+            if current.vcpus == cores {
+                try configuration.save(to: root)
+                shape = current.updating(gpuMemoryMB: configuration.resolvedGPUMemoryMB)
+                return
+            }
             guard let supervisor else { throw ARM64MachineError.notRunning }
             // Persist first, before hardware mutation. Restore the preference
             // on failure; never stop the guest to satisfy a CPU-only request.
@@ -214,7 +367,8 @@ private actor ARM64ResidentGuestOwner {
     private func ensureMachine(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
                                directory: URL, limits: LinuxGuestLimits) async throws {
         let requested = LinuxGuestLifecycleConfig(vcpus: descriptor.vcpus ?? 2,
-            memoryMB: descriptor.ramMB ?? 512)
+            memoryMB: descriptor.ramMB ?? 512,
+            gpuMemoryMB: LinuxGuestLifecycleConfig.load(from: root)?.resolvedGPUMemoryMB ?? 1024)
         if let machine, machine.state == .running {
             guard imageID == image.id, shape == requested else {
                 throw LinuxGuestError.invalidConfiguration("Stop active projects before changing the shared runtime")
@@ -249,6 +403,10 @@ private actor ARM64ResidentGuestOwner {
             kernel: try asset(.kernel, prepared.kernelPath), initrd: try asset(.initrd, prepared.initrdPath),
             commandLine: bootArguments.joined(separator: " "), privateWritableDiskPath: disk,
             ramMiB: requested.memoryMB ?? 512, possibleVCPUs: 4,
+            onlineMemoryEnabled: imageSupportsOnlineMemory(image),
+            gpuEnabled: image.deviceCapabilities?.vulkanGPU == true,
+            gpuBudgetMiB: requested.resolvedGPUMemoryMB,
+            gpuAppGroupIdentifier: FloeL10n.appGroupIdentifier,
             virtioConsoles: 9, networkEnabled: true)
         let created = try ARM64GuestMachine(ownership: .init(label: "resident"), config: config)
         machine = created; imageID = image.id; shape = requested
@@ -310,7 +468,24 @@ private actor ARM64ResidentGuestOwner {
             }
             await lease.close()
             projects.removeValue(forKey: lease.environmentID)
-            if projects.isEmpty { try await stopPhysicalMachine() }
+            if projects.isEmpty {
+                /* A persisted lower memory target waited for exactly this
+                 * moment. Apply it while the resident guest is still alive:
+                 * the lifecycle serial lock is held here, so no new project
+                 * open can race the shrink. The guest driver migrates/unuses
+                 * pages asynchronously and reports its true plugged size —
+                 * never the target. The machine is never rebooted to satisfy
+                 * the request; the ordinary stop below then proceeds. */
+                if let pending = pendingMemoryTarget, machine.state == .running {
+                    do { _ = try await machine.setMemoryBudget(pending) }
+                    catch {
+                        FloeLogger(category: .tools).warning(
+                            "Pending memory shrink could not be applied before stop; it stays the boot target")
+                    }
+                    pendingMemoryTarget = nil
+                }
+                try await stopPhysicalMachine()
+            }
         } catch {
             FloeLogger(category: .tools).warning("ARM64 project close incomplete; ownership retained")
         }
@@ -340,6 +515,7 @@ private actor ARM64ResidentGuestOwner {
         await supervisor?.close()
         guard case .stopped = await machine.stop() else { throw ARM64MachineError.stopTimeout }
         self.machine = nil; supervisor = nil; imageID = nil; shape = nil; cacheRoot = nil
+        pendingMemoryTarget = nil
         capacity = 0
         ResidentMemoryReservations.set(id: "linux-resident-arm64", bytes: 0)
     }
@@ -358,6 +534,44 @@ private actor ARM64ResidentGuestOwner {
         case .stopping: return .stopping
         case .failed: return .failed
         }
+    }
+
+    func gpuStatus() async -> ARM64GPUBudget? {
+        do { try await acquireLifecycle(cancellable: false) } catch { return nil }
+        defer { releaseLifecycle() }
+        guard let machine, machine.state == .running else { return nil }
+        return try? await machine.gpuBudget()
+    }
+
+    private func noteMemoryReservation(_ budget: ARM64MemoryBudget) {
+        let committed = max(budget.targetMiB, budget.pluggedMiB)
+        ResidentMemoryReservations.set(id: "linux-resident-arm64", bytes: Int64(committed) * 1_048_576)
+    }
+
+    /// Live online-memory truth for the settings surface: the persisted
+    /// desired target, the machine's effective budget, and (while running)
+    /// the guest's true plugged size stay deliberately distinct. A shrink
+    /// requested under live projects reports `pendingShrink` with the native
+    /// request unchanged. `pluggedMiB` is the device-attached size only — it
+    /// is never the guest's usable MemTotal and is never called the target.
+    func memoryStatus() async -> LinuxSharedMemoryStatus? {
+        do { try await acquireLifecycle(cancellable: false) } catch { return nil }
+        defer { releaseLifecycle() }
+        let persisted = LinuxGuestLifecycleConfig.load(from: root)
+        guard let desired = persisted?.memoryMB ?? shape?.memoryMB else { return nil }
+        guard let machine, machine.state == .running else {
+            return LinuxSharedMemoryStatus(desiredMiB: desired, effectiveMiB: desired,
+                pluggedMiB: nil, pendingShrink: false)
+        }
+        var effective = shape?.memoryMB ?? desired
+        var plugged: Int?
+        if let budget = try? await machine.memoryBudget(), budget.present {
+            noteMemoryReservation(budget)
+            effective = Int(budget.targetMiB)
+            plugged = Int(budget.pluggedMiB)
+        }
+        return LinuxSharedMemoryStatus(desiredMiB: desired, effectiveMiB: effective,
+            pluggedMiB: plugged, pendingShrink: pendingMemoryTarget != nil || (plugged ?? 0) > desired)
     }
 
     func powerOff() async throws {

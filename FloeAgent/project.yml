@@ -130,6 +130,7 @@ targets:
     sources:
       - path: FloeApp
         excludes:
+          - Resources/Help
           - Resources/Capabilities
           - Resources/MCPTemplates
           - Resources/Impeccable
@@ -153,6 +154,9 @@ targets:
           # app bundle (one manifest per bundle root).
           - Resources/PrivacyManifests
       - path: FloeWidgets/FloeSystemAlarmControlIntents.swift
+      - path: FloeApp/Resources/Help
+        type: folder
+        buildPhase: resources
       - path: FloeApp/Resources/MCPTemplates
         type: folder
         buildPhase: resources
@@ -281,12 +285,13 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        NSMicrophoneUsageDescription: Floe uses the microphone when you dictate, record music, or record a meeting.
+        NSMicrophoneUsageDescription: Floe uses the microphone when you dictate, record music or meetings, or start sound analysis.
         NSSpeechRecognitionUsageDescription: Floe converts your speech into text for the message composer.
         NSCalendarsFullAccessUsageDescription: Floe accesses calendars only when you ask the agent to read or edit events.
         NSRemindersFullAccessUsageDescription: Floe accesses reminders only when you ask the agent to read or edit them.
-        NSLocationWhenInUseUsageDescription: Floe uses your location for requested weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.
-        NSCameraUsageDescription: Floe opens the camera only when you choose to capture an image for a task.
+        NSLocationWhenInUseUsageDescription: Floe uses your location when you open the location toolbox or request weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background.
+        NSCameraUsageDescription: Floe opens the camera when you capture an image or use measurement, magnifier, or scanning tools.
+        NSMotionUsageDescription: Floe uses motion and pressure sensors when you open the corresponding instruments in the toolbox.
         NSFaceIDUsageDescription: Floe uses Face ID only to confirm when you enable unrestricted task access or unlock protected settings.
         NSPhotoLibraryUsageDescription: Floe opens your photo library only when you choose an image for a task.
         NSPhotoLibraryAddUsageDescription: Floe saves generated or edited images only when you ask it to save them to Photos.
@@ -443,6 +448,8 @@ targets:
         product: FloeToolboxClients
       - package: FloeToolbox
         product: FloeToolboxDiagnostics
+      - package: FloeToolbox
+        product: FloeToolboxIPInformation
       - package: FloeToolbox
         product: FloeToolboxUtilities
       - package: FloeToolbox
@@ -626,8 +633,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.7"
-        CURRENT_PROJECT_VERSION: "329"
+        MARKETING_VERSION: "1.8.8"
+        CURRENT_PROJECT_VERSION: "330"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -710,8 +717,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.7"
-        CURRENT_PROJECT_VERSION: "329"
+        MARKETING_VERSION: "1.8.8"
+        CURRENT_PROJECT_VERSION: "330"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -761,8 +768,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.7"
-        CURRENT_PROJECT_VERSION: "329"
+        MARKETING_VERSION: "1.8.8"
+        CURRENT_PROJECT_VERSION: "330"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -805,8 +812,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.7"
-        CURRENT_PROJECT_VERSION: "329"
+        MARKETING_VERSION: "1.8.8"
+        CURRENT_PROJECT_VERSION: "330"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -858,8 +865,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.7"
-        CURRENT_PROJECT_VERSION: "329"
+        MARKETING_VERSION: "1.8.8"
+        CURRENT_PROJECT_VERSION: "330"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -927,6 +934,24 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeAppTests/HelpContentCenterTests.swift
+      - path: Tests/FloeAppTests/HelpAgentToolTests.swift
+      - path: Tests/FloeAppTests/HelpReferenceLinkTests.swift
+      - path: Tests/FloeAppTests/HelpPresentationTests.swift
+      - path: Tests/FloeAppTests/HelpSettingsRoutingTests.swift
+      - path: Tests/FloeAppTests/PersonalFileAssistantLifecycleTests.swift
+      - path: Tests/FloeAppTests/ColdWaitAppLifecycleTests.swift
+      - path: Tests/FloeAppTests/MusicRecordingTransportTests.swift
+      - path: Tests/FloeAppTests/MusicMicrophoneTransportTests.swift
+      - path: Tests/FloeAppTests/NativeCreativeAudioSessionTests.swift
+      - path: Tests/FloeAppTests/MeetingSpeakerIntegrationTests.swift
+      - path: Tests/FloeAppTests/MeetingContinuousASRTests.swift
+      - path: Tests/FloeAppTests/LocalServiceOwnedLoopTests.swift
+      - path: Tests/FloeAppTests/GISAssistantVisualTests.swift
+      - path: Tests/FloeAppTests/FileAssistantLifecycleTests.swift
+      - path: Tests/FloeAppTests/QueuedInputModeTests.swift
+      - path: Tests/FloeAppTests/ChemistryDeletionLifecycleTests.swift
+      - path: Tests/FloeAppTests/BiologyAssistantIntegrationTests.swift
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
       - path: Tests/FloeAppTests/CADBasicMachiningTests.swift
       - path: Tests/FloeAppTests/CADNativeStudyReceiptTests.swift
@@ -1203,6 +1228,8 @@ targets:
       - path: Tests/FloeAppTests/ContactsReadToolsTests.swift
       - path: Tests/FloeAppTests/SystemMediaToolsTests.swift
       - path: Tests/FloeAppTests/SystemAlarmToolsTests.swift
+      - path: Tests/FloeAppTests/ToolboxTimerAlarmTests.swift
+      - path: Tests/FloeAppTests/InlineTimerTests.swift
       - path: Tests/FloeAppTests/AppleCalendarOccurrenceAppQualificationTests.swift
       - path: Tests/FloeAppTests/TemporaryChatPolicyTests.swift
       - path: Tests/FloeAppTests/LocalShellClientIsolationTests.swift
@@ -1777,6 +1804,27 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeAppTests/HelpContentCenterTests.swift
+      - path: Tests/FloeAppTests/HelpAgentToolTests.swift
+      - path: Tests/FloeAppTests/HelpReferenceLinkTests.swift
+      - path: Tests/FloeAppTests/HelpPresentationTests.swift
+      - path: Tests/FloeAppTests/HelpSettingsRoutingTests.swift
+      - path: Tests/FloeSkillsTests/HelpContentPackageTests.swift
+      - path: Tests/FloeAppTests/PersonalFileAssistantLifecycleTests.swift
+      - path: Tests/FloeAppTests/ColdWaitAppLifecycleTests.swift
+      - path: Tests/FloeAppTests/MusicRecordingTransportTests.swift
+      - path: Tests/FloeAppTests/MusicMicrophoneTransportTests.swift
+      - path: Tests/FloeAppTests/NativeCreativeAudioSessionTests.swift
+      - path: Tests/FloeAppTests/MeetingSpeakerIntegrationTests.swift
+      - path: Tests/FloeAppTests/MeetingContinuousASRTests.swift
+      - path: Tests/FloeAppTests/LocalServiceOwnedLoopTests.swift
+      - path: Tests/FloeAppTests/GISAssistantVisualTests.swift
+      - path: Tests/FloeAppTests/FileAssistantLifecycleTests.swift
+      - path: Tests/FloeAppTests/QueuedInputModeTests.swift
+      - path: Tests/FloeAppTests/ChemistryDeletionLifecycleTests.swift
+      - path: Tests/FloeAppTests/BiologyAssistantIntegrationTests.swift
+      - path: Tests/FloeAppTests/ToolboxTimerAlarmTests.swift
+      - path: Tests/FloeAppTests/InlineTimerTests.swift
       - path: Tests/FloeSkillsTests/CuratedSkillHubTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
       - path: Tests/FloeSkillsTests/Fixtures/CuratedSkillHub
@@ -1977,9 +2025,12 @@ targets:
       - path: Tests/FloeAppTests/PrintingGeometryContractTests.swift
       - path: Tests/FloeAppTests/SQLLiteralSearchIntegrationTests.swift
       - path: Tests/FloeAppTests/ToolboxDiagnosticRequestTests.swift
+      - path: Tests/FloeAppTests/NativeTracerouteCardScopeTests.swift
+      - path: Tests/FloeAppTests/TracerouteWorkbenchTests.swift
       - path: Tests/FloeAppTests/ToolboxAnalysisLifecycleTests.swift
       - path: Tests/FloeAppTests/NativeStudioApprovalIntegrationTests.swift
       - path: Tests/FloeWorkbenchTests/MediaPreparedCaptionStyleTests.swift
+      - path: Tests/FloeWorkbenchTests/MediaPreparedAssetRemovalTests.swift
       - path: Tests/FloeAppTests/MediaV2ExportFailureTests.swift
       - path: Modules/FloeCanvasKit/Tests/FloeCanvasCoreTests/FrameworkTextEnvelopeTests.swift
       - path: Qualification/Notes/Tests/NotesStoreTests.swift

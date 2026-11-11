@@ -31,6 +31,20 @@ struct HarnessExecutionLedger: Sendable {
         /// restored entries need matching retained call arguments below.
         var mutationClaimCandidate: Bool? = nil
 
+        /// Whether this call provably crossed the executor boundary. False
+        /// is a trusted pre-execution rejection (runtime gates, suppression,
+        /// budget, recovery synthesis): no external action could have
+        /// started. Restored entries without the flag stay conservative
+        /// (dispatched). This is evidence, not classification: only the
+        /// runtime's own dispatch path writes it.
+        var wasDispatched: Bool = true
+
+        /// Trusted same-operation identity proving which concrete NEW
+        /// output file this receipt's work produced (typed `outputWrite`
+        /// target arguments + resolved paths). Nil when unprovable; the
+        /// closure gate then never supersedes it.
+        var operationIdentity: String? = nil
+
         /// True when this dispatch was marked by the runtime as having an
         /// unknown real-world outcome. The flag travels inside the persisted
         /// result fingerprint so the existing checkpoint record carries it
@@ -88,7 +102,9 @@ struct HarnessExecutionLedger: Sendable {
                 excerpt: String(record.excerpt.prefix(360)),
                 occurrenceCount: max(1, record.occurrenceCount),
                 isSideEffecting: record.isSideEffecting
-                    ?? Self.legacySideEffectingTools.contains(record.toolName)
+                    ?? Self.legacySideEffectingTools.contains(record.toolName),
+                wasDispatched: record.wasDispatched ?? true,
+                operationIdentity: record.operationIdentity
             )
         }
     }
@@ -102,7 +118,9 @@ struct HarnessExecutionLedger: Sendable {
                 resultFingerprint: entry.resultFingerprint,
                 excerpt: entry.excerpt,
                 occurrenceCount: entry.occurrenceCount,
-                isSideEffecting: entry.isSideEffecting
+                isSideEffecting: entry.isSideEffecting,
+                wasDispatched: entry.wasDispatched,
+                operationIdentity: entry.operationIdentity
             )
         }
     }
@@ -338,7 +356,9 @@ struct HarnessExecutionLedger: Sendable {
         result: ToolResult,
         isSideEffecting: Bool = false,
         outcomeUnknown: Bool = false,
-        outcomeUnknownReason: UnknownOutcomeReason = .unattributed
+        outcomeUnknownReason: UnknownOutcomeReason = .unattributed,
+        wasDispatched: Bool = true,
+        operationIdentity: String? = nil
     ) {
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
         let resultData = result.outputDigest.isEmpty
@@ -371,6 +391,10 @@ struct HarnessExecutionLedger: Sendable {
             entry.excerpt = excerpt
             entry.isSideEffecting = entry.isSideEffecting || isSideEffecting
             entry.mutationClaimCandidate = entry.isSideEffecting && !isAuditedNonMutation
+            // Dispatch evidence is sticky: a synthesized replay never
+            // rewrites whether the ORIGINAL attempt crossed the executor.
+            entry.wasDispatched = entry.wasDispatched || wasDispatched
+            entry.operationIdentity = entry.operationIdentity ?? operationIdentity
             entries.append(entry)
         } else {
             entries.append(Entry(
@@ -381,7 +405,9 @@ struct HarnessExecutionLedger: Sendable {
                 excerpt: excerpt,
                 occurrenceCount: 1,
                 isSideEffecting: isSideEffecting,
-                mutationClaimCandidate: isSideEffecting && !isAuditedNonMutation
+                mutationClaimCandidate: isSideEffecting && !isAuditedNonMutation,
+                wasDispatched: wasDispatched,
+                operationIdentity: operationIdentity
             ))
         }
         if entries.count > maximumEntries {

@@ -64,8 +64,21 @@ public struct ChemicalObject: Codable, Identifiable, Sendable, Equatable {
     /// Connectivity can be valid without spatial coordinates (for example a
     /// freshly parsed SMILES). Viewing that graph does not prepare a force field.
     public var requires3DPreparation: Bool {
-        sketchDocument != nil || facts?["geometryDimension"]?.number == 2
-            || facts?["coordinateSetCount"]?.number == 0
+        if sketchDocument != nil || facts?["geometryDimension"]?.number == 2 { return true }
+        if ["mol", "sdf", "sd"].contains(format.lowercased()),
+           let generator = source.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false).dropFirst().first,
+           generator.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("2D") { return true }
+        guard facts?["coordinateSetCount"]?.number == 0 else { return false }
+        // Avogadro counts stored conformer/trajectory sets separately from
+        // the current atom positions. A static XYZ/PDB/CJSON can have zero
+        // sets and still contain valid 3D positions, including planar ones.
+        guard let encoded = facts?["cjson"]?.string, encoded.utf8.count <= 16 * 1024 * 1024,
+              let molecule = try? JSONDecoder().decode(JSONValue.self, from: Data(encoded.utf8)),
+              let elements = molecule["atoms"]?["elements"]?["number"]?.array,
+              !elements.isEmpty, elements.count <= 100_000,
+              let coordinates = molecule["atoms"]?["coords"]?["3d"]?.array,
+              coordinates.count == elements.count * 3 else { return true }
+        return !coordinates.allSatisfy { $0.number?.isFinite == true }
     }
     public init(id: UUID = UUID(), title: String, kind: ChemicalKind = .molecule,
                 format: String, source: String, revision: UInt64 = 0, facts: JSONValue? = nil) {

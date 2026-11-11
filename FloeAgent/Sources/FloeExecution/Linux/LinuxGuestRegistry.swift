@@ -88,6 +88,10 @@ public protocol LinuxGuestSessionCreating: Sendable {
                      imageDirectory: URL?, limits: LinuxGuestLimits) throws -> LinuxGuestSessionHandle
     func shutdown() async
     func sharedMachinePhase() async -> LinuxSharedMachinePhase?
+    /// Live online-memory truth (desired/effective/plugged) for the settings
+    /// surface; nil when the runtime has no shared online-memory device.
+    func sharedMemoryStatus() async -> LinuxSharedMemoryStatus?
+    func sharedGPUStatus() async -> ARM64GPUBudget?
     func powerOffSharedMachine() async throws
     func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws
 }
@@ -104,6 +108,8 @@ public extension LinuxGuestSessionCreating {
     }
     func shutdown() async {}
     func sharedMachinePhase() async -> LinuxSharedMachinePhase? { nil }
+    func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? { nil }
+    func sharedGPUStatus() async -> ARM64GPUBudget? { nil }
     func powerOffSharedMachine() async throws {
         throw LinuxGuestError.invalidConfiguration("This runtime cannot verify shared-machine power off")
     }
@@ -325,9 +331,22 @@ public actor LinuxGuestRegistry {
         let receipt: LinuxGuestOAuthProcessReceipt
         let channel: LinuxGuestCommandChannel
         let handle: LinuxGuestSessionHandle
+        let controlGeneration: UInt64
     }
     private var oauthPrivateProcesses: [UUID: OAuthPrivateProcessBinding] = [:]
     private var oauthPrivateClosed: Set<UUID> = []
+
+    private struct OwnedServiceBinding {
+        let receipt: LinuxGuestServiceProcessReceipt
+        let channel: LinuxGuestCommandChannel
+        let handle: LinuxGuestSessionHandle
+        let controlGeneration: UInt64
+        var terminal: LinuxGuestServiceProcessState?
+        var forward: LinuxGuestServiceForward?
+        var forwardPending = false
+    }
+    private var ownedServiceBindings: [UUID: OwnedServiceBinding] = [:]
+    private var closedServiceReceipts: [UUID: LinuxGuestServiceProcessReceipt] = [:]
 
     private struct Session {
         var descriptor: LinuxGuestEnvironmentDescriptor
@@ -415,10 +434,11 @@ public actor LinuxGuestRegistry {
     /// transient-release candidate: the release waits for the run's own
     /// command to finish (bounded) instead of interrupting it.
     private var activeCommands: [String: Int] = [:]
-    /// Guest pids spawned as managed background services and not yet killed.
+    /// Owned SPAWN references not yet terminal and released. PID reuse in
+    /// the same boot must not let an older release erase a newer owner.
     /// A guest with a live managed service is persistent work, not a
     /// disposable tool guest.
-    private var spawnedServices: [String: Set<Int32>] = [:]
+    private var spawnedServices: [String: Set<UUID>] = [:]
     /// Environments whose VM survived a stop (the engine run loop did not exit
     /// inside its budget). The session and its admission reservation are kept,
     /// no new guest may boot on that environment's disk, and a later stop can
@@ -2856,6 +2876,14 @@ public actor LinuxGuestRegistry {
         await factory.sharedMachinePhase()
     }
 
+    public func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? {
+        await factory.sharedMemoryStatus()
+    }
+
+    public func sharedGPUStatus() async -> ARM64GPUBudget? {
+        await factory.sharedGPUStatus()
+    }
+
     public func stopAll(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
         guard factory.usesResidentMachine, !restoringInitialState else {
             throw LinuxGuestError.guestBusy(environmentID: "shared")
@@ -3907,54 +3935,194 @@ public actor LinuxGuestRegistry {
     }
 
     public func guestSpawn(
-        environmentID: String,
-        argv: [String],
-        workingDirectory: String?,
-        logPath: String,
-        timeout: TimeInterval,
-        cancellation: CancellationToken?
+        environmentID: String, argv: [String], workingDirectory: String?, logPath: String,
+        timeout: TimeInterval, cancellation: CancellationToken?
     ) async throws -> Int32 {
+        try await guestSpawnOwnedService(environmentID: environmentID, argv: argv,
+            workingDirectory: workingDirectory, logPath: logPath, timeout: timeout, cancellation: cancellation).pid
+    }
+
+    public func guestSpawnOwnedService(
+        environmentID: String, argv: [String], workingDirectory: String?, logPath: String,
+        timeout: TimeInterval, cancellation: CancellationToken?
+    ) async throws -> LinuxGuestServiceProcessReceipt {
         let session = try await runningSessionForNewWork(environmentID: environmentID)
-        // An in-flight spawn is activity: a scoped transient release must wait
-        // for it instead of closing the console under the SPAWN exchange.
         beginActiveCommand(environmentID: environmentID)
         defer { endActiveCommand(environmentID: environmentID) }
+        let controlGeneration = await session.channel.serviceControlGeneration
+        guard sessions[environmentID]?.generation == session.generation else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
         do {
-            let pid = try await session.channel.spawnService(
-                argv: argv,
-                workingDirectory: workingDirectory,
-                logPath: logPath,
-                timeout: timeout,
-                cancellation: cancellation
-            )
-            // The spawned service is persistent guest work: owning it keeps
-            // the guest non-transient until the service is explicitly killed.
-            spawnedServices[environmentID, default: []].insert(pid)
-            return pid
+            let pid = try await session.channel.spawnService(argv: argv, workingDirectory: workingDirectory,
+                logPath: logPath, timeout: timeout, cancellation: cancellation)
+            let receipt = LinuxGuestServiceProcessReceipt(environmentID: environmentID,
+                generation: session.generation, pid: pid)
+            // Keep the captured owner even if a stop/restart crossed SPAWN.
+            // Its later proof/cleanup must never be routed to the new guest.
+            ownedServiceBindings[receipt.reference] = OwnedServiceBinding(receipt: receipt,
+                channel: session.channel, handle: session.handle, controlGeneration: controlGeneration)
+            if serviceSessionMatches(receipt, channel: session.channel) {
+                spawnedServices[environmentID, default: []].insert(receipt.reference)
+            }
+            return receipt
         } catch {
-            lastErrors[environmentID] = error.localizedDescription
-            if await session.channel.isPoisoned {
+            if sessions[environmentID]?.generation == session.generation {
+                lastErrors[environmentID] = error.localizedDescription
+            }
+            if await session.channel.isPoisoned,
+               serviceSessionMatches(environmentID: environmentID, generation: session.generation, channel: session.channel) {
                 await stop(environmentID: environmentID)
             }
             throw error
         }
     }
 
+    private func serviceSessionMatches(environmentID: String, generation: UInt64,
+        channel: LinuxGuestCommandChannel) -> Bool {
+        guard let current = sessions[environmentID] else { return false }
+        return current.generation == generation && current.channel === channel
+    }
+
+    private func serviceSessionMatches(_ receipt: LinuxGuestServiceProcessReceipt,
+        channel: LinuxGuestCommandChannel) -> Bool {
+        serviceSessionMatches(environmentID: receipt.environmentID, generation: receipt.generation, channel: channel)
+    }
+
+    private func ownedServiceBinding(_ receipt: LinuxGuestServiceProcessReceipt) throws -> OwnedServiceBinding {
+        guard let binding = ownedServiceBindings[receipt.reference], binding.receipt == receipt else {
+            throw LinuxGuestError.consoleUnavailable("the original guest service owner cannot be verified")
+        }
+        return binding
+    }
+
+    public func guestOwnedServiceState(_ receipt: LinuxGuestServiceProcessReceipt,
+        timeout: TimeInterval) async throws -> LinuxGuestServiceProcessState {
+        if closedServiceReceipts[receipt.reference] == receipt { return .exited }
+        let binding = try ownedServiceBinding(receipt)
+        if let terminal = binding.terminal { return terminal }
+        let running = await binding.handle.isRunning()
+        _ = try ownedServiceBinding(receipt)
+        if !running {
+            ownedServiceBindings[receipt.reference]?.terminal = .environmentGone
+            return .environmentGone
+        }
+        guard serviceSessionMatches(receipt, channel: binding.channel) else {
+            throw LinuxGuestError.consoleUnavailable("the service's original guest generation is no longer available")
+        }
+        let alive = try await binding.channel.serviceTreeAlive(pid: receipt.pid,
+            generation: binding.controlGeneration, timeout: timeout)
+        _ = try ownedServiceBinding(receipt)
+        guard serviceSessionMatches(receipt, channel: binding.channel) else {
+            throw LinuxGuestError.consoleUnavailable("the service's guest generation changed during its liveness query")
+        }
+        if !alive { ownedServiceBindings[receipt.reference]?.terminal = .exited }
+        return alive ? .running : .exited
+    }
+
+    public func guestStopOwnedService(_ receipt: LinuxGuestServiceProcessReceipt,
+        timeout: TimeInterval) async throws -> Bool {
+        if closedServiceReceipts[receipt.reference] == receipt { return true }
+        let binding = try ownedServiceBinding(receipt)
+        if binding.terminal != nil { return true }
+        let running = await binding.handle.isRunning()
+        _ = try ownedServiceBinding(receipt)
+        if !running {
+            ownedServiceBindings[receipt.reference]?.terminal = .environmentGone
+            return true
+        }
+        guard serviceSessionMatches(receipt, channel: binding.channel) else {
+            throw LinuxGuestError.consoleUnavailable("the service's original guest generation is no longer available")
+        }
+        let confirmed = try await binding.channel.killServiceAndJoin(pid: receipt.pid,
+            generation: binding.controlGeneration, timeout: timeout)
+        _ = try ownedServiceBinding(receipt)
+        guard serviceSessionMatches(receipt, channel: binding.channel) else {
+            throw LinuxGuestError.consoleUnavailable("the service's guest generation changed before termination was confirmed")
+        }
+        if confirmed { ownedServiceBindings[receipt.reference]?.terminal = .exited }
+        return confirmed
+    }
+
+    public func guestEnsureOwnedServiceForward(_ receipt: LinuxGuestServiceProcessReceipt,
+        forward: LinuxGuestServiceForward) async throws {
+        let binding = try ownedServiceBinding(receipt)
+        guard binding.terminal == nil, !binding.forwardPending, binding.forward == nil,
+              serviceSessionMatches(receipt, channel: binding.channel) else {
+            throw LinuxGuestError.notRunning(environmentID: receipt.environmentID)
+        }
+        ownedServiceBindings[receipt.reference]?.forward = forward
+        ownedServiceBindings[receipt.reference]?.forwardPending = true
+        defer { ownedServiceBindings[receipt.reference]?.forwardPending = false }
+        var added = false
+        do {
+            try await addForward(environmentID: receipt.environmentID, forward: forward)
+            added = true
+            let current = try ownedServiceBinding(receipt)
+            guard current.terminal == nil, serviceSessionMatches(receipt, channel: binding.channel) else {
+                throw LinuxGuestError.notRunning(environmentID: receipt.environmentID)
+            }
+        } catch {
+            if !added { ownedServiceBindings[receipt.reference]?.forward = nil }
+            throw error
+        }
+    }
+
+    public func guestReleaseOwnedService(_ receipt: LinuxGuestServiceProcessReceipt,
+        forward: LinuxGuestServiceForward) async -> Bool {
+        if closedServiceReceipts[receipt.reference] == receipt { return true }
+        guard let binding = try? ownedServiceBinding(receipt), binding.terminal != nil,
+              !binding.forwardPending else { return false }
+        if let ownedForward = binding.forward {
+            guard ownedForward == forward else { return false }
+            if await binding.handle.isRunning() {
+                guard (try? ownedServiceBinding(receipt)) != nil,
+                      serviceSessionMatches(receipt, channel: binding.channel) else { return false }
+                do { try await binding.handle.removeForward(ownedForward) }
+                catch { return false }
+                if var current = sessions[receipt.environmentID],
+                   current.generation == receipt.generation, current.channel === binding.channel {
+                    current.forwards.removeAll { $0 == ownedForward }
+                    sessions[receipt.environmentID] = current
+                }
+            }
+        }
+        guard let currentBinding = try? ownedServiceBinding(receipt), currentBinding.terminal != nil else {
+            return closedServiceReceipts[receipt.reference] == receipt
+        }
+        if serviceSessionMatches(receipt, channel: binding.channel) {
+            spawnedServices[receipt.environmentID]?.remove(receipt.reference)
+            if spawnedServices[receipt.environmentID]?.isEmpty == true { spawnedServices[receipt.environmentID] = nil }
+        }
+        ownedServiceBindings[receipt.reference] = nil
+        closedServiceReceipts[receipt.reference] = receipt
+        if closedServiceReceipts.count > 1_024, let old = closedServiceReceipts.keys.first {
+            closedServiceReceipts[old] = nil
+        }
+        return true
+    }
+
+    private func currentServiceReceipt(environmentID: String, pid: Int32) throws -> LinuxGuestServiceProcessReceipt {
+        guard let binding = ownedServiceBindings.values.first(where: {
+            $0.receipt.environmentID == environmentID && $0.receipt.pid == pid
+                && serviceSessionMatches($0.receipt, channel: $0.channel)
+        }) else { throw LinuxGuestError.consoleUnavailable("the original guest service owner cannot be verified") }
+        return binding.receipt
+    }
+
     public func guestServiceAlive(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
-        let session = try await runningSessionForNewWork(environmentID: environmentID)
-        return try await session.channel.serviceAlive(pid: pid, timeout: timeout)
+        let receipt = try currentServiceReceipt(environmentID: environmentID, pid: pid)
+        return try await guestOwnedServiceState(receipt, timeout: timeout) == .running
     }
 
     public func guestKillService(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
-        let session = try await runningSessionForNewWork(environmentID: environmentID)
-        let killed = try await session.channel.killService(pid: pid, timeout: timeout)
-        if killed {
-            spawnedServices[environmentID]?.remove(pid)
-            if spawnedServices[environmentID]?.isEmpty == true {
-                spawnedServices[environmentID] = nil
-            }
+        let receipt = try currentServiceReceipt(environmentID: environmentID, pid: pid)
+        let confirmed = try await guestStopOwnedService(receipt, timeout: timeout)
+        if confirmed, let binding = ownedServiceBindings[receipt.reference], binding.forward == nil {
+            _ = await guestReleaseOwnedService(receipt,
+                forward: LinuxGuestServiceForward(hostPort: 0, guestPort: 0))
         }
-        return killed
+        return confirmed
     }
 
     public func guestEnsureForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
@@ -4109,6 +4277,14 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
         await registry.sharedMachinePhase()
     }
 
+    public func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? {
+        await registry.sharedMemoryStatus()
+    }
+
+    public func sharedGPUStatus() async -> ARM64GPUBudget? {
+        await registry.sharedGPUStatus()
+    }
+
     public func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
         let stopped = try await registry.stopAll(allowing: observedActivities)
         for id in stopped { await localServices.environmentDidStop(environmentID: id) }
@@ -4159,6 +4335,7 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
         // through guestStatus.lastResetSharedImpact.
         await localServices.stopLocalServices(environmentID: environmentID)
         await registry.reset(environmentID: environmentID)
+        await localServices.environmentDidStop(environmentID: environmentID)
         await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
         await LinuxGuestNodeProvisioner.shared.forget(environmentID: environmentID)
     }
@@ -4502,15 +4679,16 @@ extension LinuxGuestRegistry: LinuxGuestOAuthPrivateHosting {
         guard session.generation == generation else { throw LinuxGuestOAuthPrivateError.staleRuntime }
         beginActiveCommand(environmentID: environmentID)
         defer { endActiveCommand(environmentID: environmentID) }
+        let controlGeneration = await session.channel.serviceControlGeneration
         do {
             let pid = try await session.channel.spawnService(argv: argv, workingDirectory: nil,
                 logPath: "/dev/null", timeout: 30, cancellation: cancellation)
             let receipt = LinuxGuestOAuthProcessReceipt(reference: UUID(), environmentID: environmentID,
                 generation: generation, pid: pid)
             oauthPrivateProcesses[receipt.reference] = OAuthPrivateProcessBinding(receipt: receipt,
-                channel: session.channel, handle: session.handle)
-            if let current = sessions[environmentID], current.channel === session.channel {
-                spawnedServices[environmentID, default: []].insert(pid)
+                channel: session.channel, handle: session.handle, controlGeneration: controlGeneration)
+            if serviceSessionMatches(environmentID: environmentID, generation: generation, channel: session.channel) {
+                spawnedServices[environmentID, default: []].insert(receipt.reference)
             }
             return receipt
         } catch {
@@ -4526,16 +4704,25 @@ extension LinuxGuestRegistry: LinuxGuestOAuthPrivateHosting {
         }
         guard binding.receipt == receipt else { return false }
         var confirmed = !(await binding.handle.isRunning())
-        if !confirmed {
-            confirmed = (try? await binding.channel.killService(pid: receipt.pid, timeout: 15)) == true
+        if !confirmed,
+           serviceSessionMatches(environmentID: receipt.environmentID, generation: receipt.generation, channel: binding.channel) {
+            confirmed = (try? await binding.channel.killServiceAndJoin(pid: receipt.pid,
+                generation: binding.controlGeneration, timeout: 15)) == true
+            if confirmed,
+               !serviceSessionMatches(environmentID: receipt.environmentID, generation: receipt.generation, channel: binding.channel) {
+                confirmed = false
+            }
             if !confirmed { confirmed = !(await binding.handle.isRunning()) }
         }
         if !confirmed { return oauthPrivateClosed.contains(receipt.reference) }
+        guard oauthPrivateProcesses[receipt.reference]?.receipt == receipt else {
+            return oauthPrivateClosed.contains(receipt.reference)
+        }
         oauthPrivateProcesses[receipt.reference] = nil
         oauthPrivateClosed.insert(receipt.reference)
         if oauthPrivateClosed.count > 1_024, let oldest = oauthPrivateClosed.first { oauthPrivateClosed.remove(oldest) }
-        if let current = sessions[receipt.environmentID], current.channel === binding.channel {
-            spawnedServices[receipt.environmentID]?.remove(receipt.pid)
+        if serviceSessionMatches(environmentID: receipt.environmentID, generation: receipt.generation, channel: binding.channel) {
+            spawnedServices[receipt.environmentID]?.remove(receipt.reference)
             if spawnedServices[receipt.environmentID]?.isEmpty == true { spawnedServices[receipt.environmentID] = nil }
         }
         return true

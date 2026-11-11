@@ -1,5 +1,6 @@
 import Foundation
 import FloeModels
+import FloeTools
 
 public enum HarnessState: String, Sendable, Codable, Hashable {
     case idle
@@ -28,6 +29,7 @@ public enum AgentLivenessPhase: String, Sendable, Codable, Hashable {
     case resolvingTool
     case waitingApproval
     case executingTool
+    case waitingTool
     case persisting
     case retrying
     case compacting
@@ -295,6 +297,8 @@ public enum HarnessEvent: Sendable, Codable, Hashable {
     case answerDelta(TextDelta)
     case reasoningDelta(TextDelta)
     case toolLifecycle(ToolLifecycleEvent)
+    /// Native-only bounded cumulative observations. Not a provider event.
+    case nativeToolDiagnostic(callID: String, observations: [TaskDiagnosticProgress])
     case approvalReviewChanged(ApprovalReviewSnapshot)
     case approvalRequested(ApprovalRequestSnapshot)
     case contextCompacted(ContextCompactionRecord)

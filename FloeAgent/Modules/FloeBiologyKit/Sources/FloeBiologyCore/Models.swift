@@ -49,6 +49,32 @@ public struct ProteinStructure: Codable, Sendable, Equatable {
     public var title: String
     public init(atoms: [StructureAtom], title: String = "") { self.atoms = atoms; self.title = title }
 }
+public extension Array where Element == StructureAtom {
+    /// Default 3D backbone trace over the already model/chain-filtered atoms:
+    /// Cα for proteins, phosphate for nucleic acids, both classes for mixed
+    /// deposits. Returns nil when the deposit has no backbone trace, in which
+    /// case the caller should show every atom instead of an empty view.
+    var backboneTrace: [StructureAtom]? {
+        let ca = filter { $0.name == "CA" && !$0.hetero }
+        let p = filter { $0.name == "P" && !$0.hetero }
+        if ca.isEmpty && p.isEmpty { return nil }
+        return ca + p
+    }
+    /// Consecutive trace pairs that are actually linked in the 3D view:
+    /// same chain/model, adjacent residues, same guide class, and within the
+    /// class distance (Cα–Cα ≤ 5 Å, phosphate–phosphate ≤ 8 Å).
+    var backboneLinkedPairs: [(from: StructureAtom, to: StructureAtom)] {
+        var pairs: [(from: StructureAtom, to: StructureAtom)] = []
+        for (a, b) in zip(self, dropFirst()) where a.chain == b.chain && a.model == b.model
+            && abs(a.residueNumber - b.residueNumber) == 1 && a.name == b.name {
+            let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z
+            let limit = a.name == "P" ? 8.0 : 5.0
+            let d = (dx * dx + dy * dy + dz * dz).squareRoot()
+            if d > 0.001 && d < limit { pairs.append((a, b)) }
+        }
+        return pairs
+    }
+}
 public struct MicroscopyImage: Codable, Sendable, Equatable {
     public var width: Int
     public var height: Int

@@ -8,13 +8,14 @@ import FloeTools
 @MainActor
 final class LocalTerminalStore {
     private let sessions: ShellSessionCenter
-    private var owners: [UUID: LocalTerminalOwner] = [:]
+    private var owners: [String: LocalTerminalOwner] = [:]
     init(sessions: ShellSessionCenter) { self.sessions = sessions }
-    func owner(workspaceID: UUID, root: URL) -> LocalTerminalOwner {
-        if let owner = owners[workspaceID], owner.root == root { return owner }
-        if let previous = owners[workspaceID] { Task { await previous.close() } }
-        let owner = LocalTerminalOwner(root: root, sessions: sessions)
-        owners[workspaceID] = owner
+    func owner(workspaceID: UUID, root: URL, conversationID: UUID? = nil) -> LocalTerminalOwner {
+        let key = workspaceID.uuidString + ":" + (conversationID?.uuidString ?? "project")
+        if let owner = owners[key], owner.root == root { return owner }
+        if let previous = owners[key] { Task { await previous.close() } }
+        let owner = LocalTerminalOwner(root: root, sessions: sessions, conversationID: conversationID)
+        owners[key] = owner
         return owner
     }
 }
@@ -67,6 +68,7 @@ struct TerminalPollCadence: Sendable {
 final class LocalTerminalOwner: Identifiable {
     let id = UUID()
     let root: URL
+    private let conversationID: UUID?
     private let sessions: ShellSessionCenter
     private(set) var sessionID: String?
     private(set) var output = Data()
@@ -88,7 +90,9 @@ final class LocalTerminalOwner: Identifiable {
     private var columns = 80
     private var rows = 24
 
-    init(root: URL, sessions: ShellSessionCenter) { self.root = root; self.sessions = sessions }
+    init(root: URL, sessions: ShellSessionCenter, conversationID: UUID? = nil) {
+        self.root = root; self.sessions = sessions; self.conversationID = conversationID
+    }
 
     func open() async {
         guard !alive else { return }
@@ -129,7 +133,7 @@ final class LocalTerminalOwner: Identifiable {
             }
         }
         do {
-            let result = try await sessions.open(command: "", cwd: ".", environment: [:], columns: columns, rows: rows, runID: id, rootURL: root, cancellation: token, forTerminal: true)
+            let result = try await sessions.open(command: "", cwd: ".", environment: [:], columns: columns, rows: rows, runID: id, rootURL: root, cancellation: token, forTerminal: true, conversationID: conversationID)
             guard openingGeneration == generation, !token.isCancelled, !Task.isCancelled else {
                 await sessions.close(sessionID: result.sessionID, runID: id)
                 return
@@ -325,10 +329,16 @@ struct LocalTerminalView: View {
     /// from the app-lifetime `LocalTerminalStore`, so closing the panel never
     /// stops the shell.
     var embedded: Bool = false
+    /// On-demand screen for the SAME resolved environment this terminal runs
+    /// in. nil for surfaces that do not offer a local Linux screen (the
+    /// remote SSH path stays unchanged either way). The owner only opens the
+    /// screen on demand — never at guest boot.
+    var display: LocalLinuxDisplayOwner? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var installModel: LinuxImageInstallModel?
     @State private var expanded = false
     @State private var showingPorts = false
+    @State private var showingDisplay = false
 
     var body: some View {
         if embedded {
@@ -337,7 +347,7 @@ struct LocalTerminalView: View {
                 else { content }
             }
             .fullScreenCover(isPresented: $expanded) {
-                LocalTerminalView(owner: owner)
+                LocalTerminalView(owner: owner, display: display)
             }
         } else {
             NavigationStack {
@@ -369,6 +379,16 @@ struct LocalTerminalView: View {
                     .frame(width: 8, height: 8)
                 Text(owner.status).font(.caption).lineLimit(1)
                 Spacer(minLength: 8)
+                if let display, display.screenEntryAvailable {
+                    Button { showingDisplay = true } label: {
+                        Image(systemName: "display")
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(display.state == .stopping)
+                    .accessibilityLabel(IDELanguageRunText.t("屏幕", "Screen"))
+                    .accessibilityIdentifier("terminal.display")
+                }
                 Button("portforward.title", systemImage: "network") { showingPorts = true }
                     .labelStyle(.iconOnly)
                     .frame(width: 44, height: 44)
@@ -422,6 +442,18 @@ struct LocalTerminalView: View {
             }
         }
         .sheet(isPresented: $showingPorts) { NavigationStack { LinuxPortManagementView() } }
+        .sheet(isPresented: $showingDisplay) {
+            if let display {
+                LocalLinuxDisplayView(owner: display)
+                    .accessibilityIdentifier("terminal.display.sheet")
+            }
+        }
+        .task(id: display?.environmentID) {
+            // Resolves the exact environment so the Screen entry appears only
+            // for a real local Linux environment; a view cancellation only
+            // stops the resolution, never a running display.
+            await display?.prepare()
+        }
         .task(id: owner.missingImageID) {
             if let missingID = owner.missingImageID, installModel?.imageID != missingID {
                 installModel = LinuxImageInstallModel(imageID: missingID)

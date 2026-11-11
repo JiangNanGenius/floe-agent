@@ -19,6 +19,9 @@ import FloeToolboxWorkbenches
     @Published private(set) var readingNetwork = false
     private var networkReadGeneration = UUID()
     private let database: DatabaseManager
+    private let ipInformation: TracerouteIPInformationProvider?
+    typealias IPInformationSettingsFactory = @MainActor (_ onDatabaseChanged: @escaping @MainActor () -> Void) -> AnyView
+    private let ipSettingsContent: IPInformationSettingsFactory?
     private var leases: [ToolboxTool: SessionLease] = [:]
     private var sampler: RoamingSampler?
     private var observer: Task<Void, Never>?
@@ -26,7 +29,23 @@ import FloeToolboxWorkbenches
     private var publishedTraceGeneration: UUID?
     let history = ToolboxHistoryStore.shared
     private var traceHistoryAttempt: UUID?
-    init(database: DatabaseManager) { self.database = database }
+    /// One bounded RAM display snapshot; the previous worker/lease is never
+    /// reused when a closed traceroute workbench is opened again.
+    private var retainedTraceroute: DiagnosticWorkbenchModel.RetainedTraceroute?
+    init(database: DatabaseManager, ipInformation: TracerouteIPInformationProvider? = nil,
+         ipInformationSettings: IPInformationSettingsFactory? = nil) {
+        self.database = database; self.ipInformation = ipInformation
+        self.ipSettingsContent = ipInformationSettings
+    }
+    func ipInformationSettings(for model: DiagnosticWorkbenchModel) -> AnyView? {
+        ipSettingsContent? { [weak self] in self?.refreshIPInformation() }
+    }
+    /// The service-owned update observer and settings completion both call
+    /// this, including when the initiating sheet/model has already closed.
+    func refreshIPInformation() {
+        retainedTraceroute = retainedTraceroute?.removingIPInformation()
+        for model in models.values { model.refreshIPInformation() }
+    }
     var canReadWiFiIdentity: Bool { LocationServicesCenter.shared.canReadWiFiIdentity }
     var needsInitialWiFiAuthorization: Bool { LocationServicesCenter.shared.authorizationStatus == .notDetermined }
     var wifiIdentityMessage: String? {
@@ -73,7 +92,8 @@ import FloeToolboxWorkbenches
                 case .failed: self.history.finish(request.id, outcome: .failed)
                 case .cancelled: self.history.finish(request.id, outcome: .cancelled)
                 }
-            })
+            }, ipInformation: ipInformation)
+        if tool == .traceroute, let retainedTraceroute { model.restoreTraceroute(retainedTraceroute) }
         models[tool] = model
         return model
     }
@@ -81,6 +101,11 @@ import FloeToolboxWorkbenches
     func closeNow(_ tool: ToolboxTool) {
         leases[tool] = nil
         let model = models.removeValue(forKey: tool)
+        // Fence now, before the async close can yield and old callbacks arrive.
+        if tool == .traceroute {
+            model?.cancel()
+            retainedTraceroute = model?.retainedTraceroute
+        }
         Task { await model?.close() }
         if tool == .roaming { stopTraceNow() }
     }

@@ -120,30 +120,35 @@ import FloeBiologyCore
         geometry.materials=[UIColor.systemTeal,.systemOrange,.systemBlue,.systemIndigo].map(material)
         return finish(SCNNode(geometry:geometry),points:mesh.vertices)
     }
-    static func molecule(_ atoms:[StructureAtom],backbone:Bool)->SCNScene {
-        let shown=Array((backbone ? atoms.filter{$0.name=="CA" && !$0.hetero}:atoms).prefix(5000)),model=SCNNode()
+    /// `trace` is the backbone trace (Cα and/or phosphate guide atoms, both for
+    /// mixed deposits) or nil to show every atom. Nucleic deposits carry no Cα,
+    /// so a phosphate trace keeps DNA/RNA 3D viable; links are drawn only
+    /// between same-class adjacent guides (Cα–Cα ≤ 5 Å, P–P ≤ 8 Å).
+    static func molecule(_ atoms:[StructureAtom],backboneTrace trace:[StructureAtom]?)->SCNScene {
+        let shown=Array((trace ?? atoms).prefix(5000)),model=SCNNode()
         var geometries:[String:SCNGeometry]=[:]
         for atom in shown {
-            let key=backbone ? "CA":atom.element
+            let guide:String?=trace != nil ? atom.name:nil
+            let key=guide ?? atom.element
             let geometry:SCNGeometry
             if let saved=geometries[key]{geometry=saved}else{
-                let sphere=SCNSphere(radius:backbone ? 0.34:atom.element=="H" ? 0.22:0.42);sphere.segmentCount=18
-                let color:UIColor=atom.element=="O" ? .systemRed:atom.element=="N" ? .systemBlue:atom.element=="S" ? .systemOrange:atom.element=="H" ? .systemGray3:.systemTeal
+                let sphere=SCNSphere(radius:guide=="CA" ? 0.34:guide=="P" ? 0.4:atom.element=="H" ? 0.22:0.42);sphere.segmentCount=18
+                let color:UIColor=guide=="P" ? .systemOrange:guide != nil ? .systemTeal:atom.element=="O" ? .systemRed:atom.element=="N" ? .systemBlue:atom.element=="S" ? .systemOrange:atom.element=="H" ? .systemGray3:.systemTeal
                 sphere.materials=[material(color)];geometries[key]=sphere;geometry=sphere
             }
             let node=SCNNode(geometry:geometry);node.name="atom.\(atom.id)";node.position=SCNVector3(Float(atom.x),Float(atom.y),Float(atom.z))
             model.addChildNode(node)
         }
-        if backbone {
-            let lineMaterial=material(.systemTeal)
-            for (a,b) in zip(shown,shown.dropFirst()) where a.chain==b.chain && a.model==b.model && abs(a.residueNumber-b.residueNumber)==1 {
+        if trace != nil {
+            let caMaterial=material(.systemTeal),pMaterial=material(.systemOrange)
+            for (a,b) in shown.backboneLinkedPairs {
                 let p=SIMD3<Float>(Float(a.x),Float(a.y),Float(a.z)),q=SIMD3<Float>(Float(b.x),Float(b.y),Float(b.z)),delta=q-p,length=simd_length(delta)
-                guard length>0.001,length<5 else{continue}
-                let cylinder=SCNCylinder(radius:0.15,height:CGFloat(length));cylinder.radialSegmentCount=12;cylinder.materials=[lineMaterial]
+                let cylinder=SCNCylinder(radius:0.15,height:CGFloat(length));cylinder.radialSegmentCount=12
+                cylinder.materials=[a.name=="P" ? pMaterial:caMaterial]
                 let node=SCNNode(geometry:cylinder);node.simdPosition=(p+q)/2;node.simdOrientation=simd_quatf(from:SIMD3<Float>(0,1,0),to:delta/length);model.addChildNode(node)
             }
         }
-        return finish(model,points:shown.map{SIMD3<Float>(Float($0.x),Float($0.y),Float($0.z))},radius:backbone ? 0.34:0.42)
+        return finish(model,points:shown.map{SIMD3<Float>(Float($0.x),Float($0.y),Float($0.z))},radius:trace != nil ? 0.4:0.42)
     }
     private static func finish(_ model:SCNNode,points:[SIMD3<Float>],radius:Float=0)->SCNScene {
         let scene=BiologyRenderScene();scene.framingPoints=points;scene.framingRadius=radius;model.name="biology.model"

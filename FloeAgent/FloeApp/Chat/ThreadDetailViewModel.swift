@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import FloeTools
 import Combine
 import Darwin
 import FloeCore
@@ -114,6 +115,7 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var usageByRun: [UUID: [RunUsageRecord]] = [:]
     @Published private(set) var liveUsage = UsageSnapshot()
     @Published private(set) var latestUsage = UsageSnapshot()
+    @Published private(set) var nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:]
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
     @Published private(set) var approvalReviewSummary: String?
@@ -206,7 +208,16 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var taskTitle: String = ""
     @Published private(set) var taskPolicy: TaskPolicy
     @Published private(set) var pendingInputs: [PendingUserInput] = []
+    /// Global default for sends while a run is active (steer vs queue). The
+    /// value tracks `SettingsCenter` live — an already-open ordinary chat or
+    /// file assistant follows a settings change immediately — until the user
+    /// explicitly picks a mode for THIS thread (see
+    /// `selectRunningInputMode`), which then wins for the thread's life.
     @Published var runningInputMode: RunningInputMode = .queue
+    /// True once the user explicitly chose a per-thread mode in the composer
+    /// chip; the global default stops overriding this thread's choice.
+    private var runningInputModeOverridden = false
+    private var runningInputModeSettingsObserver: AnyCancellable?
 
     let conversationID: UUID
     let center: ConversationCenter
@@ -349,6 +360,25 @@ final class ThreadDetailViewModel: ObservableObject {
         if !isTemporary {
             ComposerDraftStore.shared.registerLiveDraftOwner(self, for: conversationID)
         }
+        // Follow the global steer/queue default live: ordinary chats and
+        // every file assistant share one rule, and an already-open thread
+        // must not keep a stale copy after the user changes the setting.
+        runningInputModeSettingsObserver = center.environment.settingsCenter
+            .$runningInputMode
+            .sink { [weak self] mode in
+                guard let self else { return }
+                Task { @MainActor in
+                    guard !self.runningInputModeOverridden else { return }
+                    self.runningInputMode = mode
+                }
+            }
+    }
+
+    /// The composer chip's per-thread mode choice. Explicit user choice is
+    /// preserved for this thread; until then the global default flows in.
+    func selectRunningInputMode(_ mode: RunningInputMode) {
+        runningInputModeOverridden = true
+        runningInputMode = mode
     }
 
     // MARK: - External import landing
@@ -1281,7 +1311,10 @@ final class ThreadDetailViewModel: ObservableObject {
                 conversationID: conversationID
             )
         }
-        if isRunning, let expectedRunID = selectedRun?.id {
+        if case .runningInput(let mode) = RunningInputModePolicy.sendRoute(
+            isRunActive: isRunning && selectedRun != nil,
+            mode: inputModeAtSend
+        ), let expectedRunID = selectedRun?.id {
             // The running-input path keeps the field until the submit lands,
             // so the identity is captured before the await.
             let commit = makeCommit()
@@ -1290,7 +1323,7 @@ final class ThreadDetailViewModel: ObservableObject {
                     content: goal,
                     in: conversationID,
                     expectedRunID: expectedRunID,
-                    mode: inputModeAtSend,
+                    mode: mode,
                     selectedModelID: modelIDAtSend,
                     workspaceID: projectIDAtSend,
                     executionMode: executionMode,
@@ -2009,7 +2042,19 @@ final class ThreadDetailViewModel: ObservableObject {
         guard let runID = selectedRun?.id, isRunning else { return }
         do {
             try await center.promoteToSteer(inputID: input.id, expectedRunID: runID)
-            pendingInputs = try await center.runningInputStore(for: conversationID).pending(conversationID: conversationID)
+            pendingInputs = try await center.runningInputStore(for: conversationID)
+                .pending(conversationID: conversationID)
+        } catch { actionError = error.localizedDescription }
+    }
+
+    /// Three-dot "back to queue": withdraws a steer that the runtime has
+    /// not consumed yet. A consumed steer throws at the center boundary and
+    /// the row stays honest — sent content is never disguised as queued.
+    func demotePendingInput(_ input: PendingUserInput) async {
+        do {
+            try await center.demoteSteerToQueued(id: input.id)
+            pendingInputs = try await center.runningInputStore(for: conversationID)
+                .pending(conversationID: conversationID)
         } catch { actionError = error.localizedDescription }
     }
 
@@ -2311,6 +2356,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 } else if self.observedServiceRunID == nil, let run = self.selectedRun {
                     self.liveStateName = run.state
                     self.isRunning = !RunStateLocalizer.isTerminal(run.state)
+                        && !RunStateLocalizer.isNonExecutingReady(run.state, hasLiveOwner: center.hasLiveOwner(runID: run.id))
                 }
             }
         }
@@ -2335,8 +2381,7 @@ final class ThreadDetailViewModel: ObservableObject {
             isCompacting = false
         }
         liveStreamedText = ""
-        guard let run = selectedRun else { return }
-        liveStateName = run.state
+        liveStateName = selectedRun?.state
         liveReasoningText = ""
         hasProviderActivity = false
         isDraining = false
@@ -2344,6 +2389,11 @@ final class ThreadDetailViewModel: ObservableObject {
         reasoningAnimator.reset()
         liveUsage = UsageSnapshot()
         latestUsage = UsageSnapshot()
+        nativeToolDiagnostics = [:]
+        guard let run = selectedRun else {
+            isRunning = false
+            return
+        }
         liveEventTask = Task { [weak self, center] in
             guard let self else { return }
             guard let service = center.service(for: run.id) else {
@@ -2353,6 +2403,9 @@ final class ThreadDetailViewModel: ObservableObject {
                 // That gap is still a live task, not a pause/failure.
                 self.isRunning = center.hasLiveOwner(runID: run.id)
                     || !RunStateLocalizer.isTerminal(run.state)
+                if RunStateLocalizer.isNonExecutingReady(run.state, hasLiveOwner: center.hasLiveOwner(runID: run.id)) {
+                    self.isRunning = false
+                }
                 self.isDraining = false
                 return
             }
@@ -2368,6 +2421,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // Reattach with the runtime's own typed projection instead of
             // inferring a phase from the state name.
             self.applyLiveCompression(snapshot.contextCompression)
+            self.nativeToolDiagnostics = snapshot.nativeToolDiagnostics
             var answerTarget = snapshot.streamedText
             if !self.locallyStoppedRunIDs.contains(run.id) {
                 self.animator.update(target: answerTarget)
@@ -2420,6 +2474,17 @@ final class ThreadDetailViewModel: ObservableObject {
                     reasoningTarget += delta.text
                     self.reasoningAnimator.update(target: reasoningTarget)
                     self.hasProviderActivity = true
+                case .nativeToolDiagnostic(let callID, let observations):
+                    guard !self.locallyStoppedRunIDs.contains(run.id), observations.count <= 31 else { continue liveEvents }
+                    if self.nativeToolDiagnostics[callID] == nil, self.nativeToolDiagnostics.count >= 64 {
+                        let current = await service.snapshot()
+                        guard self.selectedRunID == run.id,
+                              feedbackGeneration == self.liveFeedbackGeneration,
+                              !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
+                        self.nativeToolDiagnostics = current.nativeToolDiagnostics
+                    } else {
+                        self.nativeToolDiagnostics[callID] = observations
+                    }
                 case .toolLifecycle(.requested):
                     if self.liveStateName == "preparingToolCall" { self.liveStateName = "streamingModel" }
                     // A new call starts: the previous settlement note is no

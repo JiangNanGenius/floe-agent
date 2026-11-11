@@ -1973,7 +1973,7 @@
   },
   {
     "source": "FloeGISKit/Web/model.js",
-    "bytes": 39894
+    "bytes": 40607
   },
   {
     "source": "FloeGISKit/Web/symbology.js",
@@ -2613,7 +2613,7 @@
   },
   {
     "source": "FloeGISKit/Web/formats.js",
-    "bytes": 44956
+    "bytes": 53144
   },
   {
     "source": "FloeGISKit/Web/analysis.js",
@@ -3165,7 +3165,7 @@
   },
   {
     "source": "FloeGISKit/Web/view.js",
-    "bytes": 43380
+    "bytes": 51439
   },
   {
     "source": "FloeGISKit/Web/main.js",

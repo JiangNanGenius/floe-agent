@@ -41,6 +41,38 @@ nonisolated struct ChemistryWorkerAttempt: Codable, Sendable {
     var updatedAt = Date()
 }
 
+/// What file deletion must do about one saved worker attempt. Decided from
+/// the durable job store and the run record alone — never from the
+/// historical execution context, whose binding may have expired long ago.
+enum ChemistryDeletionStopPlan: Equatable, Sendable {
+    /// Terminal attempts keep their record and need no action.
+    case skip
+    /// A completed processor still owes reconciled result files.
+    case reconcileFirst
+    /// No live job: record the reconciled cancellation and keep deleting.
+    case reconcileStale
+    /// The native UI's own live job: really stop it, then keep deleting.
+    case stopOwnedJob
+    /// An assistant-owned live job still belongs to its execution task.
+    case refuseLiveForeignJob
+    /// An assistant-owned attempt whose submit may still be in flight.
+    case refuseUnfinishedSubmit
+}
+
+extension ChemistryWorkerAttempt {
+    /// `hasLiveJob` comes from the durable jobs store; `owningRunEnded` is
+    /// read straight from the run record. Local file-manager authority is
+    /// separated from historical model-run lifetime, with no bypass of live
+    /// worker ownership or stop proof.
+    func deletionStopPlan(hasLiveJob: Bool, owningRunEnded: Bool) -> ChemistryDeletionStopPlan {
+        if state.terminal { return .skip }
+        if state == .transferPending { return .reconcileFirst }
+        if hasLiveJob { return nativeIntent ? .stopOwnedJob : .refuseLiveForeignJob }
+        if nativeIntent { return .reconcileStale }
+        return owningRunEnded ? .reconcileStale : .refuseUnfinishedSubmit
+    }
+}
+
 nonisolated struct ChemistryWorkerManifest: Codable, Sendable {
     var schema = "floe.chemistry.transport.v1"
     let kind: ChemistryWorkerAttempt.Kind
@@ -124,7 +156,10 @@ nonisolated struct ChemistryNativeRunMetadata: Codable, Sendable {
     private weak var environment: AppEnvironment?
     private let configuration: @MainActor (String) throws -> ChemistryWorkerConfiguration
     private var workers: [UUID: Task<Void, Never>] = [:]
-    private var nativeLeases: [UUID: WorkspaceCenter.TaskRootLease] = [:]
+    // A worker lease outlives submission. Deletion joins nativeSubmissions,
+    // then stops the genuine job and joins its monitor before removing files.
+    var nativeLeases: [UUID: WorkspaceCenter.TaskRootLease] = [:]
+    let nativeSubmissions = ChemistrySubmissionTracker()
     private var preparing: Set<String> = []
 
     init(environment: AppEnvironment,
@@ -657,23 +692,28 @@ nonisolated struct ChemistryNativeRunMetadata: Codable, Sendable {
         var value = try attempt(id, projectID: projectID, root: root, context: context)
         guard value.nativeIntent, value.owner.hostRunID == context.runID,
               value.state == .awaitingSubmission, value.jobID == nil else { throw FloeError.unauthorized }
-        _ = try await binding(context)
-        // Persist the uncertain window BEFORE invoking the durable jobs API.
-        // An interrupted submit can be adopted later, never blindly replayed.
-        value.state = .submissionUnknown; try save(value, root: root)
-        do {
-            let job = try await jobs().submit(runID: value.owner.hostRunID, toolCallID: nil,
-                targetTool: "exec.shell", payloadJSON: value.shellPayload, scope: context.scope,
-                workspaceRootURL: context.workspaceRootURL, allowedWorkspacePaths: value.allowedWorkspacePaths,
-                environmentID: value.environmentID, allowedToolNames: ["exec.shell"],
-                submissionSource: .nativeService, advisoryGroupID: value.id)
-            value.jobID = job.id; value.state = .running; try save(value, root: root)
-            let output = try await adopt(id, jobID: job.id, service: service, projectID: projectID, root: root, context: context)
-            monitor(id, service: service, projectID: projectID, root: root, context: context)
-            return output
-        } catch {
-            value.error = String(error.localizedDescription.prefix(8000)); try? save(value, root: root)
-            throw error
+        return try await nativeSubmissions.perform(id) {
+            _ = try await binding(context)
+            try Task.checkCancellation()
+            // Stop/delete may have changed the attempt while binding awaited.
+            value = try attempt(id, projectID: projectID, root: root, context: context)
+            guard value.state == .awaitingSubmission, value.jobID == nil else { throw CancellationError() }
+            // Persist uncertainty BEFORE invoking the durable jobs API.
+            value.state = .submissionUnknown; try save(value, root: root)
+            do {
+                let job = try await jobs().submit(runID: value.owner.hostRunID, toolCallID: nil,
+                    targetTool: "exec.shell", payloadJSON: value.shellPayload, scope: context.scope,
+                    workspaceRootURL: context.workspaceRootURL, allowedWorkspacePaths: value.allowedWorkspacePaths,
+                    environmentID: value.environmentID, allowedToolNames: ["exec.shell"],
+                    submissionSource: .nativeService, advisoryGroupID: value.id)
+                value.jobID = job.id; value.state = .running; try save(value, root: root)
+                let output = try await adopt(id, jobID: job.id, service: service, projectID: projectID, root: root, context: context)
+                monitor(id, service: service, projectID: projectID, root: root, context: context)
+                return output
+            } catch {
+                value.error = String(error.localizedDescription.prefix(8000)); try? save(value, root: root)
+                throw error
+            }
         }
     }
 
@@ -845,34 +885,180 @@ nonisolated struct ChemistryNativeRunMetadata: Codable, Sendable {
     }
 
     /// Stop native UI-owned probes/calculations before deleting their original.
-    /// Assistant-owned jobs require cancellation in that real task; unknown
-    /// submission or an un-reaped processor retains the original for recovery.
+    /// Deletion uses the current file owner's authority: job liveness is read
+    /// from the durable jobs store and the owning run's end state from the
+    /// run record, never by reviving a historical execution context that may
+    /// have expired. Assistant-owned live work still belongs to its task.
     func prepareForDeletion(session: ChemistryProjectSession) async throws {
         let location = try await PersonalContentService.shared.library().resolve(session.projectID)
         guard ChemistryWorkerFiles.canonical(location.url) == ChemistryWorkerFiles.canonical(session.root) else { throw PersonalContentError.changedDocument }
         let archive = try journal(location.url)
         let paths = try FileManager.default.contentsOfDirectory(at: archive, includingPropertiesForKeys: nil)
         guard paths.count <= 4096 else { throw PersonalContentError.invalidProject }
+        var attemptIDs: [UUID] = []
         for path in paths {
             guard let id = UUID(uuidString: path.lastPathComponent) else { continue }
-            let file = try ChemistryWorkerFiles.child(id.uuidString + "/attempt.json", root: archive)
-            let value = try JSONDecoder().decode(ChemistryWorkerAttempt.self, from: ChemistryWorkerFiles.read(file, limit: 256 * 1024))
-            guard value.projectID == session.projectID, value.id == id else { throw PersonalContentError.invalidProject }
-            guard !value.state.terminal else { continue }
-            if value.state == .transferPending {
-                // Its processor is already verified terminal; preserve output
-                // by requiring the user to finish reconciliation first.
-                throw FloeError.validationFailed("Reconcile the saved result files before deleting this chemistry project")
-            }
-            let output = try await cancelNative(id, record: location.record, root: location.url, service: session.service)
-            guard output.state.terminal else {
-                throw FloeError.validationFailed("The calculation is still stopping. Its original has been retained; try again after it stops.")
-            }
+            let value = try deletionAttempt(id, archive: archive, session: session)
+            attemptIDs.append(id)
+            try await stopAttemptForDeletion(value, root: location.url, service: session.service)
         }
         let project = try await session.service.project(session.projectID)
         guard !project.runs.contains(where: { $0.externalExecution != nil && [.queued, .running].contains($0.status) }) else {
-            throw FloeError.validationFailed("Stop this project's external calculations in their owning task before deleting it")
+            throw FloeError.validationFailed(IDELanguageRunText.t("先在所属任务中停止这个工程的外部计算，再删除它。", "Stop this project's external calculations in their owning task before deleting it."))
         }
+        let monitors = attemptIDs.compactMap { workers[$0] }
+        for monitor in monitors { monitor.cancel() }
+        for monitor in monitors { await monitor.value }
+        try Task.checkCancellation()
+    }
+    /// Focused lifecycle bounds; focused tests shorten them, production keeps
+    /// the defaults. They bound waits that join an owning producer, never a
+    /// blind sleep-then-assume.
+    var deletionStopTimeout = TimeInterval(15)
+    var deletionSubmitJoinTimeout = TimeInterval(15)
+    var deletionStopPollInterval = TimeInterval(0.25)
+    var deletionSubmitGraceAttempts = 6
+    var deletionSubmitGraceInterval = TimeInterval(0.5)
+    private func deletionAttempt(_ id: UUID, archive: URL, session: ChemistryProjectSession) throws -> ChemistryWorkerAttempt {
+        let file = try ChemistryWorkerFiles.child(id.uuidString + "/attempt.json", root: archive)
+        let value = try JSONDecoder().decode(ChemistryWorkerAttempt.self, from: ChemistryWorkerFiles.read(file, limit: 256 * 1024))
+        guard value.projectID == session.projectID, value.id == id else { throw PersonalContentError.invalidProject }
+        return value
+    }
+    private func owningRunEnded(_ value: ChemistryWorkerAttempt) async throws -> Bool {
+        guard let run = try await app().runStore.run(id: value.owner.hostRunID) else { return true }
+        return run.endedAt != nil
+    }
+    /// Cover the small window in which a native submit was persisted as
+    /// uncertain but its genuine jobID has not been saved yet. The durable
+    /// jobs store is authoritative for acceptance. Absence after this window
+    /// alone is never proof: the submit producer/run must also be settled.
+    private func discoverOriginalJobWithGrace(_ value: ChemistryWorkerAttempt) async throws -> BackgroundJob? {
+        var last: Error?
+        for _ in 0..<deletionSubmitGraceAttempts {
+            do {
+                if let job = try await discoverOriginalJob(value) { return job }
+            } catch { last = error }
+            try await Task.sleep(for: .milliseconds(deletionSubmitGraceInterval * 1000))
+        }
+        if let last { throw last }
+        return nil
+    }
+    private func reloadAttemptForDeletion(_ id: UUID, root: URL) throws -> ChemistryWorkerAttempt? {
+        let file = try ChemistryWorkerFiles.child(id.uuidString + "/attempt.json", root: journal(root))
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        let value = try JSONDecoder().decode(ChemistryWorkerAttempt.self, from: ChemistryWorkerFiles.read(file, limit: 256 * 1024))
+        guard value.id == id else { return nil }
+        return value
+    }
+    func stopAttemptForDeletion(_ original: ChemistryWorkerAttempt, root: URL, service: ChemistryService) async throws {
+        var value = original
+        // Includes awaitingSubmission while binding() is suspended. A worker
+        // lease is not a submit fence: it remains held while a job is running.
+        if value.nativeIntent, nativeSubmissions.isSubmitting(value.id) {
+            guard try await nativeSubmissions.waitUntilSettled(value.id, timeout: .seconds(deletionSubmitJoinTimeout)) else {
+                throw FloeError.validationFailed(IDELanguageRunText.t("这次计算仍在提交，原件已保留；请稍后再试删除。", "This calculation is still submitting. Its original has been retained; try the deletion again shortly."))
+            }
+            guard let settled = try reloadAttemptForDeletion(value.id, root: root) else { return }
+            value = settled
+        }
+        // Prevent a status read that started before cancellation from saving
+        // an older running receipt after the deletion reconciliation.
+        if let monitor = workers[value.id] {
+            monitor.cancel()
+            await monitor.value
+            if let settled = try reloadAttemptForDeletion(value.id, root: root) { value = settled }
+        }
+        // Genuine terminal attempts never touch a potentially reaped job row.
+        guard !value.state.terminal else { return }
+        if value.jobID == nil, !value.state.terminal {
+            let recovered = try await (value.state == .submissionUnknown
+                ? discoverOriginalJobWithGrace(value) : discoverOriginalJob(value))
+            if let recovered {
+                value.jobID = recovered.id
+                if !value.state.terminal { value.state = .running }
+                try save(value, root: root)
+            }
+        }
+        if let jobID = value.jobID {
+            let job = try await verifiedJob(value, jobID: jobID)
+            if job.state.isTerminal {
+                // The durable processor already finished honestly: reconcile
+                // the genuine result (or its transfer state) before deleting,
+                // exactly like the user-visible status path and without the
+                // historical execution context.
+                let output = try await reconcile(value, service: service, root: root)
+                if output.state == .transferPending {
+                    throw FloeError.validationFailed(IDELanguageRunText.t("先完成对账保存的结果文件，再删除这个化学工程。", "Reconcile the saved result files before deleting this chemistry project."))
+                }
+                guard output.state.terminal else {
+                    throw FloeError.validationFailed(IDELanguageRunText.t("计算仍在停止中，原件已保留；等它停止后再删除。", "The calculation is still stopping. Its original has been retained; delete it again after the calculation stops."))
+                }
+                return
+            }
+            // A live processor: only the native UI's own workers may be
+            // stopped here; assistant-owned work stays in its execution task.
+            guard value.nativeIntent else {
+                throw FloeError.validationFailed(IDELanguageRunText.t("这份计算仍在运行。请先在发起它的任务中停止，再删除这个文件。", "This calculation is still running. Stop it in the task that started it, then delete this file."))
+            }
+            try await stopOwnedJobForDeletion(&value, root: root, service: service)
+            return
+        }
+        // No genuine job was ever submitted: decide from the run record alone.
+        // A last store read immediately before recording the cancellation
+        // closes the gap after the bounded grace window.
+        if value.state == .submissionUnknown, let late = try await discoverOriginalJob(value) {
+            value.jobID = late.id
+            if !value.state.terminal { value.state = .running }
+            try save(value, root: root)
+            try await stopAttemptForDeletion(value, root: root, service: service)
+            return
+        }
+        switch value.deletionStopPlan(hasLiveJob: false, owningRunEnded: try await owningRunEnded(value)) {
+        case .skip: return
+        case .reconcileFirst, .stopOwnedJob, .refuseLiveForeignJob: return
+        case .refuseUnfinishedSubmit:
+            throw FloeError.validationFailed(IDELanguageRunText.t("这次计算所属的任务可能仍在提交。请先完成或停止那个任务，再删除这个文件。", "This calculation's task may still be submitting its job. Finish or stop that task before deleting this file."))
+        case .reconcileStale:
+            try await markAttemptCancelled(&value, root: root, service: service,
+                error: IDELanguageRunText.t("随化学工程删除而对账为已停止。", "Reconciled as stopped when its chemistry project was deleted."))
+        }
+    }
+    /// Really stop the user's own live worker: cancellation is a request, so
+    /// deletion continues only after the durable processor is terminal. The
+    /// honest result (or cancellation) is then reconciled like a normal stop;
+    /// a stop that does not finish keeps the original and reports why.
+    private func stopOwnedJobForDeletion(_ value: inout ChemistryWorkerAttempt, root: URL, service: ChemistryService) async throws {
+        guard let jobID = value.jobID else { return }
+        value.state = .cancelling; try save(value, root: root)
+        _ = try await jobs().cancel(id: jobID)
+        let deadline = Date().addingTimeInterval(deletionStopTimeout)
+        var stopped = false
+        while Date() < deadline, !stopped {
+            let job = try await verifiedJob(value, jobID: jobID)
+            stopped = job.state.isTerminal
+            if !stopped { try await Task.sleep(for: .milliseconds(deletionStopPollInterval * 1000)) }
+        }
+        guard stopped else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("计算仍在停止中，原件已保留；等它停止后再删除。", "The calculation is still stopping. Its original has been retained; delete it again after the calculation stops."))
+        }
+        let output = try await reconcile(value, service: service, root: root)
+        if output.state == .transferPending {
+            throw FloeError.validationFailed(IDELanguageRunText.t("先完成对账保存的结果文件，再删除这个化学工程。", "Reconcile the saved result files before deleting this chemistry project."))
+        }
+        guard output.state.terminal else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("计算仍在停止中，原件已保留；等它停止后再删除。", "The calculation is still stopping. Its original has been retained; delete it again after the calculation stops."))
+        }
+    }
+    private func markAttemptCancelled(_ value: inout ChemistryWorkerAttempt, root: URL, service: ChemistryService, error: String) async throws {
+        if let runID = value.chemistryRunID {
+            let executionJobID = try await service.project(value.projectID).runs
+                .first(where: { $0.id == runID })?.externalExecution?.jobID
+            _ = try await service.terminateExternal(value.projectID, runID: runID, owner: value.owner,
+                jobID: executionJobID, status: .cancelled, error: error)
+        }
+        value.state = .cancelled; value.error = error
+        try save(value, root: root)
     }
 }
 #endif

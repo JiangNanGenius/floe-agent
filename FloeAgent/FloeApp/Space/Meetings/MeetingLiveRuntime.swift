@@ -14,16 +14,36 @@ extension MeetingProjectSession {
     }
     func receiveCaptureEvent(_ event: CaptureEvent) async {
         switch event {
+        case .started(let session):
+            await continuousASR?.start(captureSession: session)
         case .chunkFinalized(let session, let file, let range):
             liveTranscription?.enqueue(session: session, file: file, range: range)
-        case .failed(_, let message): diagnostic = message
-        default: break
+        case .stopped:
+            // The pump already delivered every frame; the coordinator may
+            // drain, commit the genuine tail and close its lease while the
+            // file queue starts covering any remaining gaps.
+            liveTranscription?.liveCaptureFinished = true
+            await continuousASR?.captureDidStop()
+            liveTranscription?.reevaluate()
+        case .cancelled:
+            liveTranscription?.liveCaptureFinished = true
+            await continuousASR?.cancelAndWait()
+            liveTranscription?.reevaluate()
+        case .failed(_, let message):
+            diagnostic = message
+            liveTranscription?.liveCaptureFinished = true
+            await continuousASR?.cancelAndWait()
+            liveTranscription?.reevaluate()
         }
         await refresh()
     }
     func liveTranscriptDidChange() async {
+        liveTranscription?.reevaluate()
         await refresh()
         if let failure = liveTranscription?.diagnostic { diagnostic = failure }
+        // Explicit diagnostics: internal chunking/rotation counters stay out
+        // of the ordinary transcript surface but remain observable.
+        liveRecognitionDiagnostics = continuousASR?.metricsDescription ?? ""
         // The first useful chunk and the final drained chunk do not wait
         // for another timer tick. Minutes remain a separate stored record.
         if intelligence.automaticSummary, transcript.count > lastSummaryTranscriptCount,
@@ -71,7 +91,9 @@ extension MeetingProjectSession {
         rollingSummaryTask?.cancel(); rollingSummaryTask = nil; isUpdatingMinutes = false
         summaryTimer?.cancel(); summaryTimer = nil
         if isRecording { await stopRecording() }
-        summaryTimer?.cancel(); summaryTimer = nil; await liveTranscription?.cancelAndWait()
+        summaryTimer?.cancel(); summaryTimer = nil
+        await continuousASR?.cancelAndWait(); continuousASR = nil
+        await liveTranscription?.cancelAndWait()
     }
 }
 #endif

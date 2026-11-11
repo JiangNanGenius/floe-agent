@@ -27,6 +27,7 @@ struct AssistantMessageView: View {
     var attachments: [AttachmentChipItem] = []
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
     var onDesignAttachment: ((AttachmentChipItem) -> Void)? = nil
+    var helpRunID: UUID? = nil
 
     @EnvironmentObject private var speechService: SpeechService
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
@@ -36,7 +37,7 @@ struct AssistantMessageView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            InlineAnswerBodyView(source: text, isStreaming: isStreaming)
+            InlineAnswerBodyView(source: text, isStreaming: isStreaming, helpRunID: helpRunID)
             if !attachments.isEmpty {
                 AttachmentChipRow(items: attachments, alignment: .leading, onOpen: onOpenAttachment, onDesign: onDesignAttachment)
             }

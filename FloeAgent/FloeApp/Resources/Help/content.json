@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.help.quickstart",
+  "version": "1.1.0",
+  "kind": "help",
+  "minimumAppVersion": "1.7.0",
+  "sourceRevision": "",
+  "containsScripts": false,
+  "requiredCapabilities": [],
+  "dependencies": [],
+  "releaseNotes": {
+    "en": "First built-in help center package: bilingual guides, search index, bounded images and three settings how-tos.",
+    "zh-Hans": "首个内置帮助中心包：双语指南、搜索索引、有界图片和三篇设置说明。"
+  },
+  "title": {
+    "en": "Floe Help",
+    "zh-Hans": "Floe 帮助中心"
+  },
+  "documents": {
+    "en": "index.md",
+    "zh-Hans": "index.zh-Hans.md"
+  },
+  "helpManifest": "help/manifest.json"
+}

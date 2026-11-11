@@ -155,6 +155,7 @@ nonisolated final class MediaV2StagedAsset: @unchecked Sendable {
     func add(_ value: MediaV2StagedAsset) { staged.append(value) }
     func validate() throws { try Task.checkCancellation(); try token?.throwIfCancelled(); for value in staged { try value.validate() } }
     func didCommit() { staged.forEach { $0.keepCommitted() } }
+    func retainReferenced(in project: MediaProject) { retainReferenced(MediaPreparedAssets.retainedAssets(in: project)) }
     func retainReferenced(_ assets: [MediaAssetReference]) {
         let names = Set(assets.map(\.relativePath))
         for value in staged where names.contains("Assets/" + value.url.lastPathComponent) { value.keepCommitted() }

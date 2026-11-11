@@ -10,7 +10,8 @@ import FloeBiologySamples
 public func biologyText(_ english:String,_ chinese:String) -> String {
     Locale.preferredLanguages.first?.hasPrefix("zh") == true ? chinese:english
 }
-public struct BiologyAIContext: Sendable {
+public struct BiologyAIContext: Sendable, Identifiable {
+    public let id=UUID()
     public var projectID:UUID
     public var assetID:UUID?
     public var assetRevision:UInt64?
@@ -154,6 +155,11 @@ public enum BiologyLabels {
         undo[asset.id,default:[]].append(asset.payload)
         if undo[asset.id]!.count>16 {undo[asset.id]!.removeFirst()}
         redo[asset.id]=[]
+    }
+    /// A deleted dataset has no live payload stack; removal recovery goes
+    /// through the project's durable version history instead.
+    public func clearUndo(for assetID:UUID) {
+        undo.removeValue(forKey:assetID);redo.removeValue(forKey:assetID)
     }
     public func undoEdit() async {
         guard let a=selected,let payload=undo[a.id]?.last else {return}

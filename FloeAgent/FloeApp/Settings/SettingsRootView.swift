@@ -13,7 +13,7 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, internalPrompts, providers, auxiliary, localModels, canvas, webSearch, browser, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics, updates
+    case general, help, personalization, internalPrompts, providers, auxiliary, localModels, canvas, webSearch, browser, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics, updates
 
     var id: String { rawValue }
 
@@ -24,6 +24,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
     var title: LocalizedStringKey {
         switch self {
         case .general: "settings.section.general"
+        case .help: LocalizedStringKey(HelpCopy.current.title)
         case .personalization: "settings.settings_root_view.memories_personalization"
         case .internalPrompts: "settings.section.internal_prompts"
         case .providers: "settings.section.providers"
@@ -51,6 +52,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
     var systemImage: String {
         switch self {
         case .general: "gearshape"
+        case .help: "book"
         case .personalization: "person.crop.circle.badge.checkmark"
         case .internalPrompts: "text.badge.checkmark"
         case .providers: "antenna.radiowaves.left.and.right"
@@ -84,15 +86,36 @@ struct SettingsRootView: View {
     // environment. Require its dependency at every entry point instead of
     // trapping while constructing the initial detail page.
     @ObservedObject var environment: AppEnvironment
+    private let initialHelpTarget: HelpSettingsTarget?
     @State private var selection: SettingsSection? = .general
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var compactPath = NavigationPath()
+    @State private var detailPath = NavigationPath()
+    @State private var helpSettingsTarget: HelpSettingsTarget?
+
+    init(environment: AppEnvironment, initialHelpTarget: HelpSettingsTarget? = nil) {
+        self.environment = environment
+        self.initialHelpTarget = initialHelpTarget
+        let plan = initialHelpTarget.flatMap { HelpSettingsRoutePlan(target: $0, language: HelpCopy.current.language) }
+        let category = plan.flatMap { SettingsSection(rawValue: $0.categoryID) }
+        _selection = State(initialValue: category ?? .general)
+        _helpSettingsTarget = State(initialValue: plan?.target)
+        var detailPath = NavigationPath()
+        if let nestedPage = plan?.nestedPage { detailPath.append(nestedPage) }
+        _detailPath = State(initialValue: detailPath)
+        var path = NavigationPath()
+        if let category { path.append(category) }
+        if let nestedPage = plan?.nestedPage { path.append(nestedPage) }
+        _compactPath = State(initialValue: path)
+    }
+
     var body: some View {
         Group {
         if horizontalSizeClass == .regular {
             // iPad: master-detail with a preselected first category so the
             // detail column is never blank.
             NavigationSplitView(columnVisibility: $columnVisibility) {
-                List(selection: $selection) {
+                List(selection: categorySelection) {
                     Section {
                         ForEach(SettingsSection.mainCases) { section in
                             settingsRowLabel(for: section)
@@ -121,8 +144,11 @@ struct SettingsRootView: View {
                 // Wrap the detail column in a NavigationStack so NavigationLink
                 // inside detail views (e.g. MemoryView's 用户画像/SOUL.md) can
                 // push. Without this the links are silently dropped on iPad.
-                NavigationStack {
+                NavigationStack(path: $detailPath) {
                     detailView(for: selection ?? .general)
+                        .navigationDestination(for: HelpSettingsNestedPage.self) { page in
+                            nestedHelpSettingsPage(page)
+                        }
                 }
             }
         } else {
@@ -130,7 +156,7 @@ struct SettingsRootView: View {
             // compact stack here so the same screen works both from the sheet
             // and from More without relying on an ancestor implementation
             // detail.
-            NavigationStack {
+            NavigationStack(path: $compactPath) {
                 List {
                     Section {
                         ForEach(SettingsSection.mainCases) { section in
@@ -151,6 +177,9 @@ struct SettingsRootView: View {
                 .navigationDestination(for: SettingsSection.self) { section in
                     detailView(for: section)
                 }
+                .navigationDestination(for: HelpSettingsNestedPage.self) { page in
+                    nestedHelpSettingsPage(page)
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("action.done") { dismiss() }
@@ -160,6 +189,9 @@ struct SettingsRootView: View {
         }
         }
         .environmentObject(environment)
+        .onChange(of: initialHelpTarget) { _, target in
+            if let target { openHelpSetting(target) }
+        }
         .alert("settings.settings_root_view.configuration_not_saved", isPresented: Binding(
             get: { environment.settingsCenter.settingsSaveError != nil },
             set: { if !$0 { environment.settingsCenter.clearSettingsSaveError() } }
@@ -169,6 +201,35 @@ struct SettingsRootView: View {
             }
         } message: {
             Text(environment.settingsCenter.settingsSaveError ?? "settings.settings_root_view.please_try_again")
+        }
+    }
+
+    private var categorySelection: Binding<SettingsSection?> {
+        Binding(get: { selection }, set: { newValue in
+            selection = newValue
+            detailPath = NavigationPath()
+            helpSettingsTarget = nil
+        })
+    }
+
+    private func openHelpSetting(_ target: HelpSettingsTarget) {
+        guard let plan = HelpSettingsRoutePlan(target: target, language: HelpCopy.current.language),
+              let category = SettingsSection(rawValue: plan.categoryID) else { return }
+        helpSettingsTarget = plan.target
+        selection = category
+        var newDetailPath = NavigationPath()
+        if let nestedPage = plan.nestedPage { newDetailPath.append(nestedPage) }
+        detailPath = newDetailPath
+        var path = NavigationPath()
+        path.append(category)
+        if let nestedPage = plan.nestedPage { path.append(nestedPage) }
+        compactPath = path
+    }
+
+    @ViewBuilder
+    private func nestedHelpSettingsPage(_ page: HelpSettingsNestedPage) -> some View {
+        switch page {
+        case .voiceOutput: TTSSettingsView()
         }
     }
 
@@ -195,7 +256,13 @@ struct SettingsRootView: View {
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
         case .general:
-            GeneralSettingsView(center: environment.settingsCenter)
+            HelpSettingsFocusContainer(target: helpSettingsTarget?.category == "general" ? helpSettingsTarget : nil) {
+                GeneralSettingsView(center: environment.settingsCenter)
+            }
+        case .help:
+            HelpCenterView(center: environment.contentUpdateCenter.helpCenter,
+                           language: HelpCopy.current.language,
+                           onOpenSettings: openHelpSetting)
         case .personalization:
             MemoryView(center: environment.memoryCenter)
         case .internalPrompts, .updates:
@@ -235,7 +302,9 @@ struct SettingsRootView: View {
         case .privacy:
             PrivacySecurityView(center: environment.settingsCenter)
         case .execution:
-            ExecutionEnvironmentView(center: environment.settingsCenter)
+            HelpSettingsFocusContainer(target: helpSettingsTarget?.category == "execution" ? helpSettingsTarget : nil) {
+                ExecutionEnvironmentView(center: environment.settingsCenter)
+            }
         case .backgroundExecution:
             BackgroundExecutionSettingsView(
                 center: environment.settingsCenter,

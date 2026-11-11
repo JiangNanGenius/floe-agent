@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-11-10 -->
+<!-- docs-updated: 2026-11-11 -->
 
 > This guide primarily describes iOS/iPadOS. Start with [From installation to your first result](QUICKSTART.md). App Store, GitHub/Feather and TestFlight versions are tracked with verification dates in [channel status](CURRENT_STATUS.md). GitHub IPAs require your own signing; TestFlight availability follows your group. See the [workspace guide](WORKSPACES_GUIDE.md) for build-specific features. Android is a separate public alpha using your cloud model configuration, without local-model inference; follow its [selected release notes](https://www.floe-agent.com/en/releases?platform=android).
 
@@ -42,6 +42,7 @@ This guide describes workflows; use the workspace guide and selected release not
 
 **More tools & help**
 
+- [Help and guides](#help-and-guides)
 - [17. Skills, MCP, mail and automation](#17-skills-mcp-mail-and-automation)
 - [18. Background work, PiP, notifications and data](#18-background-work-pip-notifications-and-data)
 - [19. Temporary chat (RAM-only)](#19-temporary-chat-ram-only)
@@ -90,6 +91,14 @@ Downloads show actual sizes, progress and speed. Reaching 100% may be followed b
 A downloaded voice does not replace another voice you selected while waiting. Installing an environment does not start it. Apple Intelligence is off by default for new users and can be enabled on a supported device. Existing choices are preserved, and other models remain available on devices without Apple Intelligence.
 
 [↑ Back to contents](#contents)
+
+### Help and guides
+
+Open **Settings → Help & Guides** to browse topics or enter keywords in **Search guides and settings**. The bundled English and Simplified Chinese guides work offline without a configured model. In an article, use **Contents** to jump to a section or **Find on Page** to search its text; enlarge images, copy the article, and adjust appearance and text size.
+
+Ask the current assistant when you need help with an operation. Guide citations in its answer open the relevant chapter. When **Open This Setting** is offered, tap it to reach that setting and make the change yourself. Closing help returns to the original task or file with its draft and progress preserved.
+
+A failed guide update keeps the existing content readable. Updating the App preserves newer guides already on the device. Check [channel status](CURRENT_STATUS.md) and your installed build for feature availability.
 
 <!-- doc-anchor: mac-bridge -->
 ### Mac Bridge quickstart
@@ -238,6 +247,10 @@ Several task clients — the parent run and its children — may share one Linux
 *A file open beside its task in the workbench.* Open the output in the file panel, inspect its contents, then save and reopen it.
 
 Browse the task/project file panel, open text in the editor and save before running or sharing. Review conflicts: non-overlapping changes may merge; overlapping edits need a decision. A recovery copy does not mean the original was saved.
+
+**File assistants.** Open the assistant inside a file to continue that file's existing conversation. Collapsing the panel keeps the draft. Later, find it by file type under **File Tasks** in the task centre; running work, approvals and pending work remain reachable from the global task entries. Send directly when idle. While a run is active, steer the current work or queue a follow-up; switch when needed.
+
+Moving a file to Recently Deleted, restoring it or permanently deleting it first handles its associated assistant runs. If Floe says work is still stopping or finishing, follow the prompt and retry shortly; keep recovery copies. Check the associated conversation and file scope before permanent deletion. The operation affects the selected file and its assistant, leaving other tasks intact.
 
 For text, resolve save errors before running. For Office, preserve and compare both versions. Notes can keep conflicting content as a recovery document. Keep Recovered Edits until the accepted file has been checked. Archives have bounded preview/extraction and format limits; their contents are untrusted. See [concurrent editing](FLOE_CONCURRENT_EDITING.md).
 
@@ -566,6 +579,10 @@ After connecting mail, verify account/folders read-only before sending. Check re
 
 Scheduled tasks live on Home under **Scheduled** (**Schedule task** adds one). Cadences are once, daily, weekly, a fixed interval, or **after a selected task run succeeds** — the last one fires exactly once for that run and does not follow the task forever. A schedule stores the model, workspace, environment and permission policy chosen when you create it, and every execution revalidates them before it runs; the assistant cannot grant itself extra authority through a schedule. iOS decides whether Floe may run in the background: when it is allowed, the due task starts automatically; otherwise the occurrence stays **Pending (waiting for the app to run)** and a notification reminds you to open Floe. That notification is a reminder, not proof of execution — check the schedule's history and the task's own run record. Missed repeats coalesce into the latest occurrence, and each scheduled row offers Run now, Enable/Disable and History.
 
+**Timers and multi-stage tasks.** Open **Space → Toolbox → Stopwatch and timers** to record stopwatch laps, or create several named countdowns and pause, resume or stop them. Manual timers are managed separately from chat tasks. Allow the system timer permission when prompted if you want system alarms.
+
+In a task, ask: “When this timer ends, tell me the next step, then start the next timer.” Use the timer card in the answer to pause, resume or cancel, and return to the same task for its follow-up result. An alarm means the timer ended, not that the model finished the next action. When background execution is restricted, the task continues once it can run; exact-time execution is not guaranteed. If a card has not synced, check the actual state in Toolbox or the system timer.
+
 **System automation for one plan.** Save the plan first, then choose **Automation** on its Home row or row menu. The setup shows the saved plan and a suggested trigger time in its anchor time zone.
 
 1. Tap the Shortcuts badge and confirm the add on the system page. Then open the shortcut in the editor, tap the empty **Schedule** field of the **Run Scheduled Task** action, select the saved plan, then return to save. Alternatively, expand **Manual setup**, add Floe’s **Run Scheduled Task** action and select the plan.
@@ -666,9 +683,11 @@ The App Store baseline 1.7.74 covers §1–§21. Newer builds add **Space** — 
 - **Entry:** sidebar → **Space**. Sections: Overview (quick access, pinned works, folders, continue working), Notes (your Notes library), Files (list or thumbnails, filtered by type), Toolbox.
 - **Works:** documents, drawings/images, video, 2D/3D CAD, diagrams, music, meetings, chemistry projects, printing and manufacturing. Create from **New**, import existing files, and restore deleted items from Recently Deleted.
 - **Ownership:** works are stored on device, independent of chat task workspaces. Deleting a chat task never deletes Space works; deleting a work never touches task or project files.
-- **Assistants:** the Work assistant and the Meeting assistant answer within the current work's own conversation and keep unsent drafts; they can only write back into that work.
+- **Assistants:** the Work assistant and the Meeting assistant answer within the current work's own conversation and keep unsent drafts; they can only write back into that work. Reopen the panel to continue the same conversation, or find it under **File Tasks** in the task centre.
 - **Manufacturing and 3D printing** open from a CAD document's Manufacturing entry; previews report implemented checks only and are not a complete machine-safety certification, and native USB drivers are not included yet.
 - **Push** for scheduled/background work lives under Settings → Background execution → **Push**, off by default; enrollment and notification receipt are still being verified.
+
+**Toolbox.** The swipeable top entries, categories, full list and search reach the same tools. Measurement, location, sensor, camera and everyday tools live here too. Grant access when prompted, start collection explicitly, and stop when finished. Unsupported hardware shows an unavailable state. The guide below explains calibration and limits for rulers, photo measurements and sensor readings.
 
 Step-by-step tutorials for each workbench — first workflow, saving/reopening, exports and limits: [Space and specialist workbenches](WORKSPACES_GUIDE.md).
 

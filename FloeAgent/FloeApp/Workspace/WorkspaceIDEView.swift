@@ -38,6 +38,7 @@ struct WorkspaceIDEView: View {
     /// dropping the tap; no draft is evicted to make room.
     @State private var nativeOpenRefusal: IDENativeTextOpenRefusal?
     @State private var terminalOwner: LocalTerminalOwner?
+    @State private var displayOwner: LocalLinuxDisplayOwner?
     @State private var showsTerminal = false
     @State private var runController: IDELanguageRunController?
     @State private var presentedRunController: IDELanguageRunController?
@@ -665,6 +666,13 @@ struct WorkspaceIDEView: View {
         if terminalOwner == nil {
             terminalOwner = center.environment.localTerminals.owner(workspaceID: workspaceID, root: root)
         }
+        if displayOwner == nil {
+            // The IDE panel is workspace-scoped (no conversation identity):
+            // the screen binds to the workspace-derived owner, matched by
+            // tool contexts that carry the same workspace root without a
+            // conversation.
+            displayOwner = center.environment.localLinuxDisplays.owner(conversationID: nil, workspaceRoot: root)
+        }
         withAnimation(.snappy) { showsTerminal = true }
     }
 
@@ -701,7 +709,7 @@ struct WorkspaceIDEView: View {
             .padding(.horizontal, 10)
             .frame(height: FloeTheme.minimumTarget)
             .background(FloeTheme.sidebarSurface)
-            LocalTerminalView(owner: owner, embedded: true)
+            LocalTerminalView(owner: owner, embedded: true, display: displayOwner)
         }
         .frame(height: min(280, max(160, availableHeight * 0.42)))
         .background(FloeTheme.readingSurface)

@@ -1,19 +1,53 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+  "NSCameraUsageDescription": {
+    "extractionState": "manual",
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe opens the camera when you capture an image or use measurement, magnifier, or scanning tools."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 在你拍摄图片，或使用测量、放大镜与扫描工具时打开相机。"
+        }
+      }
+    }
+  },
+  "NSMotionUsageDescription": {
+    "extractionState": "manual",
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe uses motion and pressure sensors when you open the corresponding instruments in the toolbox."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 在你打开工具箱中对应的仪表时使用运动与气压传感器。"
+        }
+      }
+    }
+  },
   "NSLocationWhenInUseUsageDescription": {
     "extractionState": "manual",
     "localizations": {
       "en": {
         "stringUnit": {
           "state": "translated",
-          "value": "Floe uses your location for requested weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background."
+          "value": "Floe uses your location when you open the location toolbox or request weather and nearby places. Wi-Fi diagnostics needs precise-location permission to show the connected network and access point. Running tasks may continue using approximate location in the background."
         }
       },
       "zh-Hans": {
         "stringUnit": {
           "state": "translated",
-          "value": "Floe 使用定位获取你请求的天气与附近地点。Wi-Fi 诊断需要精确位置授权，才能显示当前网络与接入点。运行中的任务可能在后台继续使用大致位置。"
+          "value": "Floe 在你打开定位工具或请求天气与附近地点时使用位置。Wi-Fi 诊断需要精确位置授权，才能显示当前网络与接入点。运行中的任务可能在后台继续使用大致位置。"
         }
       }
     }
@@ -120,8 +154,8 @@
     },
     "NSMicrophoneUsageDescription" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses the microphone when you dictate, record music, or record a meeting." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 在你进行语音输入、音乐录音或会议录音时使用麦克风。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses the microphone when you dictate, record music or meetings, or start sound analysis." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Floe 在你进行语音输入、音乐或会议录音，以及启动声音分析时使用麦克风。" } }
       }
     },
     "NSSpeechRecognitionUsageDescription" : {

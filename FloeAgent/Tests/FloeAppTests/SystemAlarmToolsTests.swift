@@ -40,12 +40,18 @@ struct SystemAlarmToolsTests {
         var scheduled: [UUID: SystemAlarmNativeSnapshot] = [:]
         var scheduleError: Error?
         var cancelError: Error?
+        var pauseError: Error?
+        var resumeError: Error?
         var alarmsError: Error?
         var requestAuthorizationResult: SystemAlarmAuthorization?
         var onAuthorization: (@Sendable () -> Void)?
         var onSchedule: (@Sendable () async -> Void)?
+        var onAlarms: (@Sendable () async -> Void)?
+        var onPause: (@Sendable () async throws -> Void)?
         var scheduleCalls: [UUID] = []
         var cancelCalls: [UUID] = []
+        var pauseCalls: [UUID] = []
+        var resumeCalls: [UUID] = []
         var updatesContinuation: AsyncStream<[SystemAlarmNativeSnapshot]>.Continuation?
 
         init() {
@@ -63,6 +69,7 @@ struct SystemAlarmToolsTests {
         }
 
         func alarms() async throws -> [SystemAlarmNativeSnapshot] {
+            await onAlarms?()
             if let alarmsError { throw alarmsError }
             return Array(scheduled.values)
         }
@@ -75,7 +82,14 @@ struct SystemAlarmToolsTests {
             scheduleCalls.append(id)
             await onSchedule?()
             if let scheduleError { throw scheduleError }
-            let snapshot = SystemAlarmNativeSnapshot(id: id, state: "scheduled")
+            var snapshot = SystemAlarmNativeSnapshot(id: id, state: "scheduled")
+            if kind == .timer {
+                snapshot.state = "countdown"
+                snapshot.totalDuration = timerDuration
+                snapshot.previousElapsed = 0
+                snapshot.fireDate = Date().addingTimeInterval(timerDuration ?? 0)
+                snapshot.timelineFingerprint = "fp-\(id.uuidString)"
+            }
             scheduled[id] = snapshot
             emit()
             return snapshot
@@ -85,6 +99,33 @@ struct SystemAlarmToolsTests {
             cancelCalls.append(id)
             if let cancelError { throw cancelError }
             scheduled.removeValue(forKey: id)
+            emit()
+        }
+
+        func pause(id: UUID) async throws {
+            pauseCalls.append(id)
+            if let pauseError { throw pauseError }
+            guard var value = scheduled[id] else {
+                throw FloeError.notFound("no such alarm")
+            }
+            value.state = "paused"
+            value.fireDate = nil
+            value.previousElapsed = 17
+            scheduled[id] = value
+            emit()
+            try await onPause?()
+        }
+
+        func resume(id: UUID) async throws {
+            resumeCalls.append(id)
+            if let resumeError { throw resumeError }
+            guard var value = scheduled[id] else {
+                throw FloeError.notFound("no such alarm")
+            }
+            value.state = "countdown"
+            let remaining = (value.totalDuration ?? 0) - (value.previousElapsed ?? 0)
+            value.fireDate = Date().addingTimeInterval(remaining)
+            scheduled[id] = value
             emit()
         }
 
@@ -308,17 +349,31 @@ struct SystemAlarmToolsTests {
         #expect(native.scheduleCalls.isEmpty)
     }
 
-    @Test("Background requires foreground and does not schedule")
-    func backgroundRequiresForeground() async throws {
+    @Test("Background blocks only the first authorization prompt, not an authorized schedule")
+    func backgroundRequiresForegroundOnlyForAuthorization() async throws {
         let database = try await makeDatabase()
         let store = makeStore(database)
-        let native = FakeNative()
-        let service = makeService(native, store, foreground: false)
-        let tool = scheduleTool(service, foreground: false)
-        let output = try await tool.execute(.init(
+        // Not yet authorized: the system prompt cannot appear in the
+        // background, so the schedule is refused without any native call.
+        let prompting = FakeNative()
+        prompting.authorization = .notDetermined
+        let promptingService = makeService(prompting, store, foreground: false)
+        let promptingTool = scheduleTool(promptingService, foreground: false)
+        let refused = try await promptingTool.execute(.init(
             kind: "alarm", fireAt: futureISO8601(), timezone: "UTC"), context: context())
-        #expect(field("status", in: output.summary) == "foregroundRequired")
-        #expect(native.scheduleCalls.isEmpty)
+        #expect(field("status", in: refused.summary) == "authorization")
+        #expect(field("authorization", in: refused.summary) == "foregroundRequired")
+        #expect(prompting.scheduleCalls.isEmpty)
+
+        // Already authorized: no unconditional foreground gate remains — the
+        // backgrounded app may schedule a real timer.
+        let authorized = FakeNative()
+        let authorizedService = makeService(authorized, store, foreground: false)
+        let authorizedTool = scheduleTool(authorizedService, foreground: false)
+        let output = try await authorizedTool.execute(.init(
+            kind: "timer", timezone: "UTC", durationSeconds: 120), context: context())
+        #expect(field("status", in: output.summary) == "ok")
+        #expect(authorized.scheduleCalls.count == 1)
     }
 
     // MARK: - Argument boundaries
@@ -809,6 +864,412 @@ struct SystemAlarmToolsTests {
             try AppleAlarmScheduleTool.plan(.init(kind: "alarm",
                 fireAt: "2030-01-07T09:30:15Z", timezone: "UTC", repeat: "1"),
                 deviceTimeZone: utc)
+        }
+    }
+
+    // MARK: - Timer status / controls (revision-checked, owner-scoped)
+
+    /// Confirmed timer owned by `ctx`, ready for control tests.
+    private func makeConfirmedTimer(
+        _ service: SystemAlarmService,
+        _ store: SQLiteSystemAlarmStore,
+        _ native: FakeNative,
+        ctx: ToolContext
+    ) async throws -> UUID {
+        let output = try await scheduleTool(service).execute(.init(
+            kind: "timer", timezone: "UTC", durationSeconds: 300), context: ctx)
+        try #require(field("status", in: output.summary) == "ok")
+        let id = try #require(field("id", in: output.summary).flatMap(UUID.init(uuidString:)))
+        #expect(try await store.record(id: id)?.state == .created)
+        return id
+    }
+
+    @Test("timerStatus returns the authoritative owned record and live timeline snapshot")
+    func timerStatusReturnsRecordAndSnapshot() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        let service = makeService(native, store)
+        let ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+
+        let owner = SystemAlarmOwner(context: ctx)
+        let status = try await service.timerStatus(owner: owner, alarmID: id)
+        #expect(status.record.id == id)
+        #expect(status.record.state == .created)
+        #expect(status.snapshot?.state == "countdown")
+        #expect(status.snapshot?.totalDuration == 300)
+        #expect(status.snapshot?.fireDate != nil)
+        #expect(status.revision != 0)
+    }
+
+    @Test("Pause and resume reconcile against the native readback and ledger")
+    func pauseAndResumeUpdateNativeAndLedger() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        let service = makeService(native, store)
+        let ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+
+        let running = try await service.timerStatus(owner: owner, alarmID: id)
+        let paused = try await service.controlTimer(
+            owner: owner, alarmID: id, action: .pause, expectedRevision: running.revision)
+        #expect(paused.snapshot?.state == "paused")
+        #expect(paused.snapshot?.fireDate == nil)
+        #expect(paused.snapshot?.previousElapsed == 17)
+        #expect(native.pauseCalls == [id])
+        #expect(try await store.record(id: id)?.nativeState == "paused")
+
+        // A stale action with the pre-pause revision is now rejected.
+        await #expect(throws: SystemAlarmError.self) {
+            _ = try await service.controlTimer(
+                owner: owner, alarmID: id, action: .resume,
+                expectedRevision: running.revision)
+        }
+        #expect(native.resumeCalls.isEmpty)
+
+        let resumed = try await service.controlTimer(
+            owner: owner, alarmID: id, action: .resume, expectedRevision: paused.revision)
+        #expect(resumed.snapshot?.state == "countdown")
+        #expect(resumed.snapshot?.fireDate != nil)
+        #expect(native.resumeCalls == [id])
+    }
+
+    @Test("A control arriving late (native changed after the UI read) is rejected stale")
+    func lateCallbackControlIsRejectedStale() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        let service = makeService(native, store)
+        let ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+
+        // UI reads the status; meanwhile the user pauses from the Live
+        // Activity (the native side changes without the UI knowing).
+        let staleRead = try await service.timerStatus(owner: owner, alarmID: id)
+        try await native.pause(id: id)
+        await #expect(throws: SystemAlarmError.staleControlRevision) {
+            _ = try await service.controlTimer(
+                owner: owner, alarmID: id, action: .pause,
+                expectedRevision: staleRead.revision)
+        }
+        // The rejected action performed NO native mutation of its own.
+        #expect(native.pauseCalls == [id])
+    }
+
+    @Test("Repeated or invalid actions never issue a second native mutation")
+    func repeatedActionsAreRefusedWithoutMutation() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        let service = makeService(native, store)
+        let ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+
+        let running = try await service.timerStatus(owner: owner, alarmID: id)
+        let paused = try await service.controlTimer(
+            owner: owner, alarmID: id, action: .pause, expectedRevision: running.revision)
+        // Pausing an already-paused timer is refused, no second pause call.
+        await #expect(throws: SystemAlarmError.self) {
+            _ = try await service.controlTimer(
+                owner: owner, alarmID: id, action: .pause, expectedRevision: paused.revision)
+        }
+        #expect(native.pauseCalls == [id])
+    }
+
+    @Test("Foreign owner and deleted-task controls are refused, never adopted")
+    func controlsRefuseForeignAndDeleted() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        let service = makeService(native, store)
+        let ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+
+        let foreign = SystemAlarmOwner(context: context(conversation: UUID(), runID: UUID()))
+        await #expect(throws: SystemAlarmError.self) {
+            _ = try await service.controlTimer(
+                owner: foreign, alarmID: id, action: .pause, expectedRevision: 1)
+        }
+        let owner = SystemAlarmOwner(context: ctx)
+        await #expect(throws: SystemAlarmError.self) {
+            _ = try await service.controlTimer(
+                owner: owner, alarmID: UUID(), action: .pause, expectedRevision: 1)
+        }
+        #expect(native.pauseCalls.isEmpty)
+    }
+
+    @Test("A positively observed alerting state is preserved in the ledger before any Stop")
+    func alertingProofSurvivesDisappearance() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        let service = makeService(native, store)
+        let ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+
+        // The timer fires natively: readback reports alerting, timerStatus
+        // persists the positive proof.
+        var fired = native.scheduled[id]
+        fired?.state = "alerting"
+        native.scheduled[id] = fired
+        let status = try await service.timerStatus(owner: owner, alarmID: id)
+        #expect(status.snapshot?.state == "alerting")
+        #expect(try await store.record(id: id)?.nativeState == "alerting")
+
+        // The widget Stop removes the native alarm. The existing
+        // markCancelledAfterCommit keeps `native_state`, so the row still
+        // carries the firing proof (acknowledged), not a pre-deadline cancel.
+        try await native.cancel(id: id)
+        _ = try await service.cancel(owner: owner, alarmID: id)
+        let settled = try await store.record(id: id)
+        #expect(settled?.state == .cancelled)
+        #expect(settled?.nativeState == "alerting")
+    }
+
+    @Test("A control's unreadable result recovers from exact native status without replay")
+    func unknownControlReadbackRecoversThroughTimerStatus() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+        let running = try await service.timerStatus(owner: owner, alarmID: id)
+        native.onPause = { native.alarmsError = FloeError.internalError("readback unavailable") }
+        await #expect(throws: SystemAlarmError.self) {
+            _ = try await service.controlTimer(owner: owner, alarmID: id,
+                action: .pause, expectedRevision: running.revision)
+        }
+        #expect(try await store.record(id: id)?.state == .unknown)
+        native.onPause = nil; native.alarmsError = nil
+        let recovered = try await service.timerStatus(owner: owner, alarmID: id)
+        #expect(recovered.record.state == .created && recovered.record.nativeState == "paused")
+        #expect(recovered.snapshot?.state == "paused")
+        _ = try await service.controlTimer(owner: owner, alarmID: id,
+            action: .resume, expectedRevision: recovered.revision)
+        #expect(native.pauseCalls == [id] && native.resumeCalls == [id])
+        #expect(native.scheduleCalls == [id])
+    }
+
+    @Test("A native control that commits then throws stays unknown until inspected, never replayed")
+    func thrownCommittedControlIsInspectedWithoutReplay() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+        let running = try await service.timerStatus(owner: owner, alarmID: id)
+        native.onPause = { throw FloeError.internalError("reply lost after commit") }
+        await #expect(throws: SystemAlarmError.self) {
+            _ = try await service.controlTimer(owner: owner, alarmID: id,
+                action: .pause, expectedRevision: running.revision)
+        }
+        #expect(native.scheduled[id]?.state == "paused")
+        #expect(try await store.record(id: id)?.state == .unknown)
+        native.onPause = nil
+        await #expect(throws: SystemAlarmError.staleControlRevision) {
+            _ = try await service.controlTimer(owner: owner, alarmID: id,
+                action: .pause, expectedRevision: running.revision)
+        }
+        let recovered = try await service.timerStatus(owner: owner, alarmID: id)
+        #expect(recovered.record.state == .created && recovered.snapshot?.state == "paused")
+        #expect(native.pauseCalls == [id] && native.scheduleCalls == [id])
+    }
+
+    @Test("Cancellation during the control revision read fences the native mutation")
+    func cancellationDuringControlReadDoesNotMutateNative() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+        let running = try await service.timerStatus(owner: owner, alarmID: id)
+        let cancellation = CancellationToken()
+        native.onAlarms = { cancellation.cancel() }
+        await #expect(throws: SystemAlarmError.cancelledBeforeCommit) {
+            _ = try await service.controlTimer(owner: owner, alarmID: id,
+                action: .pause, expectedRevision: running.revision, cancellation: cancellation)
+        }
+        #expect(native.pauseCalls.isEmpty)
+        #expect(try await store.record(id: id)?.state == .created)
+    }
+
+    @Test("Bookkeeping-only reconciliation does not invalidate a still-current control revision")
+    func bookkeepingTimestampDoesNotMakeAControlStale() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+        let running = try await service.timerStatus(owner: owner, alarmID: id)
+        _ = try await store.markCreated(id: id, nativeState: "countdown",
+            at: running.record.updatedAt.addingTimeInterval(60))
+        let refreshed = try await service.timerStatus(owner: owner, alarmID: id)
+        #expect(refreshed.record.updatedAt != running.record.updatedAt)
+        #expect(refreshed.revision == running.revision)
+        _ = try await service.controlTimer(owner: owner, alarmID: id,
+            action: .pause, expectedRevision: running.revision)
+        #expect(native.pauseCalls == [id])
+    }
+
+    @Test("Creation persists alerting from the fresh native readback, not an older returned state")
+    func creationReadbackRetainsPositiveAlerting() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        native.onAlarms = {
+            guard let id = native.scheduleCalls.last, var value = native.scheduled[id] else { return }
+            value.state = "alerting"; native.scheduled[id] = value
+        }
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        #expect(try await store.record(id: id)?.nativeState == "alerting")
+        native.onAlarms = nil
+        native.scheduled.removeValue(forKey: id)
+        _ = try await service.reconcile(owner: SystemAlarmOwner(context: ctx))
+        let settled = try #require(try await store.record(id: id))
+        #expect(settled.state == .cancelled && settled.nativeState == "alerting")
+    }
+
+    @Test("Positive alerting status settles before a concurrent service cancel and remains durable")
+    func alertingStatusSerializesWithCancelAndRetainsProof() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        let owner = SystemAlarmOwner(context: ctx)
+        var fired = try #require(native.scheduled[id])
+        fired.state = "alerting"; native.scheduled[id] = fired
+        native.onAlarms = {
+            await #expect(throws: SystemAlarmError.operationInProgress) {
+                _ = try await service.cancel(owner: owner, alarmID: id)
+            }
+        }
+        let ringing = try await service.timerStatus(owner: owner, alarmID: id)
+        #expect(ringing.record.nativeState == "alerting" && native.cancelCalls.isEmpty)
+        native.onAlarms = nil
+        var later = fired; later.state = "countdown"
+        native.scheduled[id] = later
+        _ = try await service.reconcile(owner: owner)
+        #expect(try await store.record(id: id)?.nativeState == "alerting")
+        _ = try await service.cancel(owner: owner, alarmID: id)
+        #expect(try await store.record(id: id)?.nativeState == "alerting")
+    }
+
+    @Test("The trusted before-Stop hook durably captures an owned alert before native disappearance")
+    func beforeStopPreservesObservedAlerting() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        var fired = try #require(native.scheduled[id])
+        fired.state = "alerting"; native.scheduled[id] = fired
+        #expect(try await service.preserveAlertingBeforeStop(alarmID: id))
+        #expect(try await store.record(id: id)?.nativeState == "alerting")
+        try await native.cancel(id: id) // The host performs Stop only after the hook returns.
+        _ = try await service.reconcile(owner: SystemAlarmOwner(context: ctx))
+        let settled = try #require(try await store.record(id: id))
+        #expect(settled.state == .cancelled && settled.nativeState == "alerting")
+        #expect(!(try await service.preserveAlertingBeforeStop(alarmID: id)))
+        #expect(try await store.record(id: id)?.nativeState == "alerting")
+        #expect(native.cancelCalls == [id] && native.pauseCalls.isEmpty && native.resumeCalls.isEmpty)
+    }
+
+    @Test("The before-Stop hook cannot infer firing from a countdown, absence, foreign manual id or failed read")
+    func beforeStopRequiresOwnedPositiveNativeAlerting() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database), native = FakeNative()
+        let service = makeService(native, store), ctx = context()
+        let id = try await makeConfirmedTimer(service, store, native, ctx: ctx)
+        #expect(!(try await service.preserveAlertingBeforeStop(alarmID: id)))
+        #expect(try await store.record(id: id)?.nativeState == "countdown")
+        native.scheduled.removeValue(forKey: id)
+        #expect(!(try await service.preserveAlertingBeforeStop(alarmID: id)))
+        #expect(try await store.record(id: id)?.nativeState == "countdown")
+        let manualID = UUID()
+        native.scheduled[manualID] = .init(id: manualID, state: "alerting")
+        #expect(!(try await service.preserveAlertingBeforeStop(alarmID: manualID)))
+        #expect(try await store.record(id: manualID) == nil)
+        native.alarmsError = FloeError.internalError("native snapshot unavailable")
+        await #expect(throws: FloeError.self) {
+            _ = try await service.preserveAlertingBeforeStop(alarmID: id)
+        }
+        #expect(try await store.record(id: id)?.nativeState == "countdown")
+        #expect(native.cancelCalls.isEmpty && native.pauseCalls.isEmpty && native.resumeCalls.isEmpty)
+    }
+
+    // MARK: - Inline timer binding artifact
+
+    @Test("A confirmed timer schedule emits the immutable inline binding artifact")
+    func confirmedTimerEmitsBindingArtifact() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        let service = makeService(native, store)
+        let ctx = context()
+        let output = try await scheduleTool(service).execute(.init(
+            kind: "timer", timezone: "UTC", durationSeconds: 180, label: "Tea"), context: ctx)
+        #expect(field("status", in: output.summary) == "ok")
+        let artifact = try #require(output.artifacts.first)
+        #expect(artifact.mimeType == NativeTimerBinding.mimeType)
+        #expect(artifact.relativePath.hasPrefix("TimerArtifacts/\(ctx.runID.uuidString)/"))
+        #expect(artifact.relativePath.hasSuffix(".timer.json"))
+        #expect(ChatInlineContentCatalog.accepts(artifact, runID: ctx.runID, tool: "apple.alarm.schedule"))
+        #expect(!ChatInlineContentCatalog.accepts(artifact, runID: ctx.runID, tool: "mcp.untrusted.timer"))
+
+        // Decoded binding matches the durable ledger row exactly.
+        let binding = try JSONDecoder().decode(NativeTimerBinding.self, from: {
+            let root = try FloeArtifactStore.root()
+            return try VerifiedChatInlineArtifact.load(artifact, runID: ctx.runID,
+                tool: "apple.alarm.schedule", root: root).data
+        }())
+        let timerID = try #require(field("id", in: output.summary).flatMap(UUID.init(uuidString:)))
+        let record = try #require(try await store.record(id: timerID))
+        #expect(binding.timerID == record.id)
+        #expect(binding.ownerTaskID == record.ownerTaskID)
+        #expect(binding.producerRunID == record.ownerRunID)
+        #expect(binding.producerCallID == record.operationID)
+        #expect(binding.creationReceiptID == record.operationReceiptID)
+        #expect(binding.incarnation == NativeTimerBinding.incarnation(
+            timerID: record.id, payloadDigest: record.payloadDigest))
+        #expect(binding.label == "Tea")
+        #expect(binding.duration == 180)
+    }
+
+    @Test("Uncertain or alarm schedules never emit a timer binding artifact")
+    func uncertainSchedulesEmitNoBinding() async throws {
+        let database = try await makeDatabase()
+        let store = makeStore(database)
+        let native = FakeNative()
+        native.alarmsError = FloeError.internalError("readback down")
+        let service = makeService(native, store)
+        let pending = try await scheduleTool(service).execute(.init(
+            kind: "timer", timezone: "UTC", durationSeconds: 60), context: context())
+        #expect(field("status", in: pending.summary) == "pendingVerification")
+        #expect(pending.artifacts.isEmpty)
+
+        native.alarmsError = nil
+        let alarm = try await scheduleTool(service).execute(.init(
+            kind: "alarm", fireAt: futureISO8601(), timezone: "UTC"),
+            context: context(toolCallID: "alarm-create", idempotencyKey: "alarm-create"))
+        #expect(field("status", in: alarm.summary) == "ok")
+        #expect(alarm.artifacts.isEmpty)
+    }
+
+    @Test("Timer plans may default to the device timezone; wall alarms still require one")
+    func timerTimezoneDefaultsToDevice() throws {
+        let timer = try AppleAlarmScheduleTool.plan(
+            .init(kind: "timer", durationSeconds: 60), deviceTimeZone: .current)
+        #expect(timer.kind == .timer)
+        #expect(timer.duration == 60)
+        #expect(timer.timezone.identifier == TimeZone.current.identifier)
+        #expect(throws: FloeError.self) {
+            try AppleAlarmScheduleTool.plan(
+                .init(kind: "alarm", fireAt: futureISO8601()), deviceTimeZone: .current)
         }
     }
 

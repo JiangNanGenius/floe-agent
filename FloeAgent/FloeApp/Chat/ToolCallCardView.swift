@@ -48,6 +48,7 @@ struct ToolCallCardView: View {
     var outcomeUnknown = false
     /// The exact native completion, never a link parsed from model text.
     var gitHubSource: GitHubSourceReference? = nil
+    var diagnosticProgress: [TaskDiagnosticProgress] = []
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -55,6 +56,9 @@ struct ToolCallCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
+            if name == "network.traceroute", !diagnosticProgress.isEmpty {
+                NativeTracerouteProgressView(observations: diagnosticProgress)
+            }
             if let gitHubSource { GitHubSourceCard(reference: gitHubSource, inputSummary: inputSummary) }
             if name.hasPrefix("studio."), ["ok", "success", "succeeded"].contains(status), let resultSummary {
                 StudioToolResultView(toolName: name, summary: resultSummary)

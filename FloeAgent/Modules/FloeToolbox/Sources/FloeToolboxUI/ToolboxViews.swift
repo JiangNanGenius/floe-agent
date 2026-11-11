@@ -15,7 +15,7 @@ extension ToolboxSpacePage {
 extension ToolboxGroup {
     func title(in locale: Locale) -> String {
         func text(_ zh: String,_ en: String) -> String { locale.language.languageCode?.identifier == "zh" ? zh : en }
-        return switch self { case .connections: text("终端与远程","Terminal and remote"); case .diagnostics: text("网络诊断","Network diagnostics"); case .communication: text("通信工具","Communication tools"); case .utilities: text("实用工具","Utilities") } }
+        return switch self { case .instruments: text("测量与定位", "Measure and explore"); case .connections: text("终端与远程","Terminal and remote"); case .diagnostics: text("网络诊断","Network diagnostics"); case .communication: text("通信工具","Communication tools"); case .utilities: text("实用工具","Utilities") } }
 }
 extension ToolboxTool {
     public func title(in locale: Locale) -> String {
@@ -29,6 +29,19 @@ extension ToolboxTool {
         case .http: "HTTP / API"; case .webSocket: "WebSocket"; case .mqtt: "MQTT"
         case .hash: text("文件校验","File checksum"); case .json: text("JSON 格式化","JSON formatter"); case .encoding: text("文本编码","Text encoding")
         case .qr: text("二维码","QR code")
+        case .level: text("水平仪", "Level")
+        case .motion: text("运动传感器", "Motion sensors")
+        case .compass: text("指南针", "Compass")
+        case .ruler: text("直尺与量角器", "Ruler and protractor")
+        case .measure: text("相机测量", "Camera measure")
+        case .calculator: text("计算与换算", "Calculator and converter")
+        case .location: text("定位与地图", "Location and maps")
+        case .photoMeasure: text("图片比例测量", "Photo measure")
+        case .barometer: text("气压与高度", "Pressure and altitude")
+        case .sound: text("声音分析", "Sound analyzer")
+        case .magnifier: text("放大镜与照明", "Magnifier")
+        case .scanner: text("扫描与识别", "Scan and read")
+        case .timer: text("秒表与倒计时", "Stopwatch and timers")
         }
     }
     public var symbol: String {
@@ -39,6 +52,19 @@ extension ToolboxTool {
         case .serialAssistant: "cable.connector"; case .http: "curlybraces"; case .webSocket: "arrow.left.arrow.right"; case .mqtt: "point.3.filled.connected.trianglepath.dotted"
         case .hash: "doc.text.magnifyingglass"; case .json: "curlybraces.square"; case .encoding: "textformat.abc"
         case .qr: "qrcode"
+        case .level: "level"
+        case .motion: "gyroscope"
+        case .compass: "safari"
+        case .ruler: "ruler"
+        case .measure: "viewfinder"
+        case .calculator: "calculator"
+        case .location: "map"
+        case .photoMeasure: "photo"
+        case .barometer: "barometer"
+        case .sound: "waveform"
+        case .magnifier: "magnifyingglass"
+        case .scanner: "doc.viewfinder"
+        case .timer: "timer"
         }
     }
 }
@@ -111,6 +137,7 @@ public struct ToolboxSpaceNavigation: View {
 public struct ToolboxHomeView: View {
     @Environment(\.locale) private var toolboxLocale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var search = ""
     private func text(_ zh: String,_ en: String) -> String { toolboxLocale.language.languageCode?.identifier == "zh" ? zh : en }
     private let availability: [ToolboxTool: ToolboxAvailability]
     private let onOpen: (ToolboxTool) -> Void
@@ -122,16 +149,21 @@ public struct ToolboxHomeView: View {
             let wide = geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 24) {
-                    featuredShelf(wide: wide, width: geometry.size.width)
+                    if search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        featuredShelf(wide: wide, width: geometry.size.width)
+                    }
                     VStack(alignment: .leading, spacing: 16) {
-                        Text(text("全部工具", "All tools")).font(.title2.bold())
-                        ForEach(ToolboxGroup.allCases, id: \.self) { group in
+                        Text(search.isEmpty ? text("全部工具", "All tools") : text("搜索结果", "Results")).font(.title2.bold())
+                        if matchingTools.isEmpty {
+                            ContentUnavailableView.search(text: search)
+                        }
+                        ForEach(ToolboxGroup.allCases.filter { group in matchingTools.contains { $0.group == group } }, id: \.self) { group in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(group.title(in: toolboxLocale))
                                     .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 24), count: wide ? 2 : 1),
                                           alignment: .leading, spacing: 0) {
-                                    ForEach(ToolboxTool.allCases.filter { $0.group == group && availability[$0] != nil }) { tool in
+                                    ForEach(matchingTools.filter { $0.group == group }) { tool in
                                         directoryRow(tool)
                                     }
                                 }
@@ -144,10 +176,29 @@ public struct ToolboxHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
             }
         }.navigationTitle(text("工具箱", "Toolbox"))
+            .searchable(text: $search, prompt: text("搜索工具", "Search tools"))
+    }
+
+    private var matchingTools: [ToolboxTool] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ToolboxTool.allCases.filter { tool in
+            guard availability[tool] != nil else { return false }
+            guard !query.isEmpty else { return true }
+            let aliases: String = switch tool {
+            case .location: "GPS GNSS 经纬度 定位 地图"
+            case .motion: "陀螺仪 加速度 gyroscope accelerometer"
+            case .compass: "磁场 magnetic compass"
+            case .scanner: "OCR 扫码 扫描 二维码 条形码 barcode"
+            case .sound: "分贝 噪声 频谱 FFT spectrum audio"
+            case .timer: "计时器 stopwatch countdown"
+            default: ""
+            }
+            return (tool.title(in: toolboxLocale) + " " + summary(tool) + " " + tool.rawValue + " " + aliases).localizedStandardContains(query)
+        }
     }
 
     private var featured: [ToolboxTool] {
-        [.roaming, .http, .serialAssistant, .lan].filter { availability[$0] != nil && !isUnsupported($0) }
+        [.location, .level, .measure, .calculator, .roaming, .http].filter { availability[$0] != nil && !isUnsupported($0) }
     }
 
     private func featuredShelf(wide: Bool, width: CGFloat) -> some View {
@@ -241,6 +292,19 @@ public struct ToolboxHomeView: View {
         case .json: text("格式化与检查 JSON", "Format and validate JSON")
         case .encoding: text("转换文本编码", "Convert text encodings")
         case .qr: text("识别与生成二维码", "Read and generate QR codes")
+        case .level: text("查看水平、倾斜与相对角度", "Check level, tilt and relative angles")
+        case .motion: text("查看陀螺仪与加速度曲线", "Inspect gyroscope and acceleration data")
+        case .compass: text("查看磁北方向与磁场", "Find magnetic north and inspect magnetic fields")
+        case .ruler: text("校准屏幕，测量长度与角度", "Calibrate your screen to measure length and angles")
+        case .measure: text("用相机测量距离与平面面积", "Measure distances and flat areas with your camera")
+        case .calculator: text("科学计算与常用单位换算", "Scientific calculations and everyday conversions")
+        case .location: text("在地图上查看位置、海拔与速度", "Your location, altitude and speed on a map")
+        case .photoMeasure: text("按已知长度测量图片", "Measure an image from a known reference")
+        case .barometer: text("查看气压与相对高度变化", "Inspect air pressure and relative altitude")
+        case .sound: text("查看音量、频谱与主频", "Inspect audio levels, spectrum and frequency")
+        case .magnifier: text("放大画面，冻结细节与补光", "Zoom, freeze details and illuminate")
+        case .scanner: text("扫码、扫描文档与提取文字", "Scan codes and documents, and extract text")
+        case .timer: text("分段秒表与多个倒计时", "Lap timing and multiple countdowns")
         }
     }
     private func isUnsupported(_ tool: ToolboxTool) -> Bool { if case .unsupported = availability[tool] { true } else { false } }

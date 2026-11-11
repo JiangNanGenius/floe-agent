@@ -85,7 +85,11 @@ final class AppEnvironment: ObservableObject {
     }
     var globalSourceMemory: GlobalSourceMemoryService { _globalSourceMemory }
     lazy var toolboxCenter = ToolboxCenter(environment: self)
-    lazy var toolboxDiagnostics = ToolboxDiagnosticsCenter(database: database)
+    lazy var toolboxIPInformation: IPInformationAppOwner = IPInformationAppOwner(onDatabaseChanged: { [weak self] in
+        self?.toolboxDiagnostics.refreshIPInformation()
+    })
+    lazy var toolboxDiagnostics: ToolboxDiagnosticsCenter = ToolboxDiagnosticsCenter(
+        database: database, ipInformation: toolboxIPInformation.tracerouteProvider())
     lazy var toolboxRemote = ToolboxRemoteCenter(environment: self)
     lazy var toolboxBrowser = ToolboxBrowserOwner(environment: self)
     @Published var studioOpenRequest: StudioOpenRequest?
@@ -222,6 +226,85 @@ final class AppEnvironment: ObservableObject {
     private let environmentExecutions: EnvironmentExecutionCoordinator
     private let skillDependencyPrepareLinux: LinuxPreparationHandler
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
+    /// On-demand local Linux screens: one scoped owner per (conversation,
+    /// workspace root), resolved through the same execution coordinator the
+    /// terminal and exec tools use; the same center backs the scoped VNC tool
+    /// provider, so UI demand and model demand are two clients of one owner.
+    lazy var localLinuxDisplays: LocalLinuxDisplayCenter = makeLocalLinuxDisplays()
+
+    private func makeLocalLinuxDisplays() -> LocalLinuxDisplayCenter {
+        return LocalLinuxDisplayCenter(wiring: LocalLinuxDisplayCenter.Wiring(
+            resolver: { [weak self] conversationID, workspaceRoot in
+                guard let self else { throw FloeError.internalError("Application environment unavailable") }
+                let lease = try await self.environmentExecutions.acquire(ToolContext(
+                    runID: conversationID ?? UUID(),
+                    workspaceRootURL: workspaceRoot,
+                    cancellation: CancellationToken(),
+                    conversationID: conversationID
+                ))
+                guard let environmentID = lease.context.environmentID ?? lease.context.environment?.id else {
+                    await lease.finish()
+                    throw FloeError.validationFailed("No execution environment resolved for this workspace")
+                }
+                guard let writable = lease.context.environment?.writableLayerURL else {
+                    await lease.finish()
+                    throw FloeError.validationFailed("The resolved environment has no writable layer")
+                }
+                let record = await self.environmentRegistry.record(id: environmentID)
+                return LocalLinuxDisplayBinding(
+                    environmentID: environmentID,
+                    writableLayerURL: writable,
+                    isLinuxGuest: record?.effectiveExecutionBackend == .linuxVM,
+                    leaseCancellation: lease.context.cancellation,
+                    endLease: lease.finish
+                )
+            },
+            services: LocalLinuxDisplayServices(
+                startLocalService: { environmentID, request, cancellation in
+                    guard let controller = await FloePlatformServices.shared.linuxLocalServiceController() else {
+                        throw FloeError.invalidConfiguration("Linux local services are unavailable")
+                    }
+                    return try await controller.startLocalService(
+                        environmentID: environmentID, request: request, cancellation: cancellation
+                    )
+                },
+                stopLocalService: { handle in
+                    guard let controller = await FloePlatformServices.shared.linuxLocalServiceController() else { return }
+                    await controller.stopLocalService(handle)
+                },
+                serviceSnapshot: { handle in
+                    guard let controller = await FloePlatformServices.shared.linuxLocalServiceController() else {
+                        return LinuxGuestLocalServiceSnapshot(state: "unavailable", lastError: "Linux local services are unavailable")
+                    }
+                    return await controller.localServiceSnapshot(handle)
+                },
+                activateGuest: { environmentID, cancellation in
+                    try await FloePlatformServices.shared.activateLinuxGuestWithPreparation(
+                        id: environmentID, cancellation: cancellation
+                    )
+                },
+                environmentOwned: { environmentID in
+                    await FloePlatformServices.shared.linuxEnvironmentOwned(id: environmentID)
+                },
+                lifecycleEvents: {
+                    guard let reporter = await FloePlatformServices.shared.linuxLocalServiceController() as? LinuxGuestLocalServiceLifecycleReporting else {
+                        return nil
+                    }
+                    return await reporter.localServiceLifecycleEvents()
+                },
+                acknowledgeLifecycle: { event in
+                    guard let reporter = await FloePlatformServices.shared.linuxLocalServiceController()
+                        as? any LinuxGuestLocalServiceLifecycleReporting else { return }
+                    await reporter.acknowledgeLocalServiceLifecycleEvent(event)
+                }
+            ),
+            isLocalLinuxEnvironment: { [weak self] environmentID in
+                guard let self,
+                      let record = await self.environmentRegistry.record(id: environmentID) else { return false }
+                return record.effectiveExecutionBackend == .linuxVM && record.state != .deleting
+            }
+        ))
+    }
     /// A payload only requests the existing reconciled finite background pass.
     private lazy var apnsService = APNsFirstPartyService()
     lazy var apnsCenter = APNsCenter(
@@ -563,7 +646,36 @@ final class AppEnvironment: ObservableObject {
     private(set) var backgroundJobService: BackgroundJobService?
     #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
     private var alarmService: SystemAlarmService?
+    var systemAlarmControlling: (any SystemAlarmControlling)? { alarmService }
     #endif
+    var agentWaitNativeTimerBridge: AgentWaitNativeTimerBridge? {
+        #if canImport(UIKit) && canImport(AlarmKit) && !targetEnvironment(macCatalyst)
+        guard let service = systemAlarmControlling else { return nil }
+        return AgentWaitNativeTimerBridge(status: { owner, alarmID in
+            // Only runtime-issued identity reaches this adapter. Model JSON
+            // contains just alarmID; it cannot supply this owner/context.
+            let context = ToolContext(runID: owner.runID, toolCallID: owner.callID,
+                cancellation: CancellationToken(), conversationID: owner.conversationID,
+                clientSessionID: owner.clientSessionID)
+            let status = try await service.timerStatus(owner: SystemAlarmOwner(context: context), alarmID: alarmID)
+            let record = status.record
+            guard record.kind == .timer else {
+                throw FloeError.validationFailed("Choose an existing timer for task.wait.")
+            }
+            return AgentWaitNativeTimerObservation(binding: .init(alarmID: record.id,
+                ownerTaskID: record.ownerTaskID, producerRunID: record.ownerRunID,
+                producerCallID: record.operationID, creationReceiptID: record.operationReceiptID,
+                payloadDigest: record.payloadDigest, createdAt: record.createdAt),
+                ledgerState: record.state.rawValue, preservedNativeState: record.nativeState,
+                nativeState: status.snapshot?.state, fireDate: status.snapshot?.fireDate,
+                totalDuration: status.snapshot?.totalDuration, previousElapsed: status.snapshot?.previousElapsed,
+                startDate: status.snapshot?.startDate, timelineFingerprint: status.snapshot?.timelineFingerprint,
+                revision: status.revision)
+        }, updates: { await service.timerUpdates })
+        #else
+        return nil
+        #endif
+    }
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
     var filesCenter: FilesCenter { _filesCenter }
     /// The native image tool shares task ownership and the existing capability gate.
@@ -2305,8 +2417,10 @@ final class AppEnvironment: ObservableObject {
         if shouldSeedBundledSkills { Task { await skillsCenter.seedBuiltinDomainSkills() } }
         // Signed declarative content: foreground check at most once per day.
         // Failures are logged inside the center and never block startup.
+        registerHelpAgentTools(center: contentUpdateCenter.helpCenter)
         Task { await contentUpdateCenter.checkAutomaticallyIfDue() }
         // Durable memory.
+        registerAgentWaitTool()
         registerTaskChecklistTools(store: TaskChecklistStore(database: database))
         registerMemoryTools(store: intelligenceStore) { [runStore] runID in
             try await runStore.run(id: runID)?.conversationID
@@ -2431,6 +2545,36 @@ final class AppEnvironment: ObservableObject {
                     connectionID: connectionID,
                     approvalContext: context
                 )
+            },
+            // Scoped local Linux screen: the SAME vnc.* tools resolve this
+            // task's display when its execution environment is an on-device
+            // Linux guest with the screen open; nil returns keep the global
+            // remote path unchanged, and throws fail closed (no fallback).
+            scopedSessionProvider: { [weak self] context in
+                guard let self else { return nil }
+                return try await self.localLinuxDisplays.sessionHandle(for: context)
+            },
+            scopedConnect: { [weak self] context in
+                guard let self else { return nil }
+                return try await self.localLinuxDisplays.connectHandle(for: context)
+            },
+            scopedReconnect: { [weak self] context in
+                guard let self else { return nil }
+                return try await self.localLinuxDisplays.connectHandle(for: context)
+            },
+            scopedStatus: { [weak self] context in
+                guard let self else { return nil }
+                return await self.localLinuxDisplays.toolStatus(for: context)
+            },
+            scopedDisconnect: { [weak self] context in
+                guard let self else { return nil }
+                return await self.localLinuxDisplays.releaseToolSession(for: context)
+            },
+            didConnectRemote: { [weak self] context in
+                await self?.localLinuxDisplays.markRemoteRouting(for: context)
+            },
+            didReconnectRemote: { [weak self] context in
+                await self?.localLinuxDisplays.markRemoteRouting(for: context)
             }
         ) { [weak remoteSessionCenter] in
             // Observation and input tools are honest consumers of an

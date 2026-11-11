@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-11-10 -->
+<!-- docs-updated: 2026-11-11 -->
 # Space and specialist workbenches
 
 [简体中文](WORKSPACES_GUIDE.zh-CN.md) · [User manual](USER_GUIDE.md) · [Quickstart](QUICKSTART.md)
@@ -48,6 +48,8 @@ Meetings combine a personal notebook, live recording, transcription and AI minut
 4. Turn on **automatic AI minutes** to keep minutes updated from the transcript, or ask the meeting assistant to answer questions about this meeting and organize notes and to-dos. Unsent drafts are kept.
 5. Export **Word or PDF text minutes** from the minutes-template menu, and send follow-up actions back into your task flow.
 
+**Continuous recording in newer builds:** Pause and resume within the same meeting's recording timeline. After ending the recording, play it back and tap a transcript segment to seek to its time. Rename existing speakers or merge identities that refer to the same person; speaker separation depends on the selected recognition service. Reopen the meeting to review its recording, timestamps and corrected transcript.
+
 **Limits:** recordings stay on device by default; cloud transcription uses a service you explicitly select and is billed by that provider. Transcription quality follows your recognition settings (see the user manual §16).
 
 ## 3. Music projects — **1.8.5**
@@ -62,6 +64,8 @@ Space music works keep arrangement, keyboard, mixer and DJ workflows in one proj
 4. Save is automatic into the work. Render when you want an audio file, then check the receipt against the actual rendered file and share or export it from the work.
 
 **Music in this test update:** In Score, switch between Staff and Numbered notation while editing and saving the same score. Open Performance sounds to choose synthesized instrument sounds for each part. Perform & add renders audio, inserts a new track at the current playhead and returns to the arrangement when complete. Ordinary playback is for auditioning. Switch back to Staff to see complex marks omitted from the numbered view.
+
+**Record from the playhead in newer builds:** Move the playhead to the intended start, choose audio or MIDI recording, then perform. Existing unmuted tracks play alongside it and older clips are kept. Stop, audition the new clip on the same timeline, then save and reopen to check its position. Arrangement recording, asset previews, monitoring and DJ recording have their own controls; confirm Stop in the appropriate surface before leaving.
 
 The keyboard uses the available height for its keys. On wide screens, Show inspector / Hide inspector opens or collapses the right inspector. Expand the lower editor for a larger performance area.
 
@@ -99,6 +103,14 @@ Space → Toolbox gathers network utilities that run on your device (the Android
 - **Connections and sessions:** HTTP, WebSocket and MQTT clients, a serial assistant (TCP, UDP or Bluetooth; USB needs a supported iPad and drivers not yet shipped), plus terminal and VNC remote workspaces.
 - **Analysis:** capture browser with packet-capture import (PCAP/PCAPNG); AI analysis reports progress, can be stopped, and times out honestly.
 - **Utilities:** JSON formatting, encoding conversion, QR codes and checksums.
+
+**Measurement and everyday tools in newer builds:** Choose a tool from the swipeable top entries, categories or search; the full list remains below.
+
+- **Level, Motion Sensors, Compass, Pressure & Altitude:** start to see readings, use the offered zero, lock or recording controls, and stop collection when finished. Compass shows magnetic north; pressure-based altitude shows relative change.
+- **Ruler & Protractor, Camera Measurement, Photo Measurement:** calibrate the screen ruler against a real object first. AR measurement needs supported hardware. In a photo, set a known reference length before measuring lengths, angles or areas on the same plane, then export annotations if needed. Recheck calibration after window or display changes.
+- **Calculator & Converter, Location & Map:** evaluate expressions or swap units and copy results. After granting location access, inspect the position and accuracy, then explicitly save or share a place or send it to Notes.
+- **Sound Analysis, Magnifier & Light, Scan & Recognize:** start the microphone or camera explicitly. Inspect relative audio levels and spectrum, zoom or freeze a view, or scan codes and text and export results. Audio readings are not calibrated environmental sound pressure.
+- **Stopwatch and timers:** record laps, manage named countdowns and allow system alarms when prompted. See user manual §17 for multi-stage task timers; system alarms and the model's follow-up execution are separate outcomes.
 
 A measurement covers one endpoint and path, not your whole network. Reports export only what you choose.
 

@@ -52,6 +52,8 @@ public struct RunDependencyLabel: Sendable, Hashable {
 public protocol AgentEventSink: Sendable {
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async
     func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async
+    /// Native, approved-call observations; never a provider AgentEvent.
+    func agentRuntime(_ runtime: FloeAgentRuntime, didObserveNativeDiagnostic observation: TaskDiagnosticProgress, callID: String) async
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async
     /// Called only after a complete assistant/model step and before a steer
@@ -151,6 +153,7 @@ public struct ToolTimingStamp: Sendable, Equatable {
 }
 
 public extension AgentEventSink {
+    func agentRuntime(_ runtime: FloeAgentRuntime, didObserveNativeDiagnostic observation: TaskDiagnosticProgress, callID: String) async {}
     func agentRuntime(
         _ runtime: FloeAgentRuntime,
         didRecordApprovalDecision receipt: ApprovalDecisionReceipt
@@ -197,6 +200,8 @@ public extension AgentEventSink {
 public enum RuntimeSteerOrigin: Sendable, Hashable {
     case user
     case taskCoordination(senderRunID: UUID)
+    /// Trusted native continuation for an exact checkpoint-owned wait.
+    case waitCompletion(waitID: UUID)
 }
 
 public struct RuntimeSteerInput: Sendable, Hashable, Identifiable {
@@ -401,6 +406,128 @@ public protocol AuditSink: Sendable {
 public protocol CheckpointStore: Sendable {
     func save(_ checkpoint: AgentCheckpoint) async throws
     func load(runID: UUID) async throws -> AgentCheckpoint?
+    /// Existing durable recovery records only; no new scheduler/store.
+    func pendingRuntimeWaitCheckpoints() async throws -> [AgentCheckpoint]
+    /// Single-store current-run/marker CAS; unsupported legacy stores fail closed.
+    func parkRuntimeWaitIfCurrent(_ checkpoint: AgentCheckpoint, cancellation: CancellationToken) async throws -> Bool
+}
+
+public extension CheckpointStore {
+    func pendingRuntimeWaitCheckpoints() async throws -> [AgentCheckpoint] { [] }
+    func parkRuntimeWaitIfCurrent(_ checkpoint: AgentCheckpoint, cancellation: CancellationToken) async throws -> Bool { false }
+}
+
+/// Content-free metadata describing one persisted recovery snapshot. Every
+/// field is a version, a count or an internal identifier: safe for logs and
+/// durable diagnostic events, never carrying message, argument or result
+/// content.
+public struct RecoveryPointSnapshot: Sendable {
+    /// Monotonic per-run capture generation. Generations are assigned at
+    /// snapshot capture (actor-serial), so a higher generation always means
+    /// fresher run state regardless of how the actual store writes
+    /// interleave afterwards.
+    public var generation: Int
+    public var formatVersion: Int
+    public var stateName: String
+    public var messageCount: Int
+    public var pendingCallCount: Int
+    public var pendingResultCount: Int
+    /// False when no checkpoint store is configured (nothing was written).
+    public var persisted: Bool
+
+    public init(
+        generation: Int,
+        formatVersion: Int,
+        stateName: String,
+        messageCount: Int,
+        pendingCallCount: Int,
+        pendingResultCount: Int,
+        persisted: Bool
+    ) {
+        self.generation = generation
+        self.formatVersion = formatVersion
+        self.stateName = stateName
+        self.messageCount = messageCount
+        self.pendingCallCount = pendingCallCount
+        self.pendingResultCount = pendingResultCount
+        self.persisted = persisted
+    }
+}
+
+/// A checkpoint write that reached the store but failed (or was rejected by
+/// the snapshot-consistency invariants). Carries the capture generation so
+/// the caller can tell whether a later successful save already covers this
+/// failure; the underlying error is preserved for the existing message
+/// paths.
+public struct CheckpointWriteError: Error, Sendable, LocalizedError {
+    public var generation: Int
+    public var underlying: any Error
+    /// Redacted error identity (case name or NSError domain/code), never
+    /// the associated message.
+    public var errorIdentity: String
+
+    public init(generation: Int, underlying: any Error, errorIdentity: String) {
+        self.generation = generation
+        self.underlying = underlying
+        self.errorIdentity = errorIdentity
+    }
+
+    public var errorDescription: String? {
+        (underlying as? LocalizedError)?.errorDescription ?? underlying.localizedDescription
+    }
+}
+
+/// Redacted, actionable error identity for durability diagnostics: the
+/// FloeError case name or the NSError domain/code. Associated values and
+/// messages are deliberately excluded so no user content reaches logs.
+enum PersistenceErrorIdentity {
+    static func render(_ error: any Error) -> String {
+        if let floe = error as? FloeError {
+            switch floe {
+            case .invalidConfiguration: return "invalidConfiguration"
+            case .validationFailed: return "validationFailed"
+            case .unauthorized: return "unauthorized"
+            case .notFound: return "notFound"
+            case .storageCorrupted: return "storageCorrupted"
+            case .syncUnavailable: return "syncUnavailable"
+            case .cancelled: return "cancelled"
+            case .internalError: return "internalError"
+            }
+        }
+        if let write = error as? CheckpointWriteError {
+            return write.errorIdentity
+        }
+        let ns = error as NSError
+        return "\(ns.domain)#\(ns.code)"
+    }
+}
+
+/// One-permit async semaphore serializing checkpoint capture→save so two
+/// recovery writes can never interleave: the store's last-writer-wins
+/// upsert would otherwise let an OLDER capture land after a newer one and
+/// silently regress the durable recovery point.
+private actor CheckpointWriteGate {
+    private var available = true
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        await withCheckedContinuation { continuation in
+            if available {
+                available = false
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            available = true
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
 }
 
 /// Filesystem-backed checkpoint store (Application Support on iOS).
@@ -424,6 +551,18 @@ public actor FileCheckpointStore: CheckpointStore {
             "checkpointSaved run=\(checkpoint.runID.uuidString) bytes=\(encoded.count) replayPairs=\(checkpoint.replayedToolPairs?.count ?? 0) state=\(checkpoint.state.name)"
         )
         try encoded.write(to: url, options: .atomic)
+    }
+
+    public func pendingRuntimeWaitCheckpoints() throws -> [AgentCheckpoint] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasSuffix(".checkpoint.json") }
+            .compactMap { url in
+                let checkpoint = try AgentCheckpoint.decoded(from: Data(floeContentsOf: url))
+                guard AgentWaitRecovery.hasWaitingMarker(checkpoint),
+                      !AgentWaitRecovery.pending(in: checkpoint).isEmpty else { return nil }
+                return checkpoint
+            }
     }
 
     public func load(runID: UUID) throws -> AgentCheckpoint? {
@@ -593,6 +732,8 @@ public actor FloeAgentRuntime {
         /// A closure (rather than stored state) keeps this durable truth in
         /// the persistence layer instead of a live in-memory shadow store.
         public var outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])?
+        public var agentWaitClock: AgentWaitClock
+        public var agentWaitNativeTimerBridge: AgentWaitNativeTimerBridge?
         /// Optional durable user-question recovery seam. When present, an
         /// interrupted `user.ask` call is repaired from the question store
         /// instead of being synthesized as an unknown-outcome failure, and
@@ -644,6 +785,8 @@ public actor FloeAgentRuntime {
             serviceStorePaths: [String: String] = [:],
             toolResultCaptureRoot: URL? = nil,
             outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil,
+            agentWaitClock: AgentWaitClock = .continuous,
+            agentWaitNativeTimerBridge: AgentWaitNativeTimerBridge? = nil,
             userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil,
             currentToolAvailability: (@Sendable () async -> Set<String>)? = nil
         ) {
@@ -691,6 +834,8 @@ public actor FloeAgentRuntime {
             self.serviceStorePaths = serviceStorePaths
             self.toolResultCaptureRoot = toolResultCaptureRoot
             self.outstandingDependencies = outstandingDependencies
+            self.agentWaitClock = agentWaitClock
+            self.agentWaitNativeTimerBridge = agentWaitNativeTimerBridge
             self.userQuestionRecovery = userQuestionRecovery
             self.currentToolAvailability = currentToolAvailability
         }
@@ -762,6 +907,9 @@ public actor FloeAgentRuntime {
     private let toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])?
     private var pendingToolCalls: [ToolCall] = []
     private var pendingToolResults: [ToolResult] = []
+    private var runtimeWaitRecords: [String: AgentWaitRecord] = [:]
+    private var activeRuntimeWait: (callID: String, waitID: UUID, task: Task<AgentWaitReceipt, Error>)?
+    private var steeredRuntimeWaitIDs: Set<UUID> = []
     /// Retention receipts for the pending batch. They describe whether the
     /// FULL post-redaction output is readable by `tools.readResult`; they are
     /// transient (never checkpointed) and cleared once the batch's provider
@@ -835,6 +983,29 @@ public actor FloeAgentRuntime {
         var authorizationIdentity: String
     }
     private var dispatchAuthorityByCallID: [String: DispatchAuthority] = [:]
+    /// Monotonic per-run checkpoint capture generation. Assigned at snapshot
+    /// capture (actor-serial), so generation order is state-freshness order
+    /// even when the actual store writes interleave afterwards. A failed
+    /// write carries its generation; a later successful save with a higher
+    /// generation therefore provably covers the failed boundary's state.
+    private var checkpointGeneration = 0
+    /// Newest capture generation whose write reached the store. With the
+    /// write gate below, saves complete in capture order, so this is the
+    /// generation the store actually holds.
+    private var lastPersistedCheckpointGeneration = 0
+    /// Serializes checkpoint capture→save. Two recovery writes can never
+    /// interleave: an older capture must never land in the store after a
+    /// newer one (last-writer-wins upserts would silently regress the
+    /// recovery point).
+    private let checkpointWriteGate = CheckpointWriteGate()
+    /// Call ids whose execution ACTUALLY crossed the executor boundary in
+    /// this activation (the executor body was invoked). Settlement removes
+    /// the id and records it as trusted dispatch evidence: a failed result
+    /// without this mark is a provable pre-execution rejection — no
+    /// external action could have started — which the closure gate may
+    /// supersede only with a matching proven work identity. Ids never
+    /// settle (cancelled mid-flight) stay behind; the set dies with the run.
+    private var executorCrossedCallIDs: Set<String> = []
     /// True only after this runtime has loaded a persisted checkpoint. The
     /// recovery ledger is intentionally used to deduplicate calls at this
     /// boundary; a normal fresh run may legitimately observe the same path
@@ -1350,6 +1521,18 @@ public actor FloeAgentRuntime {
         }
     }
 
+    private func nativeDiagnosticReporter(for call: ToolCall, cancellation: CancellationToken) -> (any TaskProgressReporting)? {
+        guard call.toolName == "network.traceroute" else { return nil }
+        return CallbackTaskProgressReporter { [weak self] update in
+            guard !cancellation.isCancelled, let observation = update.diagnostic, let self else { return }
+            await self.deliverNativeDiagnostic(observation, callID: call.id)
+        }
+    }
+    private func deliverNativeDiagnostic(_ observation: TaskDiagnosticProgress, callID: String) async {
+        guard !cancellationToken.isCancelled else { return }
+        await sink?.agentRuntime(self, didObserveNativeDiagnostic: observation, callID: callID)
+    }
+
     private func emit(_ event: AgentEvent) async {
         await sink?.agentRuntime(self, didEmit: event)
     }
@@ -1490,6 +1673,7 @@ public actor FloeAgentRuntime {
         activeRunTask?.cancel()
         streamTask = nil
         cancellationToken.cancel()
+        activeRuntimeWait?.task.cancel()
         await transition(to: .cancelling)
         // 2. Stop the in-flight tool cooperatively. A parked user question is
         // not an approval and has no executor resource, but it must be
@@ -1671,6 +1855,14 @@ public actor FloeAgentRuntime {
     /// waitingApproval, waitingUserQuestion, paused. streamingModel/
     /// executingTool downgrade to preparing on disk (replay boundary).
     public func checkpoint() async throws {
+        if activeRuntimeWait != nil || runtimeWaitRecords.values.contains(where: { record in
+            record.receipt == nil && pendingToolCalls.contains(where: { call in call.id == record.owner.callID })
+        }) {
+            // Waiting already has its durable marker; keep this activation's
+            // owned suspension instead of detaching its in-flight executor.
+            _ = try await writeCheckpoint()
+            return
+        }
         try await writeCheckpoint()
         await transition(to: .checkpointed(AgentState.CheckpointRef(
             reason: FloeL10n.l("runtime.agent_runtime.task_checkpoint_saved_waiting_to_continue")
@@ -1678,14 +1870,30 @@ public actor FloeAgentRuntime {
     }
 
     /// Writes a recovery point without changing the live state. Used by the
-    /// app-level run coordinator while a stream remains active.
-    public func persistRecoveryPoint() async throws {
+    /// app-level run coordinator while a stream remains active. Returns the
+    /// content-free snapshot metadata (generation, versions, counts) so the
+    /// caller can verify coverage; throws `CheckpointWriteError` carrying
+    /// the failed capture generation.
+    @discardableResult
+    public func persistRecoveryPoint() async throws -> RecoveryPointSnapshot {
         try await writeCheckpoint()
+    }
+
+    /// Newest checkpoint capture generation the store actually holds.
+    /// Because capture→save is serialized, this is the durable recovery
+    /// boundary's freshness proof: a failure at or below this generation is
+    /// already covered by newer persisted state.
+    public func latestPersistedCheckpointGeneration() async -> Int {
+        lastPersistedCheckpointGeneration
     }
 
     /// checkpointed → preparing. Replays messages; dedups tool calls via
     /// idempotency keys.
-    public func resume(from checkpoint: AgentCheckpoint) async throws {
+    public func resume(from checkpoint: AgentCheckpoint, resumptionInput: RuntimeSteerInput? = nil) async throws {
+        guard activeRuntimeWait == nil,
+              !(state.name == "executingTool" && runtimeWaitRecords.values.contains(where: { $0.receipt == nil })) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese ? "任务正在等待，可先停止或发送引导。" : "This task is already waiting. Stop it or send guidance before continuing.")
+        }
         guard checkpoint.formatVersion <= AgentCheckpoint.currentFormatVersion else {
             throw FloeError.validationFailed("Unsupported checkpoint format v\(checkpoint.formatVersion)")
         }
@@ -1705,6 +1913,19 @@ public actor FloeAgentRuntime {
         }
         pendingToolCalls = checkpoint.pendingToolCalls
         pendingToolResults = checkpoint.pendingToolResults
+        runtimeWaitRecords = try AgentWaitRecovery.validatedRecords(in: checkpoint, runID: runID, conversationID: configuration.conversationID)
+        if let resumptionInput, case .waitCompletion(let waitID) = resumptionInput.origin {
+            guard runtimeWaitRecords.values.contains(where: {
+                $0.waitID == waitID && $0.continuationInputID == resumptionInput.id && $0.receipt?.status != .cancelled
+            }) else { throw AgentWaitError.identityChanged }
+        }
+        if let resumptionInput, case .user = resumptionInput.origin {
+            for (callID, var record) in runtimeWaitRecords where record.receipt == nil {
+                record.receipt = record.settle(.interrupted, at: configuration.agentWaitClock.now(),
+                                              reason: "New guidance interrupted this wait.")
+                runtimeWaitRecords[callID] = record
+            }
+        }
         // The recovered activation resolves its own dispatch authority; a
         // pre-interruption entry cannot describe a runner in this process.
         dispatchAuthorityByCallID.removeAll(keepingCapacity: true)
@@ -1794,7 +2015,37 @@ public actor FloeAgentRuntime {
         for call in pendingToolCalls where restoredResultIDs.contains(call.id) {
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
+        if !runtimeWaitRecords.isEmpty {
+            await transition(to: .preparing(.init(goal: messages.last(where: { $0.role == "user" })?.content ?? "", resumedFromCheckpoint: true)))
+        }
         await repairInterruptedToolPairs()
+        if !runtimeWaitRecords.isEmpty {
+            // A wait receipt is NEW evidence after the saved provider boundary.
+            // Replaying the old pre-wait request would omit that receipt.
+            restoredProviderDispatchEnvelope = nil
+            latestProviderDispatchEnvelope = nil
+            latestProviderDispatchRequest = nil
+            providerRetryRequest = nil
+            providerWireRetryRequest = nil
+            responseReasoning = checkpoint.pendingAssistantReasoning ?? ""
+            try await writeCheckpoint()
+            if cancellationToken.isCancelled { return }
+            if let resumptionInput, case .waitCompletion(let waitID) = resumptionInput.origin,
+               let record = runtimeWaitRecords.values.first(where: { $0.waitID == waitID }),
+               let result = pendingToolResults.first(where: { $0.callID == record.owner.callID }),
+               result.status != .ok {
+                // A positive cold probe can race a timer incarnation change.
+                // Pair the honest failed result durably, then require review;
+                // never advance the provider on an obsolete native callback.
+                await failRun(message: result.outputSummary, recoverable: true)
+                return
+            }
+            if let resumptionInput, case .waitCompletion = resumptionInput.origin {
+                // Only a persisted result/identity boundary acknowledges the
+                // existing durable input. A failed save consumes nothing.
+                await sink?.agentRuntime(self, didConsumeSteer: resumptionInput)
+            }
+        }
         for call in pendingToolCalls {
             if let result = pendingToolResults.first(where: { $0.callID == call.id }) {
                 activateReadTools(toolCall: call, result: result)
@@ -1832,6 +2083,16 @@ public actor FloeAgentRuntime {
         var pairedIDs = Set(pendingToolResults.map(\.callID))
         for call in pendingToolCalls where !pairedIDs.contains(call.id) {
             let lifecycle = toolLifecycleByCallID[call.id]
+            if call.toolName == AgentWaitTool.name, runtimeWaitRecords[call.id] != nil {
+                let result = await recoverRuntimeWait(call: call)
+                pendingToolResults.append(result)
+                pairedIDs.insert(call.id)
+                executionLedger.record(call: call, result: result, isSideEffecting: false,
+                                       outcomeUnknown: false, outcomeUnknownReason: .interruptedDispatch,
+                                       wasDispatched: true, operationIdentity: nil)
+                setToolLifecycle(call: call, phase: .resultCommitted)
+                continue
+            }
             // Recover the frozen effect classification. When it is absent, only
             // trust the current descriptor while its authorization identity
             // still matches the one this dispatch ran under; an absent or
@@ -1882,7 +2143,9 @@ public actor FloeAgentRuntime {
                     isSideEffecting: isSideEffecting,
                     outcomeUnknown: outcomeUnknown,
                     outcomeUnknownReason: outcomeUnknown
-                        ? .unattributed : .interruptedDispatch
+                        ? .unattributed : .interruptedDispatch,
+                    wasDispatched: !neverDispatched,
+                    operationIdentity: Self.closureOperationIdentity(for: call, configuration: configuration)
                 )
                 setToolLifecycle(call: call, phase: .resultCommitted)
                 continue
@@ -1906,7 +2169,9 @@ public actor FloeAgentRuntime {
                     result: result,
                     isSideEffecting: false,
                     outcomeUnknown: false,
-                    outcomeUnknownReason: .interruptedDispatch
+                    outcomeUnknownReason: .interruptedDispatch,
+                    wasDispatched: lifecycle?.phase == .dispatched,
+                    operationIdentity: Self.closureOperationIdentity(for: call, configuration: configuration)
                 )
                 setToolLifecycle(call: call, phase: .resultCommitted)
                 continue
@@ -1945,7 +2210,9 @@ public actor FloeAgentRuntime {
                 result: result,
                 isSideEffecting: isSideEffecting,
                 outcomeUnknown: outcomeUnknown || result.outcomeUnknown,
-                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .interruptedDispatch
+                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .interruptedDispatch,
+                wasDispatched: lifecycle?.phase == .dispatched,
+                operationIdentity: Self.closureOperationIdentity(for: call, configuration: configuration)
             )
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
@@ -2058,7 +2325,13 @@ public actor FloeAgentRuntime {
             acceptedSteerIDs.insert(input.id)
             // Fresh user guidance is explicit progress. Previous unchanged
             // retry evidence must not block the newly steered route.
-            if case .user = input.origin { loopGuard.advanceProgressEpoch() }
+            if case .user = input.origin {
+                loopGuard.advanceProgressEpoch()
+                if let waiting = activeRuntimeWait {
+                    steeredRuntimeWaitIDs.insert(waiting.waitID)
+                    waiting.task.cancel()
+                }
+            }
             return .accepted
         case .idle, .cancelling, .checkpointed, .verifying, .completed, .failed:
             return .rejected(reason: "The target run is no longer accepting guidance")
@@ -2303,7 +2576,7 @@ public actor FloeAgentRuntime {
         // workspace mutation lease (acquireMainRunMutationLease): the envelope
         // is not a client of the shared backend. Coordination itself stays
         // intact — every real main-run or child call still registers.
-        if call.toolName == DelegateTool.name {
+        if call.toolName == DelegateTool.name || (call.toolName == AgentWaitTool.name && childExecution == nil) {
             return try await body()
         }
         let label = "\(call.toolName) [\(clientSessionID(for: childExecution))]"
@@ -3762,6 +4035,19 @@ public actor FloeAgentRuntime {
                         await beginDeferredActionRepair(facts:facts)
                         return
                     case .reportUnfinished:
+                        // Decision-source diagnostics: receipt flags only
+                        // (never arguments or output content), so a false
+                        // unfinished report can be classified from logs —
+                        // pre-execution rejection vs dispatched failure vs
+                        // unknown outcome, and whether a proven operation
+                        // identity exists for correction matching.
+                        let receiptSummary = facts.latestReceipts.map { receipt -> String in
+                            let identity = receipt.operationIdentity == nil ? "none" : "proven"
+                            return "\(receipt.toolName):\(receipt.status):side=\(receipt.isSideEffecting):unknown=\(receipt.outcomeUnknown):dispatched=\(receipt.wasDispatched):mutation=\(receipt.supportsMutationClaim):identity=\(identity)"
+                        }.joined(separator: ",")
+                        logger.error(
+                            "taskClosureReportUnfinished run=\(runID.uuidString) unsettledSteps=\(facts.hasUnsettledSteps) receipts=\(receiptSummary)"
+                        )
                         await failRun(message: FloeL10n.isChinese
                             ? "本轮仍有未完成事项，执行已停止。进度与工具结果已保留，请查看失败记录后继续。"
                             : "This run stopped with unfinished work. Progress and tool results are preserved; review the failures before continuing.", recoverable:true)
@@ -3885,11 +4171,61 @@ public actor FloeAgentRuntime {
         let receipts = executionLedger.entries.map {
             TaskClosureGate.Receipt(toolName:$0.toolName,callFingerprint:$0.callFingerprint,
                 status:$0.status.rawValue,isSideEffecting:$0.isSideEffecting,outcomeUnknown:$0.outcomeUnknown,
-                supportsMutationClaim:executionLedger.supportsMutationClaim(for:$0,replayedCalls:replayedCalls))
+                supportsMutationClaim:executionLedger.supportsMutationClaim(for:$0,replayedCalls:replayedCalls),
+                wasDispatched:$0.wasDispatched,operationIdentity:$0.operationIdentity)
         }
         let available = configuration.toolsEnabled && configuration.model.capabilities.contains(.tools)
             ? runtimeVisibleCatalogDescriptors().map(\.name) : []
         return .init(steps:steps,receipts:receipts,availableToolNames:available)
+    }
+
+    /// Trusted same-operation identity for correction matching. Non-nil ONLY
+    /// when the typed contract proves a CONCRETE NEW output file for this
+    /// exact call: every typed spec resolves with the `outputWrite` role to
+    /// an explicit or deterministically derived file path — never a
+    /// container, service-store record, in-place rewrite, draft target, or
+    /// directory-bounded output. Two receipts sharing this identity targeted
+    /// the same artifact (the same output file), so a pre-execution failure
+    /// followed by an executed success on it is a provable correction of ONE
+    /// work item. Everything else — same project/document with in-place
+    /// edits, batch creation, opaque payload operations, container-level
+    /// targets — cannot prove the work item and stays conservative (nil):
+    /// the gate then never supersedes the failure.
+    static func closureOperationIdentity(for call: ToolCall, configuration: Configuration) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any] else {
+            return nil
+        }
+        let specs = TypedMutationContract.specs(for: call.toolName, arguments: object)
+        guard !specs.isEmpty else { return nil }
+        var parts: [String] = ["tool=\(call.toolName)"]
+        for spec in specs {
+            guard spec.role == .outputWrite, spec.storeKey == nil else { return nil }
+            if case .boundDirectory = spec.whenAbsent { return nil }
+            guard spec.argument != "outputDirectory",
+                  let value = Self.closureStringArgument(spec.argument, in: object)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+            parts.append("\(spec.argument)=\(value)")
+        }
+        if let targets = TypedMutationContract.resolveMutableTargets(
+            for: call.toolName,
+            arguments: object,
+            workspaceRootURL: configuration.workspaceRootURL,
+            serviceStorePaths: configuration.serviceStorePaths
+        ) {
+            parts.append(contentsOf: targets.map(\.path))
+        }
+        return parts.sorted().joined(separator: "|")
+    }
+
+    /// String argument lookup supporting one nested level (`export.file_name`
+    /// for `media.project`'s export object), mirroring the typed contract's
+    /// own resolution.
+    private static func closureStringArgument(_ key: String, in arguments: [String: Any]) -> String? {
+        if let value = arguments[key] as? String { return value }
+        let parts = key.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let nested = arguments[parts[0]] as? [String: Any] else { return nil }
+        return nested[parts[1]] as? String
     }
 
     /// Exactly one reconciliation step, using the same model loop, existing
@@ -4679,6 +5015,7 @@ public actor FloeAgentRuntime {
             childExecution: handoff,
             runtimeAuthority: runtimeAuthority,
             callOrigin: makeCallOrigin(for: call, handoff: handoff),
+            taskProgress: nativeDiagnosticReporter(for: call, cancellation: effectiveCancellation),
             temporaryReadOnly: configuration.temporaryReadOnly,
             clientSessionID: effectiveClientSessionID,
             frozenEffectiveCatalogNames: runtimeVisibleCatalogNameSet(),
@@ -4693,7 +5030,12 @@ public actor FloeAgentRuntime {
             nestedApproval: RuntimeNestedApprovalHandle { [weak self] nestedReason in
                 guard let self else { return .unavailable }
                 return await self.escalateNestedApproval(call: call, reason: nestedReason)
-            }
+            },
+            runtimeWait: call.toolName == AgentWaitTool.name && childExecution == nil
+                ? RuntimeWaitHandle { [weak self] request in
+                    guard let self else { throw AgentWaitError.unavailable }
+                    return try await self.performRuntimeWait(call: call, request: request)
+                } : nil
         )
         // Parent + children on one workspace: a MAIN-run mutation takes the
         // same canonical target lease a child call takes, so concurrent
@@ -4732,6 +5074,12 @@ public actor FloeAgentRuntime {
             await sink?.agentRuntime(self, didDispatchToolCall: call, at: dispatchStamp)
         }()
         let result: ToolResult
+        // Trusted dispatch evidence: from here until settlement, this call is
+        // marked as having crossed the executor boundary. The mark is removed
+        // again only when the executor provably never ran (environment busy
+        // or a pre-execution cancellation); any executor-thrown error keeps
+        // it, because the tool body did start.
+        executorCrossedCallIDs.insert(call.id)
         do {
             result = try await withEnvironmentCoordination(
                 environmentID: effectiveEnvironmentID,
@@ -4749,6 +5097,8 @@ public actor FloeAgentRuntime {
                 )
             }
         } catch let busy as EnvironmentBusyError {
+            // Proven coordination boundary: the executor body never ran.
+            executorCrossedCallIDs.remove(call.id)
             result = ToolResult(
                 callID: call.id,
                 status: .failed,
@@ -4761,6 +5111,11 @@ public actor FloeAgentRuntime {
                 activatesDiscovery: childExecution == nil
             )
         } catch let error as FloeError where error == .cancelled {
+            // Conservative provenance: an executor (or coordinator) can
+            // throw `.cancelled` AFTER the tool body already started and
+            // possibly committed an effect. Without positive proof the body
+            // never ran, the receipt stays marked as dispatched and is
+            // never superseded as a pre-execution rejection.
             result = ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
         } catch is CancellationError {
             result = ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -5133,7 +5488,7 @@ public actor FloeAgentRuntime {
                 isSideEffecting: executor.descriptor(named: call.toolName)?.isSideEffecting
             )
             let route = ToolLoopGuard.canonicalRoute(for: call)
-            if let firstCallID = firstCallIDByRoute[route] {
+            if let firstCallID = firstCallIDByRoute[route], call.toolName != AgentWaitTool.name {
                 let duplicate = ToolResult(
                     callID: call.id,
                     status: .failed,
@@ -5413,8 +5768,12 @@ public actor FloeAgentRuntime {
         for call in calls {
             guard let grant = approvedByID[call.id] else { continue }
             let descriptor = executor.descriptor(named: call.toolName)
-            let isParallelSafe = descriptor?.isSideEffecting == false
-                || descriptor?.supportsConcurrentBatchDispatch == true
+            // A real suspension is a main-run barrier even though it does
+            // not mutate external state. The parallel context deliberately
+            // has no trusted wait handle and must never fabricate one.
+            let isParallelSafe = call.toolName != AgentWaitTool.name
+                && (descriptor?.isSideEffecting == false
+                    || descriptor?.supportsConcurrentBatchDispatch == true)
             if isParallelSafe {
                 pendingReads.append((call, grant))
                 continue
@@ -5588,7 +5947,9 @@ public actor FloeAgentRuntime {
                 result: result,
                 isSideEffecting: executedIsSideEffecting,
                 outcomeUnknown: outcomeUnknown,
-                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .capabilityRemoved
+                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .capabilityRemoved,
+                wasDispatched: executorCrossedCallIDs.remove(call.id) != nil,
+                operationIdentity: Self.closureOperationIdentity(for: call, configuration: configuration)
             )
             if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
                 historyLookupSucceededInRun = true
@@ -6703,6 +7064,7 @@ public actor FloeAgentRuntime {
                 conversationID: configuration.conversationID,
                 childExecution: handoff,
                 callOrigin: makeCallOrigin(for: call, handoff: handoff),
+                taskProgress: nativeDiagnosticReporter(for: call, cancellation: cancellationToken),
                 temporaryReadOnly: configuration.temporaryReadOnly,
                 clientSessionID: clientSessionID(for: nil),
                 frozenEffectiveCatalogNames: runtimeVisibleCatalogNameSet()
@@ -6745,6 +7107,12 @@ public actor FloeAgentRuntime {
             // boundary below (not here), so concurrent task scheduling and
             // sink delivery latency never inflate execution time.
             // Suppressed/denied/recovered reads never reach here.
+            // Trusted dispatch evidence for settlement: these calls are
+            // committed to the executor. A per-call environment-busy failure
+            // keeps the mark (conservative — it then cannot be superseded).
+            for (call, _, _) in toRun {
+                executorCrossedCallIDs.insert(call.id)
+            }
         }
 
         let executor = self.executor
@@ -7456,8 +7824,12 @@ public actor FloeAgentRuntime {
                 role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
         }
         await releaseRunAuthorities()
+        let reason = Self.dependencyWaitReasonPrefix + ":"
+            + labels.map(\.identifier).joined(separator: ",")
+        let parkedState = AgentState.checkpointed(AgentState.CheckpointRef(reason: reason))
         do {
-            try await writeCheckpoint()
+            let saved = try await writeCheckpoint(stateOverride: parkedState)
+            guard saved.persisted else { throw AgentWaitError.unavailable }
         } catch {
             await failRun(
                 message: "Unable to persist the waiting state for outstanding background work: \(error.localizedDescription)",
@@ -7465,9 +7837,8 @@ public actor FloeAgentRuntime {
             )
             return
         }
-        let reason = Self.dependencyWaitReasonPrefix + ":"
-            + labels.map(\.identifier).joined(separator: ",")
-        await transition(to: .checkpointed(AgentState.CheckpointRef(reason: reason)))
+        guard !cancellationToken.isCancelled else { return }
+        await transition(to: parkedState)
     }
 
     /// Revokes and purges this run's runtime-issued operation authorities.
@@ -7482,6 +7853,130 @@ public actor FloeAgentRuntime {
             true
         default:
             false
+        }
+    }
+
+    // MARK: Trusted task.wait suspension
+
+    private func performRuntimeWait(call: ToolCall, request: RuntimeWaitRequest) async throws -> ToolExecutionOutput {
+        try request.validate()
+        try cancellationToken.throwIfCancelled()
+        let frozenRequest = try JSONDecoder().decode(RuntimeWaitRequest.self, from: call.argumentsJSON)
+        guard frozenRequest == request else { throw AgentWaitError.identityChanged }
+        guard !configuration.temporaryReadOnly, call.toolName == AgentWaitTool.name,
+              runtimeVisibleCatalogNameSet().contains(AgentWaitTool.name),
+              !Self.isTerminalState(state) else { throw AgentWaitError.unavailable }
+        let owner = AgentWaitOwner(conversationID: configuration.conversationID, runID: runID,
+                                   callID: call.id, clientSessionID: clientSessionID(for: nil))
+        var record: AgentWaitRecord
+        if let existing = runtimeWaitRecords[call.id] {
+            guard existing.owner == owner, existing.request == request else { throw AgentWaitError.identityChanged }
+            record = existing
+        } else {
+            guard activeRuntimeWait == nil else { throw AgentWaitError.unavailable }
+            var binding: AgentWaitNativeTimerBinding?
+            if let alarmID = request.alarmID {
+                guard let bridge = configuration.agentWaitNativeTimerBridge else { throw AgentWaitError.unavailable }
+                let observed = try await bridge.status(owner, alarmID)
+                guard observed.binding.alarmID == alarmID, observed.binding.isOwned(by: owner) else {
+                    throw AgentWaitError.identityChanged
+                }
+                binding = observed.binding
+            }
+            try cancellationToken.throwIfCancelled()
+            record = try AgentWaitRecord(owner: owner, request: request, now: configuration.agentWaitClock.now(), nativeBinding: binding)
+            let pendingIDs = Set(pendingToolCalls.map(\.id))
+            runtimeWaitRecords = runtimeWaitRecords.filter { pendingIDs.contains($0.key) }
+            guard runtimeWaitRecords.count < 64 else { throw AgentWaitError.unavailable }
+            runtimeWaitRecords[call.id] = record
+        }
+        if let receipt = record.receipt {
+            if receipt.status == .cancelled { throw FloeError.cancelled }
+            return try receipt.output()
+        }
+        // The first saved boundary carries trusted start/deadline and the
+        // actual checkpointed marker BEFORE suspension or a successful result.
+        let saved = try await writeCheckpoint()
+        guard saved.persisted else { throw AgentWaitError.unavailable }
+        try cancellationToken.throwIfCancelled()
+        guard runtimeWaitRecords[call.id]?.waitID == record.waitID, activeRuntimeWait == nil,
+              !Self.isTerminalState(state) else {
+            throw AgentWaitError.identityChanged
+        }
+        let clock = configuration.agentWaitClock
+        let native = configuration.agentWaitNativeTimerBridge
+        // Guidance can land while the initial checkpoint is saving, before
+        // the cancellation task exists. The accepted input is still authoritative.
+        if pendingSteers.contains(where: { if case .user = $0.origin { return true }; return false }) {
+            let interrupted = record.settle(.interrupted, at: clock.now(), reason: "New guidance interrupted this wait.")
+            record.receipt = interrupted
+            runtimeWaitRecords[call.id] = record
+            let settled = try await writeCheckpoint()
+            guard settled.persisted else { throw AgentWaitError.unavailable }
+            return try interrupted.output()
+        }
+        let suspendedRecord = record
+        let task = Task { try await AgentWaitSuspension.wait(record: suspendedRecord, clock: clock, native: native) }
+        activeRuntimeWait = (call.id, record.waitID, task)
+        await publishLiveness(phase: .waitingTool, message: FloeL10n.isChinese ? "等待时间或计时器结束" : "Waiting for the requested time or timer", isRecoverable: true)
+        let receipt: AgentWaitReceipt
+        do {
+            receipt = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
+        } catch {
+            guard activeRuntimeWait?.waitID == record.waitID else { throw AgentWaitError.identityChanged }
+            activeRuntimeWait = nil
+            if steeredRuntimeWaitIDs.remove(record.waitID) != nil, !cancellationToken.isCancelled {
+                var interrupted = record.settle(.interrupted, at: clock.now(), reason: "New guidance interrupted this wait.")
+                if let alarmID = request.alarmID, let native,
+                   let observed = try? await native.status(owner, alarmID), observed.binding == record.nativeBinding {
+                    if observed.nativeState == "paused", let total = observed.totalDuration, let elapsed = observed.previousElapsed {
+                        interrupted.remainingSeconds = max(0, total - elapsed)
+                    } else if let fireDate = observed.fireDate {
+                        interrupted.remainingSeconds = max(0, fireDate.timeIntervalSince(clock.now()))
+                    }
+                }
+                record.receipt = interrupted
+                runtimeWaitRecords[call.id] = record
+                let settled = try await writeCheckpoint()
+                guard settled.persisted else { throw AgentWaitError.unavailable }
+                return try interrupted.output()
+            }
+            if cancellationToken.isCancelled || error is CancellationError {
+                record.receipt = record.settle(.cancelled, at: clock.now(), reason: "The task was stopped.")
+                runtimeWaitRecords[call.id] = record
+                throw FloeError.cancelled
+            }
+            // Unknown native state remains an explicit failed wait; it does
+            // not manufacture a completed timer receipt or a recovery wake.
+            throw error
+        }
+        guard activeRuntimeWait?.waitID == record.waitID, !cancellationToken.isCancelled,
+              !Self.isTerminalState(state) else {
+            activeRuntimeWait?.task.cancel(); activeRuntimeWait = nil
+            throw FloeError.cancelled
+        }
+        activeRuntimeWait = nil
+        record.receipt = receipt
+        runtimeWaitRecords[call.id] = record
+        let settled = try await writeCheckpoint()
+        guard settled.persisted else { throw AgentWaitError.unavailable }
+        try cancellationToken.throwIfCancelled()
+        loopGuard.advanceProgressEpoch()
+        return try receipt.output()
+    }
+
+    private func recoverRuntimeWait(call: ToolCall) async -> ToolResult {
+        do {
+            let request = try JSONDecoder().decode(RuntimeWaitRequest.self, from: call.argumentsJSON)
+            let output = try await performRuntimeWait(call: call, request: request)
+            return ToolResult(callID: call.id, status: .ok, outputSummary: output.summary,
+                              outputDigest: output.fullOutputSHA256)
+        } catch let error as FloeError where error == .cancelled {
+            return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
+        } catch {
+            return ToolResult(callID: call.id, status: .failed, outputSummary: error.localizedDescription, outputDigest: "")
         }
     }
 
@@ -7545,7 +8040,8 @@ public actor FloeAgentRuntime {
 
     // MARK: Checkpoint persistence
 
-    private func writeCheckpoint() async throws {
+    @discardableResult
+    private func writeCheckpoint(stateOverride: AgentState? = nil) async throws -> RecoveryPointSnapshot {
         await publishLiveness(
             phase: .persisting,
             message: "Persisting a recovery checkpoint",
@@ -7553,15 +8049,72 @@ public actor FloeAgentRuntime {
         )
         guard let checkpointStore else {
             await publishLivenessForState(state)
-            return
+            checkpointGeneration += 1
+            return RecoveryPointSnapshot(
+                generation: checkpointGeneration,
+                formatVersion: AgentCheckpoint.currentFormatVersion,
+                stateName: state.name,
+                messageCount: messages.count,
+                pendingCallCount: 0,
+                pendingResultCount: 0,
+                persisted: false
+            )
         }
+        // Serialize capture→save against every other recovery write: the
+        // store's last-writer-wins upsert must never let an older capture
+        // land after a newer one.
+        await checkpointWriteGate.acquire()
+        defer { Task { await checkpointWriteGate.release() } }
+        // One consistent point-in-time capture of ALL actor-isolated state
+        // BEFORE the first suspending call. Reentrant actor work (a tool
+        // batch settling, a stream delta committing, a cancel landing) can
+        // only run before this capture or after the checkpoint is fully
+        // built — never halfway through — so the persisted call/result/
+        // lifecycle/message combination can never mix two different run
+        // moments and trip the snapshot-consistency invariants.
+        checkpointGeneration += 1
+        let generation = checkpointGeneration
+        let capturedWaitCalls = activeProviderPendingCalls.isEmpty ? pendingToolCalls : activeProviderPendingCalls
+        let capturedWaitResults = activeProviderPendingCalls.isEmpty ? pendingToolResults : activeProviderPendingResults
+        let capturedWaitCallIDs = Set(capturedWaitCalls.map(\.id))
+        let capturedWaitResultIDs = Set(capturedWaitResults.map(\.callID))
+        let capturedWaits = runtimeWaitRecords.values.filter { capturedWaitCallIDs.contains($0.owner.callID) }
+            .sorted { $0.owner.callID < $1.owner.callID }
+        let capturedUnsettledWaits = capturedWaits.filter { $0.receipt == nil && !capturedWaitResultIDs.contains($0.owner.callID) }
+        let capturedState: AgentState
+        if let stateOverride {
+            capturedState = stateOverride
+        } else if !cancellationToken.isCancelled,
+                  !capturedUnsettledWaits.isEmpty,
+                  !Self.isTerminalState(state) {
+            capturedState = .checkpointed(.init(reason: AgentWaitRecovery.markerPrefix + ":"
+                + capturedUnsettledWaits.map { $0.waitID.uuidString }.joined(separator: ",")))
+        } else { capturedState = state }
+        let capturedMessages = messages
+        let capturedActiveCalls = activeProviderPendingCalls
+        let capturedActiveResults = activeProviderPendingResults
+        let capturedPendingCalls = pendingToolCalls
+        let capturedPendingResults = pendingToolResults
+        let capturedResponseReasoning = responseReasoning
+        let capturedProviderRetryRequest = providerRetryRequest
+        let capturedGrants = grants
+        let capturedIdempotencyKeys = executedIdempotencyKeys
+        let capturedLedgerRecords = executionLedger.checkpointRecords()
+        let capturedLifecycle = toolLifecycleByCallID
+        let capturedContextCompaction = latestContextCompaction
+        let capturedDispatchEnvelope = latestProviderDispatchEnvelope
+        let capturedDispatchRequest = latestProviderDispatchRequest
+        let capturedReplayedPairs = replayableToolHistory
+        let capturedOwnedSystemContextID = ownedSystemContextID
+        let capturedSensitiveCallIDs = sensitivePendingCallIDs
+        let capturedSensitiveOutputCallIDs = sensitiveOutputCallIDs
         // streamingModel/executingTool/cancelling downgrade to preparing on
         // disk (replay resumes from the last tool-result boundary).
         let persistedState: AgentState
-        switch state {
+        switch capturedState {
         case .streamingModel, .executingTool, .cancelling:
             persistedState = .preparing(AgentState.PreparingInfo(
-                goal: messages.last(where: { $0.role == "user" })?.content ?? ""
+                goal: capturedMessages.last(where: { $0.role == "user" })?.content ?? ""
             ))
         case .waitingApproval(var info):
             info.toolCall = ToolArgumentSanitizer.sanitizedForPersistence(info.toolCall)
@@ -7578,14 +8131,14 @@ public actor FloeAgentRuntime {
             info.reason = info.reason.map { modelInputProjection?.redacted($0) ?? $0 }
             persistedState = .checkpointed(info)
         default:
-            persistedState = state
+            persistedState = capturedState
         }
         // Do not persist `streamText`: it is an uncommitted fragment from a
         // provider stream that may have been cancelled mid-token. Replaying it
         // as an assistant message loses the real continuation point and makes
         // the model repeat completed work. Committed assistant steps already
         // live in `messages`.
-        let checkpointMessages = messages.map { message in
+        let checkpointMessages = capturedMessages.map { message in
             var copy = message
             copy.content = modelInputProjection?.redacted(copy.content) ?? copy.content
             copy.reasoningContent = copy.reasoningContent.map { modelInputProjection?.redacted($0) ?? $0 }
@@ -7602,8 +8155,8 @@ public actor FloeAgentRuntime {
         // bytes the user authorized. Sensitive result bodies were never put
         // into the pending results (they live in the transient map and the
         // sanitized dispatch snapshot).
-        let rawCheckpointCalls = activeProviderPendingCalls.isEmpty
-            ? pendingToolCalls : activeProviderPendingCalls
+        let rawCheckpointCalls = capturedActiveCalls.isEmpty
+            ? capturedPendingCalls : capturedActiveCalls
         let scrubbedCallIDs = rawCheckpointCalls
             .filter {
                 ToolArgumentSanitizer.containsSensitiveValues(
@@ -7618,8 +8171,8 @@ public actor FloeAgentRuntime {
             return copy
         }
         let sensitiveCallIDs = Array(
-            Set(scrubbedCallIDs).union(sensitivePendingCallIDs)
-                .union(sensitiveOutputCallIDs)
+            Set(scrubbedCallIDs).union(capturedSensitiveCallIDs)
+                .union(capturedSensitiveOutputCallIDs)
         ).sorted()
         // Identifiers only. Temporary questions are RAM-only and must never
         // leak even their request ids into a checkpoint.
@@ -7631,15 +8184,15 @@ public actor FloeAgentRuntime {
         }
         let checkpointPagingCallIDs = Self.pagingCallIDs(in: checkpointCalls)
         let checkpointPendingResults = (
-            activeProviderPendingCalls.isEmpty ? pendingToolResults : activeProviderPendingResults
+            capturedActiveCalls.isEmpty ? capturedPendingResults : capturedActiveResults
         ).map { Self.checkpointSafeToolResult($0, pagingCallIDs: checkpointPagingCallIDs) }
         // Bound exactly as the live request did (boundedReasoning is
         // idempotent), keeping the envelope's reasoning digest reproducible
         // after a restart. Empty stays absent.
         let checkpointReasoning = ToolReplayPlanner.boundedReasoning(
-            responseReasoning.isEmpty
-                ? providerRetryRequest?.pendingAssistantReasoning
-                : responseReasoning
+            capturedResponseReasoning.isEmpty
+                ? capturedProviderRetryRequest?.pendingAssistantReasoning
+                : capturedResponseReasoning
         )
         let checkpoint = AgentCheckpoint(
             runID: runID,
@@ -7648,22 +8201,22 @@ public actor FloeAgentRuntime {
             messages: checkpointMessages,
             pendingToolCalls: checkpointCalls,
             pendingToolResults: checkpointPendingResults,
-            approvals: grants,
-            idempotencyKeys: executedIdempotencyKeys,
+            approvals: capturedGrants,
+            idempotencyKeys: capturedIdempotencyKeys,
             conversationMode: configuration.conversationMode,
             executionBinding: configuration.executionBinding,
-            contextCompaction: latestContextCompaction,
+            contextCompaction: capturedContextCompaction,
             parentIterationCount: iterationSnapshot.parent,
             totalIterationCount: iterationSnapshot.total,
-            executionLedgerEntries: executionLedger.checkpointRecords(),
-            toolLifecycleEntries: toolLifecycleByCallID.values.sorted {
+            executionLedgerEntries: capturedLedgerRecords,
+            toolLifecycleEntries: capturedLifecycle.values.sorted {
                 if $0.updatedAt == $1.updatedAt { return $0.callID < $1.callID }
                 return $0.updatedAt < $1.updatedAt
             },
-            providerDispatchEnvelope: latestProviderDispatchEnvelope,
-            providerDispatchRequest: latestProviderDispatchRequest,
+            providerDispatchEnvelope: capturedDispatchEnvelope,
+            providerDispatchRequest: capturedDispatchRequest,
             pendingAssistantReasoning: checkpointReasoning.map { modelInputProjection?.redacted($0) ?? $0 },
-            replayedToolPairs: replayableToolHistory.map { pair in
+            replayedToolPairs: capturedReplayedPairs.map { pair in
                 var copy = pair
                 copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
                 copy.call.argumentsJSON = modelInputProjection?.redactedJSON(copy.call.argumentsJSON) ?? copy.call.argumentsJSON
@@ -7671,18 +8224,52 @@ public actor FloeAgentRuntime {
                 copy.assistantReasoning = copy.assistantReasoning.map { modelInputProjection?.redacted($0) ?? $0 }
                 return copy
             },
-            ownedSystemContextID: ownedSystemContextID,
+            ownedSystemContextID: capturedOwnedSystemContextID,
             sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs,
-            pendingUserQuestionRequestIDs: pendingUserQuestionRequestIDs
+            pendingUserQuestionRequestIDs: pendingUserQuestionRequestIDs,
+            runtimeWaits: capturedWaits.isEmpty ? nil : capturedWaits
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {
-            throw FloeError.validationFailed(
-                "Harness checkpoint invariant failed: \(HarnessInvariantRegistry.summary(invariantViolations))"
+            // Violation NAMES plus snapshot metadata only: actionable and
+            // content-free (details can embed call identifiers; they stay in
+            // the thrown message, not the log).
+            logger.error(
+                "checkpointInvariantRejected run=\(runID.uuidString) generation=\(generation) violations=\(invariantViolations.prefix(6).map(\.name).joined(separator: ",")) state=\(persistedState.name) pendingCalls=\(checkpointCalls.count) pendingResults=\(checkpointPendingResults.count) messages=\(checkpointMessages.count)"
+            )
+            throw CheckpointWriteError(
+                generation: generation,
+                underlying: FloeError.validationFailed(
+                    "Harness checkpoint invariant failed: \(HarnessInvariantRegistry.summary(invariantViolations))"
+                ),
+                errorIdentity: "validationFailed"
             )
         }
-        try await checkpointStore.save(checkpoint)
+        do {
+            try await checkpointStore.save(checkpoint)
+            lastPersistedCheckpointGeneration = max(lastPersistedCheckpointGeneration, generation)
+        } catch {
+            // Redacted, actionable identity (error case / NSError domain+code)
+            // plus snapshot metadata — never message or argument content.
+            logger.error(
+                "checkpointSaveFailed run=\(runID.uuidString) generation=\(generation) formatVersion=\(checkpoint.formatVersion) state=\(persistedState.name) pendingCalls=\(checkpointCalls.count) pendingResults=\(checkpointPendingResults.count) messages=\(checkpointMessages.count) error=\(PersistenceErrorIdentity.render(error))"
+            )
+            throw CheckpointWriteError(
+                generation: generation,
+                underlying: error,
+                errorIdentity: PersistenceErrorIdentity.render(error)
+            )
+        }
         await publishLivenessForState(state)
+        return RecoveryPointSnapshot(
+            generation: generation,
+            formatVersion: checkpoint.formatVersion,
+            stateName: persistedState.name,
+            messageCount: checkpointMessages.count,
+            pendingCallCount: checkpointCalls.count,
+            pendingResultCount: checkpointPendingResults.count,
+            persisted: true
+        )
     }
 
     private func setToolLifecycle(

@@ -634,6 +634,20 @@ public struct LinuxGuestImageProvenance: Sendable, Equatable, Codable {
     }
 }
 
+/// Device support of the exact verified kernel/initrd/userspace image.
+/// Older manifests omit this record and retain their fixed-memory CPU path.
+public struct LinuxGuestImageDeviceCapabilities: Sendable, Equatable, Codable {
+    public var onlineMemory: Bool?
+    public var vulkanGPU: Bool?
+    public var localDisplay: Bool?
+
+    public init(onlineMemory: Bool? = nil, vulkanGPU: Bool? = nil, localDisplay: Bool? = nil) {
+        self.onlineMemory = onlineMemory
+        self.vulkanGPU = vulkanGPU
+        self.localDisplay = localDisplay
+    }
+}
+
 public struct LinuxGuestImage: Sendable, Equatable, Codable {
     public var id: String
     public var biosPath: String
@@ -663,6 +677,7 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
     /// Exact predecessor base images an existing environment disk may have
     /// been cloned from. Absent in older manifests (nil = no adoption).
     public var compatibleOrigins: [LinuxGuestCompatibleDiskOrigin]?
+    public var deviceCapabilities: LinuxGuestImageDeviceCapabilities?
 
     public init(
         id: String,
@@ -679,7 +694,8 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
         provenance: LinuxGuestImageProvenance? = nil,
         runnerArtifact: LinuxGuestImageArtifact? = nil,
         runnerCapabilities: String? = nil,
-        compatibleOrigins: [LinuxGuestCompatibleDiskOrigin]? = nil
+        compatibleOrigins: [LinuxGuestCompatibleDiskOrigin]? = nil,
+        deviceCapabilities: LinuxGuestImageDeviceCapabilities? = nil
     ) {
         self.id = id
         self.biosPath = biosPath
@@ -696,6 +712,7 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
         self.runnerArtifact = runnerArtifact
         self.runnerCapabilities = runnerCapabilities
         self.compatibleOrigins = compatibleOrigins
+        self.deviceCapabilities = deviceCapabilities
     }
 
     /// The declared artifact paths with their roles, in manifest order.
@@ -986,11 +1003,37 @@ public struct LinuxGuestInitialResetReceipt: Sendable, Equatable {
     }
 }
 
+/// Live online-memory state of the shared machine. The three quantities stay
+/// deliberately distinct and are never conflated: `desiredMiB` is the
+/// persisted target the user chose, `effectiveMiB` is the machine's current
+/// native budget, and `pluggedMiB` is the size the guest driver has actually
+/// attached so far (device truth — NOT the guest's usable MemTotal, and never
+/// reported as the target). A shrink requested while projects run stays
+/// pending: `desiredMiB` sits below `effectiveMiB` until the final project
+/// closes, so `pendingShrink` is true.
+public struct LinuxSharedMemoryStatus: Sendable, Equatable {
+    public var desiredMiB: Int
+    public var effectiveMiB: Int
+    public var pluggedMiB: Int?
+    public var pendingShrink: Bool
+
+    public init(desiredMiB: Int, effectiveMiB: Int, pluggedMiB: Int?, pendingShrink: Bool) {
+        self.desiredMiB = desiredMiB
+        self.effectiveMiB = effectiveMiB
+        self.pluggedMiB = pluggedMiB
+        self.pendingShrink = pendingShrink
+    }
+}
+
 public protocol LinuxGuestControlling: Sendable {
     func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig?
     func configureSharedGuest(_ configuration: LinuxGuestLifecycleConfig) async throws
     func stopSharedGuest() async
     func sharedMachinePhase() async -> LinuxSharedMachinePhase?
+    /// Live online-memory truth (desired/effective/plugged) for the settings
+    /// surface; nil when the runtime has no shared online-memory device.
+    func sharedMemoryStatus() async -> LinuxSharedMemoryStatus?
+    func sharedGPUStatus() async -> ARM64GPUBudget?
     func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String]
     func restoreInitialState(imageID: String,
         prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt
@@ -1144,6 +1187,8 @@ public extension LinuxGuestControlling {
     func sharedGuestConfiguration() async -> LinuxGuestLifecycleConfig? { nil }
     func stopSharedGuest() async {}
     func sharedMachinePhase() async -> LinuxSharedMachinePhase? { nil }
+    func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? { nil }
+    func sharedGPUStatus() async -> ARM64GPUBudget? { nil }
     func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
         throw LinuxGuestError.invalidConfiguration("This backend cannot verify shared-machine power off")
     }

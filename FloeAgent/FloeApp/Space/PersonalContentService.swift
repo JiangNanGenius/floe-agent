@@ -256,7 +256,7 @@ extension PersonalContentKind {
     var title: String {
         switch self {
         case .canvas: IDELanguageRunText.t("混合画布", "Canvas")
-        case .diagram: IDELanguageRunText.t("流程图", "Flowchart")
+        case .diagram: IDELanguageRunText.t("思维导图", "Mind Map")
         case .image: IDELanguageRunText.t("图像", "Image")
         case .drawing: IDELanguageRunText.t("绘画", "Drawing")
         case .video: IDELanguageRunText.t("视频", "Video")

@@ -107,6 +107,41 @@ public extension BiologyService {
                 else {let reference=try string("reference");guard reference.hasPrefix("floe-chemistry:"),reference.utf8.count<=4096 else {throw BiologyError.invalid("Choose an explicit chemistry reference.")};if !p.chemistryLinks.contains(reference){p.chemistryLinks.append(reference)}}
                 return .object(["projectID":.string(p.id.uuidString),"revision":.number(Double(p.revision+1))])
             }
+            if operation=="asset.create" {
+                guard p.revision==expectedRevision else {throw BiologyError.conflict(expected:expectedRevision,actual:p.revision)}
+                let title=try string("title")
+                guard title.utf8.count<=4096 else {throw BiologyError.invalid("Invalid dataset title.")}
+                guard let kind=parameters["kind"]?.string else {throw BiologyError.invalid("Choose the new dataset kind.")}
+                let payload:BiologyAssetPayload,original:Data,format:String
+                if kind=="sequence" {
+                    let recordName=parameters["recordName"]?.string ?? title
+                    guard !recordName.isEmpty,recordName.utf8.count<=4096 else {throw BiologyError.invalid("Invalid record name.")}
+                    // A blank board stays an uncommitted editing draft until the
+                    // caller supplies real symbols; no implicit sequence is ever
+                    // invented here.
+                    guard let rawSequence=parameters["sequence"]?.string,!rawSequence.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {throw BiologyError.invalid("Enter a sequence to create a sequence dataset.")}
+                    var records=try BiologyImporter.sequences(">"+recordName+"\n"+rawSequence+"\n",format:"fasta")
+                    if let raw=parameters["annotation"] {
+                        var fields=raw.object ?? [:]
+                        if fields["id"]==nil {fields["id"] = .string(UUID().uuidString)}
+                        if fields["strand"]==nil {fields["strand"] = .number(1)}
+                        if fields["qualifiers"]==nil {fields["qualifiers"] = .object([:])}
+                        let annotation=try JSONDecoder().decode(SequenceAnnotation.self,from:BiologyCoding.encode(JSONValue.object(fields)))
+                        guard annotation.start>=0,annotation.end>annotation.start,annotation.end<=records[0].sequence.count else {throw BiologyError.invalid("Annotation range is outside the new sequence.")}
+                        records[0].annotations.append(annotation)
+                    }
+                    payload = .sequence(records);original=Data(BiologyImporter.fasta(records).utf8);format="fasta"
+                } else if kind=="biochemicalNetwork" {
+                    let network:BiochemicalNetwork
+                    if let raw=parameters["network"] {network=try JSONDecoder().decode(BiochemicalNetwork.self,from:BiologyCoding.encode(raw));try network.validate()}
+                    else {network=BiochemicalNetwork(species:[.init(id:"S1",initialAmount:0)],reactions:[])}
+                    payload = .biochemicalNetwork(network);original=try BiologyCoding.encode(network);format="network.json"
+                } else {throw BiologyError.invalid("Unsupported dataset kind.")}
+                var asset=BiologyAsset(title:title,payload:payload,originalData:original,originalFormat:format)
+                asset.provenance=["origin":"native.blank.create"]
+                p.assets.append(asset);p.activeAssetID=asset.id
+                return .object(["assetID":.string(asset.id.uuidString),"revision":.number(1)])
+            }
             guard let assetID,let i=p.assets.firstIndex(where:{$0.id==assetID}) else {throw BiologyError.invalid("Choose an existing dataset.")}
             guard p.assets[i].revision==expectedRevision,expectedRevision<UInt64.max else {throw BiologyError.conflict(expected:expectedRevision,actual:p.assets[i].revision)}
             if operation=="asset.delete" {

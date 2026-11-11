@@ -132,7 +132,10 @@ enum CloudASRAudioExtractor {
             byteCount: byteCount)
     }
 
-    private static func pcm16Data(from sample: CMSampleBuffer) throws -> Data {
+    /// Sample bytes of one audio buffer (little-endian PCM16 after the
+    /// reader's output settings). Internal so the meetings fallback can
+    /// extract exact uncovered sub-ranges from a chunk with the same codec.
+    static func pcm16Data(from sample: CMSampleBuffer) throws -> Data {
         var blockBuffer: CMBlockBuffer?
         var audioBufferList = AudioBufferList(
             mNumberBuffers: 0,
@@ -243,6 +246,7 @@ enum CloudASRFilePipeline {
         language: VoiceRecognitionLanguage,
         requiresTiming: Bool,
         maximumChunkSeconds: Double = CloudASRFileChunker.defaultMaximumSeconds,
+        enableSpeakerAttribution: Bool = false,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> ASRTranscriptionResult {
         let prepared = try await CloudASRAudioExtractor.extract(url: fileURL)
@@ -258,6 +262,9 @@ enum CloudASRFilePipeline {
             try Task.checkCancellation()
             let chunk = try CloudASRFileChunker.chunk(
                 prepared: prepared, index: index, maximumSeconds: maximumChunkSeconds)
+            // One identity per actual provider request, not per assembled
+            // file: speaker numbering can restart at every chunk boundary.
+            let recognitionRequestID = UUID()
             let result = try await adapter.transcribe(
                 ASRFileTranscriptionRequest(
                     profile: profile,
@@ -265,7 +272,8 @@ enum CloudASRFilePipeline {
                     filename: "floe-chunk-\(index).wav",
                     mimeType: "audio/wav",
                     languages: language.recognitionCode.map { [$0] } ?? [],
-                    sourceDurationSeconds: chunk.durationSeconds),
+                    sourceDurationSeconds: chunk.durationSeconds,
+                    enableSpeakerAttribution: enableSpeakerAttribution),
                 credential: credential)
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { texts.append(text) }
@@ -280,7 +288,8 @@ enum CloudASRFilePipeline {
                         continue
                     }
                     segments.append(ASRTranscriptionSegment(
-                        start: start, end: end, text: segment.text))
+                        start: start, end: end, text: segment.text,
+                        speaker: segment.speaker, recognitionRequestID: recognitionRequestID))
                 }
             }
             if requiresTiming, !text.isEmpty, segments.count == segmentCountBeforeChunk {

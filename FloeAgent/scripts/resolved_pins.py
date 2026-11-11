@@ -283,6 +283,96 @@ HOST_GRAPH_ADAPTERS = {
 }
 
 
+# Old standalone locks can retain these four remote references after
+# the App replaced them with reviewed path packages. They are not active pins.
+# Both the vendored manifest and provenance bytes must remain exactly reviewed;
+# the remote identity/source/revision/version must also match that provenance.
+RETIRED_HOST_GRAPH_PINS = {
+    "citadel": {
+        "path": "ThirdParty/Citadel",
+        "packageName": "Citadel",
+        "manifestSHA256": "9f7a1d6c40a6cabfc61c3b0cfb724b3d33a49e00044d89f62b07a5c599959892",
+        "provenance": "PROVENANCE.json",
+        "provenanceSHA256": "3310a2ffd7eaf1e75561766851071f13fa39b5200bc099264417bbe994fe266b",
+    },
+    "libgit2": {
+        "path": "ThirdParty/FloeNativeGit",
+        "manifestSHA256": "a301444085a0abd84e28328a0c084ad8c775b84c19912149cb6f2d2831f7222b",
+        "provenance": "upstream.lock.json",
+        "provenanceSHA256": "5e20ea634d05dd3ae5195286ef3ab56df1ff5c75658526fb2b911da133d16dd9",
+        "upstreamName": "libgit2",
+    },
+    "swiftgitx": {
+        "path": "ThirdParty/FloeNativeGit",
+        "manifestSHA256": "a301444085a0abd84e28328a0c084ad8c775b84c19912149cb6f2d2831f7222b",
+        "provenance": "upstream.lock.json",
+        "provenanceSHA256": "5e20ea634d05dd3ae5195286ef3ab56df1ff5c75658526fb2b911da133d16dd9",
+        "upstreamName": "SwiftGitX",
+    },
+    "swift-crypto": {
+        "path": "ThirdParty/swift-crypto",
+        "manifestSHA256": "c078b4fd9910aa2229d81955f642e424416c8c4d0afff59db5b150e465b6a439",
+        "provenance": "FLOE_UPSTREAM.json",
+        "provenanceSHA256": "54113793203593b481dd70620e17f171784456e22ee8a7665fcbb4e74248021d",
+    },
+}
+
+
+# MediaExchange also has direct remote dependencies, so its lock remains an
+# active App-local authority. Only these four exact, proven vendored references
+# are retired; all other entries keep the ordinary merge/conflict checks.
+LOCAL_LOCK_RETIRED_REFERENCES = {
+    "FloeMediaExchange": {
+        "path": "Modules/FloeMediaExchange",
+        "manifestSHA256": "0e43ba97ba67412e05afa22191a6ed6beb7c0c8ce63f3d7baed90ca69ea652c8",
+        "identities": frozenset({"citadel", "libgit2", "swift-crypto", "swiftgitx"}),
+    },
+}
+
+
+def _retired_host_graph_pin_matches(root, pin):
+    policy = RETIRED_HOST_GRAPH_PINS.get(pin["identity"])
+    if policy is None:
+        return False
+    directory = root / policy["path"]
+    manifest = directory / "Package.swift"
+    provenance = directory / policy["provenance"]
+    host_manifest = root / "Package.swift"
+    try:
+        if directory.resolve() != directory.absolute():
+            return False
+        for path, digest in ((manifest, policy["manifestSHA256"]),
+                             (provenance, policy["provenanceSHA256"])):
+            if (path.is_symlink() or not path.is_file()
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != digest):
+                return False
+        if host_manifest.is_symlink() or not host_manifest.is_file():
+            return False
+        package_name = (r'name:[ \t]*"' + re.escape(policy["packageName"]) + r'"[ \t]*,[ \t]*'
+                        if "packageName" in policy else "")
+        declaration = (r'(?m)^[ \t]*\.package\([ \t]*' + package_name + r'path:[ \t]*"'
+                       + re.escape(policy["path"]) + r'"[ \t]*\)[ \t]*,?[ \t]*$')
+        if re.search(declaration, host_manifest.read_text(encoding="utf-8")) is None:
+            return False
+        record = json.loads(provenance.read_text(encoding="utf-8"))
+        if "upstreamName" in policy:
+            records = [item for item in record["upstreams"]
+                       if item["name"] == policy["upstreamName"]]
+            if len(records) != 1:
+                return False
+            record = records[0]
+            source = record["url"]
+        else:
+            source = record["upstream"]
+        state = {"revision": record["revision"]}
+        if record.get("version") is not None:
+            state["version"] = record["version"]
+        expected = {"identity": pin["identity"], "location": source, "state": state}
+        return same_pin(pin, expected)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _verify_host_graph_adapter(root, name, raw_path):
     policy = HOST_GRAPH_ADAPTERS[name]
     directory = root / raw_path
@@ -300,7 +390,11 @@ def _verify_host_graph_adapter(root, name, raw_path):
     host = {pin["identity"]: pin for pin in resolved_pins(json.loads((root / "Package.resolved").read_text(encoding="utf-8")))}
     for pin in resolved_pins(json.loads(lock.read_text(encoding="utf-8"))):
         parent = host.get(pin["identity"])
-        if parent is None or not same_pin({**pin, "state": {}}, {**parent, "state": {}}):
+        if parent is None:
+            if _retired_host_graph_pin_matches(root, pin):
+                continue
+            raise ValueError(f"Host-graph adapter contains an unknown identity or source: {name}: {pin['identity']}")
+        if not same_pin({**pin, "state": {}}, {**parent, "state": {}}):
             raise ValueError(f"Host-graph adapter contains an unknown identity or source: {name}: {pin['identity']}")
     # State in this standalone lock is intentionally not merged. The committed
     # parent + actual App root resolution remain checked by verify_resolution.
@@ -316,6 +410,8 @@ def application_local_pins(project, project_dir):
     may agree on the exact same pin, but a conflicting identity is rejected
     instead of letting one lock silently replace another. The two manifest-
     reviewed host-graph adapters above contribute no independent pin state.
+    The manifest-reviewed MediaExchange lock retires only its four exact
+    provenance-bound vendored references; every other pin remains authoritative.
 
     One first-party sibling is allowlisted by name and exact path:
     ``FloeMacBridge`` at ``../FloeMacBridge``. It is accepted only as a real,
@@ -344,6 +440,14 @@ def application_local_pins(project, project_dir):
         if name in HOST_GRAPH_ADAPTERS:
             _verify_host_graph_adapter(root, name, raw_path)
             continue
+        retirement = LOCAL_LOCK_RETIRED_REFERENCES.get(name)
+        if retirement is not None:
+            directory = root / raw_path
+            manifest = directory / "Package.swift"
+            if (raw_path != retirement["path"] or directory.resolve() != directory.absolute()
+                    or manifest.is_symlink() or not manifest.is_file()
+                    or hashlib.sha256(manifest.read_bytes()).hexdigest() != retirement["manifestSHA256"]):
+                raise ValueError(f"Local retirement package differs from its reviewed path or manifest: {name}")
         package_dir = (root / raw_path).resolve()
         try:
             package_dir.relative_to(root)
@@ -356,6 +460,8 @@ def application_local_pins(project, project_dir):
             # application_pins/verify_resolution, not a separate local source.
             continue
         lock_path = package_dir / "Package.resolved"
+        if retirement is not None and lock_path.is_symlink():
+            raise ValueError(f"Local retirement package lock must not be an alias: {name}")
         resolved_lock = lock_path.resolve()
         try:
             resolved_lock.relative_to(root)
@@ -372,6 +478,10 @@ def application_local_pins(project, project_dir):
                 f"Invalid Package.resolved for local Xcode package {name}: {resolved_lock}"
             ) from error
         for pin in resolved_pins(document):
+            if retirement is not None and pin["identity"] in retirement["identities"]:
+                if not _retired_host_graph_pin_matches(root, pin):
+                    raise ValueError(f"Local retired reference differs from reviewed vendored proof: {name}: {pin['identity']}")
+                continue
             existing = seen.get(pin["identity"])
             if existing is not None:
                 if same_pin(existing, pin):

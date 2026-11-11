@@ -161,11 +161,20 @@ import FloeHeavyEditorsHostAdapter
                     try await session.requireOriginal(); try context.cancellation.throwIfCancelled()
                 })
         }
+        // A project.observe result becomes the shared verified image artifact the
+        // runtime's visual-evidence flow attaches to the next provider request;
+        // the model-visible text keeps only the artifact identity, never base64.
+        var observationArtifacts: [ToolArtifactReference] = []
+        if let render = try GISObservationArtifact.makeIfPresent(result: result, expectedRevision: session.controller.document.revision, runID: context.runID, root: GISObservationArtifact.artifactRoot()) {
+            GISObservationArtifact.rewriting(&body, render: render)
+            observationArtifacts.append(render.reference)
+        }
         try await authorize(); try await session.requireOriginal(); try context.cancellation.throwIfCancelled()
         _ = try await location(session.id, context: context, editing: !canonicalExports.isEmpty)
         let text = try EditorJSON.object(body).text()
         var output = ToolExecutionOutput(digesting: text, exitStatus: 0, capturedOutput: text)
         output.outputFiles = outputFiles
+        output.artifacts = observationArtifacts
         return output
     }
 }

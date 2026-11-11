@@ -244,11 +244,11 @@ actor SystemAlarmService {
         //    manager before declaring the alarm created.
         do {
             let nativeAlarms = try await native.alarms()
-            let confirmed = nativeAlarms.contains { $0.id == alarmID }
-            if confirmed {
-                _ = try await store.markCreated(id: alarmID, nativeState: snapshot.state, at: Date())
+            if let confirmed = nativeAlarms.first(where: { $0.id == alarmID }) {
+                let nativeState = snapshot.state == "alerting" ? "alerting" : confirmed.state
+                _ = try await store.markCreated(id: alarmID, nativeState: nativeState, at: Date())
                 record.state = .created
-                record.nativeState = snapshot.state
+                record.nativeState = nativeState
             } else {
                 // Returned but readback does not show the exact id: an
                 // inconsistent native state — surface as unknown, not success.
@@ -269,6 +269,169 @@ actor SystemAlarmService {
 
     func list(owner: SystemAlarmOwner) async throws -> [SystemAlarmRecord] {
         try await store.records(ownerTaskID: owner.taskID, ownerRunID: owner.runID)
+    }
+
+    /// Event-driven change notification for timer cards: forwards the native
+    /// observation stream (alarm set + Live Activity timeline changes) as
+    /// Void ticks. Bounded (the native stream is single-subscription and
+    /// change-driven) — cards re-read `timerStatus` once per tick.
+    var timerUpdates: AsyncStream<Void> {
+        get async {
+            let stream = await native.alarmUpdates
+            return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+                let task = Task {
+                    for await _ in stream {
+                        guard !Task.isCancelled else { break }
+                        continuation.yield(())
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+    }
+
+    // MARK: - Timer status + controls (owner-scoped, revision-checked)
+
+    /// Authoritative state of one owned timer: the durable ledger record plus
+    /// the current native timeline snapshot, and the optimistic control
+    /// revision. A foreign or unrecorded id is refused, never adopted. A
+    /// positively observed `alerting` native state is persisted into the
+    /// row's `native_state` (via the existing CAS transition that preserves
+    /// it) so firing evidence survives a later Stop/disappearance — absence
+    /// alone can never be mistaken for a pre-deadline cancel.
+    func timerStatus(owner: SystemAlarmOwner, alarmID: UUID) async throws -> SystemAlarmTimerStatus {
+        guard activeMutations.insert(alarmID).inserted else {
+            throw SystemAlarmError.operationInProgress
+        }
+        defer { activeMutations.remove(alarmID) }
+        guard let record = try await store.record(id: alarmID) else {
+            throw SystemAlarmError.native("alarm \(alarmID.uuidString) is not owned by this app")
+        }
+        guard owner.sameTask(taskID: record.ownerTaskID, runID: record.ownerRunID) else {
+            throw SystemAlarmError.native("alarm \(alarmID.uuidString) belongs to another task")
+        }
+        let snapshot = try? await native.alarms().first { $0.id == alarmID }
+        if let snapshot {
+            let nativeState = record.persistedNativeState(observing: snapshot)
+            if record.state != .created || record.nativeState != nativeState {
+                // An exact native readback also repairs a control's unknown
+                // outcome. Never reissue that control to discover its result.
+                _ = try await store.markCreated(id: alarmID, nativeState: nativeState, at: Date())
+            }
+        }
+        let refreshed = try await store.record(id: alarmID) ?? record
+        return SystemAlarmTimerStatus(
+            record: refreshed,
+            snapshot: snapshot,
+            revision: SystemAlarmControlRevision.fingerprint(record: refreshed, snapshot: snapshot))
+    }
+
+    /// Trusted host-intent hook, awaited BEFORE the system Stop mutation.
+    /// Returns true only when this exact ledger-owned id is currently alerting
+    /// and that positive evidence is durable. False means no new firing proof
+    /// was established; an existing proof is never erased. Missing/manual ids
+    /// are not adopted. Busy/native-read/storage failures throw, and this
+    /// method itself never mutates AlarmKit or grants model authority.
+    @discardableResult
+    func preserveAlertingBeforeStop(alarmID: UUID) async throws -> Bool {
+        guard activeMutations.insert(alarmID).inserted else {
+            throw SystemAlarmError.operationInProgress
+        }
+        defer { activeMutations.remove(alarmID) }
+        guard let record = try await store.record(id: alarmID),
+              [.submitted, .unknown, .created].contains(record.state) else { return false }
+        guard let snapshot = try await native.alarms().first(where: { $0.id == alarmID }),
+              snapshot.state == "alerting" else { return false }
+        if record.state == .created, record.nativeState == "alerting" { return true }
+        return try await store.markCreated(id: alarmID, nativeState: "alerting", at: Date())
+    }
+
+    /// Applies one user control (pause/resume/cancel) to an owned timer.
+    /// `expectedRevision` must match the CURRENT durable/native fingerprint
+    /// (from `timerStatus`): a control based on stale UI state is rejected
+    /// with `staleControlRevision` and the caller re-reads fresh state, so a
+    /// buffered old snapshot can never drive a wrong mutation. The same
+    /// per-alarm `activeMutation` gate as schedule/cancel serializes
+    /// controls, and every mutation is reconciled against a real native
+    /// readback — a returned-but-unverified control is surfaced, not
+    /// reported as success.
+    @discardableResult
+    func controlTimer(
+        owner: SystemAlarmOwner,
+        alarmID: UUID,
+        action: SystemAlarmTimerAction,
+        expectedRevision: UInt64,
+        cancellation: CancellationToken? = nil
+    ) async throws -> SystemAlarmTimerStatus {
+        guard activeMutations.insert(alarmID).inserted else {
+            throw SystemAlarmError.operationInProgress
+        }
+        defer { activeMutations.remove(alarmID) }
+        try Self.checkCancellation(cancellation)
+        guard let record = try await store.record(id: alarmID) else {
+            throw SystemAlarmError.native("alarm \(alarmID.uuidString) is not owned by this app")
+        }
+        guard owner.sameTask(taskID: record.ownerTaskID, runID: record.ownerRunID) else {
+            throw SystemAlarmError.native("alarm \(alarmID.uuidString) belongs to another task")
+        }
+        // Stale-action rejection BEFORE any native mutation.
+        let currentSnapshot = try? await native.alarms().first { $0.id == alarmID }
+        let currentRevision = SystemAlarmControlRevision.fingerprint(
+            record: record, snapshot: currentSnapshot)
+        guard currentRevision == expectedRevision else {
+            throw SystemAlarmError.staleControlRevision
+        }
+        // Store/native reads above suspend this actor. Cancellation during
+        // those reads must fence the exact SDK mutation, not just entry.
+        try Self.checkCancellation(cancellation)
+        switch action {
+        case .pause:
+            guard record.kind == .timer, record.state == .created,
+                  currentSnapshot?.state == "countdown" else {
+                throw SystemAlarmError.invalidRequest(
+                    "only a counting-down owned timer can be paused")
+            }
+            do { try await native.pause(id: alarmID) }
+            catch {
+                try await store.markUnknown(id: alarmID, at: Date())
+                throw SystemAlarmError.native(String(describing: error))
+            }
+        case .resume:
+            guard record.kind == .timer, record.state == .created,
+                  currentSnapshot?.state == "paused" else {
+                throw SystemAlarmError.invalidRequest(
+                    "only a paused owned timer can be resumed")
+            }
+            do { try await native.resume(id: alarmID) }
+            catch {
+                try await store.markUnknown(id: alarmID, at: Date())
+                throw SystemAlarmError.native(String(describing: error))
+            }
+        case .cancel:
+            return try await reconcileCancel(owner: owner, record: record)
+                .asTimerStatus(snapshot: try? await native.alarms().first { $0.id == alarmID })
+        }
+        // Post-mutation readback reconciliation: the expected state change
+        // must actually be observable before it is reported.
+        let updated = try? await native.alarms().first { $0.id == alarmID }
+        let expectedState = action == .pause ? "paused" : "countdown"
+        if let updated {
+            _ = try await store.markCreated(
+                id: alarmID, nativeState: record.persistedNativeState(observing: updated), at: Date())
+            guard updated.state == expectedState else {
+                throw SystemAlarmError.native(
+                    "timer did not reach \(expectedState) (read \(updated.state))")
+            }
+        } else {
+            _ = try await store.markUnknown(id: alarmID, at: Date())
+            throw SystemAlarmError.native("timer is no longer scheduled")
+        }
+        let refreshed = try await requiredRecord(id: alarmID)
+        return SystemAlarmTimerStatus(
+            record: refreshed,
+            snapshot: updated,
+            revision: SystemAlarmControlRevision.fingerprint(record: refreshed, snapshot: updated))
     }
 
     // MARK: - Cancel (owner-scoped, committed-result reconciliation)
@@ -385,7 +548,8 @@ actor SystemAlarmService {
         }
         for row in eligible {
             if let snapshot = current.first(where: { $0.id == row.id }) {
-                _ = try await store.markCreated(id: row.id, nativeState: snapshot.state, at: Date())
+                _ = try await store.markCreated(id: row.id,
+                    nativeState: row.persistedNativeState(observing: snapshot), at: Date())
                 outcomes.append((row.id, .confirmedCreated))
             } else if row.nativeState != nil || row.state == .created {
                 // The ledger contains positive native-create proof, followed
@@ -413,6 +577,22 @@ actor SystemAlarmService {
         if Task.isCancelled || cancellation?.isCancelled == true {
             throw SystemAlarmError.cancelledBeforeCommit
         }
+    }
+}
+
+private extension SystemAlarmRecord {
+    /// A timer that was positively observed ringing cannot become unfired
+    /// because a later native presentation arrives. The live snapshot still
+    /// supplies its current controls/timeline independently of this proof.
+    func persistedNativeState(observing snapshot: SystemAlarmNativeSnapshot) -> String {
+        kind == .timer && nativeState == "alerting" ? "alerting" : snapshot.state
+    }
+
+    func asTimerStatus(snapshot: SystemAlarmNativeSnapshot?) -> SystemAlarmTimerStatus {
+        SystemAlarmTimerStatus(
+            record: self,
+            snapshot: snapshot,
+            revision: SystemAlarmControlRevision.fingerprint(record: self, snapshot: snapshot))
     }
 }
 #endif

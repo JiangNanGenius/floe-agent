@@ -478,6 +478,21 @@ public enum MediaPreparedEngine {
             document.assetRevisions?[asset.id] = 1
             return [.init(ref: .init(kind: .asset, id: asset.id), position: document.assets.count - 1,
                           before: nil, after: .asset(.init(reference: asset, revision: 1)))]
+        case .removeAsset(let expected, let generation):
+            let ref = MediaPreparedObjectRef(kind: .asset, id: expected.id)
+            guard let index = document.assets.firstIndex(where: { $0.id == expected.id }) else {
+                throw MediaPreparedCoreError.unknownObject(ref)
+            }
+            guard document.assets[index] == expected,
+                  (document.assetRevisions?[expected.id] ?? 0) == generation else {
+                throw MediaPreparedCoreError.staleObject(ref)
+            }
+            let uses = MediaPreparedAssets.references(to: expected.id, in: document)
+            guard uses.isEmpty else { throw MediaPreparedAssetRemovalError.inUse(uses) }
+            document.assets.remove(at: index)
+            document.assetRevisions?.removeValue(forKey: expected.id)
+            return [.init(ref: ref, position: index,
+                          before: .asset(.init(reference: expected, revision: generation)), after: nil)]
         case .replaceAsset(let expected, let generation, let replacement):
             let ref = MediaPreparedObjectRef(kind: .asset, id: expected.id)
             guard let index = document.assets.firstIndex(where: { $0.id == expected.id }) else {
@@ -861,6 +876,8 @@ public enum MediaPreparedEngine {
                 document.assetRevisions = document.assetRevisions ?? [:]
                 document.assetRevisions?[change.ref.id] = revision + 1
             } else {
+                let uses = MediaPreparedAssets.references(to: change.ref.id, in: document)
+                guard uses.isEmpty else { throw MediaPreparedAssetRemovalError.inUse(uses) }
                 document.assets.removeAll { $0.id == change.ref.id }
                 document.assetRevisions?.removeValue(forKey: change.ref.id)
             }

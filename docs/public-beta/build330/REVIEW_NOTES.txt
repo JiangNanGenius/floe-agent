@@ -1,0 +1,11 @@
+Floe 1.8.8 (330) — TestFlight update
+
+Floe is a personal AI and document workspace for iPad and iPhone. This intermediate beta adds bilingual offline Help and Guides, improves file-assistant conversations, Music recording timing and accompaniment, and continuous meeting recording with speaker labels, renaming and merging. It also improves file and Trash workflows, task status and recovery, Toolbox diagnostics, compact layouts and local Linux service management.
+
+No Floe account or demo sign-in is required. Open Settings > Help and Guides to browse or search the bundled articles. Open Space to create or import a local work, open its editor, save and reopen it. Cloud AI, transcription providers and other external services use the user's own configuration. Local files and editor entry points remain available without a cloud model or GitHub account. Recording requests microphone permission when used.
+
+Please focus on Music recording and accompaniment while preserving existing clips; continuous meeting recording, transcript labels and renaming/merging; help articles and setting links; file-assistant return paths; deletion and recovery; countdown controls; and compact/expanded layouts. Linux graphical-application feedback should cover startup, interaction and stopping. Physical-device audio, networking and peripheral behavior continues through beta feedback.
+
+Native LaTeX typesetting continues to download document-required packages and fonts on demand and create PDF on the device without starting Linux. Linux is an optional user-controlled environment for other commands and packages. New Linux hardware video decoding is not included in this intermediate beta; existing in-app video editing and playback remain available. Siri and Shortcuts retain their existing functionality.
+
+The initial rollout is internal TestFlight; any external beta submission will follow separately. This build does not replace the existing App Store submission or change its release settings.

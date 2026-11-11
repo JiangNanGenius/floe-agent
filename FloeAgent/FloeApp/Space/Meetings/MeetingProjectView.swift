@@ -288,34 +288,42 @@ struct MeetingProjectView: View {
             onInsert: { insert($0, ai: false) }, onOpenMedia: { recordings = true },
             liveStatus: liveTranscriptionStatus)
     }
+    /// Continuous, user-facing transcription state. Internal chunk counts,
+    /// queue depths and collection scheduling stay in the diagnostics
+    /// disclosure, never in the ordinary recording flow.
     private var liveTranscriptionText: String {
         guard let live = session.liveTranscription else { return t("转写准备中", "Preparing transcription") }
         if !live.enabled { return session.isRecording ? t("转写已暂停，录音继续", "Transcription paused; recording continues") : t("转写已暂停", "Transcription paused") }
-        if live.requiresRetry { return t("录音已保留，待重试 \(live.unfinishedCount) 段", "Recording saved; \(live.unfinishedCount) chunks need retrying") }
+        if live.requiresRetry { return t("录音已保留，转写未完成", "Recording saved; transcription is unfinished") }
         if live.waitingForService { return t("正在等待转写服务，录音继续保留", "Waiting for transcription; audio is being saved") }
-        if live.isWorking { return t("正在转写 · 等待 \(live.pendingCount) 段", "Transcribing · \(live.pendingCount) chunks pending") }
-        if session.isRecording { return t("正在收集下一段录音", "Collecting the next audio chunk") }
-        return t("已转写 \(live.chunks.filter { $0.state == .complete }.count) 段", "\(live.chunks.filter { $0.state == .complete }.count) chunks transcribed")
+        if live.isWorking { return t("正在转写", "Transcribing") }
+        return ""
     }
     @ViewBuilder private var liveTranscriptionStatus: some View {
         if let live = session.liveTranscription {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    if live.isWorking { ProgressView().controlSize(.small) }
-                    Text(liveTranscriptionText).font(.subheadline).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("meeting.transcription.status")
-                    Spacer(minLength: 0)
-                }
-                if live.requiresRetry || (!live.enabled && live.unfinishedCount > 0) {
-                    HStack {
-                        Button(t("重试转写", "Retry transcription")) {
-                            session.diagnostic = nil
-                            if session.intelligence.liveTranscription == false {
-                                session.updateIntelligence { $0.liveTranscription = true }
-                            } else { live.retryUnfinished() }
-                        }.disabled(live.isWorking).frame(minHeight: 44)
-                            .accessibilityIdentifier("meeting.transcription.retry")
-                        Button(t("转写设置", "Transcription settings")) { settings = true }.frame(minHeight: 44)
+            let status = liveTranscriptionText
+            let offersRetry = live.requiresRetry || (!live.enabled && live.unfinishedCount > 0)
+            if !status.isEmpty || offersRetry {
+                VStack(alignment: .leading, spacing: 6) {
+                    if !status.isEmpty {
+                        HStack(spacing: 8) {
+                            if live.isWorking { ProgressView().controlSize(.small) }
+                            Text(status).font(.subheadline).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("meeting.transcription.status")
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    if offersRetry {
+                        HStack {
+                            Button(t("重试转写", "Retry transcription")) {
+                                session.diagnostic = nil
+                                if session.intelligence.liveTranscription == false {
+                                    session.updateIntelligence { $0.liveTranscription = true }
+                                } else { live.retryUnfinished() }
+                            }.disabled(live.isWorking).frame(minHeight: 44)
+                                .accessibilityIdentifier("meeting.transcription.retry")
+                            Button(t("转写设置", "Transcription settings")) { settings = true }.frame(minHeight: 44)
+                        }
                     }
                 }
             }
@@ -389,7 +397,7 @@ struct MeetingProjectView: View {
                 HStack(spacing: 14) {
                     VStack(alignment: .leading, spacing: 2) {
                         Label(session.isRecording ? t("录音中", "Recording") : session.isPaused ? t("已暂停", "Paused") : t("准备录音", "Ready to record"), systemImage: session.isRecording ? "record.circle.fill" : "mic")
-                        if session.isRecording || (session.liveTranscription?.unfinishedCount ?? 0) > 0 {
+                        if let live = session.liveTranscription, live.requiresRetry || live.waitingForService {
                             Text(liveTranscriptionText).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
@@ -419,13 +427,26 @@ struct MeetingProjectView: View {
             List {
                 Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") { recordings = false; importing = true }
                 if let live = session.liveTranscription, !live.chunks.isEmpty {
-                    HStack {
-                        Text(t("录音片段转写", "Recorded chunk transcription"))
-                        Spacer()
-                        Text("\(live.chunks.filter { $0.state == .complete }.count) / \(live.chunks.count)").font(.caption.monospacedDigit())
+                    if live.requiresRetry || (!live.enabled && live.unfinishedCount > 0) {
+                        Button(t("重试未完成转写", "Retry unfinished transcription")) { live.retryUnfinished() }
+                            .disabled(live.isWorking)
                     }
-                    if live.isWorking { Button(t("停止片段转写", "Stop chunk transcription")) { live.cancel() } }
-                    Button(t("重试未完成片段", "Retry unfinished chunks")) { live.retryUnfinished() }.disabled(live.isWorking)
+                    if live.isWorking {
+                        Button(t("停止转写", "Stop transcription")) { live.cancel() }
+                    }
+                    // Internal chunk scheduling detail: only inside the
+                    // explicitly opened diagnostics group.
+                    DisclosureGroup(t("诊断详情", "Diagnostics")) {
+                        HStack {
+                            Text(t("转写进度", "Transcription progress"))
+                            Spacer()
+                            Text("\(live.chunks.filter { $0.state == .complete }.count) / \(live.chunks.count)")
+                                .font(.caption.monospacedDigit())
+                        }
+                        if let diagnostic = live.diagnostic {
+                            Text(diagnostic).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }.font(.footnote)
                 }
                 if session.isProcessing {
                     ProgressView(value: session.progress) { Text(t("正在转写", "Transcribing")) }
@@ -456,7 +477,11 @@ struct MeetingProjectView: View {
                         set: { value in session.updateIntelligence { $0.transcriptionServiceID = value.isEmpty ? nil : value } })) {
                         Text(t("本机 Whisper", "On-device Whisper")).tag("")
                         ForEach(transcriptionServices) { service in
-                            Text(service.title + (service.local ? "" : t(" · 云端", " · Cloud"))).tag(service.id)
+                            let separatesSpeakers = session.environment.assistantAudioService.cloudASRSettings
+                                .profile(forServiceID: service.id)?
+                                .fileCapabilities.supportsSpeakerAttribution == true
+                            return Text(service.title + (service.local ? "" : t(" · 云端", " · Cloud"))
+                                 + (separatesSpeakers ? t(" · 区分说话人", " · Speaker labels") : "")).tag(service.id)
                         }
                     }
                     Text(t("默认保留本地录音；云端转写需在这里明确选择已有服务。", "Recordings stay local. Cloud transcription uses a service you explicitly select here."))

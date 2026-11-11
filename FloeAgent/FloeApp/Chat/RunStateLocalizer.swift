@@ -23,7 +23,7 @@ enum RunStateLocalizer {
         guard let stateName else { return "chat.reasoning_block_view.waiting_for_the_model" }
         switch stateName {
         case "preparing", "idle", "preparingToolCall", "reconnecting", "committingResults",
-             "reviewingApproval", "verifying", "executingTool", "waitingApproval", "compacting", "waitingUser", "cancelling":
+             "reviewingApproval", "verifying", "executingTool", "waitingApproval", "compacting", "waitingUser", "waitingTool", "cancelling":
             return title(for: stateName)
         default:
             return "chat.reasoning_block_view.waiting_for_the_model"
@@ -43,6 +43,8 @@ enum RunStateLocalizer {
         case "reviewingApproval": "chat.run_state_localizer.the_approval_model_is_reviewing"
         case "verifying": "state.verifying"
         case "executingTool": "state.executing_tool"
+        case "waitingTool": LocalizedStringKey(FloeL10n.isChinese ? "等待中" : "Waiting")
+        case "waitingNativeInput": LocalizedStringKey(FloeL10n.isChinese ? "准备就绪" : "Ready")
         case "waitingApproval": "state.waiting_approval"
         case "compacting": "chat.run_state_localizer.compacting_context"
         case "checkpointed", "paused", "interrupted": "state.paused"
@@ -62,9 +64,9 @@ enum RunStateLocalizer {
     /// Semantic color for a machine state name (§6.2 mapping table).
     static func color(for stateName: String) -> Color {
         switch stateName {
-        case "preparing", "idle", "streamingModel", "preparingToolCall", "reconnecting", "committingResults", "reviewingApproval", "executingTool", "verifying":
+        case "preparing", "idle", "waitingNativeInput", "streamingModel", "preparingToolCall", "reconnecting", "committingResults", "reviewingApproval", "executingTool", "verifying":
             FloeTheme.primary
-        case "waitingApproval", "waitingUser", "compacting", "checkpointed", "paused", "interrupted", "blocked", "noProgress", "budgetLimited", "truncated":
+        case "waitingTool", "waitingApproval", "waitingUser", "compacting", "checkpointed", "paused", "interrupted", "blocked", "noProgress", "budgetLimited", "truncated":
             FloeTheme.pending
         case "cancelling", "recoveryFailed", "failed":
             FloeTheme.destructive
@@ -97,6 +99,13 @@ enum RunStateLocalizer {
     /// mode against a parked run.
     static func isTerminal(_ stateName: String) -> Bool {
         ["completed", "failed", "recoveryFailed", "interrupted", "cancelled", "noProgress", "budgetLimited", "truncated", "checkpointed"].contains(stateName)
+    }
+
+    /// A native workbench can hold an authorization run while awaiting input.
+    /// Keep that run non-terminal without presenting a model Stop/queue action.
+    static func isNonExecutingReady(_ stateName: String, hasLiveOwner: Bool) -> Bool {
+        stateName == "waitingNativeInput"
+            || (!hasLiveOwner && (stateName == "idle" || stateName == "unknown"))
     }
 
     static func attentionSymbol(for stateName: String) -> String? {

@@ -21,16 +21,17 @@ struct TaskClosureFlowTests {
         value.descriptors["studio.edit"] = .init(name:"studio.edit",riskLabels:[],isSideEffecting:true)
         return value
     }
-    private func runtime(_ adapter:MockAdapter,_ executor:MockExecutor,runID:UUID,sink:MockSink = .init(),
+    private func runtime(_ adapter:MockAdapter,_ executor:any ToolExecutor,runID:UUID,sink:MockSink = .init(),
         mode:ConversationMode = .chat,verify:Bool = false,fast:Bool = false,
         checklist:(@Sendable ()async->TaskChecklist?)? = nil,
         dependencies:(@Sendable ()async->[RunDependencyLabel])? = nil,
-        checkpointStore:MockCheckpointStore = .init()) -> FloeAgentRuntime {
+        checkpointStore:MockCheckpointStore = .init(),
+        policy:(any ApprovalPolicy)? = nil) -> FloeAgentRuntime {
         let provider = TestFixtures.localhostProvider()
         return FloeAgentRuntime(configuration:.init(provider:provider,model:TestFixtures.testModel(providerID:provider.id),
                 conversationMode:mode,pauseTimeout:0.1,verifyFinalAnswer:verify,planChecklistProvider:checklist,
                 providerRetryBaseDelay:0,providerRetryMaxDelay:0,providerRetryJitterRatio:0,chatFastMode:fast,outstandingDependencies:dependencies),
-            adapter:adapter,policy:AutomaticApprovalPolicy(backend:RecordingApprovalBackend()),executor:executor,
+            adapter:adapter,policy:policy ?? AutomaticApprovalPolicy(backend:RecordingApprovalBackend()),executor:executor,
             checkpointStore:checkpointStore,sink:sink,runID:runID)
     }
 
@@ -237,5 +238,194 @@ struct TaskClosureFlowTests {
         #expect(calls.executedCalls.isEmpty)
         #expect(await subject.state.name == "failed")
         #expect(sink.verifiedDraftConfirmations.isEmpty)
+    }
+
+    // MARK: - Correction/supersession evidence (W10)
+
+    private func exportReceipt(
+        _ fingerprint:String,_ status:String,_ outputPath:String,
+        dispatched:Bool,mutation:Bool = false,unknown:Bool = false
+    ) -> TaskClosureGate.Receipt {
+        .init(toolName:"document.pdf.export",callFingerprint:fingerprint,status:status,
+            isSideEffecting:true,outcomeUnknown:unknown,supportsMutationClaim:mutation,
+            wasDispatched:dispatched,
+            operationIdentity:"tool=document.pdf.export|outputPath=\(outputPath)")
+    }
+
+    @Test("A corrected pre-execution rejection with the same output identity completes")
+    func correctedPreExecutionRejectionCompletes() async throws {
+        let run = UUID(), adapter = MockAdapter(), calls = executor()
+        calls.descriptors["document.pdf.export"] = .init(name:"document.pdf.export",riskLabels:[],isSideEffecting:true)
+        let denied = try TestFixtures.toolCall(id:"denied-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/report.pdf"}"#)
+        let corrected = try TestFixtures.toolCall(id:"corrected-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/report.pdf","quality":1}"#)
+        adapter.script = [
+            [.toolRequest(denied),.completed(.init(stopReason:.toolUse))],
+            [.toolRequest(corrected),.completed(.init(stopReason:.toolUse))],
+            [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
+        ]
+        let done = checklist(run,finished:true)
+        let subject = runtime(adapter,calls,runID:run,fast:true,checklist:{done},
+            policy:DenyCallIDsPolicy(deniedCallIDs:["denied-call"]))
+        try await subject.start(goal:"导出 PDF")
+        #expect(adapter.requests.count == 3)
+        #expect(calls.executedCalls.map(\.id) == ["corrected-call"])
+        #expect(await subject.state.name == "completed")
+    }
+
+    @Test("A different output on the same tool never swallows a failure")
+    func differentOutputOnSameToolStillFails() async throws {
+        let run = UUID(), adapter = MockAdapter(), calls = executor(), sink = MockSink()
+        calls.descriptors["document.pdf.export"] = .init(name:"document.pdf.export",riskLabels:[],isSideEffecting:true)
+        let denied = try TestFixtures.toolCall(id:"denied-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/a.pdf"}"#)
+        let other = try TestFixtures.toolCall(id:"other-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/b.pdf"}"#)
+        adapter.script = [
+            [.toolRequest(denied),.completed(.init(stopReason:.toolUse))],
+            [.toolRequest(other),.completed(.init(stopReason:.toolUse))],
+            [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))],
+            [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
+        ]
+        let done = checklist(run,finished:true)
+        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:true,checklist:{done},
+            policy:DenyCallIDsPolicy(deniedCallIDs:["denied-call"]))
+        try await subject.start(goal:"导出 PDF")
+        #expect(calls.executedCalls.map(\.id) == ["other-call"])
+        guard case .failed(let failure) = await subject.state else {
+            Issue.record("An independent output must not absorb the failed one"); return
+        }
+        #expect(failure.isRecoverable)
+        #expect(!sink.events.contains { if case .completed = $0 { true } else { false } })
+    }
+
+    @Test("A post-dispatch failure is never superseded by a corrected success")
+    func dispatchedFailureIsNotSuperseded() async throws {
+        let run = UUID(), adapter = MockAdapter(), calls = executor(), sink = MockSink()
+        calls.descriptors["document.pdf.export"] = .init(name:"document.pdf.export",riskLabels:[],isSideEffecting:true)
+        let failed = try TestFixtures.toolCall(id:"failed-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/report.pdf"}"#)
+        let corrected = try TestFixtures.toolCall(id:"corrected-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/report.pdf","quality":1}"#)
+        calls.results = [
+            .init(callID:failed.id,status:.failed,outputSummary:"synthetic tool validation failure",outputDigest:"f"),
+            .init(callID:corrected.id,status:.ok,outputSummary:"exported",outputDigest:"d")
+        ]
+        adapter.script = [
+            [.toolRequest(failed),.completed(.init(stopReason:.toolUse))],
+            [.toolRequest(corrected),.completed(.init(stopReason:.toolUse))],
+            [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))],
+            [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
+        ]
+        let done = checklist(run,finished:true)
+        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:true,checklist:{done})
+        try await subject.start(goal:"导出 PDF")
+        guard case .failed(let failure) = await subject.state else {
+            Issue.record("A dispatched failure must keep blocking"); return
+        }
+        #expect(failure.isRecoverable)
+    }
+
+    @Test("A tool-body cancellation after dispatch is never superseded")
+    func executorThrownCancellationIsNotSuperseded() async throws {
+        let run = UUID(), adapter = MockAdapter(), sink = MockSink()
+        let projectID = "D971821A-96BE-46A8-A5D7-C0A80913979A"
+        let cancelled = try TestFixtures.toolCall(id:"cancelled-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/report.pdf"}"#)
+        let corrected = try TestFixtures.toolCall(id:"corrected-call",toolName:"document.pdf.export",
+            arguments:#"{"outputPath":"/tmp/report.pdf","quality":1}"#)
+        let calls = CancelThrowingExecutor(
+            descriptors:["document.pdf.export":.init(name:"document.pdf.export",riskLabels:[],isSideEffecting:true)],
+            cancelledCallIDs:["cancelled-call"])
+        adapter.script = [
+            [.toolRequest(cancelled),.completed(.init(stopReason:.toolUse))],
+            [.toolRequest(corrected),.completed(.init(stopReason:.toolUse))],
+            [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))],
+            [.textDelta(.init(text:"PDF 已导出。")),.completed(.init(stopReason:.endTurn))]
+        ]
+        let done = checklist(run,finished:true)
+        let subject = runtime(adapter,calls,runID:run,sink:sink,fast:true,checklist:{done})
+        try await subject.start(goal:"导出 PDF")
+        #expect(calls.executedCalls.map(\.id) == ["cancelled-call","corrected-call"])
+        guard case .failed(let failure) = await subject.state else {
+            Issue.record("An executor-thrown cancellation must keep blocking"); return
+        }
+        #expect(failure.isRecoverable)
+    }
+
+    @Test("Closure supersession needs a trusted same-output correction")
+    func closureSupersessionNeedsTrustedCorrection() {
+        let done = TaskClosureGate.Step(id:"all",title:"t",status:"completed")
+        let denied = exportReceipt("fp-denied","denied","/tmp/report.pdf",dispatched:false)
+        let corrected = exportReceipt("fp-ok","ok","/tmp/report.pdf",dispatched:true,mutation:true)
+        let fixed = TaskClosureGate.Facts(steps:[done],receipts:[denied,corrected],availableToolNames:["document.pdf.export"])
+        #expect(!fixed.hasNonSuccessfulWork)
+
+        let otherOutput = exportReceipt("fp-ok2","ok","/tmp/other.pdf",dispatched:true,mutation:true)
+        let independent = TaskClosureGate.Facts(steps:[done],receipts:[denied,otherOutput],availableToolNames:["document.pdf.export"])
+        #expect(independent.hasNonSuccessfulWork)
+
+        var dispatchedFailure = denied
+        dispatchedFailure.wasDispatched = true
+        let postDispatch = TaskClosureGate.Facts(steps:[done],receipts:[dispatchedFailure,corrected],availableToolNames:["document.pdf.export"])
+        #expect(postDispatch.hasNonSuccessfulWork)
+
+        var unknown = denied
+        unknown.outcomeUnknown = true
+        let unknownFacts = TaskClosureGate.Facts(steps:[done],receipts:[unknown,corrected],availableToolNames:["document.pdf.export"])
+        #expect(unknownFacts.hasNonSuccessfulWork)
+
+        // In-place/container families (studio.edit, studio.media, office
+        // apply, CAD apply, batch creation) carry no provable output
+        // identity: their receipts must never supersede.
+        var untrustedFailure = denied
+        untrustedFailure.operationIdentity = nil
+        var untrustedSuccess = corrected
+        untrustedSuccess.operationIdentity = nil
+        let untrusted = TaskClosureGate.Facts(steps:[done],receipts:[untrustedFailure,untrustedSuccess],availableToolNames:["document.pdf.export"])
+        #expect(untrusted.hasNonSuccessfulWork)
+
+        let secondFailure = exportReceipt("fp-denied-2","denied","/tmp/second.pdf",dispatched:false)
+        let oneSuccessTwoFailures = TaskClosureGate.Facts(steps:[done],receipts:[denied,secondFailure,corrected],availableToolNames:["document.pdf.export"])
+        #expect(oneSuccessTwoFailures.hasNonSuccessfulWork)
+
+        let sameFingerprintRetry = exportReceipt("fp-denied","ok","/tmp/report.pdf",dispatched:true,mutation:true)
+        let retried = TaskClosureGate.Facts(steps:[done],receipts:[denied,sameFingerprintRetry],availableToolNames:["document.pdf.export"])
+        #expect(!retried.hasNonSuccessfulWork)
+    }
+}
+
+/// Test policy denying an exact set of call ids (trusted pre-execution
+/// rejections); everything else is allowed once.
+private struct DenyCallIDsPolicy: ApprovalPolicy {
+    let policyName = "test-deny-call-ids"
+    let deniedCallIDs: Set<String>
+    func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        if deniedCallIDs.contains(action.toolCall.id) {
+            return .deny(reason: "Synthetic pre-execution rejection for regression")
+        }
+        return .allow(scope: ApprovalScope(toolName: action.toolCall.toolName, singleUse: true), expiresAt: nil)
+    }
+}
+
+/// Executor whose chosen calls throw `FloeError.cancelled` from INSIDE the
+/// tool body (a post-dispatch cancellation), proving the receipt stays
+/// marked as dispatched and is never superseded as a pre-execution rejection.
+private final class CancelThrowingExecutor: ToolExecutor, @unchecked Sendable {
+    private let descriptors: [String: ToolCatalog.Descriptor]
+    private let cancelledCallIDs: Set<String>
+    private let storage = AsyncLock<[ToolCall]>([])
+    init(descriptors: [String: ToolCatalog.Descriptor], cancelledCallIDs: Set<String>) {
+        self.descriptors = descriptors
+        self.cancelledCallIDs = cancelledCallIDs
+    }
+    var executedCalls: [ToolCall] { storage.withLock { $0 } }
+    func descriptor(named name: String) -> ToolCatalog.Descriptor? { descriptors[name] }
+    var allDescriptors: [ToolCatalog.Descriptor] { descriptors.values.sorted { $0.name < $1.name } }
+    func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+        storage.withLock { $0.append(call) }
+        if cancelledCallIDs.contains(call.id) { throw FloeError.cancelled }
+        return ToolResult(callID: call.id, status: .ok, outputSummary: "ok", outputDigest: "d")
     }
 }

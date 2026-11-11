@@ -266,6 +266,44 @@ struct ArkToolNameRegressionTests {
 
     // MARK: - Actual chat wire body
 
+    @Test("Ark discovery follow-up and restored calls preserve both real wire pairs and images", arguments: [false, true])
+    func discoveryFollowUpAndRestore(withImage: Bool) throws {
+        var request = try request(for: provider(endpoint: arkPlanRoot), schemas: ["tools.search", "checklist.readPlan"],
+            pending: [("synthetic-search", "tools.search"), ("synthetic-plan", "checklist.readPlan")],
+            results: [("synthetic-search", "Synthetic tool catalog"), ("synthetic-plan", "")])
+        if withImage {
+            request.contentMessages[1].content.append(.imageData(mimeType: "image/png",
+                base64: "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4z8DAwPAfAAcAAf9+CLHQAAAAAElFTkSuQmCC"))
+        }
+        request.contentMessages += [.init(role: "assistant", text: "Synthetic previous turn"), .init(role: "user", text: "Continue")]
+        request.pendingAssistantReasoning = ""
+        let adapter = OpenAIChatCompletionsAdapter()
+        let prepared = try adapter.prepareBody(from: request)
+        #expect(prepared.data == (try ProviderWireEncoder.encode(adapter.buildBody(from: request))))
+        let object = try #require(JSONSerialization.jsonObject(with: prepared.data) as? [String: Any])
+        let messages = try #require(object["messages"] as? [[String: Any]])
+        #expect(messages.count == 7)
+        let calls = try #require(messages[4]["tool_calls"] as? [[String: Any]])
+        #expect(calls.compactMap { ($0["function"] as? [String: Any])?["name"] as? String } == ["tools_search", "checklist_readPlan"])
+        #expect(messages.suffix(2).compactMap { $0["tool_call_id"] as? String } == ["synthetic-search", "synthetic-plan"])
+        #expect(messages[6]["content"] as? String == "")
+        #expect(messages.allSatisfy { $0["reasoning_content"] == nil })
+        if withImage {
+            let parts = try #require(messages[1]["content"] as? [[String: Any]])
+            #expect(parts.contains { ($0["image_url"] as? [String: Any])?["url"] as? String
+                == "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4z8DAwPAfAAcAAf9+CLHQAAAAAElFTkSuQmCC" })
+        }
+        // Actual Codable ToolCall restoration, without claiming this synthetic
+        // body is the user's lost dispatch snapshot.
+        var restored = request
+        restored.pendingToolCalls = try JSONDecoder().decode([ToolCall].self, from: JSONEncoder().encode(request.pendingToolCalls))
+        restored.pendingAssistantReasoning = nil
+        #expect(try adapter.prepareBody(from: restored).data == prepared.data)
+        #expect(CompatToolNames.canonicalName("tools_search", request: restored) == "tools.search")
+        #expect(CompatToolNames.canonicalName("checklist_readPlan", request: restored) == "checklist.readPlan")
+        #expect(prepared.diagnosticSummary.contains("wireMessages=7 wireCalls=2 wireResults=2"))
+    }
+
     @Test("Agent Plan ark-code-latest chat body carries grammar-exact names, image and history")
     func chatBodyCoversAllOccurrences() throws {
         let profile = provider(

@@ -411,6 +411,41 @@ struct OpenAIFileTranscriptionTests {
         #expect(fieldCount(body, "stream") == 0)
     }
 
+    @Test("A diarization-capable relay passes speaker labels through verbatim")
+    func relaySpeakerLabelsPassThrough() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        ASRURLProtocol.prepare([
+            .init(
+                statusCode: 200,
+                headers: ["Content-Type": "application/json"],
+                body: try json([
+                    "text": "Hello world",
+                    "language": "en",
+                    "segments": [
+                        ["start": 0.0, "end": 1.5, "text": "Hello", "speaker": "A"],
+                        ["start": 1.5, "end": 3.0, "text": "world"],
+                    ],
+                ]))
+        ])
+        let adapter = OpenAITranscriptionAdapter(session: session)
+        let result = try await adapter.transcribe(
+            ASRFileTranscriptionRequest(
+                profile: ASRProfile.openAICompatible(
+                    fileModelID: "whisper-1",
+                    liveModelID: nil,
+                    fileEndpoint: "https://relay.example/v1"),
+                audio: Data([0, 1, 2, 3]),
+                filename: "memo.wav",
+                mimeType: "audio/wav",
+                sourceDurationSeconds: 3.0),
+            credential: "sk-test-secret")
+        #expect(result.segments == [
+            ASRTranscriptionSegment(start: 0, end: 1.5, text: "Hello", speaker: "A"),
+            ASRTranscriptionSegment(start: 1.5, end: 3, text: "world"),
+        ])
+    }
+
     @Test("Unknown compatible model receives only the minimum wire arguments")
     func unknownModelMinimumBody() async throws {
         let session = makeSession()

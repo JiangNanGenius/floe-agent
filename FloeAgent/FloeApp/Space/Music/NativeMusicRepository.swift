@@ -228,7 +228,10 @@ actor NativeMusicRepository: MusicRepository {
         return MusicAssetPayload(asset: asset, bytes: data)
     }
 
-    func resolvedURL(for asset: MusicAsset) throws -> URL {
+    // Asset records are committed atomically and are immutable by ID. This
+    // checked path lookup uses only the immutable root, like assetRecord/blob;
+    // it does not access the actor's document/session mutation authority.
+    nonisolated func resolvedURL(for asset: MusicAsset) throws -> URL {
         let stored = try JSONDecoder().decode(MusicAsset.self, from: Data(contentsOf: assetRecord(asset.id)))
         guard stored.id == asset.id, stored.contentHash == asset.contentHash, stored.sourceRevision == asset.sourceRevision else {
             throw MusicError.invalidAsset(reason: "resolved source identity mismatch")

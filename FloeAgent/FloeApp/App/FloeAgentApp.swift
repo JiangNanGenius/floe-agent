@@ -385,6 +385,7 @@ struct RootView: View {
     /// SceneStorage belongs to one WindowGroup content instance even though
     /// navigation and the environment remain app-wide shared objects.
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
+    @State private var helpSettingsTarget: HelpSettingsTarget?
     @State private var latexOpenRequest:LaTeXOpenRequest?
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     /// Sidebar conversation selection: the row long press opens the native
@@ -403,7 +404,6 @@ struct RootView: View {
     @State private var canvasPresenceRevision = 0
     @State private var preferredCompactColumn: NavigationSplitViewColumn = .detail
     @State private var isPhoneSidebarOpen = false
-    @GestureState private var phoneDrawerTranslation: CGFloat = 0
     /// Foreground notification banner (terminal/approval events that would
     /// otherwise duplicate a system alert).
     @ObservedObject private var taskBannerCenter = TaskBannerCenter.shared
@@ -485,7 +485,9 @@ struct RootView: View {
         }
     }
 
-    var body: some View {
+    // Opaque compiler boundaries keep the existing root shell, modifier
+    // order and state ownership intact as scene integrations grow.
+    private var entryConfiguredRoot: some View {
         Group {
             if FoldableMountGate.showsBootChrome(
                 persistenceReady: environment.persistenceReady,
@@ -519,7 +521,6 @@ struct RootView: View {
         // shell — size adaptation lives inside the shells). The snapshot is
         // a plain environment value so isolated hosts and pre-27.1 systems
         // need no provider.
-        .environment(\.foldableDisplay, foldableSupport.snapshot)
         .modifier(StorageAvailabilityNotice())
         .modifier(FoldableCapabilityProbeModifier(state: foldableSupport))
         .modifier(MacBridgeRecommendationModifier(
@@ -577,40 +578,14 @@ struct RootView: View {
             // peek/confirm design means a blocked attempt consumes nothing.
             takeDestinationRequestIfNeeded()
         }
-        .sheet(item: $presentedDestination, onDismiss: {
-            // Swipe-to-dismiss is an explicit "not now": it behaves exactly
-            // like Cancel (durable source untouched, banner/card path
-            // remains). A completed choice already settled the origin, so
-            // this never cancels what the destination now owns.
-            if let request = lastPresentedDestination {
-                environment.importDestinationCenter.cancelPresentation(request)
-            }
-            lastPresentedDestination = nil
-        }) { request in
-            ImportDestinationSheet(
-                request: request,
-                center: environment.importDestinationCenter,
-                onNotes: {
-                    Task { await resolveDestination(.notes, request) }
-                },
-                onTask: { target in
-                    Task { await resolveDestination(.task, request, taskTarget: target) }
-                },
-                onCanvas: { target in
-                    Task { await resolveDestination(.canvas, request, canvasTarget: target) }
-                },
-                onCancel: {
-                    environment.importDestinationCenter.cancelPresentation(request)
-                    presentedDestination = nil
-                },
-                onPresented: {
-                    // Consumption is confirmed only once the chooser truly
-                    // appeared; blocked presentations stay re-armable.
-                    environment.importDestinationCenter.confirmPresentation(request)
-                }
-            )
-            .presentationDetents([.medium, .large])
+        .sheet(item: $presentedDestination, onDismiss: destinationChooserDismissed) { request in
+            makeImportDestinationSheet(for: request)
+                .presentationDetents([.medium, .large])
         }
+    }
+
+    private var sceneObservedRoot: some View {
+        entryConfiguredRoot
         .onReceive(environment.documentIntakeCenter.$presentation) { _ in
             presentPendingDocument()
         }
@@ -842,6 +817,10 @@ struct RootView: View {
                 linuxEnvironmentID: notification.userInfo?["environmentID"] as? String
             )
         }
+    }
+
+    var body: some View {
+        sceneObservedRoot
         .sheet(item: $presentedExecutionEnvironment) { request in
             NavigationStack {
                 Group {
@@ -866,11 +845,11 @@ struct RootView: View {
             OnboardingView(center: environment.conversationCenter)
                 .presentationSizing(.page)
         }
-        .sheet(isPresented: $router.presentedSettings) {
+        .sheet(isPresented: settingsPresentation, onDismiss: { helpSettingsTarget = nil }) {
             // Settings owns its regular-width split navigation. Wrapping that
             // split in another stack makes detail toolbar buttons and
             // NavigationLinks appear enabled while their taps are dropped.
-            SettingsRootView(environment: environment)
+            SettingsRootView(environment: environment, initialHelpTarget: helpSettingsTarget)
                 .environmentObject(router)
                 .environment(\.continuousVoiceActive, continuousVoiceActive)
                 .presentationSizing(.page)
@@ -970,6 +949,53 @@ struct RootView: View {
         // persistenceReady + scene active internally and never re-wraps the
         // navigation shell or changes editor identity.
         .floeScheduleCleanupPopup(environment: environment)
+        // Root-owned sheets/covers must inherit this scene snapshot too.
+        // Apply outside their presentation modifiers, not only to content.
+        .environment(\.foldableDisplay, foldableSupport.snapshot)
+        .environment(\.helpSceneID, sceneID)
+        .environment(\.helpSettingsOpenAction, HelpSettingsOpenAction { target in
+            helpSettingsTarget = target
+        })
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
+        .environment(\.systemAlarmController, environment.systemAlarmControlling)
+        #endif
+    }
+
+    private var settingsPresentation: Binding<Bool> {
+        Binding(get: {
+            router.presentedSettings || helpSettingsTarget != nil
+        }, set: { presented in
+            if !presented {
+                helpSettingsTarget = nil
+                router.presentedSettings = false
+            }
+        })
+    }
+
+    private func makeImportDestinationSheet(for request: ImportDestinationRequest) -> ImportDestinationSheet {
+        ImportDestinationSheet(
+            request: request,
+            center: environment.importDestinationCenter,
+            onNotes: { Task { await resolveDestination(.notes, request) } },
+            onTask: { target in Task { await resolveDestination(.task, request, taskTarget: target) } },
+            onCanvas: { target in Task { await resolveDestination(.canvas, request, canvasTarget: target) } },
+            onCancel: { cancelDestinationPresentation(request) },
+            onPresented: { environment.importDestinationCenter.confirmPresentation(request) }
+        )
+    }
+
+    private func cancelDestinationPresentation(_ request: ImportDestinationRequest) {
+        environment.importDestinationCenter.cancelPresentation(request)
+        presentedDestination = nil
+    }
+
+    private func destinationChooserDismissed() {
+        // A completed choice has already settled its origin; dismissal only
+        // cancels an outstanding chooser and preserves its durable source.
+        if let request = lastPresentedDestination {
+            environment.importDestinationCenter.cancelPresentation(request)
+        }
+        lastPresentedDestination = nil
     }
 
     private func configureDocumentRouting() {
@@ -1358,45 +1384,29 @@ struct RootView: View {
     private var iPhoneRoot: some View {
         GeometryReader { proxy in
             let drawerWidth = min(390, max(300, proxy.size.width - 44))
-            let baseOffset = isPhoneSidebarOpen ? CGFloat.zero : -drawerWidth
-            let interactiveOffset = min(0, max(-drawerWidth, baseOffset + phoneDrawerTranslation))
-            let drawerProgress = 1 - abs(interactiveOffset / drawerWidth)
+            // Top safe area is respected by this GeometryReader, so neither
+            // the content column nor the drawer collides with the system
+            // status bar. Overlay scrims and drawer backgrounds still extend
+            // behind it through their own .ignoresSafeArea().
             ZStack(alignment: .leading) {
-                contentColumn
-                    .environment(\.phoneSidebarAction, {
-                        withAnimation(.snappy) { isPhoneSidebarOpen = true }
-                    })
-                    .accessibilityHidden(drawerProgress > 0)
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .scaleEffect(1 - drawerProgress * 0.025, anchor: .trailing)
-                    .offset(x: drawerProgress * 18)
-                    .clipShape(.rect(cornerRadius: drawerProgress * 22))
-
-                if drawerProgress > 0 {
-                    Color.black.opacity(0.22 * drawerProgress)
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .onTapGesture { withAnimation(.snappy) { isPhoneSidebarOpen = false } }
-                        .accessibilityLabel("app.floe_agent_app.collapse_task_list")
-                }
-
-                // The drawer owns its OWN navigation container: on iPad the
-                // split view supplies the sidebar column's bar, while the
-                // compact drawer sits in a plain overlay here — without this
-                // stack the shared `app.name` title and the inline editing
-                // toolbar would be silently dropped (never duplicated: the
-                // iPad path above is untouched).
-                NavigationStack {
+                // ONE stable adaptive workbench: the mounted primary content
+                // and the sidebar keep their structural slots through fold,
+                // resize and drawer transitions. Compact keeps the existing
+                // drawer; a wide (unfolded) phone window gets a persistent
+                // sidebar inside this SAME phone shell. The frozen outer
+                // iPhoneRoot/iPadRoot choice is never re-evaluated.
+                AdaptivePhoneShell(
+                    isDrawerOpen: $isPhoneSidebarOpen,
+                    preferredSidebarWidth: layoutPreferences.settings.sidebarWidth,
+                    blocksDrawerGesture: presentableInspectorRoute != nil,
+                    onDismissInspector: presentableInspectorRoute == nil
+                        ? nil
+                        : { router.hideInspector() }
+                ) {
+                    contentColumn
+                } sidebar: {
                     sidebarColumn
                 }
-                    .frame(width: drawerWidth)
-                    .frame(maxHeight: .infinity)
-                    .background(FloeTheme.groupedSurface.ignoresSafeArea())
-                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .offset(x: interactiveOffset)
-                    .shadow(color: .black.opacity(0.18 * drawerProgress), radius: 24, x: 8)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("phone.sidebar.drawer")
 
                 if let route = presentableInspectorRoute {
                     Color.black.opacity(0.18)
@@ -1411,14 +1421,7 @@ struct RootView: View {
                         .accessibilityIdentifier("phone.inspector.drawer")
                 }
             }
-            // Respect the top safe area so the navigation bar (and the
-            // drawer's "Floe Agent" title) never collides with the system
-            // status-bar clock. Overlay scrims and drawer backgrounds still
-            // extend behind the status bar via their own .ignoresSafeArea().
-            .animation(.snappy, value: isPhoneSidebarOpen)
             .animation(.snappy, value: router.inspectorRoute)
-            .contentShape(Rectangle())
-            .simultaneousGesture(phoneDrawerGesture(drawerWidth: drawerWidth))
         }
         .onChange(of: router.workbenchSelection) { _, _ in
             withAnimation(.snappy) { isPhoneSidebarOpen = false }
@@ -1428,41 +1431,6 @@ struct RootView: View {
             // changing the selected task. Close the phone drawer for them too.
             withAnimation(.snappy) { isPhoneSidebarOpen = false }
         }
-    }
-
-    private func phoneDrawerGesture(drawerWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 12, coordinateSpace: .global)
-            .updating($phoneDrawerTranslation) { value, state, _ in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                if isPhoneSidebarOpen {
-                    state = min(0, value.translation.width)
-                } else if value.startLocation.x < 28, router.inspectorRoute == nil {
-                    state = max(0, value.translation.width)
-                }
-            }
-            .onEnded { value in
-                let horizontal = value.translation.width
-                let predicted = value.predictedEndTranslation.width
-                guard abs(horizontal) > abs(value.translation.height) else { return }
-                if !isPhoneSidebarOpen,
-                   value.startLocation.x < 28,
-                   router.inspectorRoute == nil,
-                   max(horizontal, predicted) > drawerWidth * 0.22 {
-                    withAnimation(.snappy) { isPhoneSidebarOpen = true }
-                } else if isPhoneSidebarOpen {
-                    // A deliberate horizontal swipe anywhere in the drawer
-                    // closes it. Supporting the user's right-swipe habit as
-                    // well as the conventional left swipe avoids requiring a
-                    // separate hand/pan mode just to dismiss navigation.
-                    let closesLeft = min(horizontal, predicted) < -drawerWidth * 0.22
-                    let closesRight = max(horizontal, predicted) > drawerWidth * 0.22
-                    if closesLeft || closesRight {
-                        withAnimation(.snappy) { isPhoneSidebarOpen = false }
-                    }
-                } else if horizontal > 0, router.inspectorRoute != nil {
-                    router.hideInspector()
-                }
-            }
     }
 
     // MARK: - iPad: task surface with an on-demand inspector
@@ -2108,6 +2076,7 @@ private struct InspectorColumnView: View {
     @State private var workspaceMountState: WorkspaceMountState = .idle
     @State private var workspaceMountAttempt = 0
     @State private var terminalOwner: LocalTerminalOwner?
+    @State private var displayOwner: LocalLinuxDisplayOwner?
     @State private var showsRemoteTerminal = false
 
     private enum WorkspaceMountState: Equatable {
@@ -2163,6 +2132,7 @@ private struct InspectorColumnView: View {
             case .changes, .workspaceFiles, .terminal:
                 workspaceMountState = .loading
                 terminalOwner = nil
+                displayOwner = nil
                 do {
                     try await environment.workspaceCenter.openTaskWorkspace(
                         conversationID: conversationID
@@ -2171,7 +2141,8 @@ private struct InspectorColumnView: View {
                     if route.content == .terminal,
                        let workspace = environment.workspaceCenter.currentWorkspace,
                        let root = environment.workspaceCenter.currentRootURL {
-                        terminalOwner = environment.localTerminals.owner(workspaceID: workspace.id, root: root)
+                        terminalOwner = environment.localTerminals.owner(workspaceID: workspace.id, root: root, conversationID: conversationID)
+                        displayOwner = environment.localLinuxDisplays.owner(conversationID: conversationID, workspaceRoot: root)
                     }
                     workspaceMountState = .mounted
                 } catch is CancellationError {
@@ -2193,7 +2164,7 @@ private struct InspectorColumnView: View {
         case .mounted:
             if route.content == .terminal {
                 if let terminalOwner {
-                    LocalTerminalView(owner: terminalOwner, embedded: true)
+                    LocalTerminalView(owner: terminalOwner, embedded: true, display: displayOwner)
                         .accessibilityIdentifier("terminal.local.workspace")
                 } else {
                     ContentUnavailableView {

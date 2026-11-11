@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.help.quickstart",
+  "version": "1.1.0",
+  "sourceRevision": "",
+  "title": {
+    "en": "Floe Help",
+    "zh-Hans": "Floe 帮助中心"
+  },
+  "indexPaths": {
+    "en": "help/index/en.json",
+    "zh-Hans": "help/index/zh-Hans.json"
+  },
+  "resources": [
+    {
+      "path": "help/articles/en/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1050,
+      "sha256": "07b91ddab116e5c5a5578b075e316741728c6ca2cfb8e6eeaab3eae688484183"
+    },
+    {
+      "path": "help/articles/en/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1071,
+      "sha256": "ad35322338dd80ba3b6583ecddc8770463dfb474135254dbcc81b702a7381228"
+    },
+    {
+      "path": "help/articles/en/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 9068,
+      "sha256": "3f2668b5fb8ab426f2342a5d595130010d784588b40d7258d8ff13133bf4b358"
+    },
+    {
+      "path": "help/articles/en/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 112062,
+      "sha256": "4ea137ef37d854b41d456acaea2617e0fb4e8e77f62abb2923539225bc646f60"
+    },
+    {
+      "path": "help/articles/en/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 951,
+      "sha256": "dc11938dbe1407bf9886f8dd9018febd5769ac7a7a752bef0d38e3100c4d887b"
+    },
+    {
+      "path": "help/articles/en/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 17453,
+      "sha256": "8ff1e318319c75177b25292309e49fc6a3987b62954f21c45abab3aa460a7a8f"
+    },
+    {
+      "path": "help/articles/zh-Hans/environment.memory.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1041,
+      "sha256": "c22dce84af35fc713cfb3c8df8b39d5358a86bf123a407e314a8881030530e30"
+    },
+    {
+      "path": "help/articles/zh-Hans/input.keyboard.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 1044,
+      "sha256": "55aa36de4f8069aee6a118b7444523d409fdf6669544978dec1f0c4dd07b10b6"
+    },
+    {
+      "path": "help/articles/zh-Hans/quickstart.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 8450,
+      "sha256": "8d83ae7696f570973176249d2341857cc45d667b5eb5f9bea4689e21da2a1487"
+    },
+    {
+      "path": "help/articles/zh-Hans/user-manual.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 104281,
+      "sha256": "df7c30b1a7a4837ea93456d82194e241e287d797d21f12c7ab49b2e5dea2bd13"
+    },
+    {
+      "path": "help/articles/zh-Hans/voice.output.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 930,
+      "sha256": "f914c507a9390b763aa0c531ede03b076be30968904f8d51eaeb90b871b5cc07"
+    },
+    {
+      "path": "help/articles/zh-Hans/workspaces.html",
+      "mimeType": "text/html; charset=utf-8",
+      "byteCount": 15587,
+      "sha256": "31567b3bc38cdb4ea95b34b3442cd003e56a1b2ce374e99c058e50f304229627"
+    },
+    {
+      "path": "help/assets/guide/canvas-current.webp",
+      "mimeType": "image/webp",
+      "byteCount": 322324,
+      "sha256": "7f562ba94657f9ab3f877cb2a59424d3c618705932190d734d1e262e96b65187"
+    },
+    {
+      "path": "help/assets/guide/home-current.webp",
+      "mimeType": "image/webp",
+      "byteCount": 605190,
+      "sha256": "2463c23350211e53178bd58aa5417e4a210a411400e0fc4b82fb6f29321cf9cc"
+    },
+    {
+      "path": "help/assets/guide/notes-current.webp",
+      "mimeType": "image/webp",
+      "byteCount": 149950,
+      "sha256": "12c53414f3e77d8233b597684adb73b18e7138d89d4335e8b8161868b7d62cec"
+    },
+    {
+      "path": "help/assets/guide/workbench-current.webp",
+      "mimeType": "image/webp",
+      "byteCount": 485478,
+      "sha256": "7f4b0c8e37923a264eb262dbaab8c5eed15e2301f7cb155f327d535e229c02b7"
+    },
+    {
+      "path": "help/index/en.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 131258,
+      "sha256": "1290ad101d5847b88dd4677d64da0d5ee443475e115abd385e512a57b8a5f433"
+    },
+    {
+      "path": "help/index/zh-Hans.json",
+      "mimeType": "application/json; charset=utf-8",
+      "byteCount": 122418,
+      "sha256": "25298cf14ee11e646b2998193f95be577ebc777dfd28fb9ffb5e59efdd3197c6"
+    },
+    {
+      "path": "help/styles/help.css",
+      "mimeType": "text/css; charset=utf-8",
+      "byteCount": 2001,
+      "sha256": "8c78a412a55f714d0407e6accc9673949a79a776021977c460a8a089f2ce470f"
+    },
+    {
+      "path": "index.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 2625,
+      "sha256": "8ea65b5e02db1d8a7e4995f154876e266a6e94ffbd11da8283c655d8060f084b"
+    },
+    {
+      "path": "index.zh-Hans.md",
+      "mimeType": "text/markdown; charset=utf-8",
+      "byteCount": 2698,
+      "sha256": "ad7d138a262d7f99b0494125c4af150689e63533e15769864af2a5cf8a3115fa"
+    }
+  ]
+}

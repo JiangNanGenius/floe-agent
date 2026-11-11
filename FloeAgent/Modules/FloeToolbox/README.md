@@ -1,12 +1,12 @@
 # FloeToolbox 工具箱模块
 
-工具箱 TB01–26 的源码包：终端/远程文件、VNC、浏览器、串口助手、独立 HTTP/WS/MQTT、网络诊断与漫游、记录/AI、USB 和实用工具。当前源码已接入主 App 的空间工具箱；版本、签名和分发仍由主线管理，USB 驱动包尚未随 App 接入。空间入口为 **概览｜手记｜文件｜工具箱**，VNC 不带 AI。
+工具箱 TB01–26 与 FI01–13 的源码包：连接与网络工具、记录/AI、USB、实用工具，以及两批测量、传感器、定位、扫描和计时工具。当前接入主 App 的空间工具箱；版本、签名和分发仍由主线管理，USB 驱动包尚未随 App 接入。空间入口为 **概览｜手记｜文件｜工具箱**，VNC 不带 AI。新增工具的收件与资格状态见[两批预研发记录](../../../docs/FLOE_TOOLBOX_INSTRUMENTS_PREDEVELOPMENT.zh-CN.md)。
 
 ## 代码与运行边界
 
 | Product / source | 已实现 |
 | --- | --- |
-| `FloeToolboxCore` | 18入口、机器来源/临时连接计划；会话代次、既有审批回调、终端AI；原子CAS滚动记录、快照/JSONL、凭据过滤；PCAP/PCAPNG、Modbus/MQTT解码；USB芯片配置计划。 |
+| `FloeToolboxCore` | 31入口、机器来源/临时连接计划；会话代次、既有审批回调、终端AI；原子CAS滚动记录、快照/JSONL、凭据过滤；PCAP/PCAPNG、Modbus/MQTT解码；USB芯片配置计划。 |
 | `FloeToolboxClients` | 原生TCP流、保留报文边界的UDP客户端（可绑定本地地址/端口）、WS文本/二进制/Ping/TLS；HTTP请求/有界响应/同源重定向/文件上传；MQTT3.1.1/5连接、订阅、QoS0/1/2、keepalive；Modbus01–06/15/16的MBAP/RTU请求、响应关联、CRC、异常、广播。接收服务及原有BLE服务的MTU分块桥接。 |
 | `FloeToolboxDiagnostics` | 实际IPv4 ICMP Ping/路由、DNS-SD记录查询、显式端口检测、Bonjour发现、公开Wi-Fi信息；AP身份和延迟探测独立采样的漫游服务。iPadOS无法取得的数据留空，不伪造RSSI或漫游。 |
 | `FloeToolboxUtilities` | 流式SHA256/512/SHA1/MD5/CRC32、JSON整理、UTF-8/Base64/URL编码、二维码PNG生成/图片识别。选文件和保存由宿主提供。 |
@@ -32,6 +32,8 @@
 ## 主 App 接入与普通聊天工具
 
 当前首页采用横向展示与完整工具列表，宽屏列表为两列。诊断结果绑定本次请求；漫游默认取当前网关并保留手输，SSID/BSSID 取决于系统权限和有效签名。导出使用实际文件与系统分享入口。通信分析由连接服务持有，有进度、停止、超时和晚结果隔离。
+
+新增测量与传感器入口采用原生仪表和相机界面；定位复用 App 共享定位服务与 MapKit，数据按实际宽度和字号选择单列或两列。工具搜索覆盖中英文名称及 GPS、OCR、陀螺仪等常用称呼。地点和扫描内容通过宿主保存到手记，文件导出沿用已有文件与分享流程。传感器缺失、定位精度、照片比例、气压高度和相对声音电平保持各自真实边界；组件宿主的样例与模拟器结果不能代替设备测量精度验证。
 
 普通任务可先调用 `toolbox.session` 的 `open`，再使用实际会话的 `toolbox.websocket.send`／`receive`、`toolbox.mqtt.subscription`／`publish` 和 `toolbox.capture.read`，最后 `close`。当前普通入口支持无认证 ws/wss 和匿名 MQTT；认证连接仍从原生界面配置并打开其助手。目标不可在会话中静默改变，仍使用现有运行授权；不要求工作区或 Linux。会话随本轮运行取消、结束或任务删除而关闭，临时聊天不提供此链路。通信记录是本会话的脱敏收发，不是系统抓包。
 

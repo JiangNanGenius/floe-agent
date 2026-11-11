@@ -16,30 +16,35 @@ import Darwin
 /// Backend signature for device traceroutes. Tests inject a fake.
 typealias DeviceTracerouteHandler = @Sendable (String, Int, Int, CancellationToken) async throws -> DeviceTracerouteReport
 
-struct DeviceTracerouteReport: Sendable, Equatable {
-    enum HopStatus: Sendable, Equatable {
+public struct ICMPTracerouteReport: Sendable, Equatable {
+    public enum HopStatus: Sendable, Equatable {
         case reached(rtts: [Double])
         case timeExceeded(address: String, rtts: [Double])
         case timeout
         case unreachable(String)
     }
 
-    struct Hop: Sendable, Equatable {
-        var ttl: Int
-        var status: HopStatus
+    public struct Hop: Sendable, Equatable {
+        public var ttl: Int
+        public var status: HopStatus
+        public init(ttl: Int, status: HopStatus) { self.ttl = ttl; self.status = status }
     }
 
-    var target: String
-    var resolvedAddress: String
-    var maxHops: Int
-    var hops: [Hop]
+    public var target: String
+    public var resolvedAddress: String
+    public var maxHops: Int
+    public var hops: [Hop]
+    public init(target: String, resolvedAddress: String, maxHops: Int, hops: [Hop]) {
+        self.target = target; self.resolvedAddress = resolvedAddress
+        self.maxHops = maxHops; self.hops = hops
+    }
 
-    var reachedTarget: Bool {
+    public var reachedTarget: Bool {
         if case .reached = hops.last?.status { return true }
         return false
     }
 
-    func summaryText() -> String {
+    public func summaryText() -> String {
         var lines = ["method=icmpTraceroute target=\(target) resolved=\(resolvedAddress) maxHops=\(maxHops)"]
         for hop in hops {
             switch hop.status {
@@ -62,14 +67,31 @@ struct DeviceTracerouteReport: Sendable, Equatable {
     }
 }
 
+typealias DeviceTracerouteReport = ICMPTracerouteReport
+
 enum DeviceICMPTraceroute {
+    private final class Admission: @unchecked Sendable {
+        private let lock = NSLock()
+        private var active = 0
+        func acquire() -> Bool { lock.withLock { guard active < 4 else { return false }; active += 1; return true } }
+        func release() { lock.withLock { active -= 1 } }
+    }
+    private static let admission = Admission()
+    // An internal transport seam exercises this actual worker/TTL/event loop
+    // deterministically. Public/App callers always use the real socket probe.
+    typealias Probe = @Sendable (Int, UInt16, CancellationToken) throws -> ProbeOutcome
     static func run(
         target: String,
         maxHops: Int,
         waitSeconds: Int,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        requestID: UUID = UUID(),
+        onObservation: TracerouteObserver? = nil,
+        probe: Probe? = nil
     ) async throws -> DeviceTracerouteReport {
         try cancellation.throwIfCancelled()
+        guard admission.acquire() else { throw DiagnosticError.busy }
+        defer { admission.release() }
         let addresses = try await NetworkDiagnosticTiming.withDeadline(
             seconds: 10,
             timeoutMessage: "device traceroute DNS resolution timed out after 10s"
@@ -80,11 +102,52 @@ enum DeviceICMPTraceroute {
             throw DiagnosticError.invalid("device traceroute supports IPv4 targets only and \(target) has no A record")
         }
         try cancellation.throwIfCancelled()
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos:.utility).async {
-                continuation.resume(with:Result { try blockingSession(target:target,sAddr:sAddr,
-                    maxHops:max(1,min(30,maxHops)),waitSeconds:max(1,min(5,waitSeconds)),cancellation:cancellation) })
-            }
+        let resolved = HostResolver.presentation(sAddr)
+        if let onObservation {
+            await onObservation(.init(requestID: requestID, value: .resolved(address: resolved)))
+        }
+        try cancellation.throwIfCancelled()
+        // A trace emits <=30 hops. One ordered, bounded consumer awaits each
+        // callback; no detached per-hop tasks can reorder or outlive return.
+        let channel = AsyncStream<TracerouteObservation>.makeStream(bufferingPolicy: .bufferingOldest(32))
+        async let delivery: Void = deliver(channel.stream, to: onObservation, cancellation: cancellation)
+        do {
+            let result: DeviceTracerouteReport = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    DispatchQueue.global(qos: .utility).async {
+                        continuation.resume(with: Result {
+                            try blockingSession(target: target, sAddr: sAddr,
+                                maxHops: max(1, min(30, maxHops)), waitSeconds: max(1, min(5, waitSeconds)),
+                                cancellation: cancellation, probe: probe, onHop: { hop in
+                                    let value = TracerouteObservation(requestID: requestID,
+                                        value: .hop(hop.observation(resolvedAddress: resolved)))
+                                    switch channel.continuation.yield(value) {
+                                    case .enqueued: break
+                                    case .terminated: throw CancellationError()
+                                    case .dropped: throw DiagnosticError.system("traceroute observation buffer exhausted")
+                                    @unknown default: throw DiagnosticError.system("traceroute observation unavailable")
+                                    }
+                                })
+                        })
+                    }
+                }
+            } onCancel: { cancellation.cancel() }
+            channel.continuation.finish()
+            await delivery
+            try cancellation.throwIfCancelled()
+            return result
+        } catch {
+            channel.continuation.finish()
+            await delivery
+            throw error
+        }
+    }
+
+    private static func deliver(_ stream: AsyncStream<TracerouteObservation>,
+                                to observer: TracerouteObserver?, cancellation: CancellationToken) async {
+        for await event in stream {
+            guard !cancellation.isCancelled, !Task.isCancelled else { return }
+            if let observer { await observer(event) }
         }
     }
 
@@ -99,7 +162,9 @@ enum DeviceICMPTraceroute {
         sAddr: UInt32,
         maxHops: Int,
         waitSeconds: Int,
-        cancellation: CancellationToken
+        cancellation: CancellationToken,
+        probe: Probe?,
+        onHop: (DeviceTracerouteReport.Hop) throws -> Void
     ) throws -> DeviceTracerouteReport {
         let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)
         guard fd >= 0 else {
@@ -132,35 +197,40 @@ enum DeviceICMPTraceroute {
                 try cancellation.throwIfCancelled()
                 let sequence = nextSequence
                 nextSequence &+= 1
-                let packet = DeviceICMPPacket.buildEchoRequest(
-                    identifier: identifier, sequence: sequence, payload: token
-                )
-                let sentAt = monotonicSeconds()
-                let sendResult = packet.withUnsafeBytes { buffer in
-                    withUnsafePointer(to: &destination) { pointer in
-                        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                            sendto(fd, buffer.baseAddress, buffer.count, 0, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                let outcome: ProbeOutcome
+                if let probe {
+                    outcome = try probe(ttl, sequence, cancellation)
+                } else {
+                    let packet = DeviceICMPPacket.buildEchoRequest(
+                        identifier: identifier, sequence: sequence, payload: token
+                    )
+                    let sentAt = monotonicSeconds()
+                    let sendResult = packet.withUnsafeBytes { buffer in
+                        withUnsafePointer(to: &destination) { pointer in
+                            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                                sendto(fd, buffer.baseAddress, buffer.count, 0, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                            }
                         }
                     }
-                }
-                if sendResult < 0 {
-                    let sendError = errno
-                    guard sendError == EHOSTUNREACH || sendError == ENETUNREACH || sendError == EHOSTDOWN else {
-                        throw DiagnosticError.system("ICMP traceroute send failed (errno \(sendError))")
+                    if sendResult < 0 {
+                        let sendError = errno
+                        guard sendError == EHOSTUNREACH || sendError == ENETUNREACH || sendError == EHOSTDOWN else {
+                            throw DiagnosticError.system("ICMP traceroute send failed (errno \(sendError))")
+                        }
+                        hopStatus = .unreachable("sendErrno=\(sendError)")
+                        continue
                     }
-                    hopStatus = .unreachable("sendErrno=\(sendError)")
-                    continue
+                    outcome = try receiveProbe(
+                        fd: fd,
+                        identifier:identifier,
+                        destination:sAddr,
+                        sequence: sequence,
+                        token: token,
+                        sentAt: sentAt,
+                        timeoutSeconds: waitSeconds,
+                        cancellation: cancellation
+                    )
                 }
-                let outcome = try receiveProbe(
-                    fd: fd,
-                    identifier:identifier,
-                    destination:sAddr,
-                    sequence: sequence,
-                    token: token,
-                    sentAt: sentAt,
-                    timeoutSeconds: waitSeconds,
-                    cancellation: cancellation
-                )
                 switch outcome {
                 case .echoReply(let rttMs):
                     rtts.append(rttMs)
@@ -178,7 +248,10 @@ enum DeviceICMPTraceroute {
                 if case .reached = hopStatus { break }
                 if case .unreachable = hopStatus { break }
             }
-            hops.append(.init(ttl: ttl, status: hopStatus ?? .timeout))
+            let hop = DeviceTracerouteReport.Hop(ttl: ttl, status: hopStatus ?? .timeout)
+            hops.append(hop)
+            try cancellation.throwIfCancelled()
+            try onHop(hop)
             if case .reached = hopStatus { break }
             if case .unreachable = hopStatus { break }
         }
@@ -190,7 +263,7 @@ enum DeviceICMPTraceroute {
         )
     }
 
-    private enum ProbeOutcome {
+    enum ProbeOutcome {
         case echoReply(rttMs: Double)
         case timeExceeded(address: String, rttMs: Double)
         case unreachable(reason: String)
@@ -249,6 +322,17 @@ enum DeviceICMPTraceroute {
             default:
                 throw DiagnosticError.system("ICMP traceroute receive failed (errno \(errno))")
             }
+        }
+    }
+}
+
+extension ICMPTracerouteReport.Hop {
+    func observation(resolvedAddress: String) -> TraceHop {
+        switch status {
+        case .reached(let rtts): .init(ttl: ttl, address: resolvedAddress, milliseconds: rtts, status: .reached)
+        case .timeExceeded(let address, let rtts): .init(ttl: ttl, address: address, milliseconds: rtts, status: .intermediate)
+        case .timeout: .init(ttl: ttl, address: nil, milliseconds: [], status: .timeout)
+        case .unreachable(let reason): .init(ttl: ttl, address: nil, milliseconds: [], status: .unreachable, reason: reason)
         }
     }
 }

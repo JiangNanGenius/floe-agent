@@ -17,7 +17,14 @@ import FloeBiologySamples
     private let onImportFile:BiologyNativeFileImportHandler?
     private let onAuthorizeFile:BiologyNativeFileAuthorizationHandler?
     private let scientificEnvironmentID:String?
+    /// Host-shared persistent assistant presentation (e.g. the App's studio
+    /// file assistant). When supplied it replaces the isolated one-shot sheet.
+    private let assistantContent:(@MainActor (BiologyAIContext) -> AnyView)?
+    private let prepareAssistant:(@MainActor (BiologyAIContext) async throws -> Void)?
     @State private var sheet:Panel?
+    @State private var renaming:BiologyAsset?
+    @State private var transforming:BiologyStructureTransformRequest?
+    @State private var assistantContext:BiologyAIContext?
     @State private var showingAnalysis=false
     private enum AnalysisInput:Hashable{case extra,cutoff,threshold,timeEnd,step}
     @FocusState private var analysisInput:AnalysisInput?
@@ -43,9 +50,9 @@ import FloeBiologySamples
     @State private var step=0.1
     @State private var extraOptions=""
     @State private var showResult=false
-    private enum Panel:String,Identifiable {case sequence,annotation,network,history,notes,assistant,rename,tools;var id:String{rawValue}}
-    public init(service:BiologyService,projectID:UUID,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil,onRunAnalysis:BiologyNativeAnalysisHandler? = nil,onImportFile:BiologyNativeFileImportHandler? = nil,onAuthorizeFile:BiologyNativeFileAuthorizationHandler? = nil,scientificEnvironmentID:String? = nil) {
-        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID
+    private enum Panel:String,Identifiable {case sequence,annotation,network,blankSequence,blankNetwork,history,notes,assistant,rename,tools;var id:String{rawValue}}
+    public init(service:BiologyService,projectID:UUID,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil,onRunAnalysis:BiologyNativeAnalysisHandler? = nil,onImportFile:BiologyNativeFileImportHandler? = nil,onAuthorizeFile:BiologyNativeFileAuthorizationHandler? = nil,scientificEnvironmentID:String? = nil,assistantContent:(@MainActor (BiologyAIContext) -> AnyView)? = nil,prepareAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil) {
+        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID;self.assistantContent=assistantContent;self.prepareAssistant=prepareAssistant
     }
     public var body:some View {
         GeometryReader { geometry in
@@ -65,6 +72,14 @@ import FloeBiologySamples
         .toolbar {toolbar}
         .inspector(isPresented:$showingAnalysis){properties.inspectorColumnWidth(min:280,ideal:320,max:360).presentationDetents([.large])}
         .sheet(item:$sheet){panel in panelView(panel).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
+        .sheet(item:$renaming){asset in BiologyAssetRenameSheet(model:model,asset:asset).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
+        .sheet(item:$transforming){request in BiologyStructureTransformSheet(model:model,request:request).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
+        .sheet(item:$assistantContext){context in
+            if let assistantContent {
+                BiologySharedAssistantPresentation(context:context,prepare:prepareAssistant,content:assistantContent)
+                    .id(context.id)
+            }
+        }
         .sheet(item:$nativeExport){item in BiologyNativeExportPicker(export:item){nativeExport=nil;Task{await model.service.finishNativeExport(item)}}}
         .alert(biologyText("Biology","生物"),isPresented:Binding(get:{model.notice != nil},set:{if !$0{model.notice=nil}})){Button(biologyText("OK","好")){model.notice=nil}}message:{Text(model.notice ?? "")}
         .fileImporter(isPresented:$importing,allowedContentTypes:[.data],allowsMultipleSelection:true){result in Task{await importFiles(result)}}
@@ -110,7 +125,7 @@ import FloeBiologySamples
                     Text(a.title).font(.headline).lineLimit(2)
                     Label(BiologyLabels.kind(a.kind)+" · "+biologyText("Saved","已保存"),systemImage:"checkmark.circle").font(.caption).foregroundStyle(.secondary)
                 }
-            } else {Text(biologyText("Import data or open an example","导入数据或打开示例")).foregroundStyle(.secondary)}
+            } else {Text(biologyText("Create from +, import or open an example","从加号新建、导入或打开示例")).foregroundStyle(.secondary)}
             Spacer()
             if model.busy {ProgressView().controlSize(.small)}
             if model.run != nil {
@@ -126,6 +141,10 @@ import FloeBiologySamples
                 ForEach(model.project?.assets ?? []){a in
                     Label{VStack(alignment:.leading,spacing:3){Text(a.title).lineLimit(2);Text(BiologyLabels.kind(a.kind)).font(.caption).foregroundStyle(.secondary)}}icon:{Image(systemName:BiologyLabels.icon(a.kind))}
                         .tag(a.id).frame(minHeight:44).accessibilityIdentifier(a.kind == .externalDataset ? "biology.assetFormat."+a.originalFormat:"biology.asset."+a.kind.rawValue)
+                        .contextMenu {
+                            Button(biologyText("Rename","重命名"),systemImage:"pencil"){renaming=a}.accessibilityIdentifier("biology.renameAsset")
+                            Button(biologyText("Delete","删除"),systemImage:"trash",role:.destructive){Task{await deleteAsset(a)}}.accessibilityIdentifier("biology.deleteAsset")
+                        }
                 }
             }
             if let runs=model.project?.runs,!runs.isEmpty {
@@ -153,7 +172,7 @@ import FloeBiologySamples
                 else if ["tif","tiff"].contains(a.originalFormat) {BiologyLargeImageView(model:model,asset:a,executionOwner:executionOwner,onRunAnalysis:onRunAnalysis,scientificEnvironmentID:scientificEnvironmentID).id(a.id)}
                 else {ContentUnavailableView(biologyText("Original dataset saved","原始数据已保存"),systemImage:"doc.badge.gearshape",description:Text(biologyText("Choose a configured scientific importer in Analysis.","请在分析中选择已配置的科学数据读取方法。")))}
             }
-        } else {ContentUnavailableView(biologyText("Start with a dataset","从一份数据开始"),systemImage:"square.and.arrow.down",description:Text(biologyText("Import a file, or choose an offline example from +.","导入文件，或从加号菜单选择离线示例。")))}
+        } else {ContentUnavailableView(biologyText("Start with a dataset","从一份数据开始"),systemImage:"square.and.arrow.down",description:Text(biologyText("Create a sequence or network from +, import a file, or choose an offline example.","从加号菜单新建序列或网络，导入文件，或选择离线示例。")))}
     }
     private var storedSelection:JSONValue? {model.selectedID.flatMap{model.project?.selections?[$0.uuidString]}}
     private var sequenceRange:Range<Int>? {
@@ -162,6 +181,10 @@ import FloeBiologySamples
     @ToolbarContentBuilder private var toolbar:some ToolbarContent {
         ToolbarItemGroup(placement:.topBarTrailing) {
             Menu {
+                Section(biologyText("New","新建")) {
+                    Button(biologyText("New sequence","新建序列"),systemImage:"text.alignleft"){sheet = .blankSequence}.accessibilityIdentifier("biology.newSequence")
+                    Button(biologyText("New reaction network","新建反应网络"),systemImage:"point.3.filled.connected.trianglepath.dotted"){sheet = .blankNetwork}.accessibilityIdentifier("biology.newNetwork")
+                }
                 Button(biologyText("Import files","导入文件"),systemImage:"square.and.arrow.down"){importing=true}
                 Section(biologyText("Offline examples","离线示例")) {
                     ForEach([BiologySampleID.sequenceComparison,.ubiquitinPDB,.ubiquitinMMCIF,.microscopy,.expressionCounts,.reactionNetwork,.phylogeneticTree,.densityVolume]){s in
@@ -215,12 +238,24 @@ import FloeBiologySamples
                         if case .biochemicalNetwork = a.payload {
                             Button(biologyText("Edit network","编辑网络"),systemImage:"pencil"){sheet = .network}.accessibilityIdentifier("biology.editNetwork")
                         }
+                        if case .proteinStructure(let structure) = a.payload {
+                            Button(biologyText("Move or rotate structure","移动或旋转结构"),systemImage:"move.3d") {
+                                let atoms=structure.atoms.filter{$0.model==structureModel && (chain.isEmpty || $0.chain==chain)}
+                                let visible=Set(atoms.map(\.id))
+                                transforming=BiologyStructureTransformRequest(asset:a,visibleAtomIDs:atoms.map(\.id),selectedAtomIDs:selectedAtoms.filter{visible.contains($0)})
+                            }.accessibilityIdentifier("biology.transformStructure")
+                        }
+                        Button(biologyText("Rename dataset","重命名数据"),systemImage:"pencil"){renaming=a}
+                        Button(biologyText("Delete dataset","删除数据"),systemImage:"trash",role:.destructive){Task{await deleteAsset(a)}}.accessibilityIdentifier("biology.deleteSelectedAsset")
                     }
                 }
                 Button(biologyText("Research notes","研究记录"),systemImage:"note.text"){sheet = .notes}
                 Button(biologyText("Version history","历史版本"),systemImage:"clock.arrow.circlepath"){sheet = .history}
                 Button(biologyText("Rename project","重命名项目"),systemImage:"pencil"){sheet = .rename}
-                Button(biologyText("Ask AI","询问 AI"),systemImage:"bubble.left.and.bubble.right"){sheet = .assistant}
+                Button(biologyText("Ask AI","询问 AI"),systemImage:"bubble.left.and.bubble.right"){
+                    if assistantContent != nil {assistantContext=BiologyAIContext(projectID:model.projectID,assetID:model.selectedID,assetRevision:model.selected?.revision,selectedRunID:model.run?.id)}
+                    else {sheet = .assistant}
+                }
                 Button(biologyText("Automation tools","自动化工具"),systemImage:"terminal"){sheet = .tools}.accessibilityIdentifier("biology.tools")
             }label:{Label(biologyText("More","更多"),systemImage:"ellipsis.circle").frame(minWidth:44,minHeight:44)}.accessibilityIdentifier("biology.more")
         }
@@ -424,11 +459,19 @@ import FloeBiologySamples
         case .sequence:if let a=model.selected {BiologySequenceEditor(model:model,asset:a,recordIndex:recordIndex)}
         case .annotation:if let a=model.selected {BiologyAnnotationEditor(model:model,asset:a,recordIndex:recordIndex)}
         case .network:if let a=model.selected,case .biochemicalNetwork(let n)=a.payload {BiologyNetworkEditor(model:model,asset:a,network:n)}
+        case .blankSequence:BiologyBlankAssetSheet(model:model,kind:.sequence)
+        case .blankNetwork:BiologyBlankAssetSheet(model:model,kind:.biochemicalNetwork)
         case .history:BiologyHistorySheet(model:model)
         case .notes:BiologyTextSheet(model:model,rename:false)
         case .rename:BiologyTextSheet(model:model,rename:true)
         case .assistant:BiologyAssistantSheet(model:model,handler:onAI)
         case .tools:BiologyToolConsole(projectID:model.projectID,makeTools:makeTools)
+        }
+    }
+    private func deleteAsset(_ a:BiologyAsset) async {
+        await model.perform {
+            _=try await model.service.update(model.projectID,operation:"asset.delete",assetID:a.id,expectedRevision:a.revision,parameters:.object([:]))
+            model.clearUndo(for:a.id)
         }
     }
     private func derivedFormat(_ a:BiologyAsset)->String {
@@ -566,6 +609,144 @@ struct BiologyAssistantSheet:View {
                 if busy{ProgressView()}
                 if !reply.isEmpty{Text(reply).textSelection(.enabled)}
             }.buttonStyle(BiologyControlButtonStyle(expands:true)).navigationTitle(biologyText("Research assistant","研究助手")).navigationBarTitleDisplayMode(.inline).toolbar{ToolbarItem(placement:.confirmationAction){Button(biologyText("Done","完成")){dismiss()}}}
+        }
+    }
+}
+struct BiologyBlankAssetSheet:View {
+    let model:BiologyWorkbenchModel
+    let kind:BiologyAssetKind
+    @Environment(\.dismiss) private var dismiss
+    @State private var title=""
+    @State private var recordName=""
+    @State private var sequence=""
+    @State private var annotate=false
+    @State private var annotationName=""
+    @State private var error:String?
+    @State private var saving=false
+    var body:some View {
+        NavigationStack {
+            Form {
+                TextField(biologyText("Dataset name","数据名称"),text:$title).biologyNamedInput(biologyText("Dataset name","数据名称")).accessibilityIdentifier("biology.blankTitle")
+                if kind == .sequence {
+                    TextField(biologyText("Record name","记录名称"),text:$recordName).biologyNamedInput(biologyText("Record name","记录名称"))
+                    // The blank board is an uncommitted editing draft: nothing is
+                    // created until the user enters a valid sequence.
+                    TextEditor(text:$sequence).font(.system(.body,design:.monospaced)).frame(minHeight:180).biologyInputSurface().autocorrectionDisabled().textInputAutocapitalization(.never).accessibilityIdentifier("biology.blankSequence")
+                    Text(biologyText("Enter a valid A–Z sequence to create this dataset.","请输入有效的 A–Z 序列后创建。")).font(.caption).foregroundStyle(.secondary)
+                    Toggle(biologyText("Add opening annotation","添加起始注释"),isOn:$annotate)
+                    if annotate {
+                        TextField(biologyText("Feature name","注释名称"),text:$annotationName).biologyNamedInput(biologyText("Feature name","注释名称"))
+                        Text(biologyText("The opening annotation spans the full new sequence on the forward strand.","起始注释覆盖整条新序列的正向链。")).font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(biologyText("Creates one starter species; edit amounts, reactions and units after saving.","先创建一个起始物种，保存后可编辑初始量、反应与单位。")).font(.caption).foregroundStyle(.secondary)
+                }
+                if let error {Text(error).foregroundStyle(.red)}
+            }.buttonStyle(BiologyControlButtonStyle(expands:true)).navigationTitle(kind == .sequence ? biologyText("New sequence","新建序列"):biologyText("New reaction network","新建反应网络")).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}.disabled(saving)}
+                ToolbarItem(placement:.confirmationAction){Button(biologyText("Create","创建")){Task{await save()}}.disabled(saving).accessibilityIdentifier("biology.createBlank")}
+            }
+            .interactiveDismissDisabled(saving)
+        }
+    }
+    private func save() async {
+        guard !saving else {return}
+        saving=true;defer{saving=false}
+        do {
+            let name=title.trimmingCharacters(in:.whitespacesAndNewlines)
+            guard !name.isEmpty else {throw BiologyError.invalid(biologyText("Enter a dataset name.","请输入数据名称。"))}
+            guard let revision=model.project?.revision else {throw BiologyError.invalid(biologyText("The project is still loading.","项目仍在加载。"))}
+            var parameters:[String:JSONValue]=["title":.string(name),"kind":.string(kind == .sequence ? "sequence" : "biochemicalNetwork")]
+            if kind == .sequence {
+                let record=recordName.trimmingCharacters(in:.whitespacesAndNewlines)
+                parameters["recordName"] = .string(record.isEmpty ? name : record)
+                let symbols=sequence.uppercased().filter{!$0.isWhitespace && !$0.isNewline}
+                guard !symbols.isEmpty else {throw BiologyError.invalid(biologyText("Enter a sequence.","请输入序列。"))}
+                parameters["sequence"] = .string(symbols)
+                if annotate {
+                    let feature=annotationName.trimmingCharacters(in:.whitespacesAndNewlines)
+                    guard !feature.isEmpty else {throw BiologyError.invalid(biologyText("Enter a feature name.","请输入注释名称。"))}
+                    parameters["annotation"] = .object(["name":.string(feature),"start":.number(0),"end":.number(Double(symbols.count)),"strand":.number(1)])
+                }
+            }
+            let created=try await model.service.update(model.projectID,operation:"asset.create",assetID:nil,expectedRevision:revision,parameters:.object(parameters))
+            await model.refresh()
+            if let id=created["assetID"]?.string.flatMap(UUID.init(uuidString:)) {model.selectedID=id}
+            dismiss()
+        }catch{self.error=error.localizedDescription}
+    }
+}
+struct BiologyAssetRenameSheet:View {
+    let model:BiologyWorkbenchModel
+    let asset:BiologyAsset
+    @Environment(\.dismiss) private var dismiss
+    @State private var title=""
+    @State private var error:String?
+    @State private var saving=false
+    var body:some View {
+        NavigationStack {
+            Form {
+                TextField(biologyText("Dataset name","数据名称"),text:$title).biologyNamedInput(biologyText("Dataset name","数据名称")).accessibilityIdentifier("biology.renameTitle")
+                if let error {Text(error).foregroundStyle(.red)}
+            }.buttonStyle(BiologyControlButtonStyle(expands:true)).navigationTitle(biologyText("Rename dataset","重命名数据")).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}.disabled(saving)}
+                ToolbarItem(placement:.confirmationAction){Button(biologyText("Save","保存")){Task{await save()}}.disabled(saving).accessibilityIdentifier("biology.saveRename")}
+            }
+            .interactiveDismissDisabled(saving)
+            .task {if title.isEmpty {title=asset.title}}
+        }
+    }
+    private func save() async {
+        guard !saving else {return}
+        saving=true;defer{saving=false}
+        do {
+            let name=title.trimmingCharacters(in:.whitespacesAndNewlines)
+            guard !name.isEmpty else {throw BiologyError.invalid(biologyText("Enter a dataset name.","请输入数据名称。"))}
+            _=try await model.service.update(model.projectID,operation:"asset.rename",assetID:asset.id,expectedRevision:asset.revision,parameters:.object(["title":.string(name)]))
+            await model.refresh();dismiss()
+        }catch{self.error=error.localizedDescription}
+    }
+}
+/// Preparation belongs to the sheet's cancellable lifetime. A view builder
+/// must never start selection writes or present a composer before they finish.
+@MainActor private struct BiologySharedAssistantPresentation:View {
+    let context:BiologyAIContext
+    let prepare:(@MainActor (BiologyAIContext) async throws -> Void)?
+    let content:@MainActor (BiologyAIContext) -> AnyView
+    @Environment(\.dismiss) private var dismiss
+    @State private var ready=false
+    @State private var error:String?
+    @State private var attempt=0
+
+    var body:some View {
+        NavigationStack {
+            Group {
+                if ready {content(context)}
+                else if let error {
+                    VStack(spacing:16) {
+                        ContentUnavailableView(biologyText("Unable to open assistant","无法打开助手"),systemImage:"exclamationmark.bubble",description:Text(biologyText("Try again, or close and select the current dataset.","请重试，或关闭后重新选择当前数据。")))
+                        Button(biologyText("Try again","重试")){attempt += 1}
+                        DisclosureGroup(biologyText("Details","详情")){Text(error).font(.caption).textSelection(.enabled)}
+                    }.padding()
+                } else {ProgressView(biologyText("Opening assistant…","正在打开助手…"))}
+            }
+            .navigationTitle(biologyText("AI assistant","AI 助手"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {ToolbarItem(placement:.confirmationAction){Button(biologyText("Done","完成")){dismiss()}}}
+        }
+        .task(id:attempt) {
+            ready=false;error=nil
+            do {
+                try await prepare?(context)
+                try Task.checkCancellation()
+                ready=true
+            } catch is CancellationError {
+            } catch {
+                guard !Task.isCancelled else {return}
+                self.error=error.localizedDescription
+            }
         }
     }
 }

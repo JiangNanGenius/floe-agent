@@ -16,9 +16,15 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
     @State private var following = MeetingTranscriptFollowState()
     @State private var userScrolling = false
     @State private var nearLiveEnd = true
+    @State private var attributionNote: String?
     private let liveEndID = "meeting.transcript.liveEnd"
     private func t(_ zh: String, _ en: String) -> String { IDELanguageRunText.t(zh, en) }
     private var isLive: Bool { session.isRecording || session.liveTranscription?.isWorking == true }
+    /// Concise, actionable state shown once when the selected engine cannot
+    /// separate speakers. Never per-segment, never a fabricated label.
+    private var showsAttributionNote: Bool {
+        attributionNote != nil && !session.transcript.isEmpty
+    }
 
     var body: some View {
         let bubbles = session.displayTranscriptBubbles
@@ -31,6 +37,11 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
                         Toggle(t("双语", "Bilingual"), isOn: $bilingual).fixedSize().font(.caption)
                     }
                     liveStatus
+                    if let note = attributionNote, showsAttributionNote {
+                        Label(note, systemImage: "person.slash")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("meeting.transcript.attributionNote")
+                    }
                     if bilingual {
                         Button(t("翻译未处理的段落", "Translate new segments"), systemImage: "character.bubble") {
                             session.analyze("translate")
@@ -86,6 +97,13 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
             }
         }
         .task(id: session.id) { await session.observeTranscriptPartials() }
+        .task(id: session.intelligence.transcriptionServiceID) {
+            attributionNote = switch await session.speakerAttributionCapability {
+            case .available: nil
+            case .degraded(let note): note
+            case .unavailable(let reason): reason
+            }
+        }
         .accessibilityIdentifier("meeting.transcript")
     }
 
@@ -130,14 +148,28 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
                 if !targets.isEmpty {
                     Menu(t("合并到说话人", "Merge into speaker")) {
                         ForEach(targets) { target in
-                            Button(target.label) { Task { await session.mergeTranscriptSpeaker(speaker, into: target) } }
+                            Button(session.displaySpeakerLabel(target)) { Task { await session.mergeTranscriptSpeaker(speaker, into: target) } }
+                        }
+                    }
+                    Menu(t("改判此段说话人", "Reassign this passage")) {
+                        ForEach(targets) { target in
+                            Button(session.displaySpeakerLabel(target)) { Task { await reassign(bubble, to: target) } }
                         }
                     }
                 }
-            } label: { Label(speaker.label, systemImage: "person.fill").font(.caption.weight(.medium)).frame(minHeight: 44) }
+            } label: { Label(session.displaySpeakerLabel(speaker), systemImage: "person.fill").font(.caption.weight(.medium)).frame(minHeight: 44) }
             .buttonStyle(.plain)
-        } else {
-            Text(t("说话人未识别", "Speaker not identified")).font(.caption).foregroundStyle(.secondary).frame(minHeight: 44)
+            .accessibilityIdentifier("meeting.transcript.speaker.\(speaker.id.rawValue.uuidString)")
+        }
+    }
+
+    /// Move every final segment of the bubble to the chosen speaker. The
+    /// engine's original attribution stays recoverable through the speaker
+    /// list; the user's correction wins over late engine results.
+    private func reassign(_ bubble: MeetingTranscriptBubble, to speaker: Speaker) async {
+        for fragment in bubble.fragments where fragment.isFinal {
+            guard let segment = session.transcript.first(where: { $0.id.rawValue == fragment.id }) else { continue }
+            await session.reassignSegment(segment, to: speaker)
         }
     }
 
@@ -180,6 +212,24 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
                 ForEach(bubble.fragments.filter(\.isFinal)) { fragment in
                     Button("\(time(fragment.start ?? 0)) · \(fragment.text.prefix(28))") { session.playTranscriptFragment(fragment) }
                         .disabled(session.isRecording || !fragment.hasValidRange)
+                }
+            }
+            let assignable = session.speakers.filter { $0.mergedInto == nil }
+            if !assignable.isEmpty {
+                Menu(t("归属此段说话人", "Attribute this passage")) {
+                    ForEach(assignable) { speaker in
+                        Button(session.displaySpeakerLabel(speaker)) { Task { await reassign(bubble, to: speaker) } }
+                    }
+                    if bubble.speakerID != nil {
+                        Button(t("清除归属", "Clear attribution"), role: .destructive) {
+                            Task {
+                                for fragment in bubble.fragments where fragment.isFinal {
+                                    guard let segment = session.transcript.first(where: { $0.id.rawValue == fragment.id }) else { continue }
+                                    await session.reassignSegment(segment, to: nil)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Button(t("插入笔记", "Insert in notes")) {

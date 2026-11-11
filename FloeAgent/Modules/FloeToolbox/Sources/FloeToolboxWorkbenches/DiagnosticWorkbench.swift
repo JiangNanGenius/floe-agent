@@ -3,13 +3,25 @@ import SwiftUI
 import FloeToolboxCore
 import FloeToolboxDiagnostics
 
-public struct DiagnosticDisplayRow: Identifiable,Sendable { public let id = UUID(); public let title: String; public let value: String; public var status: DiagnosticDisplayStatus? = nil }
+public struct DiagnosticDisplayRow: Identifiable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let value: String
+    public var status: DiagnosticDisplayStatus?
+    public var ipInformation: TracerouteIPInformation?
+    public init(id: UUID = UUID(), title: String, value: String, status: DiagnosticDisplayStatus? = nil,
+                ipInformation: TracerouteIPInformation? = nil) {
+        self.id = id; self.title = title; self.value = value; self.status = status; self.ipInformation = ipInformation
+    }
+}
 public enum DiagnosticDisplayStatus: Sendable { case timeout, unreachable, open, noConnection }
 /// The App supplies its existing authorized service. A protocol also lets
 /// focused tests deliver genuine typed responses in a controlled order.
 public protocol DiagnosticWorkbenchService: Sendable {
     func ping(target: String, count: Int, timeoutSeconds: Int) async throws -> [PingObservation]
     func traceroute(target: String, maximumHops: Int, timeoutSeconds: Int) async throws -> [TraceHop]
+    func traceroute(target: String, maximumHops: Int, timeoutSeconds: Int, requestID: UUID,
+                    onObservation: TracerouteObserver?) async throws -> [TraceHop]
     func dns(name: String, type: DNSRecordType, timeout: Double) async throws -> [DNSRecord]
     func ports(target: String, ports: [UInt16], timeout: Double) async throws -> [PortObservation]
     func discover(type: String, seconds: Double) async throws -> [BonjourService]
@@ -17,6 +29,12 @@ public protocol DiagnosticWorkbenchService: Sendable {
     func stop() async
 }
 public extension DiagnosticWorkbenchService {
+    // Legacy final-only adapters stay source-compatible but cannot pretend to
+    // stream by replaying an array after completion.
+    func traceroute(target: String, maximumHops: Int, timeoutSeconds: Int, requestID: UUID,
+                    onObservation: TracerouteObserver?) async throws -> [TraceHop] {
+        throw DiagnosticError.system("Traceroute streaming service is not configured")
+    }
     // Existing non-LAN adapters do not gain an invented discovery fallback.
     func lanScan(types: [String], seconds: Double, onEvent: (@Sendable (LANDiscoveryEvent) -> Void)?) async throws -> LANScanReport {
         throw DiagnosticError.system("LAN discovery service is not configured")
@@ -56,6 +74,8 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     @Published public private(set) var lanReport: LANScanReport?
     @Published public var recordType = DNSRecordType.a
     @Published public private(set) var running = false
+    @Published public private(set) var stopping = false
+    @Published public private(set) var ipInformationRetryable = false
     @Published public private(set) var failed = false
     @Published public private(set) var cancelled = false
     @Published public private(set) var request: DiagnosticRequestSnapshot?
@@ -67,18 +87,32 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     private let onRequestState: (@MainActor @Sendable (DiagnosticRequestSnapshot, DiagnosticRequestState) -> Void)?
     private var operation: Task<Void,Never>?
     private var generation = UUID()
+    private var closed = false
+    private var stopDrain: Task<Void, Never>?
+    private var stopGeneration = UUID()
+    private let ipInformation: TracerouteIPInformationProvider?
+    private var traceHops: [TraceHop] = []
+    private var traceRowIDs: [Int: UUID] = [:]
+    private var traceAddresses: [Int: String] = [:]
+    private var ipGeneration = UUID()
+    private var ipQueue: [String] = []
+    private var ipFinished: Set<String> = []
+    private var ipTasks: [String: Task<Void, Never>] = [:]
     public init(tool: ToolboxTool,service: any DiagnosticWorkbenchService,mayReadWiFiIdentity: Bool = false,
-                onRequestState: (@MainActor @Sendable (DiagnosticRequestSnapshot, DiagnosticRequestState) -> Void)? = nil) throws {
+                onRequestState: (@MainActor @Sendable (DiagnosticRequestSnapshot, DiagnosticRequestState) -> Void)? = nil,
+                ipInformation: TracerouteIPInformationProvider? = nil) throws {
         guard [.ping,.traceroute,.dns,.port,.lan,.wifi].contains(tool) else { throw DiagnosticError.invalid("diagnostic view") }
         self.tool = tool; self.service = service; self.mayReadWiFiIdentity = mayReadWiFiIdentity
-        self.onRequestState = onRequestState
+        self.onRequestState = onRequestState; self.ipInformation = ipInformation
     }
     @discardableResult public func run() -> Task<Void,Never>? {
-        guard !running else { return nil }
+        guard !closed, !running, !stopping else { return nil }
         let frozen = DiagnosticRequestSnapshot(id:UUID(),tool:tool,target:target.trimmingCharacters(in:.whitespacesAndNewlines),
             ports:ports,recordType:recordType,serviceType:serviceType,lanConfiguration:tool == .lan ? lanConfiguration : nil)
         // Rows belong only to this request, including its validation/failure
         // path. Previous successes are never implicitly reused as current data.
+        invalidateIPInformation()
+        traceHops = []; traceRowIDs = [:]; traceAddresses = [:]
         generation = frozen.id; request = frozen; rows = []; failure = nil
         lanServices = []; lanReport = nil
         cancelled = false; failed = false; running = true
@@ -99,7 +133,17 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
                         }
                     }
                 case .traceroute:
-                    results = try await service.traceroute(target:target,maximumHops:30,timeoutSeconds:1).map { DiagnosticDisplayRow(title:"\($0.ttl) · \($0.address ?? "*")",value:$0.milliseconds.map { String(format:"%.2f ms",$0) }.joined(separator:" · ")) }
+                    let finalHops = try await service.traceroute(target: target, maximumHops: 30, timeoutSeconds: 1,
+                        requestID: run, onObservation: { [weak self] event in
+                            await self?.acceptTrace(event, run: run)
+                        })
+                    guard generation == run else { return }
+                    guard finalHops == traceHops else {
+                        throw DiagnosticError.system("Traceroute observations did not match the final report")
+                    }
+                    // The observed rows already carry their stable identities
+                    // and optional enrichment. Never replace them with a final map.
+                    results = rows
                 case .dns:
                     let records = try await service.dns(name:target,type:type,timeout:5)
                     guard !records.isEmpty else { throw DiagnosticError.dnsNoRecords(target,type) }
@@ -131,14 +175,16 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
                 }
                 guard generation == run else { return }
                 guard !Task.isCancelled else {
-                    rows = []; lanServices = []; lanReport = nil; running = false; operation = nil; cancelled = true
+                    if tool != .traceroute { rows = [] }
+                    lanServices = []; lanReport = nil; running = false; operation = nil; cancelled = true
                     onRequestState?(frozen, .cancelled); return
                 }
                 rows = results; running = false; operation = nil
                 onRequestState?(frozen, outcome)
             } catch {
                 guard generation == run else { return }
-                rows = []; lanServices = []; lanReport = nil; running = false; operation = nil
+                if tool != .traceroute { rows = [] }
+                lanServices = []; lanReport = nil; running = false; operation = nil
                 if error is CancellationError || Task.isCancelled || (error as? DiagnosticError) == .stopped {
                     cancelled = true; failed = false; failure = nil
                 } else {
@@ -151,10 +197,142 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     }
     public func cancel() {
         let wasRunning = running
-        generation = UUID(); operation?.cancel(); operation = nil; running = false
+        generation = UUID()
+        invalidateIPInformation()
+        let previous = operation
+        previous?.cancel(); operation = nil; running = false
         if wasRunning {
-            rows = []; lanServices = []; lanReport = nil; failure = nil; failed = false; cancelled = true
+            if tool != .traceroute { rows = [] }
+            lanServices = []; lanReport = nil; failure = nil; failed = false; cancelled = true
             if let request { onRequestState?(request, .cancelled) }
+        }
+        if tool == .traceroute, let previous, stopDrain == nil {
+            // UI cancellation is immediate; Start is briefly gated until this
+            // exact worker has acknowledged and closed its own descriptor.
+            stopping = true
+            let stop = UUID(); stopGeneration = stop
+            stopDrain = Task { [weak self] in
+                await previous.value
+                guard let self, self.stopGeneration == stop else { return }
+                self.stopping = false; self.stopDrain = nil
+            }
+        }
+    }
+    public func waitUntilStopped() async { await stopDrain?.value }
+
+    /// Display data only. Closing a workbench never preserves a service,
+    /// permission, active worker or lease inside this value.
+    public struct RetainedTraceroute: Sendable {
+        public let request: DiagnosticRequestSnapshot
+        public let inputTarget: String
+        public let rows: [DiagnosticDisplayRow]
+        public let hops: [TraceHop]
+        public let cancelled: Bool
+        public let failed: Bool
+        public let failure: DiagnosticError?
+        public func removingIPInformation() -> Self {
+            let cleared = rows.map { row in var value = row; value.ipInformation = nil; return value }
+            return .init(request: request, inputTarget: inputTarget, rows: cleared, hops: hops,
+                         cancelled: cancelled, failed: failed, failure: failure)
+        }
+    }
+    public var retainedTraceroute: RetainedTraceroute? {
+        guard tool == .traceroute, let request else { return nil }
+        return .init(request: request, inputTarget: target, rows: rows, hops: traceHops,
+                     cancelled: cancelled, failed: failed, failure: failure)
+    }
+    /// A fresh App-owned service must independently authorize the next Start.
+    /// Restoring these old results never starts probing or an IP lookup.
+    public func restoreTraceroute(_ retained: RetainedTraceroute) {
+        guard !closed, tool == .traceroute, request == nil, !running, !stopping,
+              retained.request.tool == .traceroute, retained.hops.count <= 30,
+              retained.hops.count == retained.rows.count else { return }
+        request = retained.request; target = retained.inputTarget; rows = retained.rows
+        traceHops = retained.hops; cancelled = retained.cancelled
+        failed = retained.failed; failure = retained.failure
+        for (hop, row) in zip(traceHops, rows) {
+            traceRowIDs[hop.ttl] = row.id
+            if let address = hop.address { traceAddresses[hop.ttl] = address }
+        }
+    }
+
+    private func acceptTrace(_ event: TracerouteObservation, run: UUID) {
+        guard generation == run, request?.id == run, event.requestID == run, running else { return }
+        guard case .hop(let hop) = event.value else { return }
+        guard (1...30).contains(hop.ttl), hop.ttl == traceHops.count + 1,
+              hop.milliseconds.count <= 2, hop.milliseconds.allSatisfy({ $0.isFinite && $0 >= 0 }),
+              hop.address.map(Self.isNumericIPv4) ?? true else { return }
+        if let last = traceHops.last, last.status == .reached || last.status == .unreachable { return }
+        switch hop.status {
+        case .reached, .intermediate: guard hop.address != nil, !hop.milliseconds.isEmpty else { return }
+        case .timeout: guard hop.address == nil, hop.milliseconds.isEmpty else { return }
+        case .unreachable: guard hop.milliseconds.isEmpty else { return }
+        }
+        traceHops.append(hop)
+        let id = UUID(); traceRowIDs[hop.ttl] = id
+        let status: DiagnosticDisplayStatus?
+        switch hop.status { case .timeout: status = .timeout; case .unreachable: status = .unreachable; default: status = nil }
+        rows.append(.init(id: id, title: "\(hop.ttl) · \(hop.address ?? "*")",
+            value: hop.milliseconds.map { String(format: "%.2f ms", $0) }.joined(separator: " · "), status: status))
+        if let address = hop.address {
+            traceAddresses[hop.ttl] = address
+            enqueueIP(address)
+        }
+    }
+    private static func isNumericIPv4(_ address: String) -> Bool {
+        let parts = address.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts.allSatisfy { part in
+            !part.isEmpty && part.utf8.count <= 3 && part.utf8.allSatisfy { (48...57).contains($0) }
+                && UInt8(part) != nil
+        }
+    }
+    private func invalidateIPInformation() {
+        ipGeneration = UUID()
+        for task in ipTasks.values { task.cancel() }
+        ipTasks = [:]; ipQueue = []; ipFinished = []; ipInformationRetryable = false
+    }
+    /// Call after the database service changes its dataset. This cancels old
+    /// lookups and invalidates displayed enrichment without touching hops.
+    public func refreshIPInformation() {
+        invalidateIPInformation()
+        for index in rows.indices { rows[index].ipInformation = nil }
+        guard !closed, tool == .traceroute, !cancelled, request != nil else { return }
+        for address in Set(traceAddresses.values).sorted() { enqueueIP(address) }
+    }
+    private func enqueueIP(_ address: String) {
+        guard ipInformation != nil, !ipFinished.contains(address), ipTasks[address] == nil,
+              !ipQueue.contains(address), ipQueue.count < 30 else { return }
+        ipQueue.append(address); pumpIP()
+    }
+    private func pumpIP() {
+        guard let provider = ipInformation else { return }
+        while ipTasks.count < 4, !ipQueue.isEmpty {
+            let address = ipQueue.removeFirst(), run = generation, epoch = ipGeneration
+            ipTasks[address] = Task { [weak self] in
+                let information: TracerouteIPInformation?
+                let succeeded: Bool
+                let busy: Bool
+                do { information = try await provider.information(for: address); succeeded = true; busy = false }
+                catch DiagnosticError.busy { information = nil; succeeded = false; busy = true }
+                catch { information = nil; succeeded = false; busy = false }
+                guard let self, self.generation == run, self.ipGeneration == epoch, !Task.isCancelled else { return }
+                self.ipTasks[address] = nil
+                if busy {
+                    // Normal saturation waits for a real permit release. Only
+                    // bounded-queue overload reaches here; retain retry input.
+                    self.ipInformationRetryable = true
+                    if !self.ipQueue.contains(address) { self.ipQueue.append(address) }
+                    return
+                }
+                if succeeded { self.ipFinished.insert(address) }
+                if let information, information.address == address {
+                    for (ttl, expectedAddress) in self.traceAddresses where expectedAddress == address {
+                        guard let id = self.traceRowIDs[ttl], let index = self.rows.firstIndex(where: { $0.id == id }) else { continue }
+                        self.rows[index].ipInformation = information
+                    }
+                }
+                self.pumpIP()
+            }
         }
     }
     public var manualTarget: String? { Self.normalizedTarget(target) }
@@ -170,7 +348,7 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
         if let index = lanServices.firstIndex(where: { $0.key == service.key }) { lanServices[index] = service }
         else if lanServices.count < 256 { lanServices.append(service) }
     }
-    public func close() async { cancel(); await service.stop() }
+    public func close() async { closed = true; cancel(); await service.stop(); await waitUntilStopped() }
 }
 public struct DiagnosticWorkbenchView: View {
     @ObservedObject private var model: DiagnosticWorkbenchModel
@@ -178,9 +356,13 @@ public struct DiagnosticWorkbenchView: View {
     private let history: AnyView?
     private let onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)?
     private let onOpenSettings: (() -> Void)?
+    private let ipInformationSettings: AnyView?
+    @State private var showsIPInformationSettings = false
     public init(model: DiagnosticWorkbenchModel, history: AnyView? = nil,
-                onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)? = nil, onOpenSettings: (() -> Void)? = nil) {
+                onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)? = nil, onOpenSettings: (() -> Void)? = nil,
+                ipInformationSettings: AnyView? = nil) {
         self.model = model; self.history = history; self.onUseEndpoint = onUseEndpoint; self.onOpenSettings = onOpenSettings
+        self.ipInformationSettings = ipInformationSettings
     }
     private var title: String {
         switch model.tool {
@@ -211,8 +393,9 @@ public struct DiagnosticWorkbenchView: View {
                 if model.tool == .port { TextField(workbenchText("端口，以逗号分隔","Comma-separated ports",locale),text:$model.ports).disabled(model.running) }
                 if model.tool == .dns { Picker(workbenchText("记录类型","Record type",locale),selection:$model.recordType) { ForEach(DNSRecordType.allCases,id:\.rawValue) { Text(String(describing:$0).uppercased()).tag($0) } }.disabled(model.running) }
                 HStack {
-                    Button(workbenchText("开始","Start",locale)) { model.run() }.disabled(model.running)
+                    Button(workbenchText("开始","Start",locale)) { model.run() }.disabled(model.running || model.stopping)
                     if model.running { ProgressView().controlSize(.small); Button(workbenchText("停止","Stop",locale)) { model.cancel() } }
+                    if model.stopping { ProgressView().controlSize(.small); Text(workbenchText("正在停止…", "Stopping…", locale)).foregroundStyle(.secondary) }
                 }
             }
             }
@@ -230,12 +413,40 @@ public struct DiagnosticWorkbenchView: View {
                     LabeledContent(workbenchText("本次检测","This check",locale),value:request.description)
                 }
                 if model.cancelled { Text(workbenchText("本次检测已停止。","This check was stopped.",locale)).foregroundStyle(.secondary) }
-                ForEach(model.rows) { row in LabeledContent(row.title) { Text(display(row)).textSelection(.enabled) } }
+                if model.tool == .traceroute, model.request != nil, !model.running, !model.stopping, !model.failed, !model.cancelled {
+                    Text(workbenchText("检测完成。", "Check complete.", locale)).foregroundStyle(.secondary)
+                }
+                ForEach(model.rows) { row in
+                    VStack(alignment: .leading, spacing: 4) {
+                        LabeledContent(row.title) { Text(display(row)).textSelection(.enabled) }
+                        if let information = row.ipInformation {
+                            Text([information.region,
+                                  information.autonomousSystemNumber.map { "AS\($0)" },
+                                  information.organization].compactMap { $0 }.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            DisclosureGroup(workbenchText("来源", "Source", locale)) {
+                                Text(information.source).font(.caption).textSelection(.enabled)
+                                Text(information.datasetVersion).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                if model.ipInformationRetryable {
+                    Button(workbenchText("重试 IP 信息", "Retry IP information", locale)) { model.refreshIPInformation() }
+                }
                 if model.tool == .wifi { Text(workbenchText("未取得的信息显示为 —。","Unavailable information is shown as —.",locale)).font(.caption).foregroundStyle(.secondary) }
             }
             }
             if let history { history }
+            if ipInformationSettings != nil {
+                Section {
+                    Button(workbenchText("IP 信息库", "IP information database", locale)) { showsIPInformationSettings = true }
+                }
+            }
         }.navigationTitle(title)
+        .sheet(isPresented: $showsIPInformationSettings) {
+            if let ipInformationSettings { ipInformationSettings }
+        }
     }
     private func failureMessage(_ error: DiagnosticError) -> String {
         switch error {

@@ -1,0 +1,56 @@
+{
+  "repository": "https://github.com/maxmind/MaxMind-DB",
+  "commit": "dc32db5525f9c42ab7006ab3f13c69330b814dd1",
+  "license": "MIT selected from upstream dual license",
+  "files": [
+    {
+      "path": "LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/maxmind/MaxMind-DB/dc32db5525f9c42ab7006ab3f13c69330b814dd1/LICENSE-MIT",
+      "bytes": 1023,
+      "gitBlobSHA1": "f85e365de02a257e41b27305e74277428218ff96",
+      "sha256": "91276db973f25602d1aa43491f59cbc84cb88e6f151e1d0cc82a755563ce0195",
+      "vendoredPath": "LICENSE-MIT"
+    },
+    {
+      "path": "test-data/GeoIP2-City-Test.mmdb",
+      "url": "https://raw.githubusercontent.com/maxmind/MaxMind-DB/dc32db5525f9c42ab7006ab3f13c69330b814dd1/test-data/GeoIP2-City-Test.mmdb",
+      "bytes": 22569,
+      "gitBlobSHA1": "e20846ac1757a3745ae41411757ed3817536e3be",
+      "sha256": "ed972738e4e03a3e56e12041a6af4d91592249d110f7e4a647e5f2fa0e639c09",
+      "vendoredPath": "GeoIP2-City-Test.mmdb"
+    },
+    {
+      "path": "test-data/GeoLite2-ASN-Test.mmdb",
+      "url": "https://raw.githubusercontent.com/maxmind/MaxMind-DB/dc32db5525f9c42ab7006ab3f13c69330b814dd1/test-data/GeoLite2-ASN-Test.mmdb",
+      "bytes": 12653,
+      "gitBlobSHA1": "ae4cb25766f79c314d2ed7bfe35863f927455ae0",
+      "sha256": "75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a",
+      "vendoredPath": "GeoLite2-ASN-Test.mmdb"
+    },
+    {
+      "path": "test-data/GeoIP2-City-Test-Invalid-Node-Count.mmdb",
+      "url": "https://raw.githubusercontent.com/maxmind/MaxMind-DB/dc32db5525f9c42ab7006ab3f13c69330b814dd1/test-data/GeoIP2-City-Test-Invalid-Node-Count.mmdb",
+      "bytes": 22876,
+      "gitBlobSHA1": "59777eae1ee397e2bc57a6394745ccc7af73597b",
+      "sha256": "89396af24c3d0a67c0e91e0dca930f6de256fba9e9be466cb794617442fee295",
+      "vendoredPath": "GeoIP2-City-Test-Invalid-Node-Count.mmdb"
+    },
+    {
+      "path": "test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb",
+      "url": "https://raw.githubusercontent.com/maxmind/MaxMind-DB/dc32db5525f9c42ab7006ab3f13c69330b814dd1/test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb",
+      "bytes": 22478,
+      "gitBlobSHA1": "271043724b340f98fbb59498410d5986a8d2f733",
+      "sha256": "a340a6871b8bee8351befb8ad26f5229453705dddee0e948a35a65916c931e9c",
+      "vendoredPath": "GeoIP2-City-Test-Broken-Double-Format.mmdb"
+    },
+    {
+      "path": "test-data/MaxMind-DB-test-broken-pointers-24.mmdb",
+      "url": "https://raw.githubusercontent.com/maxmind/MaxMind-DB/dc32db5525f9c42ab7006ab3f13c69330b814dd1/test-data/MaxMind-DB-test-broken-pointers-24.mmdb",
+      "bytes": 1289,
+      "gitBlobSHA1": "2f71e90da9bc81710cc3303c0b48855136e7ae32",
+      "sha256": "48cc210f3e02f1cfed9a73e31fba3304ca5b3744f61f3cbc943ae8b9561c6290",
+      "vendoredPath": "MaxMind-DB-test-broken-pointers-24.mmdb"
+    }
+  ],
+  "selection": "Only listed small binary fixtures and MIT license are vendored; original upstream paths retained."
+}

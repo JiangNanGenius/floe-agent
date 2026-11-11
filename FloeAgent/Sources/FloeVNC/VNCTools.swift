@@ -40,6 +40,31 @@ public typealias VNCTargetedReconnectAction = @Sendable (
     _ context: ToolContext
 ) async throws -> VNCSessionHandle?
 
+/// Context-aware optional provider for scoped on-device displays (the local
+/// Linux screen). Semantics are strict so a scoped session can never silently
+/// replace a remote one:
+///  - returns a handle → the tool MUST use exactly that session,
+///  - returns nil      → the context is not scoped-local; the tool runs its
+///                       existing global provider unchanged (remote behavior),
+///  - throws           → the context IS scoped-local but no usable display
+///                       exists; the call fails closed (never falls back to
+///                       another task's screen or the global remote one).
+/// Read-only tools (observe/click/type/...) receive this provider: it must
+/// resolve an EXISTING connected session and must never connect or launch.
+public typealias VNCContextSessionProvider = @Sendable (ToolContext) async throws -> VNCSessionHandle?
+/// Context-aware CONNECT/RECONNECT action for scoped displays. Unlike the
+/// read-only provider this may re-establish client transport to a retained
+/// running guest service — never a second guest launch — and marks sticky
+/// tool demand until vnc.disconnect.
+public typealias VNCContextConnectAction = @Sendable (ToolContext) async throws -> VNCSessionHandle?
+/// Context-aware optional status/disconnect providers with the same ownership
+/// rule: nil means "not a scoped-local context — existing behavior".
+public typealias VNCContextStatusProvider = @Sendable (ToolContext) async -> VNCToolConnectionStatus?
+/// Notified after a successful EXPLICIT targeted (remote) connect/reconnect
+/// so the app can keep subsequent tool calls from that task on the remote
+/// session (task-scoped routing override, cleared by a local UI open).
+public typealias VNCRemoteConnectObserver = @Sendable (ToolContext) async -> Void
+
 /// Task-scoped dependency seam: wire tests exercise real RFB and screenshots
 /// without starting Apple's unrelated OCR model compiler in a short-lived host.
 enum VNCTextRecognition {
@@ -149,6 +174,23 @@ enum VNCToolSupport {
                 message(#"{"category":"configurationMissing","reason":"No VNC endpoint is available to the agent.","retryable":false,"stage":"configuration","status":"connectionFailed"}"#)
             )
         }
+        return try connectedSession(handle)
+    }
+
+    /// Resolves the connected session for one tool call, honoring an optional
+    /// scoped (context-aware) provider before the existing global provider.
+    static func connectedSession(
+        from provider: VNCSessionProvider,
+        context: ToolContext,
+        scoped scopedProvider: VNCContextSessionProvider?
+    ) async throws -> VNCSessionHandle {
+        if let scopedProvider, let scoped = try await scopedProvider(context) {
+            return try connectedSession(scoped)
+        }
+        return try await connectedSession(from: provider)
+    }
+
+    private static func connectedSession(_ handle: VNCSessionHandle) throws -> VNCSessionHandle {
         guard handle.session.isConnected else {
             if case .failed(let failure) = handle.session.currentState {
                 throw FloeError.validationFailed(failure.toolSummary)
@@ -421,11 +463,18 @@ public struct VNCStatusTool: AgentTool {
     public static let toolEffect: ToolEffect = .readOnly
     public static let requiresHostScope = false
     private let statusProvider: VNCStatusProvider
+    private let scopedStatus: VNCContextStatusProvider?
 
-    public init(statusProvider: @escaping VNCStatusProvider) { self.statusProvider = statusProvider }
+    public init(statusProvider: @escaping VNCStatusProvider, scopedStatus: VNCContextStatusProvider? = nil) {
+        self.statusProvider = statusProvider
+        self.scopedStatus = scopedStatus
+    }
     public func validate(_ args: Arguments) throws {}
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        if let scopedStatus, let status = await scopedStatus(context) {
+            return try VNCToolSupport.statusOutput(status)
+        }
         return try VNCToolSupport.statusOutput(await statusProvider())
     }
 }
@@ -451,30 +500,56 @@ public struct VNCConnectTool: AgentTool {
     private let connection: VNCConnectAction
     private let targetedConnection: VNCTargetedConnectAction?
     private let statusProvider: VNCStatusProvider
+    private let scopedConnect: VNCContextConnectAction?
+    private let scopedStatus: VNCContextStatusProvider?
+    private let didConnectRemote: VNCRemoteConnectObserver?
 
     public init(
         connection: @escaping VNCConnectAction,
         targetedConnection: VNCTargetedConnectAction? = nil,
-        statusProvider: @escaping VNCStatusProvider
+        statusProvider: @escaping VNCStatusProvider,
+        scopedConnect: VNCContextConnectAction? = nil,
+        scopedStatus: VNCContextStatusProvider? = nil,
+        didConnectRemote: VNCRemoteConnectObserver? = nil
     ) {
         self.connection = connection
         self.targetedConnection = targetedConnection
         self.statusProvider = statusProvider
+        self.scopedConnect = scopedConnect
+        self.scopedStatus = scopedStatus
+        self.didConnectRemote = didConnectRemote
     }
     public func validate(_ args: Arguments) throws {
         _ = try VNCTargetArguments.resolve(args.hostID, args.connectionID)
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        var usedScopedLocal = false
         if let target = try VNCTargetArguments.resolve(args.hostID, args.connectionID) {
             guard let targetedConnection else {
                 throw FloeError.invalidConfiguration(
                     "Explicit VNC endpoint selection is not connected in this build. Open the viewer for the intended connection or reconnect the app."
                 )
             }
-            _ = try await targetedConnection(target.hostID, target.connectionID, context)
+            if let handle = try await targetedConnection(target.hostID, target.connectionID, context) {
+                // An explicit remote target inside a Linux-environment task
+                // keeps subsequent tool calls on the remote session until the
+                // local screen is opened (task-scoped override).
+                await didConnectRemote?(context)
+                _ = handle
+            }
+        } else if let scopedConnect {
+            if let handle = try await scopedConnect(context) {
+                usedScopedLocal = true
+                _ = handle
+            } else {
+                _ = try await connection()
+            }
         } else {
             _ = try await connection()
+        }
+        if usedScopedLocal, let scopedStatus, let status = await scopedStatus(context) {
+            return try VNCToolSupport.statusOutput(status)
         }
         return try VNCToolSupport.statusOutput(await statusProvider())
     }
@@ -501,30 +576,53 @@ public struct VNCReconnectTool: AgentTool {
     private let reconnect: VNCReconnectAction
     private let targetedReconnect: VNCTargetedReconnectAction?
     private let statusProvider: VNCStatusProvider
+    private let scopedReconnect: VNCContextConnectAction?
+    private let scopedStatus: VNCContextStatusProvider?
+    private let didReconnectRemote: VNCRemoteConnectObserver?
 
     public init(
         reconnect: @escaping VNCReconnectAction,
         targetedReconnect: VNCTargetedReconnectAction? = nil,
-        statusProvider: @escaping VNCStatusProvider
+        statusProvider: @escaping VNCStatusProvider,
+        scopedReconnect: VNCContextConnectAction? = nil,
+        scopedStatus: VNCContextStatusProvider? = nil,
+        didReconnectRemote: VNCRemoteConnectObserver? = nil
     ) {
         self.reconnect = reconnect
         self.targetedReconnect = targetedReconnect
         self.statusProvider = statusProvider
+        self.scopedReconnect = scopedReconnect
+        self.scopedStatus = scopedStatus
+        self.didReconnectRemote = didReconnectRemote
     }
     public func validate(_ args: Arguments) throws {
         _ = try VNCTargetArguments.resolve(args.hostID, args.connectionID)
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        var usedScopedLocal = false
         if let target = try VNCTargetArguments.resolve(args.hostID, args.connectionID) {
             guard let targetedReconnect else {
                 throw FloeError.invalidConfiguration(
                     "Explicit VNC endpoint selection is not connected in this build. Open the viewer for the intended connection or reconnect the app."
                 )
             }
-            _ = try await targetedReconnect(target.hostID, target.connectionID, context)
+            if let handle = try await targetedReconnect(target.hostID, target.connectionID, context) {
+                await didReconnectRemote?(context)
+                _ = handle
+            }
+        } else if let scopedReconnect {
+            if let handle = try await scopedReconnect(context) {
+                usedScopedLocal = true
+                _ = handle
+            } else {
+                _ = try await reconnect()
+            }
         } else {
             _ = try await reconnect()
+        }
+        if usedScopedLocal, let scopedStatus, let status = await scopedStatus(context) {
+            return try VNCToolSupport.statusOutput(status)
         }
         return try VNCToolSupport.statusOutput(await statusProvider())
     }
@@ -567,11 +665,18 @@ public struct VNCDisconnectTool: AgentTool {
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
     private let disconnect: VNCDisconnectAction
+    private let scopedDisconnect: VNCContextStatusProvider?
 
-    public init(disconnect: @escaping VNCDisconnectAction) { self.disconnect = disconnect }
+    public init(disconnect: @escaping VNCDisconnectAction, scopedDisconnect: VNCContextStatusProvider? = nil) {
+        self.disconnect = disconnect
+        self.scopedDisconnect = scopedDisconnect
+    }
     public func validate(_ args: Arguments) throws {}
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        if let scopedDisconnect, let status = await scopedDisconnect(context) {
+            return try VNCToolSupport.statusOutput(status)
+        }
         return try VNCToolSupport.statusOutput(await disconnect())
     }
 }
@@ -592,12 +697,16 @@ public struct VNCObserveTool: AgentTool {
         mayResolveAutomatically: true
     )]
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
 
-    public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
+    public init(sessionProvider: @escaping VNCSessionProvider, scopedProvider: VNCContextSessionProvider? = nil) {
+        self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
+    }
     public func validate(_ args: Arguments) throws {}
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         return try await VNCToolSupport.observeOutput(handle)
     }
 }
@@ -624,8 +733,12 @@ public struct VNCClickElementTool: AgentTool {
     public static let requiresHostScope = false
     public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
 
-    public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
+    public init(sessionProvider: @escaping VNCSessionProvider, scopedProvider: VNCContextSessionProvider? = nil) {
+        self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
+    }
     public func validate(_ args: Arguments) throws {
         guard args.reference.range(of: #"^text-[1-9][0-9]*$"#, options: .regularExpression) != nil,
               (1...2).contains(args.clickCount ?? 1) else {
@@ -634,7 +747,7 @@ public struct VNCClickElementTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         guard let structure = handle.session.currentStructuredEvidence,
               structure.screenshotSHA256.caseInsensitiveCompare(args.screenshotSHA256) == .orderedSame,
               structure.revision == handle.session.currentFrameRevision,
@@ -685,8 +798,12 @@ public struct VNCClickTool: AgentTool {
     public static let requiresHostScope = false
     public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
 
-    public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
+    public init(sessionProvider: @escaping VNCSessionProvider, scopedProvider: VNCContextSessionProvider? = nil) {
+        self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
+    }
     public func validate(_ args: Arguments) throws {
         guard args.x >= 0, args.y >= 0, (1...2).contains(args.clickCount ?? 1) else {
             throw FloeError.validationFailed(
@@ -696,7 +813,7 @@ public struct VNCClickTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         let evidence = try VNCToolSupport.validatePoint(
             x: args.x,
             y: args.y,
@@ -724,8 +841,12 @@ public struct VNCTypeTextTool: AgentTool {
     public static let requiresHostScope = false
     public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
 
-    public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
+    public init(sessionProvider: @escaping VNCSessionProvider, scopedProvider: VNCContextSessionProvider? = nil) {
+        self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
+    }
     public func validate(_ args: Arguments) throws {
         guard !args.text.isEmpty, args.text.utf8.count <= VNCAction.typeTextMaxBytes else {
             throw FloeError.validationFailed("text must be 1-4096 UTF-8 bytes")
@@ -733,7 +854,7 @@ public struct VNCTypeTextTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         let before = handle.session.currentVisualEvidence
         try handle.session.send(text: args.text, submit: args.submit == true)
         return try await VNCToolSupport.postActionOutput(handle, before: before, details: [
@@ -768,13 +889,16 @@ public struct VNCTypeCredentialTool: AgentTool {
     public static let prerequisites = VNCObserveTool.prerequisites
 
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
     private let credentialResolver: VNCCredentialResolver
 
     public init(
         sessionProvider: @escaping VNCSessionProvider,
+        scopedProvider: VNCContextSessionProvider? = nil,
         credentialResolver: @escaping VNCCredentialResolver
     ) {
         self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
         self.credentialResolver = credentialResolver
     }
 
@@ -795,7 +919,7 @@ public struct VNCTypeCredentialTool: AgentTool {
               let text = String(data: bytes, encoding: .utf8) else {
             throw FloeError.validationFailed("Saved credential is empty, too large, or not UTF-8 text")
         }
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         try handle.session.send(text: text, submit: args.submit == true)
         // Credential text may be visible in an arbitrary focus target. Do not
         // automatically persist or expose an unredacted post-input screenshot.
@@ -826,8 +950,12 @@ public struct VNCScrollTool: AgentTool {
     public static let requiresHostScope = false
     public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
 
-    public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
+    public init(sessionProvider: @escaping VNCSessionProvider, scopedProvider: VNCContextSessionProvider? = nil) {
+        self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
+    }
     public func validate(_ args: Arguments) throws {
         guard args.deltaY != 0, (-20...20).contains(args.deltaY) else {
             throw FloeError.validationFailed("deltaY must be between -20 and 20 and non-zero")
@@ -835,7 +963,7 @@ public struct VNCScrollTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         let evidence = try VNCToolSupport.validatePoint(
             x: args.x,
             y: args.y,
@@ -889,8 +1017,12 @@ public struct VNCDragTool: AgentTool {
     public static let requiresHostScope = false
     public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
 
-    public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
+    public init(sessionProvider: @escaping VNCSessionProvider, scopedProvider: VNCContextSessionProvider? = nil) {
+        self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
+    }
     public func validate(_ args: Arguments) throws {
         guard args.fromX >= 0, args.fromY >= 0, args.toX >= 0, args.toY >= 0 else {
             throw FloeError.validationFailed("drag coordinates must be non-negative")
@@ -904,7 +1036,7 @@ public struct VNCDragTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         let evidence = try VNCToolSupport.validatePoint(
             x: args.fromX,
             y: args.fromY,
@@ -968,8 +1100,12 @@ public struct VNCKeyPressTool: AgentTool {
     public static let requiresHostScope = false
     public static let prerequisites = VNCObserveTool.prerequisites
     private let sessionProvider: VNCSessionProvider
+    private let scopedProvider: VNCContextSessionProvider?
 
-    public init(sessionProvider: @escaping VNCSessionProvider) { self.sessionProvider = sessionProvider }
+    public init(sessionProvider: @escaping VNCSessionProvider, scopedProvider: VNCContextSessionProvider? = nil) {
+        self.sessionProvider = sessionProvider
+        self.scopedProvider = scopedProvider
+    }
     public func validate(_ args: Arguments) throws {
         guard Self.supportedKeys.contains(args.key.lowercased()) else {
             throw FloeError.validationFailed("Unsupported \(VNCToolSupport.protocolName.uppercased()) key: \(args.key)")
@@ -977,7 +1113,7 @@ public struct VNCKeyPressTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider)
+        let handle = try await VNCToolSupport.connectedSession(from: sessionProvider, context: context, scoped: scopedProvider)
         let before = handle.session.currentVisualEvidence
         try handle.session.send(namedKey: args.key)
         return try await VNCToolSupport.postActionOutput(handle, before: before, details: [
@@ -1006,6 +1142,13 @@ public func registerVNCTools(
     disconnect: VNCDisconnectAction? = nil,
     connectTarget: VNCTargetedConnectAction? = nil,
     reconnectTarget: VNCTargetedReconnectAction? = nil,
+    scopedSessionProvider: VNCContextSessionProvider? = nil,
+    scopedConnect: VNCContextConnectAction? = nil,
+    scopedReconnect: VNCContextConnectAction? = nil,
+    scopedStatus: VNCContextStatusProvider? = nil,
+    scopedDisconnect: VNCContextStatusProvider? = nil,
+    didConnectRemote: VNCRemoteConnectObserver? = nil,
+    didReconnectRemote: VNCRemoteConnectObserver? = nil,
     sessionProvider: @escaping VNCSessionProvider
 ) -> VNCSessionProvider {
     ToolCatalog.register(VNCStatusTool.self)
@@ -1020,28 +1163,35 @@ public func registerVNCTools(
     ToolCatalog.register(VNCScrollTool.self)
     ToolCatalog.register(VNCDragTool.self)
     ToolCatalog.register(VNCKeyPressTool.self)
-    registry.register(VNCStatusTool(statusProvider: statusProvider))
+    registry.register(VNCStatusTool(statusProvider: statusProvider, scopedStatus: scopedStatus))
     registry.register(VNCConnectTool(
         connection: connect,
         targetedConnection: connectTarget,
-        statusProvider: statusProvider
+        statusProvider: statusProvider,
+        scopedConnect: scopedConnect,
+        scopedStatus: scopedStatus,
+        didConnectRemote: didConnectRemote
     ))
     registry.register(VNCReconnectTool(
         reconnect: reconnect ?? sessionProvider,
         targetedReconnect: reconnectTarget,
-        statusProvider: statusProvider
+        statusProvider: statusProvider,
+        scopedReconnect: scopedReconnect,
+        scopedStatus: scopedStatus,
+        didReconnectRemote: didReconnectRemote
     ))
-    registry.register(VNCDisconnectTool(disconnect: disconnect ?? { await statusProvider() }))
-    registry.register(VNCObserveTool(sessionProvider: sessionProvider))
-    registry.register(VNCClickElementTool(sessionProvider: sessionProvider))
-    registry.register(VNCClickTool(sessionProvider: sessionProvider))
-    registry.register(VNCTypeTextTool(sessionProvider: sessionProvider))
+    registry.register(VNCDisconnectTool(disconnect: disconnect ?? { await statusProvider() }, scopedDisconnect: scopedDisconnect))
+    registry.register(VNCObserveTool(sessionProvider: sessionProvider, scopedProvider: scopedSessionProvider))
+    registry.register(VNCClickElementTool(sessionProvider: sessionProvider, scopedProvider: scopedSessionProvider))
+    registry.register(VNCClickTool(sessionProvider: sessionProvider, scopedProvider: scopedSessionProvider))
+    registry.register(VNCTypeTextTool(sessionProvider: sessionProvider, scopedProvider: scopedSessionProvider))
     registry.register(VNCTypeCredentialTool(
         sessionProvider: sessionProvider,
+        scopedProvider: scopedSessionProvider,
         credentialResolver: credentialResolver
     ))
-    registry.register(VNCScrollTool(sessionProvider: sessionProvider))
-    registry.register(VNCDragTool(sessionProvider: sessionProvider))
-    registry.register(VNCKeyPressTool(sessionProvider: sessionProvider))
+    registry.register(VNCScrollTool(sessionProvider: sessionProvider, scopedProvider: scopedSessionProvider))
+    registry.register(VNCDragTool(sessionProvider: sessionProvider, scopedProvider: scopedSessionProvider))
+    registry.register(VNCKeyPressTool(sessionProvider: sessionProvider, scopedProvider: scopedSessionProvider))
     return sessionProvider
 }

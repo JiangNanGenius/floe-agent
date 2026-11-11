@@ -347,8 +347,12 @@ struct ConversationRunServiceTests {
             ]
         ]
         let executor = MockExecutor()
+        // The reply claims a file write, so the receipt must be able to
+        // substantiate a mutation: a side-effecting descriptor under the
+        // automatic policy (a read receipt would correctly trip the
+        // action-claim gate and derail this persistence test).
         executor.descriptors[call.toolName] = ToolCatalog.Descriptor(
-            name: call.toolName, riskLabels: [], isSideEffecting: false
+            name: call.toolName, riskLabels: [], isSideEffecting: true
         )
         let service = ConversationRunService(
             configuration: FloeAgentRuntime.Configuration(
@@ -357,7 +361,7 @@ struct ConversationRunServiceTests {
                 model: TestFixtures.testModel(providerID: UUID())
             ),
             adapter: adapter,
-            policy: HumanApprovalPolicy(),
+            policy: AutomaticApprovalPolicy(backend: RecordingApprovalBackend()),
             executor: executor,
             conversationStore: conversationStore,
             runStore: runStore
@@ -1750,4 +1754,307 @@ struct ConversationRunServiceToolTimingTests {
         #expect(suppressedPayload["queuedMs"] == nil)
         #expect(suppressedPayload["summary"]?.contains("duplicate tool request") == true)
     }
+
+    // MARK: - Recovery-point durability (W10)
+
+    @Test("A transient recovery-point failure is covered by a newer durable checkpoint")
+    func transientRecoveryPointFailureCoveredByNewerCheckpointCompletes() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let runStore = SQLiteRunStore(database: database)
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(.init(
+            id: conversationID, title: "Recovery", createdAt: Date(), updatedAt: Date()
+        ))
+        let call = try TestFixtures.toolCall(id: "held-read", toolName: "workspace.readFile",
+                                             arguments: #"{"path":"a.txt"}"#)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "读取完成。")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = .init(name: call.toolName, riskLabels: [], isSideEffecting: false)
+        let executorGate = AsyncGate()
+        executor.executionGate = { await executorGate.wait() }
+        let checkpointStore = FlakyCheckpointStore(SQLiteRunCheckpointStore(database: database, legacyDirectory: nil))
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            checkpointStore: checkpointStore,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        async let runResult: () = try await service.start(goal: "读取文件")
+        while await executorGate.parkedCount < 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // One full transient failure round (all three attempts), then a
+        // verified newer save that must clear the latched failure.
+        checkpointStore.failNext(3)
+        await service.persistRecoveryPoint()
+        await service.persistRecoveryPoint()
+        executorGate.open()
+        _ = try await runResult
+
+        #expect(try await runStore.run(id: service.runID)?.state == "completed")
+        let readBack = try await checkpointStore.load(runID: service.runID)
+        #expect(readBack != nil)
+        let events = try await runStore.events(runID: service.runID)
+        #expect(events.contains { $0.kind == .notice && $0.payloadJSON.contains("recoveryPointRecovered") })
+        #expect(!events.contains { $0.kind == .notice && $0.payloadJSON.contains("recoveryMetadataLimited") })
+        #expect(events.last?.kind == .terminal)
+    }
+
+    @Test("An uncovered recovery-point failure completes with a recorded limitation")
+    func uncoveredRecoveryPointFailureCompletesWithRecordedLimitation() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let runStore = SQLiteRunStore(database: database)
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(.init(
+            id: conversationID, title: "Recovery", createdAt: Date(), updatedAt: Date()
+        ))
+        let adapter = HookedAdapter()
+        adapter.script = [[
+            .textDelta(.init(text: "答案。")),
+            .completed(.init(stopReason: .endTurn))
+        ]]
+        let streamGate = AsyncGate()
+        adapter.streamHook = { requestIndex, eventIndex in
+            if requestIndex == 0 && eventIndex == 1 { await streamGate.wait() }
+        }
+        let checkpointStore = FlakyCheckpointStore(SQLiteRunCheckpointStore(database: database, legacyDirectory: nil))
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: checkpointStore,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        async let runResult: () = try await service.start(goal: "回答")
+        while await streamGate.parkedCount < 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // No newer checkpoint can land before completion: the run is a
+        // pure text answer and the first dispatch checkpoint predates the
+        // failure. The stale recovery metadata is a recorded limitation,
+        // not a failed task.
+        checkpointStore.failNext(3)
+        await service.persistRecoveryPoint()
+        streamGate.open()
+        _ = try await runResult
+
+        #expect(try await runStore.run(id: service.runID)?.state == "completed")
+        let events = try await runStore.events(runID: service.runID)
+        #expect(events.contains { $0.kind == .error && $0.payloadJSON.contains("recoveryPointPersistenceFailed") })
+        let limitationIndex = events.firstIndex {
+            $0.kind == .notice && $0.payloadJSON.contains("recoveryMetadataLimited")
+        }
+        let limitation = try #require(limitationIndex)
+        #expect(events[limitation].payloadJSON.contains("externalRecoveryPoint"))
+        #expect(limitation < events.count - 1)
+        #expect(events.last?.kind == .terminal)
+    }
+
+    @Test("A dispatch checkpoint newer than the failure clears it without a limitation")
+    func newerDispatchCheckpointClearsFailureWithoutLimitation() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let runStore = SQLiteRunStore(database: database)
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(.init(
+            id: conversationID, title: "Recovery", createdAt: Date(), updatedAt: Date()
+        ))
+        let call = try TestFixtures.toolCall(id: "held-read", toolName: "workspace.readFile",
+                                             arguments: #"{"path":"a.txt"}"#)
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(call), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "读取完成。")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = MockExecutor()
+        executor.descriptors[call.toolName] = .init(name: call.toolName, riskLabels: [], isSideEffecting: false)
+        let executorGate = AsyncGate()
+        executor.executionGate = { await executorGate.wait() }
+        let checkpointStore = FlakyCheckpointStore(SQLiteRunCheckpointStore(database: database, legacyDirectory: nil))
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            checkpointStore: checkpointStore,
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        async let runResult: () = try await service.start(goal: "读取文件")
+        while await executorGate.parkedCount < 1 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // The recovery save fails with no immediate cover; the tool's own
+        // dispatch checkpoint after the settle is NEWER than the failure and
+        // covers it before completion.
+        checkpointStore.failNext(3)
+        await service.persistRecoveryPoint()
+        executorGate.open()
+        _ = try await runResult
+
+        #expect(try await runStore.run(id: service.runID)?.state == "completed")
+        let events = try await runStore.events(runID: service.runID)
+        #expect(events.contains { $0.kind == .error && $0.payloadJSON.contains("recoveryPointPersistenceFailed") })
+        #expect(!events.contains { $0.kind == .notice && $0.payloadJSON.contains("recoveryMetadataLimited") })
+        #expect(events.last?.kind == .terminal)
+    }
+
+    @Test("A failed terminal state commit still converts completion to a recoverable failure")
+    func terminalStateCommitFailureStillFailsRecoverably() async throws {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationStore = SQLiteConversationStore(database: database)
+        let runStore = TerminalStateFailingRunStore(SQLiteRunStore(database: database))
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(.init(
+            id: conversationID, title: "Recovery", createdAt: Date(), updatedAt: Date()
+        ))
+        let adapter = MockAdapter()
+        adapter.script = [[
+            .textDelta(.init(text: "答案。")),
+            .completed(.init(stopReason: .endTurn))
+        ]]
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+
+        try await service.start(goal: "回答")
+        #expect(try await runStore.run(id: service.runID)?.state == "failed")
+        let events = try await runStore.events(runID: service.runID)
+        #expect(events.contains { $0.kind == .status && $0.payloadJSON.contains("failed") })
+    }
+}
+
+/// Checkpoint store that fails the next N saves, then delegates to the real
+/// store (used to drive the bounded retry to exhaustion exactly once).
+final class FlakyCheckpointStore: CheckpointStore, @unchecked Sendable {
+    private let base: any CheckpointStore
+    private let storage = AsyncLock(0)
+    init(_ base: any CheckpointStore) { self.base = base }
+    func failNext(_ count: Int) { storage.withLock { $0 = count } }
+
+    func save(_ checkpoint: AgentCheckpoint) async throws {
+        let fail = storage.withLock { state -> Bool in
+            if state > 0 { state -= 1; return true }
+            return false
+        }
+        if fail {
+            throw NSError(
+                domain: "FloeAgentRuntimeTests.RecoveryPoint",
+                code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "synthetic transient checkpoint failure"]
+            )
+        }
+        try await base.save(checkpoint)
+    }
+
+    func load(runID: UUID) async throws -> AgentCheckpoint? {
+        try await base.load(runID: runID)
+    }
+}
+
+/// Run-store decorator that fails the first three `updateRunState` calls
+/// for the completed state (the bounded retry exhausts into the honest
+/// recoverable-failure conversion).
+final class TerminalStateFailingRunStore: RunStore, @unchecked Sendable {
+    private let base: any RunStore
+    private let storage = AsyncLock(0)
+    init(_ base: any RunStore) { self.base = base }
+
+    func updateRunState(id: UUID, state: String, endedAt: Date?) async throws {
+        if state == "completed" {
+            let fail = storage.withLock { count -> Bool in
+                if count < 3 { count += 1; return true }
+                return false
+            }
+            if fail {
+                throw NSError(
+                    domain: "FloeAgentRuntimeTests.RunState",
+                    code: 13,
+                    userInfo: [NSLocalizedDescriptionKey: "synthetic terminal state failure"]
+                )
+            }
+        }
+        try await base.updateRunState(id: id, state: state, endedAt: endedAt)
+    }
+
+    func saveRun(_ run: RunRecord) async throws { try await base.saveRun(run) }
+    func run(id: UUID) async throws -> RunRecord? { try await base.run(id: id) }
+    func runs(conversationID: UUID) async throws -> [RunRecord] { try await base.runs(conversationID: conversationID) }
+    func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord] {
+        try await base.recentRuns(conversationID: conversationID, limit: limit)
+    }
+    func nonTerminalRuns() async throws -> [RunRecord] { try await base.nonTerminalRuns() }
+    func assignGoal(runID: UUID, goalID: UUID) async throws { try await base.assignGoal(runID: runID, goalID: goalID) }
+    @discardableResult
+    func appendEvent(runID: UUID, kind: RunEventRecord.Kind, payloadJSON: String) async throws -> RunEventRecord {
+        try await base.appendEvent(runID: runID, kind: kind, payloadJSON: payloadJSON)
+    }
+    func events(runID: UUID) async throws -> [RunEventRecord] { try await base.events(runID: runID) }
+    func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
+        try await base.recentEvents(runID: runID, limit: limit)
+    }
+    func events(runID: UUID, afterSequence: Int, limit: Int) async throws -> [RunEventRecord] {
+        try await base.events(runID: runID, afterSequence: afterSequence, limit: limit)
+    }
+    func recordUsage(_ usage: RunUsageRecord) async throws { try await base.recordUsage(usage) }
+    func usage(runID: UUID) async throws -> [RunUsageRecord] { try await base.usage(runID: runID) }
+    func recordError(_ error: RunErrorRecord) async throws { try await base.recordError(error) }
+    func errors(runID: UUID) async throws -> [RunErrorRecord] { try await base.errors(runID: runID) }
+    func saveCheckpoint(runID: UUID, conversationID: UUID, formatVersion: Int, state: String, bodyJSON: String) async throws {
+        try await base.saveCheckpoint(
+            runID: runID, conversationID: conversationID,
+            formatVersion: formatVersion, state: state, bodyJSON: bodyJSON
+        )
+    }
+    func checkpointBody(runID: UUID) async throws -> String? { try await base.checkpointBody(runID: runID) }
+    func deleteCheckpoint(runID: UUID) async throws { try await base.deleteCheckpoint(runID: runID) }
+    func usageStatistics() async throws -> UsageStatistics { try await base.usageStatistics() }
 }

@@ -78,6 +78,8 @@ struct ThreadDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.helpSceneID) private var helpSceneID
+    @Environment(\.helpSettingsOpenAction) private var helpSettingsOpenAction
     @State private var imagePlaygroundHostID = UUID().uuidString
     @Environment(\.continuousVoiceWindowID) private var voiceWindowID
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
@@ -244,6 +246,20 @@ struct ThreadDetailView: View {
             // The composer input caps at one third of the actually
             // available height — rotation, split and dynamic-type relayouts
             // all funnel through this proxy.
+            .helpPresentationHost(
+                center: environment.contentUpdateCenter.helpCenter,
+                sceneID: helpSceneID ?? "",
+                currentConversationID: viewModel.isTemporary ? nil : viewModel.conversationID,
+                currentRunID: !viewModel.isTemporary && viewModel.isRunning ? viewModel.selectedRun?.id : nil,
+                settingsDestination: { target in
+                    AnyView(SettingsRootView(environment: environment, initialHelpTarget: target)
+                        .environmentObject(router))
+                },
+                onOpenSettings: { helpSettingsOpenAction($0) }
+            )
+            .environment(\.nativeToolDiagnostics, NativeToolDiagnosticViewScope(
+                conversationID: viewModel.conversationID, runID: viewModel.selectedRun?.id,
+                observations: viewModel.nativeToolDiagnostics))
             .environment(\.composerHeightBudget, proxy.size.height)
             .environment(\.chatInlineContentScope, ChatInlineContentScope(
                 conversationID: viewModel.conversationID, isTemporary: viewModel.isTemporary))
@@ -635,6 +651,26 @@ struct ThreadDetailView: View {
                             .transition(viewModel.isRunning ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                     }
 
+                    #if canImport(AlarmKit)
+                    // A successful timer can precede any model text, including
+                    // while this run is parked in task.wait. Supply only its
+                    // unassigned cards until a real answer body takes over.
+                    if !viewModel.isTemporary, !search.isActive,
+                       !viewModel.timeline.contains(where: {
+                           if case .liveAssistantTail = $0 { return true }
+                           return false
+                       }),
+                       let runID = viewModel.selectedRun?.id,
+                       timerCardLegacyAnswerID(runID: runID) == nil {
+                        let timerProjection = InlineTimerBodyProjection.project(
+                            text: "", events: viewModel.eventsByRun[runID] ?? [], isStreaming: true)
+                        if !timerProjection.isEmpty {
+                            InlineAnswerBodyView(source: "")
+                                .environment(\.inlineTimerProjection, timerProjection)
+                        }
+                    }
+                    #endif
+
                     if viewModel.isRunning, viewModel.liveStateName == "preparingToolCall" {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
@@ -803,6 +839,19 @@ struct ThreadDetailView: View {
             let visibleSearchText = searchQuery.isEmpty ? ""
                 : ConversationSearchText.visibleText(role: "assistant", content: text)
             let searchRanges = searchQuery.ranges(in: visibleSearchText)
+            // Bind timer creations to this exact durable answer. Search rows
+            // flatten the body and get no cards.
+            #if canImport(AlarmKit)
+            let timerRunID = timerCardRunID(persisted: persisted, idSuffix: idSuffix)
+            let timerProjection: [InlineTimerCardSource] = searchRanges.isEmpty
+                ? InlineTimerBodyProjection.project(
+                    text: text,
+                    events: timerRunID.flatMap { viewModel.eventsByRun[$0] } ?? [],
+                    answerID: UUID(uuidString: idSuffix),
+                    legacyAnswerID: timerRunID.flatMap { timerCardLegacyAnswerID(runID: $0) })
+                : []
+            #endif
+            Group {
             if !searchRanges.isEmpty {
                 ThreadSearchHighlightedAssistantMessage(
                     text: visibleSearchText,
@@ -828,9 +877,16 @@ struct ThreadDetailView: View {
                     // Per-message playback ownership (primary SpeechService API):
                     // the timeline id IS the durable message id when persisted.
                     speechOwnerID: UUID(uuidString: idSuffix),
-                    onSaveToNotes: saveAnswerToNotes
+                    onSaveToNotes: saveAnswerToNotes,
+                    helpRunID: UUID(uuidString: idSuffix).flatMap { sourceID in
+                        viewModel.events.first(where: { $0.id == sourceID && $0.kind == .assistantText })?.runID
+                    }
                 )
             }
+            }
+            #if canImport(AlarmKit)
+            .environment(\.inlineTimerProjection, timerProjection)
+            #endif
 
         case .event(let event):
             ThreadEventView(
@@ -877,10 +933,22 @@ struct ThreadDetailView: View {
             )
 
         case .liveAssistantTail:
-            AssistantMessageView(
-                text: viewModel.liveStreamedText,
-                isStreaming: true
-            )
+            Group {
+                AssistantMessageView(
+                    text: viewModel.liveStreamedText,
+                    isStreaming: true, helpRunID: viewModel.selectedRun?.id
+                )
+            }
+            #if canImport(AlarmKit)
+            // The streaming tail is the run's in-progress answer body:
+            // project confirmed timers whose reference the stream omitted.
+            .environment(\.inlineTimerProjection, viewModel.selectedRunID.flatMap { runID in
+                InlineTimerBodyProjection.project(
+                    text: viewModel.liveStreamedText,
+                    events: viewModel.eventsByRun[runID] ?? [],
+                    isStreaming: true)
+            } ?? [])
+            #endif
 
         case .liveThinking:
             ModelResponseWaitingView(title: RunStateLocalizer.responseWaitingTitle(for: viewModel.selectedRun?.state))
@@ -891,6 +959,50 @@ struct ThreadDetailView: View {
             }
         }
     }
+
+    #if canImport(AlarmKit)
+    /// Read only the body's proven loaded run. An unbound legacy message
+    /// may adopt timers only when it is one run's actual terminal fallback;
+    /// arbitrary task-level messages never borrow the selected run.
+    private func timerCardRunID(persisted: PersistedMessage?, idSuffix: String) -> UUID? {
+        if let runID = persisted?.runID { return runID }
+        if let eventID = UUID(uuidString: idSuffix),
+           let found = viewModel.eventsByRun.first(where: { _, events in
+               events.contains { $0.id == eventID && $0.kind == .assistantText }
+           })?.key {
+            return found
+        }
+        guard let messageID = persisted?.id else { return nil }
+        let legacyRuns = viewModel.runs.filter { timerCardLegacyAnswerID(runID: $0.id) == messageID }
+        return legacyRuns.count == 1 ? legacyRuns.first?.id : nil
+    }
+
+    /// Match ThreadTimeline's legacy fallback selection from already-loaded
+    /// state: terminal run, no rendered assistantText, then its last bound
+    /// non-interactive assistant message or last unbound message in its window.
+    private func timerCardLegacyAnswerID(runID: UUID) -> UUID? {
+        guard let run = viewModel.runs.first(where: { $0.id == runID }),
+              RunStateLocalizer.isTerminal(run.state) else { return nil }
+        let events = viewModel.eventsByRun[runID] ?? []
+        guard !events.contains(where: { event in
+            guard event.kind == .assistantText,
+                  let payload = try? JSONDecoder().decode([String: String].self,
+                    from: Data(event.payloadJSON.utf8)) else { return false }
+            return !(payload["text"] ?? "").isEmpty
+        }) else { return nil }
+        let directlyBound = viewModel.messages.filter {
+            $0.runID == runID && $0.role == "assistant" && !$0.parts.contains { $0.kind == .interactive }
+        }
+        let upperBound = run.endedAt ?? .distantFuture
+        let candidates = directlyBound.isEmpty ? viewModel.messages.filter {
+            $0.runID == nil && $0.role == "assistant"
+                && $0.createdAt >= run.startedAt
+                && $0.createdAt <= upperBound.addingTimeInterval(2)
+        } : directlyBound
+        guard let latest = candidates.last, !latest.content.isEmpty else { return nil }
+        return latest.id
+    }
+    #endif
 
     // MARK: - State toolbar (status + Stop/Retry + inspector)
 
@@ -1377,7 +1489,8 @@ struct ThreadDetailView: View {
                         onEdit: { editingPendingInput = $0 },
                         onDelete: { input in Task { await viewModel.removePendingInput(input) } },
                         onMove: { input, offset in Task { await viewModel.movePendingInput(input, offset: offset) } },
-                        onSteer: { input in Task { await viewModel.promotePendingInput(input) } }
+                        onSteer: { input in Task { await viewModel.promotePendingInput(input) } },
+                        onDemote: { input in Task { await viewModel.demotePendingInput(input) } }
                     )
                 }
                 if viewModel.needsProvider {
@@ -1401,7 +1514,10 @@ struct ThreadDetailView: View {
             modelName: viewModel.selectedModelName,
             providerConfigured: !viewModel.needsProvider,
             isRunning: viewModel.isRunning,
-            runningInputMode: $viewModel.runningInputMode,
+            runningInputMode: Binding(
+                get: { viewModel.runningInputMode },
+                set: { viewModel.selectRunningInputMode($0) }
+            ),
             canSend: viewModel.canSend,
             projects: viewModel.availableProjects,
             projectSelectionLocked: true,
@@ -1659,6 +1775,7 @@ private struct PendingInputQueueView: View {
     let onDelete: (PendingUserInput) -> Void
     let onMove: (PendingUserInput, Int) -> Void
     let onSteer: (PendingUserInput) -> Void
+    let onDemote: (PendingUserInput) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1693,10 +1810,24 @@ private struct PendingInputQueueView: View {
                                 .disabled(queuedIndex == nil || queuedIndex == queuedInputs.startIndex)
                             Button("chat.thread_detail_view.move_down", systemImage: "arrow.down") { onMove(input, 1) }
                                 .disabled(queuedIndex == nil || queuedIndex == queuedInputs.indices.last)
-                            Button("chat.thread_detail_view.convert_to_steer", systemImage: "arrow.triangle.turn.up.right.diamond") {
-                                onSteer(input)
+                            // Both directions come from one policy: a queued
+                            // row can steer into the active run, a pending
+                            // steer can return to the queue — but only while
+                            // it has NOT been consumed. Consumed rows offer
+                            // no mode action at all.
+                            let modeActions = RunningInputModePolicy.modeActions(
+                                status: input.status, canSteer: canSteer)
+                            if modeActions.contains(.promoteToSteer) {
+                                Button("chat.thread_detail_view.convert_to_steer", systemImage: "arrow.triangle.turn.up.right.diamond") {
+                                    onSteer(input)
+                                }
+                                .disabled(!canSteer)
                             }
-                            .disabled(!canSteer || input.status != .queued)
+                            if modeActions.contains(.demoteToQueue) {
+                                Button(demoteToQueueText, systemImage: "arrow.uturn.left") {
+                                    onDemote(input)
+                                }
+                            }
                             Divider()
                             Button("workspace.workspace_canvas_view.delete", systemImage: "trash", role: .destructive) { onDelete(input) }
                         } label: {
@@ -1720,6 +1851,12 @@ private struct PendingInputQueueView: View {
 
     private var queuedInputs: [PendingUserInput] {
         inputs.filter { $0.status == .queued }
+    }
+
+    /// Central-catalog entry for this action has not landed yet; keep the
+    /// menu bilingual and reviewable in both languages for now.
+    private var demoteToQueueText: String {
+        IDELanguageRunText.t("转为排队", "Back to queue")
     }
 
     /// A trusted internal notice steer (design-assistant confirmation or
@@ -1930,7 +2067,8 @@ private struct MessageBubble: View {
                     text: displayedText ?? message.content, isStreaming: false,
                     speechOwnerID: message.id,
                     onSaveToNotes: onSaveToNotes, attachments: attachmentItems,
-                    onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign)
+                    onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign,
+                    helpRunID: message.runID)
             }
         }
         // Keep the text-selection gesture owned by the rendered text.

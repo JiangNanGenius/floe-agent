@@ -1,0 +1,44 @@
+{
+  "library": "libmaxminddb",
+  "version": "1.14.1",
+  "repository": "https://github.com/maxmind/libmaxminddb",
+  "commit": "4a3d17a621c0ebcb81498fd34d313f67fd940ab5",
+  "license": "Apache-2.0",
+  "upstreamFiles": [
+    {
+      "path": "upstream/src/maxminddb.c",
+      "sha256": "b03aedb8f35ff80aead8c5651abf46fe321d074882628e1f2fd29dc6f07fb086"
+    },
+    {
+      "path": "upstream/src/data-pool.c",
+      "sha256": "0a90925ad93c8418cc20c79489cb27ee9d00ba4f6c56187ef9a6f07dff0551e9"
+    },
+    {
+      "path": "upstream/src/data-pool.h",
+      "sha256": "d6c4002976bb720661fd837301296bd4a34a3647413f42f618cfa707b45827c6"
+    },
+    {
+      "path": "upstream/src/maxminddb-compat-util.h",
+      "sha256": "07c43ba04f9ea6f635d3b2fe87b9e9042ae7c70ad5458b284432edfd9ae5f0f3"
+    },
+    {
+      "path": "include/maxminddb.h",
+      "sha256": "de0d95663749e5b00168fcb7c6b19e7a763fae7a52c87afc42a85f75321c9209"
+    },
+    {
+      "path": "upstream/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "upstream/NOTICE",
+      "sha256": "b02b9fd5de5e187a48511e0da3935f209c1731b60efd3ac0db6b92713fece669"
+    },
+    {
+      "path": "upstream/AUTHORS",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "configuration": "Retained Root-qualified Apple unsigned __int128 configuration; no decoder-limit weakening",
+  "data": "DB-IP data CC BY4.0, attribution IP data by DB-IP.com; large databases not vendored",
+  "fixture": "Separate MaxMind-DB MIT fixtures and provenance in tests"
+}

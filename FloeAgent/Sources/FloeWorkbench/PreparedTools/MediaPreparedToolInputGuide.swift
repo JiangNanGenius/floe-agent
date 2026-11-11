@@ -38,6 +38,10 @@ public enum MediaPreparedToolInputGuide {
                 guidance:guidance+" Example IDs demonstrate the input shape; choose the actual object required by the user's task. Always use a fresh revision.",unavailableReason:missing))
         }
         let line: [[String:Double]] = [["x":0.3,"y":0.3],["x":0.55,"y":0.5],["x":0.7,"y":0.55]]
+        let unusedAsset = document.assets.first { MediaPreparedAssets.references(to: $0.id, in: document).isEmpty }
+        try add(document.kind == .image ? "image.remove-asset" : "video.remove-asset", target: unusedAsset?.id,
+                unavailableReason: unusedAsset == nil ? "No unused project asset. Remove its layer, clip or compound uses first; original sources remain protected." : nil,
+                "objectID is the exact asset UUID from the current document, not a layer/clip UUID or file path. Removes only an unused project asset through the canonical journal. In-use and opaque content refuse; original/backing files remain available for undo and recovery.")
         let curve: [ImageFreehandStroke.Point] = [.init(x:0,y:0),.init(x:0.25,y:0.3),.init(x:0.5,y:0.6),.init(x:0.75,y:0.85),.init(x:1,y:1)]
         try add("image.boolean",["objectIDs":shapes.prefix(2).map{$0.id.uuidString},"property":"union"],target:shapes.first?.id,unavailableReason:shapes.count<2 ? "Create two unlocked filled closed vector shapes, then read again.":nil,"Real editable filled-path Boolean geometry. objectIDs2...16 are actual shape UUIDs, objectID optionally chooses the primary shape/style; property=union/subtract/intersect/xor. Subtract removes other shapes from the primary. Masks/grades/groups need separate editing first. Empty intersections are truly empty and remain undoable.")
         let savedTextPath:MediaTextPathLayout? = textLayer.flatMap { if case .text(let text)=$0.content { text.pathLayout } else { nil } }

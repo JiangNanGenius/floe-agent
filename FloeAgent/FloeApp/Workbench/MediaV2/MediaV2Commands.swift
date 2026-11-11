@@ -115,6 +115,7 @@ enum MediaV2CommandError: Error, LocalizedError {
 
 extension MediaV2Session {
     static let localToolIDs: Set<String> = [
+        "image.remove-asset", "video.remove-asset",
         "image.remove", "image.content-fill", "image.heal", "image.patch", "image.smudge", "image.clone", "image.gradient", "image.blur-brush", "image.sharpen-brush", "image.layer-effect",
         "image.perspective", "image.distort", "image.wand", "image.subject", "image.refine-edge", "image.expand", "image.smooth", "image.background", "image.curves", "image.balance", "image.lut", "image.denoise",
         "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
@@ -169,6 +170,13 @@ extension MediaV2Session {
                 fencedSelection = true
             } else { fencedSelection = false }
         } else { fencedSelection = true }
+        if id == "image.remove-asset" || id == "video.remove-asset" {
+            guard id.hasPrefix(document.kind.rawValue + "."), let assetID = input.objectID,
+                  input.objectIDs == nil, !processingTool, imageWarpDraft == nil else { throw MediaV2CommandError.invalidInput }
+            let operation = try MediaPreparedAssets.removal(assetID: assetID, in: document)
+            let commit = try await apply([operation], expectedRevision: input.expectedRevision ?? document.revision, actor: actor)
+            return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
+        }
         let explicitLayer = input.objectID.flatMap { document.layer($0) }
         let explicitClip = input.objectID.flatMap { document.trackGraph.clip(id: $0) }
         let explicitTrack = input.objectID.flatMap { document.trackGraph.track($0) }

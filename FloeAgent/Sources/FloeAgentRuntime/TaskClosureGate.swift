@@ -13,6 +13,18 @@ struct TaskClosureGate: Sendable {
         /// Successful original/output mutation evidence, separate from the
         /// conservative effect bit used to account for failures and unknowns.
         var supportsMutationClaim:Bool = false
+        /// Trusted dispatch evidence from the runtime's own executor
+        /// boundary: false means the call provably never executed (policy,
+        /// gate, suppression, budget or recovery synthesis), so no external
+        /// action could have started. Defaults to true (conservative) for
+        /// receipts restored without the flag.
+        var wasDispatched:Bool = true
+        /// Trusted same-operation identity proving which concrete NEW output
+        /// file this receipt's work produced (typed `outputWrite` target
+        /// arguments plus resolved target paths). Nil unless the typed
+        /// contract proves the concrete output file; the gate then never
+        /// treats the receipt as a correctable attempt.
+        var operationIdentity:String? = nil
     }
     struct Facts: Sendable, Codable {
         var steps:[Step]
@@ -26,8 +38,48 @@ struct TaskClosureGate: Sendable {
             var seen = Set<String>()
             return receipts.reversed().filter { seen.insert($0.toolName+"|"+$0.callFingerprint).inserted }.reversed()
         }
+        /// Correction/supersession evidence over the latest receipts. A
+        /// failed side-effecting receipt may be superseded by exactly one
+        /// later successful receipt when EVERY link is proven by runtime
+        /// evidence, never by phrase or tool-name similarity:
+        ///  * the failure is a trusted pre-execution rejection
+        ///    (`wasDispatched == false` — policy/gate/suppression/budget/
+        ///    recovery synthesis, so no external action could have started),
+        ///    never an unknown-outcome receipt;
+        ///  * both receipts carry the same provable output identity (same
+        ///    tool AND same concrete output file — a different output,
+        ///    project, document or in-place target is independent work and
+        ///    never supersedes);
+        ///  * the later receipt is a real executed success
+        ///    (supportsMutationClaim, dispatched, not unknown).
+        /// Pairing is one-to-one and order-preserving: each success absorbs
+        /// only the most recent earlier unsuperseded failure of its work
+        /// identity, so a second, unanswered failure still blocks. Anything
+        /// unproven (dispatched failure, missing identity) stays blocking.
+        private static func supersededFailureIndices(in latest:[Receipt]) -> Set<Int> {
+            var superseded = Set<Int>()
+            for (index, receipt) in latest.enumerated() {
+                guard receipt.status == "ok", receipt.isSideEffecting,
+                      !receipt.outcomeUnknown, receipt.supportsMutationClaim,
+                      receipt.wasDispatched, let identity = receipt.operationIdentity else { continue }
+                for prior in stride(from: index - 1, through: 0, by: -1) where !superseded.contains(prior) {
+                    let candidate = latest[prior]
+                    guard candidate.toolName == receipt.toolName,
+                          candidate.isSideEffecting, candidate.status != "ok",
+                          !candidate.outcomeUnknown, !candidate.wasDispatched,
+                          candidate.operationIdentity == identity else { continue }
+                    superseded.insert(prior)
+                    break
+                }
+            }
+            return superseded
+        }
         var hasNonSuccessfulWork:Bool {
-            latestReceipts.contains { $0.isSideEffecting && ($0.status != "ok" || $0.outcomeUnknown) }
+            let latest = latestReceipts
+            let superseded = Self.supersededFailureIndices(in: latest)
+            return latest.enumerated().contains { index, receipt in
+                !superseded.contains(index) && receipt.isSideEffecting && (receipt.status != "ok" || receipt.outcomeUnknown)
+            }
         }
         var hasSuccessfulWork:Bool { latestReceipts.contains { $0.supportsMutationClaim && $0.status == "ok" && !$0.outcomeUnknown } }
     }

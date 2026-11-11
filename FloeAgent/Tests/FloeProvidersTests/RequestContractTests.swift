@@ -6,6 +6,115 @@ import Testing
 
 @Suite("FloeProviders.RequestContracts")
 struct RequestContractTests {
+    @Test("Native Chat transport rejects nonobject schemas with a safe field path", arguments: ["[]", "[{}]", "{invalid"])
+    func chatRejectsNonObjectToolParameters(schema: String) throws {
+        let request = syntheticChatRequest(schemas: [.init(name: "tools.search", description: "Synthetic", parametersJSON: schema)])
+        do {
+            _ = try OpenAIChatCompletionsAdapter().prepareBody(from: request)
+            Issue.record("A nonobject function schema reached the native transport boundary")
+        } catch let violation as ChatRequestContract.Violation {
+            #expect(violation.code == .parametersNotObject)
+            #expect(violation.path == "tools[0].function.parameters")
+            #expect(request.toolSchemas[0].parametersJSON == schema)
+        }
+    }
+
+    @Test("Final Chat wire rejects broken pairs instead of deleting or inventing results", arguments: ["orphan", "duplicate", "missing", "emptyID", "duplicateResult", "replayOverlap"])
+    func chatFinalWirePairValidation(fault: String) throws {
+        var request = syntheticChatRequest()
+        let call = try ToolCall(id: fault == "emptyID" ? "" : "synthetic-call", toolName: "tools.search", argumentsJSON: Data("{}".utf8), scope: .local)
+        request.pendingToolCalls = [call]
+        request.toolResults = [(callID: call.id, output: "Synthetic result")]
+        let expected: ChatRequestContract.Violation.Code
+        switch fault {
+        case "orphan": request.pendingToolCalls = []; expected = .orphanToolResult
+        case "duplicate": request.pendingToolCalls.append(call); expected = .duplicateCallID
+        case "missing": request.toolResults = []; expected = .missingToolResult
+        case "emptyID": expected = .emptyCallID
+        case "duplicateResult": request.toolResults.append(request.toolResults[0]); expected = .orphanToolResult
+        default:
+            request.replayedToolPairs = [.init(call: call, result: .init(callID: call.id, status: .ok, outputSummary: "Synthetic history", outputDigest: "synthetic"))]
+            expected = .duplicateCallID
+        }
+        let beforeCalls = request.pendingToolCalls
+        let beforeResults = request.toolResults.map(\.output)
+        do {
+            _ = try OpenAIChatCompletionsAdapter().prepareBody(from: request)
+            Issue.record("A malformed final wire pair was accepted")
+        } catch let violation as ChatRequestContract.Violation {
+            #expect(violation.code == expected)
+            #expect(violation.path.hasPrefix("messages["))
+            #expect(!violation.path.contains("synthetic-call"))
+            #expect(request.pendingToolCalls == beforeCalls)
+            #expect(request.toolResults.map(\.output) == beforeResults)
+        }
+    }
+
+    @Test("Native Chat reports one terminal local-format error without a network error")
+    func chatLocalFormatFailureIsTerminal() async throws {
+        // The request is invalid before transport. Even a regression can only
+        // reach loopback, never a configured provider or external model.
+        var request = syntheticChatRequest(schemas: [.init(name: "tools.search", description: "Synthetic", parametersJSON: "[]")])
+        request.provider.baseURL = try #require(URL(string: "http://127.0.0.1:9"))
+        var events: [AgentEvent] = []
+        for try await event in OpenAIChatCompletionsAdapter().stream(request: request, credentials: .init()) {
+            events.append(event)
+        }
+        #expect(events.count == 1)
+        let event = try #require(events.first)
+        guard case .error(let error) = event else {
+            Issue.record("Expected a normalized local-format failure"); return
+        }
+        #expect(error.kind == .malformed)
+        #expect(error.httpStatus == nil)
+    }
+
+    @Test("Actual body diagnostics are bounded and omit text, arguments, images and identifiers")
+    func chatShapeDiagnosticsAreContentFree() {
+        let secret = "SYNTHETIC-CONTENT-MUST-NOT-BE-LOGGED"
+        let call = ChatRequest.Message.ToolCall(id: secret, function: .init(name: secret, arguments: #"{"value":"SYNTHETIC-CONTENT-MUST-NOT-BE-LOGGED"}"#))
+        var messages = [
+            ChatRequest.Message(role: "user", contentParts: [.text(secret), .imageURL("data:image/png;base64," + secret)]),
+            .init(role: "assistant", content: ""),
+            .init(role: "assistant", reasoningContent: secret),
+            .init(role: "assistant", toolCalls: [call]),
+            .init(role: "tool", content: secret, toolCallID: secret)
+        ]
+        messages += Array(repeating: .init(role: secret, content: secret), count: 100)
+        let body = ChatRequest(model: secret, messages: messages,
+            tools: [.init(name: secret, description: secret, parameters: #"{"type":"object"}"#)])
+        let summary = ChatRequestContract.diagnosticSummary(body)
+        #expect(summary.contains("wireMessages=105"))
+        #expect(summary.contains("wireCalls=1 wireResults=1 imageParts=1"))
+        #expect(summary.contains("emptyAssistantTurns=1 reasoningOnlyTurns=1"))
+        #expect(summary.contains("shapesOmitted=41"))
+        #expect(summary.utf8.count < 8_192)
+        #expect(!summary.contains(secret))
+        #expect(!summary.contains("data:image"))
+        #expect(!summary.contains("base64"))
+    }
+
+    @Test("Generic InvalidParameter remains an original terminal error, with an unspecified field")
+    func arkGenericParameterErrorRetainsUnknownField() throws {
+        let original = #"{"error":{"code":"InvalidParameter","message":"Synthetic invalid request","param":"","type":"BadRequest"}}"#
+        let event = WireTranslator.httpError(status: 400, body: original)
+        guard case .error(let error) = event else { Issue.record("Expected a provider error"); return }
+        #expect(error.kind == .malformed)
+        #expect(error.httpStatus == 400)
+        #expect(error.providerMessage == original)
+        #expect(ChatRequestContract.rejectionFields(error.providerMessage) == "providerCode=InvalidParameter providerParam=unspecified")
+        let unsafe = #"{"error":{"code":"PRIVATE-SENTINEL","message":"PRIVATE-SENTINEL","param":"PRIVATE-SENTINEL"}}"#
+        #expect(!ChatRequestContract.rejectionFields(unsafe).contains("PRIVATE-SENTINEL"))
+    }
+
+    private func syntheticChatRequest(schemas: [ToolSchemaDescriptor] = []) -> ProviderStreamRequest {
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.invalid/v1")!)
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "synthetic", displayName: "Synthetic",
+            limits: .init(contextTokens: 8192, maxOutputTokens: 1024), capabilities: [.text, .tools])
+        return .init(provider: provider, model: model, messages: [(role: "user", content: "Synthetic")], toolSchemas: schemas)
+    }
+
     @Test("DeepSeek replays reasoning for every assistant history turn; other providers omit it")
     func historyReasoningReplay() throws {
         for endpoint in ["https://api.deepseek.com", "https://example.test/v1"] {

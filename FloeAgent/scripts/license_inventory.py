@@ -573,6 +573,12 @@ NOTES = (
 
 # (name, version, license, source, section, noteKey)
 STATIC_COMPONENTS = (
+    (
+        "libmaxminddb (offline IP database reader)", "1.14.1",
+        "Apache-2.0; BSD-2-Clause; BSD-3-Clause",
+        "https://github.com/maxmind/libmaxminddb/tree/4a3d17a621c0ebcb81498fd34d313f67fd940ab5",
+        "engines", None,
+    ),
     ('FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)', '0.17.0-cg2', 'MPL-2.0; MIT; CPL-1.0; FTL; Unicode-3.0; libpng-2.0; Apache-2.0 and retained notices', 'https://github.com/tectonic-typesetting/tectonic/tree/8c0126a9653239a2e6e0a5274af9b8510f643030', 'engineering', None),
     (
         "Floe chemistry native libraries (Avogadro / Eigen)",
@@ -1092,6 +1098,12 @@ STATIC_COMPONENTS = (
 
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
+    (
+        "libmaxminddb", "FloeApp/Resources/Licenses/libmaxminddb-LICENSES.txt",
+        "Licenses/libmaxminddb-LICENSES.txt", "settings.licenses.document.libmaxminddb.title",
+        "libmaxminddb — offline IP database reader", None,
+        "Apache-2.0; BSD-2-Clause; BSD-3-Clause", "full_text", True, "engines",
+    ),
     ('floe-tex-native-xdv', 'FloeApp/Resources/Licenses/FloeTeXNativeXDV-NOTICES.txt', 'Licenses/FloeTeXNativeXDV-NOTICES.txt', 'settings.licenses.document.floe_tex_native_xdv.title', 'Native typesetting engines and fonts', None, 'MPL-2.0; MIT; CPL-1.0; FTL; Unicode-3.0; libpng-2.0; Apache-2.0 and retained notices', 'notices', True, 'engineering'),
     (
         "chemistry", "FloeApp/Resources/Licenses/Chemistry-NOTICES.txt",
@@ -2331,6 +2343,7 @@ DOCUMENT_NOTES = {
 # evidence is preferred; upstream fetches are named by the pinned tag so a
 # reviewer can repeat the read.
 STATIC_EVIDENCE = {
+    "libmaxminddb (offline IP database reader)": "Modules/FloeToolbox/ThirdParty/IPInformation/PROVENANCE.json pins libmaxminddb 1.14.1 at 4a3d17a621c0ebcb81498fd34d313f67fd940ab5 and the retained source hashes. Complete Apache-2.0 LICENSE, upstream NOTICE and the embedded BSD-2-Clause/BSD-3-Clause copyright notices from upstream/src/maxminddb-compat-util.h ship in FloeApp/Resources/Licenses/libmaxminddb-LICENSES.txt.",
     "FloeGPU (Venus renderer and MoltenVK)": "Vendor/FloeGPU/PROVENANCE.json binds the renderer commit, Floe patch, official MoltenVK archive, embedded dependency notice revisions and all delivered static archives/headers. Full notices ship in FloeApp/Resources/Licenses/FloeGPU-LICENSES.txt.",
     'FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)': 'Modules/FloeLaTeXKit/Native/tectonic.source.json; patches/production-xdv-{source-manifest,local-sources}.json; licenses/native-xdv-selected-licenses.json; Production/Vendor/FloeTeXNativeXDV.manifest.json and NOTICES.json bind the original source, complete patch, selected license branches and actual Cargo/object closure.',
     "Floe chemistry native libraries (Avogadro / Eigen)": "Modules/FloeChemistryNative/UPSTREAM.json and BUILD_SAVED.json bind the Avogadro source/bridge and all three static slices; retained notices in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt. Eigen 5.0.1 is recorded as the producer's header-only build input, not a new remote SwiftPM pin.",

@@ -79,6 +79,8 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
         var verifiedDraftConfirmations: [String] = []
         /// Relative order of the proof signals against the completion event.
         var proofLog: [String] = []
+        /// Per-call settlement classifications (didClassifyToolOutcome).
+        var toolOutcomeClassifications: [ToolOutcomeClassification] = []
     }
     private let storage = AsyncLock(State())
     var transitions: [String] { storage.withLock { $0.transitions } }
@@ -87,6 +89,7 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
     var verifiedDraftSeals: [String] { storage.withLock { $0.verifiedDraftSeals } }
     var verifiedDraftConfirmations: [String] { storage.withLock { $0.verifiedDraftConfirmations } }
     var proofLog: [String] { storage.withLock { $0.proofLog } }
+    var toolOutcomeClassifications: [ToolOutcomeClassification] { storage.withLock { $0.toolOutcomeClassifications } }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         storage.withLock { $0.transitions.append(state.name) }
@@ -124,6 +127,13 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
         didRecordApprovalDecision receipt: ApprovalDecisionReceipt
     ) async {
         storage.withLock { $0.approvalReceipts.append(receipt.callID) }
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didClassifyToolOutcome classification: ToolOutcomeClassification
+    ) async {
+        storage.withLock { $0.toolOutcomeClassifications.append(classification) }
     }
 }
 

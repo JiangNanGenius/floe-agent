@@ -82,6 +82,66 @@ final class BiologyScientificViewTests:XCTestCase {
         XCTAssertEqual(permuted.values[permuted.index(10,7,12)],volume.values[volume.index(7,10,12)])
         XCTAssertThrowsError(try BiologyDensityVolume.parse(data.prefix(1050)))
     }
+    func testBackboneTraceBranchesForProteinNucleicMixedAndNonStandard() throws {
+        func atomLine(_ serial:Int,_ name:String,_ residue:String,_ number:Int,_ x:Double,_ y:Double,_ z:Double,_ element:String)->String {
+            var line = "ATOM  "
+            line += String(format:"%5d",serial)              // cols 7-11
+            line += " " + String(format:"%-4s",(name as NSString).utf8String!) // cols 13-16
+            line += String(format:"%-4s",(residue as NSString).utf8String!)     // cols 17-20
+            line += "A"                                       // col 22 chain
+            line += String(format:"%4d",number)               // cols 23-26
+            line += "    "                                    // cols 27-30
+            line += String(format:"%8.3f",x)                  // cols 31-38
+            line += String(format:"%8.3f",y)                  // cols 39-46
+            line += String(format:"%8.3f",z)                  // cols 47-54
+            line += String(format:"%6.2f",1.0)                // cols 55-60
+            line += String(repeating:" ",count:15)            // cols 61-75
+            line += String(format:"%2s",(element as NSString).utf8String!)     // cols 77-78
+            return line
+        }
+        // Pure DNA/RNA: phosphate trace, no Cα, P–P links under 8 Å.
+        let residues = ["DA","DT","DG","DC"]
+        let dnaLines = residues.enumerated().map { i,code in
+            atomLine(i+1,"P",code,i+1,Double(i)*6.5,0,0,"P")
+        } + residues.enumerated().map { i,code in
+            atomLine(i+101,"O5'",code,i+1,Double(i)*6.5+1.5,1,0,"O")
+        }
+        let dna = try BiologyImporter.parse(title:"DNA",format:"pdb",data:Data((dnaLines.joined(separator:"\n")+"\n").utf8))
+        guard case .proteinStructure(let nucleic)=dna.payload else {return XCTFail("Nucleic structure missing")}
+        XCTAssertFalse(nucleic.atoms.contains{$0.name=="CA"})
+        let nucleicTrace = try XCTUnwrap(nucleic.atoms.backboneTrace)
+        XCTAssertEqual(nucleicTrace.count,4)
+        XCTAssertTrue(nucleicTrace.allSatisfy{$0.name=="P"})
+        XCTAssertEqual(nucleicTrace.backboneLinkedPairs.count,3)
+        // Pure protein: Cα trace only, links under 5 Å.
+        let raw = try BiologySamples.data(for:.ubiquitinPDB),asset = try BiologyImporter.parse(title:"UBQ",format:"pdb",data:raw)
+        guard case .proteinStructure(let protein)=asset.payload else {return XCTFail("Protein structure missing")}
+        let proteinTrace = try XCTUnwrap(protein.atoms.backboneTrace)
+        XCTAssertGreaterThan(proteinTrace.count,50)
+        XCTAssertTrue(proteinTrace.allSatisfy{$0.name=="CA"})
+        XCTAssertFalse(proteinTrace.contains{$0.name=="P"})
+        // Mixed protein+DNA deposit keeps both backbone classes, and links
+        // never cross classes (Cα–P pairs are not linked).
+        let mixedText = (dnaLines+[
+            atomLine(201,"CA","ALA",11,0,0,0,"C"),
+            atomLine(202,"CA","ALA",12,3.8,0,0,"C"),
+            atomLine(203,"CA","ALA",13,7.6,0,0,"C"),
+        ]).joined(separator:"\n")+"\n"
+        let mixed = try BiologyImporter.parse(title:"Mixed",format:"pdb",data:Data(mixedText.utf8))
+        guard case .proteinStructure(let hybrid)=mixed.payload else {return XCTFail("Mixed structure missing")}
+        let hybridTrace = try XCTUnwrap(hybrid.atoms.backboneTrace)
+        XCTAssertEqual(hybridTrace.filter{$0.name=="P"}.count,4)
+        XCTAssertEqual(hybridTrace.filter{$0.name=="CA"}.count,3)
+        XCTAssertEqual(hybridTrace.backboneLinkedPairs.count,5)
+        XCTAssertTrue(hybridTrace.backboneLinkedPairs.allSatisfy{$0.from.name==$0.to.name})
+        // Non-standard deposit (no Cα, no phosphate) reports no trace, so the
+        // view keeps every atom instead of an empty backbone.
+        let sugarOnly = try BiologyImporter.parse(title:"Sugar",format:"pdb",data:Data((residues.enumerated().map { i,code in
+            atomLine(i+301,"O5'",code,i+1,Double(i)*4.0,1,0,"O")
+        }.joined(separator:"\n")+"\n").utf8))
+        guard case .proteinStructure(let sugar)=sugarOnly.payload else {return XCTFail("Non-standard structure missing")}
+        XCTAssertNil(sugar.atoms.backboneTrace)
+    }
     func testDepositedRibbonUsesActualCoordinatesAndRespectsChainBreaks() throws {
         let raw=try BiologySamples.data(for:.ubiquitinPDB),asset=try BiologyImporter.parse(title:"UBQ",format:"pdb",data:raw)
         guard case .proteinStructure(let structure)=asset.payload else{return XCTFail("Structure missing")}

@@ -296,7 +296,7 @@ struct LocalServiceTool: AgentTool {
             logFile: logFile,
             environment: variables
         )
-        var snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
+        let snapshot = LocalServiceProgress(state: "starting", runtime: args.runtime, stdout: "", stderr: "", truncated: false)
         try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot))
         let handle: LinuxGuestLocalServiceHandle
         do {
@@ -317,54 +317,22 @@ struct LocalServiceTool: AgentTool {
         } catch {
             throw FloeError.validationFailed(SecretRedactor.redact(String(describing: error)))
         }
-        var stopRequested = false
-        var stopSent = false
-        var announcedReady = false
         let previewEndpoint = args.runtime == "static" ? endpoint.appendingPathComponent(entry.lastPathComponent) : endpoint
-        var probeRequest = URLRequest(url: previewEndpoint); probeRequest.httpMethod = "HEAD"
-        while true {
-            if context.cancellation.isCancelled { stopRequested = true }
-            if stopRequested && !stopSent {
-                stopSent = true
-                await controller.stopLocalService(handle)
-            }
-            let guest = await controller.localServiceSnapshot(handle)
-            snapshot.state = guest.state
-            snapshot.stdout = guest.stdout
-            snapshot.stderr = guest.stderr
-            snapshot.truncated = guest.truncated
-            if let error = guest.lastError, !error.isEmpty, guest.state != "stopped" {
-                snapshot.stderr += (snapshot.stderr.isEmpty ? "" : "\n") + error
-            }
-            if ["notFound", "stopped", "completed", "failed", "unavailable"].contains(snapshot.state) { break }
-            if stopRequested {
-                snapshot.state = "stopping"; snapshot.previewURL = nil
-                BrowserURLPolicy.revokeService(owner: jobID)
-            } else if snapshot.state == "running", await responds(probe, request: probeRequest, successfulOnly: args.runtime == "static") {
-                snapshot.previewURL = previewEndpoint.absoluteString
-                BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: conversationID)
-                // First verified readiness: announce once so the app can
-                // settle the durable dependency edge and resume a parked run
-                // in the SAME run. The service itself keeps running.
-                if !announcedReady {
-                    announcedReady = true
-                    await onServiceReady?(jobID)
+        var previewRequest = URLRequest(url: previewEndpoint); previewRequest.httpMethod = "HEAD"
+        let probeRequest = previewRequest
+        return try await LocalServiceOwnedLoop.run(
+            controller: controller, handle: handle, jobID: jobID, runtime: args.runtime,
+            cancellation: context.cancellation, store: store,
+            previewURL: previewEndpoint.absoluteString,
+            isReady: { await responds(probe, request: probeRequest, successfulOnly: args.runtime == "static") },
+            setPreviewAuthorized: { authorized in
+                if authorized {
+                    BrowserURLPolicy.authorizeService(endpoint, owner: jobID, conversationID: conversationID)
+                } else {
+                    BrowserURLPolicy.revokeService(owner: jobID)
                 }
-            } else {
-                snapshot.previewURL = nil; BrowserURLPolicy.revokeService(owner: jobID)
-            }
-            snapshot.boundAndRedact()
-            do { try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot)) }
-            catch { stopRequested = true } // Persistence failure must not orphan a worker.
-            try? await Task.sleep(for: .seconds(2))
-        }
-        if !stopSent, snapshot.state == "running" || snapshot.state == "starting" {
-            await controller.stopLocalService(handle)
-        }
-        snapshot.previewURL = nil
-        snapshot.boundAndRedact()
-        try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot))
-        return ToolExecutionOutput(digesting: String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self),
-            exitStatus: stopRequested || snapshot.state == "completed" ? 0 : 1)
+            },
+            onServiceReady: onServiceReady
+        )
     }
 }

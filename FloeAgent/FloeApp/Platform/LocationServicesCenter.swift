@@ -36,6 +36,29 @@ struct SendableLocation: Sendable, Equatable {
     /// reported, never rounded up into a false precision claim.
     var accuracy: Double
     var timestamp: Date
+    var altitude: Double? = nil
+    var verticalAccuracy: Double? = nil
+    var speed: Double? = nil
+    var course: Double? = nil
+
+    init(latitude: Double, longitude: Double, accuracy: Double, timestamp: Date,
+         altitude: Double? = nil, verticalAccuracy: Double? = nil,
+         speed: Double? = nil, course: Double? = nil) {
+        self.latitude = latitude; self.longitude = longitude
+        self.accuracy = accuracy; self.timestamp = timestamp
+        self.altitude = altitude; self.verticalAccuracy = verticalAccuracy
+        self.speed = speed; self.course = course
+    }
+
+    init(systemLocation value: CLLocation) {
+        latitude = value.coordinate.latitude; longitude = value.coordinate.longitude
+        accuracy = value.horizontalAccuracy; timestamp = value.timestamp
+        let validAltitude = value.verticalAccuracy.isFinite && value.verticalAccuracy >= 0
+        altitude = validAltitude && value.altitude.isFinite ? value.altitude : nil
+        verticalAccuracy = validAltitude ? value.verticalAccuracy : nil
+        speed = value.speed.isFinite && value.speed >= 0 ? value.speed : nil
+        course = value.course.isFinite && (0..<360).contains(value.course) ? value.course : nil
+    }
 }
 
 /// Honest failure kinds for a one-shot fix. The service maps these onto the
@@ -74,6 +97,8 @@ enum LocationDriverEvent: Sendable {
     case oneShotResult(id: UInt64, result: Result<SendableLocation, LocationFixFailure>)
     case coarseLocationUpdate(SendableLocation)
     case coarseUpdatesFailed
+    case foregroundLocation(id: UUID, value: SendableLocation)
+    case foregroundFailed(id: UUID)
 }
 
 /// The narrow CoreLocation surface the service needs. The production
@@ -110,17 +135,63 @@ protocol LocationServiceDriving: AnyObject {
     func teardownBackgroundActivity()
 }
 
+/// Optional foreground observation capability. Existing one-shot consumers and
+/// their drivers keep their contract; the Toolbox uses the same authority owner.
+@MainActor
+protocol ForegroundLocationDriving: LocationServiceDriving {
+    func startForegroundUpdates(id: UUID)
+    func stopForegroundUpdates(id: UUID)
+}
+
 /// Production driver. Managers are created lazily on first use — never from a
 /// static initializer or the launch path — so app startup does not block on a
 /// location XPC connection.
 @MainActor
-final class CoreLocationDriver: NSObject, LocationServiceDriving {
+final class CoreLocationDriver: NSObject, ForegroundLocationDriving {
     var onEvent: (@MainActor (LocationDriverEvent) -> Void)?
 
     private var _authorizationManager: CLLocationManager?
     private var oneShotRequests: [UInt64: OneShotRequest] = [:]
     private var _updatesManager: CLLocationManager?
     private var activitySession: CLBackgroundActivitySession?
+    private var foregroundRequest: (id: UUID, manager: CLLocationManager, delegate: ForegroundDelegate)?
+
+    @MainActor
+    private final class ForegroundDelegate: NSObject, @preconcurrency CLLocationManagerDelegate {
+        let id: UUID
+        let deliver: @MainActor (LocationDriverEvent) -> Void
+        init(id: UUID, deliver: @escaping @MainActor (LocationDriverEvent) -> Void) {
+            self.id = id; self.deliver = deliver
+        }
+        func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+            guard let value = locations.last else { return }
+            deliver(.foregroundLocation(id: id, value: .init(systemLocation: value)))
+        }
+        func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
+            guard CoreLocationDriver.shouldStopCoarseUpdates(after: error) else { return }
+            deliver(.foregroundFailed(id: id))
+        }
+    }
+
+    func startForegroundUpdates(id: UUID) {
+        if let old = foregroundRequest { stopForegroundUpdates(id: old.id) }
+        let manager = CLLocationManager()
+        let delegate = ForegroundDelegate(id: id) { [weak self] event in self?.onEvent?(event) }
+        manager.delegate = delegate
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = kCLDistanceFilterNone
+        manager.pausesLocationUpdatesAutomatically = true
+        manager.allowsBackgroundLocationUpdates = false
+        foregroundRequest = (id, manager, delegate)
+        manager.startUpdatingLocation()
+    }
+
+    func stopForegroundUpdates(id: UUID) {
+        guard let request = foregroundRequest, request.id == id else { return }
+        request.manager.stopUpdatingLocation()
+        request.manager.delegate = nil
+        foregroundRequest = nil
+    }
 
     private struct OneShotRequest {
         let manager: CLLocationManager
@@ -157,12 +228,7 @@ final class CoreLocationDriver: NSObject, LocationServiceDriving {
                   coordinate.longitude.isFinite,
                   coordinate.longitude >= -180,
                   coordinate.longitude <= 180 else { return }
-            finish(.success(SendableLocation(
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude,
-                accuracy: value.horizontalAccuracy,
-                timestamp: value.timestamp
-            )))
+            finish(.success(SendableLocation(systemLocation: value)))
         }
 
         func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
@@ -365,6 +431,14 @@ final class LocationServicesCenter: ObservableObject {
 
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
     @Published private(set) var backgroundState: BackgroundState = .idle
+    enum ForegroundState: Sendable, Equatable {
+        case idle, waitingForPermission, locating, active, paused, denied, servicesDisabled, unavailable
+    }
+    @Published private(set) var foregroundState: ForegroundState = .idle
+    @Published private(set) var foregroundLocation: SendableLocation?
+    @Published private(set) var foregroundPrecise = false
+    private var foregroundOwners: Set<UUID> = []
+    private var foregroundGeneration: UUID?
     /// Memory-only recent background fix, consumed by the same explicit
     /// location tool as a one-shot. Accuracy remains the system's real value.
     /// Reduced-accuracy reads request a fresh fix so a previous precise fix
@@ -451,6 +525,11 @@ final class LocationServicesCenter: ObservableObject {
         }
         if driver.accuracyAuthorization != .fullAccuracy {
             latestBackgroundLocation = nil
+            if foregroundPrecise { foregroundLocation = nil }
+        }
+        foregroundPrecise = driver.accuracyAuthorization == .fullAccuracy
+        if status == .denied || status == .restricted || !driver.locationServicesEnabled {
+            foregroundLocation = nil
         }
         if !driver.locationServicesEnabled {
             latestBackgroundLocation = nil
@@ -462,6 +541,65 @@ final class LocationServicesCenter: ObservableObject {
         // (Location Services switched off globally, a prior failure clearing);
         // re-evaluate the honest state on every explicit status read.
         reconcileBackgroundLifecycle()
+        reconcileForegroundObservation()
+    }
+
+    // MARK: - Explicit, visible Toolbox observation
+
+    func beginForegroundObservation(owner: UUID) {
+        guard allowsSystemLocation else { foregroundState = .unavailable; return }
+        foregroundOwners.insert(owner)
+        refreshAuthorizationStatus()
+        if authorizationStatus == .notDetermined {
+            foregroundState = .waitingForPermission
+            requestWhenInUseAuthorizationIfAvailable()
+        }
+        reconcileForegroundObservation()
+    }
+
+    func endForegroundObservation(owner: UUID) {
+        foregroundOwners.remove(owner)
+        reconcileForegroundObservation()
+    }
+
+    func refreshForegroundObservation(owner: UUID) {
+        guard foregroundOwners.contains(owner) else { beginForegroundObservation(owner: owner); return }
+        stopForegroundStream()
+        refreshAuthorizationStatus()
+    }
+
+    private func stopForegroundStream() {
+        if let id = foregroundGeneration {
+            (driver as? any ForegroundLocationDriving)?.stopForegroundUpdates(id: id)
+        }
+        foregroundGeneration = nil
+    }
+
+    private func reconcileForegroundObservation() {
+        guard !foregroundOwners.isEmpty else {
+            stopForegroundStream()
+            if foregroundState != .idle { foregroundState = .paused }
+            return
+        }
+        guard allowsSystemLocation, let observer = driver as? any ForegroundLocationDriving else {
+            stopForegroundStream(); foregroundState = .unavailable; return
+        }
+        guard driver.locationServicesEnabled else {
+            stopForegroundStream(); foregroundLocation = nil; foregroundState = .servicesDisabled; return
+        }
+        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else {
+            stopForegroundStream(); foregroundLocation = nil
+            foregroundState = authorizationStatus == .notDetermined ? .waitingForPermission : .denied
+            return
+        }
+        guard !fullyBackgroundScene else {
+            stopForegroundStream(); foregroundState = .paused; return
+        }
+        if foregroundGeneration == nil {
+            let id = UUID(); foregroundGeneration = id
+            foregroundState = .locating
+            observer.startForegroundUpdates(id: id)
+        }
     }
 
     /// The first active rendered launch asks for When-In-Use access after setup
@@ -691,6 +829,7 @@ final class LocationServicesCenter: ObservableObject {
         self.fullyBackgroundScene = fullyBackgroundScene
         guard changed else { return }
         reconcileBackgroundLifecycle()
+        if !foregroundOwners.isEmpty { reconcileForegroundObservation() }
     }
 
     private func reconcileBackgroundLifecycle() {
@@ -803,6 +942,18 @@ final class LocationServicesCenter: ObservableObject {
             // or a settings change) re-evaluates from scratch.
             stopBackgroundAssist()
             backgroundState = supportEnabled && workEligible ? .unavailable : .idle
+        case .foregroundLocation(let id, let value):
+            guard id == foregroundGeneration, !foregroundOwners.isEmpty, !fullyBackgroundScene,
+                  driver.locationServicesEnabled,
+                  driver.authorizationStatus == .authorizedWhenInUse || driver.authorizationStatus == .authorizedAlways,
+                  Self.usableBackgroundLocation(value, at: Date()) else { return }
+            foregroundPrecise = driver.accuracyAuthorization == .fullAccuracy
+            foregroundLocation = value
+            foregroundState = .active
+        case .foregroundFailed(let id):
+            guard id == foregroundGeneration else { return }
+            stopForegroundStream()
+            foregroundState = .unavailable
         }
     }
 
@@ -810,7 +961,9 @@ final class LocationServicesCenter: ObservableObject {
         authorizationStatus = status
         if driver.accuracyAuthorization != .fullAccuracy {
             latestBackgroundLocation = nil
+            foregroundLocation = nil
         }
+        foregroundPrecise = driver.accuracyAuthorization == .fullAccuracy
         if status != .notDetermined {
             for id in Array(authorizationWaiters.keys) {
                 resolveAuthorizationWaiter(id: id, status: status)
@@ -834,6 +987,7 @@ final class LocationServicesCenter: ObservableObject {
         default:
             reconcileBackgroundLifecycle()
         }
+        if !foregroundOwners.isEmpty { reconcileForegroundObservation() }
     }
 
     private static func usableBackgroundLocation(_ value: SendableLocation, at now: Date) -> Bool {

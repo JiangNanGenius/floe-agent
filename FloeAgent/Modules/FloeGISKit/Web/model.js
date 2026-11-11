@@ -118,6 +118,16 @@ export function attributeValue(value,type){
   return String(value??'');
 }
 export function featureCollection(features=[]) { return {type:'FeatureCollection',features}; }
+// One stack-position summary shared by import receipts and map observations:
+// the model sees where a layer sits, whether it draws, and how much it holds —
+// never a bare title to guess overlap from.
+export function layerEvidence(layer,index) {
+  const evidence={id:layer.id,name:layer.name,kind:layer.kind,crs:layer.crs,index,visible:layer.visible!==false,locked:Boolean(layer.locked),opacity:layer.opacity??1};
+  if(layer.kind==='vector')evidence.featureCount=layer.data.features.length;
+  else if(layer.kind==='raster'){evidence.width=layer.width;evidence.height=layer.height;evidence.bandCount=layer.bands?.length;}
+  else if(layer.kind==='tiles')evidence.tileCount=layer.tileCount;
+  return evidence;
+}
 export function vectorLayer(name,features=[],crs='EPSG:4326') {
   features=features.map(normalizeFeature);deduplicateIDs(features);
   return {id:uid(),name,kind:'vector',crs:defineCRS(crs),visible:true,locked:false,opacity:1,group:'',style:{color:'#2879c7',fill:'#2879c7',fillOpacity:.2,width:2,radius:5,label:'',mode:'single',field:'',classes:5},fields:inferFields(features),data:featureCollection(features)};

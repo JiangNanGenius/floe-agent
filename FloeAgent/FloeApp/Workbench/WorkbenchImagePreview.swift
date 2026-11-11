@@ -157,12 +157,6 @@ struct WorkbenchImagePreview: View {
                 isEnabled: !isInkTool,
                 action: { location in handleTap(at: location, display: display) }))
         }
-        .overlay(alignment: .topLeading) {
-            if isInkTool {
-                MediaFingerDrawingToggle().padding(.horizontal, 10)
-                    .background(.regularMaterial, in: Capsule()).padding(8)
-            }
-        }
         .onChange(of: center.imageTool) { _, _ in inkBuilder.cancel() }
         .accessibilityIdentifier("workbench.preview.image")
     }

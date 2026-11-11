@@ -150,10 +150,11 @@ public struct ToolContext: Sendable {
     /// context or a nested child can never smuggle a call that claims to
     /// originate from the main run. Never Codable and never model-minted.
     public var callOrigin: ToolCallOrigin?
-    /// Progress reporter injected by the job executor while this tool runs
-    /// inside a durable background job; nil in ordinary foreground runs.
-    /// Read-only for tools: report only real processor units at natural
-    /// checkpoints (coalescing/persistence belong to the injected reporter).
+    /// Host-injected progress/observation reporter for this exact call.
+    /// Durable jobs already inject it; foreground cards require their native
+    /// runtime adapter and otherwise leave it nil. Tools never create a UI
+    /// reporter or claim that calling a nil reporter streamed a foreground card.
+    /// Report only real processor units/observations at natural checkpoints.
     public var taskProgress: (any TaskProgressReporting)?
     /// True when this run is a temporary (ephemeral) chat run. Set by the
     /// runtime from its immutable configuration; never model-minted. The
@@ -186,6 +187,8 @@ public struct ToolContext: Sendable {
     /// (legacy contexts, detached jobs); a consumer that genuinely needs a
     /// human decision must then fail honestly instead of proceeding.
     public var nestedApproval: RuntimeNestedApprovalHandle?
+    /// Trusted suspension seam for one approved main-run task.wait call. Never decoded from arguments.
+    public var runtimeWait: RuntimeWaitHandle?
 
     public init(
         runID: UUID,
@@ -215,7 +218,8 @@ public struct ToolContext: Sendable {
         clientSessionID: String? = nil,
         frozenEffectiveCatalogNames: Set<String>? = nil,
         approvalOrigin: ToolApprovalOrigin? = nil,
-        nestedApproval: RuntimeNestedApprovalHandle? = nil
+        nestedApproval: RuntimeNestedApprovalHandle? = nil,
+        runtimeWait: RuntimeWaitHandle? = nil
     ) {
         self.runID = runID
         self.environmentID = environmentID
@@ -245,6 +249,7 @@ public struct ToolContext: Sendable {
         self.frozenEffectiveCatalogNames = frozenEffectiveCatalogNames
         self.approvalOrigin = approvalOrigin
         self.nestedApproval = nestedApproval
+        self.runtimeWait = runtimeWait
     }
 
     /// Enforces the task's persisted file scope before the workspace path

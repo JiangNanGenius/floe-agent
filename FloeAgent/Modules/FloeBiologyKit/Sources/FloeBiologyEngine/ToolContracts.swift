@@ -16,6 +16,10 @@ public enum BiologyEditCatalog {
         case "project.rename","asset.rename":fields=["title":string];required=["title"]
         case "project.notes":fields=["text":string];required=["text"]
         case "project.linkChemistry":fields=["reference":string];required=["reference"]
+        case "asset.create":
+            let annotationFields:[String:JSONValue]=["id":string,"name":string,"start":integer,"end":integer,"strand":.object(["type":.string("integer"),"enum":.array([-1,0,1].map{.number(Double($0))})]),"qualifiers":.object(["type":.string("object")])]
+            fields=["title":string,"kind":.object(["type":.string("string"),"enum":.array(["sequence","biochemicalNetwork"].map(JSONValue.string))]),"recordName":string,"sequence":string,"annotation":.object(["type":.string("object"),"properties":.object(annotationFields),"required":.array(["name","start","end"].map(JSONValue.string)),"additionalProperties":.bool(false)]),"network":.object(["type":.string("object"),"description":.string("Complete typed model: species [{id,initialAmount}], reactions [{id,reactants:{species:integer},products:{species:integer},rateConstant}], timeUnit, amountUnit. Omit for a minimal valid starter network.")])]
+            required=["title","kind"]
         case "asset.delete":break
         case "asset.replace":fields=["payload":.object(["type":.string("object"),"description":.string("Copy the typed payload from biology.read and edit its values. Asset kind, original bytes, file handles and provenance cannot be replaced.")])];required=["payload"]
         case "annotation.upsert":
@@ -32,7 +36,7 @@ public enum BiologyEditCatalog {
         }
         return .object(["type":.string("object"),"properties":.object(fields),"required":.array(required.map(JSONValue.string)),"additionalProperties":.bool(false)])
     }
-    public static let operations=["project.rename","project.notes","project.linkChemistry","asset.rename","asset.delete","asset.replace","annotation.upsert","annotation.remove","image.calibrate","matrix.filter","network.replace","structure.transform"]
+    public static let operations=["project.rename","project.notes","project.linkChemistry","asset.create","asset.rename","asset.delete","asset.replace","annotation.upsert","annotation.remove","image.calibrate","matrix.filter","network.replace","structure.transform"]
     public static let scientificMethods=["seq.parse","seq.stats","seq.translate","seq.reverseComplement","seq.export","seq.align.global","seq.align.local","seq.phylogeny","struct.parse","struct.select","struct.geometry","struct.contacts","struct.rmsd","micro.import","micro.segment","micro.overlay","micro.series","micro.tile","omics.import","omics.export","omics.qc","omics.normalize","omics.pca","omics.cluster","omics.embedding","omics.diffexp","net.simulate","net.sweep","net.sbml.import","net.sbml.export","net.sbml.simulate","net.sbml.sweep"]
     public static func describe() throws -> JSONValue {
         let edits=try operations.map {op in JSONValue.object(["operation":.string(op),"revisionSource":.string(op.hasPrefix("project.") ? "project":"asset"),"parameters":try schema(op)])}
@@ -42,7 +46,7 @@ public enum BiologyEditCatalog {
             "edits":.array(edits),
             "optionalScientificMethods":.array(scientificMethods.map{BiologyMethodCatalog.describe($0)}),
             "scientificSetup":.object(["instructions":.string("These methods require the host's selected Linux environment. Inspect biology.methods for currently usable engines and the selectedScientificEnvironmentID. If packages are missing, use the existing exec.shell/package workflow in that same resolved environment with these pinned requirements; no separate biology installer or host interpreter is used. The Floe bridge probes actual engines when a scientific analysis is submitted and reports real installation/import/solver errors."),"requirements":.string(String(decoding:resources["requirements.lock"] ?? Data(),as:UTF8.self)),"sha256":.string(BiologyProjectStore.digest(resources["requirements.lock"] ?? Data()))]),
-            "workflow":.string("projects → read(summary/data or domain page) → methods → describe(operation) → select/edit/update or analyze → status/job(wait)/stop → read(result/text) → derive/export. Refresh revisions after writes. history/restore and deleted/restoreDeleted retain recoverable data."),
+            "workflow":.string("projects → read(summary/data or domain page) → methods → describe(operation) → asset.create (blank sequence with optional first annotation, or starter network) → select/edit/update or analyze → status/job(wait)/stop → read(result/text) → derive/export. Refresh revisions after writes. history/restore and deleted/restoreDeleted retain recoverable data."),
             "coordinates":.string("Sequences use zero-based half-open ranges; image regions are [x,y,width,height] in the selected level; atom coordinates are Å; native structure model is its PDB number, scientific struct model is zero-based index; matrix rows=genes, columns=cells."),
             "selection":.object(["sequence":.array(["record","start","end"].map(JSONValue.string)),"proteinStructure":.array(["atomIDs","model","chain"].map(JSONValue.string)),"microscopyImage":.array(["channel","slice","frame","region"].map(JSONValue.string)),"expressionMatrix":.array(["genes","cells"].map(JSONValue.string)),"externalDataset":.array(["series","level","channel","slice","frame","region","axis","index","nodeID"].map(JSONValue.string))]),
             "imports":.array(["fasta","fastq","genbank","pdb","cif","pgm","csv","tsv","json","tiff","h5ad","mtx","sbml","newick","mrc"].map(JSONValue.string)),

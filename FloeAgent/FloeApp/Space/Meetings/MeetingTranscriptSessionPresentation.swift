@@ -50,5 +50,16 @@ extension MeetingProjectSession {
             await refresh()
         } catch { diagnostic = error.localizedDescription }
     }
+
+    /// Anonymous engine speakers are stored language-neutrally as
+    /// "Speaker N"; the UI localizes only that generated prefix. Names the
+    /// user typed are always shown verbatim.
+    func displaySpeakerLabel(_ speaker: Speaker) -> String {
+        guard !speaker.userNamed, speaker.label.hasPrefix("Speaker "),
+              let ordinal = speaker.label.dropFirst("Speaker ".count).split(separator: " ").first else {
+            return speaker.label
+        }
+        return IDELanguageRunText.t("说话人 \(ordinal)", "Speaker \(ordinal)")
+    }
 }
 #endif

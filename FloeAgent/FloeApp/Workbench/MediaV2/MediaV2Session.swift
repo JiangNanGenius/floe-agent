@@ -129,6 +129,7 @@ import FloeTools
         let next = try await coordinator.loadProjectSnapshot(id:id)
         if next.revision != project.revision { stopPlayback() }
         project = next
+        reconcileSelection()
         if let canonical=compoundCanonicalCoordinator { onCommit?(try await canonical.loadProjectSnapshot(id:id)) } else { onCommit?(next) }
         refreshPreview()
     }
@@ -346,7 +347,7 @@ import FloeTools
                 // A reload/stop can fail after the atomic store commit. Only
                 // delete fresh assets proven unreferenced by durable state.
                 do {
-                    if let durable = try await store.loadProject(id: id), let prepared = durable.prepared { scope.retainReferenced(prepared.assets) }
+                    if let durable = try await store.loadProject(id: id), durable.prepared != nil { scope.retainReferenced(in: durable) }
                     else { scope.didCommit() }
                 } catch { scope.didCommit() }
             }

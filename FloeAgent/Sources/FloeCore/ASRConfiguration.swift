@@ -542,6 +542,11 @@ public struct ASRModelCapabilities: Codable, Sendable, Hashable {
     public var supportsTimestampGranularities: Bool
     public var supportsPrompt: Bool
     public var supportsKeywords: Bool
+    /// True when the provider/model can return a per-utterance speaker label
+    /// (Volcengine `enable_speaker_info`). False for engines that never
+    /// diarize (Whisper-class models); callers then surface an honest
+    /// capability state instead of fabricating speakers.
+    public var supportsSpeakerAttribution: Bool
     public var timing: ASRTimingProvenance
     public var maximumFileBytes: Int
 
@@ -555,7 +560,8 @@ public struct ASRModelCapabilities: Codable, Sendable, Hashable {
         supportsPrompt: Bool,
         supportsKeywords: Bool,
         timing: ASRTimingProvenance,
-        maximumFileBytes: Int
+        maximumFileBytes: Int,
+        supportsSpeakerAttribution: Bool = false
     ) {
         self.supportsFileTranscription = supportsFileTranscription
         self.supportsLiveTranscription = supportsLiveTranscription
@@ -565,9 +571,29 @@ public struct ASRModelCapabilities: Codable, Sendable, Hashable {
         self.supportsTimestampGranularities = supportsTimestampGranularities
         self.supportsPrompt = supportsPrompt
         self.supportsKeywords = supportsKeywords
+        self.supportsSpeakerAttribution = supportsSpeakerAttribution
         self.timing = timing
         self.maximumFileBytes = maximumFileBytes
     }
+    private enum CodingKeys: String, CodingKey {
+        case supportsFileTranscription, supportsLiveTranscription, fileResponseFormat, supportsFileStreaming, languageParameter, supportsTimestampGranularities, supportsPrompt, supportsKeywords, supportsSpeakerAttribution, timing, maximumFileBytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.supportsFileTranscription = try c.decode(Bool.self, forKey: .supportsFileTranscription)
+        self.supportsLiveTranscription = try c.decode(Bool.self, forKey: .supportsLiveTranscription)
+        self.fileResponseFormat = try c.decode(ASRFileResponseFormat.self, forKey: .fileResponseFormat)
+        self.supportsFileStreaming = try c.decode(Bool.self, forKey: .supportsFileStreaming)
+        self.languageParameter = try c.decode(ASRLanguageParameter.self, forKey: .languageParameter)
+        self.supportsTimestampGranularities = try c.decode(Bool.self, forKey: .supportsTimestampGranularities)
+        self.supportsPrompt = try c.decode(Bool.self, forKey: .supportsPrompt)
+        self.supportsKeywords = try c.decode(Bool.self, forKey: .supportsKeywords)
+        self.supportsSpeakerAttribution = try c.decodeIfPresent(Bool.self, forKey: .supportsSpeakerAttribution) ?? false
+        self.timing = try c.decode(ASRTimingProvenance.self, forKey: .timing)
+        self.maximumFileBytes = try c.decode(Int.self, forKey: .maximumFileBytes)
+    }
+
 }
 
 public enum ASRModelCapabilityCatalog {
@@ -598,6 +624,9 @@ public enum ASRModelCapabilityCatalog {
         case .openaiCompatible:
             return openAI(model: model)
         case .volcengine:
+            // Both the AUC file route and the SAUC `bigmodel_async` stream
+            // accept `enable_speaker_info=true` and then return per-utterance
+            // `speaker_id` values (official speaker-separation docs).
             return ASRModelCapabilities(
                 supportsFileTranscription: true,
                 supportsLiveTranscription: true,
@@ -608,7 +637,8 @@ public enum ASRModelCapabilityCatalog {
                 supportsPrompt: false,
                 supportsKeywords: false,
                 timing: .providerSegments,
-                maximumFileBytes: ASRModelCapabilities.openAIUploadLimit)
+                maximumFileBytes: ASRModelCapabilities.openAIUploadLimit,
+                supportsSpeakerAttribution: true)
         case .alibaba:
             let streaming = model.contains("streaming")
             return ASRModelCapabilities(
@@ -756,6 +786,12 @@ public struct ASRFileTranscriptionRequest: Sendable {
     /// sent) for models without `supportsFileStreaming`; callers that require
     /// streaming should check the capability first.
     public var streamsResponse: Bool
+    /// Ask a diarization-capable engine to separate speakers (Volcengine
+    /// `enable_speaker_info`). Adapters never set this on their own: the
+    /// caller opts in so ordinary caption/file work keeps the previous wire
+    /// behavior. Engines without the capability ignore it and return no
+    /// speaker labels.
+    public var enableSpeakerAttribution: Bool
 
     public init(
         profile: ASRProfile,
@@ -764,7 +800,8 @@ public struct ASRFileTranscriptionRequest: Sendable {
         mimeType: String,
         languages: [String] = [],
         sourceDurationSeconds: Double? = nil,
-        streamsResponse: Bool = false
+        streamsResponse: Bool = false,
+        enableSpeakerAttribution: Bool = false
     ) {
         self.profile = profile
         self.audio = audio
@@ -773,6 +810,7 @@ public struct ASRFileTranscriptionRequest: Sendable {
         self.languages = languages
         self.sourceDurationSeconds = sourceDurationSeconds
         self.streamsResponse = streamsResponse
+        self.enableSpeakerAttribution = enableSpeakerAttribution
     }
 }
 
@@ -813,8 +851,34 @@ public extension ASRTranscribing {
             audio: request.audio,
             durationSeconds: request.sourceDurationSeconds,
             languages: passedLanguages,
-            streamsResponse: request.streamsResponse)
+            streamsResponse: request.streamsResponse,
+            enableSpeakerAttribution: request.enableSpeakerAttribution)
         return try await transcribe(legacy, credential: credential)
+    }
+}
+
+/// One separated utterance inside a committed live final. Start/end are
+/// milliseconds from the beginning of the audio actually fed in THIS request
+/// (Volcengine SAUC `utterances[].start_time/end_time` semantics); the caller
+/// maps them onto its own media timeline because only the caller knows which
+/// source span each request domain covered. nil/empty speaker means the engine
+/// attributed no speaker for that utterance; adapters never synthesize one.
+public struct ASRLiveUtterance: Sendable, Hashable {
+    public let startMilliseconds: Double
+    public let endMilliseconds: Double
+    public let text: String
+    public let speaker: String?
+
+    public init(
+        startMilliseconds: Double,
+        endMilliseconds: Double,
+        text: String,
+        speaker: String? = nil
+    ) {
+        self.startMilliseconds = startMilliseconds
+        self.endMilliseconds = endMilliseconds
+        self.text = text
+        self.speaker = speaker
     }
 }
 
@@ -832,6 +896,17 @@ public struct ASRLiveEvent: Sendable, Hashable {
     public let turnID: UUID
     public let itemID: String?
     public let text: String
+    /// Provider attribution label for a final utterance; nil when the engine
+    /// did not separate speakers. Never synthesized by adapters. When a
+    /// committed final mixes speakers this stays nil and the per-utterance
+    /// `utterances` carry the real separation instead.
+    public let speaker: String?
+    /// Per-utterance separation of this final, when the engine produced it.
+    /// nil for engines/paths without utterance-level output; callers that need
+    /// separation fall back to a single span only when this is nil AND
+    /// `speaker` is non-nil. Adapters populate it from the documented
+    /// utterance array of the final result only.
+    public let utterances: [ASRLiveUtterance]?
     public let replacesPartial: Bool
     public let failure: ASRTranscriptionError?
     public let sequence: Int
@@ -841,6 +916,8 @@ public struct ASRLiveEvent: Sendable, Hashable {
         turnID: UUID,
         itemID: String?,
         text: String,
+        speaker: String? = nil,
+        utterances: [ASRLiveUtterance]? = nil,
         replacesPartial: Bool = false,
         failure: ASRTranscriptionError? = nil,
         sequence: Int
@@ -849,6 +926,8 @@ public struct ASRLiveEvent: Sendable, Hashable {
         self.turnID = turnID
         self.itemID = itemID
         self.text = text
+        self.speaker = speaker
+        self.utterances = utterances
         self.replacesPartial = replacesPartial
         self.failure = failure
         self.sequence = sequence
@@ -869,11 +948,14 @@ public struct ASRLiveEvent: Sendable, Hashable {
         turnID: UUID,
         itemID: String?,
         transcript: String,
+        speaker: String? = nil,
+        utterances: [ASRLiveUtterance]? = nil,
         sequence: Int
     ) -> ASRLiveEvent {
         ASRLiveEvent(
             kind: .final, turnID: turnID, itemID: itemID,
-            text: transcript, sequence: sequence)
+            text: transcript, speaker: speaker, utterances: utterances,
+            sequence: sequence)
     }
 
     public static func partialReplacement(
@@ -912,6 +994,9 @@ public struct ASRLiveSessionRequest: Sendable {
     public var maximumEventBytes: Int
     public var eventQueueCapacity: Int
     public var finishTimeoutSeconds: Double
+    /// Ask a diarization-capable live engine to separate speakers. The adapter
+    /// only sends the provider flag when the model capability supports it.
+    public var enableSpeakerAttribution: Bool
 
     public init(
         profile: ASRProfile,
@@ -923,7 +1008,8 @@ public struct ASRLiveSessionRequest: Sendable {
         maximumAudioBytes: Int = 64 * 1024 * 1024,
         maximumEventBytes: Int = 1 * 1024 * 1024,
         eventQueueCapacity: Int = 256,
-        finishTimeoutSeconds: Double = 30
+        finishTimeoutSeconds: Double = 30,
+        enableSpeakerAttribution: Bool = false
     ) {
         self.profile = profile
         self.turnID = turnID
@@ -939,6 +1025,7 @@ public struct ASRLiveSessionRequest: Sendable {
         self.eventQueueCapacity = Swift.max(8, eventQueueCapacity)
         self.finishTimeoutSeconds = (finishTimeoutSeconds.isFinite
             && finishTimeoutSeconds > 0) ? finishTimeoutSeconds : 30
+        self.enableSpeakerAttribution = enableSpeakerAttribution
     }
 }
 

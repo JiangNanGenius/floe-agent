@@ -50,6 +50,7 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
     @State private var showRuns = true
     @State private var sheet: ChemistrySheet?
     @State private var pendingPreparation: UUID?
+    @State private var removalRequest: ChemicalObject?
     private let onPrepareStructure: (@MainActor (UUID) -> Void)?
     @Environment(\.scenePhase) private var scenePhase
     public init(service: ChemistryService, projectID: UUID) {
@@ -132,6 +133,19 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
             }
         }
         .onChange(of: state.selectedID) { _, _ in atoms = []; drawing = state.selected?.sketchDocument != nil }
+        .confirmationDialog(chemistryText("Remove this object?", "移除这个对象？"),
+                            isPresented: Binding(get: { removalRequest != nil }, set: { if !$0 { removalRequest = nil } }),
+                            presenting: removalRequest) { object in
+            Button(chemistryText("Remove", "移除"), role: .destructive) {
+                let id = object.id; removalRequest = nil
+                Task { await state.removeObject(id) }
+            }
+            Button(chemistryText("Cancel", "取消"), role: .cancel) { removalRequest = nil }
+        } message: { object in
+            Text(state.hasUnsavedEdits(for: object.id)
+                ? chemistryText("“\(object.title)” has unsaved edits that will be discarded. Content already saved can be restored from History.", "“\(object.title)”有未保存的修改，移除后会丢弃这些修改；已保存的内容可在历史版本中恢复。")
+                : chemistryText("“\(object.title)” will be removed. Content already saved can be restored from History.", "将移除“\(object.title)”。已保存的内容可在历史版本中恢复。"))
+        }
         .onDisappear { Task { await state.flush() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { Task { await state.flush() } } }
     }
@@ -146,6 +160,10 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     Text(object.displaySummary).font(.caption).foregroundStyle(.secondary)
                     }
                 }.tag(object.id)
+                .swipeActions { Button(role: .destructive) { removalRequest = object } label: {
+                    Label(chemistryText("Remove", "移除"), systemImage: "trash") }.accessibilityIdentifier("chemistry.object.remove") }
+                .contextMenu { Button(role: .destructive) { removalRequest = object } label: {
+                    Label(chemistryText("Remove object", "移除对象"), systemImage: "trash") } }
             }
             }
         }

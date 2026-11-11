@@ -74,7 +74,7 @@ extension MeetingDatabase {
 
     // MARK: - Capture sessions
 
-    func insertSession(_ session: CaptureSessionSnapshot) throws {
+    func insertSession(_ session: CaptureSessionSnapshot, origin: String? = nil) throws {
         do {
             try pool.write { db in
                 try CaptureSessionRecord(
@@ -87,7 +87,8 @@ extension MeetingDatabase {
                     durationSeconds: session.durationSeconds,
                     startedAt: session.startedAt,
                     endedAt: session.endedAt,
-                    stopReason: session.stopReason?.rawValue
+                    stopReason: session.stopReason?.rawValue,
+                    originSessionID: origin
                 ).insert(db)
             }
         } catch {
@@ -215,6 +216,62 @@ extension MeetingDatabase {
         }
     }
 
+    // MARK: - Speaker bindings (engine-label → stable speaker, per request)
+
+    /// Single-transaction get-or-create: concurrent resolutions of the same
+    /// label cannot race a speaker into duplicate anonymous rows or hit the
+    /// binding primary key. The anonymous ordinal is the meeting's current
+    /// speaker count + 1, computed inside the same write.
+    func resolveSpeakerBinding(meeting: MeetingID, scope: String, providerLabel: String) throws -> SpeakerID {
+        do {
+            return try pool.write { db in
+                if let row = try SpeakerBindingRecord
+                    .filter(Column("meetingID") == meeting.description
+                        && Column("scope") == scope
+                        && Column("providerLabel") == providerLabel)
+                    .fetchOne(db) {
+                    return SpeakerID(UUID(uuidString: row.speakerID) ?? UUID())
+                }
+                let ordinal = try SpeakerRecord
+                    .filter(Column("meetingID") == meeting.description)
+                    .fetchCount(db) + 1
+                let speaker = Speaker(label: "Speaker \(ordinal)", userNamed: false)
+                try SpeakerRecord(
+                    id: speaker.id.description,
+                    meetingID: meeting.description,
+                    label: speaker.label,
+                    userNamed: speaker.userNamed,
+                    mergedInto: nil
+                ).insert(db)
+                try SpeakerBindingRecord(
+                    meetingID: meeting.description,
+                    scope: scope,
+                    providerLabel: providerLabel,
+                    speakerID: speaker.id.description
+                ).insert(db)
+                return speaker.id
+            }
+        } catch {
+            throw MeetingError.persistenceFailed(String(describing: error))
+        }
+    }
+
+    /// After a merge, point every binding that resolved to the merged speaker
+    /// at the merge target, so later recognition commits into the target and
+    /// the merge survives subsequent transcription.
+    func rebindSpeaker(meeting: MeetingID, from source: SpeakerID, to target: SpeakerID) throws {
+        do {
+            try pool.write { db in
+                try db.execute(
+                    sql: "UPDATE speaker_bindings SET speakerID = ? WHERE meetingID = ? AND speakerID = ?",
+                    arguments: [target.description, meeting.description, source.description]
+                )
+            }
+        } catch {
+            throw MeetingError.persistenceFailed(String(describing: error))
+        }
+    }
+
     // MARK: - Transcript
 
     /// Ownership/state checks and the next ordinal are in the same GRDB write.
@@ -243,11 +300,247 @@ extension MeetingDatabase {
                     sessionID: saved.sessionID.description, speakerID: saved.speakerID?.description,
                     ordinal: saved.ordinal, startSeconds: saved.range.start, endSeconds: saved.range.end,
                     text: saved.text, originalText: saved.originalText, correctedBy: saved.correctedBy?.rawValue,
+                    speakerCorrected: saved.speakerCorrected,
                     language: saved.language, sourceJSON: MeetingRecordCodec.json(saved.source)).insert(db)
                 return saved
             }
         } catch let error as MeetingError { throw error }
         catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    /// Attribution the user established by rename or merge, resolved from
+    /// the transaction's current speaker rows. Protect the raw identities at
+    /// every link of a merge chain as well as its final target. Shared by
+    /// same-key live revisions and canonical adoption.
+    private static func userEstablishedSpeakerIDs(in db: Database, meeting: MeetingID) throws -> Set<String> {
+        let rows = try SpeakerRecord
+            .filter(Column("meetingID") == meeting.description)
+            .fetchAll(db)
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let mergeTargets = Set(rows.compactMap(\.mergedInto))
+        var established: Set<String> = []
+        for row in rows {
+            var current = row.id
+            var seen: Set<String> = []
+            while let next = byID[current]?.mergedInto, !seen.contains(current) {
+                seen.insert(current)
+                current = next
+            }
+            guard let resolved = byID[current] else { continue }
+            if resolved.userNamed || mergeTargets.contains(current) {
+                established.insert(row.id)
+            }
+        }
+        return established
+    }
+
+    /// Deterministic internal test seam. The barrier is outside both the
+    /// permit lock and SQL transaction, so another actor can revoke or stop
+    /// the capture while a final is already waiting to commit.
+    func setBeforeLiveTranscriptCommit(_ barrier: (@Sendable () async -> Void)?) {
+        beforeLiveTranscriptCommit = barrier
+    }
+
+    /// Commit one live utterance by its stable request-domain identity. ONE
+    /// write transaction: an existing row with the same (meeting, liveKey) is
+    /// the same utterance re-committed (provider replay/retry): adopt revised
+    /// text/speaker only on fields the user has NOT corrected, keep the
+    /// segment id and supersede nothing. When the key is new, rows of the
+    /// SAME original's lineage overlapping this range still win (file
+    /// fallback or an earlier domain): the insert is skipped and nil is
+    /// returned. Nil proves rejection only: an existing row may cover just a
+    /// portion of the rejected utterance. Keyless finals use the same atomic
+    /// lineage overlap fence, without the revision/adoption branch.
+    ///
+    /// The service-owned permit guards the whole synchronous transaction,
+    /// including its commit. Revocation takes that exact same lock.
+    func upsertLiveTranscriptSegment(
+        _ segment: TranscriptSegment,
+        liveKey: String?,
+        permit: LiveTranscriptionCommitPermit
+    ) async throws -> (segment: TranscriptSegment?, adopted: Bool) {
+        _ = try MediaTimeRange(start: segment.range.start, end: segment.range.end)
+        await beforeLiveTranscriptCommit?()
+        do {
+            return try permit.withCommit(meeting: segment.meetingID, session: segment.sessionID) {
+                try pool.write { db in
+                    guard let session = try CaptureSessionRecord.fetchOne(db, key: segment.sessionID.description),
+                          session.meetingID == segment.meetingID.description else {
+                        throw MeetingError.sessionNotFound(segment.sessionID)
+                    }
+                    guard session.kind == CaptureKind.liveRecording.rawValue else {
+                        throw MeetingError.captureSessionEnded(segment.sessionID)
+                    }
+                    let state = CaptureSessionState(rawValue: session.state)
+                    guard state == .capturing || state == .stopped else {
+                        throw MeetingError.captureSessionEnded(segment.sessionID)
+                    }
+                    if let liveKey, let existing = try TranscriptSegmentRecord
+                        .filter(Column("meetingID") == segment.meetingID.description && Column("liveKey") == liveKey)
+                        .fetchOne(db) {
+                        var adoptedText = existing.text
+                        var adoptedSpeaker = existing.speakerID
+                        var changed = false
+                        if existing.correctedBy == nil, existing.text != segment.text {
+                            try db.execute(sql: "UPDATE transcript_segments SET text = ? WHERE id = ?",
+                                           arguments: [segment.text, existing.id])
+                            adoptedText = segment.text
+                            changed = true
+                        }
+                        if !existing.speakerCorrected, existing.speakerID != segment.speakerID?.description,
+                           !(try Self.userEstablishedSpeakerIDs(in: db, meeting: segment.meetingID)
+                            .contains(existing.speakerID ?? "")) {
+                            if let speaker = segment.speakerID {
+                                guard let row = try SpeakerRecord.fetchOne(db, key: speaker.description),
+                                      row.meetingID == segment.meetingID.description else {
+                                    throw MeetingError.speakerNotFound(speaker)
+                                }
+                            }
+                            try db.execute(sql: "UPDATE transcript_segments SET speakerID = ? WHERE id = ?",
+                                           arguments: [segment.speakerID?.description, existing.id])
+                            adoptedSpeaker = segment.speakerID?.description
+                            changed = true
+                        }
+                        let value = TranscriptSegment(id: TranscriptSegmentID(UUID(uuidString: existing.id) ?? UUID()),
+                            meetingID: segment.meetingID,
+                            sessionID: CaptureSessionID(UUID(uuidString: existing.sessionID) ?? UUID()),
+                            speakerID: adoptedSpeaker.flatMap { UUID(uuidString: $0) }.map(SpeakerID.init),
+                            range: MediaTimeRange(uncheckedStart: existing.startSeconds, end: existing.endSeconds),
+                            text: adoptedText,
+                            language: existing.language, ordinal: existing.ordinal)
+                        return (value, changed)
+                    }
+                    // New/keyless final: resolve the trusted original lineage
+                    // INSIDE this transaction, then let its existing rows win.
+                    let epsilon = MeetingCoverageMap.adjacencyEpsilon
+                    let overlapArguments: [(any DatabaseValueConvertible)?] = [
+                        segment.meetingID.description,
+                        segment.range.end - epsilon, segment.range.start + epsilon,
+                        segment.meetingID.description, segment.sessionID.description, segment.sessionID.description,
+                    ]
+                    let overlapping = try Int.fetchOne(db, sql: """
+                        SELECT COUNT(*) FROM transcript_segments
+                        WHERE meetingID = ? AND superseded = 0
+                          AND startSeconds < ? AND endSeconds > ?
+                          AND sessionID IN (
+                            SELECT id FROM capture_sessions
+                            WHERE meetingID = ? AND (id = ? OR originSessionID = ?)
+                          )
+                        """, arguments: StatementArguments(overlapArguments)) ?? 0
+                    guard overlapping == 0 else { return (nil, false) }
+                    if let speaker = segment.speakerID {
+                        guard let row = try SpeakerRecord.fetchOne(db, key: speaker.description),
+                              row.meetingID == segment.meetingID.description else { throw MeetingError.speakerNotFound(speaker) }
+                    }
+                    let ordinal = try Int.fetchOne(db, sql: "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM transcript_segments WHERE sessionID = ?", arguments: [segment.sessionID.description]) ?? 0
+                    let saved = TranscriptSegment(id: segment.id, meetingID: segment.meetingID, sessionID: segment.sessionID,
+                                                  speakerID: segment.speakerID, range: segment.range, text: segment.text,
+                                                  language: segment.language, ordinal: ordinal)
+                    try TranscriptSegmentRecord(id: saved.id.description, meetingID: saved.meetingID.description,
+                        sessionID: saved.sessionID.description, speakerID: saved.speakerID?.description,
+                        ordinal: saved.ordinal, startSeconds: saved.range.start, endSeconds: saved.range.end,
+                        text: saved.text, originalText: saved.originalText, correctedBy: saved.correctedBy?.rawValue,
+                        speakerCorrected: saved.speakerCorrected,
+                        liveKey: liveKey,
+                        language: saved.language, sourceJSON: MeetingRecordCodec.json(saved.source)).insert(db)
+                    return (saved, false)
+                }
+            }
+        } catch let error as LiveTranscriptionError { throw error }
+        catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    /// The trusted lineage of one original capture: the original itself plus
+    /// every analysis session imported from it (explicit originSessionID
+    /// links). Duplicate detection is scoped to THIS set, so two originals of
+    /// one meeting can occupy the same time ranges without ever merging.
+    func analysisLineage(meeting: MeetingID, original: CaptureSessionID) throws -> Set<String> {
+        do {
+            return try pool.read { db in
+                var ids: Set<String> = [original.description]
+                let rows = try CaptureSessionRecord
+                    .filter(Column("meetingID") == meeting.description && Column("originSessionID") == original.description)
+                    .fetchAll(db)
+                for row in rows { ids.insert(row.id) }
+                return ids
+            }
+        } catch {
+            throw MeetingError.persistenceFailed(String(describing: error))
+        }
+    }
+
+    /// Non-superseded rows inside one lineage, for coverage/reserved-range
+    /// computation at the App seam.
+    func segments(inLineage meeting: MeetingID, lineage: Set<String>) throws -> [TranscriptSegment] {
+        guard !lineage.isEmpty else { return [] }
+        do {
+            return try pool.read { db in
+                let values = lineage.sorted()
+                var result: [TranscriptSegment] = []
+                for start in stride(from: 0, to: values.count, by: 400) {
+                    let batch = Array(values[start..<min(start + 400, values.count)])
+                    let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                    let arguments = StatementArguments([meeting.description] + batch)
+                    let rows = try TranscriptSegmentRecord.fetchAll(db,
+                        sql: """
+                            SELECT transcript_segments.* FROM transcript_segments
+                            JOIN capture_sessions ON capture_sessions.id = transcript_segments.sessionID
+                            WHERE transcript_segments.meetingID = ? AND transcript_segments.superseded = 0
+                              AND transcript_segments.sessionID IN (\(placeholders))
+                            ORDER BY transcript_segments.startSeconds, transcript_segments.ordinal
+                            """,
+                        arguments: arguments)
+                    result.append(contentsOf: rows.map { Self.segmentValue($0, meeting: meeting) })
+                }
+                return result
+            }
+        } catch {
+            throw MeetingError.persistenceFailed(String(describing: error))
+        }
+    }
+
+    /// Non-superseded rows of ONE original's lineage overlapping [start, end)
+    /// beyond a 1 ms boundary tolerance. This is the duplicate fence shared
+    /// by live tail commits and file fallback: any existing row of the SAME
+    /// original — live, chunk or canonical — wins; rows of OTHER originals
+    /// are ignored even at identical times. Late arrivals are skipped, never
+    /// overwrite user corrections.
+    func segmentsOverlapping(meeting: MeetingID, lineage: Set<String>, start: Double, end: Double) throws -> [TranscriptSegment] {
+        guard !lineage.isEmpty else { return [] }
+        do {
+            return try pool.read { db in
+                let values = lineage.sorted()
+                var result: [TranscriptSegment] = []
+                for batchStart in stride(from: 0, to: values.count, by: 400) {
+                    let batch = Array(values[batchStart..<min(batchStart + 400, values.count)])
+                    let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                    var overlapArguments: [(any DatabaseValueConvertible)?] = [
+                        meeting.description,
+                        end - MeetingCoverageMap.adjacencyEpsilon,
+                        start + MeetingCoverageMap.adjacencyEpsilon,
+                    ]
+                    overlapArguments.append(contentsOf: batch)
+                    let arguments = StatementArguments(overlapArguments)
+                    let rows = try TranscriptSegmentRecord.fetchAll(db,
+                        sql: """
+                            SELECT transcript_segments.* FROM transcript_segments
+                            JOIN capture_sessions ON capture_sessions.id = transcript_segments.sessionID
+                            WHERE transcript_segments.meetingID = ?
+                              AND transcript_segments.superseded = 0
+                              AND transcript_segments.startSeconds < ?
+                              AND transcript_segments.endSeconds > ?
+                              AND transcript_segments.sessionID IN (\(placeholders))
+                            ORDER BY transcript_segments.startSeconds, transcript_segments.ordinal
+                            """,
+                        arguments: arguments)
+                    result.append(contentsOf: rows.map { Self.segmentValue($0, meeting: meeting) })
+                }
+                return result
+            }
+        } catch {
+            throw MeetingError.persistenceFailed(String(describing: error))
+        }
     }
 
     func updateSegmentCorrection(_ segment: TranscriptSegment) throws {
@@ -263,33 +556,265 @@ extension MeetingDatabase {
         }
     }
 
-    func segments(meeting: MeetingID) throws -> [TranscriptSegment] {
+    /// User speaker correction. A nil speaker clears the attribution; a real
+    /// speaker must belong to this meeting. Marks the segment speaker-corrected
+    /// so a later canonical pass never overwrites the user's choice. Durable
+    /// before return, so the correction survives reopen and retranscription.
+    func updateSegmentSpeaker(_ id: TranscriptSegmentID, meeting: MeetingID, speaker: SpeakerID?) throws {
+        do {
+            try pool.write { db in
+                if let speaker {
+                    guard let row = try SpeakerRecord.fetchOne(db, key: speaker.description),
+                          row.meetingID == meeting.description else {
+                        throw MeetingError.speakerNotFound(speaker)
+                    }
+                }
+                try db.execute(
+                    sql: "UPDATE transcript_segments SET speakerID = ?, speakerCorrected = 1 WHERE id = ? AND meetingID = ?",
+                    arguments: [speaker?.description, id.description, meeting.description]
+                )
+            }
+        } catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    // MARK: - Canonical post-record reconciliation
+
+    /// Adopt the whole-original diarization into the existing transcript of
+    /// one original recording, inside a single write transaction. Matching is
+    /// by overlapping time ranges across that original's analysis sessions.
+    /// Canonical splits/merges replace uncorrected visible rows while retaining
+    /// superseded rows for existing segment references:
+    /// - engine rows adopt the canonical text/speaker (same segment id, so
+    ///   notes/markers/todos keep their references);
+    /// - user-corrected text or user-corrected speaker is preserved;
+    /// - unmatched canonical rows append to `target`.
+    /// Rows of other recordings are untouched.
+    func reconcileCanonicalTranscript(
+        meeting: MeetingID,
+        analysisSessions: Set<String>,
+        target: CaptureSessionID,
+        inputs: [CanonicalTranscriptInput]
+    ) throws -> TranscriptReconciliation {
+        // Reject invalid provider ranges before opening a transaction. The
+        // unchecked restore initializer is never appropriate for fresh input.
+        for input in inputs {
+            _ = try MediaTimeRange(start: input.startSeconds, end: input.endSeconds)
+        }
+        guard !inputs.isEmpty else {
+            return TranscriptReconciliation(adopted: 0, appended: 0, preserved: 0)
+        }
+        do {
+            return try pool.write { db in
+                guard let targetRow = try CaptureSessionRecord.fetchOne(db, key: target.description),
+                      targetRow.meetingID == meeting.description,
+                      targetRow.state == CaptureSessionState.stopped.rawValue else {
+                    throw MeetingError.captureSessionEnded(target)
+                }
+                var sessions = analysisSessions
+                sessions.insert(target.description)
+                let rows = try TranscriptSegmentRecord
+                    .filter(Column("meetingID") == meeting.description)
+                    .filter(Column("superseded") == false)
+                    .order(Column("startSeconds"), Column("ordinal"), Column("id"))
+                    .fetchAll(db)
+                    .filter { sessions.contains($0.sessionID) }
+                let canonical = inputs.sorted {
+                    $0.startSeconds == $1.startSeconds
+                        ? $0.endSeconds < $1.endSeconds : $0.startSeconds < $1.startSeconds
+                }
+                for input in canonical {
+                    if let speaker = input.speakerID {
+                        guard let row = try SpeakerRecord.fetchOne(db, key: speaker.description),
+                              row.meetingID == meeting.description else {
+                            throw MeetingError.speakerNotFound(speaker)
+                        }
+                    }
+                }
+                func overlap(_ row: TranscriptSegmentRecord, _ input: CanonicalTranscriptInput) -> Double {
+                    max(0, min(row.endSeconds, input.endSeconds) - max(row.startSeconds, input.startSeconds))
+                }
+
+                let establishedSpeakers = try Self.userEstablishedSpeakerIDs(in: db, meeting: meeting)
+
+                // Manual corrections anchor their existing segmentation.
+                // Expand to the entire overlapping component, so an ASR split
+                // or merge cannot append another copy over protected words.
+                var protectedRows = Set(rows.indices.filter {
+                    rows[$0].correctedBy != nil || rows[$0].speakerCorrected
+                        || establishedSpeakers.contains(rows[$0].speakerID ?? "")
+                })
+                var protectedInputs = Set<Int>()
+                var rowQueue = Array(protectedRows), inputQueue: [Int] = []
+                var rowCursor = 0, inputCursor = 0
+                // Visit each row/input once. Repeated whole-component scans
+                // can grow cubically when adjacent ASR boundaries overlap.
+                while rowCursor < rowQueue.count || inputCursor < inputQueue.count {
+                    while rowCursor < rowQueue.count {
+                        let row = rows[rowQueue[rowCursor]]
+                        rowCursor += 1
+                        for i in canonical.indices where !protectedInputs.contains(i) {
+                            if overlap(row, canonical[i]) > 0 {
+                                protectedInputs.insert(i)
+                                inputQueue.append(i)
+                            }
+                        }
+                    }
+                    while inputCursor < inputQueue.count {
+                        let input = canonical[inputQueue[inputCursor]]
+                        inputCursor += 1
+                        for i in rows.indices where !protectedRows.contains(i) {
+                            if overlap(rows[i], input) > 0 {
+                                protectedRows.insert(i)
+                                rowQueue.append(i)
+                            }
+                        }
+                    }
+                }
+                var adopted = 0, appended = 0, preserved = 0
+                for i in protectedRows.sorted() {
+                    let row = rows[i]
+                    let candidates = canonical.indices.filter { overlap(row, canonical[$0]) > 0 }
+                    // Text is adopted only for an unambiguous one-to-one
+                    // alignment. A merged/split sentence has no trustworthy
+                    // word alignment with which to rewrite user boundaries.
+                    let oneToOne = candidates.count == 1 && rows.indices.filter {
+                        overlap(rows[$0], canonical[candidates[0]]) > 0
+                    }.count == 1
+                    let newText = oneToOne && row.correctedBy == nil
+                        ? canonical[candidates[0]].text : row.text
+                    let labels = Set(candidates.map { canonical[$0].speakerID?.description })
+                    let candidateSpeaker: String? = labels.count == 1 ? labels.first ?? nil : row.speakerID
+                    let keepSpeaker = row.speakerCorrected || establishedSpeakers.contains(row.speakerID ?? "")
+                    let newSpeaker = keepSpeaker ? row.speakerID : candidateSpeaker
+                    if newText != row.text || newSpeaker != row.speakerID {
+                        try db.execute(sql: "UPDATE transcript_segments SET text = ?, speakerID = ? WHERE id = ?",
+                                       arguments: [newText, newSpeaker, row.id])
+                        adopted += 1
+                    } else { preserved += 1 }
+                }
+
+                var used = protectedRows
+                for i in canonical.indices where !protectedInputs.contains(i) {
+                    let input = canonical[i]
+                    let range = try MediaTimeRange(start: input.startSeconds, end: input.endSeconds)
+                    let available = rows.indices.filter { !used.contains($0) }
+                    let best = available.filter { overlap(rows[$0], input) > 0 }.max {
+                        overlap(rows[$0], input) < overlap(rows[$1], input)
+                    }
+                    if let index = best {
+                        let row = rows[index]
+                        used.insert(index)
+                        if row.text == input.text && row.speakerID == input.speakerID?.description
+                            && row.startSeconds == input.startSeconds && row.endSeconds == input.endSeconds {
+                            preserved += 1
+                            continue
+                        }
+                        // Retain the segment ID so notes still resolve.
+                        // The visible source is normalized to `target` below.
+                        guard let sessionID = UUID(uuidString: row.sessionID) else {
+                            throw MeetingError.persistenceFailed("Invalid stored capture session identity")
+                        }
+                        let source = SourceReference.recording(session: CaptureSessionID(sessionID), range: range)
+                        try db.execute(sql: """
+                            UPDATE transcript_segments
+                            SET text = ?, speakerID = ?, startSeconds = ?, endSeconds = ?, sourceJSON = ?
+                            WHERE id = ?
+                            """, arguments: [input.text, input.speakerID?.description,
+                                range.start, range.end, try MeetingRecordCodec.json(source), row.id])
+                        adopted += 1
+                    } else {
+                        let ordinal = try Int.fetchOne(db, sql: "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM transcript_segments WHERE sessionID = ?", arguments: [target.description]) ?? 0
+                        let segment = TranscriptSegment(meetingID: meeting, sessionID: target,
+                            speakerID: input.speakerID, range: range, text: input.text, ordinal: ordinal)
+                        try TranscriptSegmentRecord(
+                            id: segment.id.description, meetingID: meeting.description,
+                            sessionID: target.description, speakerID: input.speakerID?.description,
+                            ordinal: ordinal, startSeconds: range.start, endSeconds: range.end,
+                            text: input.text, originalText: nil, correctedBy: nil,
+                            speakerCorrected: false, language: nil,
+                            sourceJSON: try MeetingRecordCodec.json(segment.source)).insert(db)
+                        appended += 1
+                    }
+                }
+                for i in rows.indices where !used.contains(i) {
+                    // Keep disjoint unmatched audio rather than assuming a
+                    // shorter provider result proves that those words vanished.
+                    guard canonical.contains(where: { overlap(rows[i], $0) > 0 }) else { continue }
+                    try db.execute(sql: "UPDATE transcript_segments SET superseded = 1 WHERE id = ?",
+                                   arguments: [rows[i].id])
+                }
+                // All visible segments now play against the whole-original
+                // analysis source. This also keeps newly split rows in media
+                // time order instead of grouping them after older chunk rows.
+                let active = try TranscriptSegmentRecord
+                    .filter(Column("meetingID") == meeting.description)
+                    .filter(Column("superseded") == false).fetchAll(db)
+                for row in active where sessions.contains(row.sessionID) && row.sessionID != target.description {
+                    let range = try MediaTimeRange(start: row.startSeconds, end: row.endSeconds)
+                    let source = SourceReference.recording(session: target, range: range)
+                    try db.execute(sql: "UPDATE transcript_segments SET sessionID = ?, sourceJSON = ? WHERE id = ?",
+                                   arguments: [target.description, try MeetingRecordCodec.json(source), row.id])
+                }
+                return TranscriptReconciliation(adopted: adopted, appended: appended, preserved: preserved)
+            }
+        } catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    func segments(meeting: MeetingID, includingSuperseded: Bool = false) throws -> [TranscriptSegment] {
         do {
             return try pool.read { db in
                 try TranscriptSegmentRecord.fetchAll(db, sql: """
                     SELECT transcript_segments.* FROM transcript_segments
                     JOIN capture_sessions ON capture_sessions.id = transcript_segments.sessionID
-                    WHERE transcript_segments.meetingID = ?
+                    WHERE transcript_segments.meetingID = ? AND (? OR transcript_segments.superseded = 0)
                     ORDER BY capture_sessions.startedAt, capture_sessions.rowid,
                              transcript_segments.startSeconds, transcript_segments.ordinal
-                    """, arguments: [meeting.description])
-                    .map { row in
-                        TranscriptSegment(
-                            id: TranscriptSegmentID(UUID(uuidString: row.id) ?? UUID()),
-                            meetingID: meeting,
-                            sessionID: CaptureSessionID(UUID(uuidString: row.sessionID) ?? UUID()),
-                            speakerID: row.speakerID.flatMap { UUID(uuidString: $0) }.map(SpeakerID.init),
-                            range: MediaTimeRange(uncheckedStart: row.startSeconds, end: row.endSeconds),
-                            text: row.text,
-                            language: row.language,
-                            ordinal: row.ordinal
-                        )
-                        .applyingStored(originalText: row.originalText, correctedBy: row.correctedBy.flatMap(CorrectionAuthor.init(rawValue:)))
-                    }
+                    """, arguments: [meeting.description, includingSuperseded])
+                    .map { Self.segmentValue($0, meeting: meeting) }
             }
         } catch {
             throw MeetingError.persistenceFailed(String(describing: error))
         }
+    }
+
+    /// Read-only source resolution includes retained historical segments,
+    /// fetched by indexed IDs in bounded batches rather than the full history.
+    func sourceSegments(meeting: MeetingID, ids: Set<TranscriptSegmentID>) throws -> [TranscriptSegment] {
+        guard !ids.isEmpty else { return [] }
+        do {
+            return try pool.read { db in
+                let values = ids.map(\.description).sorted()
+                var result: [TranscriptSegment] = []
+                for start in stride(from: 0, to: values.count, by: 400) {
+                    let batch = Array(values[start..<min(start + 400, values.count)])
+                    let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                    let arguments = StatementArguments([meeting.description] + batch)
+                    let rows = try TranscriptSegmentRecord.fetchAll(db,
+                        sql: "SELECT * FROM transcript_segments WHERE meetingID = ? AND id IN (" + placeholders + ")",
+                        arguments: arguments)
+                    result.append(contentsOf: rows.map { Self.segmentValue($0, meeting: meeting) })
+                }
+                return result
+            }
+        } catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    private nonisolated static func segmentValue(_ row: TranscriptSegmentRecord, meeting: MeetingID) -> TranscriptSegment {
+            TranscriptSegment(
+                id: TranscriptSegmentID(UUID(uuidString: row.id) ?? UUID()),
+                meetingID: meeting,
+                sessionID: CaptureSessionID(UUID(uuidString: row.sessionID) ?? UUID()),
+                speakerID: row.speakerID.flatMap { UUID(uuidString: $0) }.map(SpeakerID.init),
+                range: MediaTimeRange(uncheckedStart: row.startSeconds, end: row.endSeconds),
+                text: row.text,
+                language: row.language,
+                ordinal: row.ordinal
+            )
+            .applyingStored(originalText: row.originalText,
+                            correctedBy: row.correctedBy.flatMap(CorrectionAuthor.init(rawValue:)),
+                            speakerCorrected: row.speakerCorrected)
     }
 
     // MARK: - Notes & markers
@@ -564,9 +1089,9 @@ extension MeetingDatabase {
 
 // Re-apply stored private(set) state after decoding from a row.
 extension TranscriptSegment {
-    func applyingStored(originalText: String?, correctedBy: CorrectionAuthor?) -> TranscriptSegment {
+    func applyingStored(originalText: String?, correctedBy: CorrectionAuthor?, speakerCorrected: Bool) -> TranscriptSegment {
         var copy = self
-        if let originalText { copy.setStored(originalText: originalText, correctedBy: correctedBy) }
+        copy.setStored(originalText: originalText, correctedBy: correctedBy, speakerCorrected: speakerCorrected)
         return copy
     }
 }

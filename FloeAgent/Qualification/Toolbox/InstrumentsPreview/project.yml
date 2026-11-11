@@ -1,0 +1,145 @@
+name: FloeInstrumentsPreview
+options:
+  deploymentTarget: {iOS: '26.0'}
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: '6.0'
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  InstrumentsCore:
+    type: framework
+    platform: iOS
+    sources: [../../../Modules/FloeToolbox/Sources/FloeToolboxCore]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.core
+        PRODUCT_NAME: FloeToolboxCore
+        PRODUCT_MODULE_NAME: FloeToolboxCore
+  InstrumentsData:
+    type: framework
+    platform: iOS
+    sources:
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/InstrumentMath.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/EverydayCalculator.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/EverydayMeasurements.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/SpatialMeasurementMath.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/PhotoMeasurementMath.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/ToolboxLocationData.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxUtilities/ToolboxTimekeeping.swift
+    dependencies: [target: InstrumentsCore]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.data
+        PRODUCT_NAME: FloeToolboxUtilities
+        PRODUCT_MODULE_NAME: FloeToolboxUtilities
+  InstrumentsUI:
+    type: framework
+    platform: iOS
+    sources:
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/InstrumentMotionService.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/InstrumentMotionWorkbench.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/InstrumentLevelView.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/InstrumentCompassView.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/EverydayCalculatorView.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/EverydayRulerView.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementWorkbench.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/PhotoMeasurementModel.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/PhotoMeasurementWorkbench.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/ToolboxLocationWorkbench.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/ToolboxTimekeepingService.swift
+      - ../../../Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/ToolboxTimekeepingView.swift
+      - ../Timekeeping/Contracts/WorkbenchText.swift
+    dependencies: [target: InstrumentsCore, target: InstrumentsData]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.ui
+        PRODUCT_NAME: FloeToolboxWorkbenches
+        PRODUCT_MODULE_NAME: FloeToolboxWorkbenches
+  InstrumentsCatalog:
+    type: framework
+    platform: iOS
+    sources: [../../../Modules/FloeToolbox/Sources/FloeToolboxUI/ToolboxViews.swift]
+    dependencies: [target: InstrumentsCore]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.catalog
+        PRODUCT_NAME: FloeToolboxUI
+        PRODUCT_MODULE_NAME: FloeToolboxUI
+  InstrumentsLocationContract:
+    type: framework
+    platform: iOS
+    sources: [../../../Sources/FloeCore/FloeError.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.locationcontract
+        PRODUCT_NAME: FloeCore
+        PRODUCT_MODULE_NAME: FloeCore
+  FloeInstrumentsPreview:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../App
+        excludes: [Info.plist]
+      - ../../../FloeApp/Platform/LocationServicesCenter.swift
+    dependencies:
+      - target: InstrumentsCore
+      - target: InstrumentsData
+      - target: InstrumentsUI
+      - target: InstrumentsCatalog
+      - target: InstrumentsLocationContract
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.preview
+        PRODUCT_MODULE_NAME: FloeToolboxQualification
+        TARGETED_DEVICE_FAMILY: '1,2'
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: '$(inherited) DEBUG TOOLBOX_FIRST_BATCH_ONLY'
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleLocalizations: [en, zh-Hans]
+        UILaunchScreen: {}
+        NSLocationWhenInUseUsageDescription: This component uses location only when Locate is selected.
+        NSMotionUsageDescription: This component uses motion sensors for the instrument you open.
+        NSCameraUsageDescription: This component uses the camera when you start AR measurement.
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+  InstrumentsUnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../UnitTests
+        excludes: [EnvironmentalServiceTests.swift]
+      - ../Timekeeping/UnitTests
+      - ../../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/InstrumentMathTests.swift
+      - ../../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/EverydayToolsTests.swift
+      - ../../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/SpatialMeasurementTests.swift
+      - ../../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/PhotoMeasurementTests.swift
+      - ../../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/ToolboxTimekeepingTests.swift
+      - ../../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/ToolboxLocationTests.swift
+    dependencies:
+      - target: FloeInstrumentsPreview
+      - target: InstrumentsUI
+      - target: InstrumentsData
+      - target: InstrumentsCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.tests
+  InstrumentsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [../UITests/ToolboxWorkbenchUITests.swift]
+    dependencies: [target: FloeInstrumentsPreview]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.instruments.uitests
+schemes:
+  FloeInstrumentsPreview:
+    build:
+      targets:
+        FloeInstrumentsPreview: all
+        InstrumentsUnitTests: [test]
+        InstrumentsUITests: [test]
+    test:
+      targets: [InstrumentsUnitTests, InstrumentsUITests]

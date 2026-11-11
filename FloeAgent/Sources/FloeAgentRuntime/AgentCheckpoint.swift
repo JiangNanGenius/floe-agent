@@ -23,6 +23,18 @@ public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
     /// Whether the committed call crossed a mutating tool boundary. Optional
     /// keeps checkpoints written by older builds decodable.
     public var isSideEffecting: Bool?
+    /// Whether the call provably crossed the executor boundary before this
+    /// result existed. False is a trusted pre-execution rejection (policy,
+    /// gate, suppression, budget, recovery synthesis): nothing could have
+    /// happened externally. Nil (older checkpoints) reads as dispatched —
+    /// the conservative answer.
+    public var wasDispatched: Bool?
+    /// Trusted same-operation identity (typed `outputWrite` target
+    /// arguments plus resolved target paths) proving which concrete NEW
+    /// output file this receipt's work produced. Nil when the concrete
+    /// output cannot be proven; the closure gate then never treats the
+    /// receipt as a correctable attempt.
+    public var operationIdentity: String?
 
     public init(
         toolName: String,
@@ -31,7 +43,9 @@ public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
         resultFingerprint: String,
         excerpt: String,
         occurrenceCount: Int,
-        isSideEffecting: Bool? = nil
+        isSideEffecting: Bool? = nil,
+        wasDispatched: Bool? = nil,
+        operationIdentity: String? = nil
     ) {
         self.toolName = toolName
         self.callFingerprint = callFingerprint
@@ -40,6 +54,8 @@ public struct AgentExecutionLedgerEntry: Sendable, Codable, Hashable {
         self.excerpt = excerpt
         self.occurrenceCount = occurrenceCount
         self.isSideEffecting = isSideEffecting
+        self.wasDispatched = wasDispatched
+        self.operationIdentity = operationIdentity
     }
 }
 
@@ -320,6 +336,9 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// conversations (RAM-only questions never enter a durable checkpoint).
     public var pendingUserQuestionRequestIDs: [String]?
 
+    /// Trusted task.wait identities/deadlines/receipts. Optional for older checkpoints.
+    public var runtimeWaits: [AgentWaitRecord]?
+
     /// Current checkpoint file format.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.
@@ -354,7 +373,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         replayedToolPairs: [ReplayedToolPair]? = nil,
         ownedSystemContextID: UUID? = nil,
         sensitiveToolCallIDs: [String]? = nil,
-        pendingUserQuestionRequestIDs: [String]? = nil
+        pendingUserQuestionRequestIDs: [String]? = nil,
+        runtimeWaits: [AgentWaitRecord]? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -385,6 +405,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.ownedSystemContextID = ownedSystemContextID
         self.sensitiveToolCallIDs = sensitiveToolCallIDs
         self.pendingUserQuestionRequestIDs = pendingUserQuestionRequestIDs
+        self.runtimeWaits = runtimeWaits
     }
 
     public func encoded() throws -> Data {

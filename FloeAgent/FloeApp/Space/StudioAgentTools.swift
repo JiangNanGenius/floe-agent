@@ -49,14 +49,17 @@ enum StudioToolOutput {
 @MainActor final class StudioCoordinator {
     weak var environment: AppEnvironment?
     let access: Result<StudioDocumentAccess, Error>
+    private let libraryOverride: PersonalContentLibrary?
     private var preparations: [UUID: Task<UUID, Error>] = [:]
     private var mutating: Set<UUID> = []
     static let names: Set<String> = ["studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.media.provider", "studio.chemistry", "studio.machining"]
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, authority: StudioDocumentAccess? = nil, library: PersonalContentLibrary? = nil) {
         self.environment = environment
+        self.libraryOverride = library
         access = Result {
-            try StudioDocumentAccess(root: PersonalContentLibrary.applicationRoot()
+            if let authority { return authority }
+            return try StudioDocumentAccess(root: PersonalContentLibrary.applicationRoot()
                 .deletingLastPathComponent().appendingPathComponent("StudioAuthority"))
         }
     }
@@ -71,13 +74,23 @@ enum StudioToolOutput {
         guard let environment else { throw PersonalContentError.storageUnavailable }
         try await environment.ensureDurableAutomationReady()
         try await PersonalContentService.shared.verify(record)
+        try PersonalLibraryFileActions.requireAvailable(record.id)
         let authority = try access.get()
+        // Prevent a preparation that crossed a delete/restore await from
+        // binding a fresh successor while the old lifecycle is settling.
+        try await authority.requireNoFileLifecycle(projectID: record.id, conversationID: UUID())
         let workspace = SQLiteWorkspaceStore(database: environment.database)
-        let id: UUID
+        var id: UUID
+        // A bound assistant whose conversation still carries the legacy
+        // force-archive flag migrates on touch: unarchive exactly this
+        // binding's row, never unrelated archived chats. Idempotent — the
+        // write only fires while `archived_at` is still set.
+        var legacyArchivedBinding = false
         if let bound = try await authority.assistant(projectID: record.id),
            let conversation = try await environment.conversationStore.conversation(id: bound),
            conversation.purpose == .ordinary {
             id = bound
+            legacyArchivedBinding = conversation.archivedAt != nil
         } else {
             id = UUID()
             let now = Date()
@@ -85,7 +98,9 @@ enum StudioToolOutput {
                 try await environment.conversationStore.saveConversation(.init(id: id,
                     title: IDELanguageRunText.t("作品助手 · ", "Work assistant · ") + record.title,
                     createdAt: now, updatedAt: now, titleOrigin: .manual))
-                try await environment.conversationStore.setArchived(id: id, archived: true)
+                // File assistants persist with their document. Grouping in
+                // the task center derives from the real binding below, not
+                // from hiding the conversation in the archive bucket.
                 _ = try await workspace.ensureWorkspace(conversationID: id, title: record.title)
                 // Defaults belong to a newly created assistant. Reopening an
                 // existing document must retain its user's saved permissions.
@@ -102,9 +117,74 @@ enum StudioToolOutput {
         if try await workspace.workspaceID(conversationID: id) == nil {
             _ = try await workspace.ensureWorkspace(conversationID: id, title: record.title)
         }
-        try await environment.conversationStore.setArchived(id: id, archived: true)
+        if legacyArchivedBinding {
+            try? await environment.conversationStore.setArchived(id: id, archived: false)
+        }
+        try await requireAssistantAvailable(conversationID: id)
         await environment.conversationCenter.authoringConversationBecameVisible(id)
         return id
+    }
+    /// Every live document → assistant binding. Task-center grouping and
+    /// foreground recovery consume this instead of title/archive heuristics.
+    func assistantBindings() async -> [StudioAssistantBinding] {
+        guard case .success(let authority) = access else { return [] }
+        return (try? await authority.assistantBindings()) ?? []
+    }
+
+    func fileAssistantLifecycle(library: PersonalContentLibrary) throws -> PersonalFileAssistantLifecycle {
+        guard let environment else { throw PersonalContentError.storageUnavailable }
+        return PersonalFileAssistantLifecycle(access: try access.get(), library: library,
+            stop: { [weak environment] bindings in
+                guard let environment else { throw PersonalContentError.storageUnavailable }
+                return try await environment.conversationCenter.stopFileAssistants(bindings)
+            }, retire: { [weak environment] bindings in
+                guard let environment else { throw PersonalContentError.storageUnavailable }
+                try await environment.conversationCenter.retireStoppedFileAssistantExecution(bindings)
+            }, purge: { [weak environment] conversationID, leaseID in
+                guard let environment else { throw PersonalContentError.storageUnavailable }
+                try await environment.conversationCenter.deleteConversation(id: conversationID, fileLifecycleToken: leaseID)
+            })
+    }
+
+    private var isReconcilingFileLifecycles = false
+    private func lifecycleLibrary() async throws -> PersonalContentLibrary {
+        if let libraryOverride { return libraryOverride }
+        return try await PersonalContentService.shared.library()
+    }
+    func reconcileFileAssistantLifecycles() async {
+        guard !isReconcilingFileLifecycles else { return }
+        isReconcilingFileLifecycles = true
+        defer { isReconcilingFileLifecycles = false }
+        do {
+            let library = try await lifecycleLibrary()
+            try await fileAssistantLifecycle(library: library).reconcile()
+        } catch {
+            FloeLogger(category: .persistence).warning("fileAssistantLifecycleCleanupDeferred")
+        }
+    }
+
+    /// Binding truth is retained in Trash. Only active originals enter task
+    /// projections; missing/uncertain originals cannot restart work either.
+    func unavailableAssistantConversationIDs(bindings: [StudioAssistantBinding]) async -> Set<UUID> {
+        do {
+            let authority = try access.get()
+            let active = Set(try await lifecycleLibrary().records().map(\.id))
+            let pending = try await authority.pendingFileLifecycleConversationIDs()
+            return Set(bindings.filter { !active.contains($0.projectID) }.map(\.conversationID)).union(pending)
+        } catch { return Set(bindings.map(\.conversationID)) }
+    }
+
+    func requireAssistantAvailable(conversationID: UUID) async throws {
+        let authority = try access.get()
+        guard let projectID = try await authority.assistantProject(conversationID: conversationID) else { return }
+        try await authority.requireNoFileLifecycle(projectID: projectID, conversationID: conversationID)
+        try PersonalLibraryFileActions.requireAvailable(projectID)
+        _ = try await lifecycleLibrary().resolve(projectID)
+        try PersonalLibraryFileActions.requireAvailable(projectID)
+        guard try await authority.assistant(projectID: projectID) == conversationID else {
+            throw PersonalFileAssistantLifecycleError.changed
+        }
+        try await authority.requireNoFileLifecycle(projectID: projectID, conversationID: conversationID)
     }
     /// Discovery has no executing tool name. It still proves the real saved,
     /// ordinary task run. The executing context's runID/conversationID are

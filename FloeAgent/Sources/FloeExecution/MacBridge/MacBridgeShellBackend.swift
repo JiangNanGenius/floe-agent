@@ -77,16 +77,17 @@ public actor MacBridgeShellBackend: LocalShellBackend {
                     _ = try await client.call("signal", ["jobID": .string(jobID), "signal": .string("TERM")])
                 }
                 let page = try await client.call("poll", ["jobID": .string(jobID), "offset": .integer(offset), "limit": .integer(Int64(BridgeWire.pageBytes))])
-                if page["outcomeUnknown"]?.bool == true { return .outcomeUnknown(jobID: jobID, message: "The companion restarted before this command's exit was confirmed. Its saved output is available; it was not rerun.") }
-                let bytes = try bytes(page)
+                let status = try BridgeResponseValidation.poll(page, offset: offset)
+                if status.outcomeUnknown { return .outcomeUnknown(jobID: jobID, message: "The companion restarted before this command's exit was confirmed. Its saved output is available; it was not rerun.") }
+                let bytes = status.data
                 if !bytes.isEmpty {
                     try writer.write(contentsOf: bytes)
                     if preview.count < request.maxOutputBytes { preview.append(bytes.prefix(max(0, request.maxOutputBytes - preview.count))) }
                     offset += Int64(bytes.count)
                 }
-                let alive = page["alive"]?.bool ?? false
-                let total = page["totalBytes"]?.integer ?? offset
-                if !alive && offset >= total { exitCode = Int32(clamping: page["exitCode"]?.integer ?? 0); break }
+                let alive = status.alive
+                let total = status.totalBytes
+                if !alive && offset >= total, let confirmed = status.exitCode { exitCode = confirmed; break }
                 // Drain cancellation is finite. Escalation targets only this
                 // owned process group; a dead bridge never starts a replacement.
                 if let cancelStarted, ContinuousClock.now - cancelStarted > .seconds(5), alive {
@@ -115,8 +116,9 @@ public actor MacBridgeShellBackend: LocalShellBackend {
                         _ = try await client.call("signal", ["jobID": .string(jobID), "signal": .string("TERM")])
                         for attempt in 0..<80 {
                             let page = try await client.call("poll", ["jobID": .string(jobID), "offset": .integer(0), "limit": .integer(1)])
-                            if page["outcomeUnknown"]?.bool == true { return false }
-                            if page["alive"]?.bool == false { return true }
+                            let status = try BridgeResponseValidation.poll(page, offset: 0, limit: 1)
+                            if status.outcomeUnknown { return false }
+                            if !status.alive { return true }
                             if attempt == 30 { _ = try await client.call("signal", ["jobID": .string(jobID), "signal": .string("KILL")]) }
                             try await Task.sleep(for: .milliseconds(100))
                         }
@@ -186,10 +188,11 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         }
         let page = try await client.call("poll", ["jobID": .string(session.jobID), "offset": .integer(session.offset),
             "limit": .integer(Int64(min(max(request.maxBytes, 1), BridgeWire.pageBytes)))])
-        if page["outcomeUnknown"]?.bool == true { throw ToolExecutionOutcomeUnknownError(reference: session.jobID, message: "The Mac terminal exit was not confirmed after reconnect.") }
-        let data = try bytes(page); session.offset += Int64(data.count)
+        let status = try BridgeResponseValidation.poll(page, offset: session.offset, limit: min(max(request.maxBytes, 1), BridgeWire.pageBytes))
+        if status.outcomeUnknown { throw ToolExecutionOutcomeUnknownError(reference: session.jobID, message: "The Mac terminal exit was not confirmed after reconnect.") }
+        let data = status.data; session.offset = status.offset
         sessions[request.sessionID] = session
-        let alive = page["alive"]?.bool ?? false
+        let alive = status.alive
         let output: Data
         if let redactor = session.redactor {
             output = await redactor.redact(data, flush: !alive)
@@ -198,8 +201,8 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         }
         if !alive { try await client.synchronizeAfterExecution(root: session.root) }
         return ShellExchangeResult(output: String(decoding: output, as: UTF8.self), alive: alive,
-            exitCode: page["exitCode"]?.integer.map { Int32(clamping: $0) }, terminalOutput: output,
-            bytesRead: Int(clamping: page["totalBytes"]?.integer ?? session.offset), bytesWritten: Int(clamping: page["inputBytes"]?.integer ?? 0))
+            exitCode: status.exitCode, terminalOutput: output,
+            bytesRead: Int(clamping: status.totalBytes), bytesWritten: Int(clamping: status.inputBytes))
         } catch let error as ToolExecutionOutcomeUnknownError { throw error }
         catch {
             throw ToolExecutionOutcomeUnknownError(reference: session.jobID,
@@ -213,8 +216,9 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             // Actual exit must be observed before dropping ownership.
             for attempt in 0..<60 {
                 let page = try await client.call("poll", ["jobID": .string(session.jobID), "offset": .integer(0), "limit": .integer(1)])
-                if page["outcomeUnknown"]?.bool == true { return }
-                if page["alive"]?.bool == false {
+                let status = try BridgeResponseValidation.poll(page, offset: 0, limit: 1)
+                if status.outcomeUnknown { return }
+                if !status.alive {
                     try await client.synchronizeAfterExecution(root: session.root)
                     sessions.removeValue(forKey: sessionID); return
                 }
@@ -315,10 +319,6 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             _ = try await client.call("input", ["jobID": .string(jobID), "data": .string(data[offset..<end].base64EncodedString())])
             offset = end
         }
-    }
-    private func bytes(_ page: [String: BridgeValue]) throws -> Data {
-        guard let text = page["data"]?.string, let data = Data(base64Encoded: text) else { throw BridgeFailure.incompatible }
-        return data
     }
     private func check(_ cancellation: CancellationToken?) throws {
         try Task.checkCancellation(); try cancellation?.throwIfCancelled()

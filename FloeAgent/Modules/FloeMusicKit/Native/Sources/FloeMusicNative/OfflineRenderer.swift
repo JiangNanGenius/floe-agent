@@ -68,7 +68,7 @@ public actor MusicOfflineRenderer {
               let format = AVAudioFormat(standardFormatWithSampleRate: Double(document.tempoMap.sampleRate), channels: 2) else {
             throw MusicNativeError.invalid("render format or tail")
         }
-        let contentEnd = try document.tracks.flatMap(\.clips).map { try $0.endSample(tempoMap: document.tempoMap).value }.max() ?? 0
+        let contentEnd = document.contentEndSample.value
         let (totalFrames, overflow) = contentEnd.addingReportingOverflow(tailFrames)
         guard !overflow, totalFrames > 0 else { throw MusicNativeError.invalid("render length") }
         let work = destination.deletingLastPathComponent().appendingPathComponent(".music-work-\(UUID().uuidString)", isDirectory: true)
@@ -76,8 +76,7 @@ public actor MusicOfflineRenderer {
         defer { try? FileManager.default.removeItem(at: work) }
         let staged = musicStagingURL(for: destination)
         defer { try? FileManager.default.removeItem(at: staged) }
-        let soloed = document.tracks.contains { $0.strip.soloed }
-        let audible = document.tracks.filter { !$0.strip.muted && (!soloed || $0.strip.soloed) }
+        let audible = document.audibleTracks
         var sourceFiles: [MusicAssetID: AVAudioFile] = [:]
         for track in audible {
             for clip in track.clips {

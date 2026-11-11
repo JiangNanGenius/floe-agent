@@ -705,6 +705,9 @@ public struct ASRTranscriptionRequest: Sendable {
     /// Ask a modern model for its SSE transcript stream. The adapter only
     /// sends `stream=true` when the model capability supports it.
     public var streamsResponse: Bool
+    /// Ask a diarization-capable engine to separate speakers (Volcengine
+    /// `enable_speaker_info`). Engines without the capability ignore it.
+    public var enableSpeakerAttribution: Bool
 
     public init(
         endpointBaseURL: String? = nil,
@@ -715,7 +718,8 @@ public struct ASRTranscriptionRequest: Sendable {
         audio: Data,
         durationSeconds: Double? = nil,
         languages: [String] = [],
-        streamsResponse: Bool = false
+        streamsResponse: Bool = false,
+        enableSpeakerAttribution: Bool = false
     ) {
         self.endpointBaseURL = endpointBaseURL
         self.modelID = modelID
@@ -726,20 +730,30 @@ public struct ASRTranscriptionRequest: Sendable {
         self.audio = audio
         self.durationSeconds = durationSeconds
         self.streamsResponse = streamsResponse
+        self.enableSpeakerAttribution = enableSpeakerAttribution
     }
 }
 
 /// One provider-timed transcript segment. Start/end are seconds in the source
-/// media timeline.
+/// media timeline. `speaker` is the provider's opaque attribution label (e.g.
+/// Volcengine `speaker_id`) when the engine was asked for and produced speaker
+/// separation; nil means the engine attributed no speaker and no identity is
+/// ever fabricated downstream.
 public struct ASRTranscriptionSegment: Codable, Sendable, Hashable {
     public var start: Double
     public var end: Double
     public var text: String
+    public var speaker: String?
+    /// Locally issued identity of the actual recognizer request. Aggregators
+    /// retain it when independent requests restart numeric speaker labels.
+    public var recognitionRequestID: UUID?
 
-    public init(start: Double, end: Double, text: String) {
+    public init(start: Double, end: Double, text: String, speaker: String? = nil, recognitionRequestID: UUID? = nil) {
         self.start = start
         self.end = end
         self.text = text
+        self.speaker = speaker
+        self.recognitionRequestID = recognitionRequestID
     }
 }
 

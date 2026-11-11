@@ -31,7 +31,7 @@ public enum BiologyToolSchemas {
         case "biology.derive":fields["runID"]=string();fields["expectedRevision"]=integer(1);required += ["runID","expectedRevision"]
         case "biology.update":
             fields["assetID"]=string();fields["expectedRevision"]=integer(1)
-            fields["operation"]=string(values:["project.rename","project.notes","project.linkChemistry","asset.rename","asset.delete","asset.replace","annotation.upsert","annotation.remove","image.calibrate","matrix.filter","network.replace","structure.transform"])
+            fields["operation"]=string(values:["project.rename","project.notes","project.linkChemistry","asset.create","asset.rename","asset.delete","asset.replace","annotation.upsert","annotation.remove","image.calibrate","matrix.filter","network.replace","structure.transform"])
             fields["parameters"]=freeObject;required += ["operation","expectedRevision","parameters"]
         case "biology.select":fields["assetID"]=string();fields["expectedRevision"]=integer(1);fields["selection"]=freeObject;required += ["assetID","expectedRevision","selection"]
         case "biology.history":fields["offset"]=integer();fields["limit"]=integer(1,100)

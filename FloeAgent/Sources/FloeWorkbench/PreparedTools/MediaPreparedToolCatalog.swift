@@ -44,11 +44,12 @@ public struct MediaPreparedToolCatalog: Sendable {
         let entries: [MediaPreparedToolDescriptor]
     }
 
-    public init(data: Data) throws {
+    public init(data: Data, additionalEntries: [MediaPreparedToolDescriptor] = []) throws {
         let envelope = try JSONDecoder().decode(Envelope.self, from: data)
         guard envelope.schema == 1 else { throw MediaPreparedToolCatalogError.invalidSchema }
         var index: [String: MediaPreparedToolDescriptor] = [:]
-        for descriptor in envelope.entries {
+        let descriptors = envelope.entries + additionalEntries
+        for descriptor in descriptors {
             guard descriptor.id.hasPrefix(descriptor.kind.rawValue + "."),
                   !descriptor.category.isEmpty, !descriptor.title.isEmpty, !descriptor.titleEnglish.isEmpty,
                   descriptor.transaction == "instructionGroup",
@@ -60,7 +61,7 @@ public struct MediaPreparedToolCatalog: Sendable {
             }
             index[descriptor.id] = descriptor
         }
-        entries = envelope.entries
+        entries = descriptors
         byID = index
     }
 

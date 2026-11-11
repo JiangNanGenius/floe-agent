@@ -129,6 +129,7 @@ struct BiologySequenceEditor:View {
     @State private var error:String?
     @State private var saving=false
     private var record:SequenceRecord? {if case .sequence(let records)=asset.payload,records.indices.contains(recordIndex){return records[recordIndex]};return nil}
+    private var records:[SequenceRecord] {if case .sequence(let records)=asset.payload {return records};return []}
     var body:some View {
         NavigationStack {
             Form {
@@ -144,6 +145,9 @@ struct BiologySequenceEditor:View {
                         Button(biologyText("Clear replacement","清空替换内容"),role:.destructive){draft=""}.frame(minHeight:44).accessibilityIdentifier("biology.clearSequenceDraft")
                         TextEditor(text:$draft).font(.system(.body,design:.monospaced)).frame(minHeight:240).biologyInputSurface().autocorrectionDisabled().textInputAutocapitalization(.characters).accessibilityIdentifier("biology.sequenceDraft")
                     } footer:{Text(biologyText("Edit up to 20,000 symbols per range. Overlapping annotations and quality measurements are invalidated; originals are retained.","每次可编辑最多 20,000 个字符。相交注释和测量质量值会失效，原件保留。"))}
+                    Section {
+                        Button(biologyText("Delete this record","删除此记录"),role:.destructive){Task{await deleteRecord()}}.frame(minHeight:44).disabled(records.count<=1).accessibilityIdentifier("biology.deleteRecord")
+                    } footer:{Text(biologyText("Deleting a record keeps its name and annotations recoverable in version history; a sequence keeps at least one record. New records come from imported files or a new blank sequence.","删除记录后可在历史版本中恢复其名称与注释；序列至少保留一条记录。新记录请通过导入文件或新建空白序列创建。"))}
                     if let error {Text(error).foregroundStyle(.red)}
                 }
             }
@@ -160,6 +164,12 @@ struct BiologySequenceEditor:View {
         guard start>=1,end>=start,end<=record.sequence.count,end-start<20_000 else {error=biologyText("Choose a valid range of up to 20,000 symbols.","请选择最多 20,000 个字符的有效范围。");return}
         loadedStart=start-1;loadedEnd=end
         let chars=Array(record.sequence);draft=String(chars[loadedStart..<loadedEnd]);error=nil
+    }
+    private func deleteRecord() async {
+        guard records.count>1,records.indices.contains(recordIndex) else {return}
+        var next=records;next.remove(at:recordIndex)
+        do {try await model.savePayload(.sequence(next),for:asset);error=nil}
+        catch {self.error=error.localizedDescription}
     }
     private func save() async {
         saving=true;defer{saving=false}
@@ -180,6 +190,7 @@ struct BiologyAnnotationEditor:View {
     @State private var end=1
     @State private var reverse=false
     @State private var error:String?
+    private var record:SequenceRecord? {if case .sequence(let records)=asset.payload,records.indices.contains(recordIndex){return records[recordIndex]};return nil}
     var body:some View {
         NavigationStack {
             Form {
@@ -190,6 +201,13 @@ struct BiologyAnnotationEditor:View {
                 }
                 Toggle(biologyText("Reverse strand","反向链"),isOn:$reverse)
                 if let error {Text(error).foregroundStyle(.red)}
+                if let record,!record.annotations.isEmpty {
+                    Section(biologyText("Existing annotations · coordinates shown as 1-based inclusive","已有注释 · 坐标显示为从 1 开始的闭区间")) {
+                        ForEach(record.annotations){a in
+                            HStack{Text(a.name);Spacer();Text("\(a.start+1)…\(a.end) "+(a.strand<0 ? "←":"→")).font(.caption).monospacedDigit().foregroundStyle(.secondary)}
+                        }.onDelete{offsets in Task{await remove(offsets)}}
+                    }
+                }
             }.textFieldStyle(.roundedBorder).buttonStyle(BiologyControlButtonStyle(expands:true)).navigationTitle(biologyText("Add annotation","添加注释")).navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement:.cancellationAction){Button(biologyText("Cancel","取消")){dismiss()}}
@@ -203,6 +221,13 @@ struct BiologyAnnotationEditor:View {
             }
         }
     }
+    private func remove(_ offsets:IndexSet) async {
+        guard case .sequence(var records)=asset.payload,records.indices.contains(recordIndex) else {return}
+        let removed=offsets.compactMap{records[recordIndex].annotations.indices.contains($0) ? records[recordIndex].annotations[$0].id:nil}
+        records[recordIndex].annotations.removeAll{removed.contains($0.id)}
+        do {try await model.savePayload(.sequence(records),for:asset)}
+        catch {self.error=error.localizedDescription}
+    }
 }
 struct BiologyNetworkEditor:View {
     let model:BiologyWorkbenchModel
@@ -212,18 +237,36 @@ struct BiologyNetworkEditor:View {
     @State private var json=""
     @State private var error:String?
     init(model:BiologyWorkbenchModel,asset:BiologyAsset,network:BiochemicalNetwork) {self.model=model;self.asset=asset;_network=State(initialValue:network)}
+    private func removeSpecies(at index:Int) {
+        guard network.species.indices.contains(index) else {return}
+        let id=network.species[index].id
+        guard !network.reactions.contains(where:{$0.reactants[id] != nil || $0.products[id] != nil}) else {
+            error=biologyText("Remove the reactions that use this species first.","请先移除使用这个物种的反应。");return
+        }
+        network.species.remove(at:index);error=nil
+    }
     var body:some View {
         NavigationStack {
             Form {
                 Section(biologyText("Initial amounts","初始量")) {
-                    ForEach(network.species.indices,id:\.self){i in TextField(network.species[i].id,value:$network.species[i].initialAmount,format:.number).accessibilityIdentifier("biology.species."+network.species[i].id).biologyNamedInput(network.species[i].id)}
+                    ForEach(network.species.indices,id:\.self){i in
+                        HStack {
+                            TextField(network.species[i].id,value:$network.species[i].initialAmount,format:.number).accessibilityIdentifier("biology.species."+network.species[i].id).biologyNamedInput(network.species[i].id)
+                            Button(biologyText("Remove species","移除物种"),systemImage:"minus.circle",role:.destructive){removeSpecies(at:i)}.labelStyle(.iconOnly).frame(width:44,height:44).contentShape(Rectangle())
+                        }
+                    }
                     Button(biologyText("Add species","添加物种")) {
                         var n=network.species.count+1;while network.species.contains(where:{$0.id=="S\(n)"}){n+=1}
                         network.species.append(.init(id:"S\(n)",initialAmount:0))
                     }
                 }
                 Section(biologyText("Reaction rates","反应速率")) {
-                    ForEach(network.reactions.indices,id:\.self){i in TextField(network.reactions[i].id,value:$network.reactions[i].rateConstant,format:.number).accessibilityIdentifier("biology.rate."+network.reactions[i].id).biologyNamedInput(network.reactions[i].id)}
+                    ForEach(network.reactions.indices,id:\.self){i in
+                        HStack {
+                            TextField(network.reactions[i].id,value:$network.reactions[i].rateConstant,format:.number).accessibilityIdentifier("biology.rate."+network.reactions[i].id).biologyNamedInput(network.reactions[i].id)
+                            Button(biologyText("Remove reaction","移除反应"),systemImage:"minus.circle",role:.destructive){network.reactions.remove(at:i)}.labelStyle(.iconOnly).frame(width:44,height:44).contentShape(Rectangle()).accessibilityIdentifier("biology.removeReaction."+network.reactions[i].id)
+                        }
+                    }
                 }
                 Section(biologyText("Units","单位")) {
                     TextField(biologyText("Time unit","时间单位"),text:$network.timeUnit).biologyNamedInput(biologyText("Time unit","时间单位"))

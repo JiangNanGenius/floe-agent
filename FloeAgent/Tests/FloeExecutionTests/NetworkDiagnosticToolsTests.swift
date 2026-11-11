@@ -3,7 +3,40 @@ import Darwin
 import Testing
 import FloeCore
 import FloeTools
+import FloeToolboxDiagnostics
 @testable import FloeExecution
+
+private actor NetworkTraceProgressLog: TaskProgressReporting {
+    var updates: [TaskProgressUpdate] = []
+    private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    func report(_ update: TaskProgressUpdate) {
+        updates.append(update)
+        let ready = waiters.filter { updates.count >= $0.0 }
+        waiters.removeAll { updates.count >= $0.0 }; ready.forEach { $0.1.resume() }
+    }
+    func wait(_ count: Int) async {
+        if updates.count < count { await withCheckedContinuation { waiters.append((count, $0)) } }
+    }
+}
+private actor NetworkTraceToolGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var observer: TracerouteObserver?
+    private var requestID = UUID()
+    func hold(id: UUID, observer: TracerouteObserver?) async {
+        self.observer = observer; self.requestID = id
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            let ready = waiting; waiting = []; ready.forEach { $0.resume() }
+        }
+    }
+    func wait() async { if continuation == nil { await withCheckedContinuation { waiting.append($0) } } }
+    func open() { continuation?.resume(); continuation = nil }
+    func late() async {
+        await observer?(.init(requestID: requestID, value: .hop(.init(ttl: 9,
+            address: "192.0.2.9", milliseconds: [99], status: .reached))))
+    }
+}
 
 @Suite("FloeExecution.NetworkDiagnostics")
 struct NetworkDiagnosticToolsTests {
@@ -301,4 +334,65 @@ struct NetworkDiagnosticToolsTests {
             #expect(!labels.contains(.executesRemoteCommand))
         }
     }
+    @Test(.timeLimit(.minutes(1)))
+    func tracerouteReportsActualHopBeforeFinalOutputWithoutInventedFraction() async throws {
+        let log = NetworkTraceProgressLog(), gate = NetworkTraceToolGate()
+        let tool = NetworkTracerouteTool(observingDeviceTracer: { target, cap, _, token, id, observer in
+            await observer?(.init(requestID: id, value: .resolved(address: "192.0.2.9")))
+            await observer?(.init(requestID: id, value: .hop(.init(ttl: 1,
+                address: "192.0.2.1", milliseconds: [1, 2], status: .intermediate))))
+            await gate.hold(id: id, observer: observer)
+            try token.throwIfCancelled()
+            await observer?(.init(requestID: id, value: .hop(.init(ttl: 2,
+                address: nil, milliseconds: [], status: .timeout))))
+            return .init(target: target, resolvedAddress: "192.0.2.9", maxHops: cap,
+                hops: [.init(ttl: 1, status: .timeExceeded(address: "192.0.2.1", rtts: [1, 2])),
+                       .init(ttl: 2, status: .timeout)])
+        })
+        let args = try JSONDecoder().decode(NetworkTracerouteTool.Arguments.self,
+            from: Data(#"{"target":"fixture.example","maxHops":4}"#.utf8))
+        let result = Task { try await tool.execute(args,
+            context: .init(runID: UUID(), cancellation: CancellationToken(), taskProgress: log)) }
+        await gate.wait(); await log.wait(2)
+        let first = await log.updates
+        #expect(first.count == 2 && first[1].diagnostic?.ttl == 1)
+        #expect(first.allSatisfy { $0.totalUnits == nil && $0.fraction == nil && $0.note == nil })
+        await gate.open()
+        let output = try await result.value
+        #expect(output.summary.contains("executionTarget=device\nmethod=icmpTraceroute target=fixture.example"))
+        #expect(output.summary.contains("hop ttl=2 status=timeout"))
+        #expect(output.summary.contains("summary hops=2 reached=false"))
+        #expect(await log.updates.count == 3)
+        await gate.late() // the old callback actually executes after tool return
+        #expect(await log.updates.count == 3)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func cancelledTracerouteDoesNotPublishLateProgressOrSuccess() async throws {
+        let log = NetworkTraceProgressLog(), gate = NetworkTraceToolGate(), token = CancellationToken()
+        let tool = NetworkTracerouteTool(observingDeviceTracer: { _, _, _, cancellation, id, observer in
+            await observer?(.init(requestID: id, value: .resolved(address: "192.0.2.9")))
+            await gate.hold(id: id, observer: observer)
+            try cancellation.throwIfCancelled()
+            return .init(target: "fixture.example", resolvedAddress: "192.0.2.9", maxHops: 4, hops: [])
+        })
+        let args = try JSONDecoder().decode(NetworkTracerouteTool.Arguments.self, from: Data(#"{"target":"fixture.example"}"#.utf8))
+        let result = Task { try await tool.execute(args, context: .init(runID: UUID(), cancellation: token, taskProgress: log)) }
+        await gate.wait(); token.cancel(); await gate.late(); await gate.open()
+        if case .success = await result.result { Issue.record("Cancelled traceroute returned success") }
+        #expect(await log.updates.count == 1)
+        #expect(TaskDiagnosticProgress(requestID: UUID(), status: .intermediate, ttl: 0, address: "192.0.2.1") == nil)
+        #expect(TaskDiagnosticProgress(requestID: UUID(), status: .intermediate, ttl: 1, milliseconds: [.nan]) == nil)
+    }
+
+    @Test func tracerouteDefaultToolUsesActualNativeLoopbackObservations() async throws {
+        let log = NetworkTraceProgressLog()
+        let arguments = try JSONDecoder().decode(NetworkTracerouteTool.Arguments.self,
+            from: Data(#"{"target":"127.0.0.1","maxHops":2,"timeoutSeconds":1}"#.utf8))
+        let output = try await NetworkTracerouteTool().execute(arguments,
+            context: .init(runID: UUID(), cancellation: CancellationToken(), taskProgress: log))
+        #expect(output.exitStatus == 0 && output.summary.contains("reached=true"))
+        #expect(await log.updates.compactMap(\.diagnostic?.status) == [.resolved, .reached])
+    }
+
 }

@@ -161,15 +161,18 @@ public actor MacBridgeClient {
     public func workspace(root: URL) async throws -> (id: String, path: String) {
         let id = workspaceID(for: root)
         let result = try await call("workspace", ["workspaceID": .string(id)])
-        guard let path = result["root"]?.string else { throw BridgeFailure.incompatible }
+        let path = try BridgeResponseValidation.workspaceRoot(result)
         return (id, path)
     }
     public func files(workspaceID: String) async throws -> [[String: BridgeValue]] {
         var result: [[String: BridgeValue]] = []; var offset: Int64 = 0
+        var seenPaths = Set<String>()
         repeat {
-            let page = try await call("file.list", ["workspaceID": .string(workspaceID), "offset": .integer(offset)])
-            result += (page["files"]?.array ?? []).compactMap(\.object)
-            guard let next = page["next"]?.integer, next > offset else { break }
+            let response = try await call("file.list", ["workspaceID": .string(workspaceID), "offset": .integer(offset)])
+            let page = try BridgeResponseValidation.fileListPage(response, offset: offset, seenPaths: seenPaths)
+            result += page.files
+            seenPaths.formUnion(page.files.compactMap { $0["path"]?.string })
+            guard let next = page.next else { break }
             offset = next
         } while true
         return result.filter { row in
@@ -183,7 +186,7 @@ public actor MacBridgeClient {
         let bytes = Data(command.utf8)
         let digest = BridgeWire.digest(bytes)
         let transfer = try await call("file.begin", ["purpose": .string("command"), "jobID": .string(jobID)])
-        guard let id = transfer["transferID"]?.string else { throw BridgeFailure.incompatible }
+        let id = try BridgeResponseValidation.transferID(transfer)
         defer { Task { [self] in _ = try? await call("file.abort", ["transferID": .string(id)]) } }
         var offset = 0
         while offset < bytes.count {
@@ -201,7 +204,7 @@ public actor MacBridgeClient {
         let digest = try Self.digest(file)
         let transfer = try await call("file.begin", ["workspaceID": .string(workspaceID), "path": .string(path),
             "expectedSHA256": expected.map(BridgeValue.string) ?? .null])
-        guard let id = transfer["transferID"]?.string else { throw BridgeFailure.incompatible }
+        let id = try BridgeResponseValidation.transferID(transfer)
         defer {
             Task { [self] in _ = try? await call("file.abort", ["transferID": .string(id)]) }
         }
@@ -245,7 +248,7 @@ public actor MacBridgeClient {
         let remote = try await files(workspaceID: id)
         var current = try Self.localFiles(root: root)
         for row in remote {
-            guard let path = row["path"]?.string, let hash = row["sha256"]?.string, let total = row["size"]?.integer else { throw BridgeFailure.incompatible }
+            guard let path = row["path"]?.string, let hash = row["sha256"]?.string, let total = row["size"]?.integer else { throw BridgeFailure.invalidResponse }
             if current[path] == hash { continue }
             guard current[path] == previous[path] else { throw BridgeFailure.remote("The local file changed while the Mac was working: \(path). Both copies were retained.") }
             let target = try Self.safe(path, root: root)
@@ -260,8 +263,7 @@ public actor MacBridgeClient {
                 while offset < total {
                     try Task.checkCancellation()
                     let page = try await call("file.read", ["workspaceID": .string(id), "path": .string(path), "offset": .integer(offset)])
-                    guard let text = page["data"]?.string, let data = Data(base64Encoded: text), !data.isEmpty,
-                          offset + Int64(data.count) <= total else { throw BridgeFailure.incompatible }
+                    let data = try BridgeResponseValidation.fileChunk(page, offset: offset, totalBytes: total)
                     try writer.write(contentsOf: data); offset += Int64(data.count)
                 }
                 try writer.close()
@@ -310,8 +312,9 @@ public actor MacBridgeClient {
     public func synchronizeJobFiles(id: String) async throws {
         guard let job = try savedJobs().first(where: { $0.id == id }),
               FileManager.default.fileExists(atPath: job.rootPath) else { throw BridgeFailure.unsafePath }
-        let status = try await call("poll", ["jobID": .string(id), "offset": .integer(0), "limit": .integer(1)])
-        guard status["alive"]?.bool == false, status["outcomeUnknown"]?.bool != true else {
+        let response = try await call("poll", ["jobID": .string(id), "offset": .integer(0), "limit": .integer(1)])
+        let status = try BridgeResponseValidation.poll(response, offset: 0, limit: 1)
+        guard !status.alive, !status.outcomeUnknown else {
             throw BridgeFailure.remote("Wait for a confirmed command exit before syncing its files.")
         }
         try await synchronizeAfterExecution(root: URL(fileURLWithPath: job.rootPath, isDirectory: true))
@@ -328,7 +331,8 @@ public actor MacBridgeClient {
         var offset: Int64 = 0; var snapshotBytes: Int64?
         repeat {
             let page = try await call("poll", ["jobID": .string(id), "offset": .integer(offset), "limit": .integer(Int64(BridgeWire.pageBytes))])
-            guard let text = page["data"]?.string, let data = Data(base64Encoded: text), let total = page["totalBytes"]?.integer else { throw BridgeFailure.incompatible }
+            let status = try BridgeResponseValidation.poll(page, offset: offset)
+            let data = status.data, total = status.totalBytes
             if snapshotBytes == nil { snapshotBytes = total }
             let remaining = max(0, (snapshotBytes ?? 0) - offset)
             let bounded = data.prefix(Int(min(remaining, Int64(data.count))))

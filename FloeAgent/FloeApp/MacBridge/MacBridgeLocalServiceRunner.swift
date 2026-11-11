@@ -39,7 +39,7 @@ enum MacBridgeLocalServiceRunner {
         // Entry is workspace-relative, while cwd may be a subdirectory. Use
         // the actual host workspace root for the entry and keep cwd explicit.
         let host = try await client.call("workspace", ["workspaceID": .string(workspaceID)])
-        guard let hostRoot = host["root"]?.string else { throw BridgeFailure.incompatible }
+        let hostRoot = try BridgeResponseValidation.workspaceRoot(host)
         let hostEntry = URL(fileURLWithPath: hostRoot).appendingPathComponent(relativeEntry).path
         let executable: String
         switch args.runtime {
@@ -79,21 +79,22 @@ enum MacBridgeLocalServiceRunner {
                     _ = try await client.call("signal", ["jobID": .string(id), "signal": .string("KILL")])
                 }
                 let page = try await client.call("poll", ["jobID": .string(id), "offset": .integer(offset), "limit": .integer(Int64(BridgeWire.pageBytes))])
-                if page["outcomeUnknown"]?.bool == true { throw BridgeFailure.ambiguous }
-                guard let encoded = page["data"]?.string, let data = Data(base64Encoded: encoded) else { throw BridgeFailure.incompatible }
+                let status = try BridgeResponseValidation.poll(page, offset: offset)
+                if status.outcomeUnknown { throw BridgeFailure.ambiguous }
+                let data = status.data
                 offset += Int64(data.count)
                 snapshot.stdout = String(decoding: (Data(snapshot.stdout.utf8) + data).suffix(4_096), as: UTF8.self)
                 snapshot.truncated = offset > 4_096
-                let alive = page["alive"]?.bool ?? false
+                let alive = status.alive
                 if !alive {
-                    confirmedExitCode = page["exitCode"]?.integer
+                    confirmedExitCode = status.exitCode.map(Int64.init)
                     snapshot.previewURL = nil; BrowserURLPolicy.revokeService(owner: jobID)
                     // A finished process is not a delivered artifact. Commit the
                     // terminal status only after CAS file reconciliation succeeds.
                     try await client.synchronizeAfterExecution(root: root)
                     snapshot.state = stopping ? "stopped" : (confirmedExitCode == 0 ? "completed" : "failed")
                     snapshot.boundAndRedact(); try await store.updateProgress(id: jobID, data: JSONEncoder().encode(snapshot))
-                    return ToolExecutionOutput(digesting: String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self), exitStatus: stopping || page["exitCode"]?.integer == 0 ? 0 : 1)
+                    return ToolExecutionOutput(digesting: String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self), exitStatus: stopping || status.exitCode == 0 ? 0 : 1)
                 }
                 snapshot.state = stopping ? "stopping" : "running"
                 if !stopping, await responds(probe, request: request, successfulOnly: args.runtime == "static") {
@@ -115,8 +116,9 @@ enum MacBridgeLocalServiceRunner {
                         _ = try await client.call("signal", ["jobID": .string(id), "signal": .string("TERM")])
                         for attempt in 0..<80 {
                             let page = try await client.call("poll", ["jobID": .string(id), "offset": .integer(0), "limit": .integer(1)])
-                            if page["outcomeUnknown"]?.bool == true { return false }
-                            if page["alive"]?.bool == false { return true }
+                            let status = try BridgeResponseValidation.poll(page, offset: 0, limit: 1)
+                            if status.outcomeUnknown { return false }
+                            if !status.alive { return true }
                             if attempt == 30 { _ = try await client.call("signal", ["jobID": .string(id), "signal": .string("KILL")]) }
                             try await Task.sleep(for: .milliseconds(100))
                         }

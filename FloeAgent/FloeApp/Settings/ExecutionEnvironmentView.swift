@@ -56,6 +56,11 @@ struct ExecutionEnvironmentView: View {
     @State private var sharedConfiguration: LinuxGuestLifecycleConfig?
     @State private var sharedCPUs = 2
     @State private var sharedMemoryMB = 512
+    @State private var sharedGPUMemoryMB = 1024
+    @State private var sharedGPUStatus: ARM64GPUBudget?
+    /// Live online-memory truth (desired/effective/plugged) read from the
+    /// runtime owner; nil while stopped or when the backend has no device.
+    @State private var sharedMemoryStatus: LinuxSharedMemoryStatus?
     @State private var sharedRuntimeRunning = false
     @State private var sharedRunningIDs: Set<String> = []
 
@@ -92,12 +97,50 @@ struct ExecutionEnvironmentView: View {
                         ForEach([256, 512, 768, 1024], id: \.self) { value in
                             Text(value == 1024 ? "1 GB" : "\(value) MB").tag(value)
                         }
-                    }.disabled(sharedRuntimeRunning)
+                    }
+                    .accessibilityIdentifier("execution.shared.memory")
+                    .helpSettingsControlAnchor("execution.shared.memory")
+                    if let status = sharedMemoryStatus, sharedRuntimeRunning {
+                        LabeledContent("execution.shared.memory_current") {
+                            Text(status.effectiveMiB == 1024 ? "1 GB" : "\(status.effectiveMiB) MB")
+                                .foregroundStyle(.secondary)
+                        }
+                        if status.pendingShrink {
+                            Text(String.localizedStringWithFormat(
+                                String(localized: "execution.shared.memory_pending"),
+                                status.desiredMiB == 1024 ? "1 GB" : "\(status.desiredMiB) MB"))
+                                .font(.subheadline)
+                                .foregroundStyle(FloeTheme.pending)
+                        }
+                    }
+                    Picker("execution.shared.gpu_memory", selection: $sharedGPUMemoryMB) {
+                        ForEach([256, 512, 768, 1024, 1536, 2048], id: \.self) { value in
+                            Text(value == 1024 ? "1 GB" : value == 2048 ? "2 GB" : "\(value) MB").tag(value)
+                        }
+                    }
+                    if let gpu = sharedGPUStatus, sharedRuntimeRunning {
+                        if gpu.present {
+                            LabeledContent("execution.shared.gpu_current", value: gpuMemoryLabel(gpu.effectiveBytes))
+                            if gpu.pending {
+                                Text(String.localizedStringWithFormat(
+                                    String(localized: "execution.shared.gpu_pending"), gpuMemoryLabel(gpu.targetBytes)))
+                                    .font(.subheadline).foregroundStyle(FloeTheme.pending)
+                            } else if gpu.clamped {
+                                Text("execution.shared.gpu_limited").font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            if gpu.needsReset {
+                                Text("execution.shared.gpu_unavailable").font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("execution.shared.gpu_update_image").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    }
                     if sharedRuntimeRunning {
                         LabeledContent("execution.shared.projects", value: String(sharedRunningIDs.count))
                         Button("execution.shared.stop", role: .destructive) { runtimeRecovery = .stopShared }
                     }
-                    if sharedConfiguration != .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB) {
+                    if sharedConfiguration != .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB, gpuMemoryMB: sharedGPUMemoryMB)
+                        || sharedGPUStatus?.clamped == true {
                         Button("execution.shared.save") { Task { await saveSharedConfiguration() } }
                             .disabled(linuxBusy)
                     }
@@ -200,6 +243,7 @@ struct ExecutionEnvironmentView: View {
         }
         .task(id: linuxEnvironmentID) { await observeLinuxBackgroundWork() }
         .task(id: linuxGuestStatus?.running) { await pollServiceCount() }
+        .task(id: sharedRuntimeRunning) { await pollSharedResources() }
     }
 
     // MARK: - Linux background session (explicit user control)
@@ -454,9 +498,25 @@ struct ExecutionEnvironmentView: View {
         linuxBusy = true; linuxError = nil
         defer { linuxBusy = false }
         do {
-            try await service.configureSharedGuest(.init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB))
+            try await service.configureSharedGuest(.init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB, gpuMemoryMB: sharedGPUMemoryMB))
             sharedConfiguration = await service.sharedGuestConfiguration()
         } catch { linuxError = error.localizedDescription }
+        sharedMemoryStatus = await service.sharedMemoryStatus()
+        sharedGPUStatus = await service.sharedGPUStatus()
+    }
+
+    private func gpuMemoryLabel(_ bytes: UInt64) -> String {
+        let mib = bytes / 1_048_576
+        return mib == 1024 ? "1 GB" : mib == 2048 ? "2 GB" : "\(mib) MB"
+    }
+
+    @MainActor private func pollSharedResources() async {
+        guard sharedRuntimeRunning, let service = center.environment.linuxGuestService else { return }
+        while !Task.isCancelled {
+            sharedMemoryStatus = await service.sharedMemoryStatus()
+            sharedGPUStatus = await service.sharedGPUStatus()
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+        }
     }
 
     /// The honest per-release core ceiling for a running Linux environment.
@@ -509,6 +569,9 @@ struct ExecutionEnvironmentView: View {
             sharedConfiguration = await service.sharedGuestConfiguration()
             sharedCPUs = sharedConfiguration?.vcpus ?? 2
             sharedMemoryMB = sharedConfiguration?.memoryMB ?? 512
+            sharedGPUMemoryMB = sharedConfiguration?.resolvedGPUMemoryMB ?? 1024
+            sharedMemoryStatus = await service.sharedMemoryStatus()
+            sharedGPUStatus = await service.sharedGPUStatus()
             sharedRunningIDs = Set(await service.runtimeStates().filter(\.running).map(\.environmentID))
             sharedRuntimeRunning = !sharedRunningIDs.isEmpty
         }

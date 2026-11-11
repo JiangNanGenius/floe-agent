@@ -88,6 +88,6 @@ final class BiologyToolClosureTests:XCTestCase,@unchecked Sendable {
         let trash=try XCTUnwrap(deleted.array?.first?["id"]?.string)
         _=try await tools.invoke(name:"biology.restoreDeleted",arguments:.object(["projectID":.string(p.id.uuidString),"trashID":.string(trash)]),requestID:"restore")
         let restored=try await service.project(p.id);XCTAssertEqual(restored.notes,saved.notes)
-        let contract=try await readonly.invoke(name:"biology.describe",arguments:.object([:]));XCTAssertEqual(contract["edits"]?.array?.count,12)
+        let contract=try await readonly.invoke(name:"biology.describe",arguments:.object([:]));XCTAssertEqual(contract["edits"]?.array?.count,13)
     }
 }

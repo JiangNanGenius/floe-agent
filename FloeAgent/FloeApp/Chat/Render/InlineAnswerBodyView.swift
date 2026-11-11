@@ -13,16 +13,72 @@ import FloeMarkdown
 struct InlineAnswerBodyView: View {
     let source: String
     var isStreaming = false
+    var helpRunID: UUID? = nil
+    @Environment(\.helpContentCenter) private var helpCenter
+    @State private var helpReferences: [HelpReference] = []
+    @Environment(\.helpSceneID) private var helpSceneID
+    @Environment(\.chatInlineContentScope) private var helpScope
+    @Environment(\.openURL) private var inheritedHelpOpenURL
+    #if canImport(AlarmKit)
+    @Environment(\.inlineTimerProjection) private var inlineTimerProjection
+    #endif
     var body: some View {
         let blocks = InlineContentBlockParser.parse(source, streaming: isStreaming)
+        #if canImport(AlarmKit)
+        let suppressedTimerBlocks = InlineTimerBodyProjection.suppressedReferenceBlockIDs(
+            text: source, sources: inlineTimerProjection, isStreaming: isStreaming)
+        let visibleBlocks = blocks.filter { !suppressedTimerBlocks.contains($0.id) }
+        #else
+        let visibleBlocks = blocks
+        #endif
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(blocks) { block in
+            ForEach(visibleBlocks) { block in
                 switch block.content {
                 case .markdown(let text): MarkdownRendererView(source: text, isStreaming: isStreaming && block.id == blocks.last?.id)
                 case .reference(let title, let uri): ChatInlineContentView(title: title, uri: uri)
                 }
             }
+            #if canImport(AlarmKit)
+            // Projected native countdown timers for answers whose model text
+            // omitted the reference: appended once per whole answer (never
+            // per paragraph), each card verifying its own durable receipt.
+            let projectedTimers = InlineTimerBodyProjection.unreferencedSources(
+                inlineTimerProjection, text: source, isStreaming: isStreaming)
+            if !projectedTimers.isEmpty {
+                ForEach(projectedTimers, id: \.creationID) { timerSource in
+                    InlineTimerCard(source: timerSource)
+                }
+            }
+            #endif
+            if let center = helpCenter, let sceneID = helpSceneID, let scope = helpScope, !scope.isTemporary {
+                ForEach(helpReferences) { reference in
+                    HelpAnswerGuideCard(center: center, reference: reference, sceneID: sceneID,
+                        conversationID: scope.conversationID, answerRunID: helpRunID)
+                }
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: source) {
+            guard source.contains("floe-help://") else { helpReferences = []; return }
+            if isStreaming {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+            let text = source
+            let worker = Task.detached(priority: .utility) { HelpAnswerReferences.references(in: text) }
+            let references = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            guard !Task.isCancelled else { return }
+            helpReferences = references
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "floe-help" else {
+                inheritedHelpOpenURL(url)
+                return .handled
+            }
+            guard let reference = try? HelpReferenceLink.reference(from: url),
+                  let sceneID = helpSceneID, let scope = helpScope, !scope.isTemporary else { return .discarded }
+            return HelpPresentationCoordinator.shared.presentFromUser(
+                reference: reference, sceneID: sceneID, currentConversationID: scope.conversationID
+            ) ? .handled : .discarded
+        })
     }
 }
 
@@ -51,16 +107,16 @@ private struct ChatInlineContentView: View {
                 }
             } else if let resolved {
                 switch resolved {
-                case .artifact(_, _, let tool):
-                    if let verifiedArtifact {
-                        if ToolArtifactPresentation.isImage(verifiedArtifact.artifact) {
-                            ArtifactImageView(artifact: verifiedArtifact.artifact, index: 0, preverified: verifiedArtifact)
-                        } else {
-                            RichArtifactView(artifact: verifiedArtifact.artifact, preverified: verifiedArtifact,
-                                compactAudio: tool == "audio.synthesize",
-                                fileDiffDisposition: NativeFileDiffDisposition.writeTools.contains(tool) ? .applied : .reference)
-                        }
-                    } else { ProgressView().controlSize(.small) }
+                case .artifact(let ref, let runID, let tool):
+                    #if canImport(AlarmKit)
+                    // A verified native timer binding renders the live card,
+                    // not a generic rich-artifact fallback.
+                    if tool == "apple.alarm.schedule", ref.mimeType == NativeTimerBinding.mimeType {
+                        InlineTimerCard(source: InlineTimerCardSource(artifact: ref, runID: runID, tool: tool))
+                    } else { artifactContent(tool: tool) }
+                    #else
+                    artifactContent(tool: tool)
+                    #endif
                 case .output(let receipt, let context): RunOutputFileView(receipt: receipt, context: context)
                 case .attachment(let attachment, let messageID):
                     InlineOwnedAttachmentView(attachment: attachment, messageID: messageID)
@@ -94,6 +150,19 @@ private struct ChatInlineContentView: View {
                 if !Task.isCancelled, request == current { failed = true }
             }
         }
+    }
+
+    @ViewBuilder
+    private func artifactContent(tool: String) -> some View {
+        if let verifiedArtifact {
+            if ToolArtifactPresentation.isImage(verifiedArtifact.artifact) {
+                ArtifactImageView(artifact: verifiedArtifact.artifact, index: 0, preverified: verifiedArtifact)
+            } else {
+                RichArtifactView(artifact: verifiedArtifact.artifact, preverified: verifiedArtifact,
+                    compactAudio: tool == "audio.synthesize",
+                    fileDiffDisposition: NativeFileDiffDisposition.writeTools.contains(tool) ? .applied : .reference)
+            }
+        } else { ProgressView().controlSize(.small) }
     }
 }
 

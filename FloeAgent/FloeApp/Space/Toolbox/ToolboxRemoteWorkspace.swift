@@ -26,6 +26,7 @@ private actor ToolboxMemorySessionRegistry: RemoteSessionRegistry {
 @MainActor final class ToolboxRemoteCenter: ObservableObject {
     @Published private(set) var machines: [ToolboxMachineChoice] = []
     @Published private(set) var local: LocalTerminalOwner?
+    @Published private(set) var localDisplay: LocalLinuxDisplayOwner?
     @Published private(set) var terminalID: UUID?
     @Published private(set) var vncID: UUID?
     @Published private(set) var temporarySSH: SSHSessionOwner?
@@ -76,8 +77,9 @@ private actor ToolboxMemorySessionRegistry: RemoteSessionRegistry {
                 let lease = try await environment.workspaceCenter.acquireTaskRoot(workspace, conversationID: id)
                 do { try self.check(token) } catch { lease.release(); throw error }
                 self.rootLease = lease
-                let owner = environment.localTerminals.owner(workspaceID: workspace.id, root: lease.url)
+                let owner = environment.localTerminals.owner(workspaceID: workspace.id, root: lease.url, conversationID: id)
                 self.local = owner
+                self.localDisplay = environment.localLinuxDisplays.owner(conversationID: id, workspaceRoot: lease.url)
                 let capture = try await ToolboxTerminalSession.open(environment: environment, machine: machine,
                     title: IDELanguageRunText.t("内置 Linux", "Built-in Linux"), workingRoot: lease.url,
                     output: { [weak owner] in .init(bytes: owner?.output ?? Data(), byteEnd: owner?.outputEnd ?? 0, generation: owner?.outputGeneration ?? token) },
@@ -259,7 +261,7 @@ private struct ToolboxRemotePage: View {
         }
     }
     @ViewBuilder private var terminalSurface: some View {
-        if let owner = center.local { LocalTerminalView(owner: owner, embedded: true) }
+        if let owner = center.local { LocalTerminalView(owner: owner, embedded: true, display: center.localDisplay) }
         else if let id = center.terminalID { TerminalView(sessionID: id, center: environment.remoteSessionCenter) }
         else if let owner = center.temporarySSH {
             VStack(spacing: 0) {
