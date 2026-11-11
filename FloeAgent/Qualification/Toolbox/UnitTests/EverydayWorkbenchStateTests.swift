@@ -2,6 +2,10 @@ import Foundation
 import Testing
 import FloeToolboxUtilities
 @testable import FloeToolboxWorkbenches
+#if os(iOS)
+import CoreMotion
+import Dispatch
+#endif
 
 @MainActor
 struct EverydayWorkbenchStateTests {
@@ -111,3 +115,108 @@ struct EverydayWorkbenchStateTests {
                                  timestamp: Date(timeIntervalSince1970: 1_700_000_000))
     }
 }
+
+#if os(iOS)
+@MainActor
+struct InstrumentMotionCallbackIsolationTests {
+    @Test(arguments: InstrumentStreamKind.allCases)
+    func productionHandlerAcceptsBackgroundSDKCallbacks(_ kind: InstrumentStreamKind) async throws {
+        let probe = MotionCallbackProbe()
+        let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        let timeout = finishAfterTimeout(continuation)
+        defer { timeout.cancel(); continuation.finish() }
+        let callback = handler(for: kind, generation: 1, probe: probe, events: continuation)
+        DispatchQueue(label: "qualification.motion.callback.\(kind.rawValue)").async {
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            // Even an empty SDK delivery enters the exact production block;
+            // a MainActor-inferred block would trap before it can return.
+            callback(nil, nil)
+            callback(nil, NSError(domain: "FloeMotionCallbackQA", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "background callback error"]))
+        }
+        for await _ in events {
+            if !probe.deliveries.isEmpty { break }
+        }
+        #expect(probe.checkedGenerations == [1])
+        #expect(probe.deliveries.count == 1)
+        let delivery = try #require(probe.deliveries.first)
+        #expect(delivery.sample == nil)
+        #expect(delivery.message == "background callback error")
+    }
+
+    @Test func productionHandlerRejectsALateGenerationBeforeMainActorDelivery() async {
+        let probe = MotionCallbackProbe()
+        let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        let timeout = finishAfterTimeout(continuation)
+        defer { timeout.cancel(); continuation.finish() }
+        let previous = handler(for: .compass, generation: 1, probe: probe, events: continuation)
+        let queue = DispatchQueue(label: "qualification.motion.late-generation")
+        let invoked = DispatchSemaphore(value: 0)
+        queue.async {
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            previous(nil, NSError(domain: "FloeMotionCallbackQA", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: "stale callback error"]))
+            invoked.signal()
+        }
+        // Briefly keep this MainActor turn until the real background callback
+        // has queued its delivery, then retire its generation before yielding.
+        // async (not queue.sync) ensures the callback really leaves this actor.
+        let didInvoke = waitForCallback(invoked)
+        probe.generation = 2
+        #expect(didInvoke)
+        guard didInvoke else { return }
+        let current = handler(for: .compass, generation: 2, probe: probe, events: continuation)
+        queue.async {
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            current(nil, NSError(domain: "FloeMotionCallbackQA", code: 3,
+                                 userInfo: [NSLocalizedDescriptionKey: "current callback error"]))
+        }
+        for await _ in events {
+            if probe.checkedGenerations.contains(1), probe.checkedGenerations.contains(2),
+               probe.deliveries.contains(where: { $0.message == "current callback error" }) { break }
+        }
+        #expect(Set(probe.checkedGenerations) == Set([1, 2]))
+        #expect(probe.deliveries.count == 1)
+        #expect(probe.deliveries.first?.message == "current callback error")
+        #expect(probe.deliveries.first?.sample == nil)
+    }
+
+    private func handler(
+        for kind: InstrumentStreamKind, generation: Int, probe: MotionCallbackProbe,
+        events: AsyncStream<Void>.Continuation
+    ) -> @Sendable (CMDeviceMotion?, (any Error)?) -> Void {
+        InstrumentMotionService.makeDeviceMotionHandler(
+            for: kind, generation: generation,
+            currentGeneration: {
+                MainActor.assertIsolated()
+                probe.checkedGenerations.append(generation)
+                events.yield(())
+                return probe.generation
+            },
+            receive: { sample, message in
+                MainActor.assertIsolated()
+                probe.deliveries.append((sample, message))
+                events.yield(())
+            })
+    }
+
+    nonisolated private func finishAfterTimeout(_ events: AsyncStream<Void>.Continuation) -> Task<Void, Never> {
+        Task.detached {
+            do { try await Task.sleep(for: .seconds(5)) }
+            catch { return }
+            events.finish()
+        }
+    }
+
+    nonisolated private func waitForCallback(_ invoked: DispatchSemaphore) -> Bool {
+        invoked.wait(timeout: .now() + 2) == .success
+    }
+}
+
+@MainActor
+private final class MotionCallbackProbe {
+    var generation = 1
+    var checkedGenerations: [Int] = []
+    var deliveries: [(sample: InstrumentMotionSample?, message: String?)] = []
+}
+#endif

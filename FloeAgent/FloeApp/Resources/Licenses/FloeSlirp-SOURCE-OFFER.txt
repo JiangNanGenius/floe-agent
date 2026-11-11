@@ -1,7 +1,7 @@
 FloeSlirp corresponding source and relink offer
 ===============================================
 
-Application source tag: v1.8.8
+Application source tag: v1.8.9
 Repository: https://github.com/JiangNanGenius/floe-agent
 
 This material provides the corresponding source and rebuild/relink route for

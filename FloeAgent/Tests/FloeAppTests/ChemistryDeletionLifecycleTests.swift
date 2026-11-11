@@ -46,6 +46,78 @@ struct ChemistryDeletionLifecycleTests {
 
     // MARK: Real adapter entry
 
+    /// Files must open a cold original using native library ownership, not
+    /// recover the permissions of a historical assistant calculation. Unlike
+    /// the adapter fixtures below, this uses the visible App's real library,
+    /// session authorizer, assistant lifecycle and batch menu entrypoint.
+    @Test func coldFilesBatchDeletesLegacyChemistryWithoutRevivingTaskContexts() async throws {
+        let environment = try await appQualificationEnvironment()
+        let library = try await PersonalContentService.shared.library()
+        struct Original {
+            let record: PersonalContentRecord
+            let directory: URL
+            let metadata: Data
+            let assistantID: UUID
+            let oldTaskID: UUID
+            let attemptID: UUID
+        }
+        var originals: [Original] = []
+        for title in ["化学工程", "QA-Chat-Chemistry-1107", "QA-M4-Chemistry-1107"] {
+            let record = try await PersonalContentService.shared.create(kind: .chemistry,
+                title: "QA-P0-330-" + title + "-" + UUID().uuidString)
+            let directory = try await library.resolve(record.id).url
+            let metadata = try Data(contentsOf: directory.appendingPathComponent("FloeProject.json"))
+            let assistant = try await environment.studioCoordinator.assistant(for: record)
+            let oldTask = UUID(), oldRun = UUID(), now = Date(), attemptID = UUID()
+            try await environment.conversationStore.saveConversation(.init(id: oldTask,
+                title: "Unbound historical chemistry task", createdAt: now, updatedAt: now))
+            try await environment.runStore.saveRun(.init(id: oldRun, conversationID: oldTask,
+                state: "completed", goal: "Expired chemistry fixture", startedAt: now, endedAt: now))
+            let value = ChemistryWorkerAttempt(id: attemptID, kind: .probe, projectID: record.id,
+                chemistryRunID: nil, owner: .init(taskID: oldTask, hostRunID: oldRun),
+                environmentID: "expired-fixture-environment", bindingGeneration: 1, runtimeGeneration: nil,
+                workspaceRootPath: directory.path, allowedWorkspacePaths: [],
+                relativeDirectory: ".floe-chemistry/" + attemptID.uuidString,
+                configurationDigest: "expired-fixture", inputSHA256: "fixture", manifestSHA256: "fixture",
+                shellPayload: Data("{}".utf8), nativeIntent: false, jobID: nil, state: .awaitingSubmission)
+            try write(value, root: directory)
+            originals.append(.init(record: record, directory: directory, metadata: metadata,
+                assistantID: assistant, oldTaskID: oldTask, attemptID: attemptID))
+        }
+        let result = await PersonalLibraryFileActions.deleteBatch(originals.map { .work($0.record) },
+            environment: environment, library: library)
+        #expect(result.failed.isEmpty, "Real Files deletion failures: \(result.failed.map(\.message))")
+        #expect(result.deleted.count == 3)
+        let selectedIDs = Set(originals.map { $0.record.id })
+        let entries = try await library.recentlyDeleted().filter { $0.projectID.map(selectedIDs.contains) == true }
+        #expect(entries.count == 3)
+        for original in originals {
+            #expect(try Data(contentsOf: original.directory.appendingPathComponent("FloeProject.json")) == original.metadata)
+            #expect(try read(original.attemptID, root: original.directory).state == .cancelled)
+            let bindings = await environment.studioCoordinator.assistantBindings()
+            #expect(bindings.contains { $0.projectID == original.record.id && $0.conversationID == original.assistantID })
+        }
+        let restored = await PersonalLibraryFileActions.restoreBatch(entries, environment: environment, library: library)
+        #expect(restored.failed.isEmpty && restored.restored.count == 3)
+        for original in originals {
+            _ = try await library.resolve(original.record.id)
+            #expect(try read(original.attemptID, root: original.directory).state == .cancelled)
+        }
+        // Cleanup is another real Files operation on these exact owned IDs.
+        let deletedAgain = await PersonalLibraryFileActions.deleteBatch(originals.map { .work($0.record) },
+            environment: environment, library: library)
+        #expect(deletedAgain.failed.isEmpty && deletedAgain.deleted.count == 3)
+        let trash = try await library.recentlyDeleted().filter { $0.projectID.map(selectedIDs.contains) == true }
+        let plans = try await PersonalLibraryFileActions.permanentDeletionPlans(trash, environment: environment, library: library)
+        let purged = await PersonalLibraryFileActions.permanentlyDeleteBatch(plans, environment: environment, library: library)
+        #expect(purged.failed.isEmpty && purged.deleted.count == 3)
+        for original in originals {
+            let foreignConversation = try await environment.conversationStore.conversation(id: original.oldTaskID)
+            #expect(foreignConversation != nil, "An expired calculation never grants ownership of its task")
+            try await environment.conversationStore.deleteConversation(id: original.oldTaskID)
+        }
+    }
+
     private struct Harness {
         let environment: AppEnvironment
         let adapter: ChemistryEnvironmentJobAdapter

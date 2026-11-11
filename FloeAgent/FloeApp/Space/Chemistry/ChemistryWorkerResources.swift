@@ -57,10 +57,13 @@ nonisolated enum ChemistryWorkerFiles {
         let guarder = WorkspacePathGuard(rootURL: root, maxReadBytes: 64 * 1024 * 1024,
                                          maxWriteBytes: 64 * 1024 * 1024)
         let url = try guarder.resolve(path)
-        let lexical = canonical(root).appendingPathComponent(path).standardizedFileURL
-        // URL equality also compares the directory hint, which changes when a
-        // previously missing directory is created. Compare canonical paths;
-        // the workspace guard and the lexical comparison still reject links.
+        // Use the guard's component-resolved root for both identities.
+        // Foundation may shorten /private/var to /var when standardizing an
+        // existing device container. A second normalization would then reject
+        // the guard's safe /private/var result as Unauthorized.
+        let lexical = guarder.rootURL.appendingPathComponent(path)
+        // Paths still have to match lexically: an in-root symlink must not
+        // turn a native journal reference into another original's directory.
         guard url.path == lexical.path else { throw FloeError.unauthorized }
         return url
     }

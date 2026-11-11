@@ -145,8 +145,7 @@ enum BiologyPurgeIO {
     private static func id(_ value: stat) -> String { "\(value.st_dev):\(value.st_ino):\(value.st_birthtimespec.tv_sec):\(value.st_birthtimespec.tv_nsec)" }
     private static func information(_ fd: Int32) throws -> stat { var value = stat(); guard fstat(fd, &value) == 0 else { try fail() }; return value }
     private static func root(_ url: URL) throws -> Int32 {
-        guard url.isFileURL, url.standardizedFileURL.path == url.path,
-              url.resolvingSymlinksInPath().standardizedFileURL.path == url.path else { try fail() }
+        guard url.isFileURL, try BiologyProjectStore.storageRoot(url).path == url.path else { try fail() }
         let fd = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC); guard fd >= 0 else { try fail() }; return fd
     }
     private static func optionalRoot(_ url: URL) throws -> Int32? {

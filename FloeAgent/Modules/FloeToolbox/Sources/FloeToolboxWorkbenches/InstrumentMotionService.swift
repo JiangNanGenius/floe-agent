@@ -236,22 +236,45 @@ public struct InstrumentMotionPlotPoint: Sendable, Equatable {
             ? .xMagneticNorthZVertical
             : .xArbitraryZVertical
         manager.showsDeviceMovementDisplay = kind == .compass
-        manager.startDeviceMotionUpdates(using: frame, to: deliveryQueue) { [weak self] motion, error in
-            guard let self else { return }
-            if let error {
-                Task { @MainActor [weak self] in
-                    guard let self, self.generation == streamGeneration,
-                          let lease = self.activeLease else { return }
-                    self.activeSession?.fail(error.localizedDescription, for: lease)
-                    self.stopAll()
-                }
+        let handler = Self.makeDeviceMotionHandler(
+            for: kind, generation: streamGeneration,
+            currentGeneration: { [weak self] in self?.generation }
+        ) { [weak self] sample, errorMessage in
+            guard let self, let lease = self.activeLease else { return }
+            if let errorMessage {
+                self.activeSession?.fail(errorMessage, for: lease)
+                self.stopAll()
                 return
             }
-            guard let motion, let sample = Self.makeSample(from: motion, kind: kind) else { return }
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == streamGeneration, self.phase == .running,
-                      let lease = self.activeLease else { return }
-                self.activeSession?.record(sample, kind: kind, for: lease)
+            guard self.phase == .running, let sample else { return }
+            self.activeSession?.record(sample, kind: kind, for: lease)
+        }
+        manager.startDeviceMotionUpdates(using: frame, to: deliveryQueue, withHandler: handler)
+    }
+
+    /// CoreMotion invokes this block on its OperationQueue. Construct it in a
+    /// nonisolated context so it has no inherited MainActor entry assertion.
+    /// SDK objects stay inside the callback; only value samples/errors hop back.
+    nonisolated static func makeDeviceMotionHandler(
+        for kind: InstrumentStreamKind,
+        generation streamGeneration: Int,
+        currentGeneration: @escaping @MainActor @Sendable () -> Int?,
+        receive: @escaping @MainActor @Sendable (InstrumentMotionSample?, String?) -> Void
+    ) -> @Sendable (CMDeviceMotion?, (any Error)?) -> Void {
+        { @Sendable motion, error in
+            let sample: InstrumentMotionSample?
+            let message: String?
+            if let error {
+                sample = nil
+                message = error.localizedDescription
+            } else {
+                guard let motion, let value = Self.makeSample(from: motion, kind: kind) else { return }
+                sample = value
+                message = nil
+            }
+            Task { @MainActor in
+                guard currentGeneration() == streamGeneration else { return }
+                receive(sample, message)
             }
         }
     }

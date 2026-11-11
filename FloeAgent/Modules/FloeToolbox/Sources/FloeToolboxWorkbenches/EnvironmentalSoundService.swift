@@ -219,33 +219,52 @@ public enum ToolboxSoundError: Error, Equatable {
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw ToolboxSoundError.invalidInputFormat
         }
-        let fft = EnvironmentalSignalFFT(frameSize: analysisFrameSize)
+        let frameSize = analysisFrameSize
+        let relay = self.relay
+        let queue = analysisQueue
+        let fft = EnvironmentalSignalFFT(frameSize: frameSize)
         let core = SoundAnalysisCore(sampleRate: format.sampleRate, fft: fft,
-                                     frameSize: analysisFrameSize)
-        input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(analysisFrameSize * 2),
-                         format: format) { [weak self] buffer, _ in
-            guard let self,
-                  let frame = Self.copyMonoFrame(buffer, maxFrames: self.analysisFrameSize * 2) else { return }
-            // Realtime thread: bounded one-deep handoff, never a growing queue.
-            guard self.relay.offer(frame) else { return }
-            let relay = self.relay
-            let queue = self.analysisQueue
-            queue.async { [weak self] in
-                guard let frame = relay.take() else { return }
-                defer { relay.complete() }
-                guard let self, let result = core.process(frame) else { return }
-                Task { @MainActor [weak self] in
-                    guard let self, self.generation == streamGeneration, self.phase != .idle else { return }
-                    self.publish(result)
-                }
-            }
-        }
+                                     frameSize: frameSize)
+        let tap = Self.makeInputTap(maxFrames: frameSize * 2, relay: relay,
+            analysisQueue: queue, core: core, generation: streamGeneration,
+            currentGeneration: { [weak self] in self?.generation },
+            receive: { [weak self] result in
+                guard let self, self.phase != .idle else { return }
+                self.publish(result)
+            })
+        input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(frameSize * 2),
+                         format: format, block: tap)
         tapInstalled = true
         engine.prepare()
         try engine.start()
     }
 
-    /// Copies mono PCM off the realtime thread. Stereo input averages channels;
+    /// AVFAudio invokes its legacy, non-Sendable tap block on a realtime thread.
+    /// Build the actual callback outside MainActor isolation, copying SDK values
+    /// before handing a bounded PCM frame to the analysis queue.
+    nonisolated static func makeInputTap(
+        maxFrames: Int, relay: SoundFrameRelay, analysisQueue: DispatchQueue,
+        core: SoundAnalysisCore, generation streamGeneration: Int,
+        currentGeneration: @escaping @MainActor @Sendable () -> Int?,
+        receive: @escaping @MainActor @Sendable (SoundAnalysisCore.Result) -> Void
+    ) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        { @Sendable buffer, _ in
+            guard let frame = Self.copyMonoFrame(buffer, maxFrames: maxFrames) else { return }
+            // Realtime thread: bounded one-deep handoff, never a growing queue.
+            guard relay.offer(frame) else { return }
+            analysisQueue.async { @Sendable in
+                guard let frame = relay.take() else { return }
+                defer { relay.complete() }
+                guard let result = core.process(frame) else { return }
+                Task { @MainActor in
+                    guard currentGeneration() == streamGeneration else { return }
+                    receive(result)
+                }
+            }
+        }
+    }
+
+    /// Copies mono PCM within the realtime callback. Stereo input averages channels;
     /// frames are bounded so a broken driver cannot grow memory.
     nonisolated private static func copyMonoFrame(_ buffer: AVAudioPCMBuffer, maxFrames: Int) -> [Float]? {
         guard let channels = buffer.floatChannelData else { return nil }
@@ -382,7 +401,7 @@ public enum ToolboxSoundError: Error, Equatable {
 }
 
 /// One-deep handoff between the realtime tap and the analysis queue.
-private final class SoundFrameRelay: @unchecked Sendable {
+final class SoundFrameRelay: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: [Float]?
     private var busy = false
@@ -415,9 +434,10 @@ private final class SoundFrameRelay: @unchecked Sendable {
     }
 }
 
-/// Per-stream analysis state; touched only on the serial analysis queue.
-private final class SoundAnalysisCore: @unchecked Sendable {
-    struct Result {
+/// Per-stream analysis state. The lock protects the FFT scratch buffers and
+/// cadence/smoothing state; production also uses a serial analysis queue.
+final class SoundAnalysisCore: @unchecked Sendable {
+    struct Result: Sendable {
         let levelDBFS: Double
         let peakDBFS: Double
         let dominantFrequency: Double?
@@ -425,6 +445,7 @@ private final class SoundAnalysisCore: @unchecked Sendable {
         let appendToHistory: Bool
     }
 
+    private let lock = NSLock()
     private let sampleRate: Double
     private let fft: EnvironmentalSignalFFT?
     private let frameSize: Int
@@ -467,6 +488,8 @@ private final class SoundAnalysisCore: @unchecked Sendable {
     }
 
     func process(_ frame: [Float]) -> Result? {
+        lock.lock()
+        defer { lock.unlock() }
         frameCounter += 1
         guard let rms = EnvironmentalSignalMath.rms(frame) else { return nil }
         let instantaneous = EnvironmentalSignalMath.dbFS(rms: rms)

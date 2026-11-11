@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "修复气压计、指南针、陀螺仪等测量工具的闪退；自定义倒计时改用时、分、秒滚轮；修复部分旧化学项目删除时提示未授权，以及生物项目无法从回收站彻底清理的问题；改善部分完成按钮和本地终端屏幕错误提示。\n请重点检查测量工具打开和退出、滚轮设置倒计时、旧项目删除与恢复、回收站清空。\n本次为中间内测更新，不等待新增 Linux 视频硬件解码；后续完整版本再安排公开 TestFlight。",
+  "en-US": "Fixes crashes in the barometer, compass, gyroscope and related tools; adds hour, minute and second wheels for custom timers; fixes unauthorized errors when deleting older chemistry projects and incomplete biology-project cleanup in Trash; and corrects some Done buttons and local terminal screen errors.\nPlease check opening and leaving measurement tools, timer wheels, deleting and restoring older projects, and emptying Trash.\nThis intermediate internal beta does not wait for new Linux hardware video decoding. Public TestFlight is planned for a later complete update."
+}

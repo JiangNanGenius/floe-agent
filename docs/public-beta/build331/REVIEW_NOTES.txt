@@ -1,0 +1,9 @@
+Floe 1.8.9 (331) — Intermediate internal TestFlight update
+
+This update fixes measurement-tool callback crashes, replaces custom timer duration fields with hour/minute/second wheels, and fixes deletion of older chemistry projects and permanent deletion of biology projects in Trash. It also corrects some Done buttons and local terminal screen error presentation.
+
+No Floe account or demo sign-in is required. Open Space > Toolbox to open a measurement tool or create a timer. Sensor availability depends on the device; permissions are requested when needed. In Space > Files, a selected project's menu offers deletion. Trash supports restoration and permanent deletion. Imported external source files remain separate from project-owned copies.
+
+Cloud AI and other external services use the user's own configuration. The existing help articles, editors, and local file entry points remain available without a cloud account. Existing native video editing and playback are retained.
+
+This build is for internal TestFlight and matching existing installer channels. It is not submitted to public TestFlight. Linux GPU and new hardware video decoding continue separately for a later complete update. The existing App Store build and release settings are unchanged.

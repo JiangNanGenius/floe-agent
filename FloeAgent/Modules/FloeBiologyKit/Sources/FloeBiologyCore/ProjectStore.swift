@@ -10,25 +10,63 @@ public actor BiologyProjectStore {
     let fm = FileManager.default
     private struct Head: Codable { var revision: UInt64; var digest: String }
     public init(root: URL, ownedFilesRoot: URL? = nil) throws {
-        self.root = root.standardizedFileURL
-        if let ownedFilesRoot {
+        self.root = try Self.storageRoot(root)
+        let files = try ownedFilesRoot.map(Self.storageRoot)
+        if let files {
             guard self.root.lastPathComponent == "Projects",
-                  ownedFilesRoot.standardizedFileURL.path == self.root.deletingLastPathComponent().appendingPathComponent("OriginalFiles", isDirectory: true).path else {
+                  files.path == self.root.deletingLastPathComponent().appendingPathComponent("OriginalFiles", isDirectory: true).path else {
                 throw BiologyError.invalid("Native original files must use the configured sibling store.")
             }
         }
-        self.ownedFilesRoot = ownedFilesRoot?.standardizedFileURL
+        self.ownedFilesRoot = files
         try Self.ensureDirectory(self.root)
         try Self.ensureDirectory(self.root.appendingPathComponent("Trash"))
     }
     public nonisolated static func digest(_ bytes: Data) -> String { SHA256.hash(data:bytes).map{String(format:"%02x",$0)}.joined() }
+    /// Native configured roots only. Foundation can shorten /private/var to
+    /// /var after a missing directory is created, so it cannot be the saved
+    /// identity of either store. Resolve the OS aliases component by component
+    /// without accepting a custom symlink or re-standardizing the result.
+    nonisolated static func storageRoot(_ url: URL) throws -> URL {
+        guard url.isFileURL, url.path.hasPrefix("/") else { throw BiologyError.corrupt("Invalid native storage root.") }
+        let aliases = ["/var": "/private/var", "/tmp": "/private/tmp"]
+        var current = URL(fileURLWithPath: "/", isDirectory: true)
+        for component in url.pathComponents where component != "/" {
+            guard !component.isEmpty, component != ".", component != "..", !component.contains("\0") else {
+                throw BiologyError.corrupt("Invalid native storage root.")
+            }
+            let next = current.appendingPathComponent(component, isDirectory: true)
+            var info = stat()
+            if lstat(next.path, &info) == 0 {
+                if info.st_mode & S_IFMT == S_IFLNK {
+                    guard let target = aliases[next.path] else {
+                        throw BiologyError.corrupt("Project storage must not traverse symbolic links.")
+                    }
+                    let destination = try FileManager.default.destinationOfSymbolicLink(atPath: next.path)
+                    // macOS records these root-level OS links as relative
+                    // private/var and private/tmp; iOS may use absolute forms.
+                    guard destination == target || destination == String(target.dropFirst()) else {
+                        throw BiologyError.corrupt("Project storage must not traverse symbolic links.")
+                    }
+                    current = URL(fileURLWithPath: target, isDirectory: true)
+                    continue
+                }
+                guard info.st_mode & S_IFMT == S_IFDIR else { throw BiologyError.corrupt("Project storage contains an invalid directory.") }
+            } else if errno != ENOENT {
+                throw BiologyError.corrupt("Project storage is unavailable.")
+            }
+            current = next
+        }
+        return current
+    }
     private nonisolated static func ensureDirectory(_ url:URL) throws {
+        guard try storageRoot(url).path == url.path else { throw BiologyError.corrupt("Project storage identity changed.") }
         let fm=FileManager.default
         if fm.fileExists(atPath:url.path) {
             let values=try url.resourceValues(forKeys:[.isDirectoryKey,.isSymbolicLinkKey])
             guard values.isDirectory==true,values.isSymbolicLink != true else { throw BiologyError.corrupt("Project storage contains a symbolic link or invalid directory.") }
         } else { try fm.createDirectory(at:url,withIntermediateDirectories:true) }
-        guard url.resolvingSymlinksInPath().standardizedFileURL==url.standardizedFileURL else { throw BiologyError.corrupt("Project storage must not traverse symbolic links.") }
+        guard try storageRoot(url).path == url.path else { throw BiologyError.corrupt("Project storage must not traverse symbolic links.") }
     }
     private func directory(_ id:UUID, allowingPermanentDeletion:Bool = false) throws -> URL {
         try Self.ensureDirectory(root)

@@ -50,6 +50,12 @@ public struct ToolboxPressurePlotPoint: Sendable, Equatable {
 
 #if os(iOS)
 
+private enum ToolboxPressureDelivery: Sendable {
+    case sample(ToolboxPressureSample)
+    case failure(String)
+    case ignored
+}
+
 /// Barometric altimeter owner backed by its own `CMAltimeter` — separate from the
 /// shared CoreMotion owner used by the motion instruments. Readings are pressure
 /// in hPa and pressure-derived *relative* altitude in meters; no absolute
@@ -119,33 +125,62 @@ public struct ToolboxPressurePlotPoint: Sendable, Equatable {
         refreshAuthorization()
         guard authorization != .denied, authorization != .restricted else { return }
         guard phase != .running, phase != .starting else { return }
-        generation += 1
-        let streamGeneration = generation
+        let handler = prepareStreamHandler()
+        altimeter.startRelativeAltitudeUpdates(to: deliveryQueue, withHandler: handler)
+        phase = .running
+    }
+
+    typealias AltitudeHandler = @Sendable (CMAltitudeData?, (any Error)?) -> Void
+
+    /// Shared stream preparation; qualification can exercise the actual callback
+    /// without registering hardware updates. The receipt observes consumption only.
+    func prepareStreamHandler(didReceive: (@MainActor @Sendable (Bool) -> Void)? = nil) -> AltitudeHandler {
+        generation &+= 1
         if lastDisplayedAltitude != nil { resumeContinuity = true }
         phase = .starting
         streamError = nil
-        altimeter.startRelativeAltitudeUpdates(to: deliveryQueue) { [weak self] data, error in
-            guard let self else { return }
+        return Self.makeAltitudeHandler(for: self, generation: generation, didReceive: didReceive)
+    }
+
+    // CMAltitudeHandler has no isolation/Sendable annotation in the SDK. Create
+    // its entry outside MainActor so OperationQueue delivery cannot assert there.
+    nonisolated static func makeAltitudeHandler(
+        for service: ToolboxPressureService, generation: Int,
+        didReceive: (@MainActor @Sendable (Bool) -> Void)? = nil
+    ) -> AltitudeHandler {
+        { @Sendable [weak service] data, error in
+            let delivery: ToolboxPressureDelivery
             if let error {
-                Task { @MainActor [weak self] in
-                    guard let self, self.generation == streamGeneration else { return }
-                    self.streamError = error.localizedDescription
-                    self.stopStream()
-                }
-                return
+                delivery = .failure(error.localizedDescription)
+            } else if let data, let sample = Self.makeSample(from: data) {
+                delivery = .sample(sample)
+            } else {
+                delivery = .ignored
             }
-            guard let data, let sample = Self.makeSample(from: data) else { return }
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == streamGeneration, self.phase != .idle else { return }
-                self.accept(sample)
+            // SDK objects remain on the delivery queue; only this Sendable value
+            // and the MainActor owner reference enter the task.
+            Task { @MainActor [weak service] in
+                let accepted = service?.receive(delivery, generation: generation) ?? false
+                didReceive?(accepted)
             }
         }
-        phase = .running
+    }
+
+    private func receive(_ delivery: ToolboxPressureDelivery, generation deliveredGeneration: Int) -> Bool {
+        guard generation == deliveredGeneration, phase == .starting || phase == .running else { return false }
+        switch delivery {
+        case .sample(let sample): accept(sample)
+        case .failure(let message):
+            streamError = message
+            refreshAuthorization()
+            stopStream()
+        case .ignored: return false
+        }
+        return true
     }
 
     /// Pauses sampling, keeping history, extrema and the zero baseline.
     public func pause() {
-        generation += 1
         stopStream()
     }
 
@@ -205,6 +240,7 @@ public struct ToolboxPressurePlotPoint: Sendable, Equatable {
     }
 
     private func stopStream() {
+        generation &+= 1
         phase = .stopping
         altimeter.stopRelativeAltitudeUpdates()
         streamStartTimestamp = nil
@@ -213,6 +249,10 @@ public struct ToolboxPressurePlotPoint: Sendable, Equatable {
     }
 
     func accept(_ sample: ToolboxPressureSample) {
+        guard sample.timestamp.isFinite, sample.timestamp >= 0,
+              sample.receivedAt.timeIntervalSince1970.isFinite,
+              sample.pressureHpa.isFinite, sample.pressureHpa > 0,
+              sample.relativeAltitude.isFinite else { return }
         if measurementStartTimestamp == nil { measurementStartTimestamp = sample.timestamp }
         if streamStartTimestamp == nil {
             streamStartTimestamp = sample.timestamp
@@ -224,9 +264,9 @@ public struct ToolboxPressurePlotPoint: Sendable, Equatable {
             }
             resumeContinuity = false
         }
-        latest = sample
         guard let displayed = EnvironmentalSignalMath.relativeAltitude(
-            current: sample.relativeAltitude, baseline: zeroBaseline ?? sample.relativeAltitude) else { return }
+            current: sample.relativeAltitude, baseline: zeroBaseline ?? sample.relativeAltitude), displayed.isFinite else { return }
+        latest = sample
         lastDisplayedAltitude = displayed
         minimumAltitude = min(minimumAltitude ?? displayed, displayed)
         maximumAltitude = max(maximumAltitude ?? displayed, displayed)
@@ -267,8 +307,10 @@ public struct ToolboxPressurePlotPoint: Sendable, Equatable {
     nonisolated private static func makeSample(from data: CMAltitudeData) -> ToolboxPressureSample? {
         let pressureKpa = data.pressure.doubleValue
         let altitude = data.relativeAltitude.doubleValue
-        guard pressureKpa.isFinite, altitude.isFinite,
-              let pressureHpa = EnvironmentalSignalMath.hectopascals(fromKilopascals: pressureKpa) else {
+        guard data.timestamp.isFinite, data.timestamp >= 0,
+              pressureKpa.isFinite, pressureKpa > 0, altitude.isFinite,
+              let pressureHpa = EnvironmentalSignalMath.hectopascals(fromKilopascals: pressureKpa),
+              pressureHpa.isFinite, pressureHpa > 0 else {
             return nil
         }
         return ToolboxPressureSample(timestamp: data.timestamp, receivedAt: Date(),

@@ -9,12 +9,13 @@ import FloeToolboxUtilities
     @Environment(\.locale) private var locale
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .subheadline) private var durationUnitHeight: CGFloat = 24
     @ObservedObject private var service = ToolboxTimekeepingService.shared
     @State private var adding = false
     @State private var name = ""
-    @State private var hours = "0"
-    @State private var minutes = "5"
-    @State private var seconds = "0"
+    @State private var hours = 0
+    @State private var minutes = 5
+    @State private var seconds = 0
     @State private var ringOnStart = true
     @State private var exporting = false
     @State private var rebuilding = false
@@ -235,16 +236,19 @@ import FloeToolboxUtilities
             Form {
                 TextField(t("名称", "Name"), text: $name).accessibilityIdentifier("toolbox.timer.name")
                 if name.utf8.count > 256 { Text(t("名称太长，请缩短。", "The name is too long. Shorten it.")).foregroundStyle(.red) }
-                Section(t("时长", "Duration")) {
-                    durationField(t("小时", "Hours"), text: $hours)
-                    durationField(t("分钟", "Minutes"), text: $minutes)
-                    durationField(t("秒", "Seconds"), text: $seconds)
+                Section {
+                    durationPicker
+                        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                } header: {
+                    Text(t("时长", "Duration"))
+                } footer: {
+                    Text(t("最长 31 天，可同时保留 12 个倒计时。", "Up to 31 days, with 12 timers at a time."))
+                    if enteredDuration == nil {
+                        Text(t("请选择大于零的时长。", "Choose a duration greater than zero."))
+                            .foregroundStyle(.red)
+                    }
                 }
-                Text(t("最长 31 天，可同时保留 12 个倒计时。", "Up to 31 days, with 12 timers at a time.")).font(.caption)
                 if reminders != nil { Toggle(t("到时响铃", "Ring when finished"), isOn: $ringOnStart) }
-                if enteredDuration == nil {
-                    Text(t("请输入有效时长；分和秒需在 0–59 之间。", "Enter a valid duration; minutes and seconds must be between 0 and 59.")).font(.caption).foregroundStyle(.red)
-                }
             }
             .navigationTitle(t("添加倒计时", "Add a timer"))
             .toolbar {
@@ -260,21 +264,75 @@ import FloeToolboxUtilities
                         .accessibilityIdentifier("toolbox.timer.confirmAdd")
                 }
             }
-        }.presentationDetents([.medium, .large])
-    }
-    private func durationField(_ title: String, text: Binding<String>) -> some View {
-        HStack {
-            Text(title)
-            TextField("0", text: text).multilineTextAlignment(.trailing)
-                #if os(iOS)
-                .keyboardType(.numberPad)
-                #endif
         }
+        .presentationSizing(.form)
+        .presentationDetents([.medium, .large])
     }
+
+    private var durationPicker: some View {
+        Group {
+            if typeSize.isAccessibilitySize {
+                VStack(spacing: 12) { durationComponents() }
+            } else {
+                GeometryReader { geometry in
+                    HStack(spacing: 0) { durationComponents(columnWidth: geometry.size.width / 3) }
+                }
+                .frame(height: durationUnitHeight + 196)
+            }
+        }
+        .frame(maxWidth: 480)
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder private func durationComponents(columnWidth: CGFloat? = nil) -> some View {
+        durationWheel(t("小时", "Hours"), unit: t("时", "hr"), selection: Binding(
+            get: { hours }, set: { value in
+                hours = value
+                if value == maximumHours { minutes = 0; seconds = 0 }
+            }), values: 0...maximumHours, identifier: "hours", width: columnWidth)
+        durationWheel(t("分钟", "Minutes"), unit: t("分", "min"), selection: $minutes,
+                      values: 0...59, identifier: "minutes", width: columnWidth)
+            .disabled(hours == maximumHours)
+        durationWheel(t("秒", "Seconds"), unit: t("秒", "sec"), selection: $seconds,
+                      values: 0...59, identifier: "seconds", width: columnWidth)
+            .disabled(hours == maximumHours)
+    }
+
+    private func durationWheel(_ title: String, unit: String, selection: Binding<Int>,
+                               values: ClosedRange<Int>, identifier: String, width: CGFloat?) -> some View {
+        VStack(spacing: 0) {
+            Text(unit).font(.subheadline).foregroundStyle(.secondary)
+                .frame(height: durationUnitHeight)
+                .accessibilityHidden(true)
+            Picker(title, selection: selection) {
+                ForEach(values, id: \.self) { value in
+                    Text(value.formatted(.number.grouping(.never).locale(locale)))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .tag(value)
+                }
+            }
+            .labelsHidden()
+            #if os(iOS)
+            .pickerStyle(.wheel)
+            .frame(width: width, height: typeSize.isAccessibilitySize ? 240 : 196)
+            .clipped()
+            #else
+            .pickerStyle(.menu)
+            #endif
+            .accessibilityLabel(title)
+            .accessibilityIdentifier("toolbox.timer.duration.\(identifier)")
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var maximumHours: Int { Int(ToolboxCountdown.maximumDuration / 3600) }
     private var enteredDuration: Double? {
-        guard let h = Int(hours), let m = Int(minutes), let s = Int(seconds),
-              (0...744).contains(h), (0...59).contains(m), (0...59).contains(s) else { return nil }
-        let value = Double(h * 3600 + m * 60 + s)
+        guard (0...maximumHours).contains(hours), (0...59).contains(minutes),
+              (0...59).contains(seconds) else { return nil }
+        let value = Double(hours * 3600 + minutes * 60 + seconds)
         return value > 0 && value <= ToolboxCountdown.maximumDuration ? value : nil
     }
     private var recoveryNotice: some View {

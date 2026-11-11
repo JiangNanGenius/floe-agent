@@ -275,6 +275,51 @@ struct BiologyPermanentDeletionTests: Sendable {
         }
     }
     #if canImport(UIKit)
+    /// The Trash UI must include the canonical host/fences, not just the two
+    /// isolated stores used by the core transaction fixtures above.
+    @Test @MainActor func actualFilesTrashPurgesBiologyAndKeepsTheImportedSource() async throws {
+        let environment = try await appQualificationEnvironment()
+        let host = try await environment.biologyComposition.host()
+        let library = try await PersonalContentService.shared.library()
+        let record = try await PersonalContentService.shared.create(kind: .biology,
+            title: "QA-P0-330-Biology-" + UUID().uuidString)
+        let directory = try await library.resolve(record.id).url
+        let metadata = try Data(contentsOf: directory.appendingPathComponent("FloeProject.json"))
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("bio-owned-source-" + UUID().uuidString + ".csv")
+        let sourceBytes = Data("x,y\n1,2\n3,5\n".utf8)
+        try sourceBytes.write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let reference = try await host.files.register(trustedSourceURL: source, fileName: "owned.csv",
+            context: .init(projectID: record.id, owner: nil))
+        let head = try await host.store.load(record.id)
+        _ = try await host.store.update(record.id, expectedRevision: head.revision) {
+            $0.assets = [.init(title: "Owned dataset", payload: .externalDataset("csv"), originalData: Data(),
+                originalFormat: "csv", fileReference: reference)]
+        }
+        let assistant = try await environment.studioCoordinator.assistant(for: record)
+        try await PersonalLibraryFileActions.deleteFromFiles(.work(record), usingTrash: true,
+            environment: environment, library: library)
+        let entries = try await library.recentlyDeleted().filter { $0.projectID == record.id }
+        let entry = try #require(entries.first)
+        #expect(entries.count == 1)
+        #expect(try Data(contentsOf: directory.appendingPathComponent("FloeProject.json")) == metadata)
+        let plans = try await PersonalLibraryFileActions.permanentDeletionPlans(entries,
+            environment: environment, library: library)
+        let result = await PersonalLibraryFileActions.permanentlyDeleteBatch(plans,
+            environment: environment, library: library)
+        #expect(result.failed.isEmpty, "Actual Trash purge failures: \(result.failed.map(\.message))")
+        #expect(result.deleted.count == 1 && result.deleted.first?.entryID == entry.id)
+        let remaining = try await library.recentlyDeleted()
+        #expect(!remaining.contains { $0.projectID == record.id })
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        let native = try await host.store.permanentDeletionPlan(projectID: record.id,
+            trashID: record.id.uuidString.lowercased(), transactionID: entry.id)
+        #expect(native.completed)
+        let conversation = try await environment.conversationStore.conversation(id: assistant)
+        #expect(conversation == nil)
+        #expect(try Data(contentsOf: source) == sourceBytes, "Importing a file never makes its external source owned")
+    }
+
     @Test @MainActor func actualNativeShareBorrowMustFinishBeforeTheFileFenceCanBegin() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         _ = try await f.store.restoreDeleted(f.record.id.uuidString.lowercased(), projectID: f.record.id)
