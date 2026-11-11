@@ -3,13 +3,13 @@
      stateless page when the phonecontrol, embedded ADB and root status APIs
      are available. No copy here promises an external manager or a root grant. -->
 <resources>
-    <string name="settings_phone">Phone</string>
+    <string name="settings_phone">Device</string>
     <string name="device_access_status_label">Status</string>
     <string name="device_access_root_enable">Enable root access</string>
-    <string name="device_access_intro">Authorize phone access as needed. The assistant can enter passwords provided for the task without reading existing field contents.</string>
+    <string name="device_access_intro">Authorize device access as needed. The assistant can enter passwords provided for the task without reading existing field contents.</string>
 
-    <string name="device_access_accessibility_section">Phone control (Accessibility)</string>
-    <string name="device_access_accessibility_disclosure">Phone control reads the visible page’s node tree and acts only for the task you start.</string>
+    <string name="device_access_accessibility_section">Device control (Accessibility)</string>
+    <string name="device_access_accessibility_disclosure">Device control reads the visible page’s node tree and acts only for the task you start.</string>
     <string name="device_access_state_off">Off</string>
     <string name="device_access_state_not_granted">Not granted</string>
     <string name="device_access_state_granted">Granted</string>
@@ -22,8 +22,8 @@
     <string name="device_access_boundary_actions">Actions are read back after they run; gestures are not replayed blindly.</string>
     <string name="device_access_boundary_screenshots">A screenshot is captured only when the task asks for the observed page.</string>
 
-    <string name="device_access_active_section">Active phone task</string>
-    <string name="device_access_active_none">No task is using phone control.</string>
+    <string name="device_access_active_section">Active device task</string>
+    <string name="device_access_active_none">No task is using device control.</string>
     <string name="device_access_active_running">Running</string>
     <string name="device_access_active_waiting">Waiting for you</string>
     <string name="device_access_active_taken_over">Taken over</string>
@@ -37,7 +37,7 @@
     <string name="device_access_screen_off">Off</string>
     <string name="device_access_screen_task">This task</string>
     <string name="device_access_screen_until_stopped">Until stopped</string>
-    <string name="device_access_screen_requires_task">Start a phone task to choose a sharing scope.</string>
+    <string name="device_access_screen_requires_task">Start a device task to choose a sharing scope.</string>
 
     <string name="device_access_adb_section">Embedded ADB access</string>
     <string name="device_access_adb_intro">A private Floe service with shell access. It is not root, needs pairing on this device, and is included in this build.</string>
@@ -69,7 +69,7 @@
     <string name="device_access_adb_open_developer_options">Open developer options</string>
 
     <string name="device_access_root_section">Root access</string>
-    <string name="device_access_root_intro">Off by default. Uses a root grant this device already has; Floe never roots a phone or promotes ADB to root.</string>
+    <string name="device_access_root_intro">Off by default. Uses a root grant this device already has; Floe never roots a device or promotes ADB to root.</string>
     <string name="device_access_root_state_off">Off</string>
     <string name="device_access_root_state_no_grant">No root grant</string>
     <string name="device_access_root_state_grant_found">Root grant found</string>
@@ -87,9 +87,9 @@
     <string name="device_access_retry">Check again</string>
 
 <!-- G08 App integration: explicit capability ceilings, pairing/root flow. -->
-    <string name="device_access_task_not_allowed">Phone control is off for this task. Allow it explicitly; the Agent cannot arm it.</string>
-    <string name="device_access_task_stopped">You stopped phone control. Allow this task again to resume.</string>
-    <string name="device_access_allow_task">Allow phone control for this task</string>
+    <string name="device_access_task_not_allowed">Device control is off for this task. Allow it explicitly; the Agent cannot arm it.</string>
+    <string name="device_access_task_stopped">You stopped device control. Allow this task again to resume.</string>
+    <string name="device_access_allow_task">Allow device control for this task</string>
     <string name="device_access_select_apps_first">Select at least one target app first.</string>
     <string name="device_access_current_task">Current task</string>
 
@@ -181,15 +181,15 @@
     <string name="device_access_error_no_task">No running task is using this device.</string>
     <string name="device_access_error_runtime_not_ready">The Floe runtime is not ready yet.</string>
     <string name="device_access_error_select_apps">Select at least one target app first.</string>
-    <string name="device_access_error_phone_failed">Phone control failed.</string>
-    <string name="device_access_error_phone_stopped">Phone control was stopped.</string>
+    <string name="device_access_error_phone_failed">Device control failed.</string>
+    <string name="device_access_error_phone_stopped">Device control was stopped.</string>
     <string name="device_access_error_phone_taken">You took the device back.</string>
-    <string name="device_access_error_phone_service">Phone control service is not connected.</string>
+    <string name="device_access_error_phone_service">Device control service is not connected.</string>
     <string name="device_access_error_phone_target">The current app is not in the allowed target list.</string>
     <string name="device_access_error_phone_protected">The current screen or input field is protected.</string>
     <string name="device_access_error_phone_stale">The page changed; observe it again.</string>
-    <string name="device_access_error_phone_not_allowed">Phone control is not allowed for this task.</string>
-    <string name="device_access_error_phone_not_enabled">Phone control is not enabled in Android settings.</string>
+    <string name="device_access_error_phone_not_allowed">Device control is not allowed for this task.</string>
+    <string name="device_access_error_phone_not_enabled">Device control is not enabled in Android settings.</string>
     <string name="device_access_error_screenshot_unsupported">Screen capture is not supported for this request on this Android version.</string>
     <string name="device_access_error_unavailable">This capability is unavailable.</string>
     <string name="device_access_error_pairing_port">Enter the pairing port shown by Android.</string>

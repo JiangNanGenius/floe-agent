@@ -568,21 +568,21 @@
     <string name="external_edit_use_copy">Use edited copy</string>
     <string name="external_edit_keep_current">Keep current file</string>
     <string name="external_edit_finish">End editing</string>
-    <string name="phone_automation_title">Phone automation</string>
+    <string name="phone_automation_title">Device automation</string>
     <string name="phone_automation_automatic">Allow authorized tasks to control apps</string>
-    <string name="phone_automation_automatic_hint">Tasks can operate your selected apps. If you are using the phone, execution pauses for confirmation. Stop and takeover always cancel control.</string>
+    <string name="phone_automation_automatic_hint">Tasks can operate your selected apps. If you are using the device, execution pauses for confirmation. Stop and takeover always cancel control.</string>
     <string name="phone_automation_unlock">Unlock for tasks</string>
-    <string name="phone_automation_unlock_hint">With your consent, tasks may enter your saved PIN or password locally. It never goes to the model or diagnostic reports. Failed attempts require your help. The phone locks again only if the task unlocked it and you have not taken over. Pattern locks and some system screens need manual help.</string>
+    <string name="phone_automation_unlock_hint">With your consent, tasks may enter your saved PIN or password locally. It never goes to the model or diagnostic reports. Failed attempts require your help. The device locks again only if the task unlocked it and you have not taken over. Pattern locks and some system screens need manual help.</string>
     <string name="phone_automation_credential">Device PIN or password</string>
     <string name="phone_automation_consent_unlock">Agree and save on this device</string>
     <string name="phone_automation_forget">Remove saved unlock credential</string>
     <string name="phone_automation_floating">Show floating controls</string>
     <string name="phone_automation_pause">Pause</string>
     <string name="phone_automation_resume">Continue</string>
-    <string name="phone_automation_paused">Phone control is paused</string>
+    <string name="phone_automation_paused">Device control is paused</string>
     <string name="phone_automation_resume_failed">Could not continue. Open the task and try again.</string>
     <string name="phone_automation_in_use">Allow task to use the screen?</string>
-    <string name="phone_automation_in_use_hint">The task is waiting while you use the phone. Allow it to continue, or cancel to keep control.</string>
+    <string name="phone_automation_in_use_hint">The task is waiting while you use the device. Allow it to continue, or cancel to keep control.</string>
     <string name="phone_automation_allow">Allow</string>
     <string name="phone_automation_stop">Take over</string>
     <string name="phone_automation_credential_failed">Could not update the saved unlock credential. Try again.</string>
@@ -681,5 +681,5 @@
     <string name="workspace_document_cad_more_actions">More actions</string>
     <string name="preview_components_download_cache">Downloaded component cache</string>
     <string name="preview_components_clearing">Clearing download cache…</string>
-    <string name="phone_automation_relock_failed">Could not confirm that the phone locked after the task. Please lock it manually.</string>
+    <string name="phone_automation_relock_failed">Could not confirm that the device locked after the task. Please lock it manually.</string>
 </resources>

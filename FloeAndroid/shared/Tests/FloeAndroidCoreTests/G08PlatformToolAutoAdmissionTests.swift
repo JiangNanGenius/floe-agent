@@ -578,7 +578,7 @@ final class G08PlatformToolAutoAdmissionTests: XCTestCase {
             XCTFail("the global nonnil grant guard must stay authoritative")
         } catch let error as FloeError {
             XCTAssertEqual(error, .validationFailed(
-                "This phone action requires an approved task grant"))
+                "This device action requires an approved task grant"))
         }
         XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
 

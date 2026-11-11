@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- G08 手机/设备访问设置（仅完整版）。后端状态接口就绪后由 App 接入该无状态页面。 -->
 <resources>
-    <string name="settings_phone">手机</string>
+    <string name="settings_phone">设备</string>
     <string name="device_access_status_label">状态</string>
     <string name="device_access_root_enable">启用 Root 访问</string>
-    <string name="device_access_intro">按需授权手机操作。助手可填写任务中已提供的密码，不读取密码框现有内容。</string>
+    <string name="device_access_intro">按需授权设备操作。助手可填写任务中已提供的密码，不读取密码框现有内容。</string>
 
-    <string name="device_access_accessibility_section">手机操作（无障碍）</string>
-    <string name="device_access_accessibility_disclosure">手机操作只读取当前页面的节点树，并且只在你启动的任务中执行。</string>
+    <string name="device_access_accessibility_section">设备操作（无障碍）</string>
+    <string name="device_access_accessibility_disclosure">设备操作只读取当前页面的节点树，并且只在你启动的任务中执行。</string>
     <string name="device_access_state_off">关闭</string>
     <string name="device_access_state_not_granted">未授权</string>
     <string name="device_access_state_granted">已授权</string>
@@ -20,8 +20,8 @@
     <string name="device_access_boundary_actions">动作执行后会重新读取；不会盲目重放手势。</string>
     <string name="device_access_boundary_screenshots">仅在任务请求时截取正在观察的页面。</string>
 
-    <string name="device_access_active_section">当前手机任务</string>
-    <string name="device_access_active_none">没有任务正在使用手机操作。</string>
+    <string name="device_access_active_section">当前设备任务</string>
+    <string name="device_access_active_none">没有任务正在使用设备操作。</string>
     <string name="device_access_active_running">运行中</string>
     <string name="device_access_active_waiting">等待你</string>
     <string name="device_access_active_taken_over">已接管</string>
@@ -35,7 +35,7 @@
     <string name="device_access_screen_off">关闭</string>
     <string name="device_access_screen_task">仅此任务</string>
     <string name="device_access_screen_until_stopped">直到停止</string>
-    <string name="device_access_screen_requires_task">启动手机任务后才能选择共享范围。</string>
+    <string name="device_access_screen_requires_task">启动设备任务后才能选择共享范围。</string>
 
     <string name="device_access_adb_section">内嵌 ADB 访问</string>
     <string name="device_access_adb_intro">由 Floe 自带的 shell 权限服务提供。它不是 Root，需要在本机配对，并已包含在此版本中。</string>
@@ -67,7 +67,7 @@
     <string name="device_access_adb_open_developer_options">打开开发者选项</string>
 
     <string name="device_access_root_section">Root 访问</string>
-    <string name="device_access_root_intro">默认关闭。仅使用设备已有的 Root 授权；Floe 不会为手机获取 Root，也不会把 ADB 提升为 Root。</string>
+    <string name="device_access_root_intro">默认关闭。仅使用设备已有的 Root 授权；Floe 不会为设备获取 Root，也不会把 ADB 提升为 Root。</string>
     <string name="device_access_root_state_off">关闭</string>
     <string name="device_access_root_state_no_grant">无 Root 授权</string>
     <string name="device_access_root_state_grant_found">已找到 Root 授权</string>
@@ -84,9 +84,9 @@
     <string name="device_access_details_hide">收起详情</string>
     <string name="device_access_retry">重新检查</string>
 
-    <string name="device_access_task_not_allowed">此任务尚未开启手机控制。需要你明确允许，Agent 不能自行开启。</string>
-    <string name="device_access_task_stopped">你已停止手机控制。再次允许后才会恢复。</string>
-    <string name="device_access_allow_task">允许此任务使用手机控制</string>
+    <string name="device_access_task_not_allowed">此任务尚未开启设备控制。需要你明确允许，Agent 不能自行开启。</string>
+    <string name="device_access_task_stopped">你已停止设备控制。再次允许后才会恢复。</string>
+    <string name="device_access_allow_task">允许此任务使用设备控制</string>
     <string name="device_access_select_apps_first">请先选择至少一个目标应用。</string>
     <string name="device_access_current_task">当前任务</string>
 
@@ -178,15 +178,15 @@
     <string name="device_access_error_no_task">当前没有正在使用此设备的任务。</string>
     <string name="device_access_error_runtime_not_ready">Floe 运行时尚未就绪。</string>
     <string name="device_access_error_select_apps">请先选择至少一个目标应用。</string>
-    <string name="device_access_error_phone_failed">手机控制失败。</string>
-    <string name="device_access_error_phone_stopped">手机控制已停止。</string>
+    <string name="device_access_error_phone_failed">设备控制失败。</string>
+    <string name="device_access_error_phone_stopped">设备控制已停止。</string>
     <string name="device_access_error_phone_taken">你已接管设备。</string>
-    <string name="device_access_error_phone_service">手机控制服务未连接。</string>
+    <string name="device_access_error_phone_service">设备控制服务未连接。</string>
     <string name="device_access_error_phone_target">当前应用不在允许的目标列表中。</string>
     <string name="device_access_error_phone_protected">当前界面或输入字段受到保护。</string>
     <string name="device_access_error_phone_stale">页面已变化，请重新观察。</string>
-    <string name="device_access_error_phone_not_allowed">此任务不允许手机控制。</string>
-    <string name="device_access_error_phone_not_enabled">未在 Android 设置中启用手机控制。</string>
+    <string name="device_access_error_phone_not_allowed">此任务不允许设备控制。</string>
+    <string name="device_access_error_phone_not_enabled">未在 Android 设置中启用设备控制。</string>
     <string name="device_access_error_screenshot_unsupported">此 Android 版本不支持该截图请求。</string>
     <string name="device_access_error_unavailable">此能力当前不可用。</string>
     <string name="device_access_error_pairing_port">请输入 Android 显示的配对端口。</string>

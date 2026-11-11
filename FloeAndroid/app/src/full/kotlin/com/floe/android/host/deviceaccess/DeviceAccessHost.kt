@@ -252,6 +252,9 @@ internal class DeviceAccessHost(
     @Volatile private var pauseStateInvalid = pauseSaved != null && phonePause.snapshot == null
     private val automationControls = PhoneAutomationControls(context, ::onAutomationControl)
     private val automatedOwner = java.util.concurrent.atomic.AtomicReference<PhoneControlOwner?>(null)
+    private val deviceRunLiveness = DeviceRunLiveness(HostDeviceRunReadPort(host)) {
+        if (!closed) publish()
+    }
     private var unlockConfigured = false
     @Volatile
     private var phoneStatus: PhoneControlStatus = PhoneControlModule.statusSnapshot()
@@ -697,6 +700,7 @@ internal class DeviceAccessHost(
     }
 
     private fun closeBackends() {
+        deviceRunLiveness.stop()
         runCatching { rootController?.close() }
         rootController = null
         rootCredentials = null
@@ -1719,9 +1723,9 @@ internal class DeviceAccessHost(
         }
 
     /**
-     * The exact run that is live in the REAL holder: the task/run pair the
-     * conversation host itself reports as running and selected. A released
-     * holder or a terminal/other selected run is not live.
+     * Automatic device calls use the exact native run snapshot and terminal
+     * observer, including when no conversation UI was opened. Manual UI
+     * arming retains the existing holder check when no native proof exists.
      *
      * Native holders are keyed by canonical UPPERCASE UUID text
      * (`UUID.uuidString`); JVM-created holders use lowercase
@@ -1729,6 +1733,7 @@ internal class DeviceAccessHost(
      * conversation id — never a scan or another owner's key.
      */
     private fun isOwnerRunLive(owner: PhoneControlOwner): Boolean {
+        deviceRunLiveness.answer(owner, host.nativeRootEpoch())?.let { return it }
         val entry = PhoneTaskPresentation.holderLookupKeys(owner.taskID)
             .firstNotNullOfOrNull { key ->
                 runCatching { host.conversations.entryFor(key) }.getOrNull()
@@ -2208,6 +2213,9 @@ internal class DeviceAccessHost(
             pump?.cancelInFlight()
             // 2) Stop/take over the REAL phone session and cancel the run.
             runCatching { if (takeOver) phoneClient?.takeover() else phoneClient?.stop() }
+            // Retire the native observer after fencing input, so a user
+            // takeover cannot be mistaken for an automatic finish/relock.
+            deviceRunLiveness.stop()
             runCatching {
                 host.conversations.cancelRunFromNotification(
                     owner.taskID.toString(), owner.runID.toString())
@@ -3207,7 +3215,7 @@ internal class DeviceAccessHost(
         val pause = phonePause.snapshot?.takeIf { it.owner == ownerOf(call) } ?: return null
         if (!phonePause.bindQuestion(pause.owner, pause.id, call.toolCallID) {
                 preferences.edit().putString(KEY_PHONE_PAUSE, it.encode()).commit()
-            }) return PlatformToolOutcome.Failure("phone_interrupted", "Open the task to continue phone control.")
+            }) return PlatformToolOutcome.Failure("phone_interrupted", "Open the task to continue device control.")
         return PlatformToolOutcome.Failure("phone_paused_by_user", pause.id.toString())
     }
 
@@ -3279,6 +3287,15 @@ internal class DeviceAccessHost(
         if (!settings.automaticPhoneControl && explicitResumeOwner != owner) return@withLock null
         if (phoneStatus.activeOwner != null && phoneStatus.activeOwner != owner)
             return@withLock PlatformToolOutcome.Failure("phone_busy")
+        // A native platform claim supplies this owner; the real run service,
+        // rather than whether its chat was opened/selected, proves liveness.
+        if (!deviceRunLiveness.confirm(owner, call.epoch))
+            return@withLock PlatformToolOutcome.Failure("device_run_unavailable")
+        if (closed || userStopped || !PlatformToolsNativeLive.isLive(call.claim) ||
+            PlatformToolsNativeLive.shouldStop(call.claim)) {
+            deviceRunLiveness.stop()
+            return@withLock PlatformToolOutcome.Failure("cancelled")
+        }
         val keyguard = context.getSystemService(KeyguardManager::class.java)
         automationControls.show(owner, titleFor(owner), settings.floatingControls)
         automatedOwner.set(owner)
@@ -3310,12 +3327,17 @@ internal class DeviceAccessHost(
                 runCatching { android.util.Log.i("FloePhoneUnlock", "HOST_UNLOCK_REQUESTED") }
                 val result = try {
                     client.unlockForTask(principal, secret) {
-                        !closed && !userStopped && automatedOwner.get() == owner && isOwnerRunLive(owner)
+                        !closed && !userStopped && automatedOwner.get() == owner && isOwnerRunLive(owner) &&
+                            PlatformToolsNativeLive.isLive(call.claim) && !PlatformToolsNativeLive.shouldStop(call.claim)
                     }
                 } finally { secret.fill('\u0000') }
                 runCatching { android.util.Log.i("FloePhoneUnlock", "HOST_UNLOCK_RESULT_${result.name}") }
-                if (result != PhoneUnlockResult.UNLOCKED && result != PhoneUnlockResult.ALREADY_UNLOCKED)
+                if (result != PhoneUnlockResult.UNLOCKED && result != PhoneUnlockResult.ALREADY_UNLOCKED) {
+                    if (!PlatformToolsNativeLive.isLive(call.claim) || PlatformToolsNativeLive.shouldStop(call.claim))
+                        return@withLock PlatformToolOutcome.Failure("cancelled")
+                    if (!isOwnerRunLive(owner)) return@withLock PlatformToolOutcome.Failure("device_run_unavailable")
                     return@withLock PlatformToolOutcome.Failure("phone_unlock_needs_user")
+                }
             }
             when (val result = client.arm(principal)) {
                 is PhoneControlResult.Ok -> {
@@ -3346,20 +3368,20 @@ internal class DeviceAccessHost(
         if (userStopped) {
             return PlatformToolOutcome.Failure(
                 "phone_stopped_by_user",
-                "Phone control was stopped by the user; allow it again in Settings",
+                "Device control was stopped by the user; allow it again in Settings",
             )
         }
         if (armedOwner != ownerOf(call)) {
             publish()
             return PlatformToolOutcome.Failure(
                 "phone_arm_required",
-                "The user must allow phone control for this task in Settings > Phone",
+                "The user must allow device control for this task in Settings > Device",
             )
         }
         if (settings.allowedPackages.isEmpty()) {
             return PlatformToolOutcome.Failure(
                 "phone_target_required",
-                "No target apps are authorized in Settings > Phone",
+                "No target apps are authorized in Settings > Device",
             )
         }
         if (requireApproval && call.approvalGrantID == null) {
@@ -3478,7 +3500,7 @@ internal class DeviceAccessHost(
         val ticket = screenShare.ticket(
             owner, dispatchEpoch, ownerRunLive = isOwnerRunLive(owner),
         ) ?: return PlatformToolOutcome.Failure(
-            "screen_scope_off", "Screen content sharing is off for this task in Settings > Phone")
+            "screen_scope_off", "Screen content sharing is off for this task in Settings > Device")
         val wholeScreenRevision = wholeScreenConsentRevision
         val observationId = call.arguments.optString("observationId").ifEmpty { null }
         if (observationId != null && Build.VERSION.SDK_INT < 34) {
@@ -3491,7 +3513,7 @@ internal class DeviceAccessHost(
         if (displayCapture && !settings.wholeScreenConsent) {
             return PlatformToolOutcome.Failure(
                 "whole_screen_consent_required",
-                "The user must allow whole-screen capture in Settings > Phone",
+                "The user must allow whole-screen capture in Settings > Device",
             )
         }
         if (!screenShare.ticketStillValid(
@@ -3732,7 +3754,7 @@ internal class DeviceAccessHost(
                 else -> "task_authorization_checked_on_call"
             }
             append("\nphoneNext=").append(phoneNext)
-            append(" (Settings > Phone; VNC is not phone UI)\n")
+            append(" (Settings > Device; VNC is not device UI)\n")
             append("adb=").append(
                 when (adb) {
                     is AdbStatus.ServiceAlive -> "alive(uid=${adb.effectiveUid})"
@@ -4217,7 +4239,7 @@ internal class DeviceAccessHost(
         if (!settings.packageManagementAllowed) {
             return PlatformToolOutcome.Failure(
                 "management_not_allowed",
-                "The user must allow app management in Settings > Phone",
+                "The user must allow app management in Settings > Device",
             )
         }
         val packageName = call.arguments.optString("packageName")
@@ -4256,7 +4278,7 @@ internal class DeviceAccessHost(
                 append("\n… ").append(staged.size - MAX_LIST_ROWS).append(" more")
             }
             if (staged.isEmpty()) {
-                append("\nNo staged APKs. Use system.packages.stage for task workspace or granted-root files, or ask the user to stage APKs in Settings > Phone > App management.")
+                append("\nNo staged APKs. Use system.packages.stage for task workspace or granted-root files, or ask the user to stage APKs in Settings > Device > App management.")
             }
         }
         return PlatformToolOutcome.Success(summary)
@@ -4273,7 +4295,7 @@ internal class DeviceAccessHost(
         if (!settings.packageManagementAllowed) {
             return PlatformToolOutcome.Failure(
                 "management_not_allowed",
-                "The user must allow app management in Settings > Phone",
+                "The user must allow app management in Settings > Device",
             )
         }
         val request = PackageBatchArguments.install(call.arguments)
@@ -4383,7 +4405,7 @@ internal class DeviceAccessHost(
     private suspend fun systemPackagesStage(call: PlatformToolCall): PlatformToolOutcome {
         if (!settings.packageManagementAllowed) {
             return PlatformToolOutcome.Failure("management_not_allowed",
-                "The user must allow app management in Settings > Phone")
+                "The user must allow app management in Settings > Device")
         }
         val request = PackageStageArguments.parse(call.arguments)
         if (request is PackageStageArguments.Request.Invalid) {
@@ -4518,7 +4540,7 @@ internal class DeviceAccessHost(
         if (!settings.packageManagementAllowed) {
             return PlatformToolOutcome.Failure(
                 "management_not_allowed",
-                "The user must allow app management in Settings > Phone",
+                "The user must allow app management in Settings > Device",
             )
         }
         val request = PackageBatchArguments.uninstall(call.arguments)
@@ -4817,15 +4839,15 @@ internal class DeviceAccessHost(
     private fun advancedSystemQueryGate(): PlatformToolOutcome.Failure? = when {
         !settings.packageManagementAllowed -> PlatformToolOutcome.Failure(
             "management_not_allowed",
-            "The user must allow app management in Settings > Phone",
+            "The user must allow app management in Settings > Device",
         )
         !settings.advancedSystemManagementAllowed -> PlatformToolOutcome.Failure(
             "advanced_system_not_allowed",
-            "The user must turn on advanced app state in Settings > Phone",
+            "The user must turn on advanced app state in Settings > Device",
         )
         settings.advancedSystemTargets.isEmpty() -> PlatformToolOutcome.Failure(
             "advanced_targets_required",
-            "The user must select target apps in Settings > Phone",
+            "The user must select target apps in Settings > Device",
         )
         else -> null
     }
@@ -5153,19 +5175,19 @@ internal class DeviceAccessHost(
     private fun advancedSystemGate(requiredTool: String): PlatformToolOutcome.Failure? = when {
         !settings.packageManagementAllowed -> PlatformToolOutcome.Failure(
             "management_not_allowed",
-            "The user must allow app management in Settings > Phone",
+            "The user must allow app management in Settings > Device",
         )
         !settings.advancedSystemManagementAllowed -> PlatformToolOutcome.Failure(
             "advanced_system_not_allowed",
-            "The user must turn on advanced app state in Settings > Phone",
+            "The user must turn on advanced app state in Settings > Device",
         )
         requiredTool !in settings.advancedSystemAllowedTools -> PlatformToolOutcome.Failure(
             "advanced_tool_not_allowed",
-            "The user has not allowed this advanced action in Settings > Phone",
+            "The user has not allowed this advanced action in Settings > Device",
         )
         settings.advancedSystemTargets.isEmpty() -> PlatformToolOutcome.Failure(
             "advanced_targets_required",
-            "The user must select target apps in Settings > Phone",
+            "The user must select target apps in Settings > Device",
         )
         else -> null
     }
@@ -5432,7 +5454,7 @@ internal class DeviceAccessHost(
         if (!settings.packageManagementAllowed) {
             return PlatformToolOutcome.Failure(
                 "management_not_allowed",
-                "The user must allow app management in Settings > Phone",
+                "The user must allow app management in Settings > Device",
             )
         }
         if (!settings.advancedSystemManagementAllowed ||

@@ -568,9 +568,9 @@
     <string name="external_edit_use_copy">使用编辑副本</string>
     <string name="external_edit_keep_current">保留当前文件</string>
     <string name="external_edit_finish">结束编辑</string>
-    <string name="phone_automation_title">手机自动化</string>
+    <string name="phone_automation_title">设备自动化</string>
     <string name="phone_automation_automatic">允许已授权任务操作应用</string>
-    <string name="phone_automation_automatic_hint">任务可操作你选择的应用。你正在使用手机时先暂停并确认；停止或接管会立即取消控制。</string>
+    <string name="phone_automation_automatic_hint">任务可操作你选择的应用。你正在使用设备时先暂停并确认；停止或接管会立即取消控制。</string>
     <string name="phone_automation_unlock">为任务自动解锁</string>
     <string name="phone_automation_unlock_hint">经你同意，任务可在本机输入保存的 PIN 或密码，不发送给模型或诊断服务。失败后等待你处理，不循环尝试。仅在任务解锁且你没有接管时自动重新锁屏。图案锁和部分系统界面需要手动处理。</string>
     <string name="phone_automation_credential">设备 PIN 或密码</string>
@@ -578,12 +578,12 @@
     <string name="phone_automation_forget">删除已保存的解锁凭据</string>
     <string name="phone_automation_floating">显示悬浮控制</string>
     <string name="phone_automation_in_use">允许任务使用屏幕？</string>
-    <string name="phone_automation_in_use_hint">你正在使用手机，任务已暂停。允许后继续操作，也可以取消并保留控制权。</string>
+    <string name="phone_automation_in_use_hint">你正在使用设备，任务已暂停。允许后继续操作，也可以取消并保留控制权。</string>
     <string name="phone_automation_allow">允许</string>
     <string name="phone_automation_stop">接管</string>
     <string name="phone_automation_pause">暂停</string>
     <string name="phone_automation_resume">继续</string>
-    <string name="phone_automation_paused">手机操作已暂停</string>
+    <string name="phone_automation_paused">设备操作已暂停</string>
     <string name="phone_automation_resume_failed">无法继续，请打开任务重试。</string>
     <string name="phone_automation_credential_failed">无法更新解锁凭据，请重试。</string>
     <string name="reporting_title">诊断与反馈</string>
@@ -681,5 +681,5 @@
     <string name="workspace_document_cad_more_actions">更多操作</string>
     <string name="preview_components_download_cache">组件下载缓存</string>
     <string name="preview_components_clearing">正在清理下载缓存…</string>
-    <string name="phone_automation_relock_failed">未能确认任务结束后已锁屏，请手动锁定手机。</string>
+    <string name="phone_automation_relock_failed">未能确认任务结束后已锁屏，请手动锁定设备。</string>
 </resources>

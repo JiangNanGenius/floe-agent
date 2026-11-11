@@ -376,15 +376,15 @@ internal object DeviceAccessToolCatalog {
 
     private fun systemAccessStatus(): JSONObject = tool(
         name = SYSTEM_ACCESS_STATUS,
-        description = "Read actual Android phone UI readiness (accessibility connection, " +
+        description = "Read actual Android device UI readiness (accessibility connection, " +
             "selected app scope and user stop), embedded-ADB and root service state, the " +
             "user-granted file root ids, write ceiling and whether package " +
             "management is allowed. Reports unavailable layers honestly; it " +
             "never changes a permission. Phone UI readiness is independent of system " +
             "queries: an authorized live ADB/root service can query the system while " +
-            "accessibility is disabled. If phone tools are absent, check this status " +
-            "and ask the user to complete Settings > Phone. VNC controls a remote " +
-            "or Linux desktop, not the Android phone screen.",
+            "accessibility is disabled. If device tools are absent, check this status " +
+            "and ask the user to complete Settings > Device. VNC controls a remote " +
+            "or Linux desktop, not the Android device screen.",
         schema = schema(properties = JSONObject(), required = emptyList()),
         risks = emptyList(),
         effect = "readOnly",

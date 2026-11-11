@@ -712,15 +712,15 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         try context.cancellation.throwIfCancelled()
         guard !context.temporaryReadOnly, !context.publicWebOnly else {
             throw FloeError.validationFailed(
-                "Phone and system tools are unavailable in temporary chat; open a task")
+                "Device and system tools are unavailable in temporary chat; open a task")
         }
         guard let taskID = context.conversationID else {
             throw FloeError.validationFailed(
-                "Phone and system tools require a task-owned run")
+                "Device and system tools require a task-owned run")
         }
         guard context.childExecution == nil else {
             throw FloeError.validationFailed(
-                "Phone and system tools are main-run only")
+                "Device and system tools are main-run only")
         }
         if let origin = context.callOrigin {
             guard origin.kind == .mainRunDelegate,
@@ -728,7 +728,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                   origin.toolName == requestedName,
                   origin.callID == (context.toolCallID ?? "") else {
                 throw FloeError.validationFailed(
-                    "Phone and system tools are main-run only")
+                    "Device and system tools are main-run only")
             }
         }
         if let ceiling = context.allowedToolNames,
@@ -751,24 +751,24 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         let entry = snapshot.entry
         guard snapshot.installed, let entry else {
             throw FloeError.invalidConfiguration(
-                "Phone and system tools are unavailable for this runtime generation")
+                "Device and system tools are unavailable for this runtime generation")
         }
         guard snapshot.available else {
             // Registered but not published as actually usable for this
             // generation (or explicitly disabled while the epoch stayed the
             // same). Discovery hides it and direct execution fails closed.
             throw FloeError.invalidConfiguration(
-                "Phone and system tools are unavailable for the current runtime generation")
+                "Device and system tools are unavailable for the current runtime generation")
         }
         guard let live = currentEpoch(), live != 0, live == boundEpoch else {
             throw FloeError.invalidConfiguration(
-                "Phone and system tools are unavailable until the runtime is ready")
+                "Device and system tools are unavailable until the runtime is ready")
         }
         // Current approved metadata still constrains execution here, even
         // though the runtime already enforced the boundary at dispatch.
         if entry.isSideEffecting, context.approvalGrantID == nil {
             throw FloeError.validationFailed(
-                "This phone action requires an approved task grant")
+                "This device action requires an approved task grant")
         }
         if entry.requiresHostScope, context.scope == .local {
             throw FloeError.validationFailed(
@@ -813,10 +813,10 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 let unlocking = !paused && code != "phone_presence_required"
                 let question = UserQuestionDraft(id: pauseID.map { "phone-control-paused-\($0.uuidString.lowercased())" } ?? "phone-control-presence",
                     question: paused
-                        ? (chinese ? "手机操作已暂停。允许这个任务继续吗？" : "Phone control is paused. Allow this task to continue?")
+                        ? (chinese ? "设备操作已暂停。允许这个任务继续吗？" : "Device control is paused. Allow this task to continue?")
                         : unlocking
-                        ? (chinese ? "请在手机上解锁后选择继续。" : "Unlock the phone, then choose Continue.")
-                        : (chinese ? "你正在使用手机，允许任务接管屏幕吗？" : "Allow the task to use the screen while you are using the phone?"),
+                        ? (chinese ? "请解锁设备后选择继续。" : "Unlock the device, then choose Continue.")
+                        : (chinese ? "你正在使用设备，允许任务接管屏幕吗？" : "Allow the task to use the screen while you are using the device?"),
                     options: [
                         UserQuestionOption(id: "allow", label: chinese ? (unlocking || paused ? "继续" : "允许") : (unlocking || paused ? "Continue" : "Allow")),
                         UserQuestionOption(id: "keep-control", label: chinese ? "保留我的控制权" : "Keep control")
@@ -830,7 +830,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                       let answer = receipt.answers.first(where: { $0.source == .human }),
                       answer.selectedOptionIDs == ["allow"], let answeredAt = answer.answeredAt,
                       currentEpoch() == boundEpoch, isBound(to: boundEpoch) else {
-                    throw FloeError.validationFailed("Phone control was not allowed. Continue independent background work; do not retry UI control without a new user decision.")
+                    throw FloeError.validationFailed("Device control was not allowed. Continue independent background work; do not retry UI control without a new user decision.")
                 }
                 // This timestamp is generated from the actual human CAS answer,
                 // not from model arguments. Existing task/approval ceilings remain.
@@ -847,7 +847,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         // can never present an old-generation action as the current result.
         guard currentEpoch() == boundEpoch, isBound(to: boundEpoch) else {
             throw FloeError.invalidConfiguration(
-                "Phone and system tool generation changed before completion")
+                "Device and system tool generation changed before completion")
         }
         return Self.output(result)
     }
@@ -1290,7 +1290,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             run: { [weak self] argumentsJSON, context in
                 guard let self else {
                     throw FloeError.invalidConfiguration(
-                        "Phone and system tools are unavailable")
+                        "Device and system tools are unavailable")
                 }
                 return try await self.execute(
                     toolName: entry.name, argumentsJSON: argumentsJSON,
@@ -1471,33 +1471,38 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             return .cancelled
         case .hostUnbound, .hostClosed, .hostFenced:
             return .invalidConfiguration(
-                "Phone and system tools are unavailable for the current runtime generation")
+                "Device and system tools are unavailable for the current runtime generation")
         case .hostBudget:
-            return .validationFailed("The phone tool timed out")
+            return .validationFailed("The device tool timed out")
         case .saturated:
             return .validationFailed(
-                "Too many phone tool calls are already running; retry shortly")
+                "Too many device tool calls are already running; retry shortly")
         case .oversized:
             return .validationFailed(
-                "The phone tool request or reply exceeded its bounded size")
+                "The device tool request or reply exceeded its bounded size")
         case .resultInvalid:
-            return .internalError("The phone returned an invalid tool result")
+            return .internalError("The device returned an invalid tool result")
         case .remoteFailed(let code, _):
             switch code {
             case "cancelled":
                 return .cancelled
             case "timeout":
-                return .validationFailed("The phone tool timed out")
+                return .validationFailed("The device tool timed out")
+            case "device_run_unavailable":
+                let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
+                return .validationFailed(chinese
+                    ? "无法确认此任务仍在运行，设备操作已停止。请打开任务查看状态。"
+                    : "Device control stopped because this task is no longer confirmed running. Open the task to check its status.")
             case "permissionRequired", "notAuthorized", "unauthorized":
                 return .validationFailed(
                     "Android permission or user authorization is required for this action")
             case "serviceUnavailable", "unavailable":
                 return .invalidConfiguration(
-                    "The phone system service is unavailable")
+                    "The device system service is unavailable")
             case "invalidArguments", "requestInvalid", "requestTooLarge":
-                return .validationFailed("The phone refused this tool request")
+                return .validationFailed("The device refused this tool request")
             default:
-                return .internalError("Phone tool failed (\(code))")
+                return .internalError("Device tool failed (\(code))")
             }
         }
     }

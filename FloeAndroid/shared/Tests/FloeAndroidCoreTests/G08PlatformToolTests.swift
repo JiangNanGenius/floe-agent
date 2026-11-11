@@ -358,7 +358,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("close must fence the claimed ticket")
         } catch let error as FloeError {
             XCTAssertEqual(error, .invalidConfiguration(
-                "Phone and system tools are unavailable for the current runtime generation"))
+                "Device and system tools are unavailable for the current runtime generation"))
         }
 
         XCTAssertEqual(
@@ -531,7 +531,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("side-effecting host tools require an approved grant")
         } catch let error as FloeError {
             XCTAssertEqual(error, .validationFailed(
-                "This phone action requires an approved task grant"))
+                "This device action requires an approved task grant"))
         }
         XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
     }
@@ -586,7 +586,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("a cross-run origin must never authorize a ticket")
         } catch let error as FloeError {
             XCTAssertEqual(error, .validationFailed(
-                "Phone and system tools are main-run only"))
+                "Device and system tools are main-run only"))
         }
         XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
         XCTAssertEqual(mailbox.complete(claim: 987_654_321, status: 0,
@@ -666,7 +666,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("malformed success must never resume success")
         } catch let error as FloeError {
             XCTAssertEqual(error, .internalError(
-                "The phone returned an invalid tool result"))
+                "The device returned an invalid tool result"))
         }
         let counters = try XCTUnwrap(
             json(mailbox.statsJSON())["counters"] as? [String: Any])
@@ -705,6 +705,35 @@ final class G08PlatformToolTests: XCTestCase {
                 "Android permission or user authorization is required for this action"))
             XCTAssertFalse(error.reason.contains("/private/path"))
         }
+    }
+
+    func testUnconfirmedDeviceRunFailsWithoutRetryOrPrivateDetail() async throws {
+        let box = EpochBox(5)
+        let registry = ToolRunnerRegistry()
+        let mailbox = mailbox(box, registry: registry)
+        XCTAssertEqual(bindAndExpose(mailbox, epoch: 5, tools: [
+            makeEntry(name: "device.observe", schema: labelSchema),
+        ]), 0)
+        let toolContext = context(origin: mainOrigin(tool: "device.observe"))
+        let task = Task {
+            try await mailbox.execute(toolName: "device.observe",
+                argumentsJSON: Data(#"{"label":"synthetic"}"#.utf8), context: toolContext)
+        }
+        let claim = await waitForClaim(mailbox)
+        XCTAssertGreaterThan(claim, 0)
+        XCTAssertEqual(mailbox.complete(claim: claim, status: 1,
+            value: Data(#"{"code":"device_run_unavailable","detail":"private-diagnostic"}"#.utf8)), 0)
+        do {
+            _ = try await task.value
+            XCTFail("unconfirmed native ownership must stop device control")
+        } catch let error as FloeError {
+            let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
+            XCTAssertEqual(error, .validationFailed(chinese
+                ? "无法确认此任务仍在运行，设备操作已停止。请打开任务查看状态。"
+                : "Device control stopped because this task is no longer confirmed running. Open the task to check its status."))
+            XCTAssertFalse(error.reason.contains("private-diagnostic"))
+        }
+        XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
     }
 
     // MARK: - Screenshot evidence
@@ -877,7 +906,7 @@ final class G08PlatformToolTests: XCTestCase {
                 XCTFail("a fabricated artifact must not reach the model")
             } catch let error as FloeError {
                 XCTAssertEqual(error, .internalError(
-                    "The phone returned an invalid tool result"))
+                    "The device returned an invalid tool result"))
             }
         }
     }
@@ -923,7 +952,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("an unbound artifact must never reach the model")
         } catch let error as FloeError {
             XCTAssertEqual(error, .internalError(
-                "The phone returned an invalid tool result"))
+                "The device returned an invalid tool result"))
         }
 
         XCTAssertTrue(mailbox.bindArtifactRoot(
@@ -1233,7 +1262,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("a disabled queued ticket must never start")
         } catch let error as FloeError {
             XCTAssertEqual(error, .invalidConfiguration(
-                "Phone and system tools are unavailable for the current runtime generation"))
+                "Device and system tools are unavailable for the current runtime generation"))
         }
         XCTAssertEqual(mailbox.isLive(claim: claim), 1)
         XCTAssertEqual(mailbox.complete(
@@ -1249,7 +1278,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("a disabled name must refuse before any ticket")
         } catch let error as FloeError {
             XCTAssertEqual(error, .invalidConfiguration(
-                "Phone and system tools are unavailable for the current runtime generation"))
+                "Device and system tools are unavailable for the current runtime generation"))
         }
         XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
     }
@@ -1283,7 +1312,7 @@ final class G08PlatformToolTests: XCTestCase {
             XCTFail("a rebind must fence the old generation")
         } catch let error as FloeError {
             XCTAssertEqual(error, .invalidConfiguration(
-                "Phone and system tools are unavailable for the current runtime generation"))
+                "Device and system tools are unavailable for the current runtime generation"))
         }
         XCTAssertEqual(mailbox.complete(claim: claim, status: 0,
                                         value: resultData()), -101)
