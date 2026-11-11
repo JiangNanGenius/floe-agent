@@ -21,6 +21,7 @@ class LinuxEnvironmentTransaction(
     private val copier: LinuxRootfsMaterializer = LinuxRootfsMaterializer(),
     private val maxBytes: Long = 4L * 1024 * 1024 * 1024,
     private val maxEntries: Int = 250_000,
+    private val availableSpace: (File) -> Long = { it.usableSpace },
 ) {
     class Handle internal constructor(internal val root: Path, internal val record: Properties) {
         val id: String get() = record.getProperty("nonce")
@@ -110,17 +111,51 @@ class LinuxEnvironmentTransaction(
         require(record.getProperty("rootKey") != record.getProperty("snapshotKey"))
     }
 
-    /** Snapshot bytes never share a writable inode with the source root. */
+    /** Snapshot bytes never share a writable inode with the source root.
+     *
+     * Snapshot failures carry bounded stage codes without exposing paths.
+     * Lifecycle
+     * cancellation stays an honest InterruptedException; the copier's own
+     * RootfsMaterializeException vocabulary passes through untouched. */
     @Synchronized fun prepare(environmentID: String, writableLayer: File,
         cancelled: () -> Boolean): Handle {
         val root = writableLayer.toPath()
         trusted(root)
         require(environmentID.matches(Regex("[A-Za-z0-9_-]{1,128}")))
         require(markerMatches(root, environmentID))
-        require(!Files.exists(journal(root), NOFOLLOW_LINKS)) { "Recover the interrupted environment transaction first" }
+        if (Files.exists(journal(root), NOFOLLOW_LINKS)) {
+            // Was an untyped require: the durable journal names the recovery
+            // obligation, so a refused prepare is now an actionable stage.
+            throw environmentTransactionFailure(EnvironmentTransactionException.CODE_TRANSACTION_JOURNAL_PRESENT)
+        }
         if (cancelled()) throw InterruptedException("Environment transaction cancelled")
-        val before = image(root, cancelled)
-        require(Files.getFileStore(root).usableSpace >= before.bytes + 64L * 1024 * 1024) { "Insufficient space for environment recovery" }
+        val beforeSnapshot = try {
+            imageNodes(root, cancelled)
+        } catch (cancel: InterruptedException) {
+            throw cancel
+        } catch (typed: RootfsMaterializeException) {
+            throw typed
+        } catch (failure: Exception) {
+            // Raw open/read/attribute errors while hashing the live layer
+            // used to escape untyped; keep the original as cause (debugger
+            // only) and publish the bounded stage instead.
+            throw environmentTransactionFailure(
+                EnvironmentTransactionException.CODE_TRANSACTION_IMAGE_IO, cause = failure)
+        }
+        val before = beforeSnapshot.first
+        // Android rejects getFileStore even for an app-owned directory.
+        // File.usableSpace keeps the same fail-closed snapshot headroom.
+        val freeBytes = try {
+            availableSpace(root.toFile())
+        } catch (cancel: InterruptedException) {
+            throw cancel
+        } catch (failure: Exception) {
+            throw environmentTransactionFailure(
+                EnvironmentTransactionException.CODE_TRANSACTION_IMAGE_IO, cause = failure)
+        }
+        if (freeBytes < before.bytes + 64L * 1024 * 1024) {
+            throw environmentTransactionFailure(EnvironmentTransactionException.CODE_TRANSACTION_INSUFFICIENT_SPACE)
+        }
         val record = Properties().apply {
             setProperty("schema", "1"); setProperty("nonce", UUID.randomUUID().toString())
             setProperty("environment", environmentID); setProperty("root", root.fileName.toString())
@@ -129,23 +164,86 @@ class LinuxEnvironmentTransaction(
             setProperty("markerDigest", markerDigest(root))
         }
         val copy = snapshot(root, record)
-        Files.createDirectory(copy)
-        record.setProperty("snapshotKey", key(copy))
+        try {
+            Files.createDirectory(copy)
+            record.setProperty("snapshotKey", key(copy))
+        } catch (failure: Exception) {
+            throw environmentTransactionFailure(
+                EnvironmentTransactionException.CODE_TRANSACTION_SNAPSHOT_COPY_IO, cause = failure)
+        }
         var recorded = false
         try {
-            publishRecord(journal(root), record, initial = true)
+            try {
+                publishRecord(journal(root), record, initial = true)
+            } catch (failure: Exception) {
+                throw environmentTransactionFailure(
+                    EnvironmentTransactionException.CODE_TRANSACTION_PUBLISH_IO, cause = failure)
+            }
             recorded = true
-            copier.copyTransactionSnapshot(root.toFile(), copy, cancelled)
-            require(key(root) == record.getProperty("rootKey") && markerMatches(root, environmentID))
-            require(image(copy, cancelled) == before && image(root, cancelled) == before) { "Environment changed during snapshot" }
+            try {
+                copier.copyTransactionSnapshot(root.toFile(), copy, cancelled)
+            } catch (cancel: InterruptedException) {
+                throw cancel
+            } catch (typed: RootfsMaterializeException) {
+                // The copier's own reviewed vocabulary (copy IO/budgets and
+                // friends) is already actionable; never re-wrap it.
+                throw typed
+            } catch (failure: Exception) {
+                // Marker copy, timestamp/mode restore, the durability barrier
+                // and the closing directory fsync threw raw; type the stage.
+                throw environmentTransactionFailure(
+                    EnvironmentTransactionException.CODE_TRANSACTION_SNAPSHOT_COPY_IO, cause = failure)
+            }
+            try {
+                require(key(root) == record.getProperty("rootKey") && markerMatches(root, environmentID))
+            } catch (failure: Exception) {
+                throw environmentTransactionFailure(
+                    EnvironmentTransactionException.CODE_TRANSACTION_IDENTITY_CHANGED, cause = failure)
+            }
+            val copySnapshot = try {
+                imageNodes(copy, cancelled)
+            } catch (cancel: InterruptedException) {
+                throw cancel
+            } catch (failure: Exception) {
+                throw environmentTransactionFailure(
+                    EnvironmentTransactionException.CODE_TRANSACTION_IMAGE_IO, cause = failure)
+            }
+            val liveSnapshot = try {
+                imageNodes(root, cancelled)
+            } catch (cancel: InterruptedException) {
+                throw cancel
+            } catch (failure: Exception) {
+                throw environmentTransactionFailure(
+                    EnvironmentTransactionException.CODE_TRANSACTION_IMAGE_IO, cause = failure)
+            }
+            if (copySnapshot.first != before || liveSnapshot.first != before) {
+                // Was the untyped "Environment changed during snapshot" require:
+                // report the bounded divergence axis (never a path) so the
+                // device follow-up can tell metadata restore loss from real
+                // guest mutation. Both comparisons run so the classifier sees
+                // the dominant axis across copy and live re-read.
+                val detail = divergence(beforeSnapshot.second, copySnapshot.second, liveSnapshot.second)
+                throw environmentTransactionFailure(
+                    EnvironmentTransactionException.CODE_TRANSACTION_SNAPSHOT_VERIFY_CHANGED, detail = detail)
+            }
             record.setProperty("phase", "prepared")
-            publishRecord(journal(root), record)
+            try {
+                publishRecord(journal(root), record)
+            } catch (failure: Exception) {
+                throw environmentTransactionFailure(
+                    EnvironmentTransactionException.CODE_TRANSACTION_PUBLISH_IO, cause = failure)
+            }
             return Handle(root, record)
         } catch (failure: Throwable) {
             // No command has started. An uncertain durable publication stays
             // recoverable; never erase its only snapshot after a sync failure.
+            // The cleanup is best-effort: it must NEVER mask the original
+            // typed failure (a masked stage would reproduce exactly the
+            // generic-receipt diagnosability gap this change closes).
             if (!recorded && !Files.exists(journal(root), NOFOLLOW_LINKS)) {
-                if (Files.exists(copy, NOFOLLOW_LINKS) && key(copy) == record.getProperty("snapshotKey")) copier.removeTransactionTree(copy)
+                runCatching {
+                    if (Files.exists(copy, NOFOLLOW_LINKS) && key(copy) == record.getProperty("snapshotKey")) copier.removeTransactionTree(copy)
+                }.onFailure { failure.addSuppressed(it) }
             }
             throw failure
         }
@@ -267,7 +365,10 @@ class LinuxEnvironmentTransaction(
 
     private data class Node(val path: String, val kind: String, val mode: Int, val modified: Long,
         val content: String, val inode: String?)
-    private fun image(root: Path, cancelled: () -> Boolean = { false }): Image {
+    /** Walks and hashes one tree; returns the digest plus the sorted node
+     *  list so the verify stage can classify a divergence axis without a
+     *  second walk. */
+    private fun imageNodes(root: Path, cancelled: () -> Boolean = { false }): Pair<Image, List<Node>> {
         trusted(root)
         copier.recoverSourcePermissions(root)
         val access = copier.sourceAccess(root)
@@ -330,15 +431,62 @@ class LinuxEnvironmentTransaction(
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult { entry(file, attrs, false); return FileVisitResult.CONTINUE }
         }
         if (access != null) access.walk(visitor) else Files.walkFileTree(root, visitor)
-        val hash = MessageDigest.getInstance("SHA-256")
+        return digest(nodes, bytes) to nodes.sortedBy { it.path }
+    }
+
+    private fun image(root: Path, cancelled: () -> Boolean = { false }): Image =
+        imageNodes(root, cancelled).first
+
+    /** The exact hard-link projection used by the digest: the first sorted
+     *  path an inode appears at links the rest. Exposed so the verify
+     *  divergence classifier compares the same values the digest compares. */
+    private fun linkValues(ordered: List<Node>): List<String> {
         val linkNames = HashMap<String, String>()
-        for (node in nodes.sortedBy { it.path }) {
-            val link = node.inode?.let { linkNames.getOrPut(it) { node.path } } ?: ""
-            for (value in listOf(node.path, node.kind, node.mode.toString(), node.modified.toString(), node.content, link)) {
+        return ordered.map { node ->
+            node.inode?.let { linkNames.getOrPut(it) { node.path } } ?: ""
+        }
+    }
+
+    private fun digest(nodes: List<Node>, bytes: Long): Image {
+        val ordered = nodes.sortedBy { it.path }
+        val links = linkValues(ordered)
+        val hash = MessageDigest.getInstance("SHA-256")
+        for ((index, node) in ordered.withIndex()) {
+            for (value in listOf(node.path, node.kind, node.mode.toString(), node.modified.toString(), node.content, links[index])) {
                 val data = value.toByteArray(Charsets.UTF_8)
                 hash.update(ByteBuffer.allocate(4).putInt(data.size).array()); hash.update(data)
             }
         }
         return Image(hash.digest().joinToString("") { "%02x".format(it) }, bytes)
+    }
+
+    /** Bounded snapshot-divergence axis for the verify stage. Compares the
+     *  pre-copy node list against the copied snapshot and the live re-read and
+     *  reports the FIRST differing axis only — a closed token, never a path,
+     *  name, inode or content. Structural (path-set) differences report
+     *  "structure"; a pure byte-total difference with identical node metadata
+     *  reports "bytes". */
+    private fun divergence(expected: List<Node>, copyNodes: List<Node>,
+        liveNodes: List<Node>): String {
+        fun classOf(actual: List<Node>): String? {
+            if (actual.size != expected.size) return "entries"
+            val actualLinks = linkValues(actual)
+            val expectedLinks = linkValues(expected)
+            for (index in actual.indices) {
+                val want = expected[index]
+                val got = actual[index]
+                if (want.path != got.path) return "structure"
+                if (want.kind != got.kind) return "kind"
+                if (want.mode != got.mode) return "mode"
+                // Content precedes modified: a real guest mutation changes
+                // both, while a snapshot-metadata restore loss changes
+                // modified alone — this order tells the two apart.
+                if (want.content != got.content) return "content"
+                if (want.modified != got.modified) return "modified"
+                if (expectedLinks[index] != actualLinks[index]) return "link"
+            }
+            return null
+        }
+        return classOf(copyNodes) ?: classOf(liveNodes) ?: "bytes"
     }
 }

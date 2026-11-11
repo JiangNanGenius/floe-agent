@@ -102,6 +102,7 @@ extension MailboxLinuxShellTransport: LinuxLiveFilesTransport {
             case .replyMalformed: throw LinuxLiveFilesError.replyMalformed
             case .remoteFailed(let code): throw LinuxLiveFilesError.transport(code)
             case .remoteFailedWithRestore(let code, _): throw LinuxLiveFilesError.transport(code)
+            case .remoteFailedWithStartFailure(let code, _, _, _): throw LinuxLiveFilesError.transport(code)
             }
         } catch {
             throw LinuxLiveFilesError.transport(String(describing: type(of: error)))

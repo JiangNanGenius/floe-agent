@@ -1273,6 +1273,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // content, no args, no raw errors. Absent evidence NEVER lands
             // here (the legacy case above stays byte-identical).
             return "engine reported the request failed (code=\(code))\n" + restore.evidenceText
+        case LinuxShellTransportError.remoteFailedWithStartFailure(let code, let stage, let errno, let detail):
+            // N02 typed failed-start stage (job-46036bc8e99f4602): the SAME
+            // concise first line the legacy failure shows, then the bounded
+            // device facts — the closed stage token, optional numeric errno
+            // and optional divergence axis — re-bound to this exact claim by
+            // the trusted host pump. No paths, no content, no raw errors.
+            return "engine reported the request failed (code=\(code))\n"
+                + LinuxShellStartFailure(stage: stage, errno: errno, detail: detail).evidenceText
         case LinuxShellTransportError.replyMalformed:
             return "the engine reply frame could not be decoded; no outcome was assumed"
         case LinuxShellTransportError.hostFenced:

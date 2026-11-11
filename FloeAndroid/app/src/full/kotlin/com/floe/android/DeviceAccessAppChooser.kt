@@ -175,7 +175,7 @@ internal fun DeviceAccessAppChooserSheet(
                         modifier = Modifier.widthIn(min = 56.dp, max = 96.dp),
                     )
                 }
-                if (packages.size > maxSelections) {
+                if (selected.size >= maxSelections) {
                     FloeText(
                         stringResource(R.string.device_access_selection_limit, selected.size, maxSelections),
                         style = Floe.typography.metadata,

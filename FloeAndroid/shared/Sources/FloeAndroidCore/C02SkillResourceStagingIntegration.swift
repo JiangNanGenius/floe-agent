@@ -241,7 +241,8 @@ struct C02LiveGuestResourcePublisher: SkillGuestResourcePublishing {
             // expired or the generation fenced); the probe re-answer is the
             // only truth, so every transport failure is honestly unconfirmed.
             switch error {
-            case .remoteFailed, .remoteFailedWithRestore, .waitBudgetExpired,
+            case .remoteFailed, .remoteFailedWithRestore, .remoteFailedWithStartFailure,
+                 .waitBudgetExpired,
                  .hostFenced, .notBound, .saturated, .replyMalformed, .payloadTooLarge:
                 return .unconfirmed
             }

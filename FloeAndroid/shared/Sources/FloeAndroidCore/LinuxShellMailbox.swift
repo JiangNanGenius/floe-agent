@@ -697,6 +697,22 @@ public final class LinuxShellMailbox: @unchecked Sendable {
                let runText = payload["runID"] as? String,
                UUID(uuidString: runText) == UUID(uuidString: restore.runID) {
                 continuation?.resume(throwing: .remoteFailedWithRestore(code: code, restore: restore))
+            } else if ticket.operation == "shell.start",
+                      let startFailure = LinuxShellStartFailure.parse(stage: frame?["startFailureCode"],
+                                                                      errno: frame?["startFailureErrno"],
+                                                                      detail: frame?["startFailureDetail"]),
+                      let payload = try? JSONSerialization.jsonObject(with: ticket.payload) as? [String: Any],
+                      payload["runID"] as? String != nil {
+                // N02 typed failed-start stage: the host pump already re-bound
+                // this evidence to the exact grant/run/epoch before completing
+                // the claim; here the mailbox applies its own strict grammar
+                // (closed snake_case stage, exact integer errno 1...4095,
+                // closed snake_case detail) and the same-request run identity.
+                // Absent/foreign/malformed stays the legacy remoteFailed(code:)
+                // byte-identically — the settled terminal is never re-interpreted.
+                continuation?.resume(throwing: .remoteFailedWithStartFailure(
+                    code: code, stage: startFailure.stage,
+                    errno: startFailure.errno, detail: startFailure.detail))
             } else {
                 continuation?.resume(throwing: .remoteFailed(code: code))
             }

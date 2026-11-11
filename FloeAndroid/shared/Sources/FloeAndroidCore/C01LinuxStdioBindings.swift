@@ -476,6 +476,9 @@ public struct MailboxC01LinuxStdioTransport: C01LinuxStdioTransporting {
         case .remoteFailedWithRestore(let code, _):
             return C01LinuxStdioFailure(.unavailable,
                                         "The engine refused the stdio request (code=\(code)).")
+        case .remoteFailedWithStartFailure(let code, _, _, _):
+            return C01LinuxStdioFailure(.unavailable,
+                                        "The engine refused the stdio request (code=\(code)).")
         case .replyMalformed:
             return C01LinuxStdioFailure(.protocolViolation,
                                         "The engine stdio reply could not be decoded.")

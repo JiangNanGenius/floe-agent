@@ -1327,6 +1327,7 @@ public actor G04TerminalStore {
             case .payloadTooLarge: return "payloadTooLarge"
             case .remoteFailed(let code): return "engineFailed:" + Self.token(code)
             case .remoteFailedWithRestore(let code, _): return "engineFailed:" + Self.token(code)
+            case .remoteFailedWithStartFailure(let code, _, _, _): return "engineFailed:" + Self.token(code)
             case .replyMalformed: return "engineReplyMalformed"
             case .hostFenced: return "engineFenced"
             case .waitBudgetExpired: return "engineBudgetExpired"

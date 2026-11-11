@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.runtime
 
+import com.floe.android.linuxruntime.rootfs.environmentTransactionDiagnostic
+
 import android.content.Context
 import android.os.IBinder
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
@@ -299,6 +301,11 @@ class RuntimeKernel(context: Context) {
                         // discriminates EIO/EACCES/ENOSPC-class device facts
                         // without ever exposing a path or native message.
                         startFailureErrno(failure)?.let { errno -> failed.put("startFailureErrno", errno) }
+                        // Optional bounded snapshot-divergence axis from the
+                        // environment transaction's own typed refusal (closed
+                        // token, validated by the exception itself); absent
+                        // stays absent.
+                        startFailureDetail(failure)?.let { detail -> failed.put("startFailureDetail", detail) }
                         val rootfs = failure as? com.floe.android.linuxruntime.rootfs.RootfsMaterializeException
                         val io = rootfs?.cause
                         val kind = when (io) {
@@ -322,7 +329,7 @@ class RuntimeKernel(context: Context) {
                         }
                         val mode = rootfs?.sourceMode?.toString(8) ?: "unknown"
                         val owned = rootfs?.sourceOwnerUid?.let { uid -> uid == android.os.Process.myUid() }
-                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it errno=${startFailureErrno(failure) ?: 0} op=${rootfs?.operation ?: "none"} kind=$kind reason=$reason mode=$mode owned=${owned ?: "unknown"} directory=${rootfs?.sourceIsDirectory ?: "unknown"}")
+                        android.util.Log.i("FloeLinuxStart", "START_FAILURE:$it errno=${startFailureErrno(failure) ?: 0} op=${rootfs?.operation ?: "none"} kind=$kind reason=$reason mode=$mode owned=${owned ?: "unknown"} directory=${rootfs?.sourceIsDirectory ?: "unknown"} detail=${startFailureDetail(failure) ?: "none"}")
                     }
                     (failure as? com.floe.android.workspacebridge.WorkspaceBridgeException)
                         ?.let { bridge ->
@@ -487,6 +494,14 @@ class RuntimeKernel(context: Context) {
             if (failure is com.floe.android.linuxruntime.rootfs.RootfsPrepareCancelledException) {
                 return "rootfs_cancelled"
             }
+            // N02 (job-46036bc8e99f4602): environment-transaction prepare
+            // stages carry their own reviewed closed code; anything outside
+            // the fixed set is dropped so an unexpected token can never
+            // reach a receipt. The A5 device evidence failed generically
+            // precisely because these stages used to be untyped.
+            failure.environmentTransactionDiagnostic()?.let { diagnostic ->
+                return diagnostic.code.takeIf { it in com.floe.android.linuxruntime.rootfs.EnvironmentTransactionException.CODES }
+            }
             return when (failure.message) {
                 "workspaceOwnerUnavailable" -> "workspace_owner_unavailable"
                 "inputOwnerUnavailable" -> "workspace_input_owner_unavailable"
@@ -517,6 +532,15 @@ class RuntimeKernel(context: Context) {
                     runCatching { errnoHolder.javaClass.getField("errno").getInt(errnoHolder) }.getOrNull()
                 }
                 ?.takeIf { it in 1..4095 }
+
+        /**
+         * Optional bounded snapshot-divergence axis from the environment
+         * transaction's own typed refusal. The token was already validated
+         * against the exception's closed DETAILS set at construction; null
+         * for every other failure type, so absence stays absence.
+         */
+        internal fun startFailureDetail(failure: Throwable): String? =
+            failure.environmentTransactionDiagnostic()?.detail
 
         /** Real single-workload engine contract (single-slot executor plus
          *  the exclusive-start admission above). Ingested as a FACT only

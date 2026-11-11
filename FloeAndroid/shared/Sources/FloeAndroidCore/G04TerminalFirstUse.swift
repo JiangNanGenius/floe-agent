@@ -770,6 +770,8 @@ public enum G04TerminalFirstUse {
                 return .refused(.hostUnavailable, detail: G04TerminalFirstUseReply.boundedToken(code))
             case .remoteFailedWithRestore(let code, _):
                 return .refused(.hostUnavailable, detail: G04TerminalFirstUseReply.boundedToken(code))
+            case .remoteFailedWithStartFailure(let code, _, _, _):
+                return .refused(.hostUnavailable, detail: G04TerminalFirstUseReply.boundedToken(code))
             case .replyMalformed: return .refused(.replyMalformed)
             }
         } catch {
@@ -791,6 +793,9 @@ public enum G04TerminalFirstUse {
                 return .refused(.hostUnavailable,
                                 detail: G04TerminalFirstUseReply.boundedToken(code), request: request)
             case .remoteFailedWithRestore(let code, _):
+                return .refused(.hostUnavailable,
+                                detail: G04TerminalFirstUseReply.boundedToken(code), request: request)
+            case .remoteFailedWithStartFailure(let code, _, _, _):
                 return .refused(.hostUnavailable,
                                 detail: G04TerminalFirstUseReply.boundedToken(code), request: request)
             case .replyMalformed: return .refused(.replyMalformed, request: request)

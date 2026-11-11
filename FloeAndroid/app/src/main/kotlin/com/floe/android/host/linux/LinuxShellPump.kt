@@ -84,7 +84,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
      *  needs no recovery object and no session-key echo: the exact-request
      *  origin at capture plus the epoch re-check at completion are its whole
      *  binding. */
-    internal data class RuntimeStartFailure(val code: String, val errno: Int?)
+    internal data class RuntimeStartFailure(val code: String, val errno: Int?, val detail: String? = null)
     private data class StartFailureCapture(
         val workspace: FailedStartEvidence?, val runtime: RuntimeStartFailure?)
 
@@ -1926,7 +1926,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         private val ROOTFS_START_FAILURE_CODES = setOf(
             "rootfs_copy_io", "rootfs_copy_unsupported_entry", "rootfs_copy_symlink_refused",
             "rootfs_copy_entry_budget", "rootfs_copy_byte_budget", "rootfs_marker_mismatch",
-            "rootfs_barrier_io", "rootfs_publish_io", "rootfs_snapshot_unsupported", "rootfs_source_busy")
+            "rootfs_barrier_io", "rootfs_publish_io", "rootfs_snapshot_unsupported", "rootfs_source_busy",
+            // N02 (job-46036bc8e99f4602): the environment-transaction prepare
+            // stages, including the reviewed35-character verify token; each names one stage
+            // on the SAME rootfs start-failure channel (no new authority).
+            "transaction_journal_present", "transaction_insufficient_space", "transaction_image_io",
+            "transaction_snapshot_copy_io", "transaction_snapshot_verify_changed",
+            "transaction_identity_changed", "transaction_publish_io")
         private val FAILED_START_RUN =
             Regex("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
         private val FAILED_START_CLOSED_FIELDS = setOf(
@@ -2019,10 +2025,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         /** The runtime engine's own bounded start-failure token for exactly
          *  [controlID]: accepted ONLY as a genuine same-request failed terminal
          *  carrying a closed-vocabulary `startFailureCode`, with an optional
-         *  exact integer `startFailureErrno` in 1..4095. Any violation (wrong
-         *  state, foreign id, bad grammar, fractional/negative/overflow errno,
-         *  string/bool errno) returns null: absence stays absence and the
-         *  legacy settlement keeps its exact legacy bytes. */
+         *  exact integer `startFailureErrno` in 1..4095 and an optional bounded
+         *  snake_case `startFailureDetail` divergence axis (N02). Any violation
+         *  (wrong state, foreign id, bad grammar, fractional/negative/overflow
+         *  errno, string/bool errno, malformed detail) returns null: absence
+         *  stays absence and the legacy settlement keeps its exact legacy bytes. */
         internal fun sanitizeStartFailureCode(receiptJson: String, controlID: String): RuntimeStartFailure? {
             val value = runCatching {
                 kotlinx.serialization.json.Json.parseToJsonElement(receiptJson) as? JsonObject
@@ -2030,13 +2037,18 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (value.stringValue("state") != "failed") return null
             if (value.stringValue("requestID") != controlID) return null
             val code = value.stringValue("startFailureCode")
-                ?.takeIf { RUNTIME_START_FAILURE_CODE.matches(it) } ?: return null
+                ?.takeIf { RUNTIME_START_FAILURE_CODE.matches(it) || it in ROOTFS_START_FAILURE_CODES } ?: return null
             val errno = value["startFailureErrno"]?.let { raw ->
                 (raw as? JsonPrimitive)?.takeIf { !it.isString }
                     ?.contentOrNull?.toIntOrNull()
                     ?.takeIf { it in 1..RUNTIME_START_FAILURE_ERRNO_MAX } ?: return null
             }
-            return RuntimeStartFailure(code, errno)
+            val detail = value["startFailureDetail"]?.let { raw ->
+                (raw as? JsonPrimitive)?.takeIf { it.isString }
+                    ?.contentOrNull
+                    ?.takeIf { RUNTIME_START_FAILURE_CODE.matches(it) } ?: return null
+            }
+            return RuntimeStartFailure(code, errno, detail)
         }
 
         /** Completion-time binding for [RuntimeStartFailure]: the capture was
@@ -2108,6 +2120,9 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 value.put("code", reportedStartFailureCode(genericCode, runtime))
                 value.put("startFailureCode", runtime.code)
                 runtime.errno?.let { value.put("startFailureErrno", it) }
+                // Bounded divergence axis rides the same bound channel; the
+                // strict capture grammar already dropped malformed values.
+                runtime.detail?.let { value.put("startFailureDetail", it) }
             }
         }
         val evidence = owned.failedStartEvidenceOrNull() ?: return value

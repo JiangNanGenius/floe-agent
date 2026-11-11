@@ -688,6 +688,75 @@ public struct LinuxShellImportRestore: Sendable, Equatable {
     }
 }
 
+/// N02 (job-46036bc8e99f4602): the runtime's own bounded, closed-vocabulary
+/// failed-start stage token (plus optional numeric errno 1...4095 and the
+/// optional bounded snapshot-divergence axis), captured strictly from one
+/// settled status-1 `shell.start` frame. The engine never reflects command
+/// lines, paths or output into any of these fields; a malformed supplementary
+/// object can therefore NEVER poison the settled failure contract itself.
+public struct LinuxShellStartFailure: Sendable, Equatable {
+    /// The closed snake_case stage token (e.g. "transaction_snapshot_verify_changed").
+    public var stage: String
+    /// Optional exact integer errno (1...4095), a device fact only.
+    public var errno: Int?
+    /// Optional closed snake_case divergence axis (e.g. "modified").
+    public var detail: String?
+
+    private static let stagePattern = "^[a-z0-9_]{1,32}$"
+    private static let extendedStages: Set<String> = ["transaction_snapshot_verify_changed"]
+    private static let errnoBound = 4095
+
+    /// Public for the same reason `LinuxShellImportRestore`'s init is public:
+    /// test fakes of the typed transport seam construct typed values directly.
+    /// Production consumers receive instances ONLY through the strict `parse`.
+    public init(stage: String, errno: Int?, detail: String?) {
+        self.stage = stage
+        self.errno = errno
+        self.detail = detail
+    }
+
+    /// Strict bounded parse of the OPTIONAL `startFailureCode` +
+    /// `startFailureErrno` + `startFailureDetail` triple from one settled
+    /// status-1 frame. Returns nil when any present part violates the grammar
+    /// (absence of errno/detail is valid; a malformed value is not) — the
+    /// legacy failure path is then delivered byte-identically.
+    public static func parse(stage rawStage: Any?, errno rawErrno: Any?, detail rawDetail: Any?) -> LinuxShellStartFailure? {
+        guard let stage = rawStage as? String,
+              (stage.range(of: stagePattern, options: .regularExpression) != nil ||
+               extendedStages.contains(stage)) else { return nil }
+        let errno: Int?
+        if rawErrno == nil || rawErrno is NSNull {
+            errno = nil
+        } else {
+            guard let number = rawErrno as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite else { return nil }
+            let integer = number.int64Value
+            guard integer >= 1, integer <= Int64(errnoBound),
+                  number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+            errno = Int(integer)
+        }
+        let detail: String?
+        if rawDetail == nil || rawDetail is NSNull {
+            detail = nil
+        } else {
+            guard let token = rawDetail as? String,
+                  token.range(of: stagePattern, options: .regularExpression) != nil else { return nil }
+            detail = token
+        }
+        return LinuxShellStartFailure(stage: stage, errno: errno, detail: detail)
+    }
+
+    /// Bounded technical evidence for the EXPLICITLY-OPENED tool failure
+    /// detail: device facts only, fixed small size, never a path or content.
+    public var evidenceText: String {
+        var text = "start-failure stage=\(stage)"
+        if let errno { text += " errno=\(errno)" }
+        if let detail { text += " detail=\(detail)" }
+        return text
+    }
+}
+
 /// Receipt from the runtime's physically settled guest-root transaction.
 /// A malformed or absent supplementary receipt never proves rollback.
 public struct LinuxEnvironmentTransactionReceipt: Sendable, Equatable {
@@ -872,6 +941,16 @@ public enum LinuxShellTransportError: Error, Equatable, Sendable {
     /// A DISTINCT case (not an extra associated value on `remoteFailed`) so
     /// every existing single-binding pattern site keeps its exact meaning.
     case remoteFailedWithRestore(code: String, restore: LinuxShellImportRestore)
+    /// N02 typed failed-start stage (job-46036bc8e99f4602): the engine settled
+    /// a FAILED START with this generic code AND the runtime's own bounded,
+    /// closed-vocabulary start-failure stage token re-bound by the trusted
+    /// host pump to the exact claim after the real drain/quiescence and grant
+    /// close — plus the optional numeric errno (1...4095) and the optional
+    /// bounded snapshot-divergence axis. Absent or malformed evidence NEVER
+    /// lands here: those failures stay the unchanged `.remoteFailed(code:)`
+    /// above (legacy byte-identical). Stage/errno/detail are device facts
+    /// only — never a command, path, output or native message.
+    case remoteFailedWithStartFailure(code: String, stage: String, errno: Int?, detail: String?)
     /// The reply frame could not be decoded: ownership reconciliation rules
     /// apply (the backend must not assume a stop or an exit).
     case replyMalformed

@@ -647,7 +647,7 @@ internal object DeviceAccessToolCatalog {
 
     private fun systemPackagesRemoveForUser(): JSONObject = tool(
         name = SYSTEM_PACKAGES_REMOVE_FOR_USER,
-        description = "Remove one or more selected noncritical preinstalled apps (at most 8) for the current Android user only. The system image stays intact and system.packages.restore can bring an app back. Third-party packages are refused per item (use system.packages.uninstall); Floe, platform/security essentials and current launcher/input/dialer apps are always refused. Each item reports a definitive per-item removed/failed outcome from a post-operation read-back for the same user. Requires the user's app-management ceiling and the advanced app-state switch.",
+        description = "Remove one or more selected noncritical preinstalled apps (at most 8) for the current Android user only. The system image and existing user data stay intact (-k); system.packages.restore can bring the app back. Third-party packages are refused per item (use system.packages.uninstall); Floe, platform/security essentials and current launcher/input/dialer apps are always refused. Each item reports a definitive per-item removed/failed outcome from a post-operation read-back for the same user. Requires the user's app-management ceiling and the advanced app-state switch.",
         schema = schema(
             properties = JSONObject()
                 .put("packages", stringArray("Ordered package names (1-8).", 1, 8))

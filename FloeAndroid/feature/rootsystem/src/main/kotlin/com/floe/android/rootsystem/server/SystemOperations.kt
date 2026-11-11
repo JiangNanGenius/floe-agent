@@ -889,7 +889,7 @@ internal class SystemOperations(
 
         var reason: String? = null
         val exit = runPackageChild(
-            argv = listOf("/system/bin/pm", "uninstall", "--user", userId.toString(), packageName),
+            argv = listOf("/system/bin/pm", "uninstall", "-k", "--user", userId.toString(), packageName),
             timeoutMillis = REMOVE_FOR_USER_TIMEOUT_MILLIS,
             cancelled = cancelled,
             unavailableCode = "pm_unavailable",
@@ -935,7 +935,7 @@ internal class SystemOperations(
             ownPackages = ownPackages,
             allowed = true,
             operation = "restore",
-            systemPackage = packageSystemFlag(packageName),
+            systemPackage = packageSystemFlag(packageName, includeUninstalled = true),
             currentRolePackages = resolveCurrentRolePackages(),
         )
         if (denial != null) throw OpException(denial)
@@ -1325,8 +1325,8 @@ internal class SystemOperations(
         return roles
     }
 
-    private fun packageSystemFlag(packageName: String): Boolean =
-        packageApplication(packageName)?.let {
+    private fun packageSystemFlag(packageName: String, includeUninstalled: Boolean = false): Boolean =
+        packageApplication(packageName, includeUninstalled)?.let {
             (it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
         } ?: throw OpException("package_not_found")
 
@@ -1708,8 +1708,12 @@ internal class SystemOperations(
         null
     }
 
-    private fun packageApplication(packageName: String): android.content.pm.ApplicationInfo? = try {
-        context.packageManager.getApplicationInfo(packageName, 0)
+    private fun packageApplication(
+        packageName: String,
+        includeUninstalled: Boolean = false,
+    ): android.content.pm.ApplicationInfo? = try {
+        context.packageManager.getApplicationInfo(packageName,
+            if (includeUninstalled) PackageManager.MATCH_UNINSTALLED_PACKAGES else 0)
     } catch (_: Throwable) {
         null
     }
