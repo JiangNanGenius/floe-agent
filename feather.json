@@ -15,6 +15,17 @@
       "beta": true,
       "versions": [
         {
+          "version": "1.8.8",
+          "buildVersion": "330",
+          "date": "2026-11-11T06:25:26Z",
+          "localizedDescription": "Floe Agent 1.8.8 (build 330). Floe Agent: iPad-first AI tasks, Notes, Canvas and document editing. This beta IPA requires your own signing certificate and provisioning profile in Feather. It is separate from the signed TestFlight distribution.",
+          "downloadURL": "https://github.com/JiangNanGenius/floe-agent/releases/download/v1.8.8/Floe-Agent-1.8.8-build330-unsigned.ipa",
+          "size": 914328340,
+          "minOSVersion": "26.0",
+          "sha256": "f9122d415fc37ee480fa11300a6e88ddaf04f98e6a03ec885407c07e904a32e3",
+          "sourceCommit": "b5bf026b16e734a6a1923c2416a687ee274fce41"
+        },
+        {
           "version": "1.8.7",
           "buildVersion": "329",
           "date": "2026-11-10T13:13:27Z",
@@ -158,10 +169,10 @@
           "sourceCommit": "3368baaf8045023043bfb70d9062374c17a48a1d"
         }
       ],
-      "version": "1.8.7",
-      "versionDate": "2026-11-10T13:13:27Z",
-      "size": 908120405,
-      "downloadURL": "https://github.com/JiangNanGenius/floe-agent/releases/download/v1.8.7/Floe-Agent-1.8.7-build329-unsigned.ipa"
+      "version": "1.8.8",
+      "versionDate": "2026-11-11T06:25:26Z",
+      "size": 914328340,
+      "downloadURL": "https://github.com/JiangNanGenius/floe-agent/releases/download/v1.8.8/Floe-Agent-1.8.8-build330-unsigned.ipa"
     }
   ],
   "news": []
