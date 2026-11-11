@@ -29,5 +29,6 @@ internal fun DeviceAccessSettingsRoute(host: DeviceAccessHost) {
         callbacks = host.callbacks,
         pairingCode = pairingCode,
         onPairingCodeChange = { pairingCode = DeviceAccessPairingCode.sanitize(it) },
+        permissionOpsInspector = host.permissionOpsInspector,
     )
 }

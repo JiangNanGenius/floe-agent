@@ -82,6 +82,9 @@ class DeviceAccessToolCatalogTest {
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_SET_ENABLED,
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_REMOVE_FOR_USER,
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE,
+                DeviceAccessToolCatalog.SYSTEM_PERMISSIONS_MANAGE,
+                DeviceAccessToolCatalog.SYSTEM_APPOPS_MANAGE,
+                DeviceAccessToolCatalog.SYSTEM_SETTINGS_WRITE,
             ),
             mutating,
         )
@@ -188,7 +191,7 @@ class DeviceAccessToolCatalogTest {
             advancedSystemManagementAllowed = true,
             advancedSystemTargetsSelected = true,
         )
-        // No allowed names: nothing extra is advertised.
+        // No allowed mutation names: only the enabled read-only queries are added.
         assertEquals(
             setOf(
                 DeviceAccessToolCatalog.SYSTEM_ACCESS_STATUS,
@@ -196,6 +199,9 @@ class DeviceAccessToolCatalogTest {
                 DeviceAccessToolCatalog.SYSTEM_SERVICES_QUERY,
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_QUERY,
                 DeviceAccessToolCatalog.SYSTEM_NETWORK_DIAGNOSTICS,
+                DeviceAccessToolCatalog.SYSTEM_SETTINGS_READ,
+                DeviceAccessToolCatalog.SYSTEM_PERMISSIONS_QUERY,
+                DeviceAccessToolCatalog.SYSTEM_APPOPS_QUERY,
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_FORCE_STOP,
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_INSTALL,
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_UNINSTALL,
@@ -223,10 +229,13 @@ class DeviceAccessToolCatalogTest {
                 DeviceAccessToolCatalog.availableNames(
                     allThree.copy(advancedSystemTargetsSelected = false)),
         )
-        // Reserved ABI names are never advertised.
-        for (reserved in listOf(
+        // All six implemented categories need their exact selected name.
+        for (implemented in listOf(
             "system.permissions.manage", "system.appOps.manage", "system.settings.write")) {
-            assertFalse(reserved in DeviceAccessToolCatalog.availableNames(allThree))
+            assertTrue(implemented in DeviceAccessToolCatalog.availableNames(allThree))
+            assertFalse(implemented in DeviceAccessToolCatalog.availableNames(base))
+            assertFalse(implemented in DeviceAccessToolCatalog.availableNames(
+                allThree.copy(advancedSystemManagementAllowed = false)))
         }
     }
 

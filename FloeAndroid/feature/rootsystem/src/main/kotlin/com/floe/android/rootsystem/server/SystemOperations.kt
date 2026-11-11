@@ -26,6 +26,8 @@ import com.floe.android.rootsystem.ScopeRoot
 import com.floe.android.rootsystem.ServiceRecord
 import com.floe.android.rootsystem.ipc.BinderProtocol
 import com.floe.android.rootsystem.policy.PathPolicy
+import com.floe.android.rootsystem.policy.PermissionOpsDecision
+import com.floe.android.rootsystem.policy.PermissionOpsPolicy
 import com.floe.android.rootsystem.policy.ProtectedTargets
 import com.floe.android.rootsystem.policy.StagedApkPolicy
 import java.io.File
@@ -66,6 +68,23 @@ internal class SystemOperations(
      * skips them too.
      */
     private val activeStagedPaths = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    private val settingsOperations = SettingsOperations(
+        currentUser = ::currentUserId,
+    ) { argv, timeoutMillis, cancelled, onTail ->
+        try {
+            runPackageChild(
+                argv = argv,
+                timeoutMillis = timeoutMillis,
+                cancelled = cancelled,
+                unavailableCode = "settings_unavailable",
+                timeoutCode = "settings_timeout",
+                onOutputTail = onTail,
+            )
+        } catch (e: OpException) {
+            throw SettingsOperations.SettingsException(e.code)
+        }
+    }
 
     init {
         // Abandoned staged copies from a previous service generation are
@@ -949,6 +968,327 @@ internal class SystemOperations(
         )
     }
 
+    // --------------------------------------------------- permissions / appops
+
+    /**
+     * Read the real manifest-declared permissions, protection levels and
+     * granted state for [packageName] of the CURRENT profile (cross-user
+     * refuses honestly; the subsystem is bound to the service's own user).
+     * Read-only queries intentionally do NOT carry the mutation-grade
+     * protected-target refusal: public package/permission metadata for any
+     * selected target may be disclosed. Rows come only from the live
+     * PackageManager read; nothing is inferred from the declaration alone.
+     */
+    fun queryPermissions(
+        packageName: String,
+        userId: Int,
+    ): com.floe.android.rootsystem.PermissionQueryResult {
+        if (userId != currentUserId()) throw OpException("cross_user_unsupported")
+        if (!PACKAGE_NAME.matches(packageName)) throw OpException("package")
+        val info = packageInfoWithPermissions(packageName)
+            ?: throw OpException("package_not_found")
+        val requested = info.requestedPermissions ?: emptyArray()
+        val flags = info.requestedPermissionsFlags ?: IntArray(requested.size)
+        val out = ArrayList<com.floe.android.rootsystem.PermissionState>(
+            minOf(requested.size, MAX_PERMISSION_QUERY_ROWS),
+        )
+        for (index in requested.indices) {
+            if (out.size >= MAX_PERMISSION_QUERY_ROWS) break
+            val name = requested[index].take(PermissionOpsPolicy.MAX_PERMISSION_NAME)
+            if (!PermissionOpsPolicy.PERMISSION_NAME.matches(name)) continue
+            val protection = runCatching {
+                context.packageManager.getPermissionInfo(name, 0)?.protectionLevel
+            }.getOrNull() ?: continue
+            val granted = index < flags.size &&
+                (flags[index] and
+                    android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
+            out += com.floe.android.rootsystem.PermissionState(
+                name = name,
+                protectionLevel = PermissionOpsPolicy.protectionToken(protection),
+                granted = granted,
+            )
+        }
+        out.sortWith(
+            compareByDescending<com.floe.android.rootsystem.PermissionState> { it.granted }
+                .thenBy { it.name },
+        )
+        return com.floe.android.rootsystem.PermissionQueryResult(packageName, userId, out)
+    }
+
+    /**
+     * Grant or revoke one manifest-declared runtime (dangerous) or
+     * development permission for the current user through the real
+     * `pm grant/revoke --user` path. The declaration and its protection
+     * level are re-validated here from the live package record (never from
+     * model text); signature/fixed/admin/platform permissions refuse as
+     * "permission_protected" before dispatch; a package sharing its UID with
+     * another package refuses as "shared_uid_refused" because a UID-scoped
+     * runtime grant cannot avoid collateral effect on the sibling.
+     * [grantedBefore] is established from the live read before any mutation
+     * and the call refuses when the profile cannot be established. Success
+     * requires exit 0 plus an independent read-back of the same user's grant
+     * state, so an OS refusal is a real per-item failure, never "success".
+     */
+    fun managePermission(
+        packageName: String,
+        userId: Int,
+        permission: String,
+        action: String,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.PermissionSetReceipt {
+        if (cancelled()) throw OpException("cancelled")
+        if (userId != currentUserId()) throw OpException("cross_user_unsupported")
+        if (!PACKAGE_NAME.matches(packageName)) throw OpException("package")
+        if (ProtectedTargets.isProtectedPackage(packageName, ownPackages)) {
+            throw OpException("protected_target")
+        }
+        if (action !in PermissionOpsPolicy.ACTIONS) throw OpException("permission_action")
+        if (!PermissionOpsPolicy.PERMISSION_NAME.matches(permission)) {
+            throw OpException("permission")
+        }
+        val info = packageInfoWithPermissions(packageName)
+            ?: throw OpException("package_not_found")
+        sharedUidRefusal(packageName)?.let { throw OpException(it) }
+        val requested = info.requestedPermissions ?: emptyArray()
+        if (permission !in requested) throw OpException("permission_not_declared")
+        val protection = runCatching {
+            context.packageManager.getPermissionInfo(permission, 0)?.protectionLevel
+        }.getOrNull() ?: throw OpException("permission_unknown")
+        PermissionOpsPolicy.permissionMutable(protection)?.let { throw OpException(it) }
+        val grantedBefore = permissionGranted(packageName, permission)
+            ?: throw OpException("verify_unavailable")
+
+        var reason: String? = null
+        val exit = runPackageChild(
+            argv = listOf(
+                "/system/bin/pm", action, "--user", userId.toString(), packageName, permission,
+            ),
+            timeoutMillis = PERMISSION_SET_TIMEOUT_MILLIS,
+            cancelled = cancelled,
+            unavailableCode = "pm_unavailable",
+            onOutputTail = { reason = conciseFailureReason(it) },
+        )
+        if (cancelled()) throw OpException("cancelled")
+        val grantedAfter = permissionGranted(packageName, permission)
+            ?: throw OpException("verify_unavailable")
+        val decision = PermissionOpsDecision.permission(exit, action, grantedAfter)
+        return com.floe.android.rootsystem.PermissionSetReceipt(
+            packageName = packageName,
+            userId = userId,
+            permission = permission,
+            action = action,
+            grantedBefore = grantedBefore,
+            grantedAfter = grantedAfter,
+            succeeded = decision.succeeded,
+            detailCode = decision.detailCode,
+            failureDetail = if (decision.succeeded) null else reason,
+        )
+    }
+
+    /**
+     * Read the closed-catalog AppOps modes for [packageName] of the current
+     * user: one bounded single-operation `appops get --user <u> <pkg> <OP>`
+     * per catalog entry (never --uid, never a multi-op dump to parse). Like
+     * the permission query this read-only disclosure is NOT subject to the
+     * mutation-grade protected-target refusal. Each row preserves the
+     * per-package override, the UID-level mode and the platform default
+     * SEPARATELY plus the computed effective mode; an unparseable single-op
+     * response reports an "unknown" row instead of a fabricated default,
+     * and a failed read fails the whole query honestly.
+     */
+    fun queryAppOps(
+        packageName: String,
+        userId: Int,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.AppOpsQueryResult {
+        if (cancelled()) throw OpException("cancelled")
+        if (userId != currentUserId()) throw OpException("cross_user_unsupported")
+        if (!PACKAGE_NAME.matches(packageName)) throw OpException("package")
+        if (packageApplication(packageName) == null) throw OpException("package_not_found")
+        val sdk = android.os.Build.VERSION.SDK_INT
+        val ops = ArrayList<com.floe.android.rootsystem.AppOpsModeState>(
+            PermissionOpsPolicy.APP_OPS.size,
+        )
+        val queryDeadline = android.os.SystemClock.elapsedRealtime() + APPOPS_GET_TIMEOUT_MILLIS
+        for (spec in PermissionOpsPolicy.APP_OPS) {
+            if (sdk < spec.minSdk) continue
+            if (cancelled()) throw OpException("cancelled")
+            val remaining = queryDeadline - android.os.SystemClock.elapsedRealtime()
+            if (remaining <= 0L) throw OpException("appops_timeout")
+            val opName = spec.opName
+            val parsed = try {
+                readAppOpsParsed(packageName, userId, opName, cancelled,
+                    timeoutMillis = minOf(APPOPS_GET_TIMEOUT_MILLIS, remaining))
+            } catch (e: OpException) {
+                if (e.code == "appops_unparseable") {
+                    // Row-level honest refusal: keep the row, mark unknown.
+                    PermissionOpsPolicy.AppOpsGet(null, null, null, false, true)
+                } else {
+                    throw e
+                }
+            }
+            ops += com.floe.android.rootsystem.AppOpsModeState(
+                operation = spec.token,
+                opName = opName,
+                overrideMode = parsed.overrideMode,
+                uidMode = parsed.uidMode,
+                defaultMode = parsed.defaultMode,
+                effective = PermissionOpsDecision.effectiveMode(
+                    parsed.overrideMode,
+                    parsed.uidMode,
+                    parsed.defaultMode,
+                    parsed.noOperations,
+                ),
+            )
+        }
+        return com.floe.android.rootsystem.AppOpsQueryResult(packageName, userId, ops)
+    }
+
+    /**
+     * Set one closed-catalog AppOps mode for [packageName] of the current
+     * user through the real `appops set --user <u> <pkg> <op> <mode>` path
+     * (package form only; a UID/shared-UID target can never be expressed,
+     * and a package sharing its UID with another package refuses before
+     * dispatch as "shared_uid_refused"). The restorable BEFORE state
+     * (override/UID/default separately) is captured before the set and the
+     * observed override after it; unparseable read-back refuses instead of
+     * reporting success. Success requires exit 0 plus a read-back proving
+     * the request: a concrete mode equals the per-package override; "default"
+     * is proven by the override row being gone OR recorded as "default"
+     * (both restore platform/UID behavior — restoring an inherited UID mode
+     * as a new package override is NOT a restore).
+     */
+    fun manageAppOps(
+        packageName: String,
+        userId: Int,
+        operation: String,
+        mode: String,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.AppOpsSetReceipt {
+        if (cancelled()) throw OpException("cancelled")
+        if (userId != currentUserId()) throw OpException("cross_user_unsupported")
+        if (!PACKAGE_NAME.matches(packageName)) throw OpException("package")
+        if (ProtectedTargets.isProtectedPackage(packageName, ownPackages)) {
+            throw OpException("protected_target")
+        }
+        val sdk = android.os.Build.VERSION.SDK_INT
+        val spec = PermissionOpsPolicy.appOp(operation, sdk)
+            ?: throw OpException("appop_operation")
+        if (!PermissionOpsPolicy.modeSupported(mode, sdk)) throw OpException("appop_mode")
+        if (packageApplication(packageName) == null) throw OpException("package_not_found")
+        sharedUidRefusal(packageName)?.let { throw OpException(it) }
+        val opName = spec.opName
+
+        val before = readAppOpsParsed(packageName, userId, opName, cancelled)
+        var reason: String? = null
+        val exit = runPackageChild(
+            argv = listOf(
+                "/system/bin/appops", "set", "--user", userId.toString(),
+                packageName, opName, mode,
+            ),
+            timeoutMillis = APPOPS_SET_TIMEOUT_MILLIS,
+            cancelled = cancelled,
+            unavailableCode = "appops_unavailable",
+            timeoutCode = "appops_timeout",
+            onOutputTail = { reason = conciseFailureReason(it) },
+        )
+        if (cancelled()) throw OpException("cancelled")
+        val after = readAppOpsParsed(packageName, userId, opName, cancelled)
+        val decision = PermissionOpsDecision.appOps(exit, mode, after.overrideMode)
+        return com.floe.android.rootsystem.AppOpsSetReceipt(
+            packageName = packageName,
+            userId = userId,
+            operation = spec.token,
+            opName = opName,
+            overrideBefore = before.overrideMode,
+            uidBefore = before.uidMode,
+            defaultBefore = before.defaultMode,
+            effectiveBefore = PermissionOpsDecision.effectiveMode(
+                before.overrideMode,
+                before.uidMode,
+                before.defaultMode,
+                before.noOperations,
+            ),
+            requestedMode = mode,
+            overrideAfter = after.overrideMode,
+            effectiveAfter = PermissionOpsDecision.effectiveMode(
+                after.overrideMode,
+                after.uidMode,
+                after.defaultMode,
+                after.noOperations,
+            ),
+            succeeded = decision.succeeded,
+            detailCode = decision.detailCode,
+            failureDetail = if (decision.succeeded) null else reason,
+        )
+    }
+
+    /**
+     * One bounded single-operation `appops get`. Command failure maps to a
+     * typed code; unparseable output maps to "appops_unparseable" so callers
+     * fail closed instead of treating ambiguity as absence.
+     */
+    private fun readAppOpsParsed(
+        packageName: String,
+        userId: Int,
+        opName: String,
+        cancelled: () -> Boolean,
+        timeoutMillis: Long = APPOPS_GET_TIMEOUT_MILLIS,
+    ): PermissionOpsPolicy.AppOpsGet {
+        var tail: String? = null
+        val exit = runPackageChild(
+            argv = listOf(
+                "/system/bin/appops", "get", "--user", userId.toString(),
+                packageName, opName,
+            ),
+            timeoutMillis = timeoutMillis,
+            cancelled = cancelled,
+            unavailableCode = "appops_unavailable",
+            timeoutCode = "appops_timeout",
+            maxOutputChars = APPOPS_MAX_OUTPUT_CHARS,
+            onOutputTail = { tail = it },
+        )
+        if (exit != 0) throw OpException("appops_get_failed")
+        val parsed = PermissionOpsPolicy.parseAppOpsGet(tail ?: "", opName)
+        if (parsed.unparseable) throw OpException("appops_unparseable")
+        return parsed
+    }
+
+    /**
+     * Refuse when [packageName] shares its Linux UID with another package:
+     * UID-scoped runtime grants/AppOps entries cannot avoid collateral
+     * effect on the sibling, so the mutation is out of scope even though
+     * the package-form argv itself looks targeted. Queries may still
+     * disclose the state honestly.
+     */
+    private fun sharedUidRefusal(packageName: String): String? {
+        val uid = packageApplication(packageName)?.uid ?: return "package_not_found"
+        val siblings = runCatching {
+            context.packageManager.getPackagesForUid(uid)?.distinct()
+        }.getOrNull() ?: return "uid_scope_unavailable"
+        if (siblings.isEmpty() || packageName !in siblings) return "uid_scope_unavailable"
+        return PermissionOpsPolicy.sharedUidRefusal(siblings.size)
+    }
+
+    /** Live permission grant read-back for the service's own user profile. */
+    private fun permissionGranted(packageName: String, permission: String): Boolean? = try {
+        context.packageManager.checkPermission(permission, packageName) ==
+            PackageManager.PERMISSION_GRANTED
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun packageInfoWithPermissions(
+        packageName: String,
+    ): android.content.pm.PackageInfo? = try {
+        context.packageManager.getPackageInfo(
+            packageName,
+            android.content.pm.PackageManager.GET_PERMISSIONS,
+        )
+    } catch (_: Throwable) {
+        null
+    }
+
     /**
      * Packages holding device-critical roles right now: the resolved default
      * launcher (HOME), Settings.Secure default input method, and the Telecom
@@ -1138,6 +1478,21 @@ internal class SystemOperations(
         if (!target.exists()) return true
         return verifyOwnedDigest(target, sha256) && runCatching { target.delete() }.getOrDefault(false)
     }
+
+    // ----------------------------------------------------------- settings
+
+    fun readSetting(
+        namespace: String,
+        key: String,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.SettingReadResult =
+        settingsOperations.read(namespace, key, cancelled)
+
+    fun writeSettings(
+        changes: List<com.floe.android.rootsystem.SettingsChange>,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.SettingsBatchReceipt =
+        settingsOperations.write(changes, cancelled)
 
     // -------------------------------------------------------------- network
 
@@ -1383,6 +1738,10 @@ internal class SystemOperations(
         stdinDigest: java.security.MessageDigest? = null,
         onStreamedBytes: (Long) -> Unit = {},
         onOutputTail: ((String) -> Unit)? = null,
+        // The appops get tail legitimately carries one short line per catalog
+        // operation; callers bound their own larger ceiling, everything else
+        // keeps the historical 512-char tail.
+        maxOutputChars: Int = MAX_CHILD_OUTPUT_CHARS,
     ): Int {
         val process = try {
             ProcessBuilder(argv).redirectErrorStream(true).start()
@@ -1399,7 +1758,7 @@ internal class SystemOperations(
                         val read = input.read(buffer)
                         if (read < 0) break
                         synchronized(outputLock) {
-                            if (outputTail.length < MAX_CHILD_OUTPUT_CHARS) {
+                            if (outputTail.length < maxOutputChars) {
                                 outputTail.append(String(buffer, 0, read, Charsets.UTF_8))
                             }
                         }
@@ -1656,6 +2015,11 @@ internal class SystemOperations(
         const val REMOVE_FOR_USER_TIMEOUT_MILLIS = 60_000L
         const val RESTORE_TIMEOUT_MILLIS = 60_000L
         const val PM_LIST_TIMEOUT_MILLIS = 20_000L
+        const val PERMISSION_SET_TIMEOUT_MILLIS = 30_000L
+        const val APPOPS_GET_TIMEOUT_MILLIS = 20_000L
+        const val APPOPS_SET_TIMEOUT_MILLIS = 30_000L
+        const val APPOPS_MAX_OUTPUT_CHARS = 4096
+        const val MAX_PERMISSION_QUERY_ROWS = 256
         const val MAX_CHILD_OUTPUT_CHARS = 512
         const val CHILD_THREAD_JOIN_MILLIS = 2_000L
         const val STAGING_RETENTION_MILLIS = 24L * 60 * 60 * 1000

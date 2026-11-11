@@ -73,6 +73,7 @@ internal fun DeviceAccessAppChooserSheet(
     searchable: Boolean = true,
     countLabelRes: Int = R.string.device_access_targets_count,
     heightFractionOverride: Float? = null,
+    maxSelections: Int = 64,
 ) {
     if (!visible) return
     var query by remember { mutableStateOf("") }
@@ -128,13 +129,14 @@ internal fun DeviceAccessAppChooserSheet(
                         color = Floe.colors.secondaryLabel,
                         modifier = Modifier.weight(1f),
                     )
-                    // Batch selection over the FULL authorized list: filtering
-                    // never narrows a select-all to what is merely visible.
+                    // Preserve selected identities and show the bound before
+                    // a batch choice; never silently drop a later selection.
                     FloeCapsuleButton(
-                        stringResource(R.string.device_access_select_all),
+                        stringResource(if (packages.size > maxSelections)
+                            R.string.device_access_select_to_limit else R.string.device_access_select_all),
                         onClick = {
                             onSelectionChange(
-                                packages.map { it.packageName }.toSet(),
+                                (selected + packages.map { it.packageName }).take(maxSelections).toSet(),
                             )
                         },
                         enabled = enabled,
@@ -145,6 +147,14 @@ internal fun DeviceAccessAppChooserSheet(
                         onClick = { onSelectionChange(emptySet()) },
                         enabled = enabled,
                         modifier = Modifier.widthIn(min = 56.dp, max = 96.dp),
+                    )
+                }
+                if (packages.size > maxSelections) {
+                    FloeText(
+                        stringResource(R.string.device_access_selection_limit, selected.size, maxSelections),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     )
                 }
                 LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
@@ -158,16 +168,18 @@ internal fun DeviceAccessAppChooserSheet(
                     }
                     items(matches, key = { it.packageName }) { app ->
                         val checked = app.packageName in selected
+                        val rowEnabled = enabled && (checked || selected.size < maxSelections)
                         val toggle: (Boolean) -> Unit = { turnOn ->
                             // Start from ALL selected apps, including those hidden by the query.
                             val next = selected.toMutableSet()
-                            if (turnOn) next += app.packageName else next -= app.packageName
+                            if (turnOn && next.size < maxSelections) next += app.packageName
+                            else if (!turnOn) next -= app.packageName
                             onSelectionChange(next)
                         }
                         Row(
                             Modifier.fillMaxWidth().background(Floe.colors.sectionCardSurface)
                                 .heightIn(min = 56.dp)
-                                .toggleable(checked, enabled = enabled, role = Role.Switch, onValueChange = toggle)
+                                .toggleable(checked, enabled = rowEnabled, role = Role.Switch, onValueChange = toggle)
                                 .padding(horizontal = 12.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -181,7 +193,7 @@ internal fun DeviceAccessAppChooserSheet(
                                         overflow = TextOverflow.Ellipsis)
                                 }
                             }
-                            FloeInlineSwitch(checked, toggle, app.label, enabled = enabled,
+                            FloeInlineSwitch(checked, toggle, app.label, enabled = rowEnabled,
                                 modifier = Modifier.clearAndSetSemantics { })
                         }
                         FloeDivider()

@@ -33,7 +33,9 @@ class AutomaticAdmissionPolicyTest {
                 SystemOperation.PACKAGE_FORCE_STOP,
                 SystemOperation.PACKAGE_SET_ENABLED,
                 SystemOperation.PACKAGE_REMOVE_FOR_USER,
-                SystemOperation.PACKAGE_RESTORE)) {
+                SystemOperation.PACKAGE_RESTORE,
+                SystemOperation.PERMISSIONS_MANAGE,
+                SystemOperation.APP_OPS_MANAGE)) {
                 assertEquals(operation.name, allowed,
                     AutomaticAdmissionPolicy.isWithinEnabledCeilings(operation, ceiling))
             }
@@ -48,7 +50,9 @@ class AutomaticAdmissionPolicyTest {
             SystemOperation.PACKAGE_FORCE_STOP,
             SystemOperation.PACKAGE_SET_ENABLED,
             SystemOperation.PACKAGE_REMOVE_FOR_USER,
-            SystemOperation.PACKAGE_RESTORE)
+            SystemOperation.PACKAGE_RESTORE,
+            SystemOperation.PERMISSIONS_MANAGE,
+            SystemOperation.APP_OPS_MANAGE)
         val ceiling = AutomaticAdmissionPolicy.Ceilings(true, true, true)
         for (operation in SystemOperation.entries.filterNot { it in ordinary }) {
             assertFalse(operation.name,

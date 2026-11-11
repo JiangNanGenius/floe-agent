@@ -8,10 +8,13 @@ import com.floe.android.rootsystem.GrantRequest
 import com.floe.android.rootsystem.OperationClaim
 import com.floe.android.rootsystem.ScopeRoot
 import com.floe.android.rootsystem.SystemOperation
+import com.floe.android.rootsystem.SettingsChangeAction
 import com.floe.android.rootsystem.ipc.BinderProtocol
 import com.floe.android.rootsystem.ipc.IFloeSystemService
+import com.floe.android.rootsystem.ipc.SettingsProtocol
 import com.floe.android.rootsystem.policy.AccessPolicy
 import com.floe.android.rootsystem.policy.GrantRegistry
+import com.floe.android.rootsystem.policy.SettingsKeyPolicy
 import com.floe.android.rootsystem.policy.PathPolicy
 import com.floe.android.rootsystem.policy.ProtectedTargets
 import java.io.File
@@ -631,6 +634,259 @@ internal class FloeSystemServiceBinder(
         }
     }
 
+    // -------------------------------------------------- permissions/appops
+
+    override fun queryPermissions(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PERMISSIONS_QUERY)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PERMISSIONS_QUERY, null, write = false)) {
+            return BinderProtocol.failure("denied")
+        }
+        val packageName = request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: ""
+        if (!appStateTargetAllowed(claim, packageName)) {
+            return BinderProtocol.failure("target_not_authorized")
+        }
+        return try {
+            val result = operations.queryPermissions(
+                packageName,
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+            )
+            BinderProtocol.ok().apply {
+                putString(BinderProtocol.KEY_PACKAGE_NAME, result.packageName)
+                putInt(BinderProtocol.KEY_USER_ID, result.userId)
+                putParcelableArray(
+                    BinderProtocol.KEY_PERMISSIONS,
+                    BinderProtocol.permissionStateBundles(result.permissions),
+                )
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun managePermissions(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PERMISSIONS_MANAGE)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PERMISSIONS_MANAGE, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        val packageName = request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: ""
+        if (!appStateTargetAllowed(claim, packageName)) {
+            return BinderProtocol.failure("target_not_authorized")
+        }
+        return try {
+            val receipt = operations.managePermission(
+                packageName,
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+                request.getString(BinderProtocol.KEY_PERMISSION_NAME) ?: "",
+                request.getString(BinderProtocol.KEY_PERMISSION_ACTION) ?: "",
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(BinderProtocol.KEY_PACKAGE_RESULT, permissionSetBundle(receipt))
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun queryAppOps(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.APP_OPS_QUERY)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.APP_OPS_QUERY, null, write = false)) {
+            return BinderProtocol.failure("denied")
+        }
+        val packageName = request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: ""
+        if (!appStateTargetAllowed(claim, packageName)) {
+            return BinderProtocol.failure("target_not_authorized")
+        }
+        return try {
+            val result = operations.queryAppOps(
+                packageName,
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putString(BinderProtocol.KEY_PACKAGE_NAME, result.packageName)
+                    putInt(BinderProtocol.KEY_USER_ID, result.userId)
+                    putParcelableArray(
+                        BinderProtocol.KEY_APPOPS,
+                        BinderProtocol.appOpsStateBundles(result.operations),
+                    )
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun manageAppOps(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.APP_OPS_MANAGE)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.APP_OPS_MANAGE, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        val packageName = request!!.getString(BinderProtocol.KEY_PACKAGE_NAME) ?: ""
+        if (!appStateTargetAllowed(claim, packageName)) {
+            return BinderProtocol.failure("target_not_authorized")
+        }
+        return try {
+            val receipt = operations.manageAppOps(
+                packageName,
+                request.getInt(BinderProtocol.KEY_USER_ID, 0),
+                request.getString(BinderProtocol.KEY_APPOP_OPERATION) ?: "",
+                request.getString(BinderProtocol.KEY_APPOP_MODE) ?: "",
+            ) { registry.isCancelled(claim.requestId) }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(BinderProtocol.KEY_PACKAGE_RESULT, appOpsSetBundle(receipt))
+                }
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    private fun permissionSetBundle(
+        receipt: com.floe.android.rootsystem.PermissionSetReceipt,
+    ): Bundle = Bundle().apply {
+        putString(BinderProtocol.KEY_PACKAGE_NAME, receipt.packageName)
+        putInt(BinderProtocol.KEY_USER_ID, receipt.userId)
+        putString(BinderProtocol.KEY_PERMISSION_NAME, receipt.permission)
+        putString(BinderProtocol.KEY_PERMISSION_ACTION, receipt.action)
+        putBoolean(BinderProtocol.KEY_GRANTED_BEFORE, receipt.grantedBefore)
+        putBoolean(BinderProtocol.KEY_GRANTED, receipt.grantedAfter)
+        putBoolean(BinderProtocol.KEY_SUCCEEDED, receipt.succeeded)
+        putString(BinderProtocol.KEY_DETAIL_CODE, receipt.detailCode)
+        receipt.failureDetail?.let {
+            putString(BinderProtocol.KEY_FAILURE_DETAIL, it.take(96))
+        }
+    }
+
+    private fun appOpsSetBundle(
+        receipt: com.floe.android.rootsystem.AppOpsSetReceipt,
+    ): Bundle = Bundle().apply {
+        putString(BinderProtocol.KEY_PACKAGE_NAME, receipt.packageName)
+        putInt(BinderProtocol.KEY_USER_ID, receipt.userId)
+        putString(BinderProtocol.KEY_APPOP_OPERATION, receipt.operation)
+        putString(BinderProtocol.KEY_OP_NAME, receipt.opName)
+        receipt.overrideBefore?.let {
+            putString(BinderProtocol.KEY_OVERRIDE_BEFORE, it.take(16))
+        }
+        receipt.uidBefore?.let {
+            putString(BinderProtocol.KEY_UID_BEFORE, it.take(16))
+        }
+        receipt.defaultBefore?.let {
+            putString(BinderProtocol.KEY_DEFAULT_BEFORE, it.take(16))
+        }
+        putString(BinderProtocol.KEY_EFFECTIVE_BEFORE, receipt.effectiveBefore.take(16))
+        putString(BinderProtocol.KEY_REQUESTED_MODE, receipt.requestedMode.take(16))
+        receipt.overrideAfter?.let {
+            putString(BinderProtocol.KEY_OVERRIDE_MODE, it.take(16))
+        }
+        putString(BinderProtocol.KEY_EFFECTIVE_MODE, receipt.effectiveAfter.take(16))
+        putBoolean(BinderProtocol.KEY_SUCCEEDED, receipt.succeeded)
+        putString(BinderProtocol.KEY_DETAIL_CODE, receipt.detailCode)
+        receipt.failureDetail?.let {
+            putString(BinderProtocol.KEY_FAILURE_DETAIL, it.take(96))
+        }
+    }
+
+    override fun readSettings(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.SETTINGS_READ)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.SETTINGS_READ, null, write = false)) {
+            return BinderProtocol.failure("denied")
+        }
+        val namespace = SettingsProtocol.namespaceOf(request)
+            ?: return BinderProtocol.failure("setting_namespace")
+        val key = SettingsProtocol.keyOf(request)
+            ?: return BinderProtocol.failure("setting_key")
+        if (SettingsKeyPolicy.specFor(namespace, key) == null) {
+            return BinderProtocol.failure("setting_key")
+        }
+        return try {
+            val result = operations.readSetting(namespace, key) {
+                registry.isCancelled(claim.requestId)
+            }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply { putAll(SettingsProtocol.readResultBundle(result)) }
+            }
+        } catch (e: SettingsOperations.SettingsException) {
+            BinderProtocol.failure(e.code)
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun writeSettings(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.SETTINGS_WRITE)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.SETTINGS_WRITE, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        val changes = SettingsProtocol.parseChanges(request)
+            ?: return BinderProtocol.failure("changes")
+        val requests = changes.map {
+            SettingsKeyPolicy.ChangeRequest(
+                it.namespace,
+                it.key,
+                when (it.action) {
+                    SettingsChangeAction.PUT -> SettingsKeyPolicy.ChangeAction.PUT
+                    SettingsChangeAction.DELETE -> SettingsKeyPolicy.ChangeAction.DELETE
+                },
+                it.value,
+            )
+        }
+        if (SettingsKeyPolicy.checkBatch(requests) is SettingsKeyPolicy.BatchCheck.Rejected) {
+            // Re-validate on the service side too; the typed write repeats
+            // the check and refuses with the exact code before any mutation.
+        }
+        return try {
+            val receipt = operations.writeSettings(changes) {
+                registry.isCancelled(claim.requestId)
+            }
+            if (registry.isCancelled(claim.requestId) && !receipt.cancelled) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putAll(SettingsProtocol.batchReceiptBundle(receipt))
+                }
+            }
+        } catch (e: SettingsOperations.SettingsException) {
+            BinderProtocol.failure(e.code)
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
     /** App-state targets must come from the user-selected ceiling in the grant. */
     private fun appStateTargetAllowed(claim: OperationClaim, packageName: String): Boolean {
         val targets = registry.packageTargets(claim) ?: return false
@@ -693,7 +949,13 @@ internal class FloeSystemServiceBinder(
         add("package.setEnabled")
         add("package.removeForUser")
         add("package.restore")
+        add("settings.read")
+        add("settings.write")
         add("staged.release")
+        add("permissions.query")
+        add("permissions.manage")
+        add("appOps.query")
+        add("appOps.manage")
         add(if (mode == AccessPolicy.MODE_ROOT) "root.uid0" else "adb.shell")
         if (mode == AccessPolicy.MODE_ROOT) add("capture.root")
     }

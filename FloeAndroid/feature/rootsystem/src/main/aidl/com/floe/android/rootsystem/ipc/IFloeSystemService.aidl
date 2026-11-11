@@ -63,4 +63,25 @@ interface IFloeSystemService {
      * no package-manager effect.
      */
     Bundle releaseStagedApk(in Bundle request);
+
+    // ------------------------------------------------------------------
+    // Permission/AppOps additions, appended after releaseStagedApk on the
+    // same never-shipped protocol revision (VERSION stays 3; the legacy
+    // wire-2 first-19 positions and every earlier appended method stay
+    // untouched). Selected-target only: the real declared-permission grant
+    // state and closed-catalog AppOps modes for the current profile, with
+    // post-operation read-back. No UID/shared-UID target ever reaches here.
+    // ------------------------------------------------------------------
+    Bundle queryPermissions(in Bundle request);
+    Bundle managePermissions(in Bundle request);
+    Bundle queryAppOps(in Bundle request);
+    Bundle manageAppOps(in Bundle request);
+
+    // ------------------------------------------------------------------
+    // Settings additions, appended after the app-state/cache block. Wire 3
+    // has never shipped publicly, so these ride the same protocol revision;
+    // the first nineteen legacy transactions stay untouched.
+    // ------------------------------------------------------------------
+    Bundle readSettings(in Bundle request);
+    Bundle writeSettings(in Bundle request);
 }

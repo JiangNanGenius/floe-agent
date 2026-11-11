@@ -525,6 +525,158 @@ internal class FloeBinderClient(private val binder: IBinder) {
         AccessActionResult.Unavailable("service_died")
     }
 
+    // -------------------------------------------------- permissions/appops
+
+    fun queryPermissions(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.PermissionQueryResult> {
+        val request = request(claim, SystemOperation.PERMISSIONS_QUERY, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+        }
+        return try {
+            val reply = service?.queryPermissions(request)
+            if (BinderProtocol.isOk(reply)) {
+                val result = com.floe.android.rootsystem.PermissionQueryResult(
+                    packageName = reply?.getString(BinderProtocol.KEY_PACKAGE_NAME)?.take(BinderProtocol.MAX_NAME)
+                        ?: return RootResult.Failed("receipt"),
+                    userId = reply?.getInt(BinderProtocol.KEY_USER_ID, userId) ?: userId,
+                    permissions = BinderProtocol.permissionStates(reply) ?: emptyList(),
+                )
+                RootResult.Ok(result)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun managePermission(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        permission: String,
+        action: String,
+    ): RootResult<com.floe.android.rootsystem.PermissionSetReceipt> {
+        val request = request(claim, SystemOperation.PERMISSIONS_MANAGE, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+            putString(BinderProtocol.KEY_PERMISSION_NAME, permission)
+            putString(BinderProtocol.KEY_PERMISSION_ACTION, action)
+        }
+        return try {
+            val reply = service?.managePermissions(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.permissionSetResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun queryAppOps(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.AppOpsQueryResult> {
+        val request = request(claim, SystemOperation.APP_OPS_QUERY, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+        }
+        return try {
+            val reply = service?.queryAppOps(request)
+            if (BinderProtocol.isOk(reply)) {
+                val result = com.floe.android.rootsystem.AppOpsQueryResult(
+                    packageName = reply?.getString(BinderProtocol.KEY_PACKAGE_NAME)?.take(BinderProtocol.MAX_NAME)
+                        ?: return RootResult.Failed("receipt"),
+                    userId = reply?.getInt(BinderProtocol.KEY_USER_ID, userId) ?: userId,
+                    operations = BinderProtocol.appOpsStates(reply) ?: emptyList(),
+                )
+                RootResult.Ok(result)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun manageAppOps(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        operation: String,
+        mode: String,
+    ): RootResult<com.floe.android.rootsystem.AppOpsSetReceipt> {
+        val request = request(claim, SystemOperation.APP_OPS_MANAGE, null).apply {
+            putString(BinderProtocol.KEY_PACKAGE_NAME, packageName)
+            putInt(BinderProtocol.KEY_USER_ID, userId)
+            putString(BinderProtocol.KEY_APPOP_OPERATION, operation)
+            putString(BinderProtocol.KEY_APPOP_MODE, mode)
+        }
+        return try {
+            val reply = service?.manageAppOps(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = BinderProtocol.appOpsSetResult(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun readSettings(
+        claim: OperationClaim,
+        namespace: String,
+        key: String,
+    ): RootResult<com.floe.android.rootsystem.SettingReadResult> {
+        val request = request(claim, SystemOperation.SETTINGS_READ, null).apply {
+            putAll(SettingsProtocol.readRequest(namespace, key))
+        }
+        return try {
+            val reply = service?.readSettings(request)
+            if (BinderProtocol.isOk(reply)) {
+                val result = SettingsProtocol.readResult(reply)
+                if (result == null) RootResult.Failed("receipt") else RootResult.Ok(result)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun writeSettings(
+        claim: OperationClaim,
+        changes: List<com.floe.android.rootsystem.SettingsChange>,
+    ): RootResult<com.floe.android.rootsystem.SettingsBatchReceipt> {
+        val request = request(claim, SystemOperation.SETTINGS_WRITE, null).apply {
+            putParcelableArray(
+                SettingsProtocol.KEY_SETTINGS_CHANGES,
+                SettingsProtocol.changeBundles(changes),
+            )
+        }
+        return try {
+            val reply = service?.writeSettings(request)
+            if (BinderProtocol.isOk(reply)) {
+                val receipt = SettingsProtocol.batchReceipt(reply)
+                if (receipt == null) RootResult.Failed("receipt") else RootResult.Ok(receipt)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
     fun cancel(requestId: String) {
         try {
             service?.cancel(requestId)
@@ -557,7 +709,11 @@ internal class FloeBinderClient(private val binder: IBinder) {
             "scope_not_writable", "scope_forbidden", "scope_floe_private",
             "protected_ancestor", "cancelled",
             "protected", "protected_target", "system_package",
-            "not_system_package", "protected_role", "target_not_authorized" -> RootResult.Denied(code)
+            "not_system_package", "protected_role", "target_not_authorized",
+            "cross_user_unsupported",
+            "permission", "permission_action", "permission_not_declared",
+            "permission_protected", "permission_unknown",
+            "appop_operation", "appop_mode", "shared_uid_refused" -> RootResult.Denied(code)
             "service_died", "unavailable" -> RootResult.Unavailable(code)
             else -> RootResult.Failed(code)
         }

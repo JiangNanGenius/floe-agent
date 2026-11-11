@@ -1010,3 +1010,13 @@ English: UI refinement and Linux component work now run in separate source scope
 本批源码已完成统一验证：56项根环境／运行层定向检查与Full实际消费端编译通过；659项Gradle任务中607项复用缓存。并行复制保留逐文件及目录落盘，发布和删除前等待工作线程结束；主线程补正了信号量中断清理、输入句柄移交及调用者中断回归。UI首包实际落在Linux启动页和共享选择控件，整体菜单、材质、图标和其他页面精修继续保留，不能据此宣称全App完成。新APK界面、设备加速和新原生确认行为仍需实测，公开76保持不可变。
 
 English: The combined source passes56 focused rootfs/runtime cases and Full consumer compilation, with607 of659 Gradle tasks reused. The first UI package covers the launcher and reusable choice control; broader visual refinement, device performance and the new native confirmation path remain pending. No new APK or device pass is inferred from compilation.
+
+## 2026-11-11 N02 ADB 权限与设备设置源码收口
+
+在已接通的安装／覆盖更新／批量卸载及应用启停操作上，合并四项权限／AppOps工具和两项设备设置工具。配置沿用一个高级系统总开关、六类多选操作及已选应用范围；范围内日常动作经既有自动审批链路取得真实任务授权，不新增逐项确认。设置仅处理既定十项，动画缩放明确为全设备范围；安装版本、签名、权限、AppOps和设置均实际读回，失败及部分完成保留真实回执。
+
+本批78项相关逻辑检查及Full实际消费端编译通过；原始编译、解析和新夹具失败均保留。实际AIDL源码与Release编译器生成的32个调用序号一致，旧版前19项位置保持。修复手动操作授权登记、设置批次目标不一致、AppOps前导空格解析、异步状态与类别标签；多选不再静默截断。Android9已具备的后台AppOp按[AOSP源码](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-9.0.0_r1/core/java/android/app/AppOpsManager.java)开放，不误设Android11门槛，这不代表Android9实机验收通过。
+
+下一份实际Full APK将消费已保存的native38原生库，并编译最后几行设置重复点击／取消收尾保护；不重复未改组件或整套JVM检查。三星将实际验证自建应用的安装、覆盖更新、批量卸载、启停、权限／AppOps修改与恢复，以及配对服务和设置读写恢复。当前不宣称新APK或三星通过，1.0.0仍在功能闭合和实际验证后再提升版本；仅发行Full，保留iOS Latest。
+
+English: Typed permissions, AppOps and ten settings now join the existing app-management path through one selected advanced scope and the canonical automatic-grant lifecycle.78 focused checks pass; actual Release AIDL ordinals retain the shipped first19. A final small UI duplicate-action guard is compiled in the next Full APK. Samsung behavior and final1.0.0 qualification remain separate; no new public APK is claimed here.

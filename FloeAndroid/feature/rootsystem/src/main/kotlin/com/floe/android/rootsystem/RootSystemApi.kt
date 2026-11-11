@@ -122,6 +122,49 @@ enum class SystemOperation {
      * (pm install-existing). Absent cross-user requests refuse honestly.
      */
     PACKAGE_RESTORE,
+    /**
+     * Read the real manifest-declared permissions, protection levels and
+     * per-user granted state for one selected installed app of the current
+     * profile. Read-only; the target must be inside the grant's selected
+     * packageTargets ceiling and is never a UID/shared-UID query.
+     */
+    PERMISSIONS_QUERY,
+    /**
+     * Grant or revoke one manifest-declared runtime (dangerous) or
+     * development permission for one selected app of the current profile
+     * through the real package manager, with an independent post-pm
+     * read-back of the same user's grant state. Signature/fixed/admin/
+     * platform permissions stay hard-refused per item.
+     */
+    PERMISSIONS_MANAGE,
+    /**
+     * Read the closed-catalog AppOps modes for one selected installed app
+     * of the current profile (package-scoped `appops get`, never --uid).
+     * Read-only; the same selected-target ceiling applies.
+     */
+    APP_OPS_QUERY,
+    /**
+     * Set one closed-catalog AppOps mode (allow/ignore/deny/default/
+     * foreground) for one selected app of the current profile through the
+     * real appops command, with old/requested/effective capture and a
+     * post-set read-back. "default" clears the override; it is never an
+     * arbitrary allow.
+     */
+    APP_OPS_MANAGE,
+    /**
+     * Read one closed settings key through the real Settings provider:
+     * `system` keys for the exact current user, or the three device-wide
+     * `global` animation scales. Read-only; absent keys report absence.
+     */
+    SETTINGS_READ,
+    /**
+     * Apply one bounded typed batch (at most eight changes) to the closed
+     * settings table with per-item old/requested/effective read-back
+     * receipts. A mutation: it rides the base management ceiling plus the
+     * shared advanced-system master like the app-state group; no secure,
+     * credential, accessibility or ADB keys exist in this table.
+     */
+    SETTINGS_WRITE,
     ;
 
     companion object {
@@ -134,6 +177,12 @@ enum class SystemOperation {
             PACKAGE_SET_ENABLED,
             PACKAGE_REMOVE_FOR_USER,
             PACKAGE_RESTORE,
+            PERMISSIONS_MANAGE,
+            APP_OPS_MANAGE,
+            // The closed settings write reuses the SAME management flag
+            // machinery (GrantRegistry re-checks it on every call); the
+            // additional advanced-system master gate lives in the App host.
+            SETTINGS_WRITE,
         )
 
         /**
@@ -152,6 +201,9 @@ enum class SystemOperation {
             PACKAGE_SET_ENABLED,
             PACKAGE_REMOVE_FOR_USER,
             PACKAGE_RESTORE,
+            PERMISSIONS_MANAGE,
+            APP_OPS_MANAGE,
+            SETTINGS_WRITE,
         )
 
         fun isPackageManagement(operation: SystemOperation): Boolean =
@@ -354,6 +406,98 @@ data class PackageStateReceipt(
     val succeeded: Boolean,
     val detailCode: String,
     /** Concise sanitized `pm` failure reason; null on success. */
+    val failureDetail: String? = null,
+)
+
+/**
+ * One manifest-declared permission row for system.permissions.query. The
+ * protection level is the bounded policy token (dangerous/development/
+ * signature/privileged/normal/other); granted is the real per-user flag from
+ * the PackageManager read, never inferred from the declaration alone.
+ */
+data class PermissionState(
+    val name: String,
+    val protectionLevel: String,
+    val granted: Boolean,
+)
+
+data class PermissionQueryResult(
+    val packageName: String,
+    val userId: Int,
+    val permissions: List<PermissionState>,
+)
+
+/**
+ * Definitive outcome of one pm grant/revoke attempt. [grantedBefore] is the
+ * live per-user state established BEFORE any mutation (the call refuses
+ * when it cannot be read) and [grantedAfter] the independent read-back of
+ * the SAME user's grant state after it — never a shell success string.
+ * [detailCode] is a bounded machine token (state_matched / grant_failed /
+ * revoke_failed / verify_failed).
+ */
+data class PermissionSetReceipt(
+    val packageName: String,
+    val userId: Int,
+    val permission: String,
+    val action: String,
+    val grantedBefore: Boolean,
+    val grantedAfter: Boolean,
+    val succeeded: Boolean,
+    val detailCode: String,
+    /** Concise sanitized `pm` failure reason; null on success. */
+    val failureDetail: String? = null,
+)
+
+/**
+ * One closed-catalog AppOps row for system.appOps.query. The restorable
+ * layers stay SEPARATE from the effective mode: [overrideMode] is the
+ * per-package row (null when none printed), [uidMode] the UID-level mode,
+ * [defaultMode] the platform "Default mode:" line, and [effective] the
+ * computed truth (an active UID mode takes precedence; an explicit "default" override row counts
+ * as platform behavior; with only "No operations." and no default line the
+ * effective mode is "default"; with nothing recognized it is "unknown" —
+ * never an invented allow).
+ */
+data class AppOpsModeState(
+    val operation: String,
+    val opName: String,
+    val overrideMode: String?,
+    val uidMode: String?,
+    val defaultMode: String?,
+    val effective: String,
+)
+
+data class AppOpsQueryResult(
+    val packageName: String,
+    val userId: Int,
+    val operations: List<AppOpsModeState>,
+)
+
+/**
+ * Definitive outcome of one `appops set` attempt. The BEFORE state keeps
+ * the restorable override/UID/default layers plus the effective mode, so an
+ * inherited UID mode is never "restored" by writing a new package override.
+ * [requestedMode] is the closed requested token; [overrideAfter] is the
+ * observed per-package row after the set (null when none). Success requires
+ * exit 0 plus a read-back proving the request: a concrete mode equals the
+ * per-package override; "default" is proven by the override row being gone
+ * OR recorded as "default". Unparseable read-back refuses, never succeeds.
+ */
+data class AppOpsSetReceipt(
+    val packageName: String,
+    val userId: Int,
+    val operation: String,
+    val opName: String,
+    val overrideBefore: String?,
+    val uidBefore: String?,
+    val defaultBefore: String?,
+    val effectiveBefore: String,
+    val requestedMode: String,
+    val overrideAfter: String?,
+    val effectiveAfter: String,
+    val succeeded: Boolean,
+    val detailCode: String,
+    /** Concise sanitized `appops` failure reason; null on success. */
     val failureDetail: String? = null,
 )
 
@@ -690,6 +834,69 @@ class RootSystemController internal constructor(
     suspend fun releaseStagedApk(sha256: String): AccessActionResult =
         impl.releaseStagedApk(sha256)
 
+    /**
+     * Read the declared permissions and granted state for one selected app
+     * of the current profile. Read-only; the service re-checks the grant's
+     * selected-target ceiling. Mutation protection does not hide metadata.
+     */
+    suspend fun queryPermissions(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<PermissionQueryResult> = impl.queryPermissions(claim, packageName, userId)
+
+    /**
+     * Grant or revoke one declared runtime/development permission for one
+     * selected app of the current profile. The management ceiling applies;
+     * signature/fixed/admin/platform permissions refuse per item with a real
+     * receipt, never a silent skip.
+     */
+    suspend fun managePermission(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        permission: String,
+        action: String,
+    ): RootResult<PermissionSetReceipt> =
+        impl.managePermission(claim, packageName, userId, permission, action)
+
+    /** Read the closed-catalog AppOps modes for one selected app. */
+    suspend fun queryAppOps(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<AppOpsQueryResult> = impl.queryAppOps(claim, packageName, userId)
+
+    /**
+     * Set one closed-catalog AppOps mode for one selected app of the current
+     * profile, with old/requested/effective capture and a post-set read-back.
+     */
+    suspend fun manageAppOps(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        operation: String,
+        mode: String,
+    ): RootResult<AppOpsSetReceipt> =
+        impl.manageAppOps(claim, packageName, userId, operation, mode)
+
+    /** Read one closed settings key (system = exact current user, global = device-wide). */
+    suspend fun readSetting(
+        claim: OperationClaim,
+        namespace: String,
+        key: String,
+    ): RootResult<SettingReadResult> = impl.readSetting(claim, namespace, key)
+
+    /**
+     * Apply one bounded typed settings batch. Per-item receipts retain the
+     * old stored value (absence included), the requested value and the real
+     * stored read-back; cancellation preserves completed items.
+     */
+    suspend fun writeSettings(
+        claim: OperationClaim,
+        changes: List<SettingsChange>,
+    ): RootResult<SettingsBatchReceipt> = impl.writeSettings(claim, changes)
+
     suspend fun cancelOperation(claim: OperationClaim): AccessActionResult =
         impl.cancelOperation(claim)
 
@@ -765,6 +972,7 @@ object RootSystemModule : com.floe.android.contracts.CapabilitySource {
             com.floe.android.contracts.Capability("system.files", systemBackend),
             com.floe.android.contracts.Capability("system.packages", systemBackend),
             com.floe.android.contracts.Capability("system.diagnostics", systemBackend),
+            com.floe.android.contracts.Capability("system.settings", systemBackend),
         )
     }
 }

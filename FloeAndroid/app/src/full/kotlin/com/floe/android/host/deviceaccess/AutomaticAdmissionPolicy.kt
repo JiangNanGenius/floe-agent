@@ -32,6 +32,10 @@ internal object AutomaticAdmissionPolicy {
         val fileWritesAllowed: Boolean = false,
         /** The durable package-management ceiling is on. */
         val packageManagementAllowed: Boolean = false,
+        /** The ONE shared advanced-system master (durable). */
+        val advancedSystemManagementAllowed: Boolean = false,
+        /** Allowed advanced tool names from the ABI six-name closed list. */
+        val advancedAllowedTools: Set<String> = emptySet(),
     )
 
     /**
@@ -58,6 +62,22 @@ internal object AutomaticAdmissionPolicy {
         SystemOperation.PACKAGE_REMOVE_FOR_USER,
         SystemOperation.PACKAGE_RESTORE,
         -> ceilings.packageManagementAllowed
+
+        // Advanced permission/AppOps mutations auto-pass only inside the
+        // same enabled management ceiling; the shared advanced master, the
+        // exact allowed tool name and the selected-target ceiling are
+        // enforced by the host gate and re-checked on the service grant.
+        SystemOperation.PERMISSIONS_MANAGE,
+        SystemOperation.APP_OPS_MANAGE,
+        -> ceilings.packageManagementAllowed
+
+        // The closed settings write carries the SAME management ceiling and
+        // additionally requires the shared advanced master with its exact
+        // ABI name selected. There is no separate grant path.
+        SystemOperation.SETTINGS_WRITE,
+        -> ceilings.packageManagementAllowed &&
+            ceilings.advancedSystemManagementAllowed &&
+            DeviceAccessToolCatalog.SYSTEM_SETTINGS_WRITE in ceilings.advancedAllowedTools
 
         else -> false
     }

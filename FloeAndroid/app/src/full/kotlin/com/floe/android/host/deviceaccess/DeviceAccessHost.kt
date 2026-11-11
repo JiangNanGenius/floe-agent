@@ -28,6 +28,8 @@ import com.floe.android.DeviceAccessErrorSectionUi
 import com.floe.android.DeviceAccessFileRootUi
 import com.floe.android.DeviceAccessFileRootKindUi
 import com.floe.android.DeviceAccessPackageUi
+import com.floe.android.DeviceAccessPermissionOpsInspector
+import com.floe.android.DeviceAccessPermissionOpsResult
 import com.floe.android.DeviceAccessPairingDiscoveryUi
 import com.floe.android.DeviceAccessPresentationState
 import com.floe.android.DeviceAccessPresentation
@@ -82,10 +84,14 @@ import com.floe.android.rootsystem.RootSystemConfig
 import com.floe.android.rootsystem.RootSystemController
 import com.floe.android.rootsystem.RootSystemModule
 import com.floe.android.rootsystem.ScopeRoot
+import com.floe.android.rootsystem.SettingItemReceipt
+import com.floe.android.rootsystem.SettingsChange
+import com.floe.android.rootsystem.SettingsChangeAction
 import com.floe.android.rootsystem.StagedApk
 import com.floe.android.rootsystem.SystemOperation
 import com.floe.android.rootsystem.ipc.BinderProtocol
 import com.floe.android.rootsystem.policy.FloePackageFamily
+import com.floe.android.rootsystem.policy.SettingsKeyPolicy
 import java.nio.charset.CodingErrorAction
 import java.io.File
 import java.util.UUID
@@ -211,6 +217,16 @@ internal class DeviceAccessHost(
         "floe_device_access_v1", Context.MODE_PRIVATE)
     private val mutablePresentation = MutableStateFlow(DeviceAccessPresentationState())
     val presentation: StateFlow<DeviceAccessPresentationState> = mutablePresentation.asStateFlow()
+
+    /** Live stored values for the closed system-settings sheet (user action). */
+    private val mutableSystemSettingsUi =
+        MutableStateFlow(com.floe.android.DeviceAccessSystemSettingsUiState())
+    val systemSettingsUi: StateFlow<com.floe.android.DeviceAccessSystemSettingsUiState> =
+        mutableSystemSettingsUi.asStateFlow()
+
+    @Volatile
+    private var systemSettingsSnapshot: Map<String, String?> = emptyMap()
+    private val systemSettingsWriteInFlight = AtomicBoolean(false)
 
     private val activation = PhoneControlModule.activation(context)
     private var phoneClient: PhoneControlClient? = null
@@ -400,6 +416,15 @@ internal class DeviceAccessHost(
         onStageApks = ::stageApks,
         onRemoveStagedApk = ::removeStagedApk,
         onRevokeSystemGrants = ::revokeSystemGrants,
+        onSystemSettingsRefresh = {
+            mutableSystemSettingsUi.value = com.floe.android.DeviceAccessSystemSettingsUiState(
+                enabled = systemSettingsCeilingEnabled(), busy = true,
+            )
+            publish()
+            scope.launch(io) { refreshSystemSettings() }
+        },
+        onSystemSettingsApply = ::applySystemSettingChanges,
+        onSystemSettingsRestore = ::restoreSystemSetting,
     )
 
     // ------------------------------------------------------------- lifecycle
@@ -839,6 +864,8 @@ internal class DeviceAccessHost(
      * first, then cancel the real backend operation where one is in flight.
      */
     private fun fenceActiveRootGrants() {
+        userActionGrants.values.forEach { it.cancelled.set(true) }
+        userActionGrants.clear()
         val active = rootGrants.values.toList()
         if (active.isEmpty()) return
         rootGrants.clear()
@@ -1635,6 +1662,9 @@ internal class DeviceAccessHost(
             wholeScreenConsent = settings.wholeScreenConsent,
             windowScreenshotCapable = Build.VERSION.SDK_INT >= 34,
         )
+        mutableSystemSettingsUi.value = mutableSystemSettingsUi.value.copy(
+            enabled = systemSettingsCeilingEnabled(),
+        )
         mutablePresentation.value = DeviceAccessPresentationState(
             accessibility = accessibilityUi(),
             adb = adbUi(),
@@ -1663,6 +1693,7 @@ internal class DeviceAccessHost(
             autoUnlock = settings.autoUnlock && unlockConfigured,
             unlockConfigured = unlockConfigured,
             floatingControls = settings.floatingControls,
+            systemSettings = mutableSystemSettingsUi.value,
         )
         pump?.publishAvailability()
     }
@@ -2935,6 +2966,12 @@ internal class DeviceAccessHost(
             DeviceAccessToolCatalog.SYSTEM_PACKAGES_SET_ENABLED -> systemPackagesSetEnabled(call)
             DeviceAccessToolCatalog.SYSTEM_PACKAGES_REMOVE_FOR_USER -> systemPackagesRemoveForUser(call)
             DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE -> systemPackagesRestore(call)
+            DeviceAccessToolCatalog.SYSTEM_PERMISSIONS_QUERY -> systemPermissionsQuery(call)
+            DeviceAccessToolCatalog.SYSTEM_PERMISSIONS_MANAGE -> systemPermissionsManage(call)
+            DeviceAccessToolCatalog.SYSTEM_APPOPS_QUERY -> systemAppOpsQuery(call)
+            DeviceAccessToolCatalog.SYSTEM_APPOPS_MANAGE -> systemAppOpsManage(call)
+            DeviceAccessToolCatalog.SYSTEM_SETTINGS_READ -> systemSettingsRead(call)
+            DeviceAccessToolCatalog.SYSTEM_SETTINGS_WRITE -> systemSettingsWrite(call)
             else -> PlatformToolOutcome.Failure("unknown_tool")
         }
         if (call.tool.startsWith("phone.")) pausedPhoneOutcome(call)?.let { return it }
@@ -3541,6 +3578,11 @@ internal class DeviceAccessHost(
         SystemOperation.SERVICE_QUERY,
         SystemOperation.PACKAGE_QUERY,
         SystemOperation.NETWORK_DIAGNOSTICS,
+        SystemOperation.PERMISSIONS_QUERY,
+        SystemOperation.APP_OPS_QUERY,
+        // Closed settings read keeps the ordinary read-only ceiling
+        // (temporary-chat rules unchanged).
+        SystemOperation.SETTINGS_READ,
     )
 
     private suspend fun <T> withRootGrant(
@@ -3676,6 +3718,17 @@ internal class DeviceAccessHost(
         SystemOperation.PACKAGE_SET_ENABLED,
         SystemOperation.PACKAGE_REMOVE_FOR_USER,
         SystemOperation.PACKAGE_RESTORE -> HOST_BATCH_OUTER_TIMEOUT_MILLIS
+        // Permission/AppOps batches settle under the same 17-minute Host
+        // outer ceiling as the other bounded batch mutation tools; the
+        // per-item OS timeouts inside the service keep the real outcome far
+        // under it. The two queries stay on the ordinary 25s read-only
+        // budget (each does at most 13 bounded single-op reads).
+        SystemOperation.PERMISSIONS_MANAGE,
+        SystemOperation.APP_OPS_MANAGE -> HOST_BATCH_OUTER_TIMEOUT_MILLIS
+        // Per-item settings grant: one bounded child plus read-back. The
+        // 17-minute host batch ceiling for the closed nine mutation tools is
+        // unchanged; no blanket timeout expansion.
+        SystemOperation.SETTINGS_WRITE -> 30_000
         else -> 25_000
     }
 
@@ -4313,6 +4366,500 @@ internal class DeviceAccessHost(
         return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
     }
 
+    // --------------------------------------------- permission/appops tools
+
+    /**
+     * The Settings-sheet inspector: user-initiated reads and changes of the
+     * selected targets' permission/AppOps state. Every action re-checks the
+     * CURRENT durable ceilings (management + advanced master + selected
+     * targets) and the service re-checks the registered grant and target
+     * ceiling, so a ceiling revoked while the sheet is open refuses on the
+     * very next tap.
+     */
+    val permissionOpsInspector = object : DeviceAccessPermissionOpsInspector {
+        override suspend fun permissions(packageName: String): DeviceAccessPermissionOpsResult {
+            val result = withUserAdvancedGrant(
+                SystemOperation.PERMISSIONS_QUERY, packageName,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withUserAdvancedGrant RootResult.Unavailable("service_not_alive")
+                controller.queryPermissions(claim, packageName, currentUserId())
+            }
+            return when (result) {
+                is RootResult.Ok -> {
+                    val query = result.value
+                    DeviceAccessPermissionOpsResult.Ok(
+                        buildString {
+                            append("permissions=").append(query.permissions.size)
+                            query.permissions.take(MAX_LIST_ROWS).forEach { row ->
+                                append('\n')
+                                    .append(if (row.granted) "granted" else "denied").append('|')
+                                    .append(row.protectionLevel).append('|')
+                                    .append(row.name.take(140))
+                            }
+                            if (query.permissions.size > MAX_LIST_ROWS) {
+                                append("\n… more")
+                            }
+                        },
+                    )
+                }
+                else -> permissionOpsFailure(result)
+            }
+        }
+
+        override suspend fun appOps(packageName: String): DeviceAccessPermissionOpsResult {
+            val result = withUserAdvancedGrant(
+                SystemOperation.APP_OPS_QUERY, packageName,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withUserAdvancedGrant RootResult.Unavailable("service_not_alive")
+                controller.queryAppOps(claim, packageName, currentUserId())
+            }
+            return when (result) {
+                is RootResult.Ok -> {
+                    val query = result.value
+                    DeviceAccessPermissionOpsResult.Ok(
+                        buildString {
+                            query.operations.forEach { row ->
+                                append('\n').append(row.operation).append('|')
+                                    .append(row.effective)
+                                row.overrideMode?.let { append("|override=").append(it) }
+                                row.uidMode?.let { append("|uid=").append(it) }
+                                row.defaultMode?.let { append("|default=").append(it) }
+                            }
+                        },
+                    )
+                }
+                else -> permissionOpsFailure(result)
+            }
+        }
+
+        override suspend fun setPermission(
+            packageName: String,
+            permission: String,
+            grant: Boolean,
+        ): DeviceAccessPermissionOpsResult {
+            val result = withUserAdvancedGrant(
+                SystemOperation.PERMISSIONS_MANAGE, packageName,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withUserAdvancedGrant RootResult.Unavailable("service_not_alive")
+                controller.managePermission(
+                    claim, packageName, currentUserId(), permission,
+                    if (grant) {
+                        com.floe.android.rootsystem.policy.PermissionOpsPolicy.ACTION_GRANT
+                    } else {
+                        com.floe.android.rootsystem.policy.PermissionOpsPolicy.ACTION_REVOKE
+                    },
+                )
+            }
+            return when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        DeviceAccessPermissionOpsResult.Ok(
+                            "ok ${receipt.permission} granted=${receipt.grantedAfter}",
+                        )
+                    } else {
+                        DeviceAccessPermissionOpsResult.Failed(
+                            receipt.detailCode +
+                                (receipt.failureDetail?.let { ": ${it.take(80)}" } ?: ""),
+                        )
+                    }
+                }
+                else -> permissionOpsFailure(result)
+            }
+        }
+
+        override suspend fun setAppOp(
+            packageName: String,
+            operation: String,
+            mode: String,
+        ): DeviceAccessPermissionOpsResult {
+            val result = withUserAdvancedGrant(
+                SystemOperation.APP_OPS_MANAGE, packageName,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withUserAdvancedGrant RootResult.Unavailable("service_not_alive")
+                controller.manageAppOps(claim, packageName, currentUserId(), operation, mode)
+            }
+            return when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        DeviceAccessPermissionOpsResult.Ok(
+                            "ok ${receipt.operation} requested=${receipt.requestedMode} " +
+                                "effective=${receipt.effectiveAfter}",
+                        )
+                    } else {
+                        DeviceAccessPermissionOpsResult.Failed(
+                            receipt.detailCode +
+                                (receipt.failureDetail?.let { ": ${it.take(80)}" } ?: ""),
+                        )
+                    }
+                }
+                else -> permissionOpsFailure(result)
+            }
+        }
+    }
+
+    private fun permissionOpsFailure(result: RootResult<*>): DeviceAccessPermissionOpsResult =
+        when (result) {
+            is RootResult.Denied -> DeviceAccessPermissionOpsResult.Failed(result.code)
+            is RootResult.Unavailable ->
+                DeviceAccessPermissionOpsResult.Failed("unavailable_" + result.code)
+            is RootResult.Failed -> DeviceAccessPermissionOpsResult.Failed(result.code)
+            is RootResult.Ok -> DeviceAccessPermissionOpsResult.Failed("unknown")
+        }
+
+    /**
+     * UI-initiated advanced grant: the tap in Settings IS the user approval,
+     * so unlike the model path no canonical approvalGrantID exists. A RAM
+     * nonce grant id is registered with the privileged service for exactly
+     * one action and revoked immediately after; the durable ceilings are
+     * re-checked from the CURRENT settings at dispatch and the service
+     * re-checks the grant and the selected-target ceiling. Never a model
+     * path: tool calls still require the canonical approval grant.
+     */
+    private suspend fun <T> withUserAdvancedGrant(
+        operation: SystemOperation,
+        target: String,
+        block: suspend (OperationClaim) -> RootResult<T>,
+    ): RootResult<T> {
+        if (rootRebuilding || rootConfigDirty) return RootResult.Unavailable("policy_updating")
+        val controller = rootController ?: return RootResult.Unavailable("service_not_alive")
+        if (!systemServiceAlive()) return RootResult.Unavailable("service_not_alive")
+        if (!settings.packageManagementAllowed) return RootResult.Denied("management_not_allowed")
+        if (!settings.advancedSystemManagementAllowed) {
+            return RootResult.Denied("advanced_system_not_allowed")
+        }
+        if (settings.advancedSystemTargets.isEmpty()) return RootResult.Denied("advanced_targets_required")
+        if (target !in settings.advancedSystemTargets) return RootResult.Denied("target_not_authorized")
+        return withUserActionGrant(
+            operation = operation,
+            target = target,
+            destructive = operation !in readOnlyOperations,
+            packageTargets = settings.advancedSystemTargets,
+            block = block,
+        )
+    }
+
+
+
+    /**
+     * Read-only advanced gate: the base management ceiling, the shared
+     * advanced master and a non-empty selected target set. Query
+     * descriptors deliberately do NOT require the tool name in the durable
+     * allowed-tools set (they disclose state only); the two manager tools
+     * use [advancedSystemGate], which additionally pins the exact name.
+     */
+    private fun advancedSystemQueryGate(): PlatformToolOutcome.Failure? = when {
+        !settings.packageManagementAllowed -> PlatformToolOutcome.Failure(
+            "management_not_allowed",
+            "The user must allow app management in Settings > Phone",
+        )
+        !settings.advancedSystemManagementAllowed -> PlatformToolOutcome.Failure(
+            "advanced_system_not_allowed",
+            "The user must turn on advanced app state in Settings > Phone",
+        )
+        settings.advancedSystemTargets.isEmpty() -> PlatformToolOutcome.Failure(
+            "advanced_targets_required",
+            "The user must select target apps in Settings > Phone",
+        )
+        else -> null
+    }
+
+    private fun permissionOpsTargetRefused(packageName: String): PlatformToolOutcome.Failure? =
+        if (packageName !in settings.advancedSystemTargets) {
+            PlatformToolOutcome.Failure(
+                "target_not_authorized",
+                "Only apps the user selected in Settings can be inspected or changed.",
+            )
+        } else {
+            null
+        }
+
+    private suspend fun systemPermissionsQuery(call: PlatformToolCall): PlatformToolOutcome {
+        advancedSystemQueryGate()?.let { return it }
+        val request = PermissionOpsBatchArguments.permissionsQuery(call.arguments)
+        if (request is PermissionOpsBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PermissionOpsBatchArguments.Request.PermissionsQuery
+        crossUserRefused(request.userId)?.let { return it }
+        permissionOpsTargetRefused(request.packageName)?.let { return it }
+        val result = withRootGrant(
+            call, SystemOperation.PERMISSIONS_QUERY, null, destructive = false,
+            target = request.packageName,
+            packageTargets = settings.advancedSystemTargets,
+        ) { claim ->
+            val controller = rootController
+                ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+            controller.queryPermissions(claim, request.packageName, request.userId)
+        }
+        return when (result) {
+            is RootResult.Ok -> {
+                val query = result.value
+                val summary = buildString {
+                    append("pkg=").append(query.packageName.take(100))
+                    append(" user=").append(query.userId)
+                    append(" permissions=").append(query.permissions.size)
+                    query.permissions.take(MAX_LIST_ROWS).forEach { row ->
+                        append('\n')
+                            .append(if (row.granted) "granted" else "denied").append('|')
+                            .append(row.protectionLevel).append('|')
+                            .append(row.name.take(160))
+                    }
+                    if (query.permissions.size > MAX_LIST_ROWS) {
+                        append("\n… ").append(query.permissions.size - MAX_LIST_ROWS)
+                            .append(" more")
+                    }
+                }
+                PlatformToolOutcome.Success(summary)
+            }
+            else -> rootOutcome(result) { PlatformToolOutcome.Success("Queried.") }
+        }
+    }
+
+    /**
+     * Bounded permission grant/revoke batch (at most 8 items): one real
+     * privileged grant per item under the management ceiling, the advanced
+     * master, the exact allowed name and the selected-target ceiling; the
+     * service re-validates declaration and protection level and reports OS
+     * refusals (signature/fixed/admin/platform, undeclared permission,
+     * shared UID) as real per-item failures. Truthful nonzero exitStatus
+     * when anything failed or the batch was partially cancelled.
+     */
+    private suspend fun systemPermissionsManage(call: PlatformToolCall): PlatformToolOutcome {
+        advancedSystemGate(DeviceAccessToolCatalog.SYSTEM_PERMISSIONS_MANAGE)?.let { return it }
+        val request = PermissionOpsBatchArguments.permissionsManage(call.arguments)
+        if (request is PermissionOpsBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PermissionOpsBatchArguments.Request.PermissionsManage
+        crossUserRefused(request.userId)?.let { return it }
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(request.items.size)
+        for ((index, item) in request.items.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += request.items.size - index
+                break
+            }
+            permissionOpsTargetRefused(item.packageName)?.let {
+                failed += 1
+                lines += "fail pkg=${item.packageName.take(100)} " +
+                    "perm=${item.permission.take(120)} code=${it.code}"
+                continue
+            }
+            val result = withRootGrant(
+                call, SystemOperation.PERMISSIONS_MANAGE, null, destructive = true,
+                target = item.packageName,
+                packageTargets = settings.advancedSystemTargets,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+                controller.managePermission(
+                    claim, item.packageName, request.userId,
+                    item.permission, item.action,
+                )
+            }
+            when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        ok += 1
+                        lines += "ok pkg=${receipt.packageName.take(100)} " +
+                            "perm=${receipt.permission.take(120)} " +
+                            "action=${receipt.action} granted=${receipt.grantedAfter}"
+                    } else {
+                        failed += 1
+                        lines += "fail pkg=${receipt.packageName.take(100)} " +
+                            "perm=${receipt.permission.take(120)} " +
+                            "code=${receipt.detailCode} " +
+                            "granted=${receipt.grantedBefore}->${receipt.grantedAfter}" +
+                            (receipt.failureDetail?.let { " reason=${it.take(60)}" } ?: "")
+                    }
+                }
+                is RootResult.Denied -> {
+                    if (result.code == "cancelled") {
+                        cancelled = true
+                        skipped += request.items.size - index
+                        break
+                    }
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "perm=${item.permission.take(120)} code=root_${result.code}"
+                }
+                is RootResult.Unavailable -> {
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "perm=${item.permission.take(120)} code=unavailable_${result.code}"
+                }
+                is RootResult.Failed -> {
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "perm=${item.permission.take(120)} code=${result.code}"
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure(
+                "cancelled", "The permission batch was cancelled.",
+            )
+        }
+        val summary = buildString {
+            append("permissions requested=").append(request.items.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        val exitStatus = if (failed == 0 && !cancelled) 0 else 1
+        return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
+    }
+
+    private suspend fun systemAppOpsQuery(call: PlatformToolCall): PlatformToolOutcome {
+        advancedSystemQueryGate()?.let { return it }
+        val request = PermissionOpsBatchArguments.appOpsQuery(call.arguments)
+        if (request is PermissionOpsBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PermissionOpsBatchArguments.Request.AppOpsQuery
+        crossUserRefused(request.userId)?.let { return it }
+        permissionOpsTargetRefused(request.packageName)?.let { return it }
+        val result = withRootGrant(
+            call, SystemOperation.APP_OPS_QUERY, null, destructive = false,
+            target = request.packageName,
+            packageTargets = settings.advancedSystemTargets,
+        ) { claim ->
+            val controller = rootController
+                ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+            controller.queryAppOps(claim, request.packageName, request.userId)
+        }
+        return when (result) {
+            is RootResult.Ok -> {
+                val query = result.value
+                val summary = buildString {
+                    append("pkg=").append(query.packageName.take(100))
+                    append(" user=").append(query.userId)
+                    append(" ops=").append(query.operations.size)
+                    query.operations.forEach { row ->
+                        append('\n').append(row.operation).append('|')
+                            .append(row.effective)
+                        row.overrideMode?.let { append("|override=").append(it) }
+                        row.uidMode?.let { append("|uid=").append(it) }
+                        row.defaultMode?.let { append("|default=").append(it) }
+                    }
+                }
+                PlatformToolOutcome.Success(summary)
+            }
+            else -> rootOutcome(result) { PlatformToolOutcome.Success("Queried.") }
+        }
+    }
+
+    /**
+     * Bounded AppOps mode batch (at most 8 items) over the closed catalog.
+     * Each item captures the restorable BEFORE layers (override/UID/default)
+     * and the observed read-back; "default" success means the package
+     * override is gone or recorded default — restoring an inherited UID
+     * mode as a new package override is never reported as a restore.
+     * Truthful nonzero exitStatus when anything failed or was cancelled.
+     */
+    private suspend fun systemAppOpsManage(call: PlatformToolCall): PlatformToolOutcome {
+        advancedSystemGate(DeviceAccessToolCatalog.SYSTEM_APPOPS_MANAGE)?.let { return it }
+        val request = PermissionOpsBatchArguments.appOpsManage(call.arguments)
+        if (request is PermissionOpsBatchArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as PermissionOpsBatchArguments.Request.AppOpsManage
+        crossUserRefused(request.userId)?.let { return it }
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(request.items.size)
+        for ((index, item) in request.items.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += request.items.size - index
+                break
+            }
+            permissionOpsTargetRefused(item.packageName)?.let {
+                failed += 1
+                lines += "fail pkg=${item.packageName.take(100)} " +
+                    "op=${item.operation} code=${it.code}"
+                continue
+            }
+            val result = withRootGrant(
+                call, SystemOperation.APP_OPS_MANAGE, null, destructive = true,
+                target = item.packageName,
+                packageTargets = settings.advancedSystemTargets,
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+                controller.manageAppOps(
+                    claim, item.packageName, request.userId,
+                    item.operation, item.mode,
+                )
+            }
+            when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    if (receipt.succeeded) {
+                        ok += 1
+                        lines += "ok pkg=${receipt.packageName.take(100)} " +
+                            "op=${receipt.operation} requested=${receipt.requestedMode} " +
+                            "effective=${receipt.effectiveAfter}"
+                    } else {
+                        failed += 1
+                        lines += "fail pkg=${receipt.packageName.take(100)} " +
+                            "op=${receipt.operation} code=${receipt.detailCode} " +
+                            "effective=${receipt.effectiveBefore}->${receipt.effectiveAfter}" +
+                            (receipt.failureDetail?.let { " reason=${it.take(60)}" } ?: "")
+                    }
+                }
+                is RootResult.Denied -> {
+                    if (result.code == "cancelled") {
+                        cancelled = true
+                        skipped += request.items.size - index
+                        break
+                    }
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "op=${item.operation} code=root_${result.code}"
+                }
+                is RootResult.Unavailable -> {
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "op=${item.operation} code=unavailable_${result.code}"
+                }
+                is RootResult.Failed -> {
+                    failed += 1
+                    lines += "fail pkg=${item.packageName.take(100)} " +
+                        "op=${item.operation} code=${result.code}"
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure("cancelled", "The AppOps batch was cancelled.")
+        }
+        val summary = buildString {
+            append("appOps requested=").append(request.items.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        val exitStatus = if (failed == 0 && !cancelled) 0 else 1
+        return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
+    }
+
     // ------------------------------------------------------- app-state tools
 
     /**
@@ -4556,6 +5103,401 @@ internal class DeviceAccessHost(
         return PlatformToolOutcome.Success(summary, exitStatus = exitStatus)
     }
 
+    // ---------------------------------------------------------- settings tools
+
+    private suspend fun systemSettingsRead(call: PlatformToolCall): PlatformToolOutcome {
+        val request = SettingsToolArguments.read(call.arguments)
+        if (request is SettingsToolArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as SettingsToolArguments.Request.Read
+        val result = withRootGrant(
+            call, SystemOperation.SETTINGS_READ, null, destructive = false,
+            target = "${request.namespace}/${request.key}",
+        ) { claim ->
+            val controller = rootController
+                ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+            controller.readSetting(claim, request.namespace, request.key)
+        }
+        return when (result) {
+            is RootResult.Ok -> {
+                val value = result.value
+                PlatformToolOutcome.Success(
+                    buildString {
+                        append("setting=").append(value.namespace).append('/').append(value.key)
+                        append(" present=").append(value.value != null)
+                        value.value?.let { append(" value=").append(it) }
+                        if (value.deviceWide) append(" scope=device-wide")
+                        else append(" user=").append(value.userId)
+                    },
+                    evidence = listOf(
+                        "present=${value.value != null}",
+                        if (value.deviceWide) "scope=device-wide" else "user=${value.userId}",
+                    ),
+                )
+            }
+            else -> rootOutcome(result) { PlatformToolOutcome.Success("Read.") }
+        }
+    }
+
+    /**
+     * Bounded typed settings batch over the closed table. Every item gets its
+     * own real privileged grant and dispatch; a fenced ticket between items
+     * skips the rest and the completed receipts are preserved. The summary
+     * result= token and the batch exitStatus stay truthful for
+     * failed/partial/cancelled batches.
+     */
+    private suspend fun systemSettingsWrite(call: PlatformToolCall): PlatformToolOutcome {
+        if (!settings.packageManagementAllowed) {
+            return PlatformToolOutcome.Failure(
+                "management_not_allowed",
+                "The user must allow app management in Settings > Phone",
+            )
+        }
+        if (!settings.advancedSystemManagementAllowed ||
+            DeviceAccessToolCatalog.SYSTEM_SETTINGS_WRITE !in settings.advancedSystemAllowedTools
+        ) {
+            return PlatformToolOutcome.Failure(
+                "advanced_settings_not_allowed",
+                "The user must enable the advanced system switch and select system.settings.write",
+            )
+        }
+        val request = SettingsToolArguments.write(call.arguments)
+        if (request is SettingsToolArguments.Request.Invalid) {
+            return PlatformToolOutcome.Failure(request.code)
+        }
+        request as SettingsToolArguments.Request.Write
+        var ok = 0
+        var failed = 0
+        var skipped = 0
+        var cancelled = false
+        val lines = ArrayList<String>(request.changes.size)
+        for ((index, change) in request.changes.withIndex()) {
+            if (platformCallFenced(call)) {
+                cancelled = true
+                skipped += request.changes.size - index
+                break
+            }
+            val name = "${change.namespace}/${change.key}"
+            val result = withRootGrant(
+                call, SystemOperation.SETTINGS_WRITE, null, destructive = true, target = "1 settings change(s)",
+            ) { claim ->
+                val controller = rootController
+                    ?: return@withRootGrant RootResult.Unavailable("service_not_alive")
+                controller.writeSettings(claim, listOf(change))
+            }
+            when (result) {
+                is RootResult.Ok -> {
+                    val item = result.value.items.firstOrNull()
+                    if (item != null && item.succeeded) {
+                        ok += 1
+                        lines += settingsItemLine("ok", item)
+                    } else {
+                        failed += 1
+                        lines += settingsItemLine("fail", item)
+                    }
+                }
+                is RootResult.Denied -> {
+                    if (result.code == "cancelled") {
+                        cancelled = true
+                        skipped += request.changes.size - index
+                        break
+                    }
+                    failed += 1
+                    lines += "fail setting=$name code=root_${result.code}"
+                }
+                is RootResult.Unavailable -> {
+                    failed += 1
+                    lines += "fail setting=$name code=unavailable_${result.code}"
+                }
+                is RootResult.Failed -> {
+                    failed += 1
+                    lines += "fail setting=$name code=${result.code}"
+                }
+            }
+        }
+        if (cancelled && ok == 0 && failed == 0) {
+            return PlatformToolOutcome.Failure("cancelled", "The settings batch was cancelled.")
+        }
+        val summary = buildString {
+            append("settings requested=").append(request.changes.size)
+            append(" ok=").append(ok)
+            append(" failed=").append(failed)
+            append(" skipped=").append(skipped)
+            if (cancelled) append(" result=cancelled")
+            lines.forEach { append('\n').append(it.take(180)) }
+        }
+        return PlatformToolOutcome.Success(
+            summary = summary,
+            exitStatus = when {
+                cancelled && failed > 0 -> 131
+                cancelled -> 130
+                failed > 0 || ok == 0 -> 1
+                else -> 0
+            },
+        )
+    }
+
+    private fun settingsItemLine(kind: String, item: SettingItemReceipt?): String {
+        if (item == null) return "$kind setting=? code=receipt_missing"
+        return buildString {
+            append(kind).append(" setting=").append(item.namespace).append('/').append(item.key)
+            append(" action=").append(item.action.name.lowercase())
+            append(" old=").append(item.oldValue ?: "absent")
+            item.requestedValue?.let { append(" requested=").append(it) }
+            append(" effective=").append(item.effectiveValue ?: "absent")
+            if (item.deviceWide) append(" scope=device-wide") else append(" user=").append(item.userId)
+            if (!item.succeeded) {
+                append(" code=").append(item.detailCode)
+                item.failureDetail?.let { append(" detail=").append(it.take(60)) }
+            }
+        }
+    }
+
+    // ---------------------------------------------------- system settings UI
+
+    /** The durable gate for the settings sheet and its user actions. */
+    private fun systemSettingsCeilingEnabled(): Boolean =
+        systemServiceAlive() && settings.packageManagementAllowed &&
+            settings.advancedSystemManagementAllowed &&
+            DeviceAccessToolCatalog.SYSTEM_SETTINGS_WRITE in settings.advancedSystemAllowedTools
+
+    private fun systemSettingsEntries(): List<com.floe.android.DeviceAccessSystemSettingUi> =
+        SettingsKeyPolicy.ALL_SPECS.filter { spec ->
+            systemSettingsSnapshot.containsKey(spec.namespace + "/" + spec.key)
+        }.map { spec ->
+            val id = spec.namespace + "/" + spec.key
+            com.floe.android.DeviceAccessSystemSettingUi(
+                namespace = spec.namespace,
+                key = spec.key,
+                deviceWide = spec.deviceWide,
+                currentValue = systemSettingsSnapshot[id],
+                baselineValue = systemSettingsSnapshot[id],
+                kind = when (spec.kind) {
+                    SettingsKeyPolicy.ValueKind.INT ->
+                        com.floe.android.DeviceAccessSystemSettingKindUi.INT
+                    SettingsKeyPolicy.ValueKind.SCALE ->
+                        com.floe.android.DeviceAccessSystemSettingKindUi.SCALE
+                },
+                minInclusive = spec.minInclusive,
+                maxInclusive = spec.maxInclusive,
+            )
+        }
+
+    /** Live stored values for every closed key, one read lease per key. */
+    private suspend fun refreshSystemSettings() {
+        val controller = rootController
+        if (controller == null || !systemServiceAlive()) {
+            systemSettingsSnapshot = emptyMap()
+            mutableSystemSettingsUi.value = com.floe.android.DeviceAccessSystemSettingsUiState(
+                enabled = false,
+            )
+            return
+        }
+        val values = HashMap<String, String?>()
+        for (spec in SettingsKeyPolicy.ALL_SPECS) {
+            val result = withUserActionGrant(
+                SystemOperation.SETTINGS_READ,
+                "${spec.namespace}/${spec.key}",
+                destructive = false,
+            ) { claim -> controller.readSetting(claim, spec.namespace, spec.key) }
+            (result as? RootResult.Ok)?.let {
+                values[spec.namespace + "/" + spec.key] = it.value.value
+            }
+        }
+        systemSettingsSnapshot = values
+        mutableSystemSettingsUi.value = com.floe.android.DeviceAccessSystemSettingsUiState(
+            entries = systemSettingsEntries(),
+            enabled = systemSettingsCeilingEnabled(),
+            lastResult = if (values.size < SettingsKeyPolicy.ALL_SPECS.size) {
+                context.getString(R.string.device_access_system_settings_read_failed,
+                    SettingsKeyPolicy.ALL_SPECS.size - values.size)
+            } else null,
+        )
+        publish()
+    }
+
+    private fun applySystemSettingChanges(
+        changes: List<com.floe.android.DeviceAccessSystemSettingChangeUi>,
+    ) {
+        if (mutableSystemSettingsUi.value.busy) return
+        if (!systemSettingsCeilingEnabled()) {
+            mutableSystemSettingsUi.value = mutableSystemSettingsUi.value.copy(enabled = false)
+            return
+        }
+        val typed = changes.take(SettingsKeyPolicy.MAX_BATCH_CHANGES).map {
+            SettingsChange(
+                it.namespace,
+                it.key,
+                if (it.delete) SettingsChangeAction.DELETE else SettingsChangeAction.PUT,
+                if (it.delete) null else it.value,
+            )
+        }
+        if (typed.isEmpty() || !systemSettingsWriteInFlight.compareAndSet(false, true)) return
+        mutableSystemSettingsUi.value = mutableSystemSettingsUi.value.copy(busy = true)
+        publish()
+        scope.launch(io) {
+            try {
+            val result = withUserActionGrant(
+                SystemOperation.SETTINGS_WRITE,
+                "${typed.size} settings change(s)",
+                destructive = true,
+                timeoutMillis = rootOperationTimeoutMillis(SystemOperation.SETTINGS_WRITE) * typed.size,
+            ) { claim ->
+                rootController?.writeSettings(claim, typed)
+                    ?: RootResult.Unavailable("service_not_alive")
+            }
+            val last = when (result) {
+                is RootResult.Ok -> {
+                    val receipt = result.value
+                    context.getString(R.string.device_access_system_settings_result,
+                        receipt.ok, receipt.failed)
+                }
+                is RootResult.Denied -> context.getString(R.string.device_access_system_settings_failed)
+                is RootResult.Unavailable -> context.getString(R.string.device_access_system_settings_failed)
+                is RootResult.Failed -> context.getString(R.string.device_access_system_settings_failed)
+            }
+            refreshSystemSettings()
+            mutableSystemSettingsUi.value = mutableSystemSettingsUi.value.copy(
+                busy = false,
+                lastResult = last.take(240),
+            )
+            publish()
+            } finally {
+                systemSettingsWriteInFlight.set(false)
+                mutableSystemSettingsUi.value = mutableSystemSettingsUi.value.copy(busy = false)
+                publish()
+            }
+        }
+    }
+
+    private fun restoreSystemSetting(
+        entry: com.floe.android.DeviceAccessSystemSettingUi,
+        baseline: String?,
+    ) {
+        if (!systemSettingsCeilingEnabled()) return
+        applySystemSettingChanges(
+            listOf(
+                com.floe.android.DeviceAccessSystemSettingChangeUi(
+                    namespace = entry.namespace,
+                    key = entry.key,
+                    value = baseline ?: "",
+                    delete = baseline == null,
+                ),
+            ),
+        )
+    }
+
+    /**
+     * The USER's own settings action (sheet Apply/Restore): consent is the
+     * durable ceiling checked before dispatch; no model ticket and no
+     * fabricated approval id exists. The grant still travels the real
+     * canonical path — one host-issued, task/run/epoch-bound grant registered
+     * with the service and revoked in a finally — and the authority check
+     * consults the same live registry shape as model tickets.
+     */
+    private class UserActionGrant(
+        val taskId: String,
+        val runId: String,
+        val epoch: Long,
+        val operations: Set<SystemOperation>,
+        val packageManagementAllowed: Boolean,
+        val expectedTarget: String?,
+        val expiresAtMillis: Long,
+        val cancelled: AtomicBoolean = AtomicBoolean(false),
+    ) {
+        fun matches(claim: OperationClaim): Boolean =
+            claim.taskId == taskId && claim.runId == runId && claim.epoch == epoch
+
+        fun live(): Boolean = !cancelled.get() && System.currentTimeMillis() < expiresAtMillis
+    }
+
+    private val userActionGrants = ConcurrentHashMap<String, UserActionGrant>()
+
+    private suspend fun <T> withUserActionGrant(
+        operation: SystemOperation,
+        target: String?,
+        destructive: Boolean,
+        packageTargets: Set<String> = emptySet(),
+        timeoutMillis: Long = rootOperationTimeoutMillis(operation),
+        block: suspend (OperationClaim) -> RootResult<T>,
+    ): RootResult<T> {
+        if (rootRebuilding || rootConfigDirty) return RootResult.Unavailable("policy_updating")
+        val controller = rootController ?: return RootResult.Unavailable("service_not_alive")
+        if (!systemServiceAlive()) return RootResult.Unavailable("service_not_alive")
+        val epoch = host.nativeRootEpoch()?.takeIf { it > 0 }
+            ?: return RootResult.Unavailable("no_epoch")
+        val readOnly = operation in readOnlyOperations
+        val roots = cachedRoots.ifEmpty { FileRootCatalog.standardRoots() }
+        val decision = FileScopePolicy.decide(
+            roots = roots,
+            selectedIds = settings.fileRootIds,
+            requestedId = null,
+            fileOperation = false,
+            writeOperation = !readOnly,
+            appDataUsable = appDataUsable(),
+            globalWrites = settings.fileWritesAllowed,
+        )
+        val routing = when (decision) {
+            is FileScopePolicy.Decision.Denied -> return RootResult.Denied(decision.code)
+            is FileScopePolicy.Decision.Ok -> decision.routing
+        }
+        val management = SystemOperation.isPackageManagement(operation) &&
+            settings.packageManagementAllowed
+        val now = System.currentTimeMillis()
+        val grantId = "usersettings:" + UUID.randomUUID().toString()
+        val request = GrantRequest(
+            grantId = grantId,
+            taskId = "user-settings-action",
+            runId = UUID.randomUUID().toString(),
+            epoch = epoch,
+            expiresAtMillis = now + timeoutMillis + 5_000L,
+            scopes = listOf(
+                ScopeRoot(
+                    scopeId = routing.root.id,
+                    path = routing.root.path,
+                    writable = routing.writable && !readOnly,
+                ),
+            ),
+            operations = setOf(operation),
+            packageManagementAllowed = management,
+            packageTargets = packageTargets,
+        )
+        when (val registered = controller.registerGrant(request)) {
+            is RootResult.Ok -> Unit
+            is RootResult.Denied -> return RootResult.Denied(registered.code, registered.message)
+            is RootResult.Unavailable -> return RootResult.Unavailable(registered.code)
+            is RootResult.Failed -> return RootResult.Failed(registered.code, registered.message)
+        }
+        val claim = OperationClaim(
+            taskId = request.taskId,
+            runId = request.runId,
+            epoch = epoch,
+            grantId = grantId,
+            requestId = UUID.randomUUID().toString(),
+            callId = null,
+        )
+        val entry = UserActionGrant(
+            taskId = claim.taskId,
+            runId = claim.runId,
+            epoch = epoch,
+            operations = setOf(operation),
+            packageManagementAllowed = management,
+            expectedTarget = target,
+            expiresAtMillis = request.expiresAtMillis,
+        )
+        userActionGrants[grantId] = entry
+        try {
+            return withTimeout(timeoutMillis) { block(claim) }
+        } catch (_: Throwable) {
+            return RootResult.Failed("timeout")
+        } finally {
+            entry.cancelled.set(true)
+            userActionGrants.remove(grantId)
+            runCatching { controller.revokeGrant(grantId) }
+        }
+    }
+
     /** True when the native ticket or user stop fences this call. */
     private fun platformCallFenced(call: PlatformToolCall): Boolean =
         userStopped ||
@@ -4594,7 +5536,7 @@ internal class DeviceAccessHost(
     private inner class RootAuthority : RootSystemAuthority {
         override fun authorize(request: RootOperationRequest): AuthorityDecision {
             val entry = rootGrants[request.claim.grantId]
-                ?: return AuthorityDecision.Denied("grant_unknown")
+                ?: return authorizeUserAction(request)
             if (!entry.matches(request.claim)) {
                 return AuthorityDecision.Denied("grant_mismatch")
             }
@@ -4617,8 +5559,30 @@ internal class DeviceAccessHost(
         }
 
         override fun isCancelled(request: RootOperationRequest): Boolean {
-            val entry = rootGrants[request.claim.grantId] ?: return true
-            return entry.ticketCancelled()
+            rootGrants[request.claim.grantId]?.let { return it.ticketCancelled() }
+            val grant = userActionGrants[request.claim.grantId] ?: return true
+            return !grant.live()
+        }
+
+        /** The USER's own sheet action: same checks, host-owned grant entry. */
+        private fun authorizeUserAction(request: RootOperationRequest): AuthorityDecision {
+            val grant = userActionGrants[request.claim.grantId]
+                ?: return AuthorityDecision.Denied("grant_unknown")
+            if (!grant.matches(request.claim)) return AuthorityDecision.Denied("grant_mismatch")
+            if (request.operation !in grant.operations) return AuthorityDecision.Denied("operation")
+            if (SystemOperation.isPackageManagement(request.operation) &&
+                !grant.packageManagementAllowed
+            ) {
+                return AuthorityDecision.Denied("management")
+            }
+            if (grant.expectedTarget != null && request.target != grant.expectedTarget) {
+                return AuthorityDecision.Denied("target_mismatch")
+            }
+            return if (grant.live()) {
+                AuthorityDecision.Allowed
+            } else {
+                AuthorityDecision.Denied("expired")
+            }
         }
     }
 
@@ -4668,6 +5632,8 @@ internal class DeviceAccessHost(
         const val MAX_LIST_ROWS = 24
         const val MAX_WRITE_BYTES = 48_000
         const val ROOT_GRANT_LIFETIME_MILLIS = 30_000L
+        /** One UI-initiated permission/AppOps action: register and revoke. */
+        const val USER_ACTION_GRANT_MILLIS = 120_000L
         val FILE_OPERATIONS = setOf(
             SystemOperation.FILE_LIST,
             SystemOperation.FILE_READ,

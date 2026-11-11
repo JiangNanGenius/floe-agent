@@ -45,6 +45,27 @@ internal object DeviceAccessToolCatalog {
     const val SYSTEM_PACKAGES_SET_ENABLED = "system.packages.setEnabled"
     const val SYSTEM_PACKAGES_REMOVE_FOR_USER = "system.packages.removeForUser"
     const val SYSTEM_PACKAGES_RESTORE = "system.packages.restore"
+    const val SYSTEM_PERMISSIONS_QUERY = "system.permissions.query"
+    const val SYSTEM_PERMISSIONS_MANAGE = "system.permissions.manage"
+    const val SYSTEM_APPOPS_QUERY = "system.appOps.query"
+    const val SYSTEM_APPOPS_MANAGE = "system.appOps.manage"
+    const val SYSTEM_SETTINGS_READ = "system.settings.read"
+    const val SYSTEM_SETTINGS_WRITE = "system.settings.write"
+
+    /**
+     * The ABI's six-name closed list for settings.advancedSystemAllowedTools.
+     * The reserved permission/AppOps names stay unpublished until those
+     * packets ship; only names in this set may persist, be admitted or gate
+     * discovery. This packet publishes only system.settings.write.
+     */
+    val ADVANCED_ABI_TOOL_NAMES: Set<String> = setOf(
+        SYSTEM_PACKAGES_SET_ENABLED,
+        SYSTEM_PACKAGES_REMOVE_FOR_USER,
+        SYSTEM_PACKAGES_RESTORE,
+        "system.permissions.manage",
+        "system.appOps.manage",
+        SYSTEM_SETTINGS_WRITE,
+    )
 
     val allNames: Set<String> = linkedSetOf(
         PHONE_OBSERVE, PHONE_ACT, PHONE_SCREENSHOT,
@@ -58,6 +79,9 @@ internal object DeviceAccessToolCatalog {
         SYSTEM_PACKAGES_INSTALL, SYSTEM_PACKAGES_UNINSTALL,
         SYSTEM_PACKAGES_SET_ENABLED,
         SYSTEM_PACKAGES_REMOVE_FOR_USER, SYSTEM_PACKAGES_RESTORE,
+        SYSTEM_PERMISSIONS_QUERY, SYSTEM_PERMISSIONS_MANAGE,
+        SYSTEM_APPOPS_QUERY, SYSTEM_APPOPS_MANAGE,
+        SYSTEM_SETTINGS_READ, SYSTEM_SETTINGS_WRITE,
         )
 
     /** Actual capability ceiling for the SAME live root epoch. */
@@ -124,6 +148,9 @@ internal object DeviceAccessToolCatalog {
             result += SYSTEM_SERVICES_QUERY
             result += SYSTEM_PACKAGES_QUERY
             result += SYSTEM_NETWORK_DIAGNOSTICS
+            // Closed settings read rides the same read-only ceiling as the
+            // other system queries (temporary-chat rules unchanged).
+            result += SYSTEM_SETTINGS_READ
             if (availability.fileRootsSelected) {
                 result += SYSTEM_FILES_LIST
                 result += SYSTEM_FILES_READ
@@ -152,6 +179,29 @@ internal object DeviceAccessToolCatalog {
                     if (SYSTEM_PACKAGES_RESTORE in availability.advancedSystemAllowedTools) {
                         result += SYSTEM_PACKAGES_RESTORE
                     }
+                    // This packet's two query descriptors ship with the
+                    // advanced master and a non-empty selected target
+                    // ceiling (already implied by this block); the two
+                    // managers additionally require their exact ABI name in
+                    // the durable allowed-tools set. The reserved
+                    // system.settings.write name is never published.
+                    result += SYSTEM_PERMISSIONS_QUERY
+                    result += SYSTEM_APPOPS_QUERY
+                    if (SYSTEM_PERMISSIONS_MANAGE in availability.advancedSystemAllowedTools) {
+                        result += SYSTEM_PERMISSIONS_MANAGE
+                    }
+                    if (SYSTEM_APPOPS_MANAGE in availability.advancedSystemAllowedTools) {
+                        result += SYSTEM_APPOPS_MANAGE
+                    }
+                }
+                // The closed settings write needs the SAME base management
+                // ceiling plus the advanced master and its own ABI name; it
+                // has no package-target dimension, so it never requires the
+                // selected-target ceiling the app-state group needs.
+                if (availability.advancedSystemManagementAllowed &&
+                    SYSTEM_SETTINGS_WRITE in availability.advancedSystemAllowedTools
+                ) {
+                    result += SYSTEM_SETTINGS_WRITE
                 }
             }
             // The staged-APK list is App-local bookkeeping (zero privilege):
@@ -192,6 +242,12 @@ internal object DeviceAccessToolCatalog {
         tools.put(systemPackagesSetEnabled())
         tools.put(systemPackagesRemoveForUser())
         tools.put(systemPackagesRestore())
+        tools.put(systemPermissionsQuery())
+        tools.put(systemPermissionsManage())
+        tools.put(systemAppOpsQuery())
+        tools.put(systemAppOpsManage())
+        tools.put(systemSettingsRead())
+        tools.put(systemSettingsWrite())
         val root = JSONObject()
             .put("version", 1)
             .put("tools", tools)
@@ -566,6 +622,9 @@ internal object DeviceAccessToolCatalog {
         SYSTEM_PACKAGES_SET_ENABLED,
         SYSTEM_PACKAGES_REMOVE_FOR_USER,
         SYSTEM_PACKAGES_RESTORE,
+        SYSTEM_PERMISSIONS_MANAGE,
+        SYSTEM_APPOPS_MANAGE,
+        SYSTEM_SETTINGS_WRITE,
     )
 
     private fun systemPackagesSetEnabled(): JSONObject = tool(
@@ -608,6 +667,178 @@ internal object DeviceAccessToolCatalog {
                 .put("packages", stringArray("Ordered package names (1-8).", 1, 8))
                 .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
             required = listOf("packages"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    // --------------------------------------------- permission/appops tools
+
+    private fun systemPermissionsQuery(): JSONObject = tool(
+        name = SYSTEM_PERMISSIONS_QUERY,
+        description = "Read the real manifest-declared permissions, protection levels and granted state for one app the user selected in Settings, for the current Android profile, through the live Floe system service. Read-only: it changes nothing and never touches apps outside the selected targets. An AppOps change does not grant a manifest permission and vice versa.",
+        schema = schema(
+            properties = JSONObject()
+                .put("packageName", string("Selected package to inspect.", 3, 255))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("packageName"),
+        ),
+        risks = emptyList(),
+        effect = "readOnly",
+        sideEffecting = false,
+    )
+
+    private fun systemPermissionsManage(): JSONObject = tool(
+        name = SYSTEM_PERMISSIONS_MANAGE,
+        description = "Grant or revoke one or more manifest-declared runtime or development permissions (at most 8 items) for selected apps of the current Android profile through the real package manager. Each item reports grantedBefore/requested/grantedAfter from an independent post-pm read-back of the same user: an OS refusal (signature, fixed, admin or platform permission, undeclared permission, or a package sharing its UID with another app) is a real per-item failure, never reported as success. Requires the user's app-management ceiling, the advanced master, and the permissions.manage category.",
+        schema = schema(
+            properties = JSONObject()
+                .put("items", JSONObject()
+                    .put("type", "array")
+                    .put("description", "Ordered permission items (1-8).")
+                    .put("minItems", 1)
+                    .put("maxItems", 8)
+                    .put("items", JSONObject()
+                        .put("type", "object")
+                        .put("required", JSONArray(listOf("packageName", "permission", "action")))
+                        .put("additionalProperties", false)
+                        .put("properties", JSONObject()
+                            .put("packageName", string("Selected package.", 3, 255))
+                            .put("permission", string(
+                                "Manifest permission name, e.g. android.permission.CAMERA.",
+                                3, 255,
+                            ))
+                            .put("action", enum(
+                                "Requested grant state.",
+                                listOf("grant", "revoke"),
+                            )))))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("items"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    private fun systemAppOpsQuery(): JSONObject = tool(
+        name = SYSTEM_APPOPS_QUERY,
+        description = "Read the closed-catalog AppOps modes (camera, microphone, notification, coarse/fine location, storage read/write, overlay, write-settings, usage access, background run [legacy and modern ops], install packages) for one selected app of the current Android profile. Each row reports the per-package override, the UID-level mode and the platform default separately, plus the effective mode; 'default' means platform behavior applies, never a hidden allow. Read-only. Requires the user's app-management ceiling, the advanced master and a selected target.",
+        schema = schema(
+            properties = JSONObject()
+                .put("packageName", string("Selected package to inspect.", 3, 255))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("packageName"),
+        ),
+        risks = emptyList(),
+        effect = "readOnly",
+        sideEffecting = false,
+    )
+
+    private fun systemAppOpsManage(): JSONObject = tool(
+        name = SYSTEM_APPOPS_MANAGE,
+        description = "Set one or more closed-catalog AppOps modes (at most 8 items: allow, ignore, deny, default, foreground where the OS supports it) for selected apps of the current Android profile through the real appops command, package-scoped --user form only (never a UID). Each item captures the restorable before state (override/UID/default separately), the requested mode and the observed read-back: 'default' is proven by the package override being gone or recorded default, and an unparseable read-back is a failure, never a success. AppOps changes do not grant manifest permissions. Requires the user's app-management ceiling, the advanced master, and the appOps.manage category.",
+        schema = schema(
+            properties = JSONObject()
+                .put("items", JSONObject()
+                    .put("type", "array")
+                    .put("description", "Ordered AppOps items (1-8).")
+                    .put("minItems", 1)
+                    .put("maxItems", 8)
+                    .put("items", JSONObject()
+                        .put("type", "object")
+                        .put("required", JSONArray(listOf("packageName", "operation", "mode")))
+                        .put("additionalProperties", false)
+                        .put("properties", JSONObject()
+                            .put("packageName", string("Selected package.", 3, 255))
+                            .put("operation", enum(
+                                "Closed AppOps catalog operation.",
+                                listOf(
+                                    "camera", "microphone", "notification",
+                                    "location-coarse", "location-fine",
+                                    "storage-read", "storage-write",
+                                    "overlay", "write-settings", "usage-access",
+                                    "background-run", "background-run-any",
+                                    "install-packages",
+                                ),
+                            ))
+                            .put("mode", enum(
+                                "Requested mode. 'default' restores platform/UID behavior.",
+                                listOf("allow", "ignore", "deny", "default", "foreground"),
+                            )))))
+                .put("userId", integer("Android user id (default 0 = current).", 0, 999)),
+            required = listOf("items"),
+        ),
+        risks = listOf("modifiesRemoteSystem"),
+        effect = "mutating",
+        sideEffecting = true,
+    )
+
+    // ---------------------------------------------------------- settings
+
+    private fun systemSettingsRead(): JSONObject = tool(
+        name = SYSTEM_SETTINGS_READ,
+        description = "Read one closed device setting through the live Floe " +
+            "system service: screen brightness, brightness mode, auto-rotate, " +
+            "rotation, screen-off timeout, sound effects or haptic feedback " +
+            "(system namespace, exact current user), or one of the three " +
+            "device-wide animation scales (global namespace). Values are " +
+            "stored Settings-provider results: absent keys report " +
+            "present=false; a stored value is not proof the manufacturer " +
+            "immediately honored an effect. Read-only.",
+        schema = schema(
+            properties = JSONObject()
+                .put("namespace", enum("Settings namespace.", listOf("system", "global")))
+                .put("key", string("Closed setting key for the namespace.", 1, 64)),
+            required = listOf("namespace", "key"),
+        ),
+        risks = emptyList(),
+        effect = "readOnly",
+        sideEffecting = false,
+    )
+
+    private fun systemSettingsWrite(): JSONObject = tool(
+        name = SYSTEM_SETTINGS_WRITE,
+        description = "Apply one bounded typed batch of closed device setting " +
+            "changes (at most 8) through the live Floe system service: " +
+            "screen brightness (0-255), brightness mode, auto-rotate, " +
+            "rotation (0-3), screen-off timeout (15000-1800000 ms), sound " +
+            "effects or haptic feedback (system namespace, exact current " +
+            "user), or the device-wide animation scales (global, 0-10). Every " +
+            "item reports the real old value (absence included), the " +
+            "requested value and the stored read-back value; OEM refusals or " +
+            "clamps are reported as failures, never fabricated. Cancelling " +
+            "the run skips the remaining items and keeps the completed " +
+            "outcomes. Requires the user's app-management ceiling plus the " +
+            "advanced system switch with this tool selected.",
+        schema = schema(
+            properties = JSONObject()
+                .put("changes", JSONObject()
+                    .put("type", "array")
+                    .put("description", "Ordered setting changes (1-8).")
+                    .put("minItems", 1)
+                    .put("maxItems", 8)
+                    .put("items", JSONObject()
+                        .put("type", "object")
+                        .put("required", JSONArray(listOf("namespace", "key", "action")))
+                        .put("additionalProperties", false)
+                        .put("properties", JSONObject()
+                            .put("namespace", enum(
+                                "Settings namespace.",
+                                listOf("system", "global"),
+                            ))
+                            .put("key", string(
+                                "Closed setting key for the namespace.", 1, 64,
+                            ))
+                            .put("action", enum(
+                                "put stores value; delete removes the key (only to restore an originally-absent value).",
+                                listOf("put", "delete"),
+                            ))
+                            .put("value", string(
+                                "Decimal value for put: whole numbers for system keys; 0-10 with up to three decimals for global scales.",
+                                1, 16,
+                            ))))),
+            required = listOf("changes"),
         ),
         risks = listOf("modifiesRemoteSystem"),
         effect = "mutating",

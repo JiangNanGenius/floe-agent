@@ -15,7 +15,9 @@ import com.floe.android.rootsystem.policy.AccessPolicy
 import com.floe.android.rootsystem.policy.BackendOwnershipPolicy
 import com.floe.android.rootsystem.policy.FloePackageFamily
 import com.floe.android.rootsystem.policy.PathPolicy
+import com.floe.android.rootsystem.policy.PermissionOpsPolicy
 import com.floe.android.rootsystem.policy.ProtectedTargets
+import com.floe.android.rootsystem.policy.SettingsKeyPolicy
 import com.floe.android.rootsystem.policy.StagedApkPolicy
 import com.floe.android.rootsystem.root.RootLauncher
 import java.security.SecureRandom
@@ -1026,6 +1028,145 @@ internal class RootSystemControllerImpl(
         val client = binderClient ?: return AccessActionResult.Unavailable("service_not_alive")
         if (!sha256.matches(Regex("^[0-9a-f]{64}$"))) return AccessActionResult.Denied("staged_shape")
         return withContext(Dispatchers.IO) { client.releaseStagedApk(sha256) }
+    }
+
+    // -------------------------------------------------- permissions/appops
+
+    /**
+     * Read the declared permissions and granted state for one app of the
+     * current profile. Read-only dispatch: public package/permission
+     * metadata is disclosable for any selected target, so unlike the
+     * mutations this carries NO protected-target refusal; the service still
+     * enforces the grant's selected-target ceiling.
+     */
+    suspend fun queryPermissions(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.PermissionQueryResult> =
+        dispatch(
+            claim,
+            SystemOperation.PERMISSIONS_QUERY,
+            packageName,
+            destructive = false,
+        ) { client -> client.queryPermissions(claim, packageName, userId) }
+
+    /**
+     * Grant/revoke one declared runtime/development permission. The base
+     * management ceiling applies; the service validates the declaration and
+     * protection level again and reports OS refusals as real per-item
+     * failures.
+     */
+    suspend fun managePermission(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        permission: String,
+        action: String,
+    ): RootResult<com.floe.android.rootsystem.PermissionSetReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (ProtectedTargets.isProtectedPackage(packageName, protectedPackages)) {
+            return RootResult.Denied("protected_target")
+        }
+        if (!PermissionOpsPolicy.PERMISSION_NAME.matches(permission)) {
+            return RootResult.Denied("permission")
+        }
+        if (action !in PermissionOpsPolicy.ACTIONS) return RootResult.Denied("permission_action")
+        return dispatch(
+            claim,
+            SystemOperation.PERMISSIONS_MANAGE,
+            packageName,
+            destructive = true,
+        ) { client -> client.managePermission(claim, packageName, userId, permission, action) }
+    }
+
+    /** Read the closed-catalog AppOps modes for one app. Read-only like
+     *  [queryPermissions]: no protected-target refusal, selected-target
+     *  ceiling enforced by the service. */
+    suspend fun queryAppOps(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+    ): RootResult<com.floe.android.rootsystem.AppOpsQueryResult> =
+        dispatch(
+            claim,
+            SystemOperation.APP_OPS_QUERY,
+            packageName,
+            destructive = false,
+        ) { client -> client.queryAppOps(claim, packageName, userId) }
+
+    /** Set one closed-catalog AppOps mode for one app of the current user. */
+    suspend fun manageAppOps(
+        claim: OperationClaim,
+        packageName: String,
+        userId: Int,
+        operation: String,
+        mode: String,
+    ): RootResult<com.floe.android.rootsystem.AppOpsSetReceipt> {
+        if (!config.allowPackageManagement) return RootResult.Denied("management_disabled")
+        if (ProtectedTargets.isProtectedPackage(packageName, protectedPackages)) {
+            return RootResult.Denied("protected_target")
+        }
+        return dispatch(
+            claim,
+            SystemOperation.APP_OPS_MANAGE,
+            packageName,
+            destructive = true,
+        ) { client -> client.manageAppOps(claim, packageName, userId, operation, mode) }
+    }
+
+    suspend fun readSetting(
+        claim: OperationClaim,
+        namespace: String,
+        key: String,
+    ): RootResult<SettingReadResult> {
+        if (namespace !in SettingsKeyPolicy.SUPPORTED_NAMESPACES) {
+            return RootResult.Denied("setting_namespace")
+        }
+        if (SettingsKeyPolicy.specFor(namespace, key) == null) {
+            return RootResult.Denied("setting_key")
+        }
+        return dispatch(claim, SystemOperation.SETTINGS_READ, "$namespace/$key") { client ->
+            client.readSettings(claim, namespace, key)
+        }
+    }
+
+    suspend fun writeSettings(
+        claim: OperationClaim,
+        changes: List<SettingsChange>,
+    ): RootResult<SettingsBatchReceipt> {
+        val requests = changes.map {
+            SettingsKeyPolicy.ChangeRequest(
+                it.namespace,
+                it.key,
+                when (it.action) {
+                    SettingsChangeAction.PUT -> SettingsKeyPolicy.ChangeAction.PUT
+                    SettingsChangeAction.DELETE -> SettingsKeyPolicy.ChangeAction.DELETE
+                },
+                it.value,
+            )
+        }
+        val checked = when (val result = SettingsKeyPolicy.checkBatch(requests)) {
+            is SettingsKeyPolicy.BatchCheck.Ok -> result.changes
+            is SettingsKeyPolicy.BatchCheck.Rejected -> return RootResult.Denied(result.code)
+        }
+        val typed = checked.map {
+            SettingsChange(
+                it.namespace,
+                it.key,
+                when (it.action) {
+                    SettingsKeyPolicy.ChangeAction.PUT -> SettingsChangeAction.PUT
+                    SettingsKeyPolicy.ChangeAction.DELETE -> SettingsChangeAction.DELETE
+                },
+                it.value,
+            )
+        }
+        return dispatch(
+            claim,
+            SystemOperation.SETTINGS_WRITE,
+            "${typed.size} settings change(s)",
+            destructive = true,
+        ) { client -> client.writeSettings(claim, typed) }
     }
 
     suspend fun cancelOperation(claim: OperationClaim): AccessActionResult {

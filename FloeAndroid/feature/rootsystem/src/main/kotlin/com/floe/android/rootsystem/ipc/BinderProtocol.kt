@@ -58,6 +58,13 @@ object BinderProtocol {
         "installPackage", "uninstallPackage", "stageApk",
     )
 
+    // Settings transactions appended after the app-state/cache block. Wire 3
+    // has never shipped publicly, so these ride the same protocol revision
+    // and VERSION stays 3; the first nineteen legacy positions stay untouched.
+    val wire6AppendedMethods: List<String> = listOf(
+        "readSettings", "writeSettings",
+    )
+
     /**
      * App-state methods appended after [wire3AppendedMethods]. Wire 3 has
      * never shipped publicly, so these ride the same protocol revision; the
@@ -68,8 +75,19 @@ object BinderProtocol {
         "releaseStagedApk",
     )
 
+    /**
+     * Permission/AppOps methods appended after [wire4AppendedMethods] on the
+     * same unshipped protocol revision. Appending keeps every earlier
+     * transaction number stable; VERSION stays 3 because no wire-3 APK ever
+     * shipped.
+     */
+    val wire5AppendedMethods: List<String> = listOf(
+        "queryPermissions", "managePermissions", "queryAppOps", "manageAppOps",
+    )
+
     /** Every method appended after the legacy wire-2 block, in order. */
-    val appendedMethods: List<String> = wire3AppendedMethods + wire4AppendedMethods
+    val appendedMethods: List<String> =
+        wire3AppendedMethods + wire4AppendedMethods + wire5AppendedMethods + wire6AppendedMethods
 
     const val MAX_LIST = 500
     const val MAX_READ_BYTES = 1024 * 1024
@@ -120,6 +138,27 @@ object BinderProtocol {
     const val KEY_PRESENT_AFTER = "presentAfter"
     const val KEY_DETAIL_CODE = "detailCode"
     const val KEY_FAILURE_DETAIL = "failureDetail"
+
+    // Permission/AppOps request+reply keys (closed set; values bounded).
+    const val KEY_PERMISSION_NAME = "permissionName"
+    const val KEY_PERMISSION_ACTION = "permissionAction"
+    const val KEY_PERMISSIONS = "permissions"
+    const val KEY_APPOP_OPERATION = "appOpOperation"
+    const val KEY_APPOP_MODE = "appOpMode"
+    const val KEY_APPOPS = "appOps"
+    const val KEY_GRANTED = "granted"
+    const val KEY_GRANTED_BEFORE = "grantedBefore"
+    const val KEY_PROTECTION_LEVEL = "protectionLevel"
+    const val KEY_OVERRIDE_MODE = "overrideMode"
+    const val KEY_UID_MODE = "uidMode"
+    const val KEY_DEFAULT_MODE = "defaultMode"
+    const val KEY_EFFECTIVE_MODE = "effectiveMode"
+    const val KEY_OVERRIDE_BEFORE = "overrideBefore"
+    const val KEY_UID_BEFORE = "uidBefore"
+    const val KEY_DEFAULT_BEFORE = "defaultBefore"
+    const val KEY_EFFECTIVE_BEFORE = "effectiveBefore"
+    const val KEY_REQUESTED_MODE = "requestedMode"
+    const val KEY_OP_NAME = "opName"
 
     // Pinned packet-capture request/reply keys (no command or arbitrary path).
     const val KEY_CAPTURE_MODE = "captureMode"
@@ -433,6 +472,109 @@ object BinderProtocol {
             operation = item.getString("operation")?.take(32) ?: return null,
             requestedState = item.getString(KEY_REQUESTED_STATE)?.take(32) ?: return null,
             stateAfter = item.getString(KEY_STATE_AFTER)?.take(32) ?: return null,
+            succeeded = item.getBoolean(KEY_SUCCEEDED),
+            detailCode = item.getString(KEY_DETAIL_CODE)?.take(48) ?: return null,
+            failureDetail = item.getString(KEY_FAILURE_DETAIL)?.take(96),
+        )
+    }
+
+    // -------------------------------------------------- permissions/appops
+
+    private fun nullableString(item: Bundle, key: String, max: Int): String? =
+        if (item.containsKey(key)) item.getString(key)?.take(max) else null
+
+    /** Reply rows for system.permissions.query (bounded list). */
+    fun permissionStates(bundle: Bundle?): List<com.floe.android.rootsystem.PermissionState>? {
+        val array = bundleArray(bundle, KEY_PERMISSIONS) ?: return null
+        if (array.size > MAX_LIST) return null
+        return array.mapNotNull { item ->
+            item?.let {
+                com.floe.android.rootsystem.PermissionState(
+                    name = it.getString(KEY_PERMISSION_NAME)?.take(MAX_NAME)
+                        ?: return@mapNotNull null,
+                    protectionLevel = it.getString(KEY_PROTECTION_LEVEL)?.take(32)
+                        ?: return@mapNotNull null,
+                    granted = it.getBoolean(KEY_GRANTED),
+                )
+            }
+        }
+    }
+
+    fun permissionStateBundles(
+        states: List<com.floe.android.rootsystem.PermissionState>,
+    ): Array<Bundle> = states.map { state ->
+        Bundle().apply {
+            putString(KEY_PERMISSION_NAME, state.name.take(MAX_NAME))
+            putString(KEY_PROTECTION_LEVEL, state.protectionLevel.take(32))
+            putBoolean(KEY_GRANTED, state.granted)
+        }
+    }.toTypedArray()
+
+    /** Reply codec for the typed pm grant/revoke receipt. */
+    fun permissionSetResult(bundle: Bundle?): com.floe.android.rootsystem.PermissionSetReceipt? {
+        val item = bundle?.getBundle(KEY_PACKAGE_RESULT) ?: return null
+        return com.floe.android.rootsystem.PermissionSetReceipt(
+            packageName = item.getString(KEY_PACKAGE_NAME)?.take(MAX_NAME) ?: return null,
+            userId = item.getInt(KEY_USER_ID),
+            permission = item.getString(KEY_PERMISSION_NAME)?.take(MAX_NAME) ?: return null,
+            action = item.getString(KEY_PERMISSION_ACTION)?.take(16) ?: return null,
+            grantedBefore = item.getBoolean(KEY_GRANTED_BEFORE),
+            grantedAfter = item.getBoolean(KEY_GRANTED),
+            succeeded = item.getBoolean(KEY_SUCCEEDED),
+            detailCode = item.getString(KEY_DETAIL_CODE)?.take(48) ?: return null,
+            failureDetail = item.getString(KEY_FAILURE_DETAIL)?.take(96),
+        )
+    }
+
+    /** Reply rows for system.appOps.query (bounded list). */
+    fun appOpsStates(bundle: Bundle?): List<com.floe.android.rootsystem.AppOpsModeState>? {
+        val array = bundleArray(bundle, KEY_APPOPS) ?: return null
+        if (array.size > MAX_LIST) return null
+        return array.mapNotNull { item ->
+            item?.let {
+                com.floe.android.rootsystem.AppOpsModeState(
+                    operation = it.getString(KEY_APPOP_OPERATION)?.take(32)
+                        ?: return@mapNotNull null,
+                    opName = it.getString(KEY_OP_NAME)?.take(64) ?: return@mapNotNull null,
+                    overrideMode = nullableString(it, KEY_OVERRIDE_MODE, 16),
+                    uidMode = nullableString(it, KEY_UID_MODE, 16),
+                    defaultMode = nullableString(it, KEY_DEFAULT_MODE, 16),
+                    effective = it.getString(KEY_EFFECTIVE_MODE)?.take(16)
+                        ?: return@mapNotNull null,
+                )
+            }
+        }
+    }
+
+    fun appOpsStateBundles(
+        states: List<com.floe.android.rootsystem.AppOpsModeState>,
+    ): Array<Bundle> = states.map { state ->
+        Bundle().apply {
+            putString(KEY_APPOP_OPERATION, state.operation.take(32))
+            putString(KEY_OP_NAME, state.opName.take(64))
+            state.overrideMode?.let { putString(KEY_OVERRIDE_MODE, it.take(16)) }
+            state.uidMode?.let { putString(KEY_UID_MODE, it.take(16)) }
+            state.defaultMode?.let { putString(KEY_DEFAULT_MODE, it.take(16)) }
+            putString(KEY_EFFECTIVE_MODE, state.effective.take(16))
+        }
+    }.toTypedArray()
+
+    /** Reply codec for the typed appops set receipt. */
+    fun appOpsSetResult(bundle: Bundle?): com.floe.android.rootsystem.AppOpsSetReceipt? {
+        val item = bundle?.getBundle(KEY_PACKAGE_RESULT) ?: return null
+        return com.floe.android.rootsystem.AppOpsSetReceipt(
+            packageName = item.getString(KEY_PACKAGE_NAME)?.take(MAX_NAME) ?: return null,
+            userId = item.getInt(KEY_USER_ID),
+            operation = item.getString(KEY_APPOP_OPERATION)?.take(32) ?: return null,
+            opName = item.getString(KEY_OP_NAME)?.take(64) ?: return null,
+            overrideBefore = nullableString(item, KEY_OVERRIDE_BEFORE, 16),
+            uidBefore = nullableString(item, KEY_UID_BEFORE, 16),
+            defaultBefore = nullableString(item, KEY_DEFAULT_BEFORE, 16),
+            effectiveBefore = item.getString(KEY_EFFECTIVE_BEFORE)?.take(16)
+                ?: return null,
+            requestedMode = item.getString(KEY_REQUESTED_MODE)?.take(16) ?: return null,
+            overrideAfter = nullableString(item, KEY_OVERRIDE_MODE, 16),
+            effectiveAfter = item.getString(KEY_EFFECTIVE_MODE)?.take(16) ?: return null,
             succeeded = item.getBoolean(KEY_SUCCEEDED),
             detailCode = item.getString(KEY_DETAIL_CODE)?.take(48) ?: return null,
             failureDetail = item.getString(KEY_FAILURE_DETAIL)?.take(96),

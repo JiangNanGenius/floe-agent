@@ -231,6 +231,8 @@ data class DeviceAccessPresentationState(
     val activeTask: DeviceAccessActiveTaskUi? = null,
     val taskControl: DeviceAccessTaskControlUi = DeviceAccessTaskControlUi.OFF,
     val targets: DeviceAccessTargetsUi = DeviceAccessTargetsUi(),
+    /** Closed system-settings sheet: stored values, gate and last outcome. */
+    val systemSettings: DeviceAccessSystemSettingsUiState = DeviceAccessSystemSettingsUiState(),
     val busy: DeviceAccessBusyUi = DeviceAccessBusyUi.NONE,
     val error: DeviceAccessUiError? = null,
     /** True only on API >= 30 where wireless ADB pairing exists. */
@@ -303,6 +305,12 @@ class DeviceAccessCallbacks(
     val onRemoveStagedApk: (String) -> Unit = {},
     /** Immediately revoke every live system-access grant (visible revoke). */
     val onRevokeSystemGrants: () -> Unit = {},
+    /** Re-read the stored values for the system-settings sheet. */
+    val onSystemSettingsRefresh: () -> Unit = {},
+    /** Apply the sheet's typed batch (at most 8 changes; user action). */
+    val onSystemSettingsApply: (List<DeviceAccessSystemSettingChangeUi>) -> Unit = {},
+    /** Restore one key to [baseline], the value captured when the sheet opened. */
+    val onSystemSettingsRestore: (DeviceAccessSystemSettingUi, String?) -> Unit = { _, _ -> },
 )
 
 /**
@@ -434,6 +442,12 @@ object DeviceAccessPresentation {
             R.string.device_access_advanced_tool_remove_for_user
         DeviceAccessToolCatalog.SYSTEM_PACKAGES_RESTORE ->
             R.string.device_access_advanced_tool_restore
+        DeviceAccessToolCatalog.SYSTEM_PERMISSIONS_MANAGE ->
+            R.string.device_access_advanced_tool_permissions_manage
+        DeviceAccessToolCatalog.SYSTEM_APPOPS_MANAGE ->
+            R.string.device_access_advanced_tool_appops_manage
+        DeviceAccessToolCatalog.SYSTEM_SETTINGS_WRITE ->
+            R.string.device_access_system_settings_entry
         else -> 0
     }
 
@@ -569,6 +583,7 @@ fun DeviceAccessSettingsPage(
     pairingCode: String,
     onPairingCodeChange: (String) -> Unit,
     modifier: Modifier = Modifier,
+    permissionOpsInspector: DeviceAccessPermissionOpsInspector? = null,
 ) {
     val colors = Floe.colors
     // Presentation-only toggles: deliberately NOT saveable, so nothing about
@@ -579,8 +594,10 @@ fun DeviceAccessSettingsPage(
     var confirmRootCheck by remember { mutableStateOf(false) }
     var confirmAutomatic by remember { mutableStateOf(false) }
     var appChooserOpen by remember { mutableStateOf(false) }
+    var permissionOpsOpen by remember { mutableStateOf(false) }
     var advancedChooserOpen by remember { mutableStateOf(false) }
     var advancedToolsChooserOpen by remember { mutableStateOf(false) }
+    var systemSettingsOpen by remember { mutableStateOf(false) }
     var confirmUnlock by remember { mutableStateOf(false) }
     var unlockDraft by remember { mutableStateOf("") }
     var revealUnlock by remember { mutableStateOf(false) }
@@ -594,6 +611,16 @@ fun DeviceAccessSettingsPage(
         enabled = state.busy == DeviceAccessBusyUi.NONE,
         onSelectionChange = callbacks.onAllowedPackagesChange,
         onDismiss = { appChooserOpen = false },
+    )
+    // Compact permission/AppOps inspector over the SELECTED advanced
+    // targets; user-initiated reads/changes only, durable ceilings enforced
+    // by the host on every action.
+    DeviceAccessPermissionOpsSheet(
+        visible = permissionOpsOpen,
+        targets = state.targets.advancedSystemTargets.filter { it.selected },
+        enabled = state.busy == DeviceAccessBusyUi.NONE,
+        inspector = permissionOpsInspector,
+        onDismiss = { permissionOpsOpen = false },
     )
     DeviceAccessAppChooserSheet(
         visible = advancedChooserOpen,
@@ -622,6 +649,13 @@ fun DeviceAccessSettingsPage(
         searchable = false,
         countLabelRes = R.string.device_access_advanced_categories_count,
         heightFractionOverride = 0.72f,
+    )
+    DeviceAccessSystemSettingsSheet(
+        visible = systemSettingsOpen,
+        state = state.systemSettings,
+        onApply = callbacks.onSystemSettingsApply,
+        onRestore = callbacks.onSystemSettingsRestore,
+        onDismiss = { systemSettingsOpen = false },
     )
     val context = LocalContext.current
     var notificationAvailability by remember {
@@ -1128,6 +1162,20 @@ fun DeviceAccessSettingsPage(
                     },
                 )
             }
+            // Compact entry to the closed system-settings editor. It renders
+            // only when the real ceiling (management + advanced master +
+            // system.settings.write) is enabled, so it is never a dead
+            // control; the opened sheet re-reads the stored values first.
+            if (state.systemSettings.enabled) {
+                FloeActionRow(
+                    label = stringResource(R.string.device_access_system_settings_entry),
+                    onClick = {
+                        callbacks.onSystemSettingsRefresh()
+                        systemSettingsOpen = true
+                    },
+                    enabled = state.busy == DeviceAccessBusyUi.NONE,
+                )
+            }
             FloeActionRow(
                 label = stringResource(R.string.device_access_stage_apks),
                 onClick = {
@@ -1175,6 +1223,15 @@ fun DeviceAccessSettingsPage(
                 label = stringResource(R.string.device_access_revoke_grants),
                 onClick = callbacks.onRevokeSystemGrants,
                 enabled = state.busy == DeviceAccessBusyUi.NONE,
+            )
+            FloeActionRow(
+                label = stringResource(R.string.device_access_permission_ops_open),
+                onClick = { permissionOpsOpen = true },
+                enabled = state.busy == DeviceAccessBusyUi.NONE &&
+                    permissionOpsInspector != null &&
+                    state.targets.packageManagementAllowed &&
+                    state.targets.advancedSystemManagementAllowed &&
+                    state.targets.selectedAdvancedSystemTargets.isNotEmpty(),
             )
         }
 
