@@ -15,9 +15,9 @@
 
 **ADB当前代码与验证：** 批量安装／卸载、覆盖更新、应用状态、权限／AppOps及十项设备设置已接通类型化后端和既有授权服务。任务Linux APK暂存携带真实执行目标、导出回执与代际，普通自动模式经现有策略签发授权；保留原有指南及新增Android设备操作指南。实际Mac宿主84项传输／策略／资源检查、应用状态87项检查、权限／设置78项检查分别保留，后续真实Android ARM64对象／链接生产通过。源`3d204ca1908b7de0357263680dd0769edc8f8a55`已构建一份私有Full工程包并在三星联合安装，主App、运行组件和两项预览组件均按精确字节读回，UID保持；未改写公开Alpha79。
 
-三星已从Floe界面真实读取十项设置，将一项动画缩放改为0.5，再通过Floe恢复原有缺省状态，独立读回一致。模型调用的安装、卸载、覆盖更新及权限／AppOps仍逐项实测，不据手动设置通过宣布整条链路通过。新Linux安装依赖用例发现软件包审查后端未接通，已停止并保留原始回执，补代码后再建立新用例。
+三星已从Floe界面真实读取十项设置，修改一项动画缩放后恢复原缺省，独立读回一致。后续私有Full源`d533014a3f5a1449a2fd9d86b5be90ca0c548828`真实通过两款自建应用的自动批量安装、版本／UID查询、批量卸载和不存在查询；另从已授权只读目录真实暂存三份APK，安装v1后原地更新至v2、UID保持，再卸载确认不存在。两条新用例分别保留70／93条原始记录，没有人工点批准或用宿主安装替代。旧协议服务在工程覆盖安装后自动退役，当前协议服务不受影响；随后通过Floe正常停止／启动加载同版本工程代码。权限／AppOps及本轮其他独立能力仍按实际用例收口。
 
-English: Typed batch package management, app state, permissions/AppOps and ten settings are connected to the existing authority. Current-task Linux APK staging preserves export and generation ownership. The source-bound ARM64 libraries and private Full from`3d204ca1` are built and installed on Samsung with exact four-package bytes and preserved UIDs; public Alpha79 is unchanged. A real Floe settings write and restore passed independent read-back. Model-driven install/update/uninstall and permission/AppOps acceptance remain distinct. A new Linux dependency case exposed a missing software-package review backend; its stopped original record is retained for the code repair.
+English: Samsung passed real settings write/restore, automatic two-app batch install/query/uninstall/absence, and read-only granted-folder APK staging followed by v1-to-v2 update with the same UID and verified removal, on private Full source`d533014a3`. Raw records are retained. No manual approval or host installation substitutes were used for these package cases. The stale legacy helper retired automatically while the healthy current helper remained; a normal Floe Stop/Start then loaded the same-version engineering service. Permission/AppOps and the remaining independent flows stay open.
 
 **2026-11-11集成验证：** 后续源`321af3a4e`已生成一份内部Full测试包，实际ARM64对象／链接、Full消费者、58项原生封装和三星精确安装字节／原UID核对通过。沿用公开79版本字段仅供专用机工程验证，安装方式为ADB，既不改写公开79，也不作为在线升级证据；最终版本仍待验证后升为1.0.0。32项手机控制检查和2项Alpha发现1.0.0完整包的真实JUnit回归通过。四组新技能／资源测试的夹具编译和构造失败保留，修复与实际任务Linux可见性仍待验证，不将产品编译记为这些测试通过。新独立三星用例已真实解锁并成功读取页面，但新的交互事件又触发错误使用中确认，未启动计算器或证明任务结束重锁；58条原始记录保留，临时凭据／授权、自建任务和设备导出均已退役。旧失败任务不恢复。随后四组技能资源真实宿主32项全部通过（无跳过、无失败）；初始构造、并发与运行时夹具失败保留，未修改生产校验或原断言。实际三星ResourceR1已验证首次命令可读floe-pdf的SKILL.md（2503字节及真实SHA），但在同任务已打开PTY后，随后暂存的floe-office目录返回ENOENT；不能按staged=true当作运行中可见。67条原始回执保留，真实shell.close成功后仅自己的任务／导出被退役，原5条记录保持。后续代码包接运行中带归属和摘要校验的资源发布；旧R1不恢复。
 
@@ -1034,3 +1034,9 @@ English: The Phone page puts embedded ADB first and replaces permanent folder li
 三星独立SAF用例已通过真实文件选择器选取两份自建APK，模型在自动模式下读取暂存并实际派发批量安装，无人工批准；安装随后被系统拒绝，未执行后续卸载。69条原始记录保留。空输入诊断确认本机安装命令解析器将末尾独立`-`判为未知选项；移除该参数后进入正确的标准输入读取，未安装任何文件。源码修正为已有`-S`尺寸下的隐式标准输入，并等待输出排空后保留实际异常原因，避免只显示通用异常标题。新Full与完整安装／卸载复测仍待进行，不将诊断命令当作App通过。
 
 English: The independent SAF case selected two real owned APKs and reached actual batch installation through canonical automatic approval, then stopped on package-manager failure. Its69 original records are retained. A non-installable empty-input diagnostic isolated the vendor parser rejecting a trailing standalone dash; the corrected argv reaches stdin parsing. The source removes that argument and keeps actionable errors after bounded output draining. Full APK and real install/uninstall acceptance remain pending.
+
+## 2026-11-11 Linux软件包审查接线
+
+软件包准备不再硬接空后端：从原配置读取专用角色、通用辅助或默认Agent，验证启用状态、能力、用途和凭据后，用真实配置的提供商进行无工具审查，再沿既有策略签发授权。未配置、已撤销或审查失败保留人工等待和真实原因；不新增无条件放行或宿主解释器。实际Mac Swift6对象编译和21项角色／解析／策略检查通过，原新夹具的可变值、传输注入和队列错误保留并修正，未弱化断言。Android ARM64、新Full和真实Linux安装仍待后续验证。
+
+English: Linux package preparation now resolves the original configured review-role chain, validates capabilities and credentials, and uses a tool-free provider review through the existing approval policy. Missing, revoked or failed reviews retain truthful human fallback. Actual Mac Swift6 objects and21 focused cases pass; original fixture failures are retained. Android ARM64, a consuming Full APK and real Linux installation remain pending.
