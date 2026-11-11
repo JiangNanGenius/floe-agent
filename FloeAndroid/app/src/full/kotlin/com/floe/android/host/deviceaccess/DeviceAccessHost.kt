@@ -1724,8 +1724,9 @@ internal class DeviceAccessHost(
 
     /**
      * Automatic device calls use the exact native run snapshot and terminal
-     * observer, including when no conversation UI was opened. Manual UI
-     * arming retains the existing holder check when no native proof exists.
+     * observer, including when no conversation UI was opened. Explicit UI
+     * arming also refreshes this proof; unobserved UI candidates retain the
+     * existing holder lookup for presentation only.
      *
      * Native holders are keyed by canonical UPPERCASE UUID text
      * (`UUID.uuidString`); JVM-created holders use lowercase
@@ -2052,6 +2053,16 @@ internal class DeviceAccessHost(
         scope.launch(io) {
             armingOwner = owner
             try {
+                // An explicit Allow can follow a retry of the same run id.
+                // Refresh native ownership before replacing its ended proof;
+                // an old holder alone must not revive device automation.
+                if (!deviceRunLiveness.confirm(owner, epoch)) {
+                    error = DeviceAccessUiError(
+                        context.getString(R.string.device_access_error_no_task), "device_run_unavailable")
+                    return@launch
+                }
+                if (closed || host.nativeRootEpoch() != epoch ||
+                    phoneControlRevision.get() != armRevision || phonePause.isPaused(owner)) return@launch
                 val principal = PhoneControlPrincipal(
                     owner = owner,
                     epoch = epoch,

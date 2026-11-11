@@ -152,6 +152,22 @@ class ScheduledDeviceOwnerLivenessTest {
         assertEquals(1, source.subscriptions.single().closeCount)
     }
 
+    @Test fun explicitFreshConfirmationCanAdmitSameRunAfterRetry() = runBlocking {
+        val source = Source(owner)
+        val live = DeviceRunLiveness(source) {}
+        assertTrue(live.confirm(owner, 7))
+        val old = source.subscriptions.single()
+        old.terminal(41)
+        assertEquals(false, live.answer(owner, 7))
+        source.proof = checkNotNull(source.proof).copy(watermark = 60)
+        assertTrue(live.confirm(owner, 7))
+        old.terminal(100)
+        old.lost()
+        assertEquals(true, live.answer(owner, 7))
+        assertEquals(listOf(40L, 60L), source.watermarks)
+        live.stop()
+    }
+
     @Test fun stopWhileSnapshotPendingFencesLateResponse() = runBlocking {
         val source = Source(owner)
         val release = CompletableDeferred<Unit>()
