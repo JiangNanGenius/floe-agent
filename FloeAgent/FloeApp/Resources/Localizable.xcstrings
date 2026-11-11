@@ -146689,6 +146689,159 @@
           }
         }
       }
+    },
+    "cad.sketchImport.targetUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先打开可编辑的草图。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open an editable sketch first."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.targetChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草图已更改。请重新打开导入后再试。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The sketch changed. Reopen Import and try again."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.sourceChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "二维项目已更改，请重新选择草图。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The 2D project changed. Select the sketch again."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.unsupportedSource": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这个项目暂时无法提供可编辑草图。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This project cannot provide an editable sketch in this version."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.emptySketch": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选草图还没有图形。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected sketch is empty."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.invalidGeometry": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导入这张草图，请检查图形后重试。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This sketch cannot be imported. Check its geometry and try again."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.rebuildFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入未能应用，草图保持原样。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import could not be applied. The sketch was left unchanged."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.resultNeedsReview": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法确认导入结果。请检查草图后再尝试导入。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The import result could not be confirmed. Check the sketch before trying again."
+          }
+        }
+      }
+    },
+    "cad.sketchImport.undo": {
+      "extractionState": "manual",
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入草图"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import sketch"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -169,6 +169,9 @@ public struct ToolboxQRView: View {
     @State private var readingFailed = false
     @State private var reading = false
     @State private var didRead = false
+    @State private var showingScanner = false
+    @State private var readTask: Task<Void, Never>?
+    @State private var readGeneration = UUID()
     private let importImage: @MainActor () async throws -> Data?
     private let exportImage: (Data)->Void
     public init(importImage: @escaping @MainActor () async throws -> Data?,exportImage: @escaping (Data)->Void) { self.importImage = importImage; self.exportImage = exportImage }
@@ -192,7 +195,14 @@ public struct ToolboxQRView: View {
                         .accessibilityIdentifier("toolbox.qr.export")
                 }
             }
-            Section(workbenchText("识别图片","Read an image",locale)) {
+            Section(workbenchText("扫描与识别","Scan and read",locale)) {
+                #if os(iOS)
+                Button(workbenchText("扫描二维码","Scan QR code",locale), systemImage:"qrcode.viewfinder") {
+                    showingScanner = true
+                }
+                .disabled(reading)
+                .accessibilityIdentifier("toolbox.qr.scan")
+                #endif
                 Button(workbenchText("选择图片识别","Choose an image to read",locale),systemImage:"photo") {readImage()}
                     .disabled(reading).accessibilityIdentifier("toolbox.qr.read")
                 if reading {ProgressView(workbenchText("正在读取图片","Reading image",locale))}
@@ -201,7 +211,7 @@ public struct ToolboxQRView: View {
                 } else if didRead,result.isEmpty {
                     ContentUnavailableView(workbenchText("未发现二维码","No QR code found",locale),systemImage:"qrcode",description:Text(workbenchText("请换一张二维码完整、清晰的图片。","Choose an image with a complete, clear QR code.",locale)))
                 } else if !didRead {
-                    Text(workbenchText("选择图片后，识别出的内容可复制或分享。","Choose an image to read its QR codes, then copy or share their content.",locale)).foregroundStyle(.secondary)
+                    Text(workbenchText("扫描或选择图片，识别出的内容可复制、分享或用于生成二维码。","Scan or choose an image, then copy, share, or generate a QR code from the result.",locale)).foregroundStyle(.secondary)
                 }
             }
             if didRead,!reading,!result.isEmpty {
@@ -212,35 +222,73 @@ public struct ToolboxQRView: View {
                             Text(text).textSelection(.enabled)
                             ViewThatFits(in:.horizontal) {
                                 HStack(spacing:12) {qrResultActions(text)}
+                                    .fixedSize(horizontal:true,vertical:false)
                                 VStack(alignment:.leading,spacing:8) {qrResultActions(text)}
                             }
+                            .labelStyle(.titleAndIcon)
                         }.padding(.vertical,4)
                     }
                 }
             }
         }.navigationTitle(workbenchText("二维码","QR code",locale))
             .onChange(of:input) {_,_ in png=nil;generationFailed=false}
+            #if os(iOS)
+            .sheet(isPresented: $showingScanner) {
+                ToolboxQRScannerView { text in
+                    result = [text]
+                    didRead = true
+                    readingFailed = false
+                }
+            }
+            #endif
+            .onDisappear {
+                readGeneration = UUID()
+                readTask?.cancel()
+                readTask = nil
+                reading = false
+            }
     }
     private func readImage() {
         guard !reading else {return};reading=true;readingFailed=false
-        Task { @MainActor in
-            defer {reading=false}
+        let token = UUID()
+        readGeneration = token
+        readTask = Task { @MainActor in
+            defer { if readGeneration == token { reading=false;readTask=nil } }
             do {
                 guard let data=try await importImage() else {return}
+                guard readGeneration == token, !Task.isCancelled else { return }
                 result=[];didRead=false
                 let work=Task.detached(priority:.userInitiated) {
                     try Task.checkCancellation()
                     let values=try ToolboxQR.read(imageData:data)
                     try Task.checkCancellation();return values
                 }
-                result=try await withTaskCancellationHandler(operation:{try await work.value},onCancel:{work.cancel()})
+                let values=try await withTaskCancellationHandler(operation:{try await work.value},onCancel:{work.cancel()})
+                guard readGeneration == token, !Task.isCancelled else { return }
+                result=values
                 didRead=true
-            } catch is CancellationError {} catch {result=[];didRead=false;readingFailed=true}
+            } catch is CancellationError {} catch {
+                guard readGeneration == token, !Task.isCancelled else { return }
+                result=[];didRead=false;readingFailed=true
+            }
         }
     }
     @ViewBuilder private func qrResultActions(_ text:String)->some View {
-        Button(workbenchText("复制内容","Copy content",locale),systemImage:"doc.on.doc") {workbenchCopy(text)}.frame(minHeight:44)
-        ShareLink(item:text) {Label(workbenchText("分享内容","Share content",locale),systemImage:"square.and.arrow.up")}.frame(minHeight:44)
+        if let url = ToolboxQRLink.destination(for: text) {
+            Link(destination: url) {
+                Label(workbenchText("打开链接", "Open link", locale), systemImage: "arrow.up.right.square")
+            }
+            .buttonStyle(.borderless).labelStyle(.titleAndIcon).frame(minHeight:44)
+            .accessibilityIdentifier("toolbox.qr.openLink")
+        }
+        Button(workbenchText("复制内容","Copy content",locale),systemImage:"doc.on.doc") {workbenchCopy(text)}
+            .buttonStyle(.borderless).frame(minHeight:44)
+            .accessibilityIdentifier("toolbox.qr.copyResult")
+        ShareLink(item:text) {Label(workbenchText("分享内容","Share content",locale),systemImage:"square.and.arrow.up")}
+            .buttonStyle(.borderless).frame(minHeight:44)
+            .accessibilityIdentifier("toolbox.qr.shareResult")
+        Button(workbenchText("用于生成","Use to generate",locale), systemImage:"qrcode") { input = text }
+            .buttonStyle(.borderless).frame(minHeight:44).accessibilityIdentifier("toolbox.qr.useResult")
     }
     private func qrImage(_ bytes: Data) -> Image {
         #if os(iOS)
@@ -251,6 +299,25 @@ public struct ToolboxQRView: View {
         return Image(systemName:"qrcode")
     }
 }
+
+/// Treat a QR result as a web link only when the payload already contains
+/// an absolute HTTP(S) URL. Keep its path, query and fragment untouched.
+enum ToolboxQRLink {
+    nonisolated static func destination(for payload: String) -> URL? {
+        guard payload.utf8.count <= 8192 else { return nil }
+        let text = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty,
+              !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let url = URL(string: text, encodingInvalidCharacters: false),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = url.host(percentEncoded: false), !host.isEmpty else { return nil }
+        let invalidHostCharacters = CharacterSet.whitespacesAndNewlines
+            .union(.controlCharacters).union(CharacterSet(charactersIn: "/\\?#@"))
+        guard !host.unicodeScalars.contains(where: { invalidHostCharacters.contains($0) }) else { return nil }
+        return url
+    }
+}
+
 public struct ToolboxSelectedChecksumFile: Sendable {
     public let title: String
     public let byteCount: UInt64?

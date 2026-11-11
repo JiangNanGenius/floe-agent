@@ -784,6 +784,8 @@ final class NotesSession {
     func trash(_ value: NoteDocument, restore: Bool = false) {
         enqueue { [self] in
             guard let store else { return }
+            let lease = restore ? nil : try await NotesRepository.shared.stopAssistantHistory(documentID: value.id, in: store)
+            defer { lease?.finish() }
             _ = try await store.setTrashed(value.id, expectedRevision: value.revision, trashed: !restore)
             if !restore && document?.id == value.id { document = nil }
             try await reload()
@@ -793,7 +795,11 @@ final class NotesSession {
     func permanentlyDelete(_ value: NoteDocument) {
         enqueue { [self] in
             guard let store else { return }
+            let lease = try await NotesRepository.shared.stopAssistantHistory(documentID: value.id, in: store)
+            defer { lease.finish() }
             try await store.permanentlyDelete(value.id, expectedRevision: value.revision)
+            lease.finish()
+            try await NotesRepository.shared.reconcileAssistantCleanup(in: store)
             if document?.id == value.id { document = nil }
             try await reload()
             _ = try await store.collectDeletedResources()

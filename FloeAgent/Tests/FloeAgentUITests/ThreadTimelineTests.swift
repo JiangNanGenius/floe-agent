@@ -450,7 +450,7 @@ struct ThreadTimelineTests {
 
     @MainActor @Test("Sidebar attention states never masquerade as running or completed")
     func sidebarAttentionStates() {
-        for state in ["failed", "recoveryFailed", "interrupted", "paused", "checkpointed", "blocked", "noProgress", "budgetLimited", "truncated", "waitingApproval", "waitingUser"] {
+        for state in ["failed", "recoveryFailed", "interrupted", "paused", "checkpointed", "blocked", "noProgress", "budgetLimited", "truncated", "waitingApproval", "waitingUser", "waitingUserQuestion"] {
             #expect(RunStateLocalizer.attentionSymbol(for: state) != nil)
             #expect(!RunStateLocalizer.isLoading(stateName: state, hasError: false))
         }
@@ -458,6 +458,59 @@ struct ThreadTimelineTests {
         #expect(RunStateLocalizer.isLoading(stateName: "compacting", hasError: false))
         #expect(!RunStateLocalizer.isLoading(stateName: "compacting", hasError: true))
     }
+    @MainActor @Test("A manually collapsed failed invocation survives status refresh and rebuilt rows")
+    func failedToolManualDisclosureSurvivesRefresh() {
+        let environment = AppEnvironment.preview()
+        let model = ThreadDetailViewModel(conversationID: UUID(), center: environment.conversationCenter)
+        defer { model.stopLiveUpdates() }
+        let runID = UUID()
+        let request = makeEvent(runID: runID, sequence: 1, kind: .toolRequest,
+            payload: ["callID": "call-1", "tool": "workspace.readFile", "input": "owned fixture"])
+        let result = makeEvent(runID: runID, sequence: 2, kind: .toolResult,
+            payload: ["id": "call-1", "tool": "workspace.readFile", "status": "failed", "summary": "Fixture error"])
+        let binding = model.toolDetailExpansion(for: request)
+        #expect(binding.wrappedValue == nil)
+        let pending = ToolCallCardView(name: "workspace.readFile", inputSummary: "owned fixture", detailExpansion: binding)
+        #expect(!pending.isExpanded)
+        let failed = ToolCallCardView(name: "workspace.readFile", status: "failed",
+            resultSummary: "Fixture error", detailExpansion: binding)
+        #expect(failed.isExpanded) // First error still opens without a manual choice.
+        failed.toggleDetails() // Same action the production card header invokes.
+        #expect(binding.wrappedValue == false)
+        #expect(!failed.isExpanded)
+
+        // A paired result, a new SwiftUI row value and changed failure vocabulary
+        // all resolve the same persisted run/call identity, without a DB write.
+        let rebuiltBinding = model.toolDetailExpansion(for: result)
+        for status in ["failed", "error", "denied", "expired", "needsUser"] {
+            let rebuilt = ToolCallCardView(name: "workspace.readFile", status: status,
+                resultSummary: "Updated fixture error", detailExpansion: rebuiltBinding)
+            #expect(!rebuilt.isExpanded)
+        }
+        let reopened = ToolCallCardView(name: "workspace.readFile", status: "error",
+            resultSummary: "Fixture error", detailExpansion: rebuiltBinding)
+        reopened.toggleDetails()
+        #expect(binding.wrappedValue == true)
+        #expect(reopened.isExpanded)
+        #expect(ToolCallCardView(name: "workspace.readFile", status: "ok",
+            resultSummary: "Later receipt", detailExpansion: rebuiltBinding).isExpanded)
+        reopened.toggleDetails()
+        #expect(!reopened.isExpanded)
+
+        let repeatedID = makeEvent(runID: UUID(), sequence: 1, kind: .toolResult,
+            payload: ["id": "call-1", "status": "failed"])
+        let other = ToolCallCardView(name: "workspace.readFile", status: "failed",
+            resultSummary: "Other run", detailExpansion: model.toolDetailExpansion(for: repeatedID))
+        #expect(other.isExpanded) // A provider's reused call ID cannot inherit collapse.
+        let legacy = makeEvent(runID: runID, sequence: 3, kind: .toolResult, payload: ["status": "failed"])
+        let legacyBinding = model.toolDetailExpansion(for: legacy)
+        legacyBinding.wrappedValue = false
+        #expect(model.toolDetailExpansion(for: legacy).wrappedValue == false)
+        let otherLegacy = makeEvent(runID: runID, sequence: 4, kind: .toolResult, payload: ["status": "failed"])
+        #expect(model.toolDetailExpansion(for: otherLegacy).wrappedValue == nil)
+        #expect(binding.wrappedValue == false)
+    }
+
     @Test("Latest and live tool groups are visible without an extra tap")
     func latestToolGroupExpansionPolicy() {
         #expect(StepGroupDisclosurePolicy.initiallyExpanded(
@@ -2128,4 +2181,140 @@ private struct NoPartialToolExecutor: ToolExecutor {
         return ToolResult(callID: call.id, status: .denied, outputSummary: "Unexpected call", outputDigest: "")
     }
 }
+
+private actor SidebarActivityObservedReceipt {
+    var latest: ConversationActivitySnapshot?
+    var failure: String?
+    func receive(_ value: ConversationActivitySnapshot) { latest = value }
+    func fail(_ value: String) { failure = value }
+}
+
+extension ThreadTimelineTests {
+    @MainActor private func sidebarFixture() async throws -> (DatabaseManager, ConversationRecord, SQLiteRunStore, RunRecord) {
+        let db = try DatabaseManager.inMemory(); try await db.migrate()
+        let date = Date(timeIntervalSince1970: 1000)
+        let conversation = ConversationRecord(id: UUID(), title: "Activity fixture", createdAt: date, updatedAt: date)
+        try await SQLiteConversationStore(database: db).saveConversation(conversation)
+        let runs = SQLiteRunStore(database: db)
+        let run = RunRecord(id: UUID(), conversationID: conversation.id, state: "streamingModel", goal: "Fixture", startedAt: date)
+        try await runs.saveRun(run)
+        return (db, conversation, runs, run)
+    }
+
+    @MainActor private func sidebarObserved(_ receipt: SidebarActivityObservedReceipt, runID: UUID?, state: String?) async throws -> ConversationActivitySnapshot {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            if let value = await receipt.latest, value.run?.id == runID, value.run?.state == state { return value }
+            if let failure = await receipt.failure { throw NSError(domain: "SidebarActivityFixture", code: 1, userInfo: [NSLocalizedDescriptionKey: failure]) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw NSError(domain: "SidebarActivityFixture", code: 2, userInfo: [NSLocalizedDescriptionKey: "Actual activity observation did not deliver the committed state"])
+    }
+
+    @MainActor @Test("Sidebar observes actual failed/interrupted commits and a newer run never inherits old errors")
+    func sidebarActivityObservesFailureAndNewRunRecovery() async throws {
+        let (db, conversation, runs, run) = try await sidebarFixture()
+        let store = ConversationActivityStore(database: db), receipt = SidebarActivityObservedReceipt()
+        let observation = Task { @MainActor in
+            do {
+                let values = try await store.observation(conversationID: conversation.id)
+                for try await value in values { await receipt.receive(value) }
+            } catch { if !Task.isCancelled { await receipt.fail(error.localizedDescription) } }
+        }
+        defer { observation.cancel() }
+        _ = try await sidebarObserved(receipt, runID: run.id, state: "streamingModel")
+        try await runs.recordError(.init(runID: run.id, kind: "provider", message: "Fixture connection failed", recoverable: true))
+        try await runs.updateRunState(id: run.id, state: "failed", endedAt: Date())
+        let failed = try await sidebarObserved(receipt, runID: run.id, state: "failed")
+        let failure = try #require(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: failed, live: nil))
+        #expect(failure.symbol == "exclamationmark.circle.fill")
+        #expect(failure.detail == "Fixture connection failed")
+        #expect(!RunStateLocalizer.isLoading(stateName: failure.state, hasError: false))
+        let metadata = try await SQLiteConversationStore(database: db).conversation(id: conversation.id)
+        #expect(metadata?.updatedAt == conversation.updatedAt, "Failure must refresh without renaming/touching the conversation")
+        try await runs.updateRunState(id: run.id, state: "interrupted", endedAt: Date())
+        let interrupted = try await sidebarObserved(receipt, runID: run.id, state: "interrupted")
+        #expect(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: interrupted, live: nil)?.symbol == "exclamationmark.triangle.fill")
+        let next = RunRecord(id: UUID(), conversationID: conversation.id, state: "preparing", goal: "New run", startedAt: run.startedAt.addingTimeInterval(1))
+        let live = try #require(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: failed, live: next))
+        #expect(live.runID == next.id && live.state == "preparing" && live.detail == nil)
+        try await runs.saveRun(next)
+        _ = try await sidebarObserved(receipt, runID: next.id, state: "preparing")
+        try await runs.updateRunState(id: next.id, state: "completed", endedAt: Date())
+        let completed = try await sidebarObserved(receipt, runID: next.id, state: "completed")
+        let success = try #require(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: completed, live: nil))
+        #expect(success.symbol == "checkmark.circle" && success.detail == nil)
+        try await db.writer { database in
+            try database.execute(sql: "DELETE FROM runs WHERE conversation_id = ?", arguments: [conversation.id.uuidString])
+        }
+        let empty = try await sidebarObserved(receipt, runID: nil, state: nil)
+        #expect(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: empty, live: nil) == nil)
+    }
+
+    @MainActor @Test("Real questions, paused work, finite-job checkpoints and current-run Goal blockers stay distinct")
+    func sidebarActivitySeparatesQuestionPauseAndLinkedGoal() async throws {
+        let (db, conversation, runs, run) = try await sidebarFixture()
+        let store = ConversationActivityStore(database: db)
+        let questions = UserQuestionStore(database: db)
+        let request = UserQuestionRequest(waitPolicy: .required,
+            questions: [.init(question: "Continue?", options: [.init(id: "yes", label: "Yes")], allowsFreeText: false)])
+        try request.validate()
+        let requestID = "sidebar_question", callID = "sidebar_call", now = Date()
+        let pending = try request.makeQuestions(requestID: requestID, conversationID: conversation.id, runID: run.id, toolCallID: callID, createdAt: now)
+        let registration = UserQuestionRegistration(requestID: requestID,
+            requestDigest: FloeDigest.sha256Hex(try JSONEncoder().encode(request)), conversationID: conversation.id,
+            runID: run.id, toolCallID: callID, waitPolicy: .required, questions: pending, createdAt: now, isEphemeral: false)
+        _ = try await questions.register(registration)
+        let waiting = try await store.current(conversationID: conversation.id)
+        let question = try #require(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: waiting, live: nil))
+        #expect(waiting.run?.pendingQuestionID == requestID && question.state == "waitingUserQuestion")
+        #expect(question.symbol == "questionmark.circle.fill")
+        _ = try await questions.cancel(requestID: requestID, now: Date())
+        try await runs.appendEvent(runID: run.id, kind: .error, payloadJSON: #"{"message":"Earlier recoverable error"}"#)
+        try await runs.updateRunState(id: run.id, state: "paused", endedAt: nil)
+        let pausedSnapshot = try await store.current(conversationID: conversation.id)
+        let paused = try #require(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: pausedSnapshot, live: nil))
+        #expect(paused.state == "paused" && paused.symbol == "pause.circle.fill" && paused.detail == nil)
+        try await runs.updateRunState(id: run.id, state: "checkpointed", endedAt: Date())
+        let reason = FloeAgentRuntime.dependencyWaitReasonPrefix + UUID().uuidString
+        let payload = String(decoding: try JSONEncoder().encode(["state": "checkpointed", "reason": reason]), as: UTF8.self)
+        try await runs.appendEvent(runID: run.id, kind: .status, payloadJSON: payload)
+        let parked = try await store.current(conversationID: conversation.id)
+        #expect(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: parked, live: nil)?.state == "waitingTool")
+        let goals = SQLiteIntelligenceStore(database: db)
+        let goal = ConversationGoal(conversationID: conversation.id, objective: "Blocked fixture", acceptanceCriteria: [], steps: [], status: .blocked)
+        try await goals.saveGoal(goal)
+        try await runs.assignGoal(runID: run.id, goalID: goal.id)
+        try await runs.updateRunState(id: run.id, state: "completed", endedAt: Date())
+        let linked = try await store.current(conversationID: conversation.id)
+        #expect(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: linked, live: nil)?.state == "blocked")
+        let newer = RunRecord(id: UUID(), conversationID: conversation.id, state: "completed", goal: "Independent success", startedAt: run.startedAt.addingTimeInterval(1), endedAt: Date())
+        try await runs.saveRun(newer)
+        let current = try await store.current(conversationID: conversation.id)
+        #expect(current.run?.id == newer.id && current.run?.goalStatus == nil)
+        #expect(ConversationActivityPresentation.project(conversationID: conversation.id, isOrdinary: true, snapshot: current, live: nil)?.state == "completed")
+    }
+
+    @MainActor @Test("Durable file/canvas owners never gain an ordinary badge from any status")
+    func sidebarActivityExcludesStoredEditorOwners() async throws {
+        let db = try DatabaseManager.inMemory(); try await db.migrate()
+        let conversations = SQLiteConversationStore(database: db), runs = SQLiteRunStore(database: db)
+        let store = ConversationActivityStore(database: db)
+        for owner in [ConversationEditorOwnership.file(UUID()), .canvas(UUID(), documentID: UUID())] {
+            let record = ConversationRecord(id: UUID(), title: "Ordinary-looking title", createdAt: Date(), updatedAt: Date(), editorOwnership: owner)
+            try await conversations.saveConversation(record)
+            let readbackValue = try await conversations.conversation(id: record.id)
+            let readback = try #require(readbackValue)
+            #expect(readback.purpose == .ordinary && !readback.isVisibleInOrdinaryList)
+            let run = RunRecord(id: UUID(), conversationID: record.id, state: "streamingModel", goal: "Owned fixture", startedAt: Date())
+            try await runs.saveRun(run)
+            for state in ["streamingModel", "failed", "interrupted", "blocked", "completed", "waitingUserQuestion"] {
+                try await runs.updateRunState(id: run.id, state: state, endedAt: nil)
+                let snapshot = try await store.current(conversationID: record.id)
+                #expect(ConversationActivityPresentation.project(conversationID: record.id, isOrdinary: readback.isVisibleInOrdinaryList, snapshot: snapshot, live: nil) == nil)
+            }
+        }
+    }
+}
+
 #endif

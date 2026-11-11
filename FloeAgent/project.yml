@@ -217,6 +217,9 @@ targets:
       - path: FloeApp/Resources/Whisper
         type: folder
         buildPhase: resources
+      - path: FloeApp/Resources/MeetingSpeakers
+        type: folder
+        buildPhase: resources
       - path: FloeApp/Resources/EngineeringViewers
         type: folder
         buildPhase: resources
@@ -503,6 +506,8 @@ targets:
         product: SpeechAudioCommon
       - package: WhisperKit
         product: WhisperKit
+      - package: WhisperKit
+        product: SpeakerKit
       - framework: Vendor/PDFium/PDFium.xcframework
         embed: true
       - framework: Vendor/LibArchive/LibArchive.xcframework
@@ -633,8 +638,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.9"
-        CURRENT_PROJECT_VERSION: "331"
+        MARKETING_VERSION: "1.8.10"
+        CURRENT_PROJECT_VERSION: "332"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -717,8 +722,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.9"
-        CURRENT_PROJECT_VERSION: "331"
+        MARKETING_VERSION: "1.8.10"
+        CURRENT_PROJECT_VERSION: "332"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -768,8 +773,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.9"
-        CURRENT_PROJECT_VERSION: "331"
+        MARKETING_VERSION: "1.8.10"
+        CURRENT_PROJECT_VERSION: "332"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -812,8 +817,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.9"
-        CURRENT_PROJECT_VERSION: "331"
+        MARKETING_VERSION: "1.8.10"
+        CURRENT_PROJECT_VERSION: "332"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -865,8 +870,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.9"
-        CURRENT_PROJECT_VERSION: "331"
+        MARKETING_VERSION: "1.8.10"
+        CURRENT_PROJECT_VERSION: "332"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1820,6 +1825,11 @@ targets:
       - path: Tests/FloeAppTests/LocalServiceOwnedLoopTests.swift
       - path: Tests/FloeAppTests/GISAssistantVisualTests.swift
       - path: Tests/FloeAppTests/FileAssistantLifecycleTests.swift
+      # Focused contracts for the next intermediate build; selected cases only.
+      - path: Tests/FloePersistenceTests/ConversationPinningStoreTests.swift
+      - path: Tests/FloeNotesTests/NoteCoverStoreTests.swift
+      - path: Tests/FloeAgentUITests/ThreadTimelineTests.swift
+      - path: Tests/FloeExecutionTests/NetworkDiagnosticToolsTests.swift
       - path: Tests/FloeAppTests/QueuedInputModeTests.swift
       - path: Tests/FloeAppTests/ChemistryDeletionLifecycleTests.swift
       - path: Tests/FloeAppTests/BiologyAssistantIntegrationTests.swift
@@ -1854,6 +1864,7 @@ targets:
       - path: Tests/FloeAppTests/NextRoundGitHubSourceCardTests.swift
       - path: Tests/FloeAppTests/ChildNativeAuthoringParityTests.swift
       - path: Tests/FloeAgentRuntimeTests/ModelSwitchHistoryPreparerTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ProviderRecoveryTests.swift
       - path: Tests/FloeAppTests/NativeExternalOAuthConnectionTests.swift
       - path: Tests/FloeAppTests/NativeMailOAuthConsumerTests.swift
       - path: Tests/FloeAppTests/LibraryPermanentDeletionTests.swift
@@ -1977,6 +1988,8 @@ targets:
       - path: Tests/FloeAppTests/ManufacturingResearchSessionTests.swift
       - path: Tests/FloeAppTests/StudioManufacturingResearchContractTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CAD2DNavigationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchNavigationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchTransferTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADTapDrawingInputTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADTextureDrawingInputTests.swift
       - path: Tests/FloeAppTests/MediaDrawingInputTests.swift

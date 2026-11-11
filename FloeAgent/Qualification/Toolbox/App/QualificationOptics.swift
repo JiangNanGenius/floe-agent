@@ -4,6 +4,48 @@ import CoreImage
 import SwiftUI
 import UIKit
 import FloeToolboxWorkbenches
+import FloeToolboxUtilities
+
+@MainActor
+struct QualificationQR: View {
+    let fixture: Bool
+    var linkFixture = false
+    @State private var exportedBytes = 0
+    @State private var openedURL: String?
+
+    var body: some View {
+        ToolboxQRView(importImage: {
+            guard fixture || linkFixture else { return nil }
+            return try ToolboxQR.png(text: linkFixture ? "https://example.com/floe-toolbox?source=qr#result" : "FLOE-QR-IMPORT-2026")
+        }, exportImage: { exportedBytes = $0.count })
+        .environment(\.openURL, OpenURLAction { url in
+            guard linkFixture else { return .systemAction }
+            openedURL = url.absoluteString
+            return .handled
+        })
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if fixture || linkFixture {
+                VStack(spacing: 4) {
+                    Text("合成二维码图片 · 非相机画面 / Synthetic QR image, not a camera capture")
+                        .accessibilityIdentifier("qualification.qr.synthetic")
+                    if exportedBytes > 0 {
+                        Text("PNG callback received: \(exportedBytes) bytes")
+                            .accessibilityIdentifier("qualification.qr.exported")
+                    }
+                    if linkFixture {
+                        Text("链接打开请求记入回执 / Link open requests are recorded")
+                            .foregroundStyle(.secondary)
+                    }
+                    if let openedURL {
+                        Text(openedURL).accessibilityIdentifier("qualification.qr.openedURL")
+                    }
+                }
+                .font(.caption).padding(8).frame(maxWidth: .infinity)
+                .background(.yellow.opacity(0.15))
+            }
+        }
+    }
+}
 
 /// Supplies actual pixels to the production import/recognition path. Host
 /// callbacks produce receipts only; this host does not write Files or Notes.

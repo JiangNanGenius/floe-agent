@@ -493,6 +493,7 @@ final class AssistantAudioService: ObservableObject {
         serviceID: String? = nil,
         requiresTiming: Bool = false,
         enableSpeakerAttribution: Bool = false,
+        onPartial: @escaping @Sendable (String) -> Void = { _ in },
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> AssistantAudioTranscriptionResult {
         await refreshAvailability()
@@ -513,6 +514,7 @@ final class AssistantAudioService: ObservableObject {
                     language: language,
                     allowAppleFallback: false,
                     preferApple: false,
+                    onPartial: onPartial,
                     progress: progress)
             } catch is CancellationError {
                 throw CancellationError()
@@ -537,6 +539,7 @@ final class AssistantAudioService: ObservableObject {
                     language: language,
                     allowAppleFallback: true,
                     preferApple: true,
+                    onPartial: onPartial,
                     progress: progress)
             } catch is CancellationError {
                 throw CancellationError()
@@ -877,16 +880,13 @@ final class AssistantAudioService: ObservableObject {
 
     // MARK: - Meeting continuous live route
 
-    /// Resolve the selected transcription service to a live speaker-separation
-    /// route for continuous meeting recognition. Returns nil for local
-    /// engines and for cloud profiles without a live route that supports
-    /// speaker attribution, so the caller keeps the file-chunk queue and its
-    /// honest capability copy. A configured profile is callable as-is; any
-    /// provider error surfaces through the ordinary request path.
+    /// Resolve the selected service's actual live route. Speaker labels are
+    /// optional: a provider with real text streaming remains usable without
+    /// diarization. Unavailable explicit selections never switch providers.
+    /// Local/file-only selections keep the existing chunk queue.
     func liveTranscriptionRoute(serviceID: String?) async -> MeetingLiveTranscriptionRoute? {
         await refreshAvailability()
-        guard let descriptor = service(id: serviceID, for: .transcription)
-                ?? automaticService(for: .transcription) else { return nil }
+        guard let descriptor = service(id: serviceID, for: .transcription) else { return nil }
         let profile: ASRProfile?
         if descriptor.id == ID.transcriptionCloud {
             profile = cloudASRSettings.readyProfiles.first
@@ -896,7 +896,6 @@ final class AssistantAudioService: ObservableObject {
         guard let profile, cloudASRSettings.isReady(profile),
               let capabilities = profile.liveCapabilities,
               capabilities.supportsLiveTranscription,
-              capabilities.supportsSpeakerAttribution,
               let adapter = try? ASRAdapterFactory.liveAdapter(for: profile),
               let credential = try? cloudASRSettings.credential(for: profile) else {
             return nil

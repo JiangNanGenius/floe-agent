@@ -645,7 +645,7 @@ class DirectRevisionMetadataTests(unittest.TestCase):
 
 
 class RealApplicationGraphTests(unittest.TestCase):
-    """Exercise the committed root lock and the real FloeCADKit local lock."""
+    """Exercise the committed root seed and the complete App-local lock closure."""
 
     def setUp(self):
         self.root = Path(__file__).resolve().parents[2]
@@ -661,7 +661,7 @@ class RealApplicationGraphTests(unittest.TestCase):
         self.host_lock = self.root / "Package.resolved"
 
     def test_complete_graph_with_local_closure_and_revision_only_zip(self):
-        self.assertEqual(len(self.local), 6)
+        self.assertEqual(len(self.local), 40)
         committed_by_identity = {p["identity"]: p for p in self.committed}
         zip_pin = committed_by_identity["zipfoundation"]
         self.assertEqual(zip_pin["state"]["version"], "0.9.20")
@@ -674,7 +674,7 @@ class RealApplicationGraphTests(unittest.TestCase):
         after = {path: sha256(path) for path in
                  (self.project_path, self.host_lock, self.local_lock)}
         self.assertEqual(before, after, "verification must be read-only")
-        self.assertEqual(len(combined), len(self.committed) + len(self.local))
+        self.assertEqual(len(combined), len({p["identity"] for p in self.committed + self.local}))
         by_identity = {p["identity"]: p for p in combined}
         self.assertEqual(by_identity["zipfoundation"]["state"], zip_pin["state"])
         self.assertEqual(set(by_identity), set(committed_by_identity) | {
@@ -682,7 +682,7 @@ class RealApplicationGraphTests(unittest.TestCase):
 
     def test_incomplete_host_lock_is_a_valid_seed_and_completes_locally(self):
         seed = verify_resolution(self.committed, self.committed, self.app, self.local)
-        self.assertEqual(len(seed), len(self.committed) + len(self.local))
+        self.assertEqual(len(seed), len({p["identity"] for p in self.committed + self.local}))
         self.assertEqual(
             {p["identity"] for p in seed},
             {p["identity"] for p in self.committed} |

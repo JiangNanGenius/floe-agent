@@ -18,6 +18,7 @@ struct NotesAssistantPanel: View {
     @State private var failure: String?
     @State private var attempt = 0
     @State private var restarting = false
+    @State private var showingArchive = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +29,9 @@ struct NotesAssistantPanel: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                Button(IDELanguageRunText.t("归档会话", "Archived conversations"), systemImage: "archivebox") {
+                    showingArchive = true
+                }.labelStyle(.iconOnly).frame(width: 44, height: 44)
                 Button("notes.assistant.restart", systemImage: "arrow.counterclockwise") {
                     Task { await restart() }
                 }
@@ -61,6 +65,9 @@ struct NotesAssistantPanel: View {
                     Label("notes.notes_assistant_panel.assistant_cannot_open", systemImage: "exclamationmark.bubble")
                 } description: { Text(failure) } actions: { Button("settings.document_recovery_list_view.retry") { attempt += 1 } }
             } else { ProgressView("notes.notes_assistant_panel.opening_assistant").frame(maxWidth: .infinity, maxHeight: .infinity) }
+        }
+        .sheet(isPresented: $showingArchive) {
+            EditorAssistantArchiveView(noteDocumentID: document.id, store: store, center: environment.conversationCenter)
         }
         .task(id: "\(document.id):\(attempt)") {
             do {
@@ -104,10 +111,23 @@ struct NotesAssistantPanel: View {
         defer { restarting = false }
         do {
             environment.voiceInput.stop()
-            try await environment.conversationCenter.stopNotesAssistant(conversationID: previous)
+            let lease = try await environment.conversationCenter.stopNotesAssistantRetainingLease(conversationID: previous)
+            defer { lease.finish() }
             let next = try await environment.conversationCenter.createConversation(
                 title: FloeL10n.l("notes.notes_assistant_panel.notes", document.title), purpose: .notes)
-            try await store.bindAssistant(conversationID: next.id, documentID: document.id, canEdit: true)
+            do {
+                try await store.replaceAssistant(conversationID: next.id, documentID: document.id, expectedPrevious: previous)
+                do { try await environment.conversationStore.setArchived(id: previous, archived: true) }
+                catch {
+                    try await store.replaceAssistant(conversationID: previous, documentID: document.id, expectedPrevious: next.id)
+                    throw error
+                }
+            } catch {
+                if (try? await store.assistantConversation(documentID: document.id)) != next.id {
+                    try? await environment.conversationCenter.deleteConversation(id: next.id)
+                }
+                throw error
+            }
             if let composerInput { onInputConsumed(composerInput.id) }
             await MainActor.run {
                 NotesAssistantConversationBinding.unmap(conversationID: previous, documentID: document.id)

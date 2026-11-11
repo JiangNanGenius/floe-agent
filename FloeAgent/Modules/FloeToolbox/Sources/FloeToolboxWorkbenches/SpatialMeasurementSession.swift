@@ -11,24 +11,54 @@ import FloeToolboxUtilities
 public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let position: SIMD3<Float>
-    /// The detected plane this sample belongs to; area mode requires one
-    /// shared plane so area is never computed across unrelated surfaces.
+    /// Detected-plane evidence. Length may also use an explicitly estimated
+    /// ARKit raycast; area always requires a detected, geometrically shared plane.
     public let planeID: UUID?
+    public let surfaceNormal: SIMD3<Float>?
+    public let estimated: Bool
 }
 
 @MainActor public final class SpatialMeasurementSession: NSObject, ObservableObject {
     public enum Mode: String, CaseIterable, Sendable { case length, area }
 
     public enum Phase: Equatable, Sendable {
-        case idle, running, paused, denied, unavailable, failed(String)
+        case idle, running, paused, denied, unavailable, cameraBusy, failed(String)
     }
 
     public enum Issue: String, Equatable, Sendable {
-        case noSurface, mixedPlanes, notCoplanar, selfIntersecting, degenerate
+        case noSurface, mixedPlanes, notCoplanar, selfIntersecting, degenerate, invalidPoint, pointLimit
     }
 
     public enum TrackingSummary: Equatable, Sendable {
         case normal, initializing, limited(String), notAvailable
+    }
+
+    public enum Target: Equatable, Sendable {
+        case unavailable, searching, ready(estimated: Bool), blocked(Issue)
+    }
+
+    /// Native boundaries are injectable for state-contract qualification without
+    /// opening an ARView, requesting permission, or fabricating raycast results.
+    struct Access {
+        var supported: @MainActor () -> Bool
+        var authorization: @MainActor () -> AVAuthorizationStatus
+        var requestPermission: @MainActor (@escaping @Sendable (Bool) -> Void) -> Void
+        var active: @MainActor () -> Bool
+        var acquire: @MainActor () -> OpticsCaptureLease?
+        var owns: @MainActor (OpticsCaptureLease) -> Bool
+        var prepare: @MainActor (OpticsCaptureLease) async -> Bool
+        var release: @MainActor (OpticsCaptureLease) -> Void
+
+        @MainActor static var live: Access {
+            Access(supported: { ARWorldTrackingConfiguration.isSupported },
+                   authorization: { AVCaptureDevice.authorizationStatus(for: .video) },
+                   requestPermission: { AVCaptureDevice.requestAccess(for: .video, completionHandler: $0) },
+                   active: { UIApplication.shared.applicationState == .active },
+                   acquire: { OpticsCaptureService.shared.acquire(.spatial) },
+                   owns: { OpticsCaptureService.shared.owns($0) },
+                   prepare: { await OpticsCaptureService.shared.prepareExternalCapture(lease: $0) },
+                   release: { OpticsCaptureService.shared.release($0) })
+        }
     }
 
     public struct ProjectedLabel: Identifiable, Equatable, Sendable {
@@ -57,11 +87,17 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
     @Published public private(set) var readout = Readout()
     @Published public private(set) var labels: [ProjectedLabel] = []
     @Published public private(set) var snapshotImage: UIImage?
+    @Published public private(set) var target: Target = .unavailable
+    @Published public private(set) var isStarting = false
 
     @Published public private(set) var mode: Mode = .length
     /// Unit used for projected labels and readouts; the view owns the picker.
     @Published public var unit: SpatialMeasurementUnit = .meter {
-        didSet { updateLabels(force: true) }
+        didSet {
+            snapshotRevision = UUID()
+            snapshotImage = nil
+            updateLabels(force: true)
+        }
     }
 
     private weak var arView: ARView?
@@ -69,28 +105,64 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
     private var measurementRoot: AnchorEntity?
     private var generation = UUID()
     private var startPending = false
-    private var pendingPermissionGeneration: UUID?
+    private(set) var pendingPermissionGeneration: UUID?
     private var startDeferredUntilActive = false
     private var lastLabelUpdate = Date.distantPast
     private var wasRunningBeforeInterruption = false
+    private let access: Access
+    private var captureLease: OpticsCaptureLease?
+    private(set) var preparation: Task<Void, Never>?
+    private var resuming = false
+    private var resetOnNextRun = true
+    private var attachedSessionHasRun = false
+    private var sceneActive = true
+    private var resumeWhenActive = false
+    private var lastTargetUpdate = Date.distantPast
+    private var snapshotRevision = UUID()
+    private let measurementLabelID = UUID()
+    private var ownsCamera: Bool { captureLease.map { access.owns($0) } ?? false }
 
     public override init() {
+        access = .live
+        super.init()
+    }
+
+    init(access: Access) {
+        self.access = access
         super.init()
     }
 
     /// Called by the camera container when its ARView is created. RealityKit
     /// owns the session; the coordinator only configures and observes it.
     public func attach(_ view: ARView) {
+        guard arView !== view else { runIfAttached(); return }
+        if let previous = arView { detach(previous) }
         arView = view
+        attachedSessionHasRun = false
         view.automaticallyConfigureSession = false
-        view.session.delegate = self
         view.session.delegateQueue = .main
+        view.session.delegate = self
         if measurementRoot == nil {
             let root = AnchorEntity(world: matrix_identity_float4x4)
             view.scene.addAnchor(root)
             measurementRoot = root
         }
         runIfAttached()
+    }
+
+    func detach(_ view: ARView) {
+        guard arView === view else { return }
+        view.session.delegate = nil
+        view.session.pause()
+        arView = nil
+        attachedSessionHasRun = false
+        measurementRoot?.removeFromParent()
+        measurementRoot = nil
+        startPending = false
+        target = .unavailable
+        if phase == .running { phase = .paused }
+        cancelStart()
+        releaseCamera()
     }
 
     // MARK: - Lifecycle
@@ -106,72 +178,131 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
     /// can never open the camera after pause/stop or while the scene is
     /// inactive.
     public func requestStart() {
-        guard Self.isWorldTrackingSupported else { phase = .unavailable; return }
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        guard phase != .running, !isStarting else { return }
+        beginPreparation(resuming: false)
+    }
+
+    private func beginPreparation(resuming: Bool) {
+        guard access.supported() else { failStart(.unavailable); return }
+        guard !isStarting else { return }
+        self.resuming = resuming
+        generation = UUID()
+        let token = generation
+        guard let lease = captureLease ?? access.acquire() else { failStart(.cameraBusy); return }
+        captureLease = lease
+        isStarting = true
+        if phase != .paused { phase = .idle }
+        switch access.authorization() {
         case .authorized:
-            start()
+            prepareCamera(token: token, lease: lease)
         case .notDetermined:
-            let token = UUID()
             pendingPermissionGeneration = token
-            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    guard self.pendingPermissionGeneration == token else { return }
-                    self.pendingPermissionGeneration = nil
-                    guard granted else { self.phase = .denied; return }
-                    guard self.phase == .idle else { return }
-                    guard UIApplication.shared.applicationState == .active else {
-                        // Keep the user's explicit intent; resume only when
-                        // the scene is back in the foreground.
-                        self.startDeferredUntilActive = true
-                        return
-                    }
-                    self.start()
-                }
-            }
+            access.requestPermission(Self.makePermissionHandler(for: self, token: token))
         default:
-            phase = .denied
+            failStart(.denied)
         }
     }
 
-    /// Called by the view when the scene becomes active again; only a
-    /// previously deferred explicit start resumes here.
+    // AVCaptureDevice documents delivery on an arbitrary queue. This entry
+    // must not inherit MainActor; only the Bool grant crosses into the task.
+    nonisolated static func makePermissionHandler(
+        for owner: SpatialMeasurementSession, token: UUID,
+        didReceive: (@MainActor @Sendable (Bool) -> Void)? = nil
+    ) -> @Sendable (Bool) -> Void {
+        { @Sendable [weak owner] granted in
+            Task { @MainActor [weak owner] in
+                let accepted = owner?.permissionReceived(granted, token: token) ?? false
+                didReceive?(accepted)
+            }
+        }
+    }
+
+    private func permissionReceived(_ granted: Bool, token: UUID) -> Bool {
+        guard pendingPermissionGeneration == token, generation == token,
+              isStarting, let lease = captureLease, access.owns(lease) else { return false }
+        pendingPermissionGeneration = nil
+        guard granted else { failStart(.denied); return true }
+        guard sceneActive, access.active() else { startDeferredUntilActive = true; return true }
+        prepareCamera(token: token, lease: lease)
+        return true
+    }
+
+    private func prepareCamera(token: UUID, lease: OpticsCaptureLease) {
+        preparation?.cancel()
+        preparation = Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard !Task.isCancelled, self.generation == token, self.isStarting,
+                  self.captureLease == lease else { return }
+            guard self.access.owns(lease) else { self.failStart(.cameraBusy); return }
+            let ready = await self.access.prepare(lease)
+            guard !Task.isCancelled, self.generation == token, self.isStarting,
+                  self.captureLease == lease else { return }
+            guard self.access.owns(lease) else { self.failStart(.cameraBusy); return }
+            guard ready else { self.failStart(.cameraBusy); return }
+            guard self.access.authorization() == .authorized else { self.failStart(.denied); return }
+            guard self.sceneActive, self.access.active() else { self.startDeferredUntilActive = true; return }
+            self.isStarting = false
+            self.startDeferredUntilActive = false
+            self.start(reset: !self.resuming)
+        }
+    }
+
+    /// Settings recovery never opens the camera by itself. It restores Start;
+    /// only a pending grant or a previously active measurement may resume.
     public func sceneBecameActive() {
-        guard startDeferredUntilActive else { return }
-        startDeferredUntilActive = false
-        guard phase == .idle,
-              AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { return }
-        start()
+        sceneActive = true
+        guard access.supported() else { failStart(.unavailable); return }
+        let authorization = access.authorization()
+        if authorization == .denied || authorization == .restricted { failStart(.denied); return }
+        if phase == .denied { phase = .idle }
+        if startDeferredUntilActive, isStarting, let lease = captureLease {
+            startDeferredUntilActive = false
+            prepareCamera(token: generation, lease: lease)
+        } else if resumeWhenActive, phase == .paused {
+            resumeWhenActive = false
+            resume()
+        }
     }
 
     /// A permission sheet makes the scene inactive too. Preserve its explicit
     /// pending start until a real background transition or view teardown.
     public func sceneBecameInactive(fullyBackground: Bool) {
+        sceneActive = false
         if fullyBackground {
-            pendingPermissionGeneration = nil
-            startDeferredUntilActive = false
+            cancelStart()
+            if phase != .running { releaseCamera() }
         }
-        wasRunningBeforeInterruption = false
         guard phase == .running else { return }
         session?.pause()
+        generation = UUID()
+        releaseCamera()
+        target = .unavailable
+        tracking = .notAvailable
+        resumeWhenActive = true
         phase = .paused
     }
 
-    private func start() {
-        guard Self.isWorldTrackingSupported else { phase = .unavailable; return }
-        generation = UUID()
+    private func start(reset: Bool) {
+        guard access.supported() else { failStart(.unavailable); return }
         // World tracking resets to a new coordinate frame, so retained
         // samples and entities from any earlier run are cleared rather than
         // silently reinterpreted.
-        samples = []
-        polygonClosed = false
-        snapshotImage = nil
-        measurementRoot?.children.forEach { $0.removeFromParent() }
-        hasDetectedPlane = false
-        tracking = .initializing
+        if reset {
+            samples = []
+            polygonClosed = false
+            snapshotImage = nil
+            measurementRoot?.children.forEach { $0.removeFromParent() }
+            hasDetectedPlane = false
+            readout = Readout()
+            labels = []
+        }
+        snapshotRevision = UUID()
+        resumeWhenActive = false
+        wasRunningBeforeInterruption = false
+        target = .unavailable
+        tracking = reset || samples.isEmpty ? .initializing : .limited("relocalizing")
         phase = .running
-        readout = Readout()
-        labels = []
+        resetOnNextRun = reset
         // The camera container may not exist yet (placeholder was showing);
         // the run is applied when the ARView attaches.
         startPending = true
@@ -179,29 +310,35 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
     }
 
     private func runIfAttached() {
-        guard startPending, let session else { return }
+        guard startPending, phase == .running, let session, let lease = captureLease,
+              access.owns(lease), sceneActive, access.active(), access.authorization() == .authorized else { return }
         startPending = false
-        let configuration = ARWorldTrackingConfiguration()
+        let configuration = (resetOnNextRun ? nil : session.configuration as? ARWorldTrackingConfiguration)
+            ?? ARWorldTrackingConfiguration()
         configuration.planeDetection = [.horizontal, .vertical]
         configuration.isAutoFocusEnabled = true
+        session.delegateQueue = .main
         session.delegate = self
-        session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        session.run(configuration, options: resetOnNextRun ? [.resetTracking, .removeExistingAnchors] : [])
+        attachedSessionHasRun = true
     }
 
     public func pause() {
-        pendingPermissionGeneration = nil
-        startDeferredUntilActive = false
+        cancelStart()
+        generation = UUID()
+        resumeWhenActive = false
         wasRunningBeforeInterruption = false
-        guard phase == .running, let session else { return }
-        session.pause()
-        phase = .paused
+        session?.pause()
+        releaseCamera()
+        target = .unavailable
+        if phase == .running { phase = .paused }
     }
 
     public func resume() {
-        guard phase == .paused, UIApplication.shared.applicationState == .active, let session else { return }
-        guard Self.isWorldTrackingSupported else { phase = .unavailable; return }
-        session.run(session.configuration ?? ARWorldTrackingConfiguration(), options: [])
-        phase = .running
+        guard phase == .paused, sceneActive, access.active(), !isStarting else { return }
+        // A missing ARView means its world frame was destroyed, so retained
+        // coordinates cannot safely be reused in the replacement session.
+        beginPreparation(resuming: arView != nil && attachedSessionHasRun)
         wasRunningBeforeInterruption = false
     }
 
@@ -210,13 +347,14 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
     public func stop() {
         generation = UUID()
         startPending = false
-        pendingPermissionGeneration = nil
-        startDeferredUntilActive = false
+        cancelStart()
         if let session {
             session.delegate = nil
             session.pause()
         }
+        releaseCamera()
         arView = nil
+        attachedSessionHasRun = false
         measurementRoot?.removeFromParent()
         measurementRoot = nil
         samples = []
@@ -226,7 +364,37 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
         snapshotImage = nil
         hasDetectedPlane = false
         tracking = .notAvailable
+        target = .unavailable
         phase = .idle
+        wasRunningBeforeInterruption = false
+        resumeWhenActive = false
+    }
+
+    private func cancelStart() {
+        generation = UUID()
+        preparation?.cancel()
+        preparation = nil
+        isStarting = false
+        pendingPermissionGeneration = nil
+        startDeferredUntilActive = false
+    }
+
+    private func releaseCamera() {
+        if let lease = captureLease {
+            captureLease = nil
+            access.release(lease)
+        }
+    }
+
+    private func failStart(_ phase: Phase) {
+        cancelStart()
+        session?.pause()
+        startPending = false
+        releaseCamera()
+        tracking = .notAvailable
+        target = .unavailable
+        self.phase = phase
+        resumeWhenActive = false
         wasRunningBeforeInterruption = false
     }
 
@@ -239,33 +407,95 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
         rebuild()
     }
 
-    /// Raycasts through the reticle at the view center and anchors a sample
-    /// on the detected plane there.
-    public func placePoint() {
-        guard phase == .running, !polygonClosed,
-              samples.count < Self.maximumSamples else { return }
+    public var canPlacePoint: Bool {
+        guard phase == .running, ownsCamera, tracking == .normal, !polygonClosed,
+              samples.count < Self.maximumSamples else { return false }
+        if case .ready = target { return true }
+        return false
+    }
+
+    /// The button measures at the reticle; a camera tap measures at the actual
+    /// tapped screen location. Both always perform a fresh, real ARKit raycast.
+    public func placePoint(at location: CGPoint? = nil) {
+        guard phase == .running, ownsCamera, tracking == .normal, !polygonClosed else { return }
+        guard samples.count < Self.maximumSamples else { readout.issue = .pointLimit; return }
         guard let view = arView else { return }
-        let center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
-        let results = view.raycast(from: center, allowing: .existingPlaneGeometry, alignment: .any)
-        guard let hit = results.first else {
+        let point = location ?? CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+        guard view.bounds.contains(point), let sample = raycast(at: point, in: view) else {
             readout.issue = .noSurface
             return
         }
-        let planeID = (hit.anchor as? ARPlaneAnchor)?.identifier
-        let position = SIMD3<Float>(hit.worldTransform.columns.3.x, hit.worldTransform.columns.3.y, hit.worldTransform.columns.3.z)
-        let sample = SpatialMeasurementSample(id: UUID(), position: position, planeID: planeID)
-        if mode == .area, let issue = areaIssue(for: samples + [sample]) {
+        _ = record(sample)
+    }
+
+    private func raycast(at point: CGPoint, in view: ARView) -> SpatialMeasurementSample? {
+        guard view.bounds.width > 0, view.bounds.height > 0 else { return nil }
+        let detected = view.raycast(from: point, allowing: .existingPlaneGeometry, alignment: .any)
+            .first { $0.anchor is ARPlaneAnchor }
+        // Estimated plane hits are still ARKit measurements, but are explicitly
+        // marked and used only for length. Area never accepts this fallback.
+        let hit = detected ?? (mode == .length
+            ? view.raycast(from: point, allowing: .estimatedPlane, alignment: .any).first : nil)
+        guard let hit else { return nil }
+        let transform = hit.worldTransform
+        let position = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
+        guard SpatialMeasurementMath.isFinite(SIMD3<Double>(position)) else { return nil }
+        let plane = hit.anchor as? ARPlaneAnchor
+        let normal = plane.map { SIMD3<Float>($0.transform.columns.1.x, $0.transform.columns.1.y, $0.transform.columns.1.z) }
+        return SpatialMeasurementSample(id: UUID(), position: position, planeID: plane?.identifier,
+                                        surfaceNormal: normal, estimated: detected == nil)
+    }
+
+    private func placementIssue(for sample: SpatialMeasurementSample) -> Issue? {
+        guard SpatialMeasurementMath.isFinite(SIMD3<Double>(sample.position)) else { return .invalidPoint }
+        if let previous = samples.last,
+           SpatialMeasurementMath.distance(SIMD3<Double>(previous.position), SIMD3<Double>(sample.position))
+            < SpatialMeasurementMath.duplicateTolerance { return .degenerate }
+        return mode == .area ? areaIssue(for: samples + [sample]) : nil
+    }
+
+    /// The production placement boundary, also exercised by synthetic state
+    /// contracts. Calling this internally never substitutes for a native raycast.
+    @discardableResult func record(_ sample: SpatialMeasurementSample) -> Bool {
+        guard phase == .running, ownsCamera, tracking == .normal, !polygonClosed,
+              samples.count < Self.maximumSamples else { return false }
+        if let issue = placementIssue(for: sample) {
             readout.issue = issue
-            return
+            return false
         }
         readout.issue = nil
         samples.append(sample)
         rebuild()
+        return true
+    }
+
+    private func updateTarget(force: Bool = false) {
+        guard force || Date().timeIntervalSince(lastTargetUpdate) >= 0.1 else { return }
+        lastTargetUpdate = Date()
+        let next: Target
+        if phase != .running || tracking != .normal || polygonClosed {
+            next = .unavailable
+        } else if samples.count >= Self.maximumSamples {
+            next = .blocked(.pointLimit)
+        } else if let view = arView,
+                  let sample = raycast(at: CGPoint(x: view.bounds.midX, y: view.bounds.midY), in: view) {
+            next = placementIssue(for: sample).map(Target.blocked) ?? .ready(estimated: sample.estimated)
+        } else {
+            next = .searching
+        }
+        if target != next { target = next }
+    }
+
+    func updateTracking(_ summary: TrackingSummary) {
+        guard phase == .running, ownsCamera else { return }
+        if tracking != summary { tracking = summary }
+        updateTarget(force: true)
     }
 
     public func undo() {
-        guard !polygonClosed, !samples.isEmpty else { return }
-        samples.removeLast()
+        guard !samples.isEmpty else { return }
+        if polygonClosed { polygonClosed = false }
+        else { samples.removeLast() }
         readout.issue = nil
         rebuild()
     }
@@ -280,7 +510,7 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
 
     public func closePolygon() {
         guard mode == .area, samples.count >= 3, !polygonClosed,
-              readout.issue == nil, readout.area != nil else { return }
+              areaIssue(for: samples) == nil, readout.area != nil else { return }
         polygonClosed = true
         rebuild()
     }
@@ -289,25 +519,54 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
 
     /// Snapshot is fenced by generation: a stop/restart between capture and
     /// delivery discards the stale image instead of publishing it.
-    public func captureSnapshot() async {
+    public func captureSnapshot(summary: String = "") async {
         let token = generation
+        let revision = snapshotRevision
         guard phase == .running || phase == .paused,
               let view = arView else { return }
-        let image: UIImage? = await withCheckedContinuation { continuation in
-            view.snapshot(saveToHDR: false) { snapshot in
-                continuation.resume(returning: snapshot)
-            }
+        let bytes: Data? = await withCheckedContinuation { continuation in
+            view.snapshot(saveToHDR: false, completion: Self.makeSnapshotHandler(continuation))
         }
-        guard generation == token, UIApplication.shared.applicationState == .active else { return }
-        snapshotImage = image
+        guard generation == token, snapshotRevision == revision, access.active(),
+              let bytes, let image = UIImage(data: bytes) else { return }
+        snapshotImage = snapshot(image, summary: summary)
+    }
+
+    nonisolated private static func makeSnapshotHandler(
+        _ continuation: CheckedContinuation<Data?, Never>
+    ) -> @Sendable (UIImage?) -> Void {
+        { @Sendable image in continuation.resume(returning: image?.pngData()) }
+    }
+
+    private func snapshot(_ image: UIImage, summary: String) -> UIImage {
+        guard !summary.isEmpty else { return image }
+        let width = image.size.width
+        let font = UIFont.systemFont(ofSize: max(14, width / 35), weight: .medium)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.white]
+        let text = summary as NSString
+        let textSize = text.boundingRect(with: CGSize(width: max(1, width - 32), height: .greatestFiniteMagnitude),
+                                        options: [.usesLineFragmentOrigin], attributes: attributes, context: nil).size
+        let footer = ceil(textSize.height) + 32
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: image.size.height + footer)).image { context in
+            image.draw(at: .zero)
+            UIColor.black.setFill()
+            context.fill(CGRect(x: 0, y: image.size.height, width: width, height: footer))
+            text.draw(in: CGRect(x: 16, y: image.size.height + 16, width: max(1, width - 32), height: textSize.height),
+                      withAttributes: attributes)
+        }
     }
 
     // MARK: - Measurement
 
     private func areaIssue(for points: [SpatialMeasurementSample]) -> Issue? {
-        guard points.count >= 2 else { return nil }
-        let known = points.compactMap(\.planeID)
-        if known.count != points.count || Set(known).count > 1 { return .mixedPlanes }
+        guard let first = points.first else { return nil }
+        guard !first.estimated, first.planeID != nil, let referenceNormal = first.surfaceNormal else { return .mixedPlanes }
+        for point in points {
+            guard !point.estimated, point.planeID != nil, let normal = point.surfaceNormal,
+                  SpatialMeasurementMath.isSameSurface(referencePoint: SIMD3<Double>(first.position),
+                      referenceNormal: SIMD3<Double>(referenceNormal), point: SIMD3<Double>(point.position),
+                      normal: SIMD3<Double>(normal)) else { return .mixedPlanes }
+        }
         guard points.count >= 3 else { return nil }
         let positions = points.map { SIMD3<Double>($0.position) }
         do {
@@ -323,16 +582,19 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
     }
 
     private func rebuild() {
+        snapshotRevision = UUID()
+        snapshotImage = nil
         updateReadout()
         rebuildEntities()
         updateLabels(force: true)
+        updateTarget(force: true)
     }
 
     private func updateReadout() {
         var next = Readout()
         let positions = samples.map { SIMD3<Double>($0.position) }
-        next.segmentLengths = (1..<positions.count).map { SpatialMeasurementMath.distance(positions[$0 - 1], positions[$0]) }
-        next.totalLength = SpatialMeasurementMath.polylineLength(positions)
+        next.segmentLengths = SpatialMeasurementMath.segmentLengths(positions, closed: mode == .area && polygonClosed)
+        next.totalLength = next.segmentLengths.reduce(0, +)
         if mode == .area {
             if let issue = areaIssue(for: samples) {
                 next.issue = issue
@@ -355,13 +617,19 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
         let positions = samples.map(\.position)
         for index in 1..<positions.count {
             let midpoint = (positions[index - 1] + positions[index]) / 2
-            if let point = view.project(midpoint) {
+            if let point = view.project(midpoint), point.x.isFinite, point.y.isFinite, view.bounds.contains(point) {
                 let length = SpatialMeasurementMath.distance(SIMD3<Double>(positions[index - 1]), SIMD3<Double>(positions[index]))
                 next.append(ProjectedLabel(id: samples[index].id, position: point, text: lengthText(length)))
             }
         }
-        if mode == .area, let area = readout.area, let center = view.project(centroid(of: positions)) {
-            next.append(ProjectedLabel(id: samples[0].id, position: center, text: unit.areaFormat(area)))
+        if mode == .area, polygonClosed, let first = positions.first, let last = positions.last,
+           let point = view.project((first + last) / 2), point.x.isFinite, point.y.isFinite, view.bounds.contains(point) {
+            let length = SpatialMeasurementMath.distance(SIMD3<Double>(last), SIMD3<Double>(first))
+            next.append(ProjectedLabel(id: samples[0].id, position: point, text: lengthText(length)))
+        }
+        if mode == .area, let area = readout.area, let center = view.project(centroid(of: positions)),
+           center.x.isFinite, center.y.isFinite, view.bounds.contains(center) {
+            next.append(ProjectedLabel(id: measurementLabelID, position: center, text: unit.areaFormat(area)))
         }
         labels = next
     }
@@ -392,26 +660,32 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
         if positions.count > 1 {
             let segmentMaterial = SimpleMaterial(color: UIColor(red: 0.05, green: 0.75, blue: 0.95, alpha: 1), isMetallic: false)
             for index in 1..<positions.count {
-                let segment = cylinderEntity(from: positions[index - 1], to: positions[index], radius: Self.segmentRadius, material: segmentMaterial)
+                if let segment = cylinderEntity(from: positions[index - 1], to: positions[index], radius: Self.segmentRadius, material: segmentMaterial) {
+                    root.addChild(segment)
+                }
+            }
+            if mode == .area, polygonClosed, let first = positions.first, let last = positions.last,
+               let segment = cylinderEntity(from: last, to: first, radius: Self.segmentRadius, material: segmentMaterial) {
                 root.addChild(segment)
             }
         }
-        if mode == .area, samples.count >= 3, readout.issue == nil, readout.area != nil {
+        if mode == .area, polygonClosed, samples.count >= 3, readout.issue == nil, readout.area != nil {
             if let fill = polygonEntity(from: positions) { root.addChild(fill) }
         }
     }
 
-    private func cylinderEntity(from start: SIMD3<Float>, to end: SIMD3<Float>, radius: Float, material: SimpleMaterial) -> ModelEntity {
+    private func cylinderEntity(from start: SIMD3<Float>, to end: SIMD3<Float>, radius: Float, material: SimpleMaterial) -> ModelEntity? {
         let delta = end - start
         let length = simd_length(delta)
-        let mesh = Self.cylinderMesh(height: length, radius: radius)
+        guard length.isFinite, length >= Float(SpatialMeasurementMath.duplicateTolerance) else { return nil }
+        guard let mesh = Self.cylinderMesh(height: length, radius: radius) else { return nil }
         let entity = ModelEntity(mesh: mesh, materials: [material])
         entity.position = (start + end) / 2
-        entity.orientation = simd_quaternion(delta, SIMD3<Float>(0, 1, 0))
+        entity.orientation = simd_quaternion(SIMD3<Float>(0, 1, 0), delta / length)
         return entity
     }
 
-    private static func cylinderMesh(height: Float, radius: Float, segments: Int = 12) -> MeshResource {
+    private static func cylinderMesh(height: Float, radius: Float, segments: Int = 12) -> MeshResource? {
         var positions: [SIMD3<Float>] = []
         var normals: [SIMD3<Float>] = []
         var indices: [UInt32] = []
@@ -433,7 +707,7 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
         descriptor.positions = MeshBuffers.Positions(positions)
         descriptor.normals = MeshBuffers.Normals(normals)
         descriptor.primitives = .triangles(indices)
-        return (try? MeshResource.generate(from: [descriptor])) ?? MeshResource.generateBox(size: radius)
+        return try? MeshResource.generate(from: [descriptor])
     }
 
     private func polygonEntity(from positions: [SIMD3<Float>]) -> ModelEntity? {
@@ -470,14 +744,16 @@ public struct SpatialMeasurementSample: Identifiable, Equatable, Sendable {
 extension SpatialMeasurementSession: @preconcurrency ARSessionDelegate {
     public func session(_ session: ARSession, didFailWithError error: Error) {
         guard session === arView?.session else { return }
-        phase = .failed(error.localizedDescription)
+        guard phase == .running || phase == .paused else { return }
+        failStart(access.authorization() == .denied || access.authorization() == .restricted
+                  ? .denied : .failed(error.localizedDescription))
     }
 
     public func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
-        guard session === arView?.session else { return }
+        guard session === arView?.session, phase == .running else { return }
         switch camera.trackingState {
-        case .notAvailable: tracking = .notAvailable
-        case .limited(.initializing): tracking = .initializing
+        case .notAvailable: updateTracking(.notAvailable)
+        case .limited(.initializing): updateTracking(.initializing)
         case .limited(let reason):
             let text: String
             switch reason {
@@ -487,32 +763,44 @@ extension SpatialMeasurementSession: @preconcurrency ARSessionDelegate {
             case .initializing: text = "initializing"
             @unknown default: text = "limited"
             }
-            tracking = .limited(text)
-        case .normal: tracking = .normal
-        @unknown default: tracking = .notAvailable
+            updateTracking(.limited(text))
+        case .normal: updateTracking(.normal)
+        @unknown default: updateTracking(.notAvailable)
         }
     }
 
     public func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
-        guard session === arView?.session else { return }
+        guard session === arView?.session, phase == .running else { return }
         if anchors.contains(where: { $0 is ARPlaneAnchor }) { hasDetectedPlane = true }
     }
 
     public func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard session === arView?.session else { return }
+        guard session === arView?.session, phase == .running, ownsCamera else { return }
+        let detected = frame.anchors.contains { $0 is ARPlaneAnchor }
+        if hasDetectedPlane != detected { hasDetectedPlane = detected }
+        updateTarget()
         updateLabels()
     }
 
     public func sessionWasInterrupted(_ session: ARSession) {
-        guard session === arView?.session else { return }
-        wasRunningBeforeInterruption = phase == .running
+        guard session === arView?.session, phase == .running else { return }
+        wasRunningBeforeInterruption = true
+        cancelStart()
         session.pause()
+        releaseCamera()
+        target = .unavailable
+        tracking = .notAvailable
         phase = .paused
     }
 
     public func sessionInterruptionEnded(_ session: ARSession) {
         guard session === arView?.session, wasRunningBeforeInterruption else { return }
-        resume()
+        if sceneActive, access.active() { resume() }
+        else { resumeWhenActive = true }
+    }
+
+    public func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool {
+        session === arView?.session && !samples.isEmpty && (phase == .running || phase == .paused)
     }
 }
 #endif

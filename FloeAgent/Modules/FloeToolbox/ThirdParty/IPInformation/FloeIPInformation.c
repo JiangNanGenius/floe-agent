@@ -3,6 +3,7 @@
 #include "maxminddb.h"
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -62,6 +63,53 @@ static int named_value(MMDB_entry_s *entry, const char *field, const char *langu
     return status;
 }
 
+/* Optional MMDB numbers remain absent unless their actual field exists. */
+static int number_value(MMDB_entry_s *entry, const char *const *path,
+                        double *destination, int *present) {
+    MMDB_entry_data_s value;
+    int status = MMDB_aget_value(entry, &value, path);
+    *present = 0;
+    if (status == MMDB_LOOKUP_PATH_DOES_NOT_MATCH_DATA_ERROR) return 0;
+    if (status != MMDB_SUCCESS) return status;
+    if (!value.has_data) return 0;
+    switch (value.type) {
+        case MMDB_DATA_TYPE_DOUBLE: *destination = value.double_value; break;
+        case MMDB_DATA_TYPE_FLOAT: *destination = value.float_value; break;
+        case MMDB_DATA_TYPE_UINT16: *destination = value.uint16; break;
+        case MMDB_DATA_TYPE_UINT32: *destination = value.uint32; break;
+        case MMDB_DATA_TYPE_UINT64: *destination = (double)value.uint64; break;
+        case MMDB_DATA_TYPE_INT32: *destination = value.int32; break;
+        default: return MMDB_INVALID_DATA_ERROR;
+    }
+    *present = 1;
+    return 0;
+}
+
+static int location_value(MMDB_entry_s *entry, FloeIPDatabaseRecord *record) {
+    const char *latitude_path[] = {"location", "latitude", NULL};
+    const char *longitude_path[] = {"location", "longitude", NULL};
+    const char *accuracy_path[] = {"location", "accuracy_radius", NULL};
+    double latitude = 0, longitude = 0, accuracy = 0;
+    int has_latitude = 0, has_longitude = 0, has_accuracy = 0;
+    int status = number_value(entry, latitude_path, &latitude, &has_latitude);
+    if (status) return status;
+    status = number_value(entry, longitude_path, &longitude, &has_longitude);
+    if (status) return status;
+    status = number_value(entry, accuracy_path, &accuracy, &has_accuracy);
+    if (status) return status;
+    /* Invalid optional geography must not erase usable country/ASN fields. */
+    if (!has_latitude || !has_longitude || !isfinite(latitude) || !isfinite(longitude) ||
+        latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return 0;
+    record->has_location = 1;
+    record->latitude = latitude;
+    record->longitude = longitude;
+    if (has_accuracy && isfinite(accuracy) && accuracy >= 0) {
+        record->has_accuracy_radius = 1;
+        record->accuracy_radius_kilometers = accuracy;
+    }
+    return 0;
+}
+
 int floe_ip_lookup(FloeIPDatabase *db, const char *numeric_address,
                    const char *language, FloeIPDatabaseRecord *record) {
     if (!db || !numeric_address || !language || !record) return -1;
@@ -107,7 +155,7 @@ int floe_ip_lookup(FloeIPDatabase *db, const char *numeric_address,
         region[3] = "en";
         error = text_value(&result.entry, region, record->region, sizeof(record->region));
     }
-    return error;
+    return error ? error : location_value(&result.entry, record);
 }
 
 void floe_ip_close(FloeIPDatabase *db) {

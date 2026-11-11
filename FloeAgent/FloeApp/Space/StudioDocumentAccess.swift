@@ -122,6 +122,22 @@ actor StudioDocumentAccess {
                 arguments: [conversationID.uuidString, projectID.uuidString])
         }
     }
+    /// Native refresh CAS: no stale window may replace a newer assistant.
+    func replaceAssistant(conversationID: UUID, projectID: UUID, expectedPrevious: UUID?) throws {
+        try pool.write { db in
+            guard try !Self.hasLifecycle(db, projectID: projectID, conversationID: conversationID) else {
+                throw PersonalFileAssistantLifecycleError.pending
+            }
+            let previous = try String.fetchOne(db, sql: "SELECT conversation_id FROM document_assistants WHERE project_id=?",
+                                               arguments: [projectID.uuidString]).flatMap(UUID.init(uuidString:))
+            guard previous == expectedPrevious else { throw PersonalFileAssistantLifecycleError.changed }
+            try db.execute(sql: "INSERT INTO document_assistants(project_id,conversation_id) VALUES (?,?) ON CONFLICT(project_id) DO UPDATE SET conversation_id=excluded.conversation_id",
+                arguments: [projectID.uuidString, conversationID.uuidString])
+            try db.execute(sql: "INSERT INTO document_access(conversation_id,project_id,can_edit) VALUES (?,?,1) ON CONFLICT(conversation_id,project_id) DO UPDATE SET can_edit=1",
+                arguments: [conversationID.uuidString, projectID.uuidString])
+        }
+    }
+
     /// Reservations bind a native-created document to one exact approved call.
     /// A retry can reopen the same completed original after a process restart.
     func reserveCreation(operationKey: String, digest: String) throws -> UUID {

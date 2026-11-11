@@ -25,6 +25,19 @@ import FloeCAD
         CADDrawingModelBridge.configure(value)
         documents[id] = value; return value
     }
+    /// Read-only import snapshots must not ignore unsaved work or change a
+    /// source editor's ownership. No open/close/save is performed here.
+    static func requireSavedSketchSource(id: UUID, directory: URL,
+                                         revision: Int? = nil, contentSHA256: String? = nil) throws {
+        try PersonalLibraryFileActions.requireAvailable(id)
+        guard let document = documents[id], !document.isClosed else { return }
+        guard document.url == directory.appendingPathComponent("Document.floecad") else {
+            throw PersonalContentError.changedDocument
+        }
+        guard !document.hasUnsavedChanges else { throw PersonalCADSketchImportIssue.saveSourceFirst }
+        if let revision, document.revision != revision { throw CADSketchImportError.sourceChanged }
+        if let contentSHA256, document.contentSHA256 != contentSHA256 { throw CADSketchImportError.sourceChanged }
+    }
     static func prepareForLibraryMove(id: UUID, directory: URL) throws {
         guard !opening.contains(id) else { throw PersonalFileActionError.busy }
         if let document = documents[id] {

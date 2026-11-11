@@ -6,6 +6,8 @@
 
 import Foundation
 import Testing
+import FloeCore
+import FloeModels
 @testable import FloeProviders
 
 @Suite("QA.SSEParserEdges")
@@ -185,3 +187,179 @@ struct SSEParserEdgeTests {
         #expect(events[0].data.count == 1_048_576)
     }
 }
+
+
+#if !os(Linux)
+// Actual URLSession.bytes(for:) + production Chat decoder, no server/account.
+// A held HTTP body intentionally never sends EOF. Only the response owner
+// can make the DONE cases return, by stopping and joining its real reader.
+private final class FU13HTTPScenario: @unchecked Sendable {
+    let frames: [Data]
+    let finishesHTTP: Bool
+    private let lock = NSLock()
+    private var stopped = false
+    init(frames: [Data], finishesHTTP: Bool) { self.frames = frames; self.finishesHTTP = finishesHTTP }
+    func markStopped() { lock.withLock { stopped = true } }
+    var didStop: Bool { lock.withLock { stopped } }
+}
+
+private final class FU13HTTPScenarios: @unchecked Sendable {
+    static let shared = FU13HTTPScenarios()
+    private let lock = NSLock()
+    private var values: [String: FU13HTTPScenario] = [:]
+    func install(_ value: FU13HTTPScenario, id: String) { lock.withLock { values[id] = value } }
+    func value(id: String) -> FU13HTTPScenario? { lock.withLock { values[id] } }
+    func remove(id: String) { _ = lock.withLock { values.removeValue(forKey: id) } }
+}
+
+private final class FU13HTTPProtocol: URLProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var scenario: FU13HTTPScenario?
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "stream-fixture.invalid" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, let id = url.pathComponents.dropFirst().first,
+              let fixture = FU13HTTPScenarios.shared.value(id: id),
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                  headerFields: ["Content-Type": "text/event-stream"]) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL)); return
+        }
+        lock.withLock { scenario = fixture }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        for frame in fixture.frames { client?.urlProtocol(self, didLoad: frame) }
+        if fixture.finishesHTTP { client?.urlProtocolDidFinishLoading(self) }
+    }
+    override func stopLoading() { lock.withLock { scenario }?.markStopped() }
+}
+
+private actor FU13StreamReceipt {
+    var events: [AgentEvent] = []
+    var ended = false
+    var error: String?
+    func append(_ event: AgentEvent) { events.append(event) }
+    func finish(error: String? = nil) { self.error = error; ended = true }
+}
+
+@Suite("Chat SSE actual HTTP termination")
+struct ChatSSECompletionTests {
+    private struct Result: Sendable {
+        let events: [AgentEvent]
+        let endedBeforeCleanup: Bool
+        let stoppedBeforeCleanup: Bool
+        let error: String?
+    }
+    private func frame(delta: [String: Any] = [:], finish: String? = nil, usage: [String: Any]? = nil) throws -> Data {
+        var value: [String: Any] = ["id": "fixture", "choices": [["index": 0, "delta": delta]]]
+        if let finish { value["choices"] = [["index": 0, "delta": delta, "finish_reason": finish]] }
+        if let usage { value["choices"] = []; value["usage"] = usage }
+        return Data("data: \(String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self))\n\n".utf8)
+    }
+    private var done: Data { Data("data: [DONE]\n\n".utf8) }
+
+    private func completions(_ events: [AgentEvent]) -> [AgentEvent.StopReason] {
+        events.compactMap { event -> AgentEvent.StopReason? in
+            guard case .completed(let value) = event else { return nil }
+            return value.stopReason
+        }
+    }
+    private func text(_ events: [AgentEvent], reasoning: Bool = false) -> String {
+        events.compactMap { event -> String? in
+            switch event {
+            case .reasoningSummary(let value) where reasoning: return value.text
+            case .textDelta(let value) where !reasoning: return value.text
+            default: return nil
+            }
+        }.joined()
+    }
+    private func outputs(_ events: [AgentEvent]) -> [Int] {
+        events.compactMap { event -> Int? in
+            guard case .usage(let value) = event else { return nil }
+            return value.outputTokens
+        }
+    }
+    private func calls(_ events: [AgentEvent]) -> [String] {
+        events.compactMap { event -> String? in
+            guard case .toolRequest(let value) = event else { return nil }
+            return value.id
+        }
+    }
+
+    private func collect(_ frames: [Data], finishesHTTP: Bool) async throws -> Result {
+        let id = UUID().uuidString
+        let fixture = FU13HTTPScenario(frames: frames, finishesHTTP: finishesHTTP)
+        FU13HTTPScenarios.shared.install(fixture, id: id)
+        defer { FU13HTTPScenarios.shared.remove(id: id) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FU13HTTPProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://stream-fixture.invalid/\(id)/v1")))
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "fixture", displayName: "Fixture",
+            limits: .init(contextTokens: 4096, maxOutputTokens: 1024), capabilities: [.text, .tools])
+        let request = ProviderStreamRequest(provider: provider, model: model, messages: [("user", "Fixture")])
+        let receipt = FU13StreamReceipt()
+        let consumer = Task {
+            do {
+                let values = OpenAIChatCompletionsAdapter().stream(request: request, credentials: .init(apiKey: "fixture-only"), session: session)
+                for try await event in values { await receipt.append(event) }
+                await receipt.finish()
+            } catch { await receipt.finish(error: error.localizedDescription) }
+        }
+        // Bounded fixture wait only. This does not change any production timeout.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !(await receipt.ended), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let result = Result(events: await receipt.events, endedBeforeCleanup: await receipt.ended,
+                            stoppedBeforeCleanup: fixture.didStop, error: await receipt.error)
+        consumer.cancel()
+        session.invalidateAndCancel()
+        await consumer.value
+        return result
+    }
+
+    @Test("DONE preserves prior usage and ends/joins a response that never sends HTTP EOF")
+    func doneEndsOwnedReaderWithoutEOF() async throws {
+        let result = try await collect([
+            frame(delta: ["reasoning_content": "Thinking"]), frame(delta: ["content": "Answer"]),
+            frame(finish: "stop"), frame(usage: ["prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6]), done,
+            frame(delta: ["content": "MUST NOT ARRIVE AFTER DONE"])
+        ], finishesHTTP: false)
+        #expect(result.endedBeforeCleanup, "Production adapter must stop at DONE, not wait for HTTP EOF/watchdog")
+        #expect(result.stoppedBeforeCleanup, "Owned URLSession reader must actually be cancelled before completion returns")
+        #expect(result.error == nil)
+        #expect(completions(result.events) == [.endTurn])
+        #expect(text(result.events) == "Answer")
+        #expect(outputs(result.events) == [2])
+    }
+
+    @Test("Long reasoning followed by length/DONE is retained and reports maxTokens exactly once")
+    func reasoningLengthEndsWithoutPretendingFinalText() async throws {
+        let reasoning = String(repeating: "推理", count: 16_384)
+        let result = try await collect([frame(delta: ["reasoning_content": reasoning]), frame(finish: "length"), done], finishesHTTP: false)
+        #expect(result.endedBeforeCleanup && result.stoppedBeforeCleanup)
+        #expect(text(result.events, reasoning: true) == reasoning)
+        #expect(completions(result.events) == [.maxTokens])
+        #expect(!result.events.contains { if case .textDelta = $0 { true } else { false } })
+    }
+
+    @Test("Unexpected EOF and partial tool DONE cannot manufacture completion or a callable tool")
+    func incompleteStreamsHaveNoFalseCompletion() async throws {
+        let eof = try await collect([frame(delta: ["content": "Partial"] )], finishesHTTP: true)
+        #expect(eof.endedBeforeCleanup)
+        #expect(!eof.events.contains { if case .completed = $0 { true } else { false } })
+        let partial = try await collect([frame(delta: ["tool_calls": [["index": 0, "id": "partial", "type": "function", "function": ["name": "exec.shell", "arguments": "{"]]]]), done], finishesHTTP: false)
+        #expect(partial.endedBeforeCleanup && partial.stoppedBeforeCleanup)
+        #expect(!partial.events.contains { if case .completed = $0 { true } else { false } })
+        #expect(!partial.events.contains { if case .toolRequest = $0 { true } else { false } })
+        #expect(partial.events.contains { if case .error(let value) = $0 { value.kind == .malformedToolArguments } else { false } })
+    }
+
+    @Test("Complete tool call plus DONE emits one request and one completion without reading later calls")
+    func completeToolRemainsSingleAcrossDoneBoundary() async throws {
+        let complete: [String: Any] = ["tool_calls": [["index": 0, "id": "one", "type": "function", "function": ["name": "exec.shell", "arguments": "{}"]]]]
+        let result = try await collect([frame(delta: complete), frame(finish: "tool_calls"), done, frame(delta: complete), frame(finish: "tool_calls")], finishesHTTP: false)
+        #expect(result.endedBeforeCleanup && result.stoppedBeforeCleanup)
+        #expect(calls(result.events) == ["one"])
+        #expect(completions(result.events) == [.toolUse])
+    }
+}
+#endif

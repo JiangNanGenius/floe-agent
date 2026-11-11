@@ -63,10 +63,10 @@ private actor WorkbenchInformationGate {
         if continuations[address] == nil { await withCheckedContinuation { waiting[address, default: []].append($0) } }
     }
     func calls(_ address: String) -> Int { counts[address] ?? 0 }
-    func finish(_ address: String) {
+    func finish(_ address: String, version: String = "fixture-v1") {
         continuations.removeValue(forKey: address)?.resume(returning: .init(address: address,
             region: "Fixture region", autonomousSystemNumber: 64500, organization: "Fixture network",
-            source: "Synthetic offline adapter", datasetVersion: "fixture-v1"))
+            source: "Synthetic offline adapter", datasetVersion: version))
     }
 }
 
@@ -209,6 +209,152 @@ private actor WorkbenchInformationGate {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func missingDatabaseAndLocalAddressesHaveDifferentExplicitStates() async throws {
+        let service = HeldWorkbenchTrace(), fixture = TracerouteIPProviderFixture(version: nil)
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            isPublicInternetAddress: { $0 != "10.0.0.1" }, lookup: { try await fixture.query($0, version: $1) })
+        let model = try DiagnosticWorkbenchModel(tool: .traceroute, service: service, ipInformation: provider)
+        model.target = "fixture.example"
+        let run = try #require(model.run()); await service.wait(1)
+        await service.emit(1, ttl: 1, address: "192.0.2.1")
+        await service.emit(1, ttl: 2, address: "10.0.0.1")
+        guard await waitForIP({ model.rows.count == 2 && model.rows[0].ipInformationStatus == .databaseUnavailable
+            && model.rows[1].ipInformationStatus == .localOrSpecialUse }) else { await model.close(); return }
+        #expect(model.ipInformationDatabaseUnavailable && !model.ipInformationRetryable)
+        #expect(await fixture.lookupCount == 0)
+        await service.finish(1); await run.value; await model.close()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func noMatchIsExplicitAndIsReusedForALaterDuplicateHop() async throws {
+        let service = HeldWorkbenchTrace(), fixture = TracerouteIPProviderFixture(matches: false)
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            lookup: { try await fixture.query($0, version: $1) })
+        let model = try DiagnosticWorkbenchModel(tool: .traceroute, service: service, ipInformation: provider)
+        model.target = "fixture.example"
+        let run = try #require(model.run()); await service.wait(1); await service.emit(1, ttl: 1)
+        guard await waitForIP({ model.rows.first?.ipInformationStatus == .notFound }) else { await model.close(); return }
+        await service.emit(1, ttl: 2)
+        #expect(model.rows.allSatisfy { $0.ipInformationStatus == .notFound && $0.ipInformation == nil })
+        #expect(await fixture.lookupCount == 1)
+        #expect(!model.ipInformationRetryable && !model.ipInformationDatabaseUnavailable)
+        await service.finish(1); await run.value; await model.close()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func lookupFailureIsVisibleAndManualRetryPreservesTheActualHop() async throws {
+        let service = HeldWorkbenchTrace(), fixture = TracerouteIPProviderFixture(failLookup: true)
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            lookup: { try await fixture.query($0, version: $1) })
+        let model = try DiagnosticWorkbenchModel(tool: .traceroute, service: service, ipInformation: provider)
+        model.target = "fixture.example"
+        let run = try #require(model.run()); await service.wait(1); await service.emit(1, ttl: 1)
+        guard await waitForIP({ model.ipInformationRetryable }) else { await model.close(); return }
+        let first = try #require(model.rows.first)
+        if case .failed(let detail)? = first.ipInformationStatus { #expect(detail.contains("synthetic read failure")) }
+        else { Issue.record("A non-busy adapter failure must remain explicit") }
+        await service.finish(1); await run.value
+        await fixture.setLookupFailure(false)
+        model.completeIPInformation()
+        guard await waitForIP({ model.rows.first?.ipInformationStatus == .available }) else { await model.close(); return }
+        #expect(model.rows[0].id == first.id && model.rows[0].title == first.title && model.rows[0].value == first.value)
+        #expect(model.rows[0].ipInformation?.latitude == 51.5 && model.rows[0].ipInformation?.longitude == -0.1)
+        #expect(model.rows[0].ipInformation?.accuracyRadiusKilometers == 25)
+        #expect(await service.invocationCount == 1)
+        #expect(await fixture.lookupCount == 2)
+        #expect(!model.ipInformationRetryable)
+        await model.close()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aCompletedLookupIsAlsoAppliedToLaterDuplicateHops() async throws {
+        let service = HeldWorkbenchTrace(), information = WorkbenchInformationGate()
+        let provider = TracerouteIPInformationProvider(currentVersion: { "fixture-v1" },
+            lookup: { try await information.query($0, version: $1) })
+        let model = try DiagnosticWorkbenchModel(tool: .traceroute, service: service, ipInformation: provider)
+        model.target = "fixture.example"
+        let run = try #require(model.run()); await service.wait(1); await service.emit(1, ttl: 1)
+        await information.wait("192.0.2.1"); await information.finish("192.0.2.1")
+        guard await waitForIP({ model.rows.first?.ipInformationStatus == .available }) else { await model.close(); return }
+        await service.emit(1, ttl: 2)
+        #expect(model.rows.count == 2 && model.rows.allSatisfy { $0.ipInformation?.organization == "Fixture network" })
+        #expect(model.rows.allSatisfy { $0.ipInformationStatus == .available })
+        #expect(await information.calls("192.0.2.1") == 1)
+        await service.finish(1); await run.value; await model.close()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func restoredStoppedResultsOnlyEnrichAfterAnExplicitAction() async throws {
+        let oldService = HeldWorkbenchTrace()
+        let old = try DiagnosticWorkbenchModel(tool: .traceroute, service: oldService)
+        old.target = "fixture.example"
+        let run = try #require(old.run()); await oldService.wait(1); await oldService.emit(1, ttl: 1)
+        await old.close(); await run.value
+        let retained = try #require(old.retainedTraceroute)
+        let service = HeldWorkbenchTrace(), fixture = TracerouteIPProviderFixture()
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            lookup: { try await fixture.query($0, version: $1) })
+        let fresh = try DiagnosticWorkbenchModel(tool: .traceroute, service: service, ipInformation: provider)
+        fresh.restoreTraceroute(retained)
+        fresh.refreshIPInformation() // A database-change notification is not a user action.
+        #expect(await fixture.lookupCount == 0)
+        #expect(await service.invocationCount == 0)
+        #expect(fresh.rows[0].ipInformationStatus == .notRequested && fresh.cancelled)
+        fresh.completeIPInformation()
+        guard await waitForIP({ fresh.rows.first?.ipInformationStatus == .available }) else { await fresh.close(); return }
+        #expect(fresh.rows.map(\.id) == retained.rows.map(\.id))
+        #expect(fresh.cancelled && !fresh.running)
+        #expect(await fixture.lookupCount == 1)
+        #expect(await service.invocationCount == 0)
+        await fresh.close()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func aChangedDatasetRejectsTheLateValueAndAllowsManualRefresh() async throws {
+        let service = HeldWorkbenchTrace(), information = WorkbenchInformationGate(), fixture = TracerouteIPProviderFixture()
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            lookup: { try await information.query($0, version: $1) })
+        let model = try DiagnosticWorkbenchModel(tool: .traceroute, service: service, ipInformation: provider)
+        model.target = "fixture.example"
+        let run = try #require(model.run()); await service.wait(1); await service.emit(1, ttl: 1)
+        await information.wait("192.0.2.1")
+        let id = try #require(model.rows.first?.id)
+        await fixture.setVersion("fixture-v2"); await information.finish("192.0.2.1")
+        guard await waitForIP({ model.rows.first?.ipInformationStatus == .databaseChanged }) else { await model.close(); return }
+        #expect(model.rows[0].ipInformation == nil && model.ipInformationRetryable)
+        await service.finish(1); await run.value
+        model.completeIPInformation()
+        await information.wait("192.0.2.1"); await information.finish("192.0.2.1", version: "fixture-v2")
+        guard await waitForIP({ model.rows.first?.ipInformationStatus == .available }) else { await model.close(); return }
+        #expect(model.rows[0].id == id && model.rows[0].ipInformation?.datasetVersion == "fixture-v2")
+        #expect(await service.invocationCount == 1)
+        await model.close()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func failedDatabaseReadinessIsNotMisreportedAsAnEmptyDatabase() async throws {
+        let service = HeldWorkbenchTrace(), fixture = TracerouteIPProviderFixture(failPreparation: true)
+        let provider = TracerouteIPInformationProvider(currentVersion: { nil }, isPublicInternetAddress: { _ in true },
+            prepareLookup: { try await fixture.prepare() }, lookup: { try await fixture.query($0, version: $1) })
+        let model = try DiagnosticWorkbenchModel(tool: .traceroute, service: service, ipInformation: provider)
+        guard await waitForIP({ model.ipInformationDatabaseFailure != nil }) else { await model.close(); return }
+        #expect(!model.ipInformationDatabaseUnavailable && model.ipInformationRetryable)
+        #expect(model.ipInformationDatabaseFailure?.contains("synthetic load failure") == true)
+        #expect(await fixture.lookupCount == 0)
+        await model.close()
+    }
+
+    private func waitForIP(_ condition: @MainActor () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition(), ContinuousClock.now < deadline, !Task.isCancelled {
+            do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
+        }
+        let completed = condition()
+        #expect(completed, "The real workbench did not reach the expected IP-information state before the timeout")
+        return completed
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func closedResultsRestoreInAFreshOwnerWithoutStartingAProbe() async throws {
         let oldService = HeldWorkbenchTrace()
         let oldModel = try DiagnosticWorkbenchModel(tool: .traceroute, service: oldService)
@@ -232,4 +378,111 @@ private actor WorkbenchInformationGate {
         await freshService.finish(1); await run.value; await fresh.close()
     }
 
+}
+
+// Pure provider/value regressions also run without SwiftUI or an ICMP backend.
+private actor TracerouteIPProviderFixture {
+    private var version: String?
+    private let matches: Bool
+    private let failPreparation: Bool
+    private var failLookup: Bool
+    private let changeVersionOnLookup: Bool
+    private(set) var prepareCount = 0
+    private(set) var lookupCount = 0
+    init(version: String? = "fixture-v1", matches: Bool = true, failPreparation: Bool = false,
+         failLookup: Bool = false, changeVersionOnLookup: Bool = false) {
+        self.version = version; self.matches = matches; self.failPreparation = failPreparation
+        self.failLookup = failLookup; self.changeVersionOnLookup = changeVersionOnLookup
+    }
+    func currentVersion() -> String? { version }
+    func setVersion(_ value: String?) { version = value }
+    func setLookupFailure(_ value: Bool) { failLookup = value }
+    func prepare() throws {
+        prepareCount += 1
+        if failPreparation { throw DiagnosticError.system("synthetic load failure") }
+    }
+    func query(_ address: String, version: String) throws -> TracerouteIPInformation? {
+        lookupCount += 1
+        if failLookup { throw DiagnosticError.system("synthetic read failure") }
+        if changeVersionOnLookup { self.version = "fixture-v2" }
+        guard matches else { return nil }
+        return .init(address: address, region: "Synthetic region", autonomousSystemNumber: 64500,
+            organization: "Synthetic network", source: "Synthetic fixture", datasetVersion: version,
+            latitude: 51.5, longitude: -0.1, accuracyRadiusKilometers: 25)
+    }
+}
+
+@Suite("Traceroute IP information values and provider", .serialized)
+struct TracerouteIPProviderTests {
+    @Test func coordinatesRequireACompleteFinitePairAndDoNotInventAccuracy() {
+        let invalid: [(Double?, Double?)] = [(nil, 1), (1, nil), (.nan, 0), (0, .infinity), (91, 0), (0, -181)]
+        for (latitude, longitude) in invalid {
+            let value = TracerouteIPInformation(address: "192.0.2.1", region: "Synthetic region",
+                source: "Synthetic fixture", datasetVersion: "v1", latitude: latitude, longitude: longitude,
+                accuracyRadiusKilometers: 10)
+            #expect(value.latitude == nil && value.longitude == nil && value.accuracyRadiusKilometers == nil)
+            #expect(value.region == "Synthetic region")
+        }
+        let zero = TracerouteIPInformation(address: "192.0.2.1", source: "Synthetic fixture", datasetVersion: "v1",
+            latitude: 0, longitude: 0)
+        #expect(zero.latitude == 0 && zero.longitude == 0 && zero.accuracyRadiusKilometers == nil)
+        for radius in [-1.0, .nan, .infinity] {
+            let value = TracerouteIPInformation(address: "192.0.2.1", source: "Synthetic fixture", datasetVersion: "v1",
+                latitude: 51.5, longitude: -0.1, accuracyRadiusKilometers: radius)
+            #expect(value.latitude == 51.5 && value.longitude == -0.1 && value.accuracyRadiusKilometers == nil)
+        }
+    }
+
+    @Test func localClassificationPrecedesDatabasePreparation() async throws {
+        let fixture = TracerouteIPProviderFixture(version: nil, failPreparation: true)
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            isPublicInternetAddress: { _ in false }, prepareLookup: { try await fixture.prepare() },
+            lookup: { try await fixture.query($0, version: $1) })
+        #expect(try await provider.lookupResult(for: "10.0.0.1") == .localOrSpecialUse)
+        #expect(try await provider.information(for: "10.0.0.1") == nil)
+        #expect(await fixture.prepareCount == 0)
+        #expect(await fixture.lookupCount == 0)
+    }
+
+    @Test func emptyDatabaseAndNoMatchRemainDistinct() async throws {
+        let missing = TracerouteIPProviderFixture(version: nil)
+        let missingProvider = TracerouteIPInformationProvider(currentVersion: { await missing.currentVersion() },
+            lookup: { try await missing.query($0, version: $1) })
+        #expect(try await missingProvider.lookupResult(for: "192.0.2.1") == .databaseUnavailable)
+        #expect(await missing.lookupCount == 0)
+        let unmatched = TracerouteIPProviderFixture(matches: false)
+        let unmatchedProvider = TracerouteIPInformationProvider(currentVersion: { await unmatched.currentVersion() },
+            lookup: { try await unmatched.query($0, version: $1) })
+        #expect(try await unmatchedProvider.lookupResult(for: "192.0.2.1") == .notFound)
+        #expect(await unmatched.lookupCount == 1)
+    }
+
+    @Test func databaseReadinessFailurePropagatesAsAnError() async {
+        let fixture = TracerouteIPProviderFixture(version: nil, failPreparation: true)
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            isPublicInternetAddress: { _ in true }, prepareLookup: { try await fixture.prepare() },
+            lookup: { try await fixture.query($0, version: $1) })
+        do {
+            _ = try await provider.lookupResult(for: "192.0.2.1")
+            Issue.record("A failed database load must not become databaseUnavailable")
+        } catch { #expect(error as? DiagnosticError == .system("synthetic load failure")) }
+        #expect(await fixture.lookupCount == 0)
+    }
+
+    @Test func datasetFenceRejectsAValueFromThePreviousVersion() async throws {
+        let fixture = TracerouteIPProviderFixture(changeVersionOnLookup: true)
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() },
+            lookup: { try await fixture.query($0, version: $1) })
+        #expect(try await provider.lookupResult(for: "192.0.2.1") == .databaseChanged)
+    }
+
+    @Test func legacyInitializerAndOptionalResultRetainRealLocationFields() async throws {
+        let fixture = TracerouteIPProviderFixture()
+        let provider = TracerouteIPInformationProvider(currentVersion: { await fixture.currentVersion() }) {
+            try await fixture.query($0, version: $1)
+        }
+        let value = try #require(try await provider.information(for: "192.0.2.1"))
+        #expect(value.latitude == 51.5 && value.longitude == -0.1 && value.accuracyRadiusKilometers == 25)
+        #expect(value.autonomousSystemNumber == 64500 && value.organization == "Synthetic network")
+    }
 }

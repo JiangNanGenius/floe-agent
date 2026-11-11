@@ -40,6 +40,8 @@ struct MeetingChunkTranscript: Sendable {
     private let service: MeetingService
     typealias TranscribeChunk = @MainActor @Sendable (URL, String?) async throws -> MeetingChunkTranscript
     private let transcribeChunk: TranscribeChunk
+    typealias ProgressiveTranscribe = @MainActor @Sendable (URL, String?, MeetingFilePartialRelay) async throws -> MeetingChunkTranscript
+    private var transcribeProgressively: ProgressiveTranscribe?
     private let retryDelay: @Sendable (Int) async throws -> Void
     private let onChange: @MainActor @Sendable () async -> Void
     private(set) var chunks: [MeetingLiveChunk] = []
@@ -49,6 +51,8 @@ struct MeetingChunkTranscript: Sendable {
     private(set) var enabled = true
     var diagnostic: String?
     private var worker: Task<Void, Never>?
+    private var retiredWorkers: [UUID: Task<Void, Never>] = [:]
+    private var filePartials: [UUID: Set<TranscriptSegmentID>] = [:]
     private var generation = UUID()
     private var selectedServiceID: String?
     /// Continuous live-ASR gate, supplied by the meeting session. While the
@@ -80,36 +84,45 @@ struct MeetingChunkTranscript: Sendable {
     convenience init(meetingID: MeetingID, root: URL, service: MeetingService, audio: AssistantAudioService,
                      onChange: @escaping @MainActor @Sendable () async -> Void) throws {
         try self.init(meetingID: meetingID, root: root, service: service, transcribeChunk: { file, serviceID in
-            await audio.refreshAvailability()
-            let route: String
-            if let serviceID, !serviceID.isEmpty { route = serviceID }
-            else {
-                guard audio.services.contains(where: { $0.id == AssistantAudioService.ID.transcriptionEnhanced && $0.ready }) else {
-                    throw MeetingError.captureBackendFailed(IDELanguageRunText.t("录音已保存。请在会议设置中选择转写服务，再重试未完成片段。", "The recording is saved. Choose a transcription service in meeting settings, then retry unfinished chunks."))
-                }
-                route = AssistantAudioService.ID.transcriptionEnhanced
-            }
-            do {
-                // Meetings opt in to provider speaker separation; adapters
-                // only send the diarization flag for engines that support it,
-                // and local engines honestly return no labels.
-                let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route,
-                                                        requiresTiming: true, enableSpeakerAttribution: true)
-                return MeetingChunkTranscript(segments: result.segments, language: result.language)
-            } catch AssistantAudioError.noSpeechRecognized {
-                // Silence is a completed observation, not a broken recording.
-                return MeetingChunkTranscript(segments: [], language: nil)
-            }
+            try await Self.decode(file: file, serviceID: serviceID, audio: audio, relay: nil)
         }, onChange: onChange)
+        transcribeProgressively = { file, serviceID, relay in
+            try await Self.decode(file: file, serviceID: serviceID, audio: audio, relay: relay)
+        }
+    }
+    private static func decode(file: URL, serviceID: String?, audio: AssistantAudioService,
+                               relay: MeetingFilePartialRelay?) async throws -> MeetingChunkTranscript {
+        await audio.refreshAvailability()
+        let route: String
+        if let serviceID, !serviceID.isEmpty { route = serviceID }
+        else {
+            guard audio.services.contains(where: { $0.id == AssistantAudioService.ID.transcriptionEnhanced && $0.ready }) else {
+                throw MeetingError.captureBackendFailed(IDELanguageRunText.t("录音已保存。请在会议设置中选择转写服务，再重试未完成片段。", "The recording is saved. Choose a transcription service in meeting settings, then retry unfinished chunks."))
+            }
+            route = AssistantAudioService.ID.transcriptionEnhanced
+        }
+        do {
+            // Meetings opt in to provider speaker separation; adapters
+            // only send the diarization flag for engines that support it,
+            // and local engines honestly return no labels.
+            let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route,
+                                                    requiresTiming: true, enableSpeakerAttribution: true, onPartial: { relay?.offer($0) })
+            return MeetingChunkTranscript(segments: result.segments, language: result.language)
+        } catch AssistantAudioError.noSpeechRecognized {
+            // Silence is a completed observation, not a broken recording.
+            return MeetingChunkTranscript(segments: [], language: nil)
+        }
     }
 
     init(meetingID: MeetingID, root: URL, service: MeetingService,
          transcribeChunk: @escaping TranscribeChunk,
+         progressiveTranscribe: ProgressiveTranscribe? = nil,
          retryDelay: @escaping @Sendable (Int) async throws -> Void = { attempt in
              try await Task.sleep(for: .seconds(1 << (attempt - 1)))
          }, onChange: @escaping @MainActor @Sendable () async -> Void) throws {
         self.meetingID = meetingID; self.root = root; self.service = service
-        self.transcribeChunk = transcribeChunk; self.retryDelay = retryDelay; self.onChange = onChange
+        self.transcribeChunk = transcribeChunk; self.transcribeProgressively = progressiveTranscribe
+        self.retryDelay = retryDelay; self.onChange = onChange
         let file = root.appendingPathComponent("live-chunks.json")
         if FileManager.default.fileExists(atPath: file.path) {
             let data = try Data(contentsOf: file)
@@ -161,7 +174,16 @@ struct MeetingChunkTranscript: Sendable {
     }
     func cancel() {
         enabled = false
-        generation = UUID(); worker?.cancel(); worker = nil; isWorking = false; waitingForService = false
+        generation = UUID()
+        if let previous = worker {
+            let retired = UUID(); retiredWorkers[retired] = previous
+            previous.cancel()
+            Task { [weak self] in
+                await previous.value
+                self?.retiredWorkers[retired] = nil
+            }
+        }
+        worker = nil; isWorking = false; waitingForService = false
         for index in chunks.indices where chunks[index].state == .transcribing {
             chunks[index].state = .unconfirmed
             chunks[index].error = IDELanguageRunText.t("转写已停止，原录音与片段已保留。", "Transcription stopped. The recording and chunks were preserved.")
@@ -169,9 +191,10 @@ struct MeetingChunkTranscript: Sendable {
         try? save()
     }
     func cancelAndWait() async {
-        let previous = worker
+        var previous = Array(retiredWorkers.values)
+        if let worker { previous.append(worker) }
         cancel()
-        await previous?.value
+        for task in previous { await task.value }
     }
     func waitUntilIdle() async { await worker?.value }
 
@@ -206,9 +229,11 @@ struct MeetingChunkTranscript: Sendable {
                 let id = self.chunks[index].id
                 do {
                     try await self.process(id: id, generation: epoch)
+                    await self.retireFilePartials(epoch)
                     await self.onChange()
-                } catch is CancellationError { return }
+                } catch is CancellationError { await self.retireFilePartials(epoch); return }
                 catch {
+                    await self.retireFilePartials(epoch)
                     guard self.generation == epoch, let failed = self.chunks.firstIndex(where: { $0.id == id }) else { return }
                     if (error as? AssistantAudioError) == .transcriptionBusy,
                        (self.chunks[failed].busyRetries ?? 0) < 3 {
@@ -281,7 +306,7 @@ struct MeetingChunkTranscript: Sendable {
                 // domain even when a previous attempt of the same chunk ran.
                 chunks[index].requestKey = UUID()
                 try save()
-                let result = try await transcribeChunk(file, selectedServiceID)
+                let result = try await decodeChunk(file, analysis: chunks[index].analysisSessionID!, epoch: epoch)
                 try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
                 chunks[index].decoded = result.segments; chunks[index].language = result.language
                 chunks[index].state = .decoded; try save() // Persist real provider output BEFORE committing segments.
@@ -331,7 +356,7 @@ struct MeetingChunkTranscript: Sendable {
                 try save()
                 let result: MeetingChunkTranscript
                 do {
-                    result = try await transcribeChunk(request.url, selectedServiceID)
+                    result = try await decodeChunk(request.url, analysis: analysis, epoch: epoch)
                 } catch {
                     try? FileManager.default.removeItem(at: request.url)
                     throw error
@@ -358,11 +383,59 @@ struct MeetingChunkTranscript: Sendable {
         chunks[index].state = .complete; chunks[index].error = nil; try save()
         diagnostic = nil
     }
+    /// Decoder revisions replace one RAM-only partial. The bounded relay
+    /// never queues one task per token, invents timestamps or persists drafts.
+    private func decodeChunk(_ file: URL, analysis: CaptureSessionID, epoch: UUID) async throws -> MeetingChunkTranscript {
+        guard let transcribeProgressively else { return try await transcribeChunk(file, selectedServiceID) }
+        await retireFilePartials(epoch)
+        let partial = try await service.beginPartial(meeting: meetingID, session: analysis, text: "")
+        filePartials[epoch, default: []].insert(partial)
+        let relay = MeetingFilePartialRelay()
+        let observer = Task { [weak self, service, meetingID] in
+            for await text in relay.stream {
+                guard !Task.isCancelled, self?.generation == epoch else { break }
+                await service.updatePartial(partial, meeting: meetingID, text: text)
+            }
+        }
+        do {
+            try check(epoch)
+            let result = try await transcribeProgressively(file, selectedServiceID, relay)
+            relay.finish(); await observer.value
+            // Keep this draft until process() has durably committed the real
+            // timed result. Readers never see a blank between partial/final.
+            try check(epoch)
+            return result
+        } catch {
+            relay.finish(); observer.cancel(); await observer.value
+            await retireFilePartials(epoch)
+            throw error
+        }
+    }
+    private func retireFilePartials(_ epoch: UUID) async {
+        let ids = filePartials.removeValue(forKey: epoch) ?? []
+        for id in ids { await service.discardPartial(id, meeting: meetingID) }
+    }
     private func check(_ epoch: UUID) throws {
         try Task.checkCancellation()
         guard generation == epoch, FileManager.default.fileExists(atPath: root.appendingPathComponent("meeting.sqlite").path) else { throw CancellationError() }
     }
 }
+/// One exact decode's bounded, thread-safe text channel; SDK callbacks can
+/// arrive off-main. Finishing retires the channel before the partial is removed.
+final class MeetingFilePartialRelay: Sendable {
+    let stream: AsyncStream<String>
+    private let continuation: AsyncStream<String>.Continuation
+    init() {
+        let pair = AsyncStream.makeStream(of: String.self, bufferingPolicy: .bufferingNewest(1))
+        stream = pair.stream; continuation = pair.continuation
+    }
+    func offer(_ text: String) {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty, value.utf8.count <= 65_536 { continuation.yield(value) }
+    }
+    func finish() { continuation.finish() }
+}
+
 /// One file entry in the chunk queue: the file at `url` is a bounded WAV of
 /// the exact uncovered media interval `range` (a partial-coverage fallback
 /// request), never proportional text cutting.

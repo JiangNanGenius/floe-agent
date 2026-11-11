@@ -213,7 +213,8 @@ struct ConversationListView: View {
                     isSelected: horizontalSizeClass == .regular
                         && router.selectedConversationID == conversation.id
                 )
-                ConversationActivityBadge(conversationID: conversation.id, center: viewModel.center)
+                ConversationActivityBadge(conversationID: conversation.id, center: viewModel.center,
+                    onOpen: selection.isActive ? nil : { runID in router.openConversation(conversation.id, runID: runID) })
             }
         }
         .buttonStyle(.plain)

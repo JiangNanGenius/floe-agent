@@ -455,3 +455,75 @@ final class SpeakerAttributionTests: XCTestCase {
     }
 
 }
+
+extension SpeakerAttributionTests {
+    func testNativeCentroidsMatchOnlyWithinRecordingAndKeepUnknowns() throws {
+        let meeting = MeetingID(), original = CaptureSessionID()
+        var first = RecordingSpeakerIdentity(meeting: meeting, original: original)
+        var a = [Float](repeating: 0, count: 16), b = a
+        a[0] = 1; b[1] = 1
+        let initial = first.resolve(centroids: [0: a, 1: b], speechSeconds: [0: 4, 1: 4])
+        XCTAssertEqual(initial.count, 2)
+        XCTAssertNotEqual(initial[0], initial[1])
+        // Native cluster indices can change in the next real analysis window.
+        let next = first.resolve(centroids: [5: b, 9: a], speechSeconds: [5: 3, 9: 3])
+        XCTAssertEqual(next[5], initial[1]); XCTAssertEqual(next[9], initial[0])
+        var gray = a; gray[0] = 0.7; gray[1] = 0.7
+        XCTAssertTrue(first.resolve(centroids: [2: gray, 3: []], speechSeconds: [2: 3, 3: 3]).isEmpty,
+                      "ambiguous, absent or invalid acoustic evidence is unknown")
+        XCTAssertTrue(first.resolve(centroids: [0: a], speechSeconds: [0: 0.1]).isEmpty)
+        var reopened = try JSONDecoder().decode(RecordingSpeakerIdentity.self, from: JSONEncoder().encode(first))
+        XCTAssertEqual(reopened.resolve(centroids: [7: a], speechSeconds: [7: 2])[7], initial[0])
+        var otherRecording = RecordingSpeakerIdentity(meeting: meeting, original: CaptureSessionID())
+        XCTAssertNotEqual(otherRecording.resolve(centroids: [0: a], speechSeconds: [0: 4])[0], initial[0],
+                          "voice identity is never reused across originals, even in the same meeting")
+    }
+
+    func testNativeAttributionPersistsAndProtectsOriginalLineageAndUserChoices() async throws {
+        let (service, meeting, url) = try await makeMeeting()
+        let original = try await TestServices.importedSession(service, meeting: meeting)
+        let otherOriginal = try await TestServices.importedSession(service, meeting: meeting)
+        let file = url.deletingLastPathComponent().appendingPathComponent("native-speaker-\(UUID().uuidString).wav")
+        try Data([1, 2, 3]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let analysis = try await service.importFile(meeting: meeting, file: file, kind: .importedAudio, origin: original) { _ in
+            try MediaTimeRange(start: 0, end: 8)
+        }
+        let trackA = try await service.resolveEngineSpeaker(meeting: meeting, scope: "native|" + original.description, label: UUID().uuidString)
+        let a = try XCTUnwrap(trackA)
+        let b = try await service.addSpeaker(meeting: meeting, label: "User name", userNamed: true)
+        let row = try await service.appendFinal(meeting: meeting, session: analysis, text: "kept text", range: .init(start: 0, end: 2))
+        let corrected = try await service.appendFinal(meeting: meeting, session: analysis, text: "manual attribution", range: .init(start: 2, end: 4))
+        _ = try await service.reassignSegmentSpeaker(corrected.id, meeting: meeting, speaker: nil)
+        _ = try await service.appendFinal(meeting: meeting, session: analysis, text: "named person", range: .init(start: 4, end: 6), speaker: b.id)
+        let foreign = try await service.appendFinal(meeting: meeting, session: otherOriginal, text: "other original", range: .init(start: 0, end: 2))
+        let partial = try await service.beginPartial(meeting: meeting, session: analysis, text: "real decoder draft")
+        await service.updatePartial(partial, meeting: meeting, text: "revised draft")
+        await service.discardPartial(partial, meeting: meeting)
+        let partials = await service.currentPartials(meeting: meeting)
+        XCTAssertTrue(partials.isEmpty)
+        let window = try MediaTimeRange(start: 0, end: 6)
+        let spans = [RecordingSpeakerSpan(range: window, speaker: a)]
+        let changed = try await service.applyRecordingSpeakers(meeting: meeting, original: original, window: window, spans: spans)
+        XCTAssertEqual(changed, 1)
+        let reopened = MeetingService(database: try MeetingDatabase(path: url.path))
+        let rows = try await reopened.transcript(meeting: meeting)
+        XCTAssertEqual(rows.count, 4, "partial text is never committed by attribution")
+        let adopted = try XCTUnwrap(rows.first { $0.id == row.id })
+        XCTAssertEqual(adopted.speakerID, a); XCTAssertEqual(adopted.text, "kept text")
+        XCTAssertEqual(adopted.range, row.range); XCTAssertEqual(adopted.source, row.source)
+        XCTAssertNil(rows.first { $0.id == corrected.id }?.speakerID)
+        XCTAssertNil(rows.first { $0.id == foreign.id }?.speakerID)
+        XCTAssertEqual(rows.first { $0.text == "named person" }?.speakerID, b.id)
+        try await reopened.renameSpeaker(a, meeting: meeting, to: "Alice", byUser: true)
+        try await reopened.mergeSpeaker(a, into: b.id, meeting: meeting)
+        let afterMerge = try await reopened.applyRecordingSpeakers(meeting: meeting, original: original, window: window, spans: spans)
+        XCTAssertEqual(afterMerge, 0, "late native projection cannot undo a rename, merge or manual clear")
+        let resolved = try await reopened.resolveSpeaker(a, meeting: meeting)
+        XCTAssertEqual(resolved, b.id)
+        do {
+            _ = try await reopened.applyRecordingSpeakers(meeting: meeting, original: analysis, window: window, spans: spans)
+            XCTFail("an analysis child cannot acquire original ownership")
+        } catch MeetingError.captureSessionEnded { }
+    }
+}

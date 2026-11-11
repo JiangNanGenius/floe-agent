@@ -56,3 +56,77 @@ private actor IdentitySequence {
     #expect(DNSRecord(name:"fixture",type:.ptr,ttl:1,data:Data([0xC0,0x0C])).text == "c0 0c")
     #expect(try HostResolver.ipv4Addresses("localhost").contains { HostResolver.presentation($0) == "127.0.0.1" })
 }
+
+
+@Suite("Darwin ICMP error framing", .serialized)
+struct DarwinICMPErrorTests {
+    private let identifier: UInt16 = 0x3847
+    private let sequence: UInt16 = 42
+    private let token = Data([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+    private var destination: UInt32 {
+        Data([203, 0, 113, 8]).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+    }
+    private func sealed(_ value: Data) -> Data {
+        var data = value; data[2] = 0; data[3] = 0
+        let sum = DeviceICMPPacket.checksum(data)
+        data[2] = UInt8(sum >> 8); data[3] = UInt8(sum & 255)
+        return data
+    }
+    private func wireError(type: UInt8 = 11, headerLength: Int = 24, quoteBytes: Int = 12) -> Data {
+        let request = DeviceICMPPacket.buildEchoRequest(identifier: identifier, sequence: sequence, payload: token)
+        var data = Data(count: 8 + headerLength)
+        data[0] = type; data[8] = 0x40 | UInt8(headerLength / 4)
+        data[10] = UInt8((headerLength + request.count) >> 8)
+        data[11] = UInt8((headerLength + request.count) & 255)
+        data[17] = 1
+        data.replaceSubrange(24..<28, with: [203, 0, 113, 8])
+        data += request.prefix(quoteBytes)
+        return sealed(data)
+    }
+    private func darwinDelivered(_ wire: Data) -> Data {
+        // XNU icmp_input validates the wire checksum, then NTOHS(ip_len)
+        // in the quoted IPv4 header before delivering to the raw listener.
+        var data = wire; data.swapAt(10, 11); return data
+    }
+
+    @Test func hostOrderQuotedLengthRestoresWireChecksumWithoutRelaxingIdentity() throws {
+        let wire = wireError(), delivered = darwinDelivered(wire)
+        #expect(DeviceICMPPacket.checksum(wire) == 0)
+        #expect(DeviceICMPPacket.checksum(delivered) != 0)
+        let expected = try #require(DeviceICMPPacket.parseEmbeddedError(wire))
+        let parsed = try #require(DeviceICMPPacket.parseEmbeddedError(delivered))
+        #expect(parsed == expected)
+        #expect(parsed.matches(identifier: identifier, sequence: sequence, destination: destination, token: token))
+        #expect(!parsed.matches(identifier: identifier + 1, sequence: sequence, destination: destination, token: token))
+        #expect(!parsed.matches(identifier: identifier, sequence: sequence + 1, destination: destination, token: token))
+        #expect(!parsed.matches(identifier: identifier, sequence: sequence, destination: 0, token: token))
+        #expect(!parsed.matches(identifier: identifier, sequence: sequence, destination: destination, token: Data(repeating: 9, count: 16)))
+        var outer = Data(count: 24); outer[0] = 0x46; outer[9] = 1
+        #expect(DeviceICMPPacket.parseEmbeddedError(outer + delivered) == expected)
+    }
+
+    @Test func minimumQuotedHeadersMatchOnlyTheirExactProbeForBothErrorTypes() throws {
+        for type in [DeviceICMPPacket.timeExceededType, DeviceICMPPacket.destinationUnreachableType] {
+            let delivered = darwinDelivered(wireError(type: type, headerLength: 20, quoteBytes: 8))
+            let parsed = try #require(DeviceICMPPacket.parseEmbeddedError(delivered))
+            #expect(parsed.type == type && parsed.quotedPayload.isEmpty)
+            #expect(parsed.matches(identifier: identifier, sequence: sequence, destination: destination, token: token))
+            #expect(!parsed.matches(identifier: identifier + 1, sequence: sequence, destination: destination, token: token))
+        }
+    }
+
+    @Test func normalizationStillRejectsCorruptionFragmentsAndForeignPacketShapes() {
+        let wire = wireError()
+        var damaged = darwinDelivered(wire); damaged[damaged.count - 1] ^= 1
+        #expect(DeviceICMPPacket.parseEmbeddedError(damaged) == nil)
+        var wrongProtocol = wire; wrongProtocol[17] = 17
+        #expect(DeviceICMPPacket.parseEmbeddedError(darwinDelivered(sealed(wrongProtocol))) == nil)
+        var fragment = wire; fragment[14] = 1
+        #expect(DeviceICMPPacket.parseEmbeddedError(darwinDelivered(sealed(fragment))) == nil)
+        var notEcho = wire; notEcho[8 + 24] = DeviceICMPPacket.echoReplyType
+        #expect(DeviceICMPPacket.parseEmbeddedError(darwinDelivered(sealed(notEcho))) == nil)
+        var badLength = wire; badLength[10] = 0; badLength[11] = 20
+        #expect(DeviceICMPPacket.parseEmbeddedError(darwinDelivered(sealed(badLength))) == nil)
+        #expect(DeviceICMPPacket.parseEmbeddedError(Data(darwinDelivered(wire).prefix(35))) == nil)
+    }
+}

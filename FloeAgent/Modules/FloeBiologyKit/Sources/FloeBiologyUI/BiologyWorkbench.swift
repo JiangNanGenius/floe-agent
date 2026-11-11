@@ -21,6 +21,7 @@ import FloeBiologySamples
     /// file assistant). When supplied it replaces the isolated one-shot sheet.
     private let assistantContent:(@MainActor (BiologyAIContext) -> AnyView)?
     private let prepareAssistant:(@MainActor (BiologyAIContext) async throws -> Void)?
+    private let onPresentAssistant:(@MainActor (BiologyAIContext) async throws -> Void)?
     @State private var sheet:Panel?
     @State private var renaming:BiologyAsset?
     @State private var transforming:BiologyStructureTransformRequest?
@@ -51,8 +52,8 @@ import FloeBiologySamples
     @State private var extraOptions=""
     @State private var showResult=false
     private enum Panel:String,Identifiable {case sequence,annotation,network,blankSequence,blankNetwork,history,notes,assistant,rename,tools;var id:String{rawValue}}
-    public init(service:BiologyService,projectID:UUID,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil,onRunAnalysis:BiologyNativeAnalysisHandler? = nil,onImportFile:BiologyNativeFileImportHandler? = nil,onAuthorizeFile:BiologyNativeFileAuthorizationHandler? = nil,scientificEnvironmentID:String? = nil,assistantContent:(@MainActor (BiologyAIContext) -> AnyView)? = nil,prepareAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil) {
-        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID;self.assistantContent=assistantContent;self.prepareAssistant=prepareAssistant
+    public init(service:BiologyService,projectID:UUID,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil,onRunAnalysis:BiologyNativeAnalysisHandler? = nil,onImportFile:BiologyNativeFileImportHandler? = nil,onAuthorizeFile:BiologyNativeFileAuthorizationHandler? = nil,scientificEnvironmentID:String? = nil,assistantContent:(@MainActor (BiologyAIContext) -> AnyView)? = nil,prepareAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil,onPresentAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil) {
+        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID;self.assistantContent=assistantContent;self.prepareAssistant=prepareAssistant;self.onPresentAssistant=onPresentAssistant
     }
     public var body:some View {
         GeometryReader { geometry in
@@ -253,7 +254,11 @@ import FloeBiologySamples
                 Button(biologyText("Version history","历史版本"),systemImage:"clock.arrow.circlepath"){sheet = .history}
                 Button(biologyText("Rename project","重命名项目"),systemImage:"pencil"){sheet = .rename}
                 Button(biologyText("Ask AI","询问 AI"),systemImage:"bubble.left.and.bubble.right"){
-                    if assistantContent != nil {assistantContext=BiologyAIContext(projectID:model.projectID,assetID:model.selectedID,assetRevision:model.selected?.revision,selectedRunID:model.run?.id)}
+                    if let onPresentAssistant {
+                        let context=BiologyAIContext(projectID:model.projectID,assetID:model.selectedID,assetRevision:model.selected?.revision,selectedRunID:model.run?.id)
+                        Task {do {try await onPresentAssistant(context)} catch {model.notice=error.localizedDescription}}
+                    }
+                    else if assistantContent != nil {assistantContext=BiologyAIContext(projectID:model.projectID,assetID:model.selectedID,assetRevision:model.selected?.revision,selectedRunID:model.run?.id)}
                     else {sheet = .assistant}
                 }
                 Button(biologyText("Automation tools","自动化工具"),systemImage:"terminal"){sheet = .tools}.accessibilityIdentifier("biology.tools")

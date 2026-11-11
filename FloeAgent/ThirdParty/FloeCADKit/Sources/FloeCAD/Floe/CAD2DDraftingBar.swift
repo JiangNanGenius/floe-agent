@@ -203,7 +203,7 @@ private struct CAD2DFitSplineSheet: View {
     private func text(_ zh: String, _ en: String) -> String { CAD2DDraftingText.text(zh, en) }
 }
 
-private enum CAD2DDraftingText {
+enum CAD2DDraftingText {
     static func text(_ zh: String, _ en: String) -> String {
         // Use the host's resolved language, including its in-App override.
         let marker = FloeCADStrings.text("cad.ui.common.done", "Done")

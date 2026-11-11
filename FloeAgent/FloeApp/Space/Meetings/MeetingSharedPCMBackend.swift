@@ -36,7 +36,7 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
         epoch += 1; let generation = epoch
         self.session = session; self.sink = sink
         let channel = AsyncStream<MeetingPCMFrame>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let writer = try MeetingPCMChunkRecorder(configuration: configuration, session: session, chunkSeconds: 5)
+        let writer = try MeetingPCMChunkRecorder(configuration: configuration, session: session, chunkSeconds: 3)
         self.writer = writer
         let tap = MeetingPCMStreamTap(continuation: channel.continuation) { [weak self] reason in
             Task { await self?.fail(reason, generation: generation) }
@@ -45,10 +45,20 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
         let capturer = AudioEngineCapturer(managesAudioSession: false)
         self.capturer = capturer
         pump = Task { [weak self] in
+            var utterance = VoiceConversationUtteranceGate()
             do {
                 for await frame in channel.stream {
                     try Task.checkCancellation()
-                    if let chunk = try await writer.append(frame) { await self?.deliver(chunk, generation: generation) }
+                    // Reuse the voice pipeline's measured-RMS pause gate in
+                    // this source's actual sample-rate domain. The recorder
+                    // always writes every frame to the continuous original.
+                    utterance.voicedSamplesRequired = max(1, Int(frame.sampleRate * 0.35))
+                    utterance.silenceTailSamplesRequired = max(1, Int(frame.sampleRate * 0.55))
+                    utterance.process(rms: frame.rms, samples: frame.frameCount)
+                    if let chunk = try await writer.append(frame, endOfUtterance: utterance.shouldFlush) {
+                        utterance.noteDecoded()
+                        await self?.deliver(chunk, generation: generation)
+                    }
                     await self?.feedASR(frame)
                 }
             } catch { await self?.fail(error.localizedDescription, generation: generation) }

@@ -37,6 +37,7 @@ struct StepGroupView: View {
     private let childRunRecords: [ChildRunRecord]
     private let onOpenChild: ((ChildRunRecord?) -> Void)?
     private let conversationID: UUID?
+    private let toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)?
     let onResolveApproval: (PendingApproval, ApprovalDecision) -> Void
     @StateObject private var projection = StepGroupMetadata()
     private var payloads: [UUID: [String: String]] { projection.read(events).payloads }
@@ -55,6 +56,7 @@ struct StepGroupView: View {
         childRunRecords: [ChildRunRecord] = [],
         onOpenChild: ((ChildRunRecord?) -> Void)? = nil,
         conversationID: UUID? = nil,
+        toolDetailExpansion: (@MainActor (RunEventRecord) -> Binding<Bool?>)? = nil,
         onResolveApproval: @escaping (PendingApproval, ApprovalDecision) -> Void = { _, _ in }
     ) {
         self.events = events
@@ -66,6 +68,7 @@ struct StepGroupView: View {
         self.childRunRecords = childRunRecords
         self.onOpenChild = onOpenChild
         self.conversationID = conversationID
+        self.toolDetailExpansion = toolDetailExpansion
         self.onResolveApproval = onResolveApproval
         // The active/latest group is the user's only view into current tool
         // progress. Historical groups stay compact, while the latest group
@@ -175,7 +178,8 @@ struct StepGroupView: View {
                             decisionSummary: decisionSummary(for: event),
                             childRun: childRun(for: event),
                             onOpenChild: onOpenChild,
-                            conversationID: conversationID
+                            conversationID: conversationID,
+                            toolDetailExpansion: toolDetailExpansion?(event)
                         )
                         .transition(isLive ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                         if event.kind == .toolRequest, let pending = pendingApproval(for: event) {

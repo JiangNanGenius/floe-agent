@@ -646,7 +646,7 @@ enum CanvasAgentIdentity {
     static let conversationTitlePrefix = "Floe Canvas Agent · "
 
     static func isCanvasConversation(_ conversation: ConversationRecord?) -> Bool {
-        conversation?.title.hasPrefix(conversationTitlePrefix) == true
+        conversation?.editorOwnership?.kind == .canvas
     }
 }
 
@@ -1034,6 +1034,45 @@ enum WorkspaceCanvasRegistry {
                 )
             }
         }
+    }
+
+    struct AssistantOwnerships {
+        var all: [UUID: ConversationEditorOwnership] = [:]
+        var current: Set<UUID> = []
+    }
+
+    /// Only native persisted IDs establish legacy ownership. Imports already
+    /// strip these bindings; names and workspace membership are not authority.
+    static func assistantOwnerships(in explicitDirectory: URL? = nil) throws -> AssistantOwnerships {
+        let directory = try explicitDirectory ?? projectURL(canvasID: privateCanvasID, createDirectory: false).deletingLastPathComponent()
+        guard FileManager.default.fileExists(atPath: directory.path) else { return .init() }
+        var result = AssistantOwnerships()
+        for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            where url.pathExtension == "json" && UUID(uuidString: url.deletingPathExtension().lastPathComponent) != nil {
+            let project = try decodeProject(at: url)
+            for (documentID, conversationID) in project.agentConversationIDsByDocument {
+                guard project.documents.contains(where: { $0.id == documentID }) else { continue }
+                let owner = ConversationEditorOwnership.canvas(project.id, documentID: documentID)
+                if let previous = result.all[conversationID], previous != owner {
+                    throw FloeError.storageCorrupted("Conflicting canvas assistant ownership")
+                }
+                result.all[conversationID] = owner
+                result.current.insert(conversationID)
+            }
+            // Legacy project-wide sessions have a real container ID, but no
+            // per-document grant. Preserve that scope instead of guessing one.
+            for id in project.assistantSessions.map(\.conversationID) + [project.agentConversationID].compactMap({ $0 }) {
+                if result.all[id] == nil {
+                    result.all[id] = .canvas(project.id, documentID: project.id)
+                } else if result.all[id]?.containerID != project.id {
+                    throw FloeError.storageCorrupted("Conflicting canvas assistant ownership")
+                }
+            }
+            if project.agentConversationIDsByDocument.isEmpty, let id = project.agentConversationID {
+                result.current.insert(id)
+            }
+        }
+        return result
     }
 
     static func exists(canvasID: UUID) -> Bool {
@@ -1489,9 +1528,27 @@ private enum CanvasLifecycleService {
         if let legacyConversationID = project.agentConversationID {
             conversationIDs.insert(legacyConversationID)
         }
+        // Preserve an exact stored document owner; only true legacy nil
+        // records are backfilled from this native project's own identifiers.
+        for id in conversationIDs {
+            if let row = try await environment.conversationStore.conversation(id: id) {
+                if let owner = row.editorOwnership {
+                    guard owner.kind == .canvas, owner.containerID == project.id else {
+                        throw FloeError.validationFailed("Canvas assistant ownership changed")
+                    }
+                } else {
+                    let documentID = project.agentConversationIDsByDocument.first(where: { $0.value == id })?.key ?? project.id
+                    try await environment.conversationStore.claimEditorOwnership(id: id, owner: .canvas(project.id, documentID: documentID))
+                }
+            }
+        }
+        let histories = try await environment.conversationStore.editorConversations(kind: .canvas, containerID: project.id)
+        conversationIDs.formUnion(histories.map(\.id))
+        let lease = try await environment.conversationCenter.stopEditorContainer(kind: .canvas, containerID: project.id)
+        defer { lease.finish() }
         for conversationID in conversationIDs {
             if try await environment.conversationStore.conversation(id: conversationID) != nil {
-                try await environment.conversationCenter.deleteConversation(id: conversationID)
+                try await environment.conversationCenter.deleteConversation(id: conversationID, fileLifecycleToken: lease.id)
             }
         }
         try await cancelAndDeleteMediaJobs(
@@ -3061,13 +3118,27 @@ private final class CanvasDocumentStore: ObservableObject {
         project.agentConversationIDsByDocument[documentID]
     }
 
-    func setAgentConversationID(_ id: UUID, for documentID: UUID) {
-        guard project.documents.contains(where: { $0.id == documentID }) else { return }
+    func setAgentConversationID(_ id: UUID, for documentID: UUID) throws {
+        guard project.documents.contains(where: { $0.id == documentID }) else {
+            throw FloeError.validationFailed("Canvas document changed")
+        }
+        let previous = project
         project.agentConversationIDsByDocument[documentID] = id
         project.agentConversationID = id
         project.schemaVersion = CanvasProject.currentSchemaVersion
         project.updatedAt = Date()
-        persist()
+        guard persist() else {
+            let failure = saveError
+            // A secondary sync error may follow a real file commit. Prove
+            // that commit by native readback; otherwise retain the old view.
+            if let committed = try? WorkspaceCanvasRegistry.project(canvasID: project.id),
+               committed.agentConversationIDsByDocument[documentID] == id {
+                project = committed; saveError = failure; return
+            }
+            project = previous
+            saveError = failure
+            throw FloeError.validationFailed(failure ?? "Canvas conversation could not be saved")
+        }
     }
 
     /// Compatibility wrapper for callers that have not yet adopted
@@ -6029,15 +6100,16 @@ struct WorkspaceCanvasView: View {
         }
     }
 
-    init(canvasID: UUID, name: String, workspace: WorkspaceRecord?) {
+    init(canvasID: UUID, name: String, workspace: WorkspaceRecord?, assistantDocumentID: UUID? = nil) {
         self.workspace = workspace
         personalRecord = nil
         kitStore = nil
-        _store = StateObject(wrappedValue: CanvasDocumentStore(
-            canvasID: canvasID,
-            workspaceID: workspace?.id,
-            canvasName: name
-        ))
+        let documentStore = CanvasDocumentStore(canvasID: canvasID, workspaceID: workspace?.id, canvasName: name)
+        if let assistantDocumentID, documentStore.project.selectedDocumentID != assistantDocumentID {
+            documentStore.select(assistantDocumentID)
+        }
+        _store = StateObject(wrappedValue: documentStore)
+        _showsAgent = State(initialValue: assistantDocumentID != nil)
     }
 
     init(backing: CanvasFrameworkBacking, project: FloeCore.CanvasProject, kitStore: CanvasEditorStore) {
@@ -12544,6 +12616,8 @@ private struct CanvasAgentFloatingPanel: View {
     @State private var isDragging = false
     @State private var activeConversationID: UUID?
     @State private var preparedDocumentID: UUID?
+    @State private var restarting = false
+    @State private var showingArchive = false
 
     private var center: ConversationCenter { environment.conversationCenter }
     private var mcpCenter: MCPSettingsCenter { environment.mcpSettingsCenter }
@@ -12560,6 +12634,9 @@ private struct CanvasAgentFloatingPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             floatingHeader
+            if let setupError, activeConversationID != nil {
+                Text(setupError).font(.callout).foregroundStyle(.red).padding(8)
+            }
             if !isCollapsed {
                 Divider()
                 if let activeConversationID {
@@ -12575,6 +12652,7 @@ private struct CanvasAgentFloatingPanel: View {
                         isRunning: $isRunning
                     )
                     .id(activeConversationID)
+                    .disabled(restarting)
                 } else {
                     ContentUnavailableView(
                         setupError == nil ? "workspace.workspace_canvas_view.preparing_canvas_assistant" : "workspace.workspace_canvas_view.could_not_prepare_the_canvas_assistant",
@@ -12592,6 +12670,9 @@ private struct CanvasAgentFloatingPanel: View {
         }
         .shadow(color: .black.opacity(0.20), radius: 24, y: 12)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .sheet(isPresented: $showingArchive) {
+            EditorAssistantArchiveView(owner: .canvas(store.project.id, documentID: store.project.selectedDocumentID), center: center)
+        }
         .task(id: store.project.selectedDocumentID) {
             await prepare(documentID: store.project.selectedDocumentID)
         }
@@ -12620,6 +12701,20 @@ private struct CanvasAgentFloatingPanel: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            Menu {
+                Button(IDELanguageRunText.t("归档会话", "Archived conversations"), systemImage: "archivebox") {
+                    showingArchive = true
+                }
+                Button("notes.assistant.restart", systemImage: "arrow.counterclockwise") {
+                    Task { await restart() }
+                }
+                .disabled(activeConversationID == nil || restarting)
+            } label: {
+                Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(IDELanguageRunText.t("助手会话", "Assistant conversations"))
+            .accessibilityIdentifier("canvas.assistant.sessions")
             Button {
                 withAnimation(reduceMotion ? nil : .snappy) { isCollapsed.toggle() }
             } label: {
@@ -12705,12 +12800,38 @@ private struct CanvasAgentFloatingPanel: View {
         }
     }
 
+    @MainActor private func restart() async {
+        guard let previous = activeConversationID, !restarting else { return }
+        let documentID = store.project.selectedDocumentID
+        restarting = true
+        defer { restarting = false }
+        do {
+            environment.voiceInput.stop()
+            let next = try await ensureConversationAndPolicy(documentID: documentID, replacing: previous)
+            guard store.project.selectedDocumentID == documentID, activeConversationID == previous else { return }
+            pendingRequest = nil
+            activeConversationID = next
+            setupError = nil
+        } catch { setupError = error.localizedDescription }
+    }
+
     @MainActor
-    private func ensureConversationAndPolicy(documentID: UUID) async throws -> UUID {
+    private func ensureConversationAndPolicy(documentID: UUID, replacing previous: UUID? = nil) async throws -> UUID {
+        let owner = ConversationEditorOwnership.canvas(store.project.id, documentID: documentID)
+        var stopLease: PersonalFileAssistantStopLease?
+        defer { stopLease?.finish() }
+        if let previous {
+            guard store.agentConversationID(for: documentID) == previous else {
+                throw FloeError.validationFailed("Canvas conversation changed")
+            }
+            try await environment.conversationStore.claimEditorOwnership(id: previous, owner: owner)
+            stopLease = try await center.stopEditorAssistant(conversationID: previous, expectedOwner: owner)
+        }
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let conversationID: UUID
-        if let existing = store.agentConversationID(for: documentID),
+        if previous == nil, let existing = store.agentConversationID(for: documentID),
            try await environment.conversationStore.conversation(id: existing) != nil {
+            try await environment.conversationStore.claimEditorOwnership(id: existing, owner: owner)
             conversationID = existing
         } else {
             let id = UUID()
@@ -12723,9 +12844,9 @@ private struct CanvasAgentFloatingPanel: View {
                     title: "\(CanvasAgentIdentity.conversationTitlePrefix)\(store.project.name) · \(documentName)",
                     createdAt: now,
                     updatedAt: now,
-                    titleOrigin: .manual
+                    titleOrigin: .manual,
+                    editorOwnership: owner
                 ))
-                try await environment.conversationStore.setArchived(id: id, archived: true)
                 if let workspace {
                     try await workspaceStore.linkConversation(
                         workspaceID: workspace.id,
@@ -12740,7 +12861,6 @@ private struct CanvasAgentFloatingPanel: View {
                         title: FloeL10n.l("workspace.workspace_canvas_view.canvas_assistant_2", store.project.name, documentName)
                     )
                 }
-                store.setAgentConversationID(id, for: documentID)
                 conversationID = id
             } catch {
                 try? await environment.conversationStore.deleteConversation(id: id)
@@ -12780,7 +12900,23 @@ private struct CanvasAgentFloatingPanel: View {
             recoveryPolicy: .safePoint,
             notificationPolicy: .stages
         ))
+        if let previous, store.agentConversationID(for: documentID) != previous {
+            throw FloeError.validationFailed("Canvas conversation changed")
+        }
+        if store.agentConversationID(for: documentID) != conversationID {
+            try store.setAgentConversationID(conversationID, for: documentID)
+        }
+        if let previous {
+            do { try await environment.conversationStore.setArchived(id: previous, archived: true) }
+            catch {
+                if store.agentConversationID(for: documentID) == conversationID {
+                    try store.setAgentConversationID(previous, for: documentID)
+                }
+                throw error
+            }
+        }
         center.taskPolicyDidChange(conversationID: conversationID)
+        await center.canvasAssistantBindingDidChange(conversationID)
         return conversationID
     }
 

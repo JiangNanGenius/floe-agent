@@ -93,6 +93,16 @@ public struct InstrumentLevelAngles: Equatable, Sendable {
     public init(x: Double, y: Double, tilt: Double) { self.x = x; self.y = y; self.tilt = tilt }
 }
 
+/// Interface orientation, rather than UIDeviceOrientation. Landscape-left has
+/// the device's bottom on the screen's left; landscape-right has it on the right.
+public enum InstrumentScreenOrientation: Sendable, Equatable, CaseIterable {
+    case portrait, portraitUpsideDown, landscapeLeft, landscapeRight
+}
+
+public enum InstrumentLevelDisplayMode: Sendable, Equatable {
+    case dualAxis, bar
+}
+
 /// ZYX Euler angles in degrees derived from an attitude quaternion.
 public struct InstrumentEulerAngles: Equatable, Sendable {
     public var pitch: Double
@@ -167,6 +177,53 @@ public enum InstrumentMath {
     public static func bubblePosition(up rawUp: InstrumentVec3) -> (x: Double, y: Double)? {
         guard let up = rawUp.normalized() else { return nil }
         return (min(max(up.x, -1), 1), min(max(up.y, -1), 1))
+    }
+
+    /// Maps device coordinates to screen-right, screen-top and screen-outward.
+    /// UIKit interface landscape orientations are opposite to device orientations.
+    public static func screenVector(_ vector: InstrumentVec3,
+                                    orientation: InstrumentScreenOrientation) -> InstrumentVec3 {
+        switch orientation {
+        case .portrait: return vector
+        case .portraitUpsideDown: return InstrumentVec3(-vector.x, -vector.y, vector.z)
+        case .landscapeLeft: return InstrumentVec3(vector.y, -vector.x, vector.z)
+        case .landscapeRight: return InstrumentVec3(-vector.y, vector.x, vector.z)
+        }
+    }
+
+    /// The physical screen plane enters bar mode within 15° of vertical and
+    /// returns to dual-axis mode beyond 22°. Never pass a zeroed attitude here:
+    /// calibration must not change how the device is physically being held.
+    public static func levelDisplayMode(gravity rawGravity: InstrumentVec3,
+                                        previous: InstrumentLevelDisplayMode) -> InstrumentLevelDisplayMode {
+        guard rawGravity.magnitude.isFinite, let gravity = rawGravity.normalized() else { return previous }
+        let normalComponent = abs(gravity.z)
+        switch previous {
+        case .dualAxis: return normalComponent <= sin(15 / degreesPerRadian) ? .bar : .dualAxis
+        case .bar: return normalComponent >= sin(22 / degreesPerRadian) ? .dualAxis : .bar
+        }
+    }
+
+    /// Inclination of the screen's horizontal edge: positive raises its right
+    /// end, including when the device is vertical or upside down. A saved pose
+    /// subtracts that same edge's inclination, without the vertical singularity
+    /// of a zeroed +Z vector. A nil reference measures against physical level.
+    public static func barLevelAngle(gravity rawGravity: InstrumentVec3,
+                                     referenceUp: InstrumentVec3? = nil,
+                                     orientation: InstrumentScreenOrientation) -> Double? {
+        guard rawGravity.magnitude.isFinite, let gravity = rawGravity.normalized() else { return nil }
+        let up = screenVector(InstrumentVec3(-gravity.x, -gravity.y, -gravity.z), orientation: orientation)
+        let angle = asin(min(max(up.x, -1), 1)) * degreesPerRadian
+        guard let referenceUp else { return angle }
+        guard referenceUp.magnitude.isFinite, let reference = referenceUp.normalized() else { return nil }
+        let screenReference = screenVector(reference, orientation: orientation)
+        return angle - asin(min(max(screenReference.x, -1), 1)) * degreesPerRadian
+    }
+
+    /// Magnified spirit-level travel: ±10° reaches the ends of the tube.
+    public static func barBubblePosition(angleDegrees: Double) -> Double? {
+        guard angleDegrees.isFinite else { return nil }
+        return min(max(angleDegrees / 10, -1), 1)
     }
 
     /// Row-major rotation matrix for an attitude quaternion; nil on invalid input.

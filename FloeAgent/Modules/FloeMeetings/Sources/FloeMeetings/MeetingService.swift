@@ -274,6 +274,14 @@ public actor MeetingService {
         partials[meeting]?[id]?.text = text
     }
 
+    /// Drop one RAM-only revision when its exact file decode ends, fails or
+    /// is cancelled. This never commits text or changes another request.
+    public func discardPartial(_ id: TranscriptSegmentID, meeting: MeetingID) {
+        guard !committingPartials.contains(id) else { return }
+        partials[meeting]?[id] = nil
+        partialOrder[meeting]?.removeAll { $0 == id }
+    }
+
     /// Ordered partials for display (transcript order by insertion).
     public func currentPartials(meeting: MeetingID) -> [PartialTranscript] {
         guard let order = partialOrder[meeting], let map = partials[meeting] else { return [] }
@@ -485,6 +493,14 @@ public actor MeetingService {
     ) async throws -> [TranscriptSegment] {
         let lineage = try await database.analysisLineage(meeting: meeting, original: original)
         return try await database.segments(inLineage: meeting, lineage: lineage)
+    }
+
+    /// Native, measured attribution. Source/recording ownership and user
+    /// correction precedence are checked in the same database transaction.
+    @discardableResult
+    public func applyRecordingSpeakers(meeting: MeetingID, original: CaptureSessionID,
+                                       window: MediaTimeRange, spans: [RecordingSpeakerSpan]) async throws -> Int {
+        try await database.applyRecordingSpeakers(meeting: meeting, original: original, window: window, spans: spans)
     }
 
     /// Close the lease and drop its partial. Idempotent.

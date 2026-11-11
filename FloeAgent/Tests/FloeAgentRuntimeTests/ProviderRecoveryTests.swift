@@ -166,6 +166,45 @@ struct ProviderRecoveryTests {
         #expect(executor.executedCalls.isEmpty)
     }
 
+    @Test("Usage metadata preserves the reasoning idle budget")
+    func usagePreservesReasoningIdleBudget() async throws {
+        try await assertUsagePreservesSemanticIdleBudget(toolArguments: false)
+    }
+
+    @Test("Usage metadata preserves the tool-argument idle budget")
+    func usagePreservesToolArgumentsIdleBudget() async throws {
+        try await assertUsagePreservesSemanticIdleBudget(toolArguments: true)
+    }
+
+    private func assertUsagePreservesSemanticIdleBudget(toolArguments: Bool) async throws {
+        let adapter = UsageDuringSemanticPhaseAdapter(toolArguments: toolArguments)
+        let executor = MockExecutor()
+        let sink = MockSink()
+        var config = configuration(maxProviderRetries: 0, firstEventTimeout: 1)
+        config.providerStreamIdleTimeout = 0.03
+        config.providerReasoningIdleTimeout = 1
+        let runtime = FloeAgentRuntime(configuration: config, adapter: adapter,
+            policy: HumanApprovalPolicy(), executor: executor,
+            checkpointStore: MockCheckpointStore(), sink: sink)
+
+        try await runtime.start(goal: "preserve the active semantic phase after accounting")
+
+        #expect(await runtime.liveness().phase == .completed)
+        #expect(await runtime.providerAttempt()?.attempt == 1)
+        #expect(adapter.callCount == 1)
+        #expect(executor.executedCalls.isEmpty)
+        let texts = sink.events.compactMap { event -> String? in
+            guard case .textDelta(let delta) = event else { return nil }
+            return delta.text
+        }
+        let usageReports = sink.events.compactMap { event -> AgentEvent.UsageReport? in
+            guard case .usage(let usage) = event else { return nil }
+            return usage
+        }
+        #expect(texts == ["answer after legitimate gap"])
+        #expect(usageReports.map(\.outputTokens) == [1])
+    }
+
     @Test("a missing first event triggers the watchdog and reconnects")
     func missingFirstEventReconnects() async throws {
         let adapter = NeverEndingFirstAttemptAdapter()
@@ -329,5 +368,42 @@ private struct ArgumentProgressAdapter: ProviderAdapter {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+}
+
+/// A usage event follows real reasoning or argument progress, then a gap that
+/// exceeds the ordinary text budget but stays inside the configured phase budget.
+private final class UsageDuringSemanticPhaseAdapter: ProviderAdapter, @unchecked Sendable {
+    let protocolKind: ModelProtocol = .openAIChatCompletions
+    private let calls = AsyncLock(0)
+    private let toolArguments: Bool
+
+    init(toolArguments: Bool) { self.toolArguments = toolArguments }
+    var callCount: Int { calls.withLock { $0 } }
+
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+        _ = calls.withLock { value -> Int in value += 1; return value }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    if toolArguments {
+                        await request.onToolArgumentsProgress?()
+                    } else {
+                        continuation.yield(.reasoningSummary(.init(text: "still reasoning")))
+                    }
+                    continuation.yield(.usage(.init(inputTokens: 1, outputTokens: 1)))
+                    try await Task.sleep(for: .milliseconds(200))
+                    try Task.checkCancellation()
+                    continuation.yield(.textDelta(.init(text: "answer after legitimate gap")))
+                    continuation.yield(.completed(.init(stopReason: .endTurn)))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }

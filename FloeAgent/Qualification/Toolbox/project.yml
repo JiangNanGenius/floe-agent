@@ -28,12 +28,15 @@ targets:
     sources:
       - App
       - ../../FloeApp/Platform/LocationServicesCenter.swift
+      - ../../FloeApp/Space/Toolbox/IPInformationAppOwner.swift
     dependencies:
       - target: FloeLocationCoreContract
       - package: FloeToolbox
         product: FloeToolboxUI
       - package: FloeToolbox
         product: FloeToolboxWorkbenches
+      - package: FloeToolbox
+        product: FloeToolboxIPInformation
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.toolbox.qualification
@@ -68,10 +71,17 @@ targets:
       - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/EnvironmentalSignalTests.swift
       - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/OpticsRecognitionTests.swift
       - ../../Modules/FloeToolbox/Tests/FloeToolboxUtilitiesTests/ToolboxTimekeepingTests.swift
+      - ../../Modules/FloeToolbox/Tests/FloeToolboxIPInformationTests/IPInformationServiceTests.swift
+      - ../../Tests/FloeAppTests/TracerouteWorkbenchTests.swift
+      - path: ../../Modules/FloeToolbox/Tests/FloeToolboxIPInformationTests/Fixtures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: FloeToolboxQualification
       - package: FloeToolbox
         product: FloeToolboxUtilities
+      - package: FloeToolbox
+        product: FloeToolboxIPInformation
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.toolbox.qualification.tests

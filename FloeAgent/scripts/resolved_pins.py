@@ -324,7 +324,7 @@ RETIRED_HOST_GRAPH_PINS = {
 LOCAL_LOCK_RETIRED_REFERENCES = {
     "FloeMediaExchange": {
         "path": "Modules/FloeMediaExchange",
-        "manifestSHA256": "0e43ba97ba67412e05afa22191a6ed6beb7c0c8ce63f3d7baed90ca69ea652c8",
+        "manifestSHA256": "303aa0fc036cd0db59c04585767fe28ee93d6c3d1e2d4f441e34a047439673af",
         "identities": frozenset({"citadel", "libgit2", "swift-crypto", "swiftgitx"}),
     },
 }

@@ -52,6 +52,30 @@ public struct IPInformationRecord: Sendable, Equatable {
     public let networkPrefixLength: Int?
     public let source: String
     public let datasetVersion: String
+    /// Approximate IP-database location, never the device/router's GPS position.
+    public let latitude: Double?
+    public let longitude: Double?
+    /// Optional radius supplied by the dataset, in kilometers. No default.
+    public let accuracyRadiusKilometers: Double?
+
+    public init(address: String, countryCode: String?, country: String?, region: String?, city: String?,
+                autonomousSystemNumber: UInt32?, organization: String?, networkPrefixLength: Int?,
+                source: String, datasetVersion: String, latitude: Double? = nil, longitude: Double? = nil,
+                accuracyRadiusKilometers: Double? = nil) {
+        self.address = address; self.countryCode = countryCode; self.country = country
+        self.region = region; self.city = city; self.autonomousSystemNumber = autonomousSystemNumber
+        self.organization = organization; self.networkPrefixLength = networkPrefixLength
+        self.source = source; self.datasetVersion = datasetVersion
+        if let latitude, let longitude, latitude.isFinite, longitude.isFinite,
+           (-90...90).contains(latitude), (-180...180).contains(longitude) {
+            self.latitude = latitude; self.longitude = longitude
+            self.accuracyRadiusKilometers = accuracyRadiusKilometers.flatMap {
+                $0.isFinite && $0 >= 0 ? $0 : nil
+            }
+        } else {
+            self.latitude = nil; self.longitude = nil; self.accuracyRadiusKilometers = nil
+        }
+    }
     public var regionSummary: String? {
         var seen = Set<String>()
         let values = [country, region, city].compactMap { $0 }.filter { !$0.isEmpty && seen.insert($0).inserted }
@@ -60,7 +84,8 @@ public struct IPInformationRecord: Sendable, Equatable {
     func addressed(_ address: String) -> Self {
         Self(address: address, countryCode: countryCode, country: country, region: region, city: city,
              autonomousSystemNumber: autonomousSystemNumber, organization: organization,
-             networkPrefixLength: networkPrefixLength, source: source, datasetVersion: datasetVersion)
+             networkPrefixLength: networkPrefixLength, source: source, datasetVersion: datasetVersion,
+             latitude: latitude, longitude: longitude, accuracyRadiusKilometers: accuracyRadiusKilometers)
     }
 }
 

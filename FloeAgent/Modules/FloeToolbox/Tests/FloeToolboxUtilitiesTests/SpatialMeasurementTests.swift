@@ -22,6 +22,39 @@ private func p(_ x: Double, _ y: Double, _ z: Double) -> SIMD3<Double> { SIMD3<D
     #expect(abs(SpatialMeasurementMath.polylineLength(stepped) - (0.3 + 0.41231056256176694)) < 1e-9)
 }
 
+@Test func spatialEditingEmptyPathsAndClosingPerimeterRemainComplete() {
+    #expect(SpatialMeasurementMath.segmentLengths([]).isEmpty)
+    #expect(SpatialMeasurementMath.segmentLengths([p(0, 0, 0)]).isEmpty)
+    let square = [p(0, 0, 0), p(1, 0, 0), p(1, 1, 0), p(0, 1, 0)]
+    #expect(SpatialMeasurementMath.segmentLengths(square) == [1, 1, 1])
+    #expect(SpatialMeasurementMath.segmentLengths(square, closed: true) == [1, 1, 1, 1])
+    #expect(SpatialMeasurementMath.segmentLengths([p(0, 0, 0), p(3, 4, 0)], closed: true) == [5])
+}
+
+@Test func spatialSurfaceCompatibilityUsesGeometryRatherThanAnchorIdentity() {
+    let floor = p(0, 1, 0)
+    #expect(SpatialMeasurementMath.isSameSurface(referencePoint: .zero, referenceNormal: floor,
+                                               point: p(2, 0.01, 3), normal: -floor))
+    #expect(!SpatialMeasurementMath.isSameSurface(referencePoint: .zero, referenceNormal: floor,
+                                                point: p(2, 0.1, 3), normal: floor))
+    #expect(!SpatialMeasurementMath.isSameSurface(referencePoint: .zero, referenceNormal: floor,
+                                                point: p(2, 0, 3), normal: p(1, 0, 0)))
+    #expect(!SpatialMeasurementMath.isSameSurface(referencePoint: .zero, referenceNormal: .zero,
+                                                point: p(2, 0, 3), normal: floor))
+    #expect(!SpatialMeasurementMath.isSameSurface(referencePoint: .zero, referenceNormal: floor,
+                                                point: p(.nan, 0, 3), normal: floor))
+}
+
+@Test func spatialGeometryRejectsNonfiniteCoordinates() {
+    let invalid = [p(0, 0, 0), p(1, 0, 0), p(1, .nan, 0)]
+    #expect(SpatialMeasurementMath.planeBasis(for: invalid) == nil)
+    #expect(throws: SpatialMeasurementMathError.invalidCoordinate) { try SpatialMeasurementMath.polygonArea(invalid) }
+    #expect(throws: SpatialMeasurementMathError.invalidCoordinate) {
+        try SpatialMeasurementMath.polygonArea([p(0, 0, 0), p(1, 0, 0), p(0, 1, 0)], coplanarTolerance: .infinity)
+    }
+    #expect(SpatialMeasurementMath.triangulate([SIMD2(0, 0), SIMD2(1, 0), SIMD2(.infinity, 1)]) == nil)
+}
+
 @Test func spatialPolygonAreaComputesSquareRectangleTriangleAndConcaveL() throws {
     let square = [p(0, 0, 0), p(1, 0, 0), p(1, 1, 0), p(0, 1, 0)]
     #expect(try SpatialMeasurementMath.polygonArea(square) == 1)

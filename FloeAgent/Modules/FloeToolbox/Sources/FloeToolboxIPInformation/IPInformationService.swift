@@ -59,11 +59,15 @@ public actor IPInformationService {
         for observer in observers.values { observer.yield(lastState) }
     }
     public nonisolated func tracerouteProvider() -> TracerouteIPInformationProvider {
-        TracerouteIPInformationProvider(currentVersion: { await self.currentVersion() }, lookup: { address, version in
+        TracerouteIPInformationProvider(currentVersion: { await self.currentVersion() },
+            isPublicInternetAddress: { try IPAddressClassification.classify($0) == .publicInternet },
+            lookup: { address, version in
             guard let value = try await self.lookup(address, expectedVersion: version) else { return nil }
             return TracerouteIPInformation(address: address, region: value.regionSummary,
                 autonomousSystemNumber: value.autonomousSystemNumber, organization: value.organization,
-                source: value.source, datasetVersion: value.datasetVersion)
+                source: value.source, datasetVersion: value.datasetVersion,
+                latitude: value.latitude, longitude: value.longitude,
+                accuracyRadiusKilometers: value.accuracyRadiusKilometers)
         })
     }
     public func lookup(_ address: String, expectedVersion: String? = nil) async throws -> IPInformationRecord? {

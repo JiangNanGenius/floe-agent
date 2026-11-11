@@ -72,6 +72,16 @@ public actor NotesStore {
                     body BLOB NOT NULL);
                 """)
         }
+        migrator.registerMigration("notes.v6.assistant-history") { db in
+            guard try Int.fetchOne(db, sql: "SELECT count(*) FROM (SELECT conversation_id FROM assistant_threads GROUP BY conversation_id HAVING count(*)>1)") == 0 else {
+                throw NoteError.conflict
+            }
+            try db.execute(sql: """
+                CREATE TABLE assistant_history(document_id TEXT NOT NULL, conversation_id TEXT PRIMARY KEY NOT NULL);
+                CREATE TABLE assistant_cleanup(document_id TEXT NOT NULL, conversation_id TEXT PRIMARY KEY NOT NULL);
+                INSERT OR IGNORE INTO assistant_history SELECT document_id,conversation_id FROM assistant_threads;
+                """)
+        }
         try migrator.migrate(database)
     }
 
@@ -579,6 +589,9 @@ public actor NotesStore {
             for resource in candidates {
                 try db.execute(sql: "INSERT OR IGNORE INTO resource_collection VALUES(?)", arguments: [resource.uuidString])
             }
+            try db.execute(sql: "INSERT OR IGNORE INTO assistant_cleanup SELECT document_id,conversation_id FROM assistant_history WHERE document_id=?", arguments: [id.uuidString])
+            try db.execute(sql: "INSERT OR IGNORE INTO assistant_cleanup SELECT document_id,conversation_id FROM assistant_threads WHERE document_id=?", arguments: [id.uuidString])
+            try db.execute(sql: "DELETE FROM assistant_history WHERE document_id=?", arguments: [id.uuidString])
             for table in ["assistant_scopes", "assistant_threads", "edit_receipts", "note_search"] {
                 try db.execute(sql: "DELETE FROM \(table) WHERE document_id=?", arguments: [id.uuidString])
             }
@@ -777,9 +790,31 @@ public actor NotesStore {
     /// Explicit knowledge grants in ordinary chats are deliberately not included.
     public func assistantConversationIDs() throws -> [UUID] {
         try database.read { db in
-            try String.fetchAll(db, sql: "SELECT DISTINCT conversation_id FROM assistant_threads")
+            try String.fetchAll(db, sql: "SELECT conversation_id FROM assistant_history UNION SELECT conversation_id FROM assistant_threads UNION SELECT conversation_id FROM assistant_cleanup")
                 .compactMap(UUID.init(uuidString:))
         }
+    }
+
+    /// Native document ownership only; explicit knowledge grants are excluded.
+    public func assistantHistory(documentID: UUID) throws -> [UUID] {
+        try database.read { db in
+            try String.fetchAll(db, sql: "SELECT conversation_id FROM assistant_history WHERE document_id=? UNION SELECT conversation_id FROM assistant_threads WHERE document_id=?",
+                arguments: [documentID.uuidString, documentID.uuidString]).compactMap(UUID.init(uuidString:))
+        }
+    }
+    public func assistantOriginalIsAvailable(conversationID: UUID) throws -> Bool? {
+        try database.read { db in
+            guard let documentID = try String.fetchOne(db, sql: "SELECT document_id FROM assistant_history WHERE conversation_id=? UNION SELECT document_id FROM assistant_threads WHERE conversation_id=?",
+                arguments: [conversationID.uuidString, conversationID.uuidString]) else { return nil }
+            return try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM documents WHERE id=? AND deleted IS NULL)", arguments: [documentID]) ?? false
+        }
+    }
+
+    public func pendingAssistantCleanup() throws -> [UUID] {
+        try database.read { try String.fetchAll($0, sql: "SELECT conversation_id FROM assistant_cleanup").compactMap(UUID.init(uuidString:)) }
+    }
+    public func acknowledgeAssistantCleanup(_ id: UUID) throws {
+        try database.write { try $0.execute(sql: "DELETE FROM assistant_cleanup WHERE conversation_id=?", arguments: [id.uuidString]) }
     }
 
     public func assistantConversation(documentID: UUID) throws -> UUID? {
@@ -793,13 +828,30 @@ public actor NotesStore {
         try database.write { db in
             let value = try read(documentID, db: db)
             guard value.deletedAt == nil else { throw NoteError.notFound }
+            if let owner = try String.fetchOne(db, sql: "SELECT document_id FROM assistant_history WHERE conversation_id=?", arguments: [conversationID.uuidString]),
+               owner != documentID.uuidString { throw NoteError.conflict }
             // Rebinding is atomic with revoking the previous owner's document scope.
             // Messages and run history live independently and are retained.
             if let previous = try String.fetchOne(db, sql: "SELECT conversation_id FROM assistant_threads WHERE document_id=?", arguments: [documentID.uuidString]), previous != conversationID.uuidString {
                 try db.execute(sql: "DELETE FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [previous, documentID.uuidString])
             }
+            try db.execute(sql: "INSERT OR IGNORE INTO assistant_history VALUES(?,?)", arguments: [documentID.uuidString, conversationID.uuidString])
             try db.execute(sql: "INSERT OR REPLACE INTO assistant_threads VALUES(?,?)", arguments: [documentID.uuidString, conversationID.uuidString])
             try db.execute(sql: "INSERT OR REPLACE INTO assistant_scopes VALUES(?,?,?)", arguments: [conversationID.uuidString, documentID.uuidString, canEdit])
+        }
+    }
+
+    public func replaceAssistant(conversationID: UUID, documentID: UUID, expectedPrevious: UUID) throws {
+        try database.write { db in
+            guard try read(documentID, db: db).deletedAt == nil else { throw NoteError.notFound }
+            let previous = try String.fetchOne(db, sql: "SELECT conversation_id FROM assistant_threads WHERE document_id=?", arguments: [documentID.uuidString])
+            guard previous == expectedPrevious.uuidString else { throw NoteError.conflict }
+            if let owner = try String.fetchOne(db, sql: "SELECT document_id FROM assistant_history WHERE conversation_id=?", arguments: [conversationID.uuidString]),
+               owner != documentID.uuidString { throw NoteError.conflict }
+            try db.execute(sql: "INSERT OR IGNORE INTO assistant_history VALUES(?,?)", arguments: [documentID.uuidString, conversationID.uuidString])
+            try db.execute(sql: "DELETE FROM assistant_scopes WHERE conversation_id=? AND document_id=?", arguments: [expectedPrevious.uuidString, documentID.uuidString])
+            try db.execute(sql: "UPDATE assistant_threads SET conversation_id=? WHERE document_id=?", arguments: [conversationID.uuidString, documentID.uuidString])
+            try db.execute(sql: "INSERT OR REPLACE INTO assistant_scopes VALUES(?,?,1)", arguments: [conversationID.uuidString, documentID.uuidString])
         }
     }
 

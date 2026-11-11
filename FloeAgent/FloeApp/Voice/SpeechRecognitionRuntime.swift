@@ -161,11 +161,19 @@ protocol SpeechRecognitionModelInstance: Sendable {
     /// and word timestamps. Never called concurrently with `transcribe` or
     /// another timed call; the runtime lease is the serialization boundary.
     func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [SpeechRecognitionTimedSegment]
+    /// The same timed decode, with genuine decoder text revisions in RAM.
+    /// A partial never supplies invented media timing or durable final rows.
+    func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding,
+                         onPartial: @escaping @Sendable (String) -> Void) async throws -> [SpeechRecognitionTimedSegment]
     /// Release the resident weights.
     func unmount() async
 }
 
 extension SpeechRecognitionModelInstance {
+    func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding,
+                         onPartial: @escaping @Sendable (String) -> Void) async throws -> [SpeechRecognitionTimedSegment] {
+        try await transcribeTimed(audio: audio, decoding: decoding)
+    }
     /// Voice-only models and test seams do not have to fabricate timing.
     func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [SpeechRecognitionTimedSegment] {
         throw SpeechRecognitionModelFailure.timedTranscriptionUnsupported

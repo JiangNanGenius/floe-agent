@@ -31,6 +31,9 @@ protocol ViewportCameraControl: AnyObject {
     func animateToStandardView(_ view: StandardView)
     /// Switch between perspective and orthographic projection.
     func setProjection(orthographic: Bool)
+    /// Reconcile permanent drafting and the active sketch's temporary plane
+    /// lock. The real viewport keeps the pre-sketch camera for restoration.
+    func setNavigationLock(draftingOnly: Bool, sketchPlane: SketchPlane?)
     /// Animate to frame a world-space AABB (Items Manager "Zoom to").
     func fitTo(bounds: (min: SIMD3<Float>, max: SIMD3<Float>))
     /// World units per screen point at the camera target depth — converts
@@ -50,6 +53,14 @@ protocol ViewportCameraControl: AnyObject {
     /// World-units-per-gizmo-unit at `origin` (constant on-screen gizmo size).
     /// The 2D move/rotate overlay uses it to project gizmo-local part anchors.
     func gizmoWorldScale(at origin: SIMD3<Float>) -> Float
+}
+
+extension ViewportCameraControl {
+    func setNavigationLock(draftingOnly: Bool, sketchPlane: SketchPlane?) {
+        guard draftingOnly || sketchPlane != nil else { return }
+        setProjection(orthographic: true)
+        if let sketchPlane { moveCameraHeadOn(to: sketchPlane) }
+    }
 }
 
 @MainActor
@@ -153,6 +164,7 @@ final class EditorViewModel {
             if !mode.isSketching || mode.sketchTool != nil { sketchTransformActive = false }
             // An Items plane selection lives only while idle.
             if mode != .idle { selectedPlaneID = nil }
+            if mode != oldValue { synchronizeNavigationLock() }
         }
     }
     /// Per-editor History selection; never stored in the document or Undo.
@@ -270,17 +282,35 @@ final class EditorViewModel {
     /// An explicitly opened drafting entrance can precede the Metal viewport
     /// binding. Consume its requested plane when the real camera attaches.
     var draftingPlaneOnViewportBind: SketchPlane?
-    /// Bound by the visible workbench, rather than inferred from whether a
-    /// 3D editor happens to be editing a sketch.
-    var planarNavigationOnly = false
+    /// The host's permanent 2D choice is separate from a 3D sketch's temporary
+    /// navigation lock. Leaving a sketch cannot unlock a drafting workbench.
+    private var draftingNavigationOnly = false
+    var planarNavigationOnly: Bool {
+        get { draftingNavigationOnly || mode.isSketching }
+        set {
+            guard draftingNavigationOnly != newValue else { return }
+            draftingNavigationOnly = newValue
+            synchronizeNavigationLock()
+        }
+    }
+    /// Transient viewport state shared across fullscreen camera handoffs.
+    /// Neither field changes the document, saved camera, or undo history.
+    @ObservationIgnored var cameraBeforeSketchNavigation: TurntableCamera?
+    @ObservationIgnored var lockedNavigationPlane: SketchPlane?
     weak var cameraControl: (any ViewportCameraControl)? {
         didSet {
+            synchronizeNavigationLock()
             guard let plane = draftingPlaneOnViewportBind, let cameraControl else { return }
             draftingPlaneOnViewportBind = nil
             orthographicEnabled = true
             cameraControl.setProjection(orthographic: true)
             cameraControl.moveCameraHeadOn(to: plane)
         }
+    }
+
+    private func synchronizeNavigationLock() {
+        cameraControl?.setNavigationLock(draftingOnly: draftingNavigationOnly,
+                                         sketchPlane: activeSketch?.plane)
     }
 
     func requestDraftingCamera(for plane: SketchPlane) {
@@ -8173,11 +8203,8 @@ final class EditorViewModel {
     /// Orthographic projection toggle state (mirrored to the camera).
     var orthographicEnabled = false
 
-    /// True while sketching with the camera off head-on; shows the Look at
-    /// Sketch button. Maintained by the viewport as the camera moves AND
-    /// recomputed on sketch entry — entering a sketch no longer moves the
-    /// camera, so waiting for motion would hide the affordance exactly when
-    /// an angled view makes it most useful.
+    /// True if the viewport is off the active sketch's plane. The navigation
+    /// lock normally keeps this false; the viewport maintains the affordance.
     var lookAtSketchAvailable = false
 
     /// Degrees off head-on past which Look at Sketch is offered. Shared with
@@ -8186,16 +8213,6 @@ final class EditorViewModel {
 
     func applyStandardView(_ view: StandardView) {
         guard !planarNavigationOnly else { lookAtSketch(); return }
-        // Shapr3D (observed 2026-09-13, seven trials): a named view that is
-        // not the active sketch's head-on view or its underside ends the
-        // sketch — Front, Right and the oblique home view all did; Top and
-        // Bottom on a ground sketch did not, and free rotation never does.
-        // Without this the sketch stayed open edge-on, where taps place
-        // nothing. Free orbit keeps the sketch and offers Look at Sketch.
-        if case .sketching = mode, let plane = activeSketch?.plane,
-           !view.isHeadOn(to: plane) {
-            finishSketch()
-        }
         cameraControl?.animateToStandardView(view)
     }
 
@@ -15054,14 +15071,6 @@ final class EditorViewModel {
         session.preview { $0.sketches.append(sketch) }
         provisionalSketch = (sketch.id, session.undoStack.undoCommands.count)
         mode = .sketching(sketch.id, tool: tool)
-        // Direct reference verification (2026-09-07): choosing a sketch plane
-        // enters its normal drawing view. Do not require a second Look at
-        // Sketch action before the user can place geometry predictably.
-        // Subsequent user orbiting remains available inside sketch mode.
-        if let control = cameraControl {
-            control.moveCameraHeadOn(to: sketch.plane)
-            lookAtSketchAvailable = false
-        }
     }
 
     /// Degrees off head-on past which a sketch plane is too edge-on to draw on.
@@ -19532,10 +19541,9 @@ final class EditorViewModel {
         cancelTool()
         selectedImageID = nil
         selection.removeAll()
-        // Re-opening an existing sketch starts with no tool armed (Shapr3D):
-        // taps select, drags edit or orbit; arm a tool from the palette to draw.
+        // Re-opening starts with no tool armed: taps select, unclaimed drags
+        // pan on the locked plane; arm a tool from the palette to draw.
         mode = .sketching(id, tool: nil)
-        cameraControl?.moveCameraHeadOn(to: sketch.plane)
         reportBrokenExternalReferences(in: sketch)
     }
 

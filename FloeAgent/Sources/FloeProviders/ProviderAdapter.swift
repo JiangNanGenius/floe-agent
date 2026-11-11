@@ -560,23 +560,29 @@ enum ProviderTransport {
 /// cancels URLSession work immediately, including before task installation.
 final class SSEPumpCancellation: @unchecked Sendable {
     private let lock = NSLock()
+    // Keep the handle after cancel so a response owner can still join it.
     private var task: Task<Void, Never>?
+    private var networkTask: URLSessionTask?
     private var cancelled = false
     func install(_ task: Task<Void, Never>) {
-        let cancelNow = lock.withLock {
-            if cancelled { return true }
-            self.task = task
-            return false
-        }
+        let cancelNow = lock.withLock { self.task = task; return cancelled }
+        if cancelNow { task.cancel() }
+    }
+    func installNetworkTask(_ task: URLSessionTask) {
+        let cancelNow = lock.withLock { networkTask = task; return cancelled }
         if cancelNow { task.cancel() }
     }
     func cancel() {
-        let running = lock.withLock {
-            cancelled = true
-            let running = task; task = nil
-            return running
-        }
-        running?.cancel()
+        let running = lock.withLock { cancelled = true; return (task, networkTask) }
+        running.1?.cancel()
+        running.0?.cancel()
+    }
+    /// events() installs its worker synchronously before returning the
+    /// stream. Awaiting it fences every actual HTTP-reader exit path.
+    func cancelAndWait() async {
+        cancel()
+        let running = lock.withLock { task }
+        await running?.value
     }
     deinit { cancel() }
 }
@@ -625,6 +631,7 @@ struct SSEBytePump: Sendable {
                     continuation.finish()
                     #else
                     let (bytes, response) = try await session.bytes(for: urlRequest)
+                    cancellation?.installNetworkTask(bytes.task)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                         var body = ""
                         for try await byte in bytes {
@@ -916,6 +923,14 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
+        stream(request: request, credentials: credentials,
+               session: ProviderTransport.session(ephemeral: request.ephemeralTransport))
+    }
+
+    /// Internal deterministic HTTP fixture seam. The public entrypoint keeps
+    /// the existing ordinary/temporary transport policy authoritative.
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials,
+                session: URLSession) -> AsyncThrowingStream<AgentEvent, Error> {
         let request = request.refreshingRuntimeClock()
         let requestID = UUID().uuidString
         return AsyncThrowingStream { continuation in
@@ -931,7 +946,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     logger.info("providerRequestShape protocol=chat requestID=\(requestID) \(prepared.diagnosticSummary)")
                     let pump = SSEBytePump(
                         urlRequest: urlRequest,
-                        session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
+                        session: session
                     )
                     let responseCancellation = SSEPumpCancellation()
                     defer { responseCancellation.cancel() }
@@ -946,61 +961,74 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     // distinct values are all kept, and an identical report in
                     // a separate request starts with a fresh set and counts.
                     var emittedUsageReports = Set<AgentEvent.UsageReport>()
-                    for try await sseEvent in pump.events(cancellation: responseCancellation) {
-                        if let errorEvent = httpErrorEvent(from: sseEvent) {
-                            if case .error(let error) = errorEvent {
-                                let status = error.httpStatus.map(String.init) ?? "none"
-                                logger.warning(
-                                    "providerRequestRejected protocol=chat requestID=\(requestID) stage=http provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) \(ChatRequestContract.rejectionFields(error.providerMessage)) \(prepared.diagnosticSummary)"
-                                )
-                            }
-                            continuation.yield(errorEvent)
-                            continue
-                        }
-                        guard sseEvent.data != "[DONE]" else { continue }
-                        do {
-                            let chunk = try decoder.decode(ChatChunk.self, from: Data(sseEvent.data.utf8))
-                            if chunk.choices.contains(where: { choice in
-                                (choice.delta.toolCalls ?? []).contains { !($0.function?.arguments ?? "").isEmpty }
-                            }) {
-                                await request.onToolArgumentsProgress?()
-                            }
-                            for event in boundary.consume(chunk) {
-                                if case .completed(let completion) = event {
-                                    // OpenAI Chat Completions commonly sends a
-                                    // separate usage-only chunk after the
-                                    // finish_reason chunk. Do not terminate the
-                                    // runtime until the SSE stream has drained.
-                                    deferredCompletion = completion
-                                } else if case .usage(let report) = event {
-                                    if emittedUsageReports.insert(report).inserted {
-                                        continuation.yield(.usage(report))
+                    do {
+                        try await withTaskCancellationHandler {
+                            chatEvents: for try await sseEvent in pump.events(cancellation: responseCancellation) {
+                                try Task.checkCancellation()
+                                if let errorEvent = httpErrorEvent(from: sseEvent) {
+                                    if case .error(let error) = errorEvent {
+                                        let status = error.httpStatus.map(String.init) ?? "none"
+                                        logger.warning(
+                                            "providerRequestRejected protocol=chat requestID=\(requestID) stage=http provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) \(ChatRequestContract.rejectionFields(error.providerMessage)) \(prepared.diagnosticSummary)"
+                                        )
                                     }
-                                } else {
-                                    continuation.yield(event)
+                                    continuation.yield(errorEvent)
+                                    continue
+                                }
+                                // The SSE terminator ends this response even when the
+                                // server/proxy leaves its HTTP body open. Prior usage
+                                // frames have already been consumed; later frames do not belong to it.
+                                guard sseEvent.data != "[DONE]" else { break chatEvents }
+                                do {
+                                    let chunk = try decoder.decode(ChatChunk.self, from: Data(sseEvent.data.utf8))
+                                    if chunk.choices.contains(where: { choice in
+                                        (choice.delta.toolCalls ?? []).contains { !($0.function?.arguments ?? "").isEmpty }
+                                    }) {
+                                        await request.onToolArgumentsProgress?()
+                                    }
+                                    for event in boundary.consume(chunk) {
+                                        if case .completed(let completion) = event {
+                                            // OpenAI Chat Completions commonly sends a
+                                            // separate usage-only chunk after the
+                                            // finish_reason chunk. Do not terminate the
+                                            // runtime until the SSE stream has drained.
+                                            deferredCompletion = completion
+                                        } else if case .usage(let report) = event {
+                                            if emittedUsageReports.insert(report).inserted {
+                                                continuation.yield(.usage(report))
+                                            }
+                                        } else {
+                                            continuation.yield(event)
+                                        }
+                                    }
+                                    // Reject before publishing machine text, then cancel this
+                                    // HTTP response. Runtime grants at most one native-call
+                                    // correction; do not drain an invalid token stream.
+                                    if boundary.isRejected { break }
+                                } catch {
+                                    logger.error("Chat chunk decode failed: \(error.localizedDescription)")
+                                    if let rejection = boundary.droppedChunk() {
+                                        // A dropped chunk while tool arguments were
+                                        // streaming would otherwise concatenate
+                                        // incomplete JSON and surface later as an
+                                        // unexplainable invalid call. Fail closed:
+                                        // discard the partial aggregation and let the
+                                        // runtime offer one bounded correction. The
+                                        // malformed payload is never emitted.
+                                        continuation.yield(rejection)
+                                        break
+                                    }
                                 }
                             }
-                            // Reject before publishing machine text, then cancel this
-                            // HTTP response. Runtime grants at most one native-call
-                            // correction; do not drain an invalid token stream.
-                            if boundary.isRejected { break }
-                        } catch {
-                            logger.error("Chat chunk decode failed: \(error.localizedDescription)")
-                            if let rejection = boundary.droppedChunk() {
-                                // A dropped chunk while tool arguments were
-                                // streaming would otherwise concatenate
-                                // incomplete JSON and surface later as an
-                                // unexplainable invalid call. Fail closed:
-                                // discard the partial aggregation and let the
-                                // runtime offer one bounded correction. The
-                                // malformed payload is never emitted.
-                                continuation.yield(rejection)
-                                break
-                            }
-                        }
+                        } onCancel: { responseCancellation.cancel() }
+                    } catch {
+                        await responseCancellation.cancelAndWait()
+                        throw error
                     }
+                    await responseCancellation.cancelAndWait()
+                    try Task.checkCancellation()
                     for event in boundary.finish() { continuation.yield(event) }
-                    if let deferredCompletion {
+                    if !boundary.isRejected, let deferredCompletion {
                         continuation.yield(.completed(deferredCompletion))
                     }
                     continuation.finish()

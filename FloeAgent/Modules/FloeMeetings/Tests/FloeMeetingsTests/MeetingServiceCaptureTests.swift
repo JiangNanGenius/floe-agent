@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 import XCTest
+#if canImport(AVFoundation)
+import AVFoundation
+import FloeMeetingsAV
+#endif
 @testable import FloeMeetings
 
 final class MeetingServiceCaptureTests: XCTestCase {
@@ -97,3 +101,34 @@ final class MeetingServiceCaptureTests: XCTestCase {
         }
     }
 }
+
+#if canImport(AVFoundation)
+extension MeetingServiceCaptureTests {
+    func testPauseBoundaryFinalizesEarlyWithoutLosingOriginalOrTail() async throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("pause-chunks-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let writer = try MeetingPCMChunkRecorder(configuration: .init(directory: directory), session: CaptureSessionID(), chunkSeconds: 3)
+        let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 5120))
+        buffer.frameLength = 5120
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
+        for index in 0..<5120 { samples[index] = 0.125 }
+        let frame = try MeetingPCMFrame(copying: buffer)
+        XCTAssertEqual(frame.rms, 0.125, accuracy: 0.00001)
+        var chunks: [MeetingPCMChunk] = []
+        for index in 0..<5 {
+            if let chunk = try await writer.append(frame, endOfUtterance: index == 3) { chunks.append(chunk) }
+        }
+        if let tail = try await writer.finish() { chunks.append(tail) }
+        XCTAssertEqual(chunks.count, 2)
+        XCTAssertEqual(chunks[0].range.start, 0, accuracy: 0.0001)
+        XCTAssertEqual(chunks[0].range.end, 1.28, accuracy: 0.0001)
+        XCTAssertEqual(chunks[1].range.start, 1.28, accuracy: 0.0001)
+        XCTAssertEqual(chunks[1].range.end, 1.6, accuracy: 0.0001)
+        let originalURL = await writer.originalURL
+        let original = try AVAudioFile(forReading: originalURL)
+        XCTAssertEqual(original.length, 25_600, "every source sample, including the pause and stop tail, stays in the lossless original")
+        XCTAssertEqual(original.processingFormat.sampleRate, 16_000)
+    }
+}
+#endif

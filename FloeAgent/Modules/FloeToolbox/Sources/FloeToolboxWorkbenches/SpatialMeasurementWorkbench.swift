@@ -25,21 +25,25 @@ public struct ToolboxSpatialMeasurementView: View {
     public var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 760 && !typeSize.isAccessibilitySize
-            Group {
-                if wide {
-                    HStack(alignment: .top, spacing: 0) {
-                        VStack(spacing: 0) { topBar; cameraArea; controlBar }
-                        Divider()
-                        ScrollView { readoutPanel.padding(20) }.frame(width: 320)
-                    }
-                } else {
-                    VStack(spacing: 0) { topBar; cameraArea; readoutPanelCompact; controlBar }
+            let layout = wide
+                ? AnyLayout(HStackLayout(alignment: .top, spacing: 0))
+                : AnyLayout(VStackLayout(spacing: 0))
+            // Keep the camera subtree's identity when rotating or resizing;
+            // replacing its ARView would also replace its world coordinate frame.
+            layout {
+                VStack(spacing: 0) { topBar; cameraArea; controlBar }
+                if wide { Divider() }
+                ScrollView {
+                    readoutPanel.padding(wide ? 20 : 16)
                 }
+                .frame(width: wide ? 320 : nil)
+                .frame(maxHeight: wide ? .infinity : min(180, geometry.size.height * 0.25))
+                .background(.background.secondary)
             }
         }
         .background(.background)
         .navigationTitle(t("AR 测量", "AR Measure"))
-        .onAppear { session.unit = unit }
+        .onAppear { session.unit = unit; session.sceneBecameActive() }
         .onChange(of: unit) { _, value in session.unit = value }
         .onChange(of: scenePhase) { _, phase in
             if phase == .inactive || phase == .background {
@@ -61,7 +65,8 @@ public struct ToolboxSpatialMeasurementView: View {
                 snapshotControls
                 Button(role: .destructive) { session.stop() } label: {
                     Text(t("停止", "Stop")).frame(minHeight: 44)
-                }.disabled(session.phase != .running && session.phase != .paused)
+                }.disabled(session.phase != .running && session.phase != .paused && !session.isStarting)
+                    .accessibilityIdentifier("toolbox.measure.stop")
             }
             VStack(alignment: .leading, spacing: 4) {
                 Label(statusText, systemImage: statusSymbol).font(.subheadline)
@@ -70,7 +75,8 @@ public struct ToolboxSpatialMeasurementView: View {
                     Spacer(minLength: 4)
                     Button(role: .destructive) { session.stop() } label: {
                         Text(t("停止", "Stop")).frame(minHeight: 44)
-                    }.disabled(session.phase != .running && session.phase != .paused)
+                    }.disabled(session.phase != .running && session.phase != .paused && !session.isStarting)
+                        .accessibilityIdentifier("toolbox.measure.stop")
                 }
             }
         }
@@ -81,11 +87,11 @@ public struct ToolboxSpatialMeasurementView: View {
 
     @ViewBuilder private var snapshotControls: some View {
         Button {
-            Task { await session.captureSnapshot() }
+            Task { await session.captureSnapshot(summary: accessibilitySummary + "\n" + t("近似测量", "Approximate measurement")) }
         } label: {
             Image(systemName: "camera").frame(width: 44, height: 44)
         }
-        .disabled(session.phase != .running && session.phase != .paused)
+        .disabled((session.phase != .running && session.phase != .paused) || session.samples.count < 2)
         .accessibilityLabel(t("拍摄测量快照", "Capture measurement snapshot"))
         if let image = session.snapshotImage {
             ShareLink(item: Image(uiImage: image),
@@ -141,13 +147,15 @@ public struct ToolboxSpatialMeasurementView: View {
         Button { session.undo() } label: {
             Image(systemName: "arrow.uturn.backward").frame(width: 44, height: 44)
         }
-        .disabled(session.samples.isEmpty || session.polygonClosed)
-        .accessibilityLabel(t("撤销上一点", "Undo last point"))
+        .disabled(session.samples.isEmpty)
+        .accessibilityLabel(session.polygonClosed ? t("重新打开图形", "Reopen shape") : t("撤销上一点", "Undo last point"))
+        .accessibilityIdentifier("toolbox.measure.undo")
         Button { session.clear() } label: {
             Image(systemName: "trash").frame(width: 44, height: 44)
         }
         .disabled(session.samples.isEmpty)
         .accessibilityLabel(t("清除全部点", "Clear all points"))
+        .accessibilityIdentifier("toolbox.measure.clear")
         if session.mode == .area {
             Button { session.closePolygon() } label: {
                 Image(systemName: session.polygonClosed ? "checkmark.circle.fill" : "checkmark.circle")
@@ -155,6 +163,7 @@ public struct ToolboxSpatialMeasurementView: View {
             }
             .disabled(!session.readout.canClose)
             .accessibilityLabel(t("闭合图形", "Close shape"))
+            .accessibilityIdentifier("toolbox.measure.close")
         }
     }
 
@@ -164,7 +173,7 @@ public struct ToolboxSpatialMeasurementView: View {
                 .frame(minHeight: 44)
         }
         .buttonStyle(.borderedProminent)
-        .disabled(session.phase != .running || session.polygonClosed)
+        .disabled(!session.canPlacePoint)
         .accessibilityIdentifier("toolbox.measure.add")
     }
 
@@ -179,24 +188,27 @@ public struct ToolboxSpatialMeasurementView: View {
                     .accessibilityHidden(true)
                 reticle
                 labelsOverlay
-                if session.phase == .running, !session.hasDetectedPlane {
+                if session.phase == .running {
                     planeHint
                 }
                 if session.phase == .paused {
                     pausedOverlay
                 }
             }
-            .accessibilityElement(children: .ignore)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel(cameraSummary)
         case .idle:
             placeholder(symbol: "ruler",
                         title: t("AR 测量", "AR Measure"),
-                        description: t("将中央准星对准平面，逐点添加以测量长度或面积。结果约为近似值。", "Aim the reticle at a surface, add points and measure length or area. Results are approximate.")) {
+                        description: t("对准表面后添加点，也可轻点画面选点。面积需沿同一平面逐个选择边角，再闭合图形。结果为近似值。", "Aim at a surface and add points, or tap the camera image. For area, select corners in order on one plane, then close the shape. Results are approximate.")) {
+                if session.isStarting { ProgressView(t("正在准备相机", "Preparing camera")) }
                 Button { session.requestStart() } label: {
                     Label(t("开始测量", "Start measuring"), systemImage: "play.fill")
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(session.isStarting)
                 .accessibilityIdentifier("toolbox.measure.start")
             }
         case .denied:
@@ -207,11 +219,19 @@ public struct ToolboxSpatialMeasurementView: View {
                     Text(t("打开设置", "Open Settings")).frame(minHeight: 44)
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("toolbox.measure.settings")
             }
         case .unavailable:
             placeholder(symbol: "ruler",
                         title: t("此设备不支持", "Not supported on this device"),
-                        description: t("AR 世界追踪需要较新的 iPhone 或 iPad，模拟器不支持。", "World tracking requires a newer iPhone or iPad and is not available in Simulator."))
+                        description: t("此设备无法使用 AR 世界追踪。需要支持 ARKit 的 iPhone 或 iPad。", "AR world tracking is unavailable here. Use an ARKit-capable iPhone or iPad."))
+        case .cameraBusy:
+            placeholder(symbol: "camera",
+                        title: t("相机正在使用中", "Camera in use"),
+                        description: t("请先关闭其他相机工具或窗口，再重试。", "Close the other camera tool or window, then try again.")) {
+                Button(t("重试", "Try Again")) { session.requestStart() }.frame(minHeight: 44)
+                    .accessibilityIdentifier("toolbox.measure.retry")
+            }
         case .failed(let message):
             placeholder(symbol: "exclamationmark.triangle",
                         title: t("无法启动测量", "Unable to start"),
@@ -220,6 +240,7 @@ public struct ToolboxSpatialMeasurementView: View {
                     Text(t("重试", "Try Again")).frame(minHeight: 44)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("toolbox.measure.retry")
             }
         }
     }
@@ -240,27 +261,37 @@ public struct ToolboxSpatialMeasurementView: View {
 
     private var reticle: some View {
         ZStack {
-            Circle().stroke(.white, lineWidth: 1.5).frame(width: 26, height: 26)
-            Circle().fill(.white).frame(width: 3, height: 3)
+            Circle().stroke(reticleColor, lineWidth: 2).frame(width: 26, height: 26)
+            Circle().fill(reticleColor).frame(width: 3, height: 3)
         }
         .shadow(color: .black.opacity(0.45), radius: 1)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
+    private var reticleColor: Color {
+        switch session.target {
+        case .ready(let estimated): estimated ? .yellow : .green
+        case .blocked: .orange
+        case .unavailable, .searching: .white
+        }
+    }
+
     private var planeHint: some View {
         VStack {
             Spacer()
-            Text(t("缓慢移动设备，以识别平面", "Slowly move the device to detect a surface"))
+            Text(targetHint)
                 .font(.subheadline)
                 .foregroundStyle(.white)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .background(Color.black.opacity(0.45), in: Capsule())
-                .padding(.bottom, 24)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+                .multilineTextAlignment(.center)
+                .background(Color.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 12)
+                .padding(.bottom, 16)
+                .accessibilityIdentifier("toolbox.measure.target")
         }
+        .allowsHitTesting(false)
     }
 
     private var labelsOverlay: some View {
@@ -283,9 +314,11 @@ public struct ToolboxSpatialMeasurementView: View {
             VStack(spacing: 12) {
                 Text(t("已暂停", "Paused")).font(.headline).foregroundStyle(.white)
                 Button { session.resume() } label: {
-                    Text(t("继续", "Resume")).frame(minWidth: 120, minHeight: 44)
+                    Text(session.isStarting ? t("正在恢复", "Resuming") : t("继续", "Resume")).frame(minWidth: 120, minHeight: 44)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(session.isStarting)
+                .accessibilityIdentifier("toolbox.measure.resume")
             }
         }
         .allowsHitTesting(true)
@@ -316,7 +349,7 @@ public struct ToolboxSpatialMeasurementView: View {
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                     if session.mode == .area {
-                        LabeledContent(t("周长", "Perimeter")) {
+                        LabeledContent(session.polygonClosed ? t("周长", "Perimeter") : t("已描长度", "Drawn length")) {
                             Text(unit.format(session.readout.totalLength)).monospacedDigit()
                         }
                     } else if !session.readout.segmentLengths.isEmpty {
@@ -352,27 +385,19 @@ public struct ToolboxSpatialMeasurementView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Compact strip used on narrow layouts: the same grouped values, kept
-    /// short so the camera keeps most of the screen.
-    private var readoutPanelCompact: some View {
-        ScrollView {
-            readoutPanel.padding(16)
-        }
-        .frame(maxHeight: 260)
-        .background(.background.secondary)
-    }
-
     private var primaryValue: String {
-        if session.mode == .area, let area = session.readout.area {
-            return unit.areaFormat(area)
+        if session.mode == .area {
+            return session.readout.area.map(unit.areaFormat) ?? "—"
         }
+        guard session.samples.count >= 2 else { return "—" }
         return unit.format(session.readout.totalLength)
     }
 
     private var primaryAccessibilityValue: String {
-        if session.mode == .area, let area = session.readout.area {
-            return unit.areaAccessibilityFormat(area)
+        if session.mode == .area {
+            return session.readout.area.map(unit.areaAccessibilityFormat) ?? t("面积未完成", "Area not completed")
         }
+        guard session.samples.count >= 2 else { return t("长度未完成", "Length not completed") }
         return unit.accessibilityFormat(session.readout.totalLength)
     }
 
@@ -388,17 +413,31 @@ public struct ToolboxSpatialMeasurementView: View {
     private var accessibilitySummary: String {
         let count = session.samples.count
         if session.mode == .area, session.readout.area != nil {
-            return t("已测量 \(count) 个点，面积 \(primaryAccessibilityValue)，周长 \(unit.accessibilityFormat(session.readout.totalLength))", "\(count) points measured, area \(primaryAccessibilityValue), perimeter \(unit.accessibilityFormat(session.readout.totalLength))")
+            if session.polygonClosed {
+                return t("已测量 \(count) 个点，面积 \(primaryAccessibilityValue)，周长 \(unit.accessibilityFormat(session.readout.totalLength))", "\(count) points measured, area \(primaryAccessibilityValue), perimeter \(unit.accessibilityFormat(session.readout.totalLength))")
+            }
+            return t("已放置 \(count) 个点，预览面积 \(primaryAccessibilityValue)，请闭合图形。", "\(count) points placed, preview area \(primaryAccessibilityValue). Close the shape to finish.")
         }
+        if session.mode == .area { return t("已放置 \(count) 个点，请在同一平面上选择至少三个边角。", "\(count) points placed. Select at least three corners on the same surface.") }
+        if count < 2 { return t("已放置 \(count) 个点，请添加下一点测量长度。", "\(count) points placed. Add another point to measure length.") }
         return t("已测量 \(count) 个点，总长度 \(primaryAccessibilityValue)", "\(count) points measured, total length \(primaryAccessibilityValue)")
     }
 
     // MARK: - Copy
 
     private var statusText: String {
+        switch session.phase {
+        case .idle: return session.isStarting ? t("正在准备相机", "Preparing camera") : t("尚未开始", "Not started")
+        case .paused: return t("已暂停", "Paused")
+        case .denied: return t("没有相机权限", "No camera access")
+        case .unavailable: return t("此设备不支持", "Not supported here")
+        case .cameraBusy: return t("相机正在使用中", "Camera in use")
+        case .failed: return t("会话已停止", "Session stopped")
+        case .running: break
+        }
         switch session.tracking {
         case .normal:
-            return session.hasDetectedPlane ? t("就绪", "Ready") : t("正在识别平面", "Detecting surface")
+            return session.canPlacePoint ? t("可以添加点", "Ready to add a point") : t("对准表面", "Aim at a surface")
         case .initializing:
             return t("正在初始化", "Initializing")
         case .limited(let reason):
@@ -410,6 +449,28 @@ public struct ToolboxSpatialMeasurementView: View {
             }
         case .notAvailable:
             return t("追踪不可用", "Tracking unavailable")
+        }
+    }
+
+    private var targetHint: String {
+        if session.polygonClosed { return t("图形已闭合，可撤销闭合或清除后重新测量。", "Shape closed. Reopen it with Undo, or clear to measure again.") }
+        switch session.tracking {
+        case .initializing: return t("缓慢移动设备，保持表面在画面中", "Move slowly and keep the surface in view")
+        case .notAvailable: return t("追踪暂时不可用，请保持相机无遮挡", "Tracking is unavailable. Keep the camera unobstructed")
+        case .limited(let reason):
+            if reason == "relocalizing" { return t("回到暂停前的位置；无法恢复时可停止后重新开始", "Return to the previous location, or stop and start again") }
+            return t("缓慢移动，对准光线充足、有纹理的表面", "Move slowly toward a well-lit, textured surface")
+        case .normal: break
+        }
+        switch session.target {
+        case .ready(let estimated):
+            if estimated { return t("已找到估计表面，可添加长度点；结果为近似值", "Estimated surface found. Add a length point; the result is approximate") }
+            return t("准星已对准平面，添加点或轻点画面选点", "Surface ready. Add a point or tap the camera image")
+        case .blocked(let issue): return issueText(issue)
+        case .searching, .unavailable:
+            return session.mode == .area
+                ? t("将准星对准已识别平面，按边角顺序选点", "Aim at a detected surface and select corners in order")
+                : t("缓慢移动设备，将准星对准表面", "Move slowly and aim the reticle at a surface")
         }
     }
 
@@ -443,7 +504,11 @@ public struct ToolboxSpatialMeasurementView: View {
         case .selfIntersecting:
             return t("图形自相交，请撤销后重新选点。", "The shape crosses itself. Undo and pick points again.")
         case .degenerate:
-            return t("图形退化，点之间距离过小。", "The shape is degenerate; points are too close together.")
+            return t("请移动到下一个边角，避免重复点或同一直线。", "Move to the next corner. Avoid duplicate or collinear points.")
+        case .invalidPoint:
+            return t("此位置不可靠，请重新对准表面。", "This position is unreliable. Aim at the surface again.")
+        case .pointLimit:
+            return t("已达到 64 个点，请完成或清除后重新测量。", "The 64-point limit is reached. Finish, or clear to measure again.")
         }
     }
 
@@ -454,17 +519,33 @@ public struct ToolboxSpatialMeasurementView: View {
     }
 }
 
-private struct SpatialMeasurementARContainer: UIViewRepresentable {
+@MainActor private struct SpatialMeasurementARContainer: UIViewRepresentable {
     let session: SpatialMeasurementSession
 
+    func makeCoordinator() -> Coordinator { Coordinator(session: session) }
+
     func makeUIView(context: Context) -> ARView {
-        let view = ARView(frame: .zero)
+        let view = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
+        view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
         session.attach(view)
         return view
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
         session.attach(uiView)
+    }
+
+    static func dismantleUIView(_ uiView: ARView, coordinator: Coordinator) {
+        coordinator.session.detach(uiView)
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        let session: SpatialMeasurementSession
+        init(session: SpatialMeasurementSession) { self.session = session }
+        @objc func tap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended, let view = recognizer.view else { return }
+            session.placePoint(at: recognizer.location(in: view))
+        }
     }
 }
 

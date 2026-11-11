@@ -35,6 +35,7 @@ struct PersonalContentEditor: View {
     @State private var chemistryNotesRequest: ChemistryNotesRequest?
     @State private var chemistryEpoch = UUID()
     @StateObject private var biologyNotesReturn = BiologyNotesReturn()
+    @StateObject private var recordingLeave = MeetingRecordingLeaveCoordinator()
     @StateObject private var assistantLeave = DocumentAssistantLeaveCoordinator()
     @StateObject private var sourceAssistantLeave = DocumentAssistantLeaveCoordinator()
     @State private var closing = false
@@ -133,14 +134,16 @@ struct PersonalContentEditor: View {
         }
         .interactiveDismissDisabled()
         .documentAssistantLeavePresentation(assistantLeave)
+        .meetingRecordingLeavePresentation(recordingLeave)
         .environment(\.documentAssistantLeaveIntent, DocumentAssistantLeaveIntent(authorize: {
             guard !closing else { return false }
             closing = true; defer { closing = false }
-            return await authorizeAssistantDeparture()
+            return await authorizeEditorDeparture()
         }))
         .onChange(of: isPresented) { _, presented in
             if !presented {
                 presentationGeneration = UUID()
+                recordingLeave.cancel()
                 biologyNotesReturn.cancel()
                 if case .biology(let session) = content { Task { await session.close() } }
                 if case .geography(let session) = content { Task { await session.presentationEnded() } }
@@ -166,6 +169,7 @@ struct PersonalContentEditor: View {
         } message: { Text(printPreparationError ?? "") }
         .onChange(of: record.id) { _, _ in
             presentationGeneration = UUID()
+            recordingLeave.cancel()
             editorOwnsTextInput = false
             biologyNotesReturn.cancel()
             showingAssistant = false
@@ -269,6 +273,9 @@ struct PersonalContentEditor: View {
                     case .biology(let session):
                         BiologyEditorSurface(session: session, onInsertIntoNotes: { [returns = biologyNotesReturn] payload in
                             try await returns.insert(payload, host: session.host)
+                        }, onAssistant: {
+                            guard case .biology(let current) = content, current.projectID == session.projectID else { return }
+                            showingAssistant = true
                         })
                     case .latex(let session):
                         LaTeXEditorSurface(session:session)
@@ -296,17 +303,23 @@ struct PersonalContentEditor: View {
                             }
                     case .cad(let document):
                         Group {
-                            if record.kind == .cad2D { FloeCAD2DWorkbenchView(document: document) }
-                            else { FloeCADWorkbenchView(document: document) }
+                            if record.kind == .cad2D {
+                                FloeCAD2DWorkbenchView(document: document)
+                            } else {
+                                // The work's editor kind owns these entries. A 3D
+                                // workbench remains 3D while editing a sketch.
+                                FloeCADWorkbenchView(document: document)
+                                    .modifier(CADLibrarySketchImportEntry(document: document))
+                                    .modifier(CADManufacturingEntry(document: document,
+                                        directory: document.url.deletingLastPathComponent().appendingPathComponent("Manufacturing", isDirectory: true),
+                                        ownerID: record.id,
+                                        onPreparePrint: { Task { await preparePrint() } },
+                                        onAssistant: { showingAssistant = true }))
+                                    .modifier(CADSimulationEntry(document: document,
+                                        directory: document.url.deletingLastPathComponent().appendingPathComponent("Simulation", isDirectory: true), ownerID: record.id))
+                            }
                         }
                         .environment(\.cadCanvasKeyboardAvoidanceEnabled, editorOwnsTextInput)
-                        .modifier(CADManufacturingEntry(document: document,
-                            directory: document.url.deletingLastPathComponent().appendingPathComponent("Manufacturing", isDirectory: true),
-                            ownerID: record.id,
-                            onPreparePrint: { Task { await preparePrint() } },
-                            onAssistant: { showingAssistant = true }))
-                        .modifier(CADSimulationEntry(document:document,
-                            directory:document.url.deletingLastPathComponent().appendingPathComponent("Simulation",isDirectory:true),ownerID:record.id))
                         .ignoresSafeArea(.keyboard, edges: canvasKeyboardEdges)
                         .editorLayoutObservation("cad")
                         .background {
@@ -341,7 +354,7 @@ struct PersonalContentEditor: View {
                         }.accessibilityIdentifier("space.editor.openInCAD")
                     }
                 }
-                if content != nil, record.kind != .biology {
+                if content != nil {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(record.kind == .meeting
                                ? IDELanguageRunText.t("会议助手", "Meeting assistant")
@@ -516,10 +529,19 @@ struct PersonalContentEditor: View {
                 })
         } catch { self.error = error.localizedDescription; return false }
     }
+    @MainActor private func authorizeEditorDeparture() async -> Bool {
+        let id = record.id, generation = presentationGeneration
+        if case .meeting(let session) = content {
+            guard await recordingLeave.authorize(session: session, isStillCurrent: {
+                record.id == id && presentationGeneration == generation && isPresented
+            }) else { return false }
+        }
+        return await authorizeAssistantDeparture()
+    }
     @MainActor private func finish() async {
         guard !closing else { return }
         closing = true; defer { closing = false }
-        guard await authorizeAssistantDeparture() else { return }
+        guard await authorizeEditorDeparture() else { return }
         switch content {
         case .diagram(let model): await model.close()
         case .manufacturing(let model):

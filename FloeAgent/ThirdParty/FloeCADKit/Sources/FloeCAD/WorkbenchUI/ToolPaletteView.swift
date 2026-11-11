@@ -81,6 +81,8 @@ private struct GroupFrameKey: PreferenceKey {
 
 struct ToolPaletteView: View {
     @Bindable var viewModel: EditorViewModel
+    var draftingOnly = false
+    var ensureDraftingSketch: (() -> Void)? = nil
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var paletteOnRight: Bool { CADPreferences.shared.paletteOnRight }
@@ -143,7 +145,7 @@ struct ToolPaletteView: View {
     // MARK: - Entries by context
 
     private var entries: [PaletteEntry] {
-        viewModel.mode.isSketching ? sketchEntries : bodyEntries
+        (draftingOnly || viewModel.mode.isSketching) ? sketchEntries : bodyEntries
     }
 
     private var bodyEntries: [PaletteEntry] {
@@ -399,6 +401,7 @@ struct ToolPaletteView: View {
         return ToolItem(id: label, label: FloeCADStrings.text(key, label), icon: icon, active: active,
                         accessibilityID: tool == .rect ? "Rect" : nil,
                         run: {
+                            if draftingOnly, !viewModel.mode.isSketching { ensureDraftingSketch?() }
                             if active {
                                 viewModel.deselectSketchTool()
                             } else {

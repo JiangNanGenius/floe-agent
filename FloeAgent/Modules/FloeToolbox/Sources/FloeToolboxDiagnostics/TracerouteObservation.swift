@@ -17,6 +17,11 @@ public struct TracerouteObservation: Sendable, Equatable {
 
 public typealias TracerouteObserver = @Sendable (TracerouteObservation) async -> Void
 
+public enum TracerouteIPInformationLookupResult: Sendable, Equatable {
+    case information(TracerouteIPInformation)
+    case databaseUnavailable, localOrSpecialUse, notFound, databaseChanged
+}
+
 /// Optional offline-information adapter. The database/updater remains owned
 /// by its service. A missing adapter or database never delays probe output.
 public struct TracerouteIPInformationProvider: Sendable {
@@ -60,27 +65,65 @@ public struct TracerouteIPInformationProvider: Sendable {
     }
     private static let admission = Admission()
     public let currentVersion: @Sendable () async -> String?
+    public let isPublicInternetAddress: @Sendable (String) throws -> Bool
+    public let prepareLookup: @Sendable () async throws -> Void
     public let lookup: @Sendable (_ numericAddress: String, _ version: String) async throws -> TracerouteIPInformation?
     public init(currentVersion: @escaping @Sendable () async -> String?,
                 lookup: @escaping @Sendable (String, String) async throws -> TracerouteIPInformation?) {
-        self.currentVersion = currentVersion; self.lookup = lookup
+        self.init(currentVersion: currentVersion, isPublicInternetAddress: { _ in true }, lookup: lookup)
+    }
+    /// The database module supplies its existing numeric-address classifier.
+    /// Legacy adapters retain their original initializer and lookup behavior.
+    public init(currentVersion: @escaping @Sendable () async -> String?,
+                isPublicInternetAddress: @escaping @Sendable (String) throws -> Bool,
+                lookup: @escaping @Sendable (String, String) async throws -> TracerouteIPInformation?) {
+        self.init(currentVersion: currentVersion, isPublicInternetAddress: isPublicInternetAddress,
+                  prepareLookup: {}, lookup: lookup)
+    }
+    public init(currentVersion: @escaping @Sendable () async -> String?,
+                isPublicInternetAddress: @escaping @Sendable (String) throws -> Bool,
+                prepareLookup: @escaping @Sendable () async throws -> Void,
+                lookup: @escaping @Sendable (String, String) async throws -> TracerouteIPInformation?) {
+        self.currentVersion = currentVersion; self.isPublicInternetAddress = isPublicInternetAddress
+        self.prepareLookup = prepareLookup; self.lookup = lookup
     }
     /// Admission remains held until the actual adapter returns, even if a
     /// cancelled view has discarded its callback. Rapid close/reopen cannot
     /// accumulate unlimited uncooperative lookup tasks.
     static var informationAdmissionState: (active: Int, waiting: Int) { admission.state }
+    public func databaseVersion() async throws -> String? {
+        try await Self.admission.acquire()
+        defer { Self.admission.release() }
+        return try await preparedVersion()
+    }
+    private func preparedVersion() async throws -> String? {
+        try Task.checkCancellation()
+        try await prepareLookup()
+        try Task.checkCancellation()
+        let version = await currentVersion()
+        try Task.checkCancellation()
+        return version
+    }
     public func information(for address: String) async throws -> TracerouteIPInformation? {
+        if case .information(let value) = try await lookupResult(for: address) { return value }
+        return nil
+    }
+    public func lookupResult(for address: String) async throws -> TracerouteIPInformationLookupResult {
+        try Task.checkCancellation()
+        guard try isPublicInternetAddress(address) else { return .localOrSpecialUse }
         try await Self.admission.acquire()
         defer { Self.admission.release() }
         try Task.checkCancellation()
-        let selectedVersion = await currentVersion()
+        let selectedVersion = try await preparedVersion()
         try Task.checkCancellation()
-        guard let version = selectedVersion else { return nil }
+        guard let version = selectedVersion else { return .databaseUnavailable }
         let result = try await lookup(address, version)
         try Task.checkCancellation()
-        guard await currentVersion() == version, let result,
-              result.address == address, result.datasetVersion == version else { return nil }
-        return result
+        guard await currentVersion() == version else { return .databaseChanged }
+        try Task.checkCancellation()
+        guard let result else { return .notFound }
+        guard result.address == address, result.datasetVersion == version else { return .databaseChanged }
+        return .information(result)
     }
 }
 
@@ -93,12 +136,23 @@ public struct TracerouteIPInformation: Sendable, Equatable {
     public let organization: String?
     public let source: String
     public let datasetVersion: String
+    public let latitude: Double?
+    public let longitude: Double?
+    public let accuracyRadiusKilometers: Double?
     public init(address: String, region: String? = nil, autonomousSystemNumber: UInt32? = nil,
-                organization: String? = nil, source: String, datasetVersion: String) {
+                organization: String? = nil, source: String, datasetVersion: String,
+                latitude: Double? = nil, longitude: Double? = nil, accuracyRadiusKilometers: Double? = nil) {
         self.address = String(address.prefix(64)); self.region = region.map { String($0.prefix(512)) }
         self.autonomousSystemNumber = autonomousSystemNumber
         self.organization = organization.map { String($0.prefix(512)) }
         self.source = String(source.prefix(512)); self.datasetVersion = String(datasetVersion.prefix(256))
+        if let latitude, let longitude, latitude.isFinite, longitude.isFinite,
+           (-90...90).contains(latitude), (-180...180).contains(longitude) {
+            self.latitude = latitude; self.longitude = longitude
+            self.accuracyRadiusKilometers = accuracyRadiusKilometers.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        } else {
+            self.latitude = nil; self.longitude = nil; self.accuracyRadiusKilometers = nil
+        }
     }
 }
 

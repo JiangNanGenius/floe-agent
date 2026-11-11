@@ -241,3 +241,88 @@ struct ConversationPinningStoreTests {
         #expect(ordered.first?.id == pinnedOld.id)
     }
 }
+
+
+@Suite("Editor assistant durable ownership")
+struct EditorAssistantOwnershipTests {
+    @Test("Owner and row commit atomically; archive, rename, workspace and cold reopen cannot expose an editor")
+    func atomicOwnerSurvivesNormalMutationAndReopen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-editor-owner-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("state.sqlite")
+        let database = try DatabaseManager(path: url); try await database.migrate()
+        let store = SQLiteConversationStore(database: database)
+        let id = UUID(), file = UUID(), now = Date()
+        let owned = ConversationRecord(id: id, title: "same title", createdAt: now, updatedAt: now,
+            editorOwnership: .file(file))
+        try await store.saveConversationWithCanonicalWorkspace(owned)
+        #expect(try await store.conversations().isEmpty)
+        #expect(try await store.conversation(id: id)?.editorOwnership == .file(file))
+        #expect(try await SQLiteWorkspaceStore(database: database).workspaceID(conversationID: id) != nil)
+        try await store.renameConversation(id: id, title: "ordinary title")
+        try await store.setArchived(id: id, archived: true)
+        try await store.setArchived(id: id, archived: false)
+        try await store.saveConversation(.init(id: id, title: "save from an old caller", createdAt: now, updatedAt: now))
+        #expect(try await store.conversation(id: id)?.editorOwnership == .file(file), "Old callers cannot erase durable ownership")
+        #expect(try await store.conversations(includeArchived: true).isEmpty)
+        let reopened = try DatabaseManager(path: url); try await reopened.migrate()
+        let cold = SQLiteConversationStore(database: reopened)
+        #expect(try await cold.conversation(id: id)?.editorOwnership == .file(file))
+        #expect(try await cold.conversations(includeArchived: true).isEmpty)
+        let rejectedID = UUID()
+        await #expect(throws: (any Error).self) {
+            try await store.saveConversationWithCanonicalWorkspace(.init(id: rejectedID, title: "wrong feature",
+                createdAt: now, updatedAt: now, visibility: .skillAuthoring, editorOwnership: .file(file)))
+        }
+        #expect(try await store.conversation(id: rejectedID) == nil, "A failed ownership claim rolls the INSERT back")
+    }
+
+    @Test("Exact native claims retain old history while unrelated identically named chats stay ordinary")
+    func exactClaimsNeverPromoteOrRetargetHistory() async throws {
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let store = SQLiteConversationStore(database: database)
+        let old = UUID(), next = UUID(), ordinary = UUID(), file = UUID(), now = Date()
+        for id in [old, next, ordinary] {
+            try await store.saveConversation(.init(id: id, title: "Work assistant · same", createdAt: now, updatedAt: now))
+        }
+        try await store.claimEditorOwnership(id: old, owner: .file(file))
+        try await store.claimEditorOwnership(id: old, owner: .file(file))
+        try await store.claimEditorOwnership(id: next, owner: .file(file))
+        await #expect(throws: (any Error).self) { try await store.claimEditorOwnership(id: old, owner: .file(UUID())) }
+        await #expect(throws: (any Error).self) { try await store.setPinned(id: old, pinnedAt: now) }
+        #expect(try await store.conversations().map(\.id) == [ordinary])
+        #expect(try await store.conversation(id: old)?.editorOwnership == .file(file))
+        #expect(try await store.conversation(id: next)?.editorOwnership == .file(file))
+        let blank = UUID()
+        try await store.saveConversation(.init(id: blank, title: "", createdAt: now, updatedAt: now, editorOwnership: .file(file)))
+        #expect(try await store.deleteConversationIfVerifiedEmpty(id: blank) == false)
+    }
+
+    @Test("The additive migration preserves table identity and rejects partial or unknown ownership")
+    func migrationPreservesRowsAndRejectsPartialOwnership() throws {
+        let queue = try DatabaseQueue()
+        var migrator = DatabaseMigrator()
+        migrator.registerMigration("legacy") { db in
+            try db.execute(sql: "CREATE TABLE conversations(id TEXT PRIMARY KEY, purpose TEXT NOT NULL, visibility TEXT NOT NULL); INSERT INTO conversations VALUES ('kept','ordinary','normal'); CREATE TABLE messages(id TEXT PRIMARY KEY, conversation_id TEXT REFERENCES conversations(id), content TEXT); INSERT INTO messages VALUES ('message','kept','v60 history'); PRAGMA user_version=60")
+        }
+        try migrator.migrate(queue)
+        let originalRoot = try queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='conversations'") }
+        V61EditorAssistantOwnership.register(into: &migrator)
+        try migrator.migrate(queue)
+        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='conversations'") } == originalRoot)
+        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM conversations WHERE editor_owner_kind IS NULL") } == 1)
+        let uuid = UUID().uuidString
+        for statement in [
+            "UPDATE conversations SET editor_owner_kind='file'",
+            "UPDATE conversations SET editor_document_id='\(uuid)'",
+            "UPDATE conversations SET editor_owner_kind='unknown',editor_document_id='\(uuid)',editor_container_id='\(uuid)'"
+        ] {
+            #expect(throws: (any Error).self) { try queue.write { try $0.execute(sql: statement) } }
+        }
+        try queue.write { try $0.execute(sql: "UPDATE conversations SET editor_owner_kind='file',editor_document_id=?,editor_container_id=?", arguments: [uuid, uuid]) }
+        #expect(throws: (any Error).self) { try queue.write { try $0.execute(sql: "UPDATE conversations SET purpose='notes'") } }
+        #expect(try queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") } == 61)
+        #expect(try queue.read { try String.fetchOne($0, sql: "SELECT content FROM messages WHERE id='message'") } == "v60 history")
+    }
+}

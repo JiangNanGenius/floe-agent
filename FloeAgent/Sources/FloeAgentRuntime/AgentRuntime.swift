@@ -3687,11 +3687,17 @@ public actor FloeAgentRuntime {
 
         let observedAt = Date()
         providerLastProgressAt = observedAt
-        providerLastEventWasToolArguments = false
-        providerLastEventWasReasoning = {
-            if case .reasoningSummary = rawEvent { return true }
-            return false
-        }()
+        // Usage is accounting, not a change from thinking/tool arguments to
+        // ordinary text. Preserve the last semantic phase's existing budget.
+        if case .usage = rawEvent {
+            // A usage trailer must not shorten a legitimate reasoning gap.
+        } else {
+            providerLastEventWasToolArguments = false
+            providerLastEventWasReasoning = {
+                if case .reasoningSummary = rawEvent { return true }
+                return false
+            }()
+        }
         if !providerReceivedFirstEvent {
             providerReceivedFirstEvent = true
             await publishProviderAttempt(

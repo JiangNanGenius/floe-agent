@@ -77,6 +77,8 @@ final class IPInformationAppOwner: ObservableObject {
         TracerouteIPInformationProvider(currentVersion: {
             guard let service = try? await self.service() else { return nil }
             return await service.currentVersion()
+        }, isPublicInternetAddress: { try IPAddressClassification.classify($0) == .publicInternet }, prepareLookup: {
+            _ = try await self.service()
         }, lookup: { address, version in
             let service = try await self.service()
             return try await service.tracerouteProvider().lookup(address, version)

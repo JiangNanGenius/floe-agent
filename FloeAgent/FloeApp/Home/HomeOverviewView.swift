@@ -44,6 +44,13 @@ struct HomeOverviewView: View {
     @State private var fileTasksExpanded = false
     @State private var fileTaskKind: PersonalContentKind?
     @State private var openingFileTask: PersonalContentRecord?
+    private struct CanvasTaskOpenRequest: Identifiable {
+        let id: UUID
+        let documentID: UUID
+        let title: String
+        let workspace: WorkspaceRecord?
+    }
+    @State private var openingCanvasTask: CanvasTaskOpenRequest?
     @State private var fileTaskOpen: Task<Void, Never>?
     @State private var fileTaskOpenID: UUID?
     /// Long-press multi-select in this overview (no management sheet; bulk
@@ -425,6 +432,11 @@ struct HomeOverviewView: View {
             PersonalContentEditor(record: record, opensAssistantOnLoad: true)
                 .environmentObject(viewModel.environment)
         }
+        .fullScreenCover(item: $openingCanvasTask, onDismiss: { Task { await load() } }) { request in
+            WorkspaceCanvasView(canvasID: request.id, name: request.title, workspace: request.workspace,
+                                assistantDocumentID: request.documentID)
+                .environmentObject(viewModel.environment)
+        }
         .sheet(isPresented: $showingSchedule) {
             TaskScheduleSheet {
                 // A save must register its insurance reminder through the
@@ -765,7 +777,7 @@ struct HomeOverviewView: View {
 
     @MainActor private func openTask(_ conversation: ConversationRecord) {
         cancelFileTaskOpen()
-        guard center.isFileAssistantConversation(conversation.id)
+        guard conversation.editorOwnership != nil || center.isFileAssistantConversation(conversation.id)
                 || viewModel.fileAssistantFiles[conversation.id] != nil else {
             router.openThreadFromHome(conversation.id)
             return
@@ -780,6 +792,22 @@ struct HomeOverviewView: View {
                 }
             }
             do {
+                if let owner = conversation.editorOwnership, owner.kind == .canvas {
+                    let project = try WorkspaceCanvasRegistry.project(canvasID: owner.containerID)
+                    guard project.agentConversationIDsByDocument[owner.documentID] == conversation.id
+                        || (owner.documentID == project.id && project.agentConversationID == conversation.id) else {
+                        throw PersonalContentError.changedDocument
+                    }
+                    let workspace: WorkspaceRecord?
+                    if let id = project.workspaceID {
+                        workspace = try await SQLiteWorkspaceStore(database: viewModel.environment.database).workspace(id: id)
+                    } else { workspace = nil }
+                    try Task.checkCancellation()
+                    guard fileTaskOpenID == requestID else { return }
+                    openingCanvasTask = .init(id: project.id, documentID: owner.documentID,
+                                              title: project.name, workspace: workspace)
+                    return
+                }
                 let authority = try viewModel.environment.studioCoordinator.access.get()
                 guard let projectID = try await authority.assistantProject(conversationID: conversation.id) else {
                     throw PersonalContentError.changedDocument

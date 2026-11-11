@@ -26,6 +26,7 @@ import SwiftUI
 
 struct CommandSearchView: View {
     @Bindable var viewModel: EditorViewModel
+    var draftingOnly = false
 
     @State private var query = ""
     @State private var highlighted = 0
@@ -33,7 +34,9 @@ struct CommandSearchView: View {
     @State private var refusal: String?
     @FocusState private var focused: Bool
 
-    private var results: [AppCommand] { viewModel.commandSearchResults(for: query) }
+    private var results: [AppCommand] {
+        viewModel.commandSearchResults(for: query).filter { !draftingOnly || CADDraftingCommandAvailability.allows($0.id) }
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -176,13 +179,29 @@ struct CommandSearchView: View {
     }
 
     private func run(_ command: AppCommand?) {
-        guard let command else { return }
+        guard let command, !draftingOnly || CADDraftingCommandAvailability.allows(command.id) else { return }
         if !viewModel.runCommandFromSearch(command.id) {
             refusal = String(
                 format: FloeCADStrings.text("cad.ui.search.unavailable",
                                             "“%@” isn't available right now."),
                 command.title
             )
+        }
+    }
+}
+
+/// Presentation scope of the standalone drawing entrance, never inferred
+/// from sketch mode or the temporary planar navigation of a 3D sketch.
+nonisolated enum CADDraftingCommandAvailability {
+    static func allows(_ id: String) -> Bool {
+        switch id {
+        case "sketch.line", "sketch.rectangle", "sketch.circle", "sketch.arc",
+             "sketch.ellipse", "sketch.polygon", "sketch.text", "sketch.trim",
+             "sketch.offset", "sketch.construction", "model.project",
+             "edit.undo", "edit.redo", "edit.delete", "edit.selectAll",
+             "view.fit", "view.zoomToSelection", "app.commandSearch", "app.commandSearchAlt":
+            return true
+        default: return false
         }
     }
 }

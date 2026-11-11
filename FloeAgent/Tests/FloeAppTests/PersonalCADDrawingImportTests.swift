@@ -110,5 +110,131 @@ import Testing
             #expect(cached.revision==revision && cached.snapshotJSON()==before)
         }
     }
+
+    @Test func librarySketchSelectionKeepsNativeCurvesSizeAndOneUndo() async throws {
+        let root = try directory(), service = PersonalContentService(root: root)
+        var opened: [Opened] = []; defer { remove(opened, root: root) }
+        let source = try await create(service, kind: .cad2D, title: "Two native sketches"); opened.append(source)
+        source.document.activate2DWorkspace()
+        let sourceSketch = try #require(source.document.viewModel().activeSketch)
+        let ellipseID = UUID(), splineID = UUID()
+        let ellipse = SketchEntity.ellipse(id: ellipseID, center: SIMD2(2, 3), radiusX: 3.5, radiusY: 1.5, rotation: 0.3)
+        let spline = SketchEntity.spline(id: splineID, points: [SIMD2(0, 0), SIMD2(1, 2), SIMD2(4, 1)], closed: false)
+        let exact = SketchEntity.exactCurve(id: UUID(), definition: try SketchCurveDefinition(ellipse))
+        source.document.session.perform(AddSketchEntitiesCommand(sketchID: sourceSketch.id, entities: [ellipse, exact]))
+        source.document.session.perform(AddSketchEntitiesCommand(sketchID: sourceSketch.id, entities: [spline], asConstruction: true))
+        source.document.session.perform(AddSketchCommand(sketch: Sketch(name: "Do not import this sketch", plane: .worldXY,
+            entities: [.circle(id: UUID(), center: .zero, radius: 400)])))
+        source.document.project.unitRaw = DisplayUnit.inches.rawValue
+        try #require((await source.document.save()).succeeded)
+        let sourceHash = source.document.contentSHA256, sourceRevision = source.document.revision
+        source.document.close()
+        let selectedSource = try await PersonalCADSketchImport.load(projectID: source.id, service: service)
+        #expect(selectedSource.native.sketches.count == 2)
+        #expect(selectedSource.native.displayUnit == DisplayUnit.inches.rawValue)
+        #expect(selectedSource.native.contentSHA256 == sourceHash)
+
+        let target = try await create(service, kind: .cad3D, title: "Current target sketch"); opened.append(target)
+        let targetPlane = SketchPlane(origin: SIMD3(7, 8, 9), xAxis: SIMD3(0, 0, -1), yAxis: SIMD3(0, 1, 0))
+        let existing = SketchEntity.line(id: ellipseID, a: .zero, b: SIMD2(8, 0))
+        let targetSketch = Sketch(name: "Active target", plane: targetPlane, entities: [existing])
+        target.document.session.perform(AddSketchCommand(sketch: targetSketch))
+        target.document.project.unitRaw = DisplayUnit.centimeters.rawValue
+        let model = target.document.viewModel(); model.mode = .sketching(targetSketch.id, tool: nil)
+        let context = try target.document.currentSketchImportContext()
+        let receipt = try await PersonalCADSketchImport.append(selectedSource, sketchID: sourceSketch.id.raw,
+            to: target.document, context: context, service: service)
+        let result = try #require(model.activeSketch)
+        #expect(result.id == targetSketch.id && result.plane == targetPlane)
+        #expect(target.document.session.document.sketches.count == 1)
+        #expect(target.document.session.document.bodies.isEmpty)
+        #expect(result.entities.first == existing)
+        #expect(receipt.entityIDs.count == 3 && Set(receipt.entityIDs).count == 3)
+        #expect(!receipt.entityIDs.contains(ellipseID) && !receipt.entityIDs.contains(splineID))
+        let importedEllipse = try #require(result.entities.first { if case .ellipse = $0 { return true }; return false })
+        if case let .ellipse(_, center, rx, ry, rotation) = importedEllipse {
+            #expect(center == SIMD2(2.0, 3.0) && rx == 3.5 && ry == 1.5 && rotation == 0.3)
+        }
+        let importedExact = try #require(result.entities.first { if case .exactCurve = $0 { return true }; return false })
+        if case let .exactCurve(_, definition) = importedExact, case let .exactCurve(_, original) = exact {
+            #expect(definition == original)
+        }
+        let importedSpline = try #require(result.entities.first { if case .spline = $0 { return true }; return false })
+        if case let .spline(id, points, closed) = importedSpline {
+            #expect(points == [SIMD2(0.0, 0.0), SIMD2(1.0, 2.0), SIMD2(4.0, 1.0)] && !closed)
+            #expect(result.isConstruction(id))
+        }
+        target.document.session.undo()
+        #expect(model.activeSketch?.entities == [existing])
+        target.document.session.redo()
+        #expect(model.activeSketch?.entities == result.entities)
+        try #require((await target.document.save()).succeeded)
+        target.document.close()
+        let reopened = try await PersonalCADSessions.open(id: target.id, directory: target.directory)
+        opened.append((target.id, target.directory, reopened))
+        #expect(reopened.session.document.sketches.first?.entities == result.entities)
+        #expect(reopened.session.document.sketches.first?.plane == targetPlane)
+        let original = try #require(await FloeCADDocument.storedIdentity(at: source.document.url))
+        #expect(original.revision == sourceRevision && original.contentSHA256 == sourceHash)
+    }
+
+    @Test func librarySketchImportRejectsChangesDeletionAndCancellationWithoutEditingTarget() async throws {
+        let root = try directory(), service = PersonalContentService(root: root)
+        var opened: [Opened] = []; defer { remove(opened, root: root) }
+        let source = try await create(service, kind: .cad2D, title: "Guarded source"); opened.append(source)
+        source.document.activate2DWorkspace()
+        let sourceSketch = try #require(source.document.viewModel().activeSketch)
+        source.document.session.perform(AddSketchEntitiesCommand(sketchID: sourceSketch.id,
+            entities: [.circle(id: UUID(), center: .zero, radius: 3)]))
+        try #require((await source.document.save()).succeeded)
+        let selectedSource = try await PersonalCADSketchImport.load(projectID: source.id, service: service)
+        let target = try await create(service, kind: .cad3D, title: "Guarded target"); opened.append(target)
+        let sketch = Sketch(plane: .worldXY)
+        target.document.session.perform(AddSketchCommand(sketch: sketch))
+        target.document.viewModel().mode = .sketching(sketch.id, tool: nil)
+        let staleContext = try target.document.currentSketchImportContext()
+        target.document.session.perform(AddSketchEntitiesCommand(sketchID: sketch.id,
+            entities: [.line(id: UUID(), a: .zero, b: SIMD2(1, 1))]))
+        let before = target.document.snapshotJSON()
+        do {
+            _ = try await PersonalCADSketchImport.append(selectedSource, sketchID: sourceSketch.id.raw,
+                to: target.document, context: staleContext, service: service)
+            Issue.record("A target edit must invalidate the captured import context")
+        } catch CADSketchImportError.targetChanged { }
+        #expect(target.document.snapshotJSON() == before)
+        let context = try target.document.currentSketchImportContext()
+        let cancelled = Task { @MainActor in
+            try await PersonalCADSketchImport.append(selectedSource, sketchID: sourceSketch.id.raw,
+                to: target.document, context: context, service: service)
+        }
+        cancelled.cancel()
+        do { _ = try await cancelled.value; Issue.record("Cancelled selection must not commit") }
+        catch is CancellationError { }
+        #expect(target.document.snapshotJSON() == before)
+        source.document.session.perform(AddSketchEntitiesCommand(sketchID: sourceSketch.id,
+            entities: [.circle(id: UUID(), center: .zero, radius: 4)]))
+        do {
+            _ = try await PersonalCADSketchImport.load(projectID: source.id, service: service)
+            Issue.record("An unsaved source must ask its owner to save first")
+        } catch PersonalCADSketchImportIssue.saveSourceFirst { }
+        try #require((await source.document.save()).succeeded)
+        do {
+            _ = try await PersonalCADSketchImport.append(selectedSource, sketchID: sourceSketch.id.raw,
+                to: target.document, context: context, service: service)
+            Issue.record("A new saved source revision must invalidate the selection")
+        } catch CADSketchImportError.sourceChanged { }
+        #expect(target.document.snapshotJSON() == before)
+        source.document.close()
+        let library = try await service.library()
+        let current = try await library.resolve(source.id)
+        _ = try await library.softDelete(current.record)
+        do {
+            _ = try await PersonalCADSketchImport.append(selectedSource, sketchID: sourceSketch.id.raw,
+                to: target.document, context: context, service: service)
+            Issue.record("A deleted library source must not be imported")
+        } catch PersonalContentError.deleted { }
+        #expect(target.document.snapshotJSON() == before)
+    }
+
 }
 #endif

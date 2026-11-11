@@ -86,4 +86,37 @@ import simd
         var corrupt = input; corrupt.sourceBytes.append(0)
         XCTAssertThrowsError(try corrupt.validate())
     }
+
+    func testSketchPageDrawingAppendKeepsPlaneSourceAndSingleUndoWithTargetFence() async throws {
+        let (directory, document) = try await fixture()
+        defer { document.close(); try? FileManager.default.removeItem(at: directory) }
+        let retainedSource = try source()
+        let existing = SketchEntity.line(id: UUID(), a: .zero, b: SIMD2(1, 0))
+        let plane = SketchPlane(origin: SIMD3(4, 5, 6), xAxis: SIMD3(0, 0, -1), yAxis: SIMD3(0, 1, 0))
+        let sketch = Sketch(plane: plane, entities: [existing], drawingSource: retainedSource)
+        document.session.perform(AddSketchCommand(sketch: sketch))
+        let model = document.viewModel(); model.mode = .sketching(sketch.id, tool: nil)
+        let context = try document.currentSketchImportContext(), input = try source(unit: 25.4)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        XCTAssertEqual(try document.currentSketchImportContext().editRevision, context.editRevision)
+        let outcome = try document.appendDrawingTransfer(input,
+            placement: .init(target: .selected, sourceAnchor: [10, 20]), context: context)
+        let imported = try XCTUnwrap(model.activeSketch)
+        XCTAssertEqual(document.session.document.sketches.count, 1)
+        XCTAssertEqual(imported.id, sketch.id); XCTAssertEqual(imported.plane, plane)
+        XCTAssertEqual(imported.entities.first, existing)
+        XCTAssertEqual(imported.drawingSource, retainedSource)
+        XCTAssertEqual(outcome.entityIDs.count, 2)
+        guard case let .line(_, a, b) = imported.entities[1] else { return XCTFail("exact line missing") }
+        XCTAssertEqual(a.x, 0, accuracy: 1e-8); XCTAssertEqual(a.y, 0, accuracy: 1e-8)
+        XCTAssertEqual(b.x, 254, accuracy: 1e-8); XCTAssertEqual(b.y, 0, accuracy: 1e-8)
+        XCTAssertThrowsError(try document.appendDrawingTransfer(input, placement: .init(target: .selected), context: context))
+        XCTAssertEqual(model.activeSketch?.entities, imported.entities)
+        document.session.undo(); XCTAssertEqual(model.activeSketch?.entities, [existing])
+        document.session.redo(); XCTAssertEqual(model.activeSketch?.entities, imported.entities)
+        XCTAssertThrowsError(try document.appendDrawingTransfer(input,
+            placement: .init(target: .front), context: document.currentSketchImportContext()))
+        XCTAssertEqual(model.activeSketch?.drawingSource, retainedSource)
+    }
 }

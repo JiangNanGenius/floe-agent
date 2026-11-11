@@ -14,6 +14,26 @@ import FloeCore
 import FloeModels
 import FloeTools
 
+/// Provider call IDs are unique only within their owning run. A legacy row
+/// without a call ID uses its durable event ID instead of sharing an empty key.
+struct ToolCallDisclosureKey: Hashable {
+    private enum Invocation: Hashable { case call(String), event(UUID) }
+    private let runID: UUID
+    private let invocation: Invocation
+
+    init(runID: UUID, callID: String?, eventID: UUID) {
+        self.runID = runID
+        if let callID, !callID.isEmpty { invocation = .call(callID) }
+        else { invocation = .event(eventID) }
+    }
+}
+
+enum ToolCallDisclosurePolicy {
+    static func isExpanded(status: String, manualChoice: Bool?) -> Bool {
+        manualChoice ?? ["failed", "error", "denied", "expired", "needsUser"].contains(status)
+    }
+}
+
 /// Presentation model for one tool call card. `status` accepts the
 /// producer's raw vocabulary (`ok` / `failed` / `pending`) plus the
 /// run-state name when available; colors resolve through RunStateLocalizer.
@@ -50,7 +70,25 @@ struct ToolCallCardView: View {
     var gitHubSource: GitHubSourceReference? = nil
     var diagnosticProgress: [TaskDiagnosticProgress] = []
 
-    @State private var isExpanded = false
+    /// The thread supplies its run/call-scoped choice; other hosts retain a
+    /// local choice. Nil means use the first-status default, never a command
+    /// to overwrite an explicit manual collapse on a later status update.
+    var detailExpansion: Binding<Bool?>? = nil
+    @State private var localDetailExpansion: Bool? = nil
+
+    var isExpanded: Bool {
+        let choice: Bool?
+        if let detailExpansion { choice = detailExpansion.wrappedValue }
+        else { choice = localDetailExpansion }
+        return ToolCallDisclosurePolicy.isExpanded(status: status, manualChoice: choice)
+    }
+
+    func toggleDetails() {
+        guard hasDetail else { return }
+        let expanded = !isExpanded
+        if let detailExpansion { detailExpansion.wrappedValue = expanded }
+        else { localDetailExpansion = expanded }
+    }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -88,9 +126,6 @@ struct ToolCallCardView: View {
         .background(FloeTheme.stepSurface, in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(FloeTheme.separator.opacity(0.45), lineWidth: 0.5))
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: status)
-        .onChange(of: status, initial: true) { _, value in
-            if ["failed", "error", "denied", "expired", "needsUser"].contains(value) { isExpanded = true }
-        }
         .accessibilityElement(children: .contain)
     }
 
@@ -98,8 +133,7 @@ struct ToolCallCardView: View {
 
     private var header: some View {
         Button {
-            guard hasDetail else { return }
-            withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { isExpanded.toggle() }
+            withAnimation(FloeTheme.motionAnimation(reduceMotion: reduceMotion)) { toggleDetails() }
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: statusIcon)

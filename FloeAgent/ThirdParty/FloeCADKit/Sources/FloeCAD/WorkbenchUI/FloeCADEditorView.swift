@@ -545,6 +545,7 @@ struct FloeCADEditorView: View {
     /// hosts, in which case no context is published.
     @Environment(\.cadSelectionObserver) private var selectionObserver
     @Environment(\.cadBuildingProfessionalPresenter) private var buildingProfessionalPresenter
+    @Environment(\.cadImportSketchFromLibrary) private var importLibrarySketch
     @State private var viewModel: EditorViewModel?
     @State private var exportDocument: ExportDocument?
     /// X22 quick mesh exports (STL/3MF/USDZ/DXF) show the model-only notice
@@ -639,6 +640,17 @@ struct FloeCADEditorView: View {
     @State private var importRequest: ImportRequest = .stl
     @State private var showImporter = false
     @State private var lastManualImportRequest: ImportRequest?
+    @State private var fileImportOwner: ObjectIdentifier?
+    /// Captured before the picker opens; never re-resolved as a different sketch
+    /// when reading or placement completes.
+    @State private var pickerSketchImportContext: CADSketchImportContext?
+    @State private var lastManualImportIntoCurrentSketch = false
+    private struct PendingSketchDrawingImport {
+        let id = UUID()
+        let source: CADSketchTransferEnvelope
+        let context: CADSketchImportContext
+    }
+    @State private var pendingSketchDrawingImport: PendingSketchDrawingImport?
     @State private var showScreenshotOptions = false
     @State private var showShellOptions = false
     /// Insert Image (plan §B10): Photos picker + image file importer.
@@ -700,6 +712,14 @@ struct FloeCADEditorView: View {
             pendingWorkbenchDestination = nil
             showBuildingWorkspace = false
             buildingNavigationLease = nil
+            importTask?.cancel()
+            importTask = nil
+            viewModel?.fenceManualImportOperations()
+            viewModel?.pendingDrawingTransfer = nil
+            showImporter = false
+            fileImportOwner = nil
+            pickerSketchImportContext = nil
+            pendingSketchDrawingImport = nil
         }
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear {
@@ -805,10 +825,7 @@ struct FloeCADEditorView: View {
                         : FloeCADStrings.text("cad.status.dragOrExactValue",
                                               "Drag an arrow or tap for an exact value")
                 }
-                if draftingOnly {
-                    return FloeCADStrings.text("cad.status.dragToPan", "Pan the drawing — pick a tool to draw")
-                }
-                return FloeCADStrings.text("cad.status.dragToOrbit", "Drag to orbit — pick a tool to draw")
+                return FloeCADStrings.text("cad.status.dragToPan", "Pan the drawing — pick a tool to draw")
             default: break
             }
         }
@@ -836,6 +853,31 @@ struct FloeCADEditorView: View {
     @ViewBuilder
     private func sketchDetailActions(_ viewModel: EditorViewModel) -> some View {
         sketchStateChip(viewModel).fixedSize(horizontal: true, vertical: false)
+        Menu {
+            Button(CAD2DDraftingText.text("导入图纸（DXF/DWG）…", "Import Drawing (DXF/DWG)…")) {
+                presentFileImport(.dxf, intoCurrentSketch: true, viewModel: viewModel)
+            }
+            .accessibilityIdentifier("ImportDrawingIntoCurrentSketch")
+            if let importLibrarySketch {
+                Button(CAD2DDraftingText.text("从二维 CAD 项目导入…", "Import from 2D CAD Project…")) {
+                    do {
+                        let context = try document.currentSketchImportContext()
+                        fencePendingFileImport(viewModel)
+                        viewModel.manualImportProblem = nil
+                        importLibrarySketch(context)
+                    } catch {
+                        lastManualImportRequest = .dxf
+                        lastManualImportIntoCurrentSketch = true
+                        viewModel.manualImportProblem = error.localizedDescription
+                    }
+                }
+                .accessibilityIdentifier("ImportLibrarySketchIntoCurrentSketch")
+            }
+        } label: {
+            Label(CAD2DDraftingText.text("导入草图", "Import Sketch"), systemImage: "square.and.arrow.down")
+        }
+        .controlSize(.small)
+        .accessibilityIdentifier("CurrentSketchImportMenu")
         if viewModel.lookAtSketchAvailable {
             Button("Look at Sketch") { viewModel.lookAtSketch() }
                 .controlSize(.small)
@@ -1521,40 +1563,39 @@ struct FloeCADEditorView: View {
     /// Toolbar Import menu (STL/DXF files, inserted images).
     private func importMenu(_ viewModel: EditorViewModel) -> some View {
         Menu {
-            Button(FloeCADStrings.label("cad.ui.import.stlFile", "STL File…")) {
-                importRequest = .stl
-                showImporter = true
+            if !draftingOnly {
+                Button(FloeCADStrings.label("cad.ui.import.stlFile", "STL File…")) {
+                    presentFileImport(.stl, viewModel: viewModel)
+                }
+                .accessibilityIdentifier("ImportSTL")
             }
-            .accessibilityIdentifier("ImportSTL")
             // DXF import (plan §B14): entities join a ground-plane
             // sketch as one undo step.
             Button(FloeCADStrings.label("cad.ui.import.dxfFile", "DWG / DXF Drawing…")) {
-                importRequest = .dxf
-                showImporter = true
+                presentFileImport(.dxf, viewModel: viewModel)
             }
             .accessibilityIdentifier("ImportDXF")
-            // STEP import (spec §12.1): solids arrive analytic, so an imported
-            // part can be filleted/shelled/booleaned like a native one.
-            Button(FloeCADStrings.label("cad.ui.import.stepFile", "STEP File…")) {
-                importRequest = .step
-                showImporter = true
+            if !draftingOnly {
+                // STEP import (spec §12.1): solids arrive analytic, so an imported
+                // part can be filleted/shelled/booleaned like a native one.
+                Button(FloeCADStrings.label("cad.ui.import.stepFile", "STEP File…")) {
+                    presentFileImport(.step, viewModel: viewModel)
+                }
+                .accessibilityIdentifier("ImportSTEP")
+                // IGES exact exchange (closed solids and open surfaces). Same
+                // off-main prepare + atomic commit as STEP; surfaces stay exact
+                // open-surface bodies and are never reported as solids.
+                Button(FloeCADStrings.label("cad.ui.import.igesFile", "IGES File…")) {
+                    presentFileImport(.iges, viewModel: viewModel)
+                }
+                .accessibilityIdentifier("ImportIGES")
+                // Textured meshes: glTF/GLB, USDZ, OBJ with its MTL and images, .blend,
+                // or a zip holding any of them. Parts become mesh bodies.
+                Button(FloeCADStrings.label("cad.ui.import.meshFile", "OBJ / glTF / USDZ / Blender…")) {
+                    presentFileImport(.mesh, viewModel: viewModel)
+                }
+                .accessibilityIdentifier("ImportMesh")
             }
-            .accessibilityIdentifier("ImportSTEP")
-            // IGES exact exchange (closed solids and open surfaces). Same
-            // off-main prepare + atomic commit as STEP; surfaces stay exact
-            // open-surface bodies and are never reported as solids.
-            Button(FloeCADStrings.label("cad.ui.import.igesFile", "IGES File…")) {
-                importRequest = .iges
-                showImporter = true
-            }
-            .accessibilityIdentifier("ImportIGES")
-            // Textured meshes: glTF/GLB, USDZ, OBJ with its MTL and images, .blend,
-            // or a zip holding any of them. Parts become mesh bodies.
-            Button(FloeCADStrings.label("cad.ui.import.meshFile", "OBJ / glTF / USDZ / Blender…")) {
-                importRequest = .mesh
-                showImporter = true
-            }
-            .accessibilityIdentifier("ImportMesh")
             Divider()
             // Insert Image (plan §B10, spec §6.3): the picked
             // picture waits for a plane tap (ground by default).
@@ -1563,8 +1604,7 @@ struct FloeCADEditorView: View {
             }
             .accessibilityIdentifier("InsertImagePhotos")
             Button(FloeCADStrings.label("cad.ui.import.imageFiles", "Image from Files…")) {
-                importRequest = .image
-                showImporter = true
+                presentFileImport(.image, viewModel: viewModel)
             }
             .accessibilityIdentifier("InsertImageFiles")
         } label: {
@@ -1585,7 +1625,7 @@ struct FloeCADEditorView: View {
     }
 
     private func performQuickExport(_ choice: QuickViewOnlyExport) {
-        guard let viewModel else { return }
+        guard let viewModel, !draftingOnly || choice == .dxf else { return }
         switch choice {
         case .stl:
             if let data = viewModel.exportSTL() {
@@ -1618,43 +1658,48 @@ struct FloeCADEditorView: View {
     /// screenshot, and — where ModelIO can write USDZ — USDZ + AR Preview.
     private func exportMenu(_ viewModel: EditorViewModel) -> some View {
         Menu {
-            Button("STL") {
-                requestQuickExport(.stl, viewModel: viewModel)
-            }
-            // OBJ and GLB open an options sheet (plan §B14): both
-            // support the "Separate File per Body" split.
-            Button("OBJ") {
-                meshExportFormat = .obj
-            }
-            Button("GLB") {
-                meshExportFormat = .glb
-            }
-            Button("3MF") {
-                requestQuickExport(.threeMF, viewModel: viewModel)
-            }
-            // USDZ only where ModelIO can actually write it
-            // (never faked — some simulators can't).
-            if USDZExporter.isSupported {
-                Button("USDZ") {
-                    requestQuickExport(.usdz, viewModel: viewModel)
+            if !draftingOnly {
+                Button("STL") {
+                    requestQuickExport(.stl, viewModel: viewModel)
+                }
+                // OBJ and GLB open an options sheet (plan §B14): both
+                // support the "Separate File per Body" split.
+                Button("OBJ") {
+                    meshExportFormat = .obj
+                }
+                Button("GLB") {
+                    meshExportFormat = .glb
+                }
+                Button("3MF") {
+                    requestQuickExport(.threeMF, viewModel: viewModel)
+                }
+                // USDZ only where ModelIO can actually write it
+                // (never faked — some simulators can't).
+                if USDZExporter.isSupported {
+                    Button("USDZ") {
+                        requestQuickExport(.usdz, viewModel: viewModel)
+                    }
                 }
             }
             // DXF of the active/ground sketch (plan §B14).
             Button("DXF") {
                 requestQuickExport(.dxf, viewModel: viewModel)
             }
-            // The exact-solid exchange path always previews included/excluded
-            // parts before writing; the old STEP shortcut skipped mesh bodies.
-            Button(FloeCADStrings.label("cad.ui.export.exchange", "Export Model…")) {
-                showAssemblyExportSheet = true
+            if !draftingOnly {
+                // The exact-solid exchange path always previews included/excluded
+                // parts before writing; the old STEP shortcut skipped mesh bodies.
+                Button(FloeCADStrings.label("cad.ui.export.exchange", "Export Model…")) {
+                    showAssemblyExportSheet = true
+                }
+                .accessibilityIdentifier("ExportExchange")
             }
-            .accessibilityIdentifier("ExportExchange")
             Divider()
             // Full-fidelity FloeCAD project package: sketches, features,
             // variables, assembly and drawings. Mesh exports above are
             // geometry-only; this commits the versioned package (off-main,
             // revision-guarded) that reopens as a live document.
-            Button(FloeCADStrings.label("cad.ui.export.saveProject", "Save Project")) {
+            Button(draftingOnly ? CAD2DDraftingText.text("保存图纸", "Save Drawing")
+                   : FloeCADStrings.text("cad.ui.export.saveProject", "Save Project")) {
                 Task {
                     let outcome = await document.save()
                     if let error = outcome.error {
@@ -1768,7 +1813,7 @@ struct FloeCADEditorView: View {
                 // chip while drawing.
                 ZStack {
                     if !draftingOnly { OrientationCubeLabels(viewModel: viewModel) }
-                    MoveGizmoOverlay(viewModel: viewModel)
+                    if !draftingOnly { MoveGizmoOverlay(viewModel: viewModel) }
                     SnapChipOverlay(viewModel: viewModel)
                 }
             }
@@ -1778,22 +1823,24 @@ struct FloeCADEditorView: View {
                 // exact-distance field when an arrow is tapped (§5.1). One
                 // ZStack, so the modifier chain stays type-checkable.
                 ZStack {
-                    ExtrudeGizmoOverlay(viewModel: viewModel)
-                    MoveDistanceOverlay(viewModel: viewModel)
-                    RotationOrbitOverlay(viewModel: viewModel)
+                    if !draftingOnly {
+                        ExtrudeGizmoOverlay(viewModel: viewModel)
+                        MoveDistanceOverlay(viewModel: viewModel)
+                        RotationOrbitOverlay(viewModel: viewModel)
+                    }
                 }
             }
             .overlay {
                 // Hardware-keyboard hotkeys (spec §8.4). Zero-sized; see
                 // CommandShortcutsView for why the shortcuts ride on buttons.
-                CommandShortcutsView(viewModel: viewModel)
+                CommandShortcutsView(viewModel: viewModel, draftingOnly: draftingOnly)
             }
             .overlay {
                 // Command Search (spec §8.4). An overlay rather than a sheet:
                 // it must be openable from anywhere, and two sheets cannot be
                 // up at once.
                 if viewModel.commandSearchActive {
-                    CommandSearchView(viewModel: viewModel)
+                    CommandSearchView(viewModel: viewModel, draftingOnly: draftingOnly)
                 }
             }
             .overlay(alignment: settings.paletteOnRight ? .leading : .trailing) {
@@ -1848,7 +1895,7 @@ struct FloeCADEditorView: View {
             .overlay(alignment: .topTrailing) {
                 // Items Manager sidebar (spec §11).
                 if showItemsPanel {
-                    ItemsPanelView(viewModel: viewModel)
+                    ItemsPanelView(viewModel: viewModel, draftingOnly: draftingOnly)
                         .padding(.trailing, 14)
                         .padding(.top, 8)
                 }
@@ -1856,7 +1903,7 @@ struct FloeCADEditorView: View {
             .overlay(alignment: .topLeading) {
                 // Feature history / timeline panel (Phase D, Task C3). Anchored
                 // leading so it clears the Items panel at .topTrailing.
-                if viewModel.showHistoryPanel {
+                if !draftingOnly, viewModel.showHistoryPanel {
                     HistoryPanelView(viewModel: viewModel)
                         .padding(.leading, 14)
                         .padding(.top, 8)
@@ -1872,7 +1919,8 @@ struct FloeCADEditorView: View {
                         viewportFrame: viewportGeometry.frame(in: .global),
                         contentFrame: paletteContentFrame
                     ) {
-                        ToolPaletteView(viewModel: viewModel)
+                        ToolPaletteView(viewModel: viewModel, draftingOnly: draftingOnly,
+                                        ensureDraftingSketch: { document.activate2DWorkspace() })
                             // Only the column is measured; flyouts stay overlays.
                             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
                                 paletteFrame = $0
@@ -1881,7 +1929,7 @@ struct FloeCADEditorView: View {
                             .padding(.trailing, insets.trailing)
                             // Interface side (spec §17), including open panels.
                             .padding(settings.paletteOnRight ? .trailing : .leading,
-                                     (settings.paletteOnRight ? showItemsPanel : viewModel.showHistoryPanel)
+                                     (settings.paletteOnRight ? showItemsPanel : (!draftingOnly && viewModel.showHistoryPanel))
                                      ? 318 : 14)
                             .padding(.top, insets.top + 8)
                             // Preserve measured bottom-control overlap avoidance.
@@ -2351,65 +2399,67 @@ struct FloeCADEditorView: View {
                     // plus Display modes / Isolate / Section (spec §16).
                     Menu {
                         cameraOrientationCommands(viewModel)
-                        Divider()
-                        // Display modes (spec §16.4); the submenu label names
-                        // the active shader.
-                        Menu {
-                            Picker("Display", selection: Binding(
-                                get: { viewModel.displayMode },
-                                set: { viewModel.displayMode = $0 }
-                            )) {
-                                ForEach(DisplayMode.allCases, id: \.self) { mode in
-                                    Text(mode.displayLabel).tag(mode)
-                                }
-                            }
+                        if !draftingOnly {
                             Divider()
-                            Toggle("Show Hidden Edges", isOn: Binding(
-                                get: { viewModel.showHiddenEdges },
-                                set: { viewModel.showHiddenEdges = $0 }
+                            // Display modes (spec §16.4); the submenu label names
+                            // the active shader.
+                            Menu {
+                                Picker("Display", selection: Binding(
+                                    get: { viewModel.displayMode },
+                                    set: { viewModel.displayMode = $0 }
+                                )) {
+                                    ForEach(DisplayMode.allCases, id: \.self) { mode in
+                                        Text(mode.displayLabel).tag(mode)
+                                    }
+                                }
+                                Divider()
+                                Toggle("Show Hidden Edges", isOn: Binding(
+                                    get: { viewModel.showHiddenEdges },
+                                    set: { viewModel.showHiddenEdges = $0 }
+                                ))
+                            } label: {
+                                Label(
+                                    "Display: \(viewModel.displayMode.displayLabel)",
+                                    systemImage: "cube.transparent"
+                                )
+                            }
+                            // Ground blob shadows (visualization v1, plan §B15).
+                            Toggle("Ground Shadow", isOn: Binding(
+                                get: { viewModel.groundShadowEnabled },
+                                set: { viewModel.groundShadowEnabled = $0 }
                             ))
-                        } label: {
-                            Label(
-                                "Display: \(viewModel.displayMode.displayLabel)",
-                                systemImage: "cube.transparent"
-                            )
-                        }
-                        // Ground blob shadows (visualization v1, plan §B15).
-                        Toggle("Ground Shadow", isOn: Binding(
-                            get: { viewModel.groundShadowEnabled },
-                            set: { viewModel.groundShadowEnabled = $0 }
-                        ))
-                        // Isolate (spec §16.2): hide everything but the
-                        // selection; exiting restores.
-                        if viewModel.isIsolateActive {
-                            Button("Exit Isolate") {
-                                viewModel.exitIsolate()
+                            // Isolate (spec §16.2): hide everything but the
+                            // selection; exiting restores.
+                            if viewModel.isIsolateActive {
+                                Button("Exit Isolate") {
+                                    viewModel.exitIsolate()
+                                }
+                            } else {
+                                Button("Isolate") {
+                                    viewModel.enterIsolate()
+                                }
+                                .disabled(viewModel.selection.isEmpty)
                             }
-                        } else {
-                            Button("Isolate") {
-                                viewModel.enterIsolate()
-                            }
-                            .disabled(viewModel.selection.isEmpty)
-                        }
-                        // Section View (spec §16.1).
-                        if viewModel.sectionState != nil {
-                            Button("Flip Section") {
-                                viewModel.flipSection()
-                            }
-                            Button("Section Off") {
-                                viewModel.endSection()
-                            }
-                        } else if viewModel.viewOverlay.section != nil {
-                            Button(FloeCADStrings.text(
-                                "cad.overlay.section.show", "Show Section")) {
-                                viewModel.setSectionEnabled(true)
-                            }
-                            Button("Section Off") {
-                                viewModel.endSection()
-                            }
-                        } else {
-                            Button("Section") {
-                                viewModel.beginSectionPlanePick()
+                            // Section View (spec §16.1).
+                            if viewModel.sectionState != nil {
+                                Button("Flip Section") {
+                                    viewModel.flipSection()
+                                }
+                                Button("Section Off") {
+                                    viewModel.endSection()
+                                }
+                            } else if viewModel.viewOverlay.section != nil {
+                                Button(FloeCADStrings.text(
+                                    "cad.overlay.section.show", "Show Section")) {
+                                    viewModel.setSectionEnabled(true)
+                                }
+                                Button("Section Off") {
+                                    viewModel.endSection()
+                                }
+                            } else {
+                                Button("Section") {
+                                    viewModel.beginSectionPlanePick()
+                                }
                             }
                         }
                         if viewModel.hasMeasurementAnnotations {
@@ -2425,14 +2475,16 @@ struct FloeCADEditorView: View {
                     }
                     .accessibilityIdentifier("ViewsMenu")
 
-                    Button {
-                        viewModel.showHistoryPanel.toggle()
-                    } label: {
-                        Label(FloeCADStrings.label("cad.toolbar.history", "Feature Tree"),
-                              systemImage: "clock.arrow.circlepath")
-                    }
-                    .accessibilityIdentifier("HistoryButton")
+                    if !draftingOnly {
+                        Button {
+                            viewModel.showHistoryPanel.toggle()
+                        } label: {
+                            Label(FloeCADStrings.label("cad.toolbar.history", "Feature Tree"),
+                                  systemImage: "clock.arrow.circlepath")
+                        }
+                        .accessibilityIdentifier("HistoryButton")
 
+                    }
                     Button {
                         viewModel.showVariablesPanel.toggle()
                     } label: {
@@ -2554,7 +2606,7 @@ struct FloeCADEditorView: View {
     }
 
     private func requestWorkbenchDestination(_ destination: CADWorkbenchDestination) {
-        guard !document.isClosed else { return }
+        guard !draftingOnly, !document.isClosed else { return }
         if case .building = destination {
             guard !buildingWorkspaceActive else { return }
             buildingNavigationLease = buildingProfessionalPresenter?.retainNavigation(document)
@@ -2566,7 +2618,7 @@ struct FloeCADEditorView: View {
     private func finishWorkbenchDestination() {
         guard let pending = pendingWorkbenchDestination else { return }
         pendingWorkbenchDestination = nil
-        guard pending.owner == ObjectIdentifier(document), !document.isClosed else {
+        guard !draftingOnly, pending.owner == ObjectIdentifier(document), !document.isClosed else {
             if !showBuildingWorkspace { buildingNavigationLease = nil }
             return
         }
@@ -2613,46 +2665,48 @@ struct FloeCADEditorView: View {
             .accessibilityIdentifier("CADCompactSettingsButton")
             Menu {
                 cameraOrientationCommands(viewModel)
-                Divider()
-                Menu {
-                    Picker("Display", selection: Binding(
-                        get: { viewModel.displayMode },
-                        set: { viewModel.displayMode = $0 }
-                    )) {
-                        ForEach(DisplayMode.allCases, id: \.self) { mode in
-                            Text(mode.displayLabel).tag(mode)
-                        }
-                    }
+                if !draftingOnly {
                     Divider()
-                    Toggle("Show Hidden Edges", isOn: Binding(
-                        get: { viewModel.showHiddenEdges },
-                        set: { viewModel.showHiddenEdges = $0 }
-                    ))
-                } label: {
-                    Label("Display: \(viewModel.displayMode.displayLabel)",
-                          systemImage: "cube.transparent")
-                }
-                Toggle("Ground Shadow", isOn: Binding(
-                    get: { viewModel.groundShadowEnabled },
-                    set: { viewModel.groundShadowEnabled = $0 }
-                ))
-                if viewModel.isIsolateActive {
-                    Button("Exit Isolate") { viewModel.exitIsolate() }
-                } else {
-                    Button("Isolate") { viewModel.enterIsolate() }
-                        .disabled(viewModel.selection.isEmpty)
-                }
-                if viewModel.sectionState != nil {
-                    Button("Flip Section") { viewModel.flipSection() }
-                    Button("Section Off") { viewModel.endSection() }
-                } else if viewModel.viewOverlay.section != nil {
-                    Button(FloeCADStrings.text(
-                        "cad.overlay.section.show", "Show Section")) {
-                        viewModel.setSectionEnabled(true)
+                    Menu {
+                        Picker("Display", selection: Binding(
+                            get: { viewModel.displayMode },
+                            set: { viewModel.displayMode = $0 }
+                        )) {
+                            ForEach(DisplayMode.allCases, id: \.self) { mode in
+                                Text(mode.displayLabel).tag(mode)
+                            }
+                        }
+                        Divider()
+                        Toggle("Show Hidden Edges", isOn: Binding(
+                            get: { viewModel.showHiddenEdges },
+                            set: { viewModel.showHiddenEdges = $0 }
+                        ))
+                    } label: {
+                        Label("Display: \(viewModel.displayMode.displayLabel)",
+                              systemImage: "cube.transparent")
                     }
-                    Button("Section Off") { viewModel.endSection() }
-                } else {
-                    Button("Section") { viewModel.beginSectionPlanePick() }
+                    Toggle("Ground Shadow", isOn: Binding(
+                        get: { viewModel.groundShadowEnabled },
+                        set: { viewModel.groundShadowEnabled = $0 }
+                    ))
+                    if viewModel.isIsolateActive {
+                        Button("Exit Isolate") { viewModel.exitIsolate() }
+                    } else {
+                        Button("Isolate") { viewModel.enterIsolate() }
+                            .disabled(viewModel.selection.isEmpty)
+                    }
+                    if viewModel.sectionState != nil {
+                        Button("Flip Section") { viewModel.flipSection() }
+                        Button("Section Off") { viewModel.endSection() }
+                    } else if viewModel.viewOverlay.section != nil {
+                        Button(FloeCADStrings.text(
+                            "cad.overlay.section.show", "Show Section")) {
+                            viewModel.setSectionEnabled(true)
+                        }
+                        Button("Section Off") { viewModel.endSection() }
+                    } else {
+                        Button("Section") { viewModel.beginSectionPlanePick() }
+                    }
                 }
                 if viewModel.hasMeasurementAnnotations {
                     Toggle(FloeCADStrings.text(
@@ -2665,11 +2719,13 @@ struct FloeCADEditorView: View {
             } label: {
                 Label("Views", systemImage: "square.stack.3d.up")
             }
-            Button {
-                viewModel.showHistoryPanel.toggle()
-            } label: {
-                Label(FloeCADStrings.label("cad.toolbar.history", "Feature Tree"),
-                      systemImage: "clock.arrow.circlepath")
+            if !draftingOnly {
+                Button {
+                    viewModel.showHistoryPanel.toggle()
+                } label: {
+                    Label(FloeCADStrings.label("cad.toolbar.history", "Feature Tree"),
+                          systemImage: "clock.arrow.circlepath")
+                }
             }
             Button {
                 showVersions = true
@@ -2770,12 +2826,46 @@ struct FloeCADEditorView: View {
         .background(.bar)
     }
 
+    private func fencePendingFileImport(_ viewModel: EditorViewModel) {
+        importTask?.cancel()
+        viewModel.fenceManualImportOperations()
+        showImporter = false
+        fileImportOwner = nil
+        pickerSketchImportContext = nil
+        viewModel.pendingDrawingTransfer = nil
+        pendingSketchDrawingImport = nil
+    }
+
+    private func presentFileImport(_ request: ImportRequest, intoCurrentSketch: Bool = false,
+                                   viewModel: EditorViewModel) {
+        guard !document.isClosed,
+              !draftingOnly || request == .dxf || request == .image else { return }
+        lastManualImportRequest = request
+        lastManualImportIntoCurrentSketch = intoCurrentSketch
+        do {
+            let context = intoCurrentSketch ? try document.currentSketchImportContext() : nil
+            fencePendingFileImport(viewModel)
+            fileImportOwner = ObjectIdentifier(document)
+            pickerSketchImportContext = context
+            viewModel.manualImportProblem = nil
+            importRequest = request
+            showImporter = true
+        } catch {
+            viewModel.manualImportProblem = error.localizedDescription
+        }
+    }
+
     /// The one Import-menu completion handler; `importRequest` says which
     /// entry opened the picker. Every kind shares the same OFF-MAIN read and
     /// keeps its own feature semantics once the bytes are in hand.
     private func handleImport(
         _ result: Result<[URL], Error>, viewModel: EditorViewModel
     ) {
+        guard fileImportOwner == ObjectIdentifier(document), !document.isClosed,
+              !draftingOnly || importRequest == .dxf || importRequest == .image else { return }
+        fileImportOwner = nil
+        let sketchContext = pickerSketchImportContext
+        pickerSketchImportContext = nil
         let urls: [URL]
         switch result {
         case .success(let selected): urls = selected
@@ -2790,7 +2880,7 @@ struct FloeCADEditorView: View {
         if importRequest == .mesh {
             beginMeshGroupImport(urls: urls, viewModel: viewModel)
         } else if urls.count == 1, let url = urls.first {
-            beginImport(from: url, request: importRequest, viewModel: viewModel)
+            beginImport(from: url, request: importRequest, sketchContext: sketchContext, viewModel: viewModel)
         } else {
             lastManualImportRequest = importRequest
             viewModel.manualImportProblem = FloeCADStrings.text("cad.import.oneSource", "Select one source file for this import.")
@@ -2828,8 +2918,11 @@ struct FloeCADEditorView: View {
     /// The picker selection is the user's own import action, not a model/tool
     /// grant: nothing here widens file access for an agent path.
     private func beginImport(from url: URL, request: ImportRequest,
+                             sketchContext: CADSketchImportContext? = nil,
                              viewModel: EditorViewModel) {
+        guard !draftingOnly || request == .dxf || request == .image else { return }
         lastManualImportRequest = request
+        lastManualImportIntoCurrentSketch = sketchContext != nil
         importTask?.cancel()
         importTask = Task { @MainActor in
             let operation = viewModel.beginManualImportOperation()
@@ -2867,7 +2960,15 @@ struct FloeCADEditorView: View {
                     do {
                         let prepared = try await decoder(source.data, source.fileName)
                         guard !Task.isCancelled, viewModel.isCurrentManualImport(operation), !document.isClosed else { return }
-                        try document.queueDrawingTransfer(prepared)
+                        if let sketchContext {
+                            try prepared.validate()
+                            // Keep append intent with its source. Losing this
+                            // presentation can never fall back to a new sketch.
+                            pendingSketchDrawingImport = PendingSketchDrawingImport(source: prepared, context: sketchContext)
+                        } else {
+                            try document.queueDrawingTransfer(prepared)
+                            pendingSketchDrawingImport = nil
+                        }
                     } catch {
                         guard viewModel.isCurrentManualImport(operation) else { return }
                         viewModel.manualImportProblem = error.localizedDescription
@@ -2892,6 +2993,39 @@ struct FloeCADEditorView: View {
         case "step", "stp": return .step
         case "iges", "igs": return .iges
         default: return nil
+        }
+    }
+
+    @ViewBuilder
+    private func drawingTransferSheet(_ viewModel: EditorViewModel) -> some View {
+        if let pending = pendingSketchDrawingImport {
+            CADSketchTransferSheet(source: pending.source, hasSelection: viewModel.activeSketch != nil,
+                                  destination: .currentSketch) { placement in
+                guard pendingSketchDrawingImport?.id == pending.id,
+                      viewModel.pendingDrawingTransfer == nil else {
+                    throw CADSketchImportError.targetChanged
+                }
+                _ = try document.appendDrawingTransfer(pending.source, placement: placement, context: pending.context)
+                pendingSketchDrawingImport = nil
+            }
+            .id(pending.id)
+        } else if let transfer = viewModel.pendingDrawingTransfer {
+            let presentationID = viewModel.drawingTransferPresentationID
+            CADSketchTransferSheet(source: transfer,
+                hasSelection: draftingOnly ? viewModel.activeSketch != nil : viewModel.drawingImportSelectionAvailable,
+                destination: draftingOnly ? .currentDrawingPlane : .choosePlane) { placement in
+                guard viewModel.pendingDrawingTransfer != nil,
+                      viewModel.drawingTransferPresentationID == presentationID else {
+                    throw CADSketchImportError.targetChanged
+                }
+                // Standalone 2D still creates a new drawing sketch, on its
+                // current plane. Generic 3D import keeps every plane choice.
+                guard !draftingOnly || (placement.target == .selected && viewModel.activeSketch != nil) else {
+                    throw CADSketchImportError.targetUnavailable
+                }
+                try viewModel.importDrawingTransfer(transfer, placement: placement)
+            }
+            .id(presentationID)
         }
     }
 
@@ -2921,9 +3055,8 @@ struct FloeCADEditorView: View {
                     canvasActionStatusBar
                     if let problem = viewModel.manualImportProblem {
                         CADImportProblemBar(message: problem, onChooseFile: {
-                            guard !document.isClosed else { return }
-                            importRequest = lastManualImportRequest ?? importRequest
-                            showImporter = true
+                            presentFileImport(lastManualImportRequest ?? importRequest,
+                                intoCurrentSketch: lastManualImportIntoCurrentSketch, viewModel: viewModel)
                         }, onClose: { viewModel.manualImportProblem = nil })
                     }
                 }
@@ -2944,16 +3077,15 @@ struct FloeCADEditorView: View {
                 handleImport(result, viewModel: viewModel)
             }
             .sheet(isPresented: Binding(
-                get: { viewModel.pendingDrawingTransfer != nil },
-                set: { if !$0 { viewModel.pendingDrawingTransfer = nil } }
-            )) {
-                if let transfer = viewModel.pendingDrawingTransfer {
-                    CADSketchTransferSheet(source: transfer,
-                        hasSelection: viewModel.drawingImportSelectionAvailable) { placement in
-                        try viewModel.importDrawingTransfer(transfer, placement: placement)
+                get: { pendingSketchDrawingImport != nil || viewModel.pendingDrawingTransfer != nil },
+                set: {
+                    if !$0 {
+                        viewModel.pendingDrawingTransfer = nil
+                        pendingSketchDrawingImport = nil
                     }
-                    .id(viewModel.drawingTransferPresentationID)
                 }
+            )) {
+                drawingTransferSheet(viewModel)
             }
             .sheet(item: $pendingMeshImport) { pending in
                 MeshUnitPromptSheet(probe: pending.probe) { unit in
@@ -3006,6 +3138,10 @@ struct FloeCADEditorView: View {
                     viewModel.fenceManualImportOperations()
                     importTask?.cancel()
                     importTask = nil
+                    showImporter = false
+                    fileImportOwner = nil
+                    pickerSketchImportContext = nil
+                    pendingSketchDrawingImport = nil
                 }
             }
             .photosPicker(

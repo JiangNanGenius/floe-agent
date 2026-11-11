@@ -42,6 +42,7 @@ import FloeCore
                 }
             }
             .environment(\.cadWorkbenchTransientlyCovered, true)
+            .modifier(CADLibrarySketchImportEntry(document: document))
             .modifier(CADOfflineRenderEntry(document: document, root: destination.sourceRoot,
                 workspaceID: destination.workspaceID, conversationID: destination.conversationID))
             .navigationTitle(document.name)

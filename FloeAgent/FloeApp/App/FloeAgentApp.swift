@@ -1784,7 +1784,8 @@ struct RootView: View {
                       systemImage: "bubble.left")
             }
             Spacer(minLength: 0)
-            ConversationActivityBadge(conversationID: conversation.id, center: environment.conversationCenter)
+            ConversationActivityBadge(conversationID: conversation.id, center: environment.conversationCenter,
+                onOpen: inlineSelection.isActive ? nil : { runID in router.openConversation(conversation.id, runID: runID) })
         }
         .lineLimit(1)
         .tag(SidebarSelection.workbench(.conversation(conversation.id)))

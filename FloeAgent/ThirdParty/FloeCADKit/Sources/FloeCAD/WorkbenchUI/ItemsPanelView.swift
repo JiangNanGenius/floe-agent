@@ -23,6 +23,7 @@ struct ItemsMoveTarget: Identifiable {
 
 struct ItemsPanelView: View {
     @Bindable var viewModel: EditorViewModel
+    var draftingOnly = false
 
     /// Folders shown collapsed (view state — not part of the document).
     @State private var collapsedFolders: Set<ItemFolderID> = []
@@ -43,17 +44,19 @@ struct ItemsPanelView: View {
                     }
                 }
 
-                sectionHeader(FloeCADStrings.text("cad.ui.items.bodies", "Bodies"))
-                let looseBodies = document.bodies.filter { !filed.contains(.body($0.id)) }
-                if looseBodies.isEmpty {
-                    emptyRow(document.bodies.isEmpty
-                             ? FloeCADStrings.text("cad.ui.items.noBodies", "No bodies yet")
-                             : "All bodies are in folders")
-                }
-                ForEach(looseBodies) { body in
-                    itemRow(.body(body.id), depth: 0, tree: tree)
-                }
+                if !draftingOnly {
+                    sectionHeader(FloeCADStrings.text("cad.ui.items.bodies", "Bodies"))
+                    let looseBodies = document.bodies.filter { !filed.contains(.body($0.id)) }
+                    if looseBodies.isEmpty {
+                        emptyRow(document.bodies.isEmpty
+                                 ? FloeCADStrings.text("cad.ui.items.noBodies", "No bodies yet")
+                                 : "All bodies are in folders")
+                    }
+                    ForEach(looseBodies) { body in
+                        itemRow(.body(body.id), depth: 0, tree: tree)
+                    }
 
+                }
                 sectionHeader(FloeCADStrings.text("cad.ui.items.sketches", "Sketches"))
                 let sketches = viewModel.itemSketches
                 let looseSketches = sketches.filter { !filed.contains(.sketch($0.id)) }
@@ -105,90 +108,92 @@ struct ItemsPanelView: View {
                     itemRow(.image(image.id), depth: 0, tree: tree)
                 }
 
-                sectionHeader(FloeCADStrings.text("cad.ui.items.planes", "Planes"))
-                let loosePlanes = document.planes.filter { !filed.contains(.plane($0.id)) }
-                if loosePlanes.isEmpty {
-                    emptyRow(document.planes.isEmpty
-                             ? FloeCADStrings.text("cad.ui.items.noPlanes", "No planes yet")
-                             : "All planes are in folders")
-                }
-                ForEach(loosePlanes) { plane in
-                    itemRow(.plane(plane.id), depth: 0, tree: tree)
-                }
-                if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
-                    Button {
-                        viewModel.showThreePointPlaneSheet = true
-                    } label: {
-                        Label(FloeCADStrings.text("cad.datum.addThreePoint", "3-Point Plane"),
-                              systemImage: "triangle")
-                            .font(.caption)
+                if !draftingOnly {
+                    sectionHeader(FloeCADStrings.text("cad.ui.items.planes", "Planes"))
+                    let loosePlanes = document.planes.filter { !filed.contains(.plane($0.id)) }
+                    if loosePlanes.isEmpty {
+                        emptyRow(document.planes.isEmpty
+                                 ? FloeCADStrings.text("cad.ui.items.noPlanes", "No planes yet")
+                                 : "All planes are in folders")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .accessibilityIdentifier("ItemsAddThreePointPlane")
-                }
-
-                sectionHeader(FloeCADStrings.text("cad.ui.items.axes", "Axes"))
-                let looseAxes = document.axes.filter { !filed.contains(.axis($0.id)) }
-                if looseAxes.isEmpty {
-                    emptyRow(document.axes.isEmpty
-                             ? FloeCADStrings.text("cad.ui.items.noAxes", "No axes yet")
-                             : "All axes are in folders")
-                }
-                ForEach(looseAxes) { axis in
-                    itemRow(.axis(axis.id), depth: 0, tree: tree)
-                }
-                if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
-                    Button {
-                        viewModel.showDatumAxisCreateSheet = true
-                    } label: {
-                        Label(FloeCADStrings.text("cad.datum.addAxis", "Add Axis"),
-                              systemImage: "line.diagonal.arrow")
-                            .font(.caption)
+                    ForEach(loosePlanes) { plane in
+                        itemRow(.plane(plane.id), depth: 0, tree: tree)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .accessibilityIdentifier("ItemsAddAxis")
-                }
-
-                sectionHeader(FloeCADStrings.text("cad.ui.items.points", "Points"))
-                if document.datumPoints.isEmpty {
-                    emptyRow(FloeCADStrings.text("cad.ui.items.noPoints", "No points yet"))
-                }
-                ForEach(document.datumPoints) { point in
-                    ItemRowView(
-                        icon: "smallcircle.filled.circle",
-                        name: point.name,
-                        isHidden: point.isHidden,
-                        renameable: true,
-                        isSelected: viewModel.selectedDatumPointID == point.id,
-                        depth: 0,
-                        onEdit: point.definition != nil && !viewModel.session.isReadOnly
-                            ? { viewModel.openDatumPointSheet(point.id) } : nil,
-                        onSelect: { viewModel.selectDatumPoint(point.id) },
-                        onToggleVisibility: {
-                            viewModel.setDatumPointHidden(point.id, hidden: !point.isHidden)
-                        },
-                        onRename: { viewModel.renameDatumPoint(point.id, to: $0) },
-                        onZoom: {},
-                        onDelete: { _ = viewModel.deleteDatumPoint(point.id) })
-                }
-                if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
-                    Button {
-                        viewModel.openDatumPointSheet(nil)
-                    } label: {
-                        Label(FloeCADStrings.text("cad.datum.addPoint", "Add Point"),
-                              systemImage: "smallcircle.filled.circle")
-                            .font(.caption)
+                    if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
+                        Button {
+                            viewModel.showThreePointPlaneSheet = true
+                        } label: {
+                            Label(FloeCADStrings.text("cad.datum.addThreePoint", "3-Point Plane"),
+                                  systemImage: "triangle")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .accessibilityIdentifier("ItemsAddThreePointPlane")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .accessibilityIdentifier("ItemsAddDatumPoint")
-                }
 
+                    sectionHeader(FloeCADStrings.text("cad.ui.items.axes", "Axes"))
+                    let looseAxes = document.axes.filter { !filed.contains(.axis($0.id)) }
+                    if looseAxes.isEmpty {
+                        emptyRow(document.axes.isEmpty
+                                 ? FloeCADStrings.text("cad.ui.items.noAxes", "No axes yet")
+                                 : "All axes are in folders")
+                    }
+                    ForEach(looseAxes) { axis in
+                        itemRow(.axis(axis.id), depth: 0, tree: tree)
+                    }
+                    if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
+                        Button {
+                            viewModel.showDatumAxisCreateSheet = true
+                        } label: {
+                            Label(FloeCADStrings.text("cad.datum.addAxis", "Add Axis"),
+                                  systemImage: "line.diagonal.arrow")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .accessibilityIdentifier("ItemsAddAxis")
+                    }
+
+                    sectionHeader(FloeCADStrings.text("cad.ui.items.points", "Points"))
+                    if document.datumPoints.isEmpty {
+                        emptyRow(FloeCADStrings.text("cad.ui.items.noPoints", "No points yet"))
+                    }
+                    ForEach(document.datumPoints) { point in
+                        ItemRowView(
+                            icon: "smallcircle.filled.circle",
+                            name: point.name,
+                            isHidden: point.isHidden,
+                            renameable: true,
+                            isSelected: viewModel.selectedDatumPointID == point.id,
+                            depth: 0,
+                            onEdit: point.definition != nil && !viewModel.session.isReadOnly
+                                ? { viewModel.openDatumPointSheet(point.id) } : nil,
+                            onSelect: { viewModel.selectDatumPoint(point.id) },
+                            onToggleVisibility: {
+                                viewModel.setDatumPointHidden(point.id, hidden: !point.isHidden)
+                            },
+                            onRename: { viewModel.renameDatumPoint(point.id, to: $0) },
+                            onZoom: {},
+                            onDelete: { _ = viewModel.deleteDatumPoint(point.id) })
+                    }
+                    if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
+                        Button {
+                            viewModel.openDatumPointSheet(nil)
+                        } label: {
+                            Label(FloeCADStrings.text("cad.datum.addPoint", "Add Point"),
+                                  systemImage: "smallcircle.filled.circle")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .accessibilityIdentifier("ItemsAddDatumPoint")
+                    }
+
+                }
                 sectionHeader(FloeCADStrings.text("cad.ui.items.symbols", "Symbols"), dropsToTopLevel: false)
                 if document.symbols.isEmpty {
                     emptyRow(FloeCADStrings.text("cad.ui.items.noSymbols", "No symbols yet"))
@@ -231,7 +236,8 @@ struct ItemsPanelView: View {
                 .font(.subheadline.weight(.semibold))
             Spacer()
             Button {
-                viewModel.createItemFolder()
+                if draftingOnly { viewModel.createItemFolder(containing: []) }
+                else { viewModel.createItemFolder() }
             } label: {
                 Image(systemName: "folder.badge.plus")
                     .font(.system(size: 15))
@@ -253,14 +259,18 @@ struct ItemsPanelView: View {
     private func folderRows(_ folder: ItemFolder, depth: Int, tree: ItemFolderTree) -> AnyView {
         let collapsed = collapsedFolders.contains(folder.id)
         let children = tree.children(of: folder.id)
-        let liveMembers = folder.members.filter { viewModel.isItemHidden($0) != nil }
+        let subtreeItems = tree.keys(inSubtree: folder.id)
+        let drawingItems = subtreeItems.filter { allowsItem($0) && viewModel.isItemHidden($0) != nil }
+        let folderHidden = draftingOnly ? (!drawingItems.isEmpty && drawingItems.allSatisfy { viewModel.isItemHidden($0) == true })
+            : viewModel.itemFolderIsHidden(folder.id)
+        let liveMembers = folder.members.filter { allowsItem($0) && viewModel.isItemHidden($0) != nil }
         return AnyView(
             Group {
                 FolderRowView(
                     name: folder.name,
                     depth: depth,
-                    isHidden: viewModel.itemFolderIsHidden(folder.id),
-                    holdsItems: !tree.keys(inSubtree: folder.id).contains { viewModel.isItemHidden($0) != nil } == false,
+                    isHidden: folderHidden,
+                    holdsItems: !drawingItems.isEmpty,
                     isCollapsed: collapsed,
                     hasContents: !liveMembers.isEmpty || !children.isEmpty,
                     dragPayload: ItemsDragPayload.folder(folder.id),
@@ -269,7 +279,15 @@ struct ItemsPanelView: View {
                         if collapsed { collapsedFolders.remove(folder.id) } else { collapsedFolders.insert(folder.id) }
                     },
                     onToggleVisibility: {
-                        viewModel.setItemFolderHidden(folder.id, hidden: !viewModel.itemFolderIsHidden(folder.id))
+                        if draftingOnly {
+                            for key in drawingItems {
+                                switch key {
+                                case .sketch(let id): viewModel.setItemHidden(.sketch(id), hidden: !folderHidden)
+                                case .image(let id): viewModel.setImageHidden(id, hidden: !folderHidden)
+                                default: break
+                                }
+                            }
+                        } else { viewModel.setItemFolderHidden(folder.id, hidden: !folderHidden) }
                     },
                     onRename: { viewModel.renameItemFolder(folder.id, to: $0) },
                     onNewSubfolder: {
@@ -278,6 +296,7 @@ struct ItemsPanelView: View {
                     },
                     onMove: { viewModel.moveItemFolder(folder.id, into: $0) },
                     onRemove: { viewModel.removeItemFolder(folder.id) },
+                    allowsDeleteAll: !draftingOnly || subtreeItems.allSatisfy { allowsItem($0) },
                     onDeleteAll: { viewModel.deleteItemFolderAndItems(folder.id) },
                     onDrop: { payloads in
                         collapsedFolders.remove(folder.id)
@@ -305,6 +324,7 @@ struct ItemsPanelView: View {
     }
 
     private func rowView(for key: DocumentItemKey, depth: Int, tree: ItemFolderTree) -> ItemRowView? {
+        guard allowsItem(key) else { return nil }
         let document = viewModel.session.document
         let targets = moveTargets(forItem: key, tree: tree)
         let payload = ItemsDragPayload.item(key)
@@ -382,6 +402,14 @@ struct ItemsPanelView: View {
         }
     }
 
+    private func allowsItem(_ key: DocumentItemKey) -> Bool {
+        guard draftingOnly else { return true }
+        switch key {
+        case .sketch, .image: return true
+        case .body, .plane, .axis: return false
+        }
+    }
+
     private func moveTargets(forItem key: DocumentItemKey, tree: ItemFolderTree) -> [ItemsMoveTarget] {
         let current = tree.folder(containing: key)
         return [ItemsMoveTarget(id: nil,
@@ -409,7 +437,8 @@ struct ItemsPanelView: View {
     private func handleDrop(_ payloads: [AppDragPayload], into folder: ItemFolderID?) -> Bool {
         let decoded = ItemsDragPayload.decode(payloads)
         guard !decoded.keys.isEmpty || !decoded.folders.isEmpty else { return false }
-        if !decoded.keys.isEmpty { viewModel.moveItems(decoded.keys, toFolder: folder) }
+        let keys = decoded.keys.filter { allowsItem($0) }
+        if !keys.isEmpty { viewModel.moveItems(keys, toFolder: folder) }
         for id in decoded.folders { viewModel.moveItemFolder(id, into: folder) }
         return true
     }
@@ -517,6 +546,7 @@ private struct FolderRowView: View {
     let onNewSubfolder: () -> Void
     let onMove: (ItemFolderID?) -> Void
     let onRemove: () -> Void
+    var allowsDeleteAll = true
     let onDeleteAll: () -> Void
     let onDrop: ([AppDragPayload]) -> Bool
 
@@ -620,6 +650,7 @@ private struct FolderRowView: View {
                 Label(FloeCADStrings.label("cad.ui.items.deleteFolderAndItems", "Delete Folder and Items"),
                       systemImage: "trash")
             }
+            .disabled(!allowsDeleteAll)
     }
 }
 

@@ -354,9 +354,17 @@ struct WhisperKitRecognitionModel: SpeechRecognitionModelInstance, @unchecked Se
     /// mapped by `SpeechRecognitionTimedMapping`; no timing is synthesized
     /// from the whole asset or a text-only result.
     func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [SpeechRecognitionTimedSegment] {
+        try await transcribeTimed(audio: audio, decoding: decoding, onPartial: { _ in })
+    }
+    func transcribeTimed(audio: [Float], decoding: SpeechRecognitionDecoding,
+                         onPartial: @escaping @Sendable (String) -> Void) async throws -> [SpeechRecognitionTimedSegment] {
         let options = DecodingOptions(language: decoding.languageCode, detectLanguage: decoding.detectLanguage,
                                       skipSpecialTokens: true, withoutTimestamps: false, wordTimestamps: true)
-        let results = try await kit.transcribe(audioArray: audio, decodeOptions: options)
+        let results = try await kit.transcribe(audioArray: audio, decodeOptions: options, callback: { progress in
+            guard !Task.isCancelled else { return false }
+            onPartial(progress.text)
+            return nil
+        })
         let raw = results.flatMap(\.segments).map { segment in
             SpeechRecognitionTimedMapping.RawSegment(
                 start: segment.start,

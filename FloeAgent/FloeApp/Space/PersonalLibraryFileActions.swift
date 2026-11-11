@@ -410,7 +410,7 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         case .electronics: try await ElectronicsProjectSession.prepareForFileAction(id: record.id, directory: directory)
         case .geography: try await GISProjectSession.prepareForFileAction(id: record.id, directory: directory)
         case .image, .drawing, .video: try MediaV2Session.requireIdleForDeletion(id: record.id)
-        case .meeting: await MeetingProjectSession.prepareForDeletion(id: record.id)
+        case .meeting: try await MeetingProjectSession.prepareForDeletion(id: record.id)
         case .chemistry:
             guard let environment else { throw PersonalContentError.storageUnavailable }
             try await ChemistryProjectSession.prepareForLibraryDeletion(record: record, directory: directory,

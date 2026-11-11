@@ -21,6 +21,25 @@ public enum ConversationVisibility: String, Codable, Sendable, Hashable {
     case normal, skillAuthoring
 }
 
+/// Durable native editor ownership. Presentation ownership never grants
+/// document access and remains independent of ordinary run execution purpose.
+public struct ConversationEditorOwnership: Codable, Sendable, Hashable {
+    public enum Kind: String, Codable, Sendable, Hashable { case file, canvas }
+    public let kind: Kind
+    public let documentID: UUID
+    public let containerID: UUID
+
+    public init(kind: Kind, documentID: UUID, containerID: UUID) {
+        self.kind = kind; self.documentID = documentID; self.containerID = containerID
+    }
+    public static func file(_ id: UUID) -> Self {
+        .init(kind: .file, documentID: id, containerID: id)
+    }
+    public static func canvas(_ id: UUID, documentID: UUID) -> Self {
+        .init(kind: .canvas, documentID: documentID, containerID: id)
+    }
+}
+
 /// A conversation row with its plain-text projection. Structured multimodal
 /// parts are loaded separately via `parts(messageID:)`.
 public struct ConversationRecord: Sendable, Hashable, Identifiable {
@@ -32,6 +51,7 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
     public var archivedAt: Date?
     public var purpose: ConversationPurpose
     public var visibility: ConversationVisibility
+    public var editorOwnership: ConversationEditorOwnership?
     /// Optional durable sidebar pin (schema v55). `nil` for every row written
     /// before pinning existed and for ordinary unpinned rows. Pinning is
     /// presentation metadata on the SAME conversation row — never a
@@ -50,7 +70,8 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         archivedAt: Date? = nil,
         purpose: ConversationPurpose = .ordinary,
         visibility: ConversationVisibility = .normal,
-        pinnedAt: Date? = nil
+        pinnedAt: Date? = nil,
+        editorOwnership: ConversationEditorOwnership? = nil
     ) {
         self.id = id
         self.title = title
@@ -61,13 +82,14 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         self.purpose = purpose
         self.visibility = visibility
         self.pinnedAt = pinnedAt
+        self.editorOwnership = editorOwnership
     }
 }
 
 public extension ConversationRecord {
     var isPinned: Bool { pinnedAt != nil }
     var isVisibleInOrdinaryList: Bool {
-        purpose == .ordinary && visibility == .normal && archivedAt == nil
+        purpose == .ordinary && visibility == .normal && archivedAt == nil && editorOwnership == nil
     }
 }
 
@@ -172,6 +194,10 @@ public protocol ConversationStore: Sendable {
     func saveConversation(_ conversation: ConversationRecord) async throws
     /// Atomically saves an ordinary conversation with its canonical task workspace.
     func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws
+    /// Claims native ownership without changing an existing different owner.
+    func claimEditorOwnership(id: UUID, owner: ConversationEditorOwnership) async throws
+    func editorConversations(owner: ConversationEditorOwnership) async throws -> [ConversationRecord]
+    func editorConversations(kind: ConversationEditorOwnership.Kind, containerID: UUID) async throws -> [ConversationRecord]
     func conversations() async throws -> [ConversationRecord]
     func conversations(includeArchived: Bool) async throws -> [ConversationRecord]
     func conversation(id: UUID) async throws -> ConversationRecord?
@@ -220,6 +246,16 @@ public protocol ConversationStore: Sendable {
 }
 
 public extension ConversationStore {
+    func editorConversations(kind: ConversationEditorOwnership.Kind, containerID: UUID) async throws -> [ConversationRecord] {
+        throw FloeError.storageCorrupted("Durable editor history is unavailable for this store")
+    }
+    func editorConversations(owner: ConversationEditorOwnership) async throws -> [ConversationRecord] {
+        throw FloeError.storageCorrupted("Durable editor history is unavailable for this store")
+    }
+    func claimEditorOwnership(id: UUID, owner: ConversationEditorOwnership) async throws {
+        throw FloeError.storageCorrupted("Durable editor ownership is unavailable for this store")
+    }
+
     /// Non-durable stores must not approximate this with two independent writes.
     func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws {
         throw FloeError.storageCorrupted("Atomic conversation/workspace creation is unavailable for this store")
@@ -333,6 +369,51 @@ public actor SQLiteConversationStore: ConversationStore {
                 conversation.pinnedAt.map { PersistenceCodec.encode($0) }
             ]
         )
+        if let owner = conversation.editorOwnership {
+            // Row and ownership commit in this SAME writer transaction: there
+            // is never a committed ordinary row awaiting an ownership write.
+            try claimEditorOwnership(id: conversation.id, owner: owner, db: db)
+        }
+    }
+
+    public func editorConversations(kind: ConversationEditorOwnership.Kind, containerID: UUID) async throws -> [ConversationRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM conversations WHERE editor_owner_kind=? AND editor_container_id=? ORDER BY updated_at DESC,id",
+                arguments: [kind.rawValue, containerID.uuidString]).map { try Self.conversation(from: $0) }
+        }
+    }
+
+    public func editorConversations(owner: ConversationEditorOwnership) async throws -> [ConversationRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM conversations WHERE editor_owner_kind=? AND editor_document_id=? AND editor_container_id=? ORDER BY updated_at DESC,id",
+                arguments: [owner.kind.rawValue, owner.documentID.uuidString, owner.containerID.uuidString])
+                .map { try Self.conversation(from: $0) }
+        }
+    }
+
+    public func claimEditorOwnership(id: UUID, owner: ConversationEditorOwnership) async throws {
+        try await database.writer { db in
+            try Self.claimEditorOwnership(id: id, owner: owner, db: db)
+        }
+    }
+
+    private static func claimEditorOwnership(id: UUID, owner: ConversationEditorOwnership, db: Database) throws {
+        guard owner.kind != .file || owner.documentID == owner.containerID else {
+            throw FloeError.validationFailed("Invalid file assistant ownership")
+        }
+        guard let row = try Row.fetchOne(db, sql: "SELECT * FROM conversations WHERE id = ?",
+                                        arguments: [id.uuidString]) else {
+            throw FloeError.notFound("conversation")
+        }
+        guard row["purpose"] as String? == "ordinary", row["visibility"] as String? == "normal" else {
+            throw FloeError.validationFailed("This conversation belongs to another feature")
+        }
+        if let existing = try editorOwnership(from: row) {
+            guard existing == owner else { throw FloeError.validationFailed("Editor ownership changed") }
+            return
+        }
+        try db.execute(sql: "UPDATE conversations SET editor_owner_kind=?, editor_document_id=?, editor_container_id=? WHERE id=?",
+            arguments: [owner.kind.rawValue, owner.documentID.uuidString, owner.containerID.uuidString, id.uuidString])
     }
 
     public func conversations() async throws -> [ConversationRecord] {
@@ -344,8 +425,8 @@ public actor SQLiteConversationStore: ConversationStore {
             try Row.fetchAll(
                 db,
                 sql: includeArchived
-                    ? "SELECT * FROM conversations WHERE purpose = 'ordinary' AND visibility = 'normal' ORDER BY updated_at DESC, id"
-                    : "SELECT * FROM conversations WHERE purpose = 'ordinary' AND visibility = 'normal' AND archived_at IS NULL ORDER BY updated_at DESC, id"
+                    ? "SELECT * FROM conversations WHERE purpose = 'ordinary' AND visibility = 'normal' AND editor_owner_kind IS NULL AND editor_document_id IS NULL AND editor_container_id IS NULL ORDER BY updated_at DESC, id"
+                    : "SELECT * FROM conversations WHERE purpose = 'ordinary' AND visibility = 'normal' AND editor_owner_kind IS NULL AND editor_document_id IS NULL AND editor_container_id IS NULL AND archived_at IS NULL ORDER BY updated_at DESC, id"
             ).map(Self.conversation(from:))
         }
     }
@@ -430,7 +511,7 @@ public actor SQLiteConversationStore: ConversationStore {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                    SELECT title, title_origin, purpose, visibility, archived_at
+                    SELECT title, title_origin, purpose, visibility, archived_at, editor_owner_kind, editor_document_id, editor_container_id
                     FROM conversations WHERE id = ?
                     """,
                 arguments: [conversationID]
@@ -441,6 +522,9 @@ public actor SQLiteConversationStore: ConversationStore {
             let archivedAt = row["archived_at"] as String?
             guard purpose == "ordinary",
                   row["visibility"] as String? == ConversationVisibility.normal.rawValue,
+                  row["editor_owner_kind"] as String? == nil,
+                  row["editor_document_id"] as String? == nil,
+                  row["editor_container_id"] as String? == nil,
                   title.isEmpty,
                   titleOrigin == "autoPending",
                   archivedAt == nil
@@ -520,13 +604,16 @@ public actor SQLiteConversationStore: ConversationStore {
             // (plus its ephemeral store rejects `setPinned` entirely).
             guard let row = try Row.fetchOne(
                 db,
-                sql: "SELECT purpose, visibility FROM conversations WHERE id = ?",
+                sql: "SELECT purpose, visibility, editor_owner_kind, editor_document_id, editor_container_id FROM conversations WHERE id = ?",
                 arguments: [id.uuidString]
             ) else {
                 throw FloeError.notFound("conversation \(id.uuidString)")
             }
             guard row["purpose"] as String? == ConversationPurpose.ordinary.rawValue,
-                  row["visibility"] as String? == ConversationVisibility.normal.rawValue
+                  row["visibility"] as String? == ConversationVisibility.normal.rawValue,
+                  row["editor_owner_kind"] as String? == nil,
+                  row["editor_document_id"] as String? == nil,
+                  row["editor_container_id"] as String? == nil
             else {
                 throw FloeError.validationFailed("Only ordinary conversations can be pinned")
             }
@@ -756,6 +843,19 @@ public actor SQLiteConversationStore: ConversationStore {
 
     // MARK: - Row mapping
 
+    private static func editorOwnership(from row: Row) throws -> ConversationEditorOwnership? {
+        let kind = row["editor_owner_kind"] as String?
+        let document = row["editor_document_id"] as String?
+        let container = row["editor_container_id"] as String?
+        if kind == nil && document == nil && container == nil { return nil }
+        guard let kind, let parsedKind = ConversationEditorOwnership.Kind(rawValue: kind),
+              let document, let documentID = UUID(uuidString: document),
+              let container, let containerID = UUID(uuidString: container) else {
+            throw FloeError.storageCorrupted("Invalid editor conversation ownership")
+        }
+        return .init(kind: parsedKind, documentID: documentID, containerID: containerID)
+    }
+
     private static func conversation(from row: Row) throws -> ConversationRecord {
         guard let id = UUID(uuidString: row["id"]) else {
             throw FloeError.storageCorrupted("Invalid conversation identifier")
@@ -770,7 +870,8 @@ public actor SQLiteConversationStore: ConversationStore {
             archivedAt: (row["archived_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) },
             purpose: ConversationPurpose(rawValue: row["purpose"]) ?? .ordinary,
             visibility: ConversationVisibility(rawValue: row["visibility"] as String? ?? "normal") ?? .normal,
-            pinnedAt: (row["pinned_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) }
+            pinnedAt: (row["pinned_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) },
+            editorOwnership: try editorOwnership(from: row)
         )
     }
 

@@ -29,6 +29,9 @@ import FloeTools
     /// recording start from the user's selected service; nil keeps the
     /// file-chunk queue as the only path.
     var continuousASR: MeetingContinuousASR?
+    var speakerRecognition: MeetingSpeakerRecognition?
+    var isStoppingForFileAction = false
+    private var captureIntent = UUID()
     var isUpdatingMinutes = false
     var rollingSummaryGeneration = UUID()
     private var captureSettlement: Task<Void, Never>?
@@ -97,19 +100,28 @@ import FloeTools
             guard let asr = value?.continuousASR, asr.isLiveActive else { return (false, []) }
             return (true, asr.coveredSnapshot())
         }
+        do {
+            value.speakerRecognition = try MeetingSpeakerRecognition(meeting: MeetingID(id), root: directory, service: service,
+                onChange: { [weak value] in await value?.liveTranscriptDidChange() })
+        } catch { value.diagnostic = error.localizedDescription }
         sessions[id] = value
         await service.setCaptureEventHandler { [weak value] event in
             Task { @MainActor in await value?.receiveCaptureEvent(event) }
         }
         await value.refresh()
+        await value.speakerRecognition?.resumeSavedWork()
         // A tool inspection must not create a replacement notebook or link.
         // The native meeting UI retains its existing first-open creation path.
         if createNotebookIfMissing { await value.loadNotebook() }
         return value
     }
-    static func prepareForDeletion(id: UUID) async {
+    static func prepareForDeletion(id: UUID) async throws {
         guard let value = sessions[id] else { return }
-        await value.stopOwnedProcessing()
+        value.isStoppingForFileAction = true
+        guard await value.stopOwnedProcessing() else {
+            value.isStoppingForFileAction = false
+            throw PersonalFileActionError.busy
+        }
         sessions.removeValue(forKey: id)
     }
     func refresh() async {
@@ -117,6 +129,9 @@ import FloeTools
             meeting = try await service.meeting(MeetingID(id))
             recordings = try await service.sessions(meeting: MeetingID(id))
             transcript = try await service.transcript(meeting: MeetingID(id))
+            if !isStoppingForFileAction, try await speakerRecognition?.applyStored(rows: transcript.map { (originalCaptureSession(for: $0.sessionID), $0) }) == true {
+                transcript = try await service.transcript(meeting: MeetingID(id))
+            }
             transcriptPartials = await service.currentPartials(meeting: MeetingID(id))
             notes = try await service.notes(meeting: MeetingID(id))
             todos = try await service.todos(meeting: MeetingID(id))
@@ -155,7 +170,8 @@ import FloeTools
         transcript.first(where: { $0.id == id }) ?? sourceReferences[id]
     }
     func startRecording() async {
-        guard !changingCapture, !isRecording else { return }
+        guard !isStoppingForFileAction, !changingCapture, !isRecording else { return }
+        let intent = UUID(); captureIntent = intent
         changingCapture = true; diagnostic = nil
         defer { changingCapture = false }
         do {
@@ -163,34 +179,47 @@ import FloeTools
             guard await AVAudioApplication.requestRecordPermission() else {
                 throw MeetingError.captureBackendFailed(IDELanguageRunText.t("请在系统设置中允许 Floe 使用麦克风，再开始录音。", "Allow Floe to use the microphone in system settings, then start recording."))
             }
+            guard !isStoppingForFileAction, captureIntent == intent else { throw CancellationError() }
+            try Task.checkCancellation()
             try audio.acquireRecording(); audioHeld = true
             configureLiveTranscription()
             await prepareContinuousASR()
+            await speakerRecognition?.prepare()
+            guard !isStoppingForFileAction, captureIntent == intent else { throw CancellationError() }
+            try Task.checkCancellation()
             let directory = root.appendingPathComponent("Recordings")
             if let asr = continuousASR {
                 await backend.setASRFeed { [weak asr] frame in asr?.offer(frame) }
             }
+            guard !isStoppingForFileAction, captureIntent == intent else { throw CancellationError() }
             liveTranscription?.liveCaptureFinished = false
             liveTranscription?.reevaluate()
             _ = try await service.startCapture(meeting: MeetingID(id), backend: backend,
                 configuration: .init(directory: directory))
+            if isStoppingForFileAction || captureIntent != intent || Task.isCancelled {
+                _ = try? await service.stopCapture()
+                await refresh()
+                throw CancellationError()
+            }
             isPaused = false
             await refresh()
             synchronizeSummaryTimer()
-        } catch { releaseAudio(); diagnostic = error.localizedDescription }
+        } catch is CancellationError { releaseAudio() }
+        catch { releaseAudio(); diagnostic = error.localizedDescription }
     }
 
     /// Resolve the selected transcription service to a continuous live route.
-    /// A nil route (local engine, no live speaker separation, no credential)
+    /// A nil route (local engine, no live support, no credential)
     /// keeps the existing file-chunk queue untouched; the user's selection is
     /// never switched or upgraded silently.
     private func prepareContinuousASR() async {
         continuousASR = nil
-        guard intelligence.liveTranscription != false else { return }
+        guard intelligence.liveTranscription != false,
+              let selected = intelligence.transcriptionServiceID, !selected.isEmpty else { return }
         let meetingID = MeetingID(id)
         let audio = environment.assistantAudioService
         guard let route = await audio.liveTranscriptionRoute(
-            serviceID: intelligence.transcriptionServiceID) else { return }
+            serviceID: selected) else { return }
         continuousASR = MeetingContinuousASR(
             meetingID: meetingID, service: service, route: route,
             onChange: { [weak self] in
@@ -201,11 +230,16 @@ import FloeTools
                 self.diagnostic = message
             })
     }
-    func stopRecording() async {
-        guard !changingCapture else { return }
+    @discardableResult func stopRecording() async -> Bool {
+        guard !changingCapture else { return false }
         changingCapture = true
         defer { changingCapture = false }
-        do { _ = try await service.stopCapture() }
+        var succeeded = false
+        do {
+            let outcome = try await service.stopCapture()
+            succeeded = outcome.state == .stopped && outcome.stopReason != .timeout
+            if !succeeded { diagnostic = IDELanguageRunText.t("录音结束未完成，请稍后重试。原文件已保留。", "Recording did not finish cleanly. Try again shortly. The original is preserved.") }
+        }
         catch { diagnostic = error.localizedDescription }
         await refresh()
         captureSettlement?.cancel()
@@ -220,11 +254,42 @@ import FloeTools
         }
         isPaused = false
         synchronizeSummaryTimer()
+        return succeeded
     }
+    /// True navigation uses this completion boundary. A pending permission/
+    /// launch is fenced before suspension; a live stop waits for the physical
+    /// writer's finalized tail AND the persisted terminal capture row.
+    func stopRecordingForDeparture(expectedIntent: UUID? = nil) async -> Bool {
+        guard expectedIntent == nil || expectedIntent == captureIntent else { return false }
+        captureIntent = UUID()
+        for _ in 0..<400 where changingCapture {
+            do { try await Task.sleep(for: .milliseconds(25)) } catch { return false }
+        }
+        guard !changingCapture else {
+            diagnostic = IDELanguageRunText.t("录音仍在准备，请稍后重试离开。", "Recording is still preparing. Try leaving again shortly.")
+            return false
+        }
+        if await service.activeCaptureSession != nil {
+            guard await stopRecording() else { return false }
+        }
+        for _ in 0..<400 {
+            if await service.activeCaptureSession == nil {
+                await refresh()
+                if let failure = await service.capturePersistenceFailure { diagnostic = failure.localizedDescription; return false }
+                return true
+            }
+            do { try await Task.sleep(for: .milliseconds(25)) } catch { return false }
+        }
+        diagnostic = IDELanguageRunText.t("录音尚未结束，请稍后重试。原文件已保留。", "Recording has not finished yet. Try again shortly. The original is preserved.")
+        return false
+    }
+    var hasRecordingToLeave: Bool { isRecording || changingCapture }
+    var recordingDepartureIdentity: UUID { captureIntent }
+
     func pauseRecording() async {
         guard isRecording else { return }
-        await stopRecording()
-        if !isRecording { isPaused = true }
+        let stopped = await stopRecording()
+        if stopped, !isRecording { isPaused = true }
     }
     private func releaseAudio() {
         guard audioHeld else { return }
@@ -273,6 +338,7 @@ import FloeTools
             let current = await service.currentPartials(meeting: MeetingID(id))
             guard !Task.isCancelled else { return }
             if transcriptPartials != current { transcriptPartials = current }
+            await speakerRecognition?.refreshModelStatus()
             do { try await Task.sleep(for: .milliseconds(300)) }
             catch { return }
         }
@@ -319,13 +385,18 @@ import FloeTools
         }
     }
     func transcribe(_ source: CaptureSessionSnapshot) {
-        guard !isProcessing, source.state == .stopped else { return }
+        guard !isStoppingForFileAction, !isProcessing, source.state == .stopped else { return }
         isProcessing = true; progress = 0; diagnostic = nil
         generation = UUID(); let token = generation
         processing = Task { [self] in
             defer { if generation == token { isProcessing = false; processing = nil } }
             do {
                 let file = try mediaFile(for: source)
+                await speakerRecognition?.prepare()
+                do { try await speakerRecognition?.enqueueOriginal(source.id, file: file) }
+                catch { speakerRecognition?.reportPreparationFailure() }
+                try Task.checkCancellation()
+                guard generation == token else { throw CancellationError() }
                 let target: CaptureSessionID
                 if source.kind != .liveRecording { target = source.id }
                 else if let mapped = analysisSessions[source.id.rawValue],
@@ -345,13 +416,14 @@ import FloeTools
                 // numeric speaker labels cannot reuse the earlier request's identities.
                 let recognitionRequestID = UUID().uuidString
                 let result = try await environment.assistantAudioService.transcribe(
-                    fileURL: file, language: .automatic, requiresTiming: true,
-                    enableSpeakerAttribution: true) { [weak self] fraction in
+                    fileURL: file, language: .automatic,
+                    serviceID: intelligence.transcriptionServiceID ?? AssistantAudioService.ID.transcriptionEnhanced,
+                    requiresTiming: true, enableSpeakerAttribution: true, progress: { [weak self] fraction in
                     Task { @MainActor in
                         guard let self, self.generation == token else { return }
                         self.progress = min(1, max(0, fraction))
                     }
-                }
+                })
                 guard !result.segments.isEmpty else { throw PersonalContentError.invalidProject }
                 // The whole-original diarization is the canonical post-record
                 // view. Its labels bind in this recognition request's own domain
@@ -394,8 +466,15 @@ import FloeTools
             }
         }
     }
+    /// Freeze only this session's analysis before returning its exact worker
+    /// to the native stop path for joining. No detached cancellation claim.
+    func cancelAnalysisForOwnedStop() -> Task<Void, Never>? {
+        let previous = processing
+        generation = UUID(); previous?.cancel(); processing = nil; isProcessing = false
+        return previous
+    }
     func cancelProcessing() {
-        generation = UUID(); processing?.cancel(); processing = nil; isProcessing = false
+        _ = cancelAnalysisForOwnedStop()
         liveTranscription?.cancel()
         if let asr = continuousASR {
             Task { await asr.cancelAndWait() }
@@ -452,43 +531,28 @@ import FloeTools
         } catch { diagnostic = error.localizedDescription }
     }
 
-    /// Honest speaker-separation capability of the transcription service the
-    /// user selected for this meeting. Local engines never diarize; a cloud
-    /// profile reports its catalog capability. Never gates recording.
+    /// Provider labels and the independent native engine are separate
+    /// capabilities. Preparation/failure is reported honestly and never gates
+    /// the transcription provider the user selected.
     var speakerAttributionCapability: FloeMeetings.CapabilityState {
         get async {
+            if let diagnostic = speakerRecognition?.diagnostic { return .degraded(note: diagnostic) }
+            let status = await MeetingSpeakerModelStore.shared.status()
+            if status == .ready { return .available }
             let serviceID = intelligence.transcriptionServiceID ?? AssistantAudioService.ID.transcriptionEnhanced
-            if serviceID == AssistantAudioService.ID.transcriptionEnhanced
-                || serviceID == AssistantAudioService.ID.transcriptionSystem {
-                return .unavailable(reason: IDELanguageRunText.t(
-                    "当前转写服务不支持区分说话人。录音与转写不受影响；在会议设置中选择支持分离的云端服务后可自动标注。",
-                    "The selected transcription service cannot separate speakers. Recording and transcription are unaffected; choose a cloud service with speaker separation in meeting settings to label speakers automatically."))
+            let audio = environment.assistantAudioService
+            let profile = serviceID == AssistantAudioService.ID.transcriptionCloud
+                ? audio.cloudASRSettings.readyProfiles.first : audio.cloudASRSettings.profile(forServiceID: serviceID)
+            if let profile, profile.fileCapabilities.supportsSpeakerAttribution || profile.liveCapabilities?.supportsSpeakerAttribution == true { return .available }
+            switch status {
+            case .downloading:
+                return .degraded(note: IDELanguageRunText.t("正在准备本地说话人识别，录音与转写继续。", "Preparing local speaker recognition. Recording and transcription continue."))
+            case .failed(let reason): return .degraded(note: reason)
+            case .unsupported:
+                return .unavailable(reason: IDELanguageRunText.t("当前构建未包含本地说话人识别。已配置服务返回的说话人仍会保留。", "Local speaker recognition is not included in this build. Speaker labels returned by your service are retained."))
+            default:
+                return .degraded(note: IDELanguageRunText.t("本地说话人识别尚未准备，可在会议设置中下载。录音与文字不受影响。", "Local speaker recognition is not ready. Download it in meeting settings. Audio and text are unaffected."))
             }
-            await environment.assistantAudioService.refreshAvailability()
-            guard let descriptor = environment.assistantAudioService.services
-                .first(where: { $0.id == serviceID && $0.capability == .transcription }) else {
-                return .unavailable(reason: IDELanguageRunText.t(
-                    "所选转写服务当前不可用，无法区分说话人。",
-                    "The selected transcription service is unavailable, so speakers cannot be separated."))
-            }
-            let profile: ASRProfile?
-            if descriptor.id == AssistantAudioService.ID.transcriptionCloud {
-                profile = environment.assistantAudioService.cloudASRSettings.readyProfiles.first
-            } else {
-                profile = environment.assistantAudioService.cloudASRSettings.profile(forServiceID: descriptor.id)
-            }
-            guard let profile else {
-                return .unavailable(reason: IDELanguageRunText.t(
-                    "所选转写服务不支持区分说话人。录音与转写不受影响。",
-                    "The selected transcription service cannot separate speakers. Recording and transcription are unaffected."))
-            }
-            let capabilities = profile.fileCapabilities
-            if capabilities.supportsSpeakerAttribution {
-                return .available
-            }
-            return .unavailable(reason: IDELanguageRunText.t(
-                "所选转写服务不支持区分说话人。录音与转写不受影响；可更换支持分离的服务。",
-                "The selected transcription service cannot separate speakers. Recording and transcription are unaffected; switch to a service that supports separation."))
         }
     }
     func exportTranscript(_ format: MeetingExportFormat) async {

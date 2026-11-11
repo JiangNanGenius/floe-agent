@@ -331,6 +331,7 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
             // owner is bounded; verification/commit callbacks hold their own
             // settle leases. Never await all future network components here.
             await WhisperModelStore.shared.restoreInstallation()
+            await MeetingSpeakerModelStore.shared.restoreInstallation()
         }
         if let bootstrap {
             settlement.trackBootstrap(bootstrap)

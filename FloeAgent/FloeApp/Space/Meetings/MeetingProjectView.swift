@@ -296,7 +296,7 @@ struct MeetingProjectView: View {
         if !live.enabled { return session.isRecording ? t("转写已暂停，录音继续", "Transcription paused; recording continues") : t("转写已暂停", "Transcription paused") }
         if live.requiresRetry { return t("录音已保留，转写未完成", "Recording saved; transcription is unfinished") }
         if live.waitingForService { return t("正在等待转写服务，录音继续保留", "Waiting for transcription; audio is being saved") }
-        if live.isWorking { return t("正在转写", "Transcribing") }
+        if live.isWorking, !session.isRecording { return t("正在转写", "Transcribing") }
         return ""
     }
     @ViewBuilder private var liveTranscriptionStatus: some View {
@@ -307,7 +307,6 @@ struct MeetingProjectView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     if !status.isEmpty {
                         HStack(spacing: 8) {
-                            if live.isWorking { ProgressView().controlSize(.small) }
                             Text(status).font(.subheadline).foregroundStyle(.secondary)
                                 .accessibilityIdentifier("meeting.transcription.status")
                             Spacer(minLength: 0)
@@ -477,15 +476,40 @@ struct MeetingProjectView: View {
                         set: { value in session.updateIntelligence { $0.transcriptionServiceID = value.isEmpty ? nil : value } })) {
                         Text(t("本机 Whisper", "On-device Whisper")).tag("")
                         ForEach(transcriptionServices) { service in
-                            let separatesSpeakers = session.environment.assistantAudioService.cloudASRSettings
-                                .profile(forServiceID: service.id)?
-                                .fileCapabilities.supportsSpeakerAttribution == true
+                            let profile = session.environment.assistantAudioService.cloudASRSettings.profile(forServiceID: service.id)
+                            let separatesSpeakers = profile?.fileCapabilities.supportsSpeakerAttribution == true
+                                || profile?.liveCapabilities?.supportsSpeakerAttribution == true
                             return Text(service.title + (service.local ? "" : t(" · 云端", " · Cloud"))
                                  + (separatesSpeakers ? t(" · 区分说话人", " · Speaker labels") : "")).tag(service.id)
                         }
                     }
                     Text(t("默认保留本地录音；云端转写需在这里明确选择已有服务。", "Recordings stay local. Cloud transcription uses a service you explicitly select here."))
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section(t("说话人", "Speakers")) {
+                    if let recognition = session.speakerRecognition {
+                        switch recognition.modelStatus {
+                        case .ready:
+                            Label(t("本地说话人识别已就绪", "Local speaker recognition is ready"), systemImage: "person.2")
+                        case .downloading(let fraction):
+                            ProgressView(value: fraction) {
+                                Text(t("正在准备说话人识别", "Preparing speaker recognition"))
+                            }
+                            Button(t("取消下载", "Cancel download"), role: .cancel) { Task { await recognition.cancelPreparation() } }
+                        case .unsupported:
+                            Text(t("当前构建未包含本地说话人识别", "Local speaker recognition is not included in this build"))
+                        case .absent, .failed:
+                            Button(t("准备本地说话人识别 · 11.2 MB", "Prepare local speaker recognition · 11.2 MB")) { Task { await recognition.retry() } }
+                        }
+                        if let failure = recognition.diagnostic {
+                            Text(failure).font(.caption).foregroundStyle(.secondary)
+                            Button(t("重试说话人识别", "Retry speaker recognition")) { Task { await recognition.retry() } }
+                        }
+                    }
+                    Text(t("说话人识别在本机处理，不改变所选转写服务。未能确认的片段不标注姓名。", "Speaker recognition runs on device and keeps your transcription service. Uncertain passages remain unlabelled."))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Link(t("Argmax SpeakerKit · 模型 CC BY 4.0", "Argmax SpeakerKit · model CC BY 4.0"), destination: URL(string: "https://huggingface.co/argmaxinc/speakerkit-coreml")!)
+                        .font(.caption)
                 }
                 Section(t("纪要", "Minutes")) {
                     Picker(t("模板", "Template"), selection: Binding(get: { session.minutesTemplate.rawValue }, set: { value in

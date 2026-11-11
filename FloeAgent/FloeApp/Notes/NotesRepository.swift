@@ -8,6 +8,47 @@ import FloePersistence
 actor NotesRepository {
     static let shared = NotesRepository()
     private var instance: NotesStore?
+    private weak var conversationCenter: ConversationCenter?
+    private var reconcilingAssistantCleanup = false
+
+    func bindConversationCenter(_ center: ConversationCenter) { conversationCenter = center }
+
+    func requireAssistantAvailable(conversationID: UUID) async throws {
+        guard let store = try existingStore() else { throw NoteError.resourceUnavailable }
+        guard try await store.assistantOriginalIsAvailable(conversationID: conversationID) == true else { throw NoteError.notFound }
+    }
+
+    func stopAssistantHistory(documentID: UUID, in suppliedStore: NotesStore? = nil) async throws -> PersonalFileAssistantStopLease {
+        let selectedStore = try suppliedStore ?? store()
+        let ids = try await selectedStore.assistantHistory(documentID: documentID)
+        guard !ids.isEmpty else { return await PersonalFileAssistantStopLease() }
+        guard let conversationCenter else { throw NoteError.resourceUnavailable }
+        var leases: [PersonalFileAssistantStopLease] = []
+        do {
+            for id in ids {
+                leases.append(try await conversationCenter.stopNotesAssistantRetainingLease(conversationID: id))
+            }
+            let held = leases
+            return await PersonalFileAssistantStopLease { for lease in held { lease.finish() } }
+        } catch {
+            for lease in leases { await lease.finish() }
+            throw error
+        }
+    }
+
+    /// Exact cleanup IDs commit with permanent note deletion. A failed native
+    /// cleanup remains durable for the next reload; no raw task data deletion.
+    func reconcileAssistantCleanup(in suppliedStore: NotesStore? = nil) async throws {
+        guard !reconcilingAssistantCleanup, let conversationCenter, let store = try suppliedStore ?? existingStore() else { return }
+        reconcilingAssistantCleanup = true; defer { reconcilingAssistantCleanup = false }
+        for id in try await store.pendingAssistantCleanup() {
+            if let row = try await conversationCenter.environment.conversationStore.conversation(id: id) {
+                guard row.purpose == .notes else { throw NoteError.conflict }
+                try await conversationCenter.deleteConversation(id: id)
+            }
+            try await store.acknowledgeAssistantCleanup(id)
+        }
+    }
 
     func drainWriterForSuspension() async {
         await instance?.drainWriterForSuspension()
@@ -30,6 +71,7 @@ actor NotesRepository {
         guard instance != nil || FileManager.default.fileExists(atPath: root.path) else { return }
         let ids = try await store().assistantConversationIDs()
         try await Self.markAssistantOwnership(ids, database: database)
+        try await reconcileAssistantCleanup()
     }
 
     nonisolated static func markAssistantOwnership(_ ids: [UUID], database: DatabaseManager) async throws {

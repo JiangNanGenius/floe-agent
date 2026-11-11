@@ -29,33 +29,47 @@ public struct IPInformationDatabaseView: View {
             Section(text("Installed database", "已安装数据库")) {
                 if let metadata = state?.metadata {
                     LabeledContent(text("Source", "来源"), value: metadata.source)
+                        .accessibilityIdentifier("toolbox.ip.database.source")
                     LabeledContent(text("Version", "版本"), value: metadata.releaseLabel)
+                        .accessibilityIdentifier("toolbox.ip.database.version")
                     LabeledContent(text("Installed", "安装时间"), value: metadata.installedAt.formatted(date: .abbreviated, time: .omitted))
                     Text(metadata.attribution).font(.caption)
                     if let license = metadata.licenseURL { Link(text("Data license", "数据许可"), destination: license) }
-                } else { Text(text("No offline database installed.", "尚未安装离线数据库。")) }
+                } else {
+                    Text(text("Install a database to see IP locations and network information in Traceroute.", "安装信息库后，可在路由跟踪中查看 IP 归属地和网络信息。"))
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("toolbox.ip.database.empty")
+                }
             }
             Section(text("Download", "下载")) {
-                Text(text("Verified DB-IP Lite: November 2026", "已核验的 DB-IP Lite：2026 年 11 月"))
+                Text(text("DB-IP Lite · November 2026", "DB-IP Lite · 2026 年 11 月"))
                 Link("DB-IP.com", destination: URL(string: "https://db-ip.com/db/lite.php")!)
                 if state?.isUpdating == true {
                     ProgressView(text("Updating database…", "正在更新数据库…"))
+                        .accessibilityIdentifier("toolbox.ip.database.updating")
                     if let count = state?.downloadedBytes, count > 0 {
                         Text(ByteCountFormatter.string(fromByteCount: count, countStyle: .file)).font(.caption)
                     }
                     if let operation = state?.operationID {
                         Button(text("Cancel update", "取消更新"), role: .cancel) { Task { await service.cancelUpdate(operation) } }
+                            .accessibilityIdentifier("toolbox.ip.database.cancel")
                     }
                 } else {
-                    Button(text("Install verified edition", "安装已核验版")) {
+                    Button(text("Download and install", "下载并安装")) {
                         Task { do { _ = try await service.startDefaultUpdate() } catch { self.error = safeMessage(error) } }
                     }
+                    .accessibilityIdentifier("toolbox.ip.database.install")
+                    Text(text("About 65 MB. Available offline after download.", "约 65 MB，下载后可离线使用。"))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section(text("Import MMDB files", "导入 MMDB 文件")) {
                 Button(city?.lastPathComponent ?? text("Choose City database", "选择地区数据库")) { pickingCity = true; showPicker = true }
+                    .accessibilityIdentifier("toolbox.ip.database.cityFile")
                 Button(asn?.lastPathComponent ?? text("Choose ASN database", "选择 ASN 数据库")) { pickingCity = false; showPicker = true }
+                    .accessibilityIdentifier("toolbox.ip.database.asnFile")
                 TextField(text("Version label", "版本标记"), text: $importLabel)
+                    .accessibilityIdentifier("toolbox.ip.database.versionLabel")
                 Button(text("Import pair", "导入数据库")) {
                     guard let city, let asn else { return }
                     Task {
@@ -63,6 +77,7 @@ public struct IPInformationDatabaseView: View {
                         catch { self.error = safeMessage(error) }
                     }
                 }.disabled(city == nil || asn == nil || importLabel.isEmpty)
+                    .accessibilityIdentifier("toolbox.ip.database.import")
             }.disabled(state?.isUpdating == true)
             if let message = state?.message { Section { Text(message) } }
             if state?.phase == .cancelled { Section { Text(text("Update cancelled. Your installed database is unchanged.", "更新已取消，已安装数据库保持不变。")) } }

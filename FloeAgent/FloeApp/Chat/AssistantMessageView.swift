@@ -52,10 +52,6 @@ struct AssistantMessageView: View {
                         .frame(minHeight: FloeTheme.minimumTarget)
                     }
                     copyButton
-                    if let onSaveToNotes {
-                        Button("chat.assistant_message_view.save_to_notes", systemImage: "square.and.arrow.down") { onSaveToNotes(text) }
-                            .font(FloeTheme.Typography.metadata).frame(minHeight: FloeTheme.minimumTarget)
-                    }
                 }
             }
             if allowsReadAloud, speechService.failureOwnerID == playbackOwnerID, let failureKey = speechService.failureKey {

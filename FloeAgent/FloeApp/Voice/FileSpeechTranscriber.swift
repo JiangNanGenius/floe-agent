@@ -92,6 +92,7 @@ actor FileSpeechTranscriber {
     func transcribeResult(url: URL, language: VoiceRecognitionLanguage,
                           allowAppleFallback: Bool = true,
                           preferApple: Bool = false,
+                          onPartial: @escaping @Sendable (String) -> Void = { _ in },
                           progress: @escaping @Sendable (Double) -> Void = { _ in })
         async throws -> FileSpeechResult {
         guard !active else { throw WhisperModelStore.Failure.busy }
@@ -110,7 +111,7 @@ actor FileSpeechTranscriber {
         if preferApple {
             let outcome = await Self.decodeFile(
                 asset: asset, track: track, duration: duration, language: language,
-                allowAppleFallback: allowAppleFallback, lease: nil, progress: progress)
+                allowAppleFallback: allowAppleFallback, lease: nil, onPartial: onPartial, progress: progress)
             return try await finish(outcome, lease: nil)
         }
 
@@ -131,7 +132,7 @@ actor FileSpeechTranscriber {
             // honestly when the caller allows it.
             let outcome = await Self.decodeFile(
                 asset: asset, track: track, duration: duration, language: language,
-                allowAppleFallback: allowAppleFallback, lease: nil, progress: progress)
+                allowAppleFallback: allowAppleFallback, lease: nil, onPartial: onPartial, progress: progress)
             return try await finish(outcome, lease: nil)
         }
 
@@ -155,7 +156,7 @@ actor FileSpeechTranscriber {
                 }
                 let outcome = await Self.decodeFile(
                     asset: workerAsset, track: workerTrack, duration: duration, language: language,
-                    allowAppleFallback: allowAppleFallback, lease: lease, progress: progress)
+                    allowAppleFallback: allowAppleFallback, lease: lease, onPartial: onPartial, progress: progress)
                 box.set(outcome)
             } catch is CancellationError {
                 box.set(.cancelled(decoderFault: false))
@@ -172,7 +173,7 @@ actor FileSpeechTranscriber {
             try Task.checkCancellation()
             let outcome = await Self.decodeFile(
                 asset: asset, track: track, duration: duration, language: language,
-                allowAppleFallback: allowAppleFallback, lease: nil, progress: progress)
+                allowAppleFallback: allowAppleFallback, lease: nil, onPartial: onPartial, progress: progress)
             return try await finish(outcome, lease: nil)
         }
 
@@ -218,6 +219,7 @@ actor FileSpeechTranscriber {
         language: VoiceRecognitionLanguage,
         allowAppleFallback: Bool,
         lease: SpeechRecognitionLease?,
+        onPartial: @escaping @Sendable (String) -> Void,
         progress: @escaping @Sendable (Double) -> Void
     ) async -> FileDecodeOutcome {
         var output: [TimedSpeechSegment] = []
@@ -250,7 +252,8 @@ actor FileSpeechTranscriber {
                                 audio: audio,
                                 decoding: SpeechRecognitionDecoding(
                                     languageCode: language.recognitionCode,
-                                    detectLanguage: language.recognitionCode == nil))
+                                    detectLanguage: language.recognitionCode == nil),
+                                onPartial: onPartial)
                             guard !decoded.isEmpty else { throw FileSpeechError.empty }
                             segments = decoded.map { segment in
                                 let value = segment.offsetting(by: offset)
@@ -288,7 +291,7 @@ actor FileSpeechTranscriber {
                             appleAuthorized = true
                         }
                         do {
-                            let words = try await AppleSpeechChunk().recognize(audio: audio, locale: language.locale)
+                            let words = try await AppleSpeechChunk().recognize(audio: audio, locale: language.locale, onPartial: onPartial)
                             segments = Self.captionGroups(words: words, offset: offset, length: length)
                             if usedEngine == nil { usedEngine = .apple }
                         } catch is CancellationError {
@@ -389,7 +392,8 @@ private final class AppleSpeechChunk: @unchecked Sendable {
     private var timeout: Task<Void, Never>?
     private var recognizer: SFSpeechRecognizer?
 
-    func recognize(audio: [Float], locale: Locale) async throws -> [TimedSpeechSegment.Word] {
+    func recognize(audio: [Float], locale: Locale,
+                   onPartial: @escaping @Sendable (String) -> Void = { _ in }) async throws -> [TimedSpeechSegment.Word] {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let cancelled = lock.withLock { () -> Bool in
@@ -406,9 +410,12 @@ private final class AppleSpeechChunk: @unchecked Sendable {
                     if let base = source.baseAddress { channel.update(from: base, count: source.count) }
                 }
                 let request = SFSpeechAudioBufferRecognitionRequest()
-                request.shouldReportPartialResults = false
+                request.shouldReportPartialResults = true
                 request.taskHint = .dictation
                 let task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+                    if let result, !result.isFinal, self?.lock.withLock({ self?.finished == false }) == true {
+                        onPartial(result.bestTranscription.formattedString)
+                    }
                     if let result, result.isFinal {
                         let words = result.bestTranscription.segments.map { segment in
                             TimedSpeechSegment.Word(start: segment.timestamp, end: segment.timestamp + segment.duration, text: segment.substring)

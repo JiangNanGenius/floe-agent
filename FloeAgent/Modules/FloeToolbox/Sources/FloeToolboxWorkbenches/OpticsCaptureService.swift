@@ -11,7 +11,9 @@ public struct OpticsCaptureLease: Sendable, Hashable {
 }
 
 public enum OpticsCaptureKind: String, Sendable, Hashable {
-    case magnifier, scanner, document
+    case magnifier, scanner, document, spatial
+
+    fileprivate var usesCaptureSession: Bool { self == .magnifier || self == .scanner }
 }
 
 public enum OpticsCaptureAuthorization: Sendable, Equatable {
@@ -77,7 +79,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     /// rendered only when the user freezes. Touched on sessionQueue only.
     private nonisolated(unsafe) var lastCIImage: CIImage?
 
-    private override init() {
+    override init() {
         super.init()
         NotificationCenter.default.addObserver(forName: AVCaptureSession.wasInterruptedNotification,
                                                object: session, queue: .main) { [weak self] note in
@@ -132,6 +134,13 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     /// feature's preceding capture stream and torch have actually stopped.
     public func prepareDocumentCapture(lease: OpticsCaptureLease) async -> Bool {
         guard owns(lease), activeKind == .document else { return false }
+        return await prepareExternalCapture(lease: lease)
+    }
+
+    /// ARKit and VisionKit own their camera sessions. Keep one reservation
+    /// across tools and drain our preceding stream before either starts.
+    public func prepareExternalCapture(lease: OpticsCaptureLease) async -> Bool {
+        guard owns(lease), let kind = activeKind, !kind.usesCaptureSession else { return false }
         let ready = await withCheckedContinuation { continuation in
             sessionQueue.async { [weak self] in
                 guard let self, self.sessionLeaseID == lease.identifier else {
@@ -144,7 +153,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
                 continuation.resume(returning: true)
             }
         }
-        return ready && owns(lease) && activeKind == .document
+        return ready && owns(lease) && activeKind == kind
     }
 
     /// Stops the camera, turns the torch off, and drops buffered frames.
@@ -174,7 +183,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     /// permission grant is fenced by a generation token so it can never open
     /// the camera after release() or while the scene is inactive.
     public func requestStart(lease: OpticsCaptureLease) {
-        guard activeLease == lease, activeKind != .document else { return }
+        guard activeLease == lease, activeKind?.usesCaptureSession == true else { return }
         refreshAuthorization()
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
@@ -182,21 +191,26 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
         case .notDetermined:
             let token = UUID()
             permissionGeneration = token
-            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                Task { @MainActor [weak self] in
-                    guard let self, self.permissionGeneration == token else { return }
-                    self.permissionGeneration = UUID()
-                    guard granted else { self.authorization = .denied; return }
-                    guard self.activeLease == lease else { return }
-                    self.authorization = .authorized
-                    self.beginStart(lease: lease)
-                }
-            }
+            AVCaptureDevice.requestAccess(for: .video, completionHandler: Self.makeAuthorizationHandler { [weak self] granted in
+                guard let self, self.permissionGeneration == token, self.activeLease == lease else { return }
+                self.permissionGeneration = UUID()
+                guard granted else { self.authorization = .denied; return }
+                self.authorization = .authorized
+                self.beginStart(lease: lease)
+            })
         case .denied, .restricted:
             authorization = .denied
         @unknown default:
             authorization = .denied
         }
+    }
+
+    // AVFoundation invokes permission callbacks on an arbitrary queue. Build
+    // the legacy SDK closure outside MainActor before hopping with its Bool.
+    nonisolated static func makeAuthorizationHandler(
+        receive: @escaping @MainActor @Sendable (Bool) -> Void
+    ) -> @Sendable (Bool) -> Void {
+        { granted in Task { @MainActor in receive(granted) } }
     }
 
     private func refreshAuthorization() {
@@ -209,7 +223,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     }
 
     private func beginStart(lease: OpticsCaptureLease) {
-        guard owns(lease), activeKind != .document else { return }
+        guard owns(lease), activeKind?.usesCaptureSession == true else { return }
         sessionQueue.async { [weak self] in
             guard let self, self.sessionLeaseID == lease.identifier else { return }
             do {
@@ -313,7 +327,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     /// User-driven torch only; never auto-enabled. Unsupported devices ignore
     /// the call so the UI can keep the control disabled.
     public func setTorch(on: Bool, lease: OpticsCaptureLease) {
-        guard owns(lease), activeKind != .document else { return }
+        guard owns(lease), activeKind?.usesCaptureSession == true else { return }
         sessionQueue.async { [weak self] in
             guard let self, self.sessionLeaseID == lease.identifier,
                   let device = self.device, device.hasTorch else { return }
@@ -340,7 +354,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     /// Hardware zoom: clamped by the active format and the device's own
     /// maximum, so the factor always reflects a real device property.
     public func setZoomFactor(_ factor: CGFloat, lease: OpticsCaptureLease) {
-        guard owns(lease), activeKind != .document else { return }
+        guard owns(lease), activeKind?.usesCaptureSession == true else { return }
         sessionQueue.async { [weak self] in
             guard let self, self.sessionLeaseID == lease.identifier, let device = self.device else { return }
             let clamped = max(1, min(factor, device.activeFormat.videoMaxZoomFactor, device.maxAvailableVideoZoomFactor))
@@ -361,7 +375,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     /// preview layer so the reticle matches the device point of interest.
     public func focus(atPreviewPoint point: CGPoint, previewLayer: AVCaptureVideoPreviewLayer,
                       lease: OpticsCaptureLease) {
-        guard owns(lease), activeKind != .document else { return }
+        guard owns(lease), activeKind?.usesCaptureSession == true else { return }
         let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: point)
         sessionQueue.async { [weak self] in
             guard let self, self.sessionLeaseID == lease.identifier, let device = self.device,
@@ -387,7 +401,7 @@ public final class OpticsCaptureService: NSObject, ObservableObject {
     /// render happens on the session queue so it can never read a frame
     /// that is being replaced; output is bounded to the requested maximum.
     public func renderLastFrame(lease: OpticsCaptureLease, maximumDimension: CGFloat = 4096) async -> UIImage? {
-        guard owns(lease), activeKind != .document else { return nil }
+        guard owns(lease), activeKind?.usesCaptureSession == true else { return nil }
         let image: UIImage? = await withCheckedContinuation { continuation in
             sessionQueue.async { [weak self] in
                 guard let self, self.sessionLeaseID == lease.identifier, let ciImage = self.lastCIImage else {

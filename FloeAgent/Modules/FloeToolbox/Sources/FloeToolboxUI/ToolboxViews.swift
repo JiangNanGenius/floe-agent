@@ -57,7 +57,7 @@ extension ToolboxTool {
         case .compass: "safari"
         case .ruler: "ruler"
         case .measure: "viewfinder"
-        case .calculator: "calculator"
+        case .calculator: "plus.forwardslash.minus"
         case .location: "map"
         case .photoMeasure: "photo"
         case .barometer: "barometer"
@@ -74,14 +74,21 @@ extension ToolboxTool {
 private struct ToolboxToolIcon:View {
     let tool:ToolboxTool
     var body:some View {
+        Image(systemName: resolvedSymbol)
+            .renderingMode(.template)
+            .symbolRenderingMode(.monochrome)
+    }
+
+    // Resolve availability without converting the symbol to a platform bitmap:
+    // Image(uiImage:) otherwise keeps its original black rendering in dark mode.
+    private var resolvedSymbol: String {
         #if os(iOS)
-        if let image=UIImage(systemName:tool.symbol) ?? UIImage(systemName:"doc.text") {Image(uiImage:image)}
-        else {Image(systemName:"wrench.and.screwdriver")}
+        return UIImage(systemName: tool.symbol) != nil ? tool.symbol : "wrench.and.screwdriver"
         #elseif os(macOS)
-        if let image=NSImage(systemSymbolName:tool.symbol,accessibilityDescription:nil) ?? NSImage(systemSymbolName:"doc.text",accessibilityDescription:nil) {Image(nsImage:image)}
-        else {Image(systemName:"wrench.and.screwdriver")}
+        return NSImage(systemSymbolName: tool.symbol, accessibilityDescription: nil) != nil
+            ? tool.symbol : "wrench.and.screwdriver"
         #else
-        Image(systemName:tool.symbol)
+        return tool.symbol
         #endif
     }
 }

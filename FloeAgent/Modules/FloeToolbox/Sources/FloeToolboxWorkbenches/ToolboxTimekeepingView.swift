@@ -10,6 +10,7 @@ import FloeToolboxUtilities
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .subheadline) private var durationUnitHeight: CGFloat = 24
+    @ScaledMetric(relativeTo: .subheadline) private var presetMinimumWidth: CGFloat = 76
     @ObservedObject private var service = ToolboxTimekeepingService.shared
     @State private var adding = false
     @State private var name = ""
@@ -27,18 +28,21 @@ import FloeToolboxUtilities
 
     public var body: some View {
         GeometryReader { geometry in
+            let horizontalInset: CGFloat = geometry.size.width < 600 ? 16 : 20
+            let contentWidth = max(0, min(geometry.size.width, 1100) - horizontalInset * 2)
             TimelineView(ToolboxClockTimeline(interval: service.state.stopwatch.running ? 1.0 / 30 : 1,
                                              paused: !ticking || scenePhase != .active)) { _ in
                 let now = ToolboxTimeSample.now
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 28) {
+                    VStack(alignment: .leading, spacing: 20) {
                         if service.loading { ProgressView(t("正在读取计时记录", "Loading timers")) }
                         if service.state.clockReview { recoveryNotice }
                         if let issue = service.issue { issueNotice(issue) }
                         stopwatch(now)
-                        timers(now, wide: geometry.size.width >= 760 && !typeSize.isAccessibilitySize)
+                        timers(now, width: contentWidth, wide: geometry.size.width >= 760 && !typeSize.isAccessibilitySize)
                     }
-                    .padding(20).frame(maxWidth: 1100).frame(maxWidth: .infinity)
+                    .padding(.horizontal, horizontalInset).padding(.vertical, 16)
+                    .frame(maxWidth: 1100).frame(maxWidth: .infinity)
                 }
                 .onChange(of: service.expiredIDs(at: now)) { _, ids in
                     if !ids.isEmpty { service.reconcile(at: now) }
@@ -69,24 +73,25 @@ import FloeToolboxUtilities
     }
 
     private func stopwatch(_ now: ToolboxTimeSample) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(t("秒表", "Stopwatch")).font(.title2.bold())
+                Text(t("秒表", "Stopwatch")).font(.headline)
                 Spacer()
                 if service.saving { ProgressView().controlSize(.small).accessibilityLabel(t("正在保存", "Saving")) }
             }
             ViewThatFits(in: .horizontal) {
-                Text(ToolboxTimeText.duration(service.state.stopwatch.elapsed(at: now), hundredths: true))
-                    .font(.system(.largeTitle, design: .monospaced).weight(.medium))
-                Text(ToolboxTimeText.duration(service.state.stopwatch.elapsed(at: now), hundredths: true))
-                    .font(.body.monospacedDigit())
-            }.accessibilityIdentifier("toolbox.timer.stopwatch.reading")
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 16) { stopwatchActions(now) }
-                VStack(alignment: .leading, spacing: 12) { stopwatchActions(now) }
+                HStack(alignment: .center, spacing: 0) {
+                    stopwatchReading(now).fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 24)
+                    stopwatchActionRow(now)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    stopwatchReading(now)
+                    stopwatchActionLayout(now)
+                }
             }
-            .disabled(!service.loaded)
             if !service.state.stopwatch.laps.isEmpty {
+                Divider()
                 DisclosureGroup(t("分段记录", "Laps") + " (\(service.state.stopwatch.laps.count))") {
                     LazyVStack(spacing: 0) {
                         HStack {
@@ -111,7 +116,36 @@ import FloeToolboxUtilities
                 }.accessibilityIdentifier("toolbox.timer.laps")
             }
         }
-        .padding(20).background(clockReadingBackground, in: RoundedRectangle(cornerRadius: 14))
+        .padding(16).background(clockReadingBackground, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func stopwatchReading(_ now: ToolboxTimeSample) -> some View {
+        timeReading(service.state.stopwatch.elapsed(at: now), hundredths: true, style: .largeTitle)
+            .accessibilityIdentifier("toolbox.timer.stopwatch.reading")
+    }
+
+    private func timeReading(_ value: Double, hundredths: Bool = false, style: Font.TextStyle) -> some View {
+        let text = ToolboxTimeText.duration(value, hundredths: hundredths)
+        return ViewThatFits(in: .horizontal) {
+            Text(text).font(.system(style, design: .rounded).monospacedDigit().weight(.medium))
+            Text(text).font(.body.monospacedDigit())
+        }
+    }
+
+    private func stopwatchActionLayout(_ now: ToolboxTimeSample) -> some View {
+        ViewThatFits(in: .horizontal) {
+            stopwatchActionRow(now)
+            VStack(alignment: .leading, spacing: 8) { stopwatchActions(now) }
+        }
+        .buttonBorderShape(.roundedRectangle(radius: 10))
+        .disabled(!service.loaded)
+    }
+
+    private func stopwatchActionRow(_ now: ToolboxTimeSample) -> some View {
+        HStack(spacing: 8) { stopwatchActions(now) }
+            .fixedSize(horizontal: true, vertical: false)
+            .buttonBorderShape(.roundedRectangle(radius: 10))
+            .disabled(!service.loaded)
     }
 
     @ViewBuilder private func stopwatchActions(_ now: ToolboxTimeSample) -> some View {
@@ -122,52 +156,88 @@ import FloeToolboxUtilities
             Label(service.state.stopwatch.running ? t("暂停", "Pause") : t("开始", "Start"),
                   systemImage: service.state.stopwatch.running ? "pause.fill" : "play.fill")
                 .frame(minHeight: 32)
-        }.buttonStyle(.borderedProminent).accessibilityIdentifier("toolbox.timer.stopwatch.start")
+        }.buttonStyle(.borderedProminent).frame(minHeight: 44)
+            .accessibilityIdentifier("toolbox.timer.stopwatch.start")
         Button { service.lap(at: now) } label: { Label(t("分段", "Lap"), systemImage: "flag").frame(minHeight: 32) }
             .buttonStyle(.bordered)
+            .frame(minHeight: 44)
             .disabled(!service.state.stopwatch.running || service.state.stopwatch.laps.count >= ToolboxStopwatch.maximumLaps)
             .accessibilityIdentifier("toolbox.timer.stopwatch.lap")
-        Button { service.resetStopwatch() } label: { Label(t("重置", "Reset"), systemImage: "arrow.counterclockwise").frame(minHeight: 44) }
-            .buttonStyle(.borderless)
+        Button { service.resetStopwatch() } label: { Label(t("重置", "Reset"), systemImage: "arrow.counterclockwise").frame(minHeight: 32) }
+            .buttonStyle(.bordered).frame(minHeight: 44)
             .accessibilityIdentifier("toolbox.timer.stopwatch.reset")
     }
 
-    private func timers(_ now: ToolboxTimeSample, wide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text(t("倒计时", "Timers")).font(.title2.bold())
-                Spacer()
-                Button { adding = true } label: { Label(t("添加", "Add"), systemImage: "plus").frame(minHeight: 44) }
-                    .disabled(!service.loaded || service.state.timers.count >= ToolboxTimekeepingArchive.maximumTimers)
-                    .accessibilityIdentifier("toolbox.timer.add")
-            }
-            ScrollView(.horizontal) {
-                HStack(spacing: 12) {
-                    ForEach([1, 5, 15, 25], id: \.self) { value in
-                        Button {
-                            service.addTimer(label: "\(value) " + t("分钟", "minutes"), duration: Double(value * 60), ring: reminders != nil)
-                        } label: { Text("\(value) " + t("分钟", "min")).frame(minHeight: 32) }
-                            .buttonStyle(.bordered)
-                            .accessibilityIdentifier("toolbox.timer.preset.\(value)")
-                    }
+    private func timers(_ now: ToolboxTimeSample, width: CGFloat, wide: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if width >= 720 && typeSize <= .xLarge {
+                HStack(spacing: 16) {
+                    Text(t("倒计时", "Timers")).font(.title2.bold())
+                    Spacer(minLength: 16)
+                    timerPresets(width: 480)
+                    addTimerButton
                 }
-            }.scrollIndicators(.hidden).disabled(!service.loaded || service.state.timers.count >= ToolboxTimekeepingArchive.maximumTimers)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(t("倒计时", "Timers")).font(.title2.bold())
+                        Spacer(minLength: 8)
+                        addTimerButton
+                    }
+                    timerPresets(width: width)
+                }
+            }
             if service.state.timers.isEmpty {
                 ContentUnavailableView(t("还没有倒计时", "No timers yet"), systemImage: "timer",
                     description: Text(t("选一个常用时长，或添加自定义倒计时。", "Choose a preset or add your own timer.")))
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .top), count: wide ? 2 : 1), spacing: 16) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .top), count: wide ? 2 : 1), spacing: 12) {
                 ForEach(service.state.timers) { timer in timerCard(timer, now: now) }
             }
         }
     }
 
+    private var addTimerButton: some View {
+        Button { adding = true } label: { Label(t("添加", "Add"), systemImage: "plus").frame(minHeight: 44) }
+            .disabled(!service.loaded || service.state.timers.count >= ToolboxTimekeepingArchive.maximumTimers)
+            .accessibilityIdentifier("toolbox.timer.add")
+    }
+
+    private func timerPresets(width: CGFloat) -> some View {
+        let availableWidth = max(0, min(width, 480))
+        let columns = availableWidth >= presetMinimumWidth * 4 + 24 ? 4
+            : availableWidth >= presetMinimumWidth * 2 + 8 ? 2 : 1
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: columns), spacing: 8) {
+            ForEach([1, 5, 15, 25], id: \.self) { value in
+                Button {
+                    service.addTimer(label: "\(value) " + t("分钟", "minutes"), duration: Double(value * 60), ring: reminders != nil)
+                } label: {
+                    Text("\(value) " + t("分钟", "min"))
+                        .font(.subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.roundedRectangle(radius: 10))
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("toolbox.timer.preset.\(value)")
+            }
+        }
+        .frame(width: availableWidth, alignment: .leading)
+        .disabled(!service.loaded || service.state.timers.count >= ToolboxTimekeepingArchive.maximumTimers)
+    }
+
     private func timerCard(_ timer: ToolboxCountdown, now: ToolboxTimeSample) -> some View {
         let remaining = timer.remaining(at: now)
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(timer.label).font(.headline).fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("toolbox.timer.title.\(timer.id.uuidString)")
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(timer.label).font(.headline).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("toolbox.timer.title.\(timer.id.uuidString)")
+                    Label(remaining <= 0 ? t("已结束", "Finished") : timer.phase == .running ? t("计时中", "Running") : t("已暂停", "Paused"),
+                          systemImage: remaining <= 0 ? "checkmark.circle" : timer.phase == .running ? "timer" : "pause.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer(minLength: 8)
                 Menu {
                     Button(t("重置", "Reset"), systemImage: "arrow.counterclockwise") { service.reset(timer.id) }
@@ -177,27 +247,22 @@ import FloeToolboxUtilities
                     .accessibilityIdentifier("toolbox.timer.actions.\(timer.id.uuidString)")
             }
             ViewThatFits(in: .horizontal) {
-                Text(ToolboxTimeText.duration(ceil(remaining))).font(.system(.title, design: .monospaced).weight(.medium))
-                Text(ToolboxTimeText.duration(ceil(remaining))).font(.body.monospacedDigit())
-            }.accessibilityIdentifier("toolbox.timer.remaining.\(timer.id.uuidString)")
-            HStack {
-                Label(remaining <= 0 ? t("已结束", "Finished") : timer.phase == .running ? t("计时中", "Running") : t("已暂停", "Paused"),
-                      systemImage: remaining <= 0 ? "checkmark.circle" : timer.phase == .running ? "timer" : "pause.circle")
-                    .font(.subheadline)
-                Spacer()
-                Button {
-                    if remaining <= 0 { service.restart(timer.id) }
-                    else if timer.phase == .running { service.pause(timer.id) }
-                    else { service.resume(timer.id) }
-                } label: {
-                    Label(remaining <= 0 ? t("重新开始", "Restart") : timer.phase == .running ? t("暂停", "Pause") : t("继续", "Resume"),
-                          systemImage: timer.phase == .running && remaining > 0 ? "pause.fill" : "play.fill")
-                        .frame(minHeight: 32)
-                }.buttonStyle(.bordered)
-                    .accessibilityIdentifier("toolbox.timer.toggle.\(timer.id.uuidString)")
+                HStack(spacing: 0) {
+                    timerReading(timer, remaining: remaining).fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 16)
+                    timerToggle(timer, remaining: remaining).fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    timerReading(timer, remaining: remaining)
+                    HStack {
+                        Spacer(minLength: 0)
+                        timerToggle(timer, remaining: remaining)
+                    }
+                }
             }
             Divider()
             Toggle(t("到时响铃", "Ring when finished"), isOn: Binding(get: { timer.reminder }, set: { service.setReminder($0, for: timer.id) }))
+                .font(.subheadline).frame(minHeight: 44)
                 .disabled(reminders == nil || service.reminderStatus[timer.id] == .working)
                 .accessibilityIdentifier("toolbox.timer.reminder.\(timer.id.uuidString)")
             if service.reminderStatus[timer.id] == .working { ProgressView().controlSize(.small) }
@@ -227,8 +292,29 @@ import FloeToolboxUtilities
                 }
             }
         }
-        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
         .background(clockReadingBackground, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func timerReading(_ timer: ToolboxCountdown, remaining: Double) -> some View {
+        timeReading(ceil(remaining), style: .title)
+            .accessibilityIdentifier("toolbox.timer.remaining.\(timer.id.uuidString)")
+    }
+
+    private func timerToggle(_ timer: ToolboxCountdown, remaining: Double) -> some View {
+        Button {
+            if remaining <= 0 { service.restart(timer.id) }
+            else if timer.phase == .running { service.pause(timer.id) }
+            else { service.resume(timer.id) }
+        } label: {
+            Label(remaining <= 0 ? t("重新开始", "Restart") : timer.phase == .running ? t("暂停", "Pause") : t("继续", "Resume"),
+                  systemImage: timer.phase == .running && remaining > 0 ? "pause.fill" : "play.fill")
+                .frame(minHeight: 32)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.roundedRectangle(radius: 10))
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("toolbox.timer.toggle.\(timer.id.uuidString)")
     }
 
     private var addSheet: some View {

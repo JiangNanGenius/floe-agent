@@ -155,10 +155,17 @@ enum DeviceICMPPacket {
     /// of its ICMP request. A sequence alone cannot identify a probe from this
     /// unconnected socket: parallel runs start at the same sequence number.
     static func parseEmbeddedError(_ raw: Data) -> EmbeddedError? {
-        guard let data = icmpPayload(raw) else { return nil }
+        guard var data = icmpPayload(raw) else { return nil }
         guard data.count >= 8 + 20 + 8,
-              data[0] == timeExceededType || data[0] == destinationUnreachableType,
-              checksum(data) == 0 else { return nil }
+              data[0] == timeExceededType || data[0] == destinationUnreachableType else { return nil }
+        if checksum(data) != 0 {
+            // XNU icmp_input validates the wire checksum, then converts the
+            // quoted IPv4 ip_len to host order before raw-socket delivery.
+            // Restore only that field and still require the full checksum;
+            // unrelated damage and foreign probe identities remain rejected.
+            data.swapAt(8 + 2, 8 + 3)
+            guard checksum(data) == 0 else { return nil }
+        }
         let ipStart = 8
         guard data[ipStart] >> 4 == 4 else { return nil }
         let headerLength = Int(data[ipStart] & 0x0F) * 4

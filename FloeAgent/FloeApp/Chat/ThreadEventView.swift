@@ -53,6 +53,7 @@ struct ThreadEventView: View {
     /// it. Enables the run-output card's conversation-equality check; the
     /// runtime-sealed taskID is still required when nil.
     var conversationID: UUID? = nil
+    var toolDetailExpansion: Binding<Bool?>? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -225,7 +226,8 @@ struct ThreadEventView: View {
                     outcomeUnknown: toolRequestResultPayload["outcomeUnknown"] == "true",
                     gitHubSource: gitHubSource,
                     diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
-                        runID: event.runID, callID: payload["callID"] ?? payload["id"])
+                        runID: event.runID, callID: payload["callID"] ?? payload["id"]),
+                    detailExpansion: toolDetailExpansion
                 )
             }
 
@@ -259,7 +261,8 @@ struct ThreadEventView: View {
                     outcomeUnknown: payload["outcomeUnknown"] == "true",
                     gitHubSource: gitHubSource,
                     diagnosticProgress: nativeDiagnostics.values(conversationID: conversationID,
-                        runID: event.runID, callID: payload["callID"] ?? payload["id"])
+                        runID: event.runID, callID: payload["callID"] ?? payload["id"]),
+                    detailExpansion: toolDetailExpansion
                 )
             }
 

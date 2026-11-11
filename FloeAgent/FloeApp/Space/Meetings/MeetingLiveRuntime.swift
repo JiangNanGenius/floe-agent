@@ -13,23 +13,28 @@ extension MeetingProjectSession {
             serviceID: intelligence.transcriptionServiceID, resumeUnfinished: resumeUnfinished)
     }
     func receiveCaptureEvent(_ event: CaptureEvent) async {
+        guard !isStoppingForFileAction else { return }
         switch event {
         case .started(let session):
             await continuousASR?.start(captureSession: session)
         case .chunkFinalized(let session, let file, let range):
             liveTranscription?.enqueue(session: session, file: file, range: range)
-        case .stopped:
+            speakerRecognition?.enqueue(original: session, file: file, range: range)
+        case .stopped(let session, _):
+            speakerRecognition?.captureFinished(session)
             // The pump already delivered every frame; the coordinator may
             // drain, commit the genuine tail and close its lease while the
             // file queue starts covering any remaining gaps.
             liveTranscription?.liveCaptureFinished = true
             await continuousASR?.captureDidStop()
             liveTranscription?.reevaluate()
-        case .cancelled:
+        case .cancelled(let session):
+            speakerRecognition?.captureFinished(session)
             liveTranscription?.liveCaptureFinished = true
             await continuousASR?.cancelAndWait()
             liveTranscription?.reevaluate()
-        case .failed(_, let message):
+        case .failed(let session, let message):
+            if let session { speakerRecognition?.captureFinished(session) }
             diagnostic = message
             liveTranscription?.liveCaptureFinished = true
             await continuousASR?.cancelAndWait()
@@ -40,6 +45,7 @@ extension MeetingProjectSession {
     func liveTranscriptDidChange() async {
         liveTranscription?.reevaluate()
         await refresh()
+        if let failure = speakerRecognition?.diagnostic { diagnostic = failure }
         if let failure = liveTranscription?.diagnostic { diagnostic = failure }
         // Explicit diagnostics: internal chunking/rotation counters stay out
         // of the ordinary transcript surface but remain observable.
@@ -84,16 +90,20 @@ extension MeetingProjectSession {
         }
     }
     /// Host deletion/explicit-stop seam. Closing the editor does not call it.
-    func stopOwnedProcessing() async {
-        cancelProcessing(); rollingSummaryGeneration = UUID()
+    func stopOwnedProcessing() async -> Bool {
+        let previousProcessing = cancelAnalysisForOwnedStop(), previousSummary = rollingSummaryTask
+        rollingSummaryGeneration = UUID()
+        previousSummary?.cancel(); rollingSummaryTask = nil; isUpdatingMinutes = false
+        summaryTimer?.cancel(); summaryTimer = nil
         await cancelDocumentExportAndWait()
         await followups?.cancelAndWait()
-        rollingSummaryTask?.cancel(); rollingSummaryTask = nil; isUpdatingMinutes = false
-        summaryTimer?.cancel(); summaryTimer = nil
-        if isRecording { await stopRecording() }
-        summaryTimer?.cancel(); summaryTimer = nil
-        await continuousASR?.cancelAndWait(); continuousASR = nil
         await liveTranscription?.cancelAndWait()
+        await continuousASR?.cancelAndWait(); continuousASR = nil
+        await previousProcessing?.value; await previousSummary?.value
+        let stopped = await stopRecordingForDeparture()
+        summaryTimer?.cancel(); summaryTimer = nil
+        await speakerRecognition?.cancelAndWait()
+        return stopped
     }
 }
 #endif

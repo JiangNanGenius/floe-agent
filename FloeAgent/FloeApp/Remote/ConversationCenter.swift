@@ -1270,9 +1270,13 @@ final class ConversationCenter: ObservableObject {
     /// Document-bound file assistants, keyed by the durable
     /// `document_assistants` binding — never by title or archive flag.
     /// These persist with their document and are grouped separately in the
-    /// task center; a running file task also appears in `conversations`
-    /// driven surfaces through the ordinary list after migration.
+    /// task center. They never enter ordinary chat/sidebar history.
     @Published private(set) var fileAssistantConversations: [ConversationRecord] = []
+    @Published private(set) var canvasAssistantConversations: [ConversationRecord] = []
+    private var fileAssistantConversationIDs: Set<UUID> = []
+    private var currentCanvasAssistants: [ConversationEditorOwnership: UUID] = [:]
+    private var currentFileAssistants: [UUID: UUID] = [:]
+    private var canvasOwnershipReconciled = false
     /// Live runs keyed by run ID, refreshed from snapshots.
     @Published private(set) var activeRuns: [UUID: RunRecord] = [:]
     @Published private(set) var goalPresentationRevision = 0
@@ -1574,6 +1578,7 @@ final class ConversationCenter: ObservableObject {
     /// StudioAuthority store.
     var studioAssistantBindingsOverride: [StudioAssistantBinding]?
     var studioAssistantUnavailableOverride: Set<UUID>?
+    var canvasAssistantOwnershipOverride: WorkspaceCanvasRegistry.AssistantOwnerships?
     #endif
 
     /// Reloads conversations, providers and models from the stores.
@@ -1581,12 +1586,14 @@ final class ConversationCenter: ObservableObject {
         // Local model discovery can initialize a runtime. Publish persisted
         // history first so that work is immediately navigable while it runs.
         do {
+            await NotesRepository.shared.bindConversationCenter(self)
             try await NotesRepository.shared.reconcileAssistantOwnership(database: environment.database)
             await environment.studioCoordinator.reconcileFileAssistantLifecycles()
             // Run the binding reconcile BEFORE reading the ordinary list:
             // a legacy archived bound assistant must become persistent first
             // so this same reload already projects it everywhere.
-            await reconcileFileAssistantOwnership()
+            try await reconcileFileAssistantOwnership()
+            try await reconcileCanvasAssistantOwnership()
             conversations = ConversationListOrdering.sorted(
                 try await environment.conversationStore.conversations().filter {
                     !unavailableFileAssistantConversationIDs.contains($0.id)
@@ -1718,8 +1725,15 @@ final class ConversationCenter: ObservableObject {
         let isTemporary = isTemporaryConversation(conversationID)
         let conversationStore = self.conversationStore(for: conversationID)
         let runStore = self.runStore(for: conversationID)
-        guard let conversation = try await conversationStore.conversation(id: conversationID) else {
+        guard var conversation = try await conversationStore.conversation(id: conversationID) else {
             throw FloeError.notFound("conversation \(conversationID.uuidString)")
+        }
+        if !isTemporary, conversation.purpose == .ordinary, conversation.visibility == .normal, conversation.editorOwnership == nil,
+           let owner = try await nativeEditorOwnership(conversationID) {
+            conversation = try await claimNativeEditorOwnership(conversationID, owner: owner)
+        }
+        if !isTemporary, conversation.editorOwnership != nil {
+            conversations.removeAll { $0.id == conversationID }
         }
         let messagePage = try await conversationStore.messagePage(
             conversationID: conversationID, before: nil, limit: 20
@@ -1861,17 +1875,17 @@ final class ConversationCenter: ObservableObject {
     /// archived chats are never touched. Idempotent — the unarchive write
     /// fires only while the legacy flag is present, so steady-state reloads
     /// never churn `updated_at`.
-    private func reconcileFileAssistantOwnership() async {
+    private func reconcileFileAssistantOwnership() async throws {
         #if DEBUG
         // `??` cannot carry an async right-hand side; branch explicitly.
         let bindings: [StudioAssistantBinding]
         if let override = studioAssistantBindingsOverride {
             bindings = override
         } else {
-            bindings = await environment.studioCoordinator.assistantBindings()
+            bindings = try await environment.studioCoordinator.assistantBindingsForOwnership()
         }
         #else
-        let bindings = await environment.studioCoordinator.assistantBindings()
+        let bindings = try await environment.studioCoordinator.assistantBindingsForOwnership()
         #endif
         #if DEBUG
         if studioAssistantBindingsOverride != nil {
@@ -1882,6 +1896,18 @@ final class ConversationCenter: ObservableObject {
         #else
         unavailableFileAssistantConversationIDs = await environment.studioCoordinator.unavailableAssistantConversationIDs(bindings: bindings)
         #endif
+        currentFileAssistants = Dictionary(bindings.map { ($0.projectID, $0.conversationID) }, uniquingKeysWith: { first, _ in first })
+        fileAssistantConversationIDs = Set(bindings.map(\.conversationID))
+        conversations.removeAll { fileAssistantConversationIDs.contains($0.id) }
+        // Claim even unavailable/Trashed originals before reading ordinary
+        // history. Missing bindings never turn retained editor history normal.
+        for binding in bindings {
+            if let row = try await environment.conversationStore.conversation(id: binding.conversationID),
+               row.purpose == .ordinary {
+                try await environment.conversationStore.claimEditorOwnership(
+                    id: row.id, owner: .file(binding.projectID))
+            }
+        }
         var records: [ConversationRecord] = []
         for binding in bindings where !unavailableFileAssistantConversationIDs.contains(binding.conversationID) {
             guard var record = try? await environment.conversationStore
@@ -1898,25 +1924,127 @@ final class ConversationCenter: ObservableObject {
 
     /// True when the conversation is a document-bound file assistant.
     func isFileAssistantConversation(_ conversationID: UUID) -> Bool {
-        fileAssistantConversations.contains { $0.id == conversationID }
+        fileAssistantConversationIDs.contains(conversationID)
+    }
+
+    private func reconcileCanvasAssistantOwnership() async throws {
+        #if DEBUG
+        let bindings = try canvasAssistantOwnershipOverride ?? WorkspaceCanvasRegistry.assistantOwnerships()
+        #else
+        let bindings = try WorkspaceCanvasRegistry.assistantOwnerships()
+        #endif
+        conversations.removeAll { bindings.all[$0.id] != nil }
+        var records: [ConversationRecord] = []
+        for (id, owner) in bindings.all {
+            guard let existing = try await environment.conversationStore.conversation(id: id) else { continue }
+            if let stored = existing.editorOwnership {
+                guard stored.kind == .canvas, stored.containerID == owner.containerID,
+                      !bindings.current.contains(id) || stored == owner else {
+                    throw FloeError.validationFailed("Canvas assistant ownership changed")
+                }
+            } else {
+                try await environment.conversationStore.claimEditorOwnership(id: id, owner: owner)
+            }
+            if bindings.current.contains(id) {
+                // Old Canvas builds force-archived the active assistant.
+                // Only the exact current native binding sheds that legacy flag.
+                if existing.archivedAt != nil { try await environment.conversationStore.setArchived(id: id, archived: false) }
+                if let row = try await environment.conversationStore.conversation(id: id) { records.append(row) }
+            }
+        }
+        currentCanvasAssistants = Dictionary(records.compactMap { row in
+            row.editorOwnership.map { ($0, row.id) }
+        }, uniquingKeysWith: { first, _ in first })
+        canvasAssistantConversations = ConversationListOrdering.sorted(records)
+        canvasOwnershipReconciled = true
+    }
+
+    /// File binding commit notification fences late old-session callbacks.
+    func fileAssistantBindingDidChange(_ conversationID: UUID) async {
+        guard let row = try? await environment.conversationStore.conversation(id: conversationID),
+              let owner = row.editorOwnership, owner.kind == .file else { return }
+        currentFileAssistants[owner.documentID] = conversationID
+        await refreshConversationInList(conversationID)
+    }
+
+    private func claimNativeEditorOwnership(_ id: UUID, owner: ConversationEditorOwnership) async throws -> ConversationRecord {
+        conversations.removeAll { $0.id == id }
+        try await environment.conversationStore.claimEditorOwnership(id: id, owner: owner)
+        if owner.kind == .canvas, currentCanvasAssistants[owner] == id,
+           try await environment.conversationStore.conversation(id: id)?.archivedAt != nil {
+            try await environment.conversationStore.setArchived(id: id, archived: false)
+        }
+        guard let row = try await environment.conversationStore.conversation(id: id) else { throw FloeError.notFound("conversation") }
+        return row
+    }
+
+    private func nativeEditorOwnership(_ id: UUID) async throws -> ConversationEditorOwnership? {
+        if let project = try await environment.studioCoordinator.assistantProjectForOwnership(id) { return .file(project) }
+        if !canvasOwnershipReconciled {
+            #if DEBUG
+            let bindings = try canvasAssistantOwnershipOverride ?? WorkspaceCanvasRegistry.assistantOwnerships()
+            #else
+            let bindings = try WorkspaceCanvasRegistry.assistantOwnerships()
+            #endif
+            if let owner = bindings.all[id] {
+                if bindings.current.contains(id) { currentCanvasAssistants[owner] = id }
+                return owner
+            }
+        }
+        return nil
+    }
+
+    /// Called only after the native Canvas binding CAS has committed.
+    func canvasAssistantBindingDidChange(_ conversationID: UUID) async {
+        guard let row = try? await environment.conversationStore.conversation(id: conversationID),
+              let owner = row.editorOwnership, owner.kind == .canvas else { return }
+        currentCanvasAssistants[owner] = conversationID
+        await refreshConversationInList(conversationID)
     }
 
     private func refreshConversationInList(_ conversationID: UUID) async {
         // Temporary conversations never enter the saved list projection.
         guard !isTemporaryConversation(conversationID) else { return }
-        do { try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID) }
+        do { try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID, validateCanvasBinding: false) }
         catch {
             conversations.removeAll { $0.id == conversationID }
             fileAssistantConversations.removeAll { $0.id == conversationID }
             return
         }
-        guard let fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
-        // Bound assistants live in the file-assistant projection. Keep that
-        // list fresh (reopen/title edits) without pushing the row into the
-        // ordinary task sections.
-        if let index = fileAssistantConversations.firstIndex(where: { $0.id == conversationID }) {
-            fileAssistantConversations[index] = fresh
+        guard var fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
+        // A first touch can precede a full reload. Consult the native binding,
+        // never the old list cache, before publishing a legacy ordinary row.
+        if fresh.purpose == .ordinary, fresh.visibility == .normal, fresh.editorOwnership == nil {
+            do {
+                if let owner = try await nativeEditorOwnership(conversationID) {
+                    fresh = try await claimNativeEditorOwnership(conversationID, owner: owner)
+                }
+            } catch {
+                conversations.removeAll { $0.id == conversationID }
+                return // Unknown ownership cannot authorize ordinary publication.
+            }
+        }
+        if let owner = fresh.editorOwnership, owner.kind == .file {
+            guard (try? await environment.studioCoordinator.assistantProjectForOwnership(conversationID)) == owner.documentID,
+                  currentFileAssistants[owner.documentID] == nil || currentFileAssistants[owner.documentID] == conversationID else {
+                conversations.removeAll { $0.id == conversationID }
+                fileAssistantConversations.removeAll { $0.id == conversationID }
+                return
+            }
+            currentFileAssistants[owner.documentID] = conversationID
+            fileAssistantConversationIDs.insert(conversationID)
+            fileAssistantConversations.removeAll { $0.id == conversationID || $0.editorOwnership == fresh.editorOwnership }
+            fileAssistantConversations.append(fresh)
             ConversationListOrdering.sort(&fileAssistantConversations)
+        } else if let owner = fresh.editorOwnership, owner.kind == .canvas {
+            guard currentCanvasAssistants[owner] == conversationID else {
+                conversations.removeAll { $0.id == conversationID }
+                canvasAssistantConversations.removeAll { $0.id == conversationID }
+                return
+            }
+            canvasAssistantConversations.removeAll { $0.id == conversationID || $0.editorOwnership == owner }
+            canvasAssistantConversations.append(fresh)
+            ConversationListOrdering.sort(&canvasAssistantConversations)
         }
         guard fresh.isVisibleInOrdinaryList else {
             conversations.removeAll { $0.id == conversationID }
@@ -2072,14 +2200,16 @@ final class ConversationCenter: ObservableObject {
     /// Candidates come from BOTH the ordinary list and the bound
     /// file-assistant projection — recovery discovers document-bound tasks
     /// by real ownership, never by the visible sidebar list.
+    func foregroundRecoveryConversations() -> [ConversationRecord] {
+        var seen: Set<UUID> = []
+        return (conversations + fileAssistantConversations + canvasAssistantConversations)
+            .filter { seen.insert($0.id).inserted }
+    }
+
     func resumeSafeRunsAfterForeground() async {
         await refreshRuntimeWaitRecovery()
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
-        // De-duplicated by id: a migrated assistant can appear in both lists.
-        var seen: Set<UUID> = []
-        let candidates = (conversations + fileAssistantConversations).filter {
-            seen.insert($0.id).inserted
-        }
+        let candidates = foregroundRecoveryConversations()
         for conversation in candidates {
             guard !unavailableFileAssistantConversationIDs.contains(conversation.id),
                   !deletingConversationIDs.contains(conversation.id) else { continue }
@@ -7998,7 +8128,24 @@ final class ConversationCenter: ObservableObject {
     /// Holds exact conversation launch fences and waits for real task cleanup.
     /// Durable historical runs alone are not live owners. Background processors
     /// must report terminal AFTER their cleanup; timeout keeps the file intact.
-    func stopFileAssistants(_ bindings: [StudioAssistantBinding]) async throws -> PersonalFileAssistantStopLease {
+    private func fileAssistantHistoryBindings(_ current: [StudioAssistantBinding]) async throws -> [StudioAssistantBinding] {
+        var bindings = current
+        var seen = Set(current.map(\.conversationID))
+        for projectID in Set(current.map(\.projectID)) {
+            for row in try await environment.conversationStore.editorConversations(owner: .file(projectID))
+                where seen.insert(row.id).inserted {
+                bindings.append(.init(projectID: projectID, conversationID: row.id))
+            }
+        }
+        return bindings
+    }
+
+    func stopFileAssistants(_ current: [StudioAssistantBinding]) async throws -> PersonalFileAssistantStopLease {
+        let bindings = try await fileAssistantHistoryBindings(current)
+        return try await stopAssistantBindings(bindings)
+    }
+
+    private func stopAssistantBindings(_ bindings: [StudioAssistantBinding]) async throws -> PersonalFileAssistantStopLease {
         let ids = Set(bindings.map(\.conversationID))
         guard !isClearingHistory, deletingConversationIDs.isDisjoint(with: ids) else {
             throw PersonalFileAssistantLifecycleError.stopping
@@ -8118,7 +8265,12 @@ final class ConversationCenter: ObservableObject {
     /// Called only after the file commit with its stop lease still held. Keep
     /// transcript/error/output history; retire pending inputs and old recovery
     /// candidates so Restore never means "run the old work again".
-    func retireStoppedFileAssistantExecution(_ bindings: [StudioAssistantBinding]) async throws {
+    func retireStoppedFileAssistantExecution(_ current: [StudioAssistantBinding]) async throws {
+        let bindings = try await fileAssistantHistoryBindings(current)
+        try await retireStoppedAssistantBindings(bindings)
+    }
+
+    private func retireStoppedAssistantBindings(_ bindings: [StudioAssistantBinding]) async throws {
         for binding in bindings {
             let id = binding.conversationID
             guard fileAssistantStopTokens[id] != nil, deletingConversationIDs.contains(id) else {
@@ -8146,26 +8298,59 @@ final class ConversationCenter: ObservableObject {
     /// A Notes restart retains every message and run, but stops the old owner before
     /// its document grant is replaced. The launch fence also covers preprocessing.
     func stopNotesAssistant(conversationID: UUID) async throws {
+        let lease = try await stopNotesAssistantRetainingLease(conversationID: conversationID)
+        lease.finish()
+    }
+
+    func stopNotesAssistantRetainingLease(conversationID: UUID) async throws -> PersonalFileAssistantStopLease {
         guard try await environment.conversationStore.conversation(id: conversationID)?.purpose == .notes else {
             throw FloeError.validationFailed("Not a document assistant conversation")
         }
-        guard deletingConversationIDs.insert(conversationID).inserted else {
-            throw FloeError.validationFailed("Conversation is already stopping")
+        return try await stopAndRetireAssistantBindings([.init(projectID: conversationID, conversationID: conversationID)])
+    }
+
+    func stopEditorAssistant(conversationID: UUID, expectedOwner: ConversationEditorOwnership) async throws -> PersonalFileAssistantStopLease {
+        guard try await environment.conversationStore.conversation(id: conversationID)?.editorOwnership == expectedOwner else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("此文件会话已变化，请重新打开助手", "This file conversation changed. Reopen the assistant."))
         }
-        launchFence.invalidate(scope: conversationID)
-        defer { deletingConversationIDs.remove(conversationID) }
-        await waitForLaunches()
-        let runs = try await environment.runStore.runs(conversationID: conversationID)
-        let tasks = runs.compactMap { runTasks[$0.id] }
-        for run in runs { await cancel(runID: run.id) }
-        for task in tasks { _ = await task.value }
+        let histories = try await environment.conversationStore.editorConversations(owner: expectedOwner)
+        return try await stopAndRetireAssistantBindings(histories.map {
+            StudioAssistantBinding(projectID: expectedOwner.documentID, conversationID: $0.id)
+        })
+    }
+
+    func stopEditorContainer(kind: ConversationEditorOwnership.Kind, containerID: UUID) async throws -> PersonalFileAssistantStopLease {
+        let histories = try await environment.conversationStore.editorConversations(kind: kind, containerID: containerID)
+        var bindings: [StudioAssistantBinding] = []
+        for row in histories {
+            guard let owner = row.editorOwnership, owner.kind == kind, owner.containerID == containerID else {
+                throw PersonalFileAssistantLifecycleError.changed
+            }
+            bindings.append(.init(projectID: owner.documentID, conversationID: row.id))
+        }
+        return try await stopAndRetireAssistantBindings(bindings)
+    }
+
+    private func stopAndRetireAssistantBindings(_ bindings: [StudioAssistantBinding]) async throws -> PersonalFileAssistantStopLease {
+        let lease = try await stopAssistantBindings(bindings)
+        do { try await retireStoppedAssistantBindings(bindings); return lease }
+        catch { lease.finish(); throw error }
     }
 
     /// The only conversation deletion path used by the UI. It closes the
     /// conversation to new launches, lets an in-flight launch transaction
     /// settle, then cancels and awaits provider work before the FK cascade.
-    func deleteConversation(id: UUID, fileLifecycleToken: UUID? = nil) async throws {
+    func deleteConversation(id: UUID, fileLifecycleToken: UUID? = nil, includeEditorHistory: Bool = true) async throws {
         let heldByFileLifecycle = fileLifecycleToken != nil && fileAssistantStopTokens[id] == fileLifecycleToken
+        if includeEditorHistory, heldByFileLifecycle,
+           let owner = try await environment.conversationStore.conversation(id: id)?.editorOwnership, owner.kind == .file {
+            for sibling in try await environment.conversationStore.editorConversations(owner: owner) where sibling.id != id {
+                guard fileAssistantStopTokens[sibling.id] == fileLifecycleToken else {
+                    throw PersonalFileAssistantLifecycleError.stopping
+                }
+                try await deleteConversation(id: sibling.id, fileLifecycleToken: fileLifecycleToken, includeEditorHistory: false)
+            }
+        }
         guard heldByFileLifecycle || deletingConversationIDs.insert(id).inserted else {
             throw FloeError.validationFailed("Conversation deletion is already in progress")
         }
@@ -8267,6 +8452,9 @@ final class ConversationCenter: ObservableObject {
     }
 
     func restoreConversation(id: UUID) async throws {
+        guard try await environment.conversationStore.conversation(id: id)?.editorOwnership == nil else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("请从原文件打开助手", "Open the assistant from its original file."))
+        }
         try await environment.studioCoordinator.requireAssistantAvailable(conversationID: id)
         try await environment.conversationStore.setArchived(id: id, archived: false)
         await reload()

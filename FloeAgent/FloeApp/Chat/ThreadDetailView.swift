@@ -938,7 +938,8 @@ struct ThreadDetailView: View {
                 decisionSummary: decisionSummary(for: event),
                 childRun: childRun(for: event),
                 onOpenChild: { openChild($0) },
-                conversationID: viewModel.conversationID
+                conversationID: viewModel.conversationID,
+                toolDetailExpansion: viewModel.toolDetailExpansion(for: event)
             )
 
         case .stepGroup(let events, let isLatest):
@@ -952,6 +953,7 @@ struct ThreadDetailView: View {
                 childRunRecords: viewModel.childRunRecords,
                 onOpenChild: { openChild($0) },
                 conversationID: viewModel.conversationID,
+                toolDetailExpansion: { viewModel.toolDetailExpansion(for: $0) },
                 onResolveApproval: { approval, decision in
                     Task { await viewModel.resolve(approval, decision: decision) }
                 }

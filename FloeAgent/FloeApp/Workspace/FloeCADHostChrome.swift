@@ -45,14 +45,16 @@ struct FloeCADHostChrome: ViewModifier {
     @State private var fullScreen = false
     @State private var building = false
     @State private var simulationCovered = false
+    @State private var libraryCovered = false
     @State private var buildingProfessionalCovered = false
     @State private var printAfterFullscreen = false
 
     func body(content: Content) -> some View {
         content
+            .modifier(CADLibrarySketchImportEntry(document: document, onCoverChange: { libraryCovered = $0 }))
             .onAppear { filePresentation.attach(document) }
             .onDisappear {
-                if !fullScreen && !building && !externalCoverPresented && !simulationCovered && !buildingProfessionalCovered { filePresentation.release() }
+                if !fullScreen && !building && !externalCoverPresented && !simulationCovered && !buildingProfessionalCovered && !libraryCovered { filePresentation.release() }
             }
             .task(id:ObjectIdentifier(document)) {
                 filePresentation.attach(document)
@@ -62,7 +64,7 @@ struct FloeCADHostChrome: ViewModifier {
             // is TRANSIENTLY covered — its disappearance is not a close, so
             // the close-time preview flush is suppressed (T7T). A real close
             // (cover dismissed) leaves this false and flushes normally.
-            .environment(\.cadWorkbenchTransientlyCovered, fullScreen || building || externalCoverPresented || simulationCovered || buildingProfessionalCovered)
+            .environment(\.cadWorkbenchTransientlyCovered, fullScreen || building || externalCoverPresented || simulationCovered || buildingProfessionalCovered || libraryCovered)
             .modifier(CADOfflineRenderEntry(document:document,root:workspaceRoot,workspaceID:workspaceID,conversationID:conversationID))
             .modifier(CADSimulationEntry(document:document,onCoverChange:{ simulationCovered = $0 }))
             .modifier(CADBuildingProfessionalEntry(document: document, root: workspaceRoot,
@@ -106,6 +108,7 @@ struct FloeCADHostChrome: ViewModifier {
                         document: document,
                         canvasActions: canvasActions,
                         onSelectionContextChange: onSelectionContextChange)
+                        .modifier(CADLibrarySketchImportEntry(document: document, onCoverChange: { libraryCovered = $0 }))
                         .modifier(CADManufacturingEntry(document: document,
                             available: manufacturingAvailable, offered: onPreparePrint != nil,
                             onPreparePrint: { printAfterFullscreen = true; fullScreen = false }))

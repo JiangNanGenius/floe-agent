@@ -98,13 +98,23 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
         }
         .task(id: session.id) { await session.observeTranscriptPartials() }
         .task(id: session.intelligence.transcriptionServiceID) {
-            attributionNote = switch await session.speakerAttributionCapability {
-            case .available: nil
-            case .degraded(let note): note
-            case .unavailable(let reason): reason
-            }
+            await refreshAttributionNote()
+        }
+        .onChange(of: session.speakerRecognition?.modelStatus) { _, _ in
+            Task { await refreshAttributionNote() }
+        }
+        .onChange(of: session.speakerRecognition?.diagnostic) { _, _ in
+            Task { await refreshAttributionNote() }
         }
         .accessibilityIdentifier("meeting.transcript")
+    }
+
+    private func refreshAttributionNote() async {
+        attributionNote = switch await session.speakerAttributionCapability {
+        case .available: nil
+        case .degraded(let note): note
+        case .unavailable(let reason): reason
+        }
     }
 
     private func bubbleView(_ bubble: MeetingTranscriptBubble) -> some View {

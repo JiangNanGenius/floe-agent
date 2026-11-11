@@ -60,11 +60,15 @@ final class IPDatabaseSnapshot: @unchecked Sendable {
         let region = try copiedString(&c.region), name = try copiedString(&c.city)
         let organization = try copiedString(&a.organization)
         let number = a.has_asn != 0 ? a.asn : nil
-        guard code != nil || country != nil || region != nil || name != nil || organization != nil || number != nil else { return nil }
+        guard code != nil || country != nil || region != nil || name != nil || organization != nil || number != nil
+                || c.has_location != 0 else { return nil }
         return IPInformationRecord(address: address, countryCode: code, country: country, region: region, city: name,
             autonomousSystemNumber: number, organization: organization,
             networkPrefixLength: a.found != 0 ? Int(a.prefix_length) : (c.found != 0 ? Int(c.prefix_length) : nil),
-            source: metadata.source, datasetVersion: metadata.datasetVersion)
+            source: metadata.source, datasetVersion: metadata.datasetVersion,
+            latitude: c.has_location != 0 ? c.latitude : nil,
+            longitude: c.has_location != 0 ? c.longitude : nil,
+            accuracyRadiusKilometers: c.has_accuracy_radius != 0 ? c.accuracy_radius_kilometers : nil)
     }
 }
 

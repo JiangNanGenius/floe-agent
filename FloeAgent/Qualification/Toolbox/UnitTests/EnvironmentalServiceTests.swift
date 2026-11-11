@@ -148,6 +148,65 @@ struct EnvironmentalServiceTests {
 #endif
 
 #if os(iOS)
+@MainActor
+struct ToolboxCameraReservationTests {
+    @Test func cameraAuthorizationFactoryAcceptsBackgroundDeliveryOnMainActor() async {
+        let granted: Bool = await withCheckedContinuation { continuation in
+            let handler = OpticsCaptureService.makeAuthorizationHandler { value in
+                #expect(Thread.isMainThread)
+                continuation.resume(returning: value)
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                #expect(!Thread.isMainThread)
+                handler(false)
+            }
+        }
+        #expect(!granted)
+    }
+
+    @Test func arReservationExcludesOtherCameraToolsAndRejectsLateRelease() async throws {
+        let service = OpticsCaptureService()
+        let ar = try #require(service.acquire(.spatial))
+        #expect(await service.prepareExternalCapture(lease: ar))
+        #expect(service.acquire(.scanner) == nil)
+        #expect(service.acquire(.magnifier) == nil)
+        #expect(service.acquire(.document) == nil)
+        service.release(ar)
+
+        let scanner = try #require(service.acquire(.scanner))
+        defer { service.release(scanner) }
+        service.release(ar)
+        #expect(service.owns(scanner))
+        #expect(!service.owns(ar))
+        #expect(!(await service.prepareExternalCapture(lease: ar)))
+        #expect(!(await service.prepareExternalCapture(lease: scanner)))
+    }
+
+    @Test func externalReservationNeverStartsAnAVCaptureSessionOrRequestsPermission() async throws {
+        let service = OpticsCaptureService()
+        let ar = try #require(service.acquire(.spatial))
+        defer { service.release(ar) }
+        service.requestStart(lease: ar)
+        #expect(service.authorization == .unknown)
+        #expect(!service.running)
+        #expect(!(await service.prepareDocumentCapture(lease: ar)))
+        #expect(await service.prepareExternalCapture(lease: ar))
+        #expect(!service.session.isRunning)
+    }
+
+    @Test func documentCaptureRetainsItsExternalSessionBarrier() async throws {
+        let service = OpticsCaptureService()
+        let document = try #require(service.acquire(.document))
+        defer { service.release(document) }
+        #expect(await service.prepareDocumentCapture(lease: document))
+        #expect(service.activeKind == .document)
+        #expect(service.owns(document))
+        #expect(!service.running)
+    }
+}
+#endif
+
+#if os(iOS)
 import AVFoundation
 import Dispatch
 import FloeToolboxUtilities

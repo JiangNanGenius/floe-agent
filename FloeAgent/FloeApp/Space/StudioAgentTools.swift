@@ -70,47 +70,79 @@ enum StudioToolOutput {
         defer { preparations[record.id] = nil }
         return try await pending.value
     }
-    private func prepareAssistant(_ record: PersonalContentRecord) async throws -> UUID {
+    func restartAssistant(for record: PersonalContentRecord, expectedConversationID: UUID) async throws -> UUID {
+        guard preparations[record.id] == nil else { throw PersonalFileAssistantLifecycleError.pending }
+        let pending = Task { try await self.prepareAssistant(record, replacing: expectedConversationID) }
+        preparations[record.id] = pending
+        defer { preparations[record.id] = nil }
+        return try await pending.value
+    }
+
+    private func prepareAssistant(_ record: PersonalContentRecord, replacing expected: UUID? = nil) async throws -> UUID {
         guard let environment else { throw PersonalContentError.storageUnavailable }
         try await environment.ensureDurableAutomationReady()
-        try await PersonalContentService.shared.verify(record)
+        if let libraryOverride {
+            try await PersonalContentService(root: libraryOverride.root).verify(record)
+        } else {
+            try await PersonalContentService.shared.verify(record)
+        }
         try PersonalLibraryFileActions.requireAvailable(record.id)
         let authority = try access.get()
         // Prevent a preparation that crossed a delete/restore await from
         // binding a fresh successor while the old lifecycle is settling.
         try await authority.requireNoFileLifecycle(projectID: record.id, conversationID: UUID())
         let workspace = SQLiteWorkspaceStore(database: environment.database)
+        let previous = try await authority.assistant(projectID: record.id)
+        var stopLease: PersonalFileAssistantStopLease?
+        defer { stopLease?.finish() }
+        if let expected {
+            guard previous == expected else { throw PersonalFileAssistantLifecycleError.changed }
+            try await environment.conversationStore.claimEditorOwnership(id: expected, owner: .file(record.id))
+            stopLease = try await environment.conversationCenter.stopEditorAssistant(conversationID: expected, expectedOwner: .file(record.id))
+            guard try await authority.assistant(projectID: record.id) == expected else { throw PersonalFileAssistantLifecycleError.changed }
+        }
         var id: UUID
         // A bound assistant whose conversation still carries the legacy
         // force-archive flag migrates on touch: unarchive exactly this
         // binding's row, never unrelated archived chats. Idempotent — the
         // write only fires while `archived_at` is still set.
         var legacyArchivedBinding = false
-        if let bound = try await authority.assistant(projectID: record.id),
+        if expected == nil, let bound = previous,
            let conversation = try await environment.conversationStore.conversation(id: bound),
            conversation.purpose == .ordinary {
+            try await environment.conversationStore.claimEditorOwnership(id: bound, owner: .file(record.id))
             id = bound
             legacyArchivedBinding = conversation.archivedAt != nil
         } else {
             id = UUID()
             let now = Date()
             do {
-                try await environment.conversationStore.saveConversation(.init(id: id,
+                try await environment.conversationStore.saveConversationWithCanonicalWorkspace(.init(id: id,
                     title: IDELanguageRunText.t("作品助手 · ", "Work assistant · ") + record.title,
-                    createdAt: now, updatedAt: now, titleOrigin: .manual))
+                    createdAt: now, updatedAt: now, titleOrigin: .manual, editorOwnership: .file(record.id)))
                 // File assistants persist with their document. Grouping in
                 // the task center derives from the real binding below, not
                 // from hiding the conversation in the archive bucket.
-                _ = try await workspace.ensureWorkspace(conversationID: id, title: record.title)
                 // Defaults belong to a newly created assistant. Reopening an
                 // existing document must retain its user's saved permissions.
                 try await workspace.saveTaskPolicy(.init(conversationID: id, approvalMode: TaskApprovalMode.automatic.rawValue,
                     networkAllowed: true, browserControlAllowed: false, uploadAllowed: false,
                     credentialsAllowed: false, remoteExecutionAllowed: false))
-                try await authority.bindAssistant(conversationID: id, projectID: record.id)
+                try await authority.replaceAssistant(conversationID: id, projectID: record.id, expectedPrevious: previous)
+                if let expected {
+                    do { try await environment.conversationStore.setArchived(id: expected, archived: true) }
+                    catch {
+                        // Restore the exact predecessor only if our successor
+                        // still owns the native binding. Never replace a newer one.
+                        try await authority.replaceAssistant(conversationID: expected, projectID: record.id, expectedPrevious: id)
+                        throw error
+                    }
+                }
                 environment.conversationCenter.taskPolicyDidChange(conversationID: id)
             } catch {
-                try? await environment.conversationStore.deleteConversation(id: id)
+                if (try? await authority.assistant(projectID: record.id)) != id {
+                    try? await environment.conversationStore.deleteConversation(id: id)
+                }
                 throw error
             }
         }
@@ -121,9 +153,17 @@ enum StudioToolOutput {
             try? await environment.conversationStore.setArchived(id: id, archived: false)
         }
         try await requireAssistantAvailable(conversationID: id)
-        await environment.conversationCenter.authoringConversationBecameVisible(id)
+        await environment.conversationCenter.fileAssistantBindingDidChange(id)
         return id
     }
+    func assistantBindingsForOwnership() async throws -> [StudioAssistantBinding] {
+        try await access.get().assistantBindings()
+    }
+
+    func assistantProjectForOwnership(_ conversationID: UUID) async throws -> UUID? {
+        try await access.get().assistantProject(conversationID: conversationID)
+    }
+
     /// Every live document → assistant binding. Task-center grouping and
     /// foreground recovery consume this instead of title/archive heuristics.
     func assistantBindings() async -> [StudioAssistantBinding] {
@@ -174,9 +214,28 @@ enum StudioToolOutput {
         } catch { return Set(bindings.map(\.conversationID)) }
     }
 
-    func requireAssistantAvailable(conversationID: UUID) async throws {
+    func requireAssistantAvailable(conversationID: UUID, validateCanvasBinding: Bool = true) async throws {
         let authority = try access.get()
-        guard let projectID = try await authority.assistantProject(conversationID: conversationID) else { return }
+        let bound = try await authority.assistantProject(conversationID: conversationID)
+        if let environment, let row = try await environment.conversationStore.conversation(id: conversationID),
+           (row.editorOwnership != nil || row.purpose == .notes), row.archivedAt != nil {
+            throw FloeError.validationFailed(IDELanguageRunText.t("这是已归档会话，请在当前文件助手中继续", "This conversation is archived. Continue in the current file assistant."))
+        }
+        if let environment, let owner = try await environment.conversationStore.conversation(id: conversationID)?.editorOwnership {
+            if owner.kind == .file {
+                guard bound == owner.documentID else { throw PersonalFileAssistantLifecycleError.changed }
+            } else if validateCanvasBinding {
+                let project = try WorkspaceCanvasRegistry.project(canvasID: owner.containerID)
+                guard project.agentConversationIDsByDocument[owner.documentID] == conversationID
+                    || (owner.documentID == project.id && project.agentConversationID == conversationID) else {
+                    throw PersonalFileAssistantLifecycleError.changed
+                }
+            }
+        }
+        if let environment, try await environment.conversationStore.conversation(id: conversationID)?.purpose == .notes {
+            try await NotesRepository.shared.requireAssistantAvailable(conversationID: conversationID)
+        }
+        guard let projectID = bound else { return }
         try await authority.requireNoFileLifecycle(projectID: projectID, conversationID: conversationID)
         try PersonalLibraryFileActions.requireAvailable(projectID)
         _ = try await lifecycleLibrary().resolve(projectID)

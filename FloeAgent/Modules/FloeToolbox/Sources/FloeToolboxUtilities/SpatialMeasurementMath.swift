@@ -101,7 +101,7 @@ public enum SpatialMeasurementUnit: String, CaseIterable, Codable, Sendable {
 }
 
 public enum SpatialMeasurementMathError: Error, Equatable, Sendable {
-    case insufficientPoints, duplicatePoints, degeneratePolygon, notCoplanar, selfIntersecting
+    case insufficientPoints, duplicatePoints, degeneratePolygon, notCoplanar, selfIntersecting, invalidCoordinate
 }
 
 /// Pure geometry for the spatial measurement instruments. All inputs are in
@@ -115,6 +115,35 @@ public enum SpatialMeasurementMath {
     /// Areas below this are treated as noise from an unreliable tap.
     public static let minimumPolygonArea: Double = 0.0001
 
+    public static func isFinite(_ point: SIMD3<Double>) -> Bool {
+        point.x.isFinite && point.y.isFinite && point.z.isFinite
+    }
+
+    /// Detected anchors may merge or change identifiers. They still describe
+    /// one surface only when both their normals and measured offsets agree.
+    public static func isSameSurface(
+        referencePoint: SIMD3<Double>, referenceNormal: SIMD3<Double>,
+        point: SIMD3<Double>, normal: SIMD3<Double>,
+        tolerance: Double = defaultCoplanarTolerance
+    ) -> Bool {
+        guard [referencePoint, referenceNormal, point, normal].allSatisfy(isFinite),
+              tolerance.isFinite, tolerance >= 0 else { return false }
+        let referenceLength = simd_length(referenceNormal), length = simd_length(normal)
+        guard referenceLength.isFinite, length.isFinite, referenceLength > 1e-9, length > 1e-9 else { return false }
+        let first = referenceNormal / referenceLength, second = normal / length
+        let deviation = abs(simd_dot(point - referencePoint, first))
+        return abs(simd_dot(first, second)) >= 0.98 && deviation.isFinite && deviation <= tolerance
+    }
+
+    /// Safe for empty/one-point editing states. Closing adds exactly one final
+    /// edge, after the polygon has been explicitly completed by the user.
+    public static func segmentLengths(_ points: [SIMD3<Double>], closed: Bool = false) -> [Double] {
+        guard points.count >= 2 else { return [] }
+        var lengths = zip(points, points.dropFirst()).map { distance($0.0, $0.1) }
+        if closed, points.count >= 3 { lengths.append(distance(points[points.count - 1], points[0])) }
+        return lengths
+    }
+
     public static func distance(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Double {
         let delta = a - b
         return (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).squareRoot()
@@ -122,12 +151,7 @@ public enum SpatialMeasurementMath {
 
     /// Total length along a polyline. Fewer than two points measure zero.
     public static func polylineLength(_ points: [SIMD3<Double>]) -> Double {
-        guard points.count > 1 else { return 0 }
-        var total = 0.0
-        for index in 1..<points.count {
-            total += distance(points[index - 1], points[index])
-        }
-        return total
+        segmentLengths(points).reduce(0, +)
     }
 
     /// Least-squares-style plane fit using Newell's method, which stays
@@ -138,7 +162,7 @@ public enum SpatialMeasurementMath {
     /// duplicated.
     public static func planeBasis(for points: [SIMD3<Double>])
         -> (origin: SIMD3<Double>, normal: SIMD3<Double>, u: SIMD3<Double>, v: SIMD3<Double>)? {
-        guard points.count >= 3 else { return nil }
+        guard points.count >= 3, points.allSatisfy(isFinite) else { return nil }
         var normal = SIMD3<Double>(0, 0, 0)
         for index in 0..<points.count {
             let current = points[index]
@@ -195,6 +219,9 @@ public enum SpatialMeasurementMath {
     public static func polygonArea(_ points: [SIMD3<Double>],
                                    coplanarTolerance: Double = SpatialMeasurementMath.defaultCoplanarTolerance) throws -> Double {
         guard points.count >= 3 else { throw SpatialMeasurementMathError.insufficientPoints }
+        guard points.allSatisfy(isFinite), coplanarTolerance.isFinite, coplanarTolerance >= 0 else {
+            throw SpatialMeasurementMathError.invalidCoordinate
+        }
         for index in 0..<points.count {
             if distance(points[index], points[(index + 1) % points.count]) < duplicateTolerance {
                 throw SpatialMeasurementMathError.duplicatePoints
@@ -206,7 +233,7 @@ public enum SpatialMeasurementMath {
         let projected = points.map { project($0, onto: basis) }
         guard !hasSelfIntersection(projected) else { throw SpatialMeasurementMathError.selfIntersecting }
         let area = abs(shoelaceArea(projected))
-        guard area >= minimumPolygonArea else { throw SpatialMeasurementMathError.degeneratePolygon }
+        guard area.isFinite, area >= minimumPolygonArea else { throw SpatialMeasurementMathError.degeneratePolygon }
         return area
     }
 
@@ -271,7 +298,7 @@ public enum SpatialMeasurementMath {
     /// polygonArea first; this never invents fill for crossing shapes and
     /// does not itself detect self-intersection.
     public static func triangulate(_ polygon: [SIMD2<Double>]) -> [SIMD3<UInt32>]? {
-        guard polygon.count >= 3 else { return nil }
+        guard polygon.count >= 3, polygon.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
         var order = Array(0..<polygon.count)
         if shoelaceArea(polygon) < 0 { order.reverse() }
         var ears: [SIMD3<UInt32>] = []

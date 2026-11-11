@@ -2,6 +2,268 @@ import Foundation
 import SwiftUI
 import FloeToolboxCore
 import FloeToolboxDiagnostics
+import MapKit
+
+public enum TracerouteIPInformationStatus: Sendable, Equatable {
+    case notRequested, loading, available, databaseUnavailable, localOrSpecialUse, notFound, databaseChanged
+    case failed(String)
+    var isRetryable: Bool {
+        switch self { case .failed, .databaseChanged: true; default: false }
+    }
+}
+
+private struct TracerouteIPMapSelection: Identifiable {
+    let information: TracerouteIPInformation
+    var id: String { information.address + ":" + information.datasetVersion }
+}
+
+/// The same real optional fields are used beside a hop and in its map sheet.
+struct TracerouteIPInformationFields: View {
+    let information: TracerouteIPInformation
+    @Environment(\.locale) private var locale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var hasTwoColumns = false
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading),
+                                 count: hasTwoColumns && !dynamicTypeSize.isAccessibilitySize ? 2 : 1),
+                  alignment: .leading, spacing: 10) {
+            if let region = information.region, !region.isEmpty {
+                field(workbenchText("地区", "Region", locale), value: region)
+            }
+            if let number = information.autonomousSystemNumber { field("ASN", value: "AS\(number)") }
+            if let organization = information.organization, !organization.isEmpty {
+                field(workbenchText("网络组织", "Network organization", locale), value: organization)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: Bool.self) { $0.size.width >= 520 } action: { hasTwoColumns = $0 }
+    }
+
+    private func field(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Keep each fact in one place; expansion adds only the record's extra data.
+private struct TracerouteIPInformationSummary: View {
+    let information: TracerouteIPInformation
+    let onOpenMap: () -> Void
+    @Environment(\.locale) private var locale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var expanded = false
+    @State private var showsDatasetDetails = false
+    @State private var hasTwoColumns = false
+
+    private var region: String? {
+        information.region.flatMap { $0.isEmpty ? nil : $0 }
+    }
+    private var network: String? {
+        let parts = [information.autonomousSystemNumber.map { "AS\($0)" },
+                     information.organization.flatMap { $0.isEmpty ? nil : $0 }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+    private var columns: Int { hasTwoColumns && !dynamicTypeSize.isAccessibilitySize ? 2 : 1 }
+    private var summaryLineLimit: Int? { expanded || dynamicTypeSize.isAccessibilitySize ? nil : 2 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 4) {
+                summary
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .onGeometryChange(for: Bool.self) { $0.size.width >= 600 } action: { hasTwoColumns = $0 }
+                Button {
+                    withAnimation {
+                        expanded.toggle()
+                        if !expanded { showsDatasetDetails = false }
+                    }
+                } label: {
+                    Label(workbenchText(expanded ? "收起详情" : "展开详情", expanded ? "Hide details" : "Show details", locale),
+                          systemImage: expanded ? "chevron.down" : "chevron.right")
+                        .labelStyle(.iconOnly)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("toolbox.traceroute.details.\(information.address)")
+                .accessibilityValue(workbenchText(expanded ? "已展开" : "已收起", expanded ? "Expanded" : "Collapsed", locale))
+
+                if information.latitude != nil, information.longitude != nil {
+                    Button(action: onOpenMap) {
+                        Label(workbenchText("查看约略位置", "View approximate location", locale), systemImage: "map")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("toolbox.traceroute.location.\(information.address)")
+                }
+            }
+            if expanded { details }
+        }
+    }
+
+    private var summary: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: region != nil && network != nil ? columns : 1),
+                  alignment: .leading, spacing: 2) {
+            if let region { Text(region).font(.callout).lineLimit(summaryLineLimit) }
+            if let network { Text(network).font(.caption).foregroundStyle(.secondary).lineLimit(summaryLineLimit) }
+            if region == nil && network == nil {
+                Text(workbenchText("IP 信息", "IP information", locale)).font(.callout)
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let latitude = information.latitude, let longitude = information.longitude {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: columns),
+                          alignment: .leading, spacing: 8) {
+                    supplementalField(workbenchText("坐标", "Coordinates", locale),
+                                      value: String(format: "%.5f, %.5f", latitude, longitude))
+                    supplementalField(workbenchText("精度半径", "Accuracy radius", locale),
+                                      value: information.accuracyRadiusKilometers.map {
+                                          $0.formatted(.number.precision(.fractionLength(0...1))) + " km"
+                                      } ?? workbenchText("未提供", "Not provided", locale))
+                }
+            }
+            HStack(spacing: 12) {
+                Text(information.source).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .accessibilityIdentifier("toolbox.traceroute.source.\(information.address)")
+                Spacer(minLength: 0)
+                Button { showsDatasetDetails.toggle() } label: {
+                    Label(workbenchText("数据详情", "Data details", locale),
+                          systemImage: showsDatasetDetails ? "chevron.up" : "chevron.down")
+                        .font(.caption).frame(minHeight: 44)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("toolbox.traceroute.dataset.\(information.address)")
+            }
+            if showsDatasetDetails {
+                Text(information.datasetVersion).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                    .accessibilityIdentifier("toolbox.traceroute.version.\(information.address)")
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private func supplementalField(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.caption).monospacedDigit().textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Opened only by an explicit hop action. There is no location authorization,
+/// user-location annotation or tracking control in this IP-database map.
+struct TracerouteIPLocationView: View {
+    let information: TracerouteIPInformation
+    @Environment(\.locale) private var locale
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var camera: MapCameraPosition = .automatic
+
+    private var coordinate: CLLocationCoordinate2D? {
+        guard let latitude = information.latitude, let longitude = information.longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+    private var accuracyMeters: Double? {
+        guard let radius = information.accuracyRadiusKilometers else { return nil }
+        let meters = radius * 1_000
+        return meters.isFinite ? meters : nil
+    }
+    private func resetCamera() {
+        guard let coordinate else { return }
+        // This is a viewport choice, not a substitute accuracy radius.
+        let distance = max(10_000, min(information.accuracyRadiusKilometers ?? 25, 5_000) * 4_000)
+        camera = .region(MKCoordinateRegion(center: coordinate, latitudinalMeters: distance, longitudinalMeters: distance))
+    }
+    var body: some View {
+        NavigationStack {
+            GeometryReader { geometry in
+                if coordinate != nil {
+                    if geometry.size.width >= 760 && geometry.size.width > geometry.size.height && !dynamicTypeSize.isAccessibilitySize {
+                        HStack(spacing: 0) {
+                            map
+                            Divider()
+                            ScrollView { details.padding(20) }.frame(width: 300)
+                        }
+                    } else {
+                        VStack(spacing: 0) {
+                            map.frame(minHeight: 100)
+                            Divider()
+                            ScrollView { details.padding(20) }
+                                .frame(maxHeight: max(80, min(geometry.size.height * 0.4, 260)))
+                        }
+                    }
+                } else {
+                    ContentUnavailableView(workbenchText("此记录未提供位置", "No location in this record", locale), systemImage: "map")
+                }
+            }
+            .navigationTitle(workbenchText("IP 约略位置", "Approximate IP location", locale))
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { resetCamera() } label: { Label(workbenchText("重置地图", "Reset map", locale), systemImage: "arrow.counterclockwise") }
+                        .disabled(coordinate == nil)
+                        .accessibilityIdentifier("toolbox.traceroute.map.reset")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(workbenchText("完成", "Done", locale)) { dismiss() }
+                        .accessibilityIdentifier("toolbox.traceroute.map.done")
+                }
+            }
+            .onAppear { resetCamera() }
+        }
+    }
+    private var map: some View {
+        Map(position: $camera, interactionModes: [.pan, .zoom]) {
+            if let coordinate {
+                if let accuracyMeters { MapCircle(center: coordinate, radius: accuracyMeters).foregroundStyle(.blue.opacity(0.14)) }
+                Marker(information.address, coordinate: coordinate)
+            }
+        }
+        .mapStyle(.standard(elevation: .flat))
+        .mapControls { MapScaleView() }
+        .accessibilityIdentifier("toolbox.traceroute.map")
+    }
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(information.address).font(.headline.monospaced()).textSelection(.enabled)
+            Text(workbenchText("IP 数据库提供的约略位置，可能偏离实际位置。", "An approximate location from the IP database. It may differ from the actual location.", locale))
+                .font(.callout).foregroundStyle(.secondary)
+            if let radius = information.accuracyRadiusKilometers {
+                let radiusText = radius.formatted(.number.precision(.fractionLength(0...1)))
+                Text(workbenchText("数据集精度半径：\(radiusText) km", "Dataset accuracy radius: \(radiusText) km", locale))
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                Text(workbenchText("数据集未提供精度范围。", "The dataset does not provide an accuracy radius.", locale))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            if let latitude = information.latitude, let longitude = information.longitude {
+                Text(String(format: "%.5f, %.5f", latitude, longitude)).font(.callout.monospaced()).textSelection(.enabled)
+            }
+            TracerouteIPInformationFields(information: information)
+            Text(information.source).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            DisclosureGroup(workbenchText("数据详情", "Data details", locale)) {
+                Text(information.datasetVersion).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            .buttonStyle(.borderless)
+            .frame(minHeight: 44)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
 
 public struct DiagnosticDisplayRow: Identifiable, Sendable {
     public let id: UUID
@@ -9,9 +271,11 @@ public struct DiagnosticDisplayRow: Identifiable, Sendable {
     public let value: String
     public var status: DiagnosticDisplayStatus?
     public var ipInformation: TracerouteIPInformation?
+    public var ipInformationStatus: TracerouteIPInformationStatus?
     public init(id: UUID = UUID(), title: String, value: String, status: DiagnosticDisplayStatus? = nil,
-                ipInformation: TracerouteIPInformation? = nil) {
+                ipInformation: TracerouteIPInformation? = nil, ipInformationStatus: TracerouteIPInformationStatus? = nil) {
         self.id = id; self.title = title; self.value = value; self.status = status; self.ipInformation = ipInformation
+        self.ipInformationStatus = ipInformationStatus
     }
 }
 public enum DiagnosticDisplayStatus: Sendable { case timeout, unreachable, open, noConnection }
@@ -76,6 +340,8 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     @Published public private(set) var running = false
     @Published public private(set) var stopping = false
     @Published public private(set) var ipInformationRetryable = false
+    @Published public private(set) var ipInformationDatabaseUnavailable = false
+    @Published public private(set) var ipInformationDatabaseFailure: String?
     @Published public private(set) var failed = false
     @Published public private(set) var cancelled = false
     @Published public private(set) var request: DiagnosticRequestSnapshot?
@@ -96,14 +362,21 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     private var traceAddresses: [Int: String] = [:]
     private var ipGeneration = UUID()
     private var ipQueue: [String] = []
-    private var ipFinished: Set<String> = []
+    private struct IPResult {
+        let status: TracerouteIPInformationStatus
+        let information: TracerouteIPInformation?
+    }
+    private var ipResults: [String: IPResult] = [:]
     private var ipTasks: [String: Task<Void, Never>] = [:]
+    private var ipDatabaseTask: Task<Void, Never>?
     public init(tool: ToolboxTool,service: any DiagnosticWorkbenchService,mayReadWiFiIdentity: Bool = false,
                 onRequestState: (@MainActor @Sendable (DiagnosticRequestSnapshot, DiagnosticRequestState) -> Void)? = nil,
                 ipInformation: TracerouteIPInformationProvider? = nil) throws {
         guard [.ping,.traceroute,.dns,.port,.lan,.wifi].contains(tool) else { throw DiagnosticError.invalid("diagnostic view") }
         self.tool = tool; self.service = service; self.mayReadWiFiIdentity = mayReadWiFiIdentity
         self.onRequestState = onRequestState; self.ipInformation = ipInformation
+        ipInformationDatabaseUnavailable = tool == .traceroute && ipInformation == nil
+        if tool == .traceroute { checkIPDatabase() }
     }
     @discardableResult public func run() -> Task<Void,Never>? {
         guard !closed, !running, !stopping else { return nil }
@@ -116,6 +389,7 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
         generation = frozen.id; request = frozen; rows = []; failure = nil
         lanServices = []; lanReport = nil
         cancelled = false; failed = false; running = true
+        if tool == .traceroute { checkIPDatabase() }
         onRequestState?(frozen, .running)
         let run = frozen.id, target = frozen.target, ports = frozen.ports, type = frozen.recordType
         operation = Task { [weak self] in
@@ -231,7 +505,11 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
         public let failed: Bool
         public let failure: DiagnosticError?
         public func removingIPInformation() -> Self {
-            let cleared = rows.map { row in var value = row; value.ipInformation = nil; return value }
+            let cleared = rows.map { row in
+                var value = row; value.ipInformation = nil
+                if value.ipInformationStatus != nil { value.ipInformationStatus = .notRequested }
+                return value
+            }
             return .init(request: request, inputTarget: inputTarget, rows: cleared, hops: hops,
                          cancelled: cancelled, failed: failed, failure: failure)
         }
@@ -248,12 +526,16 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
               retained.request.tool == .traceroute, retained.hops.count <= 30,
               retained.hops.count == retained.rows.count else { return }
         request = retained.request; target = retained.inputTarget; rows = retained.rows
+        for index in rows.indices where rows[index].ipInformationStatus == .loading {
+            rows[index].ipInformationStatus = .notRequested
+        }
         traceHops = retained.hops; cancelled = retained.cancelled
         failed = retained.failed; failure = retained.failure
         for (hop, row) in zip(traceHops, rows) {
             traceRowIDs[hop.ttl] = row.id
             if let address = hop.address { traceAddresses[hop.ttl] = address }
         }
+        ipInformationRetryable = rows.contains { $0.ipInformationStatus?.isRetryable == true }
     }
 
     private func acceptTrace(_ event: TracerouteObservation, run: UUID) {
@@ -273,7 +555,8 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
         let status: DiagnosticDisplayStatus?
         switch hop.status { case .timeout: status = .timeout; case .unreachable: status = .unreachable; default: status = nil }
         rows.append(.init(id: id, title: "\(hop.ttl) · \(hop.address ?? "*")",
-            value: hop.milliseconds.map { String(format: "%.2f ms", $0) }.joined(separator: " · "), status: status))
+            value: hop.milliseconds.map { String(format: "%.2f ms", $0) }.joined(separator: " · "), status: status,
+            ipInformationStatus: hop.address == nil ? nil : .notRequested))
         if let address = hop.address {
             traceAddresses[hop.ttl] = address
             enqueueIP(address)
@@ -289,18 +572,67 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
     private func invalidateIPInformation() {
         ipGeneration = UUID()
         for task in ipTasks.values { task.cancel() }
-        ipTasks = [:]; ipQueue = []; ipFinished = []; ipInformationRetryable = false
+        ipDatabaseTask?.cancel(); ipDatabaseTask = nil
+        ipTasks = [:]; ipQueue = []; ipResults = [:]; ipInformationRetryable = false
+        for index in rows.indices where rows[index].ipInformationStatus == .loading {
+            rows[index].ipInformationStatus = .notRequested
+        }
     }
     /// Call after the database service changes its dataset. This cancels old
-    /// lookups and invalidates displayed enrichment without touching hops.
+    /// lookups without touching hops. Completed/restored results stay manual;
+    /// only a currently running trace resumes automatic offline enrichment.
     public func refreshIPInformation() {
+        guard !closed, tool == .traceroute else { return }
+        reloadIPInformation(enqueue: running && !cancelled)
+    }
+    /// Explicitly enriches retained observations, without starting a new probe.
+    /// Also works for a stopped or failed trace with usable hop addresses.
+    public func completeIPInformation() {
+        guard !closed, tool == .traceroute, request != nil, !stopping else { return }
+        reloadIPInformation(enqueue: true)
+    }
+    public var ipInformationLoading: Bool { !ipTasks.isEmpty || !ipQueue.isEmpty }
+    public var hasIPInformationAddresses: Bool { !traceAddresses.isEmpty }
+    private func reloadIPInformation(enqueue: Bool) {
         invalidateIPInformation()
-        for index in rows.indices { rows[index].ipInformation = nil }
-        guard !closed, tool == .traceroute, !cancelled, request != nil else { return }
-        for address in Set(traceAddresses.values).sorted() { enqueueIP(address) }
+        for index in rows.indices {
+            rows[index].ipInformation = nil
+            if rows[index].ipInformationStatus != nil { rows[index].ipInformationStatus = .notRequested }
+        }
+        checkIPDatabase()
+        if enqueue { for address in Set(traceAddresses.values).sorted() { enqueueIP(address) } }
+    }
+    private func checkIPDatabase() {
+        guard let provider = ipInformation else { ipInformationDatabaseUnavailable = true; return }
+        let run = generation, epoch = ipGeneration
+        ipInformationDatabaseFailure = nil
+        ipDatabaseTask?.cancel()
+        ipDatabaseTask = Task { [weak self] in
+            do {
+                let version = try await provider.databaseVersion()
+                guard let self, self.generation == run, self.ipGeneration == epoch, !Task.isCancelled else { return }
+                self.ipInformationDatabaseUnavailable = version == nil
+                self.ipDatabaseTask = nil
+            } catch {
+                guard let self, self.generation == run, self.ipGeneration == epoch, !Task.isCancelled else { return }
+                self.ipInformationDatabaseUnavailable = false
+                self.ipInformationDatabaseFailure = Self.ipErrorDetail(error)
+                self.ipInformationRetryable = true
+                self.ipDatabaseTask = nil
+            }
+        }
     }
     private func enqueueIP(_ address: String) {
-        guard ipInformation != nil, !ipFinished.contains(address), ipTasks[address] == nil,
+        if let cached = ipResults[address] {
+            updateIPRows(address, result: cached)
+            return
+        }
+        guard ipInformation != nil else {
+            finishIP(address, result: IPResult(status: .databaseUnavailable, information: nil))
+            return
+        }
+        updateIPRows(address, result: IPResult(status: .loading, information: nil))
+        guard ipTasks[address] == nil,
               !ipQueue.contains(address), ipQueue.count < 30 else { return }
         ipQueue.append(address); pumpIP()
     }
@@ -309,31 +641,44 @@ public enum DiagnosticRequestState: Sendable { case running, completed, failed, 
         while ipTasks.count < 4, !ipQueue.isEmpty {
             let address = ipQueue.removeFirst(), run = generation, epoch = ipGeneration
             ipTasks[address] = Task { [weak self] in
-                let information: TracerouteIPInformation?
-                let succeeded: Bool
-                let busy: Bool
-                do { information = try await provider.information(for: address); succeeded = true; busy = false }
-                catch DiagnosticError.busy { information = nil; succeeded = false; busy = true }
-                catch { information = nil; succeeded = false; busy = false }
+                let result: IPResult
+                do {
+                    switch try await provider.lookupResult(for: address) {
+                    case .information(let value): result = IPResult(status: .available, information: value)
+                    case .databaseUnavailable: result = IPResult(status: .databaseUnavailable, information: nil)
+                    case .localOrSpecialUse: result = IPResult(status: .localOrSpecialUse, information: nil)
+                    case .notFound: result = IPResult(status: .notFound, information: nil)
+                    case .databaseChanged: result = IPResult(status: .databaseChanged, information: nil)
+                    }
+                } catch {
+                    if Task.isCancelled { return }
+                    // Adapter failures stay visible and retryable. In particular,
+                    // a failed read is never cached as a successful no-match.
+                    result = IPResult(status: .failed(Self.ipErrorDetail(error)), information: nil)
+                }
                 guard let self, self.generation == run, self.ipGeneration == epoch, !Task.isCancelled else { return }
                 self.ipTasks[address] = nil
-                if busy {
-                    // Normal saturation waits for a real permit release. Only
-                    // bounded-queue overload reaches here; retain retry input.
-                    self.ipInformationRetryable = true
-                    if !self.ipQueue.contains(address) { self.ipQueue.append(address) }
-                    return
-                }
-                if succeeded { self.ipFinished.insert(address) }
-                if let information, information.address == address {
-                    for (ttl, expectedAddress) in self.traceAddresses where expectedAddress == address {
-                        guard let id = self.traceRowIDs[ttl], let index = self.rows.firstIndex(where: { $0.id == id }) else { continue }
-                        self.rows[index].ipInformation = information
-                    }
-                }
+                self.finishIP(address, result: result)
                 self.pumpIP()
             }
         }
+    }
+    private func finishIP(_ address: String, result: IPResult) {
+        ipResults[address] = result
+        if result.status == .databaseUnavailable { ipInformationDatabaseUnavailable = true }
+        updateIPRows(address, result: result)
+        ipInformationRetryable = ipInformationDatabaseFailure != nil || rows.contains { $0.ipInformationStatus?.isRetryable == true }
+    }
+    private func updateIPRows(_ address: String, result: IPResult) {
+        for (ttl, expectedAddress) in traceAddresses where expectedAddress == address {
+            guard let id = traceRowIDs[ttl], let index = rows.firstIndex(where: { $0.id == id }) else { continue }
+            rows[index].ipInformation = result.information
+            rows[index].ipInformationStatus = result.status
+        }
+    }
+    private static func ipErrorDetail(_ error: any Error) -> String {
+        let detail = (error as? LocalizedError)?.errorDescription ?? String(reflecting: error)
+        return String(detail.prefix(1_024))
     }
     public var manualTarget: String? { Self.normalizedTarget(target) }
     static func normalizedTarget(_ raw: String) -> String? {
@@ -358,6 +703,7 @@ public struct DiagnosticWorkbenchView: View {
     private let onOpenSettings: (() -> Void)?
     private let ipInformationSettings: AnyView?
     @State private var showsIPInformationSettings = false
+    @State private var ipLocation: TracerouteIPMapSelection?
     public init(model: DiagnosticWorkbenchModel, history: AnyView? = nil,
                 onUseEndpoint: ((ToolboxTool, String, UInt16?) -> Void)? = nil, onOpenSettings: (() -> Void)? = nil,
                 ipInformationSettings: AnyView? = nil) {
@@ -416,36 +762,110 @@ public struct DiagnosticWorkbenchView: View {
                 if model.tool == .traceroute, model.request != nil, !model.running, !model.stopping, !model.failed, !model.cancelled {
                     Text(workbenchText("检测完成。", "Check complete.", locale)).foregroundStyle(.secondary)
                 }
+                if model.tool == .traceroute { ipInformationControls }
                 ForEach(model.rows) { row in
                     VStack(alignment: .leading, spacing: 4) {
                         LabeledContent(row.title) { Text(display(row)).textSelection(.enabled) }
                         if let information = row.ipInformation {
-                            Text([information.region,
-                                  information.autonomousSystemNumber.map { "AS\($0)" },
-                                  information.organization].compactMap { $0 }.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                            DisclosureGroup(workbenchText("来源", "Source", locale)) {
-                                Text(information.source).font(.caption).textSelection(.enabled)
-                                Text(information.datasetVersion).font(.caption).foregroundStyle(.secondary)
+                            TracerouteIPInformationSummary(information: information) {
+                                ipLocation = TracerouteIPMapSelection(information: information)
                             }
+                        } else if let status = row.ipInformationStatus {
+                            ipStatus(status)
                         }
                     }
-                }
-                if model.ipInformationRetryable {
-                    Button(workbenchText("重试 IP 信息", "Retry IP information", locale)) { model.refreshIPInformation() }
                 }
                 if model.tool == .wifi { Text(workbenchText("未取得的信息显示为 —。","Unavailable information is shown as —.",locale)).font(.caption).foregroundStyle(.secondary) }
             }
             }
             if let history { history }
-            if ipInformationSettings != nil {
+            if ipInformationSettings != nil && (model.tool != .traceroute || !model.ipInformationDatabaseUnavailable) {
                 Section {
                     Button(workbenchText("IP 信息库", "IP information database", locale)) { showsIPInformationSettings = true }
+                        .buttonStyle(.borderless)
+                        .frame(minHeight: 44)
                 }
             }
         }.navigationTitle(title)
         .sheet(isPresented: $showsIPInformationSettings) {
-            if let ipInformationSettings { ipInformationSettings }
+            NavigationStack {
+                if let ipInformationSettings {
+                    ipInformationSettings
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button(workbenchText("完成", "Done", locale)) { showsIPInformationSettings = false }
+                                    .accessibilityIdentifier("toolbox.traceroute.ipDatabase.done")
+                            }
+                        }
+                }
+            }
+        }
+        .sheet(item: $ipLocation) { selection in
+            TracerouteIPLocationView(information: selection.information)
+        }
+    }
+    @ViewBuilder private var ipInformationControls: some View {
+        if model.ipInformationDatabaseUnavailable {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(workbenchText("尚未安装 IP 信息库。安装后可补充地区、ASN 和约略位置。", "No IP database is installed. Install one to add regions, ASN details and approximate locations.", locale),
+                      systemImage: "externaldrive")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("toolbox.traceroute.ipDatabaseUnavailable")
+                if ipInformationSettings != nil {
+                    Button { showsIPInformationSettings = true } label: {
+                        Text(workbenchText("安装 IP 信息库", "Install IP database", locale)).frame(minHeight: 44)
+                    }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("toolbox.traceroute.installIPDatabase")
+                }
+            }
+        } else if let detail = model.ipInformationDatabaseFailure {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(workbenchText("IP 信息库暂不可用，可以重试或打开设置。", "The IP database is unavailable. Retry or open its settings.", locale),
+                      systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                DisclosureGroup(workbenchText("详情", "Details", locale)) { Text(detail).font(.caption).textSelection(.enabled) }
+                    .buttonStyle(.borderless)
+                    .frame(minHeight: 44)
+            }
+            .accessibilityIdentifier("toolbox.traceroute.ipDatabaseFailure")
+        }
+        if model.hasIPInformationAddresses {
+            HStack(spacing: 12) {
+                Button {
+                    model.completeIPInformation()
+                } label: {
+                    Label(ipInformationActionTitle, systemImage: "arrow.clockwise")
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.ipInformationLoading || model.stopping || model.ipInformationDatabaseUnavailable)
+                .accessibilityIdentifier("toolbox.traceroute.refreshIPInformation")
+                if model.ipInformationLoading { ProgressView().controlSize(.small) }
+            }
+        }
+    }
+    private var ipInformationActionTitle: String {
+        if model.ipInformationRetryable { return workbenchText("重试 IP 信息", "Retry IP information", locale) }
+        return model.rows.contains(where: { $0.ipInformation != nil })
+            ? workbenchText("刷新 IP 信息", "Refresh IP information", locale)
+            : workbenchText("补充 IP 信息", "Add IP information", locale)
+    }
+    @ViewBuilder private func ipStatus(_ status: TracerouteIPInformationStatus) -> some View {
+        switch status {
+        case .databaseUnavailable, .available: EmptyView()
+        case .loading: Text(workbenchText("正在补充 IP 信息…", "Loading IP information…", locale)).font(.caption).foregroundStyle(.secondary)
+        case .notRequested: Text(workbenchText("IP 信息尚未补充", "IP information not added", locale)).font(.caption).foregroundStyle(.secondary)
+        case .localOrSpecialUse: Text(workbenchText("本地或保留地址", "Local or special-use address", locale)).font(.caption).foregroundStyle(.secondary)
+        case .notFound: Text(workbenchText("库中未匹配", "No match in the database", locale)).font(.caption).foregroundStyle(.secondary)
+        case .databaseChanged: Text(workbenchText("信息库已更换，请刷新。", "The database changed. Refresh IP information.", locale)).font(.caption).foregroundStyle(.secondary)
+        case .failed(let detail):
+            Text(workbenchText("IP 信息暂不可用，可以重试。", "IP information is unavailable. Try again.", locale)).font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup(workbenchText("详情", "Details", locale)) { Text(detail).font(.caption).textSelection(.enabled) }
+                .buttonStyle(.borderless)
+                .frame(minHeight: 44)
         }
     }
     private func failureMessage(_ error: DiagnosticError) -> String {

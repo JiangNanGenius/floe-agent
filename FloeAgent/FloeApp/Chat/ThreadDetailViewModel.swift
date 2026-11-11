@@ -9,6 +9,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import SwiftUI
 import FloeTools
 import Combine
 import Darwin
@@ -99,6 +100,19 @@ final class ThreadDetailViewModel: ObservableObject {
     private let logger = FloeLogger(category: .app)
 
     // MARK: - Published presentation state
+
+    /// Session presentation only, independent of lazily rebuilt timeline rows.
+    /// Never persisted in the conversation database or shared across threads.
+    @Published private var toolDetailExpansionChoices: [ToolCallDisclosureKey: Bool] = [:]
+
+    func toolDetailExpansion(for event: RunEventRecord) -> Binding<Bool?> {
+        let payload = ConversationCenter.decodePayload(event.payloadJSON)
+        let key = ToolCallDisclosureKey(runID: event.runID,
+            callID: payload["callID"] ?? payload["id"], eventID: event.id)
+        return Binding(get: { self.toolDetailExpansionChoices[key] }, set: { value in
+            self.toolDetailExpansionChoices[key] = value
+        })
+    }
 
     /// The conversation's runs, newest first.
     @Published private(set) var runs: [RunRecord] = [] { didSet { timelineRevision &+= 1 } }

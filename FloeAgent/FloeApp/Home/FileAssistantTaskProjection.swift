@@ -66,7 +66,7 @@ enum FileAssistantTaskProjection {
         for record in records where record.purpose == .ordinary {
             guard seen.insert(record.id).inserted else { continue }
             let state = latestRunState(record.id)
-            guard boundConversationIDs.contains(record.id) else {
+            guard boundConversationIDs.contains(record.id) || record.editorOwnership != nil else {
                 ordinary.append(record)
                 guard let state else { continue }
                 if !terminalStates.contains(state), state != "waitingApproval" {

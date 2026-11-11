@@ -214,6 +214,7 @@ struct NotesRootView: View {
                 PersonalContentEditor(record: value)
             }
             .task {
+                await NotesRepository.shared.bindConversationCenter(environment.conversationCenter)
                 DocumentAssistantLeaveBindings.installNotes(on: session, environment: environment, coordinator: assistantLeave)
                 await session.open()
                 adoptPendingDocument()

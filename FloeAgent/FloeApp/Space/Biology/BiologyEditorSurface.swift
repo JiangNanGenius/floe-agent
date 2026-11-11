@@ -8,6 +8,15 @@ import FloeBiologyUI
 struct BiologyEditorSurface: View {
     let session: BiologyProjectSession
     var onInsertIntoNotes: BiologyNotesInsertion?
+    var onAssistant: (() -> Void)?
+    private var assistantPresenter: (@MainActor (BiologyAIContext) async throws -> Void)? {
+        guard let action = onAssistant else { return nil }
+        return { context in
+            try await session.syncAssistantSelection(context)
+            try Task.checkCancellation()
+            action()
+        }
+    }
     var body: some View {
         BiologyWorkbench(service: session.host.service, projectID: session.projectID,
             onInsertInNotes: { project, asset, run in
@@ -30,7 +39,8 @@ struct BiologyEditorSurface: View {
             assistantContent: { _ in
                 AnyView(StudioAssistantView(record: session.record, embedded: true))
             },
-            prepareAssistant: { context in try await session.syncAssistantSelection(context) })
+            prepareAssistant: { context in try await session.syncAssistantSelection(context) },
+            onPresentAssistant: assistantPresenter)
         .accessibilityIdentifier("biology.personalEditor")
         .task { await session.prepareExecutionLocation() }
     }

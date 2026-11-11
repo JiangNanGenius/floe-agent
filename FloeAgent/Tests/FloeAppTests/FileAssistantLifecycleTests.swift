@@ -11,7 +11,7 @@ import FloeModels
 import FloePersistence
 @testable import FloeApp
 
-@Suite("FloeApp.FileAssistantLifecycle")
+@Suite("FloeApp.FileAssistantLifecycle", .serialized)
 @MainActor
 struct FileAssistantLifecycleTests {
 
@@ -126,12 +126,20 @@ struct FileAssistantLifecycleTests {
     private final class Fixture: @unchecked Sendable {
         let environment: AppEnvironment
         let center: ConversationCenter
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("floe-editor-identity-\(UUID().uuidString)")
+        let library: PersonalContentLibrary
+        let access: StudioDocumentAccess
 
         @MainActor
         init() throws {
+            library = PersonalContentLibrary(root: root.appendingPathComponent("Library"))
+            access = try StudioDocumentAccess(root: root.appendingPathComponent("Authority"))
             environment = AppEnvironment.preview()
-            center = ConversationCenter(environment: environment)
+            environment.studioCoordinator = StudioCoordinator(environment: environment, authority: access, library: library)
+            center = environment.conversationCenter
+            center.canvasAssistantOwnershipOverride = .init()
         }
+        func clean() { try? FileManager.default.removeItem(at: root) }
     }
 
     private func makeFixture() async throws -> Fixture {
@@ -158,7 +166,9 @@ struct FileAssistantLifecycleTests {
         let migrated = try #require(await store.conversation(id: bound.id))
         #expect(migrated.archivedAt == nil)
         #expect(fixture.center.fileAssistantConversations.map(\.id) == [bound.id])
-        #expect(fixture.center.conversations.contains { $0.id == bound.id })
+        #expect(migrated.editorOwnership?.kind == .file)
+        #expect(!fixture.center.conversations.contains { $0.id == bound.id })
+        #expect(try await store.conversations(includeArchived: true).allSatisfy { $0.id != bound.id })
         // Ordinary archive semantics are untouched.
         let stillArchived = try #require(await store.conversation(id: archivedChat.id))
         #expect(stillArchived.archivedAt != nil)
@@ -194,6 +204,136 @@ struct FileAssistantLifecycleTests {
         #expect(fixture.center.fileAssistantConversations.map(\.id) == [second.id])
         #expect(fixture.center.isFileAssistantConversation(second.id))
         #expect(!fixture.center.isFileAssistantConversation(first.id))
+        #expect(try await fixture.environment.conversationStore.conversation(id: first.id)?.editorOwnership == .file(project))
+        #expect(!fixture.center.conversations.contains { $0.id == first.id || $0.id == second.id })
+    }
+
+    @Test("Native file creation, streaming refresh and same-file restart retain exact editor ownership")
+    func nativeFileAssistantNeverBecomesOrdinaryHistory() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.clean() }
+        let file = try await fixture.library.create(kind: .document, title: "Shared title") { directory, _ in
+            let original = directory.appendingPathComponent("Original")
+            try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+            try Data("original remains\n".utf8).write(to: original.appendingPathComponent("Document.md"))
+        }
+        let center = fixture.center, store = fixture.environment.conversationStore
+        let ordinary = try await center.createConversation(title: "Work assistant · Shared title")
+        let first = try await fixture.environment.studioCoordinator.assistant(for: file)
+        let firstRecord = try #require(await store.conversation(id: first))
+        #expect(firstRecord.editorOwnership == .file(file.id))
+        #expect(firstRecord.purpose == .ordinary, "Editor isolation cannot change ordinary execution purpose")
+        #expect(!firstRecord.isVisibleInOrdinaryList)
+        #expect(try await store.conversations().map(\.id) == [ordinary.id])
+        #expect(!center.conversations.contains { $0.id == first })
+        let message = PersistedMessage(id: UUID(), conversationID: first, role: "user", content: "Retained history", createdAt: Date())
+        try await store.appendMessage(message)
+        try await store.renameConversation(id: first, title: "Now exactly an ordinary title")
+        try await store.setArchived(id: first, archived: true)
+        try await store.setArchived(id: first, archived: false)
+        await center.authoringConversationBecameVisible(first)
+        #expect(!center.conversations.contains { $0.id == first })
+        #expect(center.fileAssistantConversations.contains { $0.id == first })
+        let oldWorkspace = try await SQLiteWorkspaceStore(database: fixture.environment.database).workspaceID(conversationID: first)
+
+        let next = try await fixture.environment.studioCoordinator.restartAssistant(for: file, expectedConversationID: first)
+        await center.authoringConversationBecameVisible(first)
+        #expect(center.fileAssistantConversations.map(\.id) == [next], "A late old callback cannot replace the current file session")
+        #expect(next != first)
+        #expect(try await fixture.access.assistant(projectID: file.id) == next)
+        #expect(try await store.conversation(id: first)?.editorOwnership == .file(file.id))
+        #expect(try await store.conversation(id: first)?.archivedAt != nil)
+        #expect(try await store.conversation(id: next)?.archivedAt == nil)
+        #expect(try await store.conversation(id: next)?.editorOwnership == .file(file.id))
+        #expect(try await store.messages(conversationID: first).map(\.id) == [message.id])
+        #expect(try await SQLiteWorkspaceStore(database: fixture.environment.database).workspaceID(conversationID: first) == oldWorkspace)
+        await #expect(throws: (any Error).self) { try await center.restoreConversation(id: first) }
+        await #expect(throws: (any Error).self) {
+            _ = try await fixture.environment.studioCoordinator.restartAssistant(for: file, expectedConversationID: first)
+        }
+        #expect(try await fixture.access.assistant(projectID: file.id) == next, "A stale window must not rebind a newer session")
+        let reopened = ConversationCenter(environment: fixture.environment)
+        reopened.canvasAssistantOwnershipOverride = .init()
+        await reopened.reload()
+        #expect(reopened.fileAssistantConversations.map(\.id) == [next])
+        #expect(reopened.conversations.map(\.id) == [ordinary.id])
+        #expect(Set(reopened.foregroundRecoveryConversations().map(\.id)) == [ordinary.id, next])
+        #expect(try await store.conversations(includeArchived: true).map(\.id) == [ordinary.id])
+        #expect(try Data(contentsOf: (try await fixture.library.resolve(file.id)).url
+            .appendingPathComponent("Original/Document.md")) == Data("original remains\n".utf8))
+        let trashed = try await PersonalLibraryFileActions.delete(file, environment: fixture.environment, library: fixture.library)
+        #expect(try await store.conversation(id: first)?.archivedAt != nil)
+        #expect(try await store.conversation(id: next)?.archivedAt == nil)
+        #expect(center.fileAssistantConversations.isEmpty)
+        try await PersonalLibraryFileActions.restore(trashed, environment: fixture.environment, library: fixture.library)
+        #expect(center.fileAssistantConversations.map(\.id) == [next])
+        #expect(try await store.conversation(id: first)?.archivedAt != nil)
+        let trashAgain = try await PersonalLibraryFileActions.delete(file, environment: fixture.environment, library: fixture.library)
+        let plan = try #require(try await PersonalLibraryFileActions.permanentDeletionPlans([trashAgain], environment: fixture.environment, library: fixture.library).first)
+        _ = try await PersonalLibraryFileActions.permanentlyDelete(plan, environment: fixture.environment, library: fixture.library)
+        #expect(try await store.conversation(id: first) == nil)
+        #expect(try await store.conversation(id: next) == nil)
+        #expect(try await store.conversation(id: ordinary.id) != nil, "A normal task merely referring to the file must survive")
+    }
+
+    @Test("Canvas native IDs restore ownership; names never hide ordinary chats and global task visibility survives")
+    func canvasBindingsStayEditorOwnedAcrossRestoreAndTaskProjection() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.clean() }
+        let center = fixture.center, store = fixture.environment.conversationStore
+        let current = try await center.createConversation(title: "renamed canvas session")
+        let old = try await center.createConversation(title: "old editor history")
+        let ordinary = try await center.createConversation(title: CanvasAgentIdentity.conversationTitlePrefix + "ordinary")
+        let document = CanvasDocument(name: "Page")
+        var project = CanvasProject(id: UUID(), name: "Native canvas", documents: [document], selectedDocumentID: document.id)
+        project.agentConversationIDsByDocument = [document.id: current.id]
+        project.agentConversationID = current.id
+        project.assistantSessions = [.init(conversationID: old.id, title: "Old session")]
+        try await store.claimEditorOwnership(id: old.id, owner: .canvas(project.id, documentID: document.id))
+        try await store.setArchived(id: old.id, archived: true)
+        let directory = fixture.root.appendingPathComponent("Canvases")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try CanvasProjectCodec.encode(project, encoder: encoder)
+            .write(to: directory.appendingPathComponent(project.id.uuidString + ".json"))
+        let bindings = try WorkspaceCanvasRegistry.assistantOwnerships(in: directory)
+        center.canvasAssistantOwnershipOverride = bindings
+        try await store.setArchived(id: current.id, archived: true)
+        let firstTouch = try await center.sessionSnapshot(conversationID: current.id)
+        #expect(firstTouch.conversation.editorOwnership == .canvas(project.id, documentID: document.id))
+        #expect(firstTouch.conversation.archivedAt == nil, "The exact legacy current binding remains usable")
+        #expect(!center.conversations.contains { $0.id == current.id }, "Legacy first touch must repair ownership before full reload")
+        try await store.setArchived(id: current.id, archived: true)
+        await center.reload()
+        let owned = try #require(await store.conversation(id: current.id))
+        #expect(owned.editorOwnership == .canvas(project.id, documentID: document.id))
+        #expect(CanvasAgentIdentity.isCanvasConversation(owned))
+        #expect(!CanvasAgentIdentity.isCanvasConversation(ordinary), "A title is not editor ownership")
+        #expect(center.canvasAssistantConversations.map(\.id) == [current.id])
+        #expect(center.conversations.map(\.id) == [ordinary.id])
+        #expect(Set(center.foregroundRecoveryConversations().map(\.id)) == [ordinary.id, current.id])
+        try await store.setArchived(id: current.id, archived: false)
+        await center.authoringConversationBecameVisible(current.id)
+        #expect(!center.conversations.contains { $0.id == current.id || $0.id == old.id })
+        await #expect(throws: (any Error).self) { try await center.restoreConversation(id: current.id) }
+        #expect(try await store.conversation(id: old.id)?.editorOwnership == .canvas(project.id, documentID: document.id),
+            "Legacy project-wide history metadata cannot replace the exact stored document owner")
+        let sections = FileAssistantTaskProjection.sections(
+            records: center.conversations + center.canvasAssistantConversations,
+            boundConversationIDs: [], latestRunState: { $0 == current.id ? "executingTool" : nil })
+        #expect(sections.ordinary.map(\.id) == [ordinary.id])
+        #expect(sections.running.map(\.id) == [current.id], "Editor work stays globally discoverable in Task Center")
+        #expect(sections.fileArea.isEmpty)
+        let approvals = FileAssistantTaskProjection.sections(records: [owned], boundConversationIDs: [],
+            latestRunState: { _ in "waitingApproval" })
+        #expect(approvals.ordinary.isEmpty)
+        #expect(approvals.fileArea.map(\.id) == [current.id])
+        let originalOwner = owned.editorOwnership
+        center.canvasAssistantOwnershipOverride = .init(all: [current.id: .canvas(UUID(), documentID: document.id)], current: [current.id])
+        await center.reload()
+        #expect(!center.conversations.contains { $0.id == current.id || $0.id == old.id })
+        #expect(try await store.conversation(id: current.id)?.editorOwnership == originalOwner,
+            "A failed foreign backfill must retain data and remain excluded from normal history")
     }
 }
 #endif

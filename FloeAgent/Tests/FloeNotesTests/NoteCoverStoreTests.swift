@@ -543,3 +543,58 @@ struct NoteCoverStoreTests {
         return data as Data
     }
 }
+
+
+@Suite("Notes exact assistant history")
+struct NotesAssistantHistoryTests {
+    @Test("Native rebind retains exact history; ordinary knowledge grants never become assistants")
+    func rebindRetainsOnlyThisNotesHistory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-assistant-history-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let note = try await store.create(NoteDocument(title: "Owned note"))
+        let unrelated = try await store.create(NoteDocument(title: "Other note"))
+        let old = UUID(), next = UUID(), ordinary = UUID(), other = UUID()
+        try await store.bindAssistant(conversationID: old, documentID: note.id, canEdit: true)
+        try await store.bindAssistant(conversationID: other, documentID: unrelated.id, canEdit: true)
+        try await store.grantAccess(conversationID: ordinary, documentID: note.id, canEdit: false)
+        try await store.replaceAssistant(conversationID: next, documentID: note.id, expectedPrevious: old)
+        await #expect(throws: (any Error).self) {
+            try await store.replaceAssistant(conversationID: UUID(), documentID: note.id, expectedPrevious: old)
+        }
+        #expect(try await store.assistantConversation(documentID: note.id) == next)
+        #expect(Set(try await store.assistantHistory(documentID: note.id)) == [old, next])
+        #expect(!(try await store.assistantConversationIDs()).contains(ordinary))
+        #expect(try await store.assistantHistory(documentID: unrelated.id) == [other])
+        let reopened = try NotesStore(root: root)
+        #expect(Set(try await reopened.assistantHistory(documentID: note.id)) == [old, next])
+        let trashed = try await store.setTrashed(note.id, expectedRevision: note.revision, trashed: true)
+        #expect(try await store.assistantOriginalIsAvailable(conversationID: next) == false)
+        let restored = try await store.setTrashed(note.id, expectedRevision: trashed.revision, trashed: false)
+        #expect(restored.deletedAt == nil)
+        #expect(try await store.assistantConversation(documentID: note.id) == next)
+        #expect(Set(try await store.assistantHistory(documentID: note.id)) == [old, next])
+    }
+
+    @Test("Permanent deletion atomically records only this note's current and archive cleanup IDs")
+    func permanentDeleteKeepsExactRecoverableCleanupReceipts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-assistant-purge-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let note = try await store.create(NoteDocument(title: "To delete"))
+        let otherNote = try await store.create(NoteDocument(title: "Keep"))
+        let old = UUID(), next = UUID(), other = UUID(), ordinary = UUID()
+        try await store.bindAssistant(conversationID: old, documentID: note.id, canEdit: true)
+        try await store.replaceAssistant(conversationID: next, documentID: note.id, expectedPrevious: old)
+        try await store.bindAssistant(conversationID: other, documentID: otherNote.id, canEdit: true)
+        try await store.grantAccess(conversationID: ordinary, documentID: note.id, canEdit: false)
+        let trashed = try await store.setTrashed(note.id, expectedRevision: note.revision, trashed: true)
+        try await store.permanentlyDelete(note.id, expectedRevision: trashed.revision)
+        #expect(Set(try await store.pendingAssistantCleanup()) == [old, next])
+        #expect(try await store.assistantHistory(documentID: note.id).isEmpty)
+        #expect(try await store.assistantHistory(documentID: otherNote.id) == [other])
+        try await store.acknowledgeAssistantCleanup(old)
+        let reopened = try NotesStore(root: root)
+        #expect(try await reopened.pendingAssistantCleanup() == [next], "Cleanup failure/relaunch cannot lose the remaining native receipt")
+    }
+}

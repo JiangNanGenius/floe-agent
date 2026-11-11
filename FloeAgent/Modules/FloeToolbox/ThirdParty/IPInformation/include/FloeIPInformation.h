@@ -18,6 +18,11 @@ typedef struct {
     char region[512];
     char city[512];
     char organization[512];
+    int has_location;
+    double latitude;
+    double longitude;
+    int has_accuracy_radius;
+    double accuracy_radius_kilometers;
 } FloeIPDatabaseRecord;
 // kind1=City, kind2=ASN. Errors never contain the caller's file path.
 FloeIPDatabase *floe_ip_open(const char *path, int kind, uint64_t maximum_bytes,

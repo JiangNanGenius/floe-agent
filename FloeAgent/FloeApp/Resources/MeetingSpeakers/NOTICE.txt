@@ -1,0 +1,17 @@
+Speaker recognition attribution
+
+SpeakerKit, part of Argmax WhisperKit / argmax-oss-swift
+Copyright (c) 2024 argmax, inc.
+SDK: https://github.com/argmaxinc/WhisperKit
+Revision: 1e2a163736dfa5a198e637ae44c114e1c6d5cc2d
+MIT license: original included in SpeakerKit-MIT.txt.
+
+Core ML speaker recognition models: Argmax, Inc.
+https://huggingface.co/argmaxinc/speakerkit-coreml
+Revision: 556fc52a13327837688f02289457cded017802e9
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+Original model card and license included in MODEL_CARD.md and CC-BY-4.0.txt.
+Floe selects the unmodified W8A16 Pyannote v3 segmenter/embedder/preprocessor
+and W32A32 Pyannote v4 PLDA projector. No model weights were modified.
+Recognition runs on device. Attribution does not imply endorsement.

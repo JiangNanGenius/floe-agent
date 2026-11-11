@@ -5,8 +5,12 @@ import SwiftUI
 /// its destination plane and matching reference point. It does not infer a
 /// solid or reconstruct an arbitrary multi-view drawing.
 struct CADSketchTransferSheet: View {
+    enum Destination: Equatable {
+        case choosePlane, currentDrawingPlane, currentSketch
+    }
     let source: CADSketchTransferEnvelope
     let hasSelection: Bool
+    let destination: Destination
     let onImport: (CADSketchTransferPlacement) throws -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.locale) private var locale
@@ -19,10 +23,11 @@ struct CADSketchTransferSheet: View {
     @State private var rotation = 0.0
     @State private var acceptOmissions = false
     @State private var error: String?
-    init(source: CADSketchTransferEnvelope, hasSelection: Bool,
+    init(source: CADSketchTransferEnvelope, hasSelection: Bool, destination: Destination = .choosePlane,
          onImport: @escaping (CADSketchTransferPlacement) throws -> Void) {
         self.source = source; self.hasSelection = hasSelection; self.onImport = onImport
-        _target = State(initialValue: hasSelection ? .selected : .front)
+        self.destination = destination
+        _target = State(initialValue: destination != .choosePlane || hasSelection ? .selected : .front)
         _scale = State(initialValue: source.snapshot.unitScaleMM ?? 0)
     }
     private func t(_ zh: String, _ en: String) -> String { locale.identifier.hasPrefix("zh") ? zh : en }
@@ -44,15 +49,24 @@ struct CADSketchTransferSheet: View {
                     }
                 }
                 Section(t("草图平面", "Sketch plane")) {
-                    Picker(t("目标平面", "Destination"), selection: $target) {
-                        if hasSelection { Text(t("已选草图／平面／面", "Selected sketch / plane / face")).tag(CADSketchTransferPlacement.Target.selected) }
-                        Text(t("正视图", "Front")).tag(CADSketchTransferPlacement.Target.front)
-                        Text(t("顶视图", "Top")).tag(CADSketchTransferPlacement.Target.top)
-                        Text(t("右视图", "Right")).tag(CADSketchTransferPlacement.Target.right)
-                        Text(t("原图平面", "Source plane")).tag(CADSketchTransferPlacement.Target.source)
+                    if destination == .choosePlane {
+                        Picker(t("目标平面", "Destination"), selection: $target) {
+                            if hasSelection { Text(t("已选草图／平面／面", "Selected sketch / plane / face")).tag(CADSketchTransferPlacement.Target.selected) }
+                            Text(t("正视图", "Front")).tag(CADSketchTransferPlacement.Target.front)
+                            Text(t("顶视图", "Top")).tag(CADSketchTransferPlacement.Target.top)
+                            Text(t("右视图", "Right")).tag(CADSketchTransferPlacement.Target.right)
+                            Text(t("原图平面", "Source plane")).tag(CADSketchTransferPlacement.Target.source)
+                        }
+                        Text(t("分别选择正、顶、侧视图，设置对应参考点和偏移，即可将多视图对齐到不同草图平面。", "Select front, top and side view groups separately, then use matching reference points and offsets to align their sketches."))
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent(t("目标平面", "Destination"), value: destination == .currentSketch
+                            ? t("当前草图", "Current sketch") : t("当前图纸平面", "Current drawing plane"))
+                        if !hasSelection {
+                            Text(t("请先打开可编辑的草图，再重新导入。", "Open an editable sketch, then reopen Import."))
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
-                    Text(t("分别选择正、顶、侧视图，设置对应参考点和偏移，即可将多视图对齐到不同草图平面。", "Select front, top and side view groups separately, then use matching reference points and offsets to align their sketches."))
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section(t("参考点与对齐", "Reference point and alignment")) {
                     number(t("原图参考 X", "Source reference X"), $anchorX)
@@ -72,19 +86,22 @@ struct CADSketchTransferSheet: View {
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }
-            .navigationTitle(t("转三维草图", "Create 3D sketch"))
+            .navigationTitle(destination == .choosePlane ? t("转三维草图", "Create 3D sketch")
+                : destination == .currentSketch ? t("导入到当前草图", "Import into Current Sketch")
+                : t("导入图纸", "Import Drawing"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button(t("取消", "Cancel")) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(t("导入", "Import")) {
                         do {
-                            try onImport(CADSketchTransferPlacement(target: target, sourceAnchor: [anchorX, anchorY],
+                            try onImport(CADSketchTransferPlacement(target: destination == .choosePlane ? target : .selected, sourceAnchor: [anchorX, anchorY],
                                 offsetMM: [offsetX, offsetY], rotationDegrees: rotation, unitScaleMM: scale,
                                 acceptOmissions: acceptOmissions))
                             dismiss()
                         } catch { self.error = error.localizedDescription }
                     }
-                    .disabled(scale <= 0 || (!source.snapshot.omissions.isEmpty && !acceptOmissions))
+                    .disabled(scale <= 0 || (destination != .choosePlane && !hasSelection)
+                        || (!source.snapshot.omissions.isEmpty && !acceptOmissions))
                 }
             }
         }

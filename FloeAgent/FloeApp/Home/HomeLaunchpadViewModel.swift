@@ -312,9 +312,9 @@ final class HomeLaunchpadViewModel: ObservableObject {
         // The projection splits them: bound conversations never render twice
         // in the task center, and running/failed file tasks stay globally
         // visible alongside the ordinary buckets.
-        let boundIDs = Set(center.fileAssistantConversations.map(\.id))
+        let boundIDs = Set((center.fileAssistantConversations + center.canvasAssistantConversations).map(\.id))
         var seenIDs: Set<UUID> = []
-        let records = (center.conversations + center.fileAssistantConversations)
+        let records = (center.conversations + center.fileAssistantConversations + center.canvasAssistantConversations)
             .filter { seenIDs.insert($0.id).inserted }
         for conversation in records {
             let recent = (try? await environment.runStore.recentRuns(conversationID: conversation.id, limit: 1)) ?? []

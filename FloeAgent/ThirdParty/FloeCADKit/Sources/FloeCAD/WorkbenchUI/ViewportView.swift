@@ -113,12 +113,13 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     private var paletteOnRight = false
     private var safeArea = ViewportSafeArea()
     private(set) var draftingOnly: Bool
+    private var navigationLockApplied = false
 
     init(viewModel: EditorViewModel, draftingOnly: Bool = false) {
         self.viewModel = viewModel
         self.draftingOnly = draftingOnly
         super.init()
-        gestures.planarNavigation = draftingOnly
+        gestures.planarNavigation = draftingOnly || viewModel.mode.isSketching
         // A coordinator created while another live viewport owns the shared
         // bindings is a re-presentation of that viewport (the fullscreen
         // cover); remember it so a dismantle can hand the camera back. (T7W)
@@ -162,6 +163,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             // A presenter returning from a fullscreen round trip (or a cover
             // mounting over the presenter): keep the exact handoff camera.
             renderer.camera = currentRenderer.camera
+            navigationLockApplied = current.navigationLockApplied
             openingFit = nil
         }
         bindSharedViewport()
@@ -190,6 +192,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         }
         if let renderer {
             presenterRenderer.camera = renderer.camera
+            presenter.navigationLockApplied = navigationLockApplied
         }
         presenter.openingFit = nil
         presenter.bindSharedViewport()
@@ -254,15 +257,10 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         // (gestures and animated flights both move the camera).
         gestures.cameraChanged = { [weak self] in self?.cameraDidMove() }
         cameraAnimator?.cameraChanged = { [weak self] in self?.cameraDidMove() }
-        renderer.showsOrientationCube = !draftingOnly
+        renderer.showsOrientationCube = !(draftingOnly || viewModel.mode.isSketching)
         renderer.camera.projection = (draftingOnly || viewModel.orthographicEnabled)
             ? .orthographic
             : .perspective(fovY: TurntableCamera.defaultFovY)
-
-        // The first attached viewport also supports headless capture. A later
-        // cover claims all shared bindings only when it enters the window;
-        // merely constructing/attaching it cannot displace a visible owner.
-        if viewModel.cameraControl == nil { bindSharedViewport() }
 
         // A migrated legacy scene opens on its authored camera, exactly as the
         // old director framed it; a resize must not re-fit that view (no
@@ -273,6 +271,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         // fit. (T7W)
         if let presenterCamera = presenter?.renderer?.camera {
             renderer.camera = presenterCamera
+            navigationLockApplied = presenter?.navigationLockApplied ?? false
         } else if let saved = viewModel.savedSceneCamera {
             renderer.camera = saved
         } else if let bounds = renderer.scene.worldBounds {
@@ -281,6 +280,11 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             // so this fit knows neither; it is redone as they land.
             openingFit = renderer.camera
         }
+
+        // Establish the real opening camera BEFORE a sketch lock saves it.
+        // A cover claims bindings only on entering the window, after copying
+        // the presenter's camera; constructing it cannot steal that owner.
+        if viewModel.cameraControl == nil { bindSharedViewport() }
 
         // Re-publish the camera whenever the viewport is laid out or resized.
         // The MTKView starts at .zero and is sized afterwards, so every SwiftUI
@@ -306,14 +310,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
     func setDraftingOnly(_ value: Bool) {
         guard draftingOnly != value else { return }
-        draftingOnly = value; gestures.planarNavigation = value
-        renderer?.showsOrientationCube = !value
+        draftingOnly = value
+        gestures.planarNavigation = value || viewModel.mode.isSketching
         if viewModel.cameraControl === self { viewModel.planarNavigationOnly = value }
-        if value {
-            cubeOrbitActive = false
-            numericEditorBlockedCubeDrag = false
-            moveCameraHeadOn(to: viewModel.activeSketch?.plane ?? .worldXY)
-        }
     }
 
     private func install(_ renderer: Renderer, in view: MTKView) {
@@ -337,6 +336,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     }
 
     func sceneDidChange() {
+        if viewModel.cameraControl === self {
+            setNavigationLock(draftingOnly: draftingOnly, sketchPlane: viewModel.activeSketch?.plane)
+        }
         renderer?.scene = viewModel.scene
         view?.setNeedsDisplay()
     }
@@ -406,7 +408,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
     private func handleViewportTap(at point: CGPoint, source: CADViewportInputSource?) {
         // Orientation cube first: taps on it never reach the model.
-        if !draftingOnly, let renderer, let view,
+        if !viewModel.planarNavigationOnly, let renderer, let view,
            let pose = OrientationCube.hitPose(
                at: point, camera: renderer.camera, viewSize: view.bounds.size
            ) {
@@ -668,12 +670,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         pullActive = false
         if source == .pencil { viewModel.sawApplePencil = true }
 
-        // Orientation cube = universal orbit control (spec §7.2): a drag that
-        // STARTS on the cube orbits the camera in drawing modes, so the user can
-        // always reorient even when a tool owns the rest of the viewport. (A
-        // tap on the cube still snaps to that standard view — taps and drags
-        // are separate gestures.)
-        if !draftingOnly, let view, OrientationCube.rect(in: view.bounds.size).contains(point) {
+        // The cube reorients 3D navigation, but cannot escape a sketch plane
+        // or a permanently two-dimensional workbench.
+        if !viewModel.planarNavigationOnly, let view, OrientationCube.rect(in: view.bounds.size).contains(point) {
             // Native numeric entry blocks cube dragging without committing or
             // dismissing its draft. Claim the gesture so it cannot fall through
             // to canvas orbit or drawing; restore normal cube input on release.
@@ -940,6 +939,7 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             return
         }
         if cubeOrbitActive {
+            guard !viewModel.planarNavigationOnly else { cubeOrbitActive = false; return }
             guard let renderer, let view else { return }
             let delta = CGSize(
                 width: point.x - lastCubeDragPoint.x,
@@ -1132,13 +1132,53 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
     // MARK: - ViewportCameraControl
 
+    func setNavigationLock(draftingOnly: Bool, sketchPlane: SketchPlane?) {
+        guard let renderer else { return }
+        let locked = draftingOnly || viewModel.mode.isSketching
+        gestures.planarNavigation = locked
+        renderer.showsOrientationCube = !locked
+        if locked {
+            if cubeOrbitActive || numericEditorBlockedCubeDrag { viewportDragID = nil }
+            cubeOrbitActive = false
+            numericEditorBlockedCubeDrag = false
+            if !draftingOnly, viewModel.cameraBeforeSketchNavigation == nil {
+                viewModel.cameraBeforeSketchNavigation = renderer.camera
+            }
+            let plane = sketchPlane ?? viewModel.lockedNavigationPlane ?? .worldXY
+            let mustAlign = !navigationLockApplied || viewModel.lockedNavigationPlane != plane
+            navigationLockApplied = true
+            viewModel.lockedNavigationPlane = plane
+            if !viewModel.orthographicEnabled { viewModel.orthographicEnabled = true }
+            if mustAlign {
+                // Invalidates any in-flight 3D flight once on entry/plane
+                // change. Tool changes, redraws and fullscreen handoffs keep
+                // the user's exact planar pan/zoom instead of re-centering.
+                openingFit = nil
+                moveCameraHeadOn(to: plane)
+            }
+        } else {
+            navigationLockApplied = false
+            viewModel.lockedNavigationPlane = nil
+            if let camera = viewModel.cameraBeforeSketchNavigation {
+                viewModel.cameraBeforeSketchNavigation = nil
+                viewModel.orthographicEnabled = camera.projection == .orthographic
+                openingFit = nil
+                cameraAnimator?.setImmediately(to: camera)
+            }
+        }
+    }
+
     func fitScene() {
         guard let renderer else { return }
         var target = renderer.camera
         if let bounds = renderer.scene.worldBounds {
             target.fit(boundsMin: bounds.min, boundsMax: bounds.max, aspect: fitAspect)
         } else {
-            if draftingOnly { target.target = .zero; target.distance = 12 }
+            if viewModel.planarNavigationOnly {
+                let origin = viewModel.activeSketch?.plane.origin ?? .zero
+                target.target = SIMD3(Float(origin.x), Float(origin.y), Float(origin.z))
+                target.distance = 12
+            }
             else { target = TurntableCamera() }
         }
         cameraAnimator?.animate(to: target)
@@ -1206,13 +1246,13 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
 
     func animateToStandardView(_ standard: StandardView) {
         guard let renderer else { return }
-        guard !draftingOnly else { moveCameraHeadOn(to: viewModel.activeSketch?.plane ?? .worldXY); return }
+        guard !viewModel.planarNavigationOnly else { moveCameraHeadOn(to: viewModel.activeSketch?.plane ?? .worldXY); return }
         cameraAnimator?.animate(to: standard.applied(to: renderer.camera), duration: 0.4)
     }
 
     func setProjection(orthographic: Bool) {
         guard let renderer else { return }
-        renderer.camera.projection = (draftingOnly || orthographic)
+        renderer.camera.projection = (viewModel.planarNavigationOnly || orthographic)
             ? .orthographic
             : .perspective(fovY: TurntableCamera.defaultFovY)
         view?.setNeedsDisplay()
@@ -1283,16 +1323,17 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         if simd_dot(normal, renderer.camera.position - originF) < 0 {
             normal = -normal
         }
-        // Turntable angles that put the eye along the plane normal; vertical
-        // planes clamp at the elevation limit (top/bottom-down views).
-        target.elevation = min(
-            max(asin(min(max(normal.y, -1), 1)), -TurntableCamera.elevationLimit),
-            TurntableCamera.elevationLimit
-        )
+        let elevation = asin(min(max(normal.y, -1), 1))
+        // Locked planes use exact poles with their own screen-up direction.
+        // Ordinary Y-up animated views retain their existing safe limit.
+        target.elevation = viewModel.planarNavigationOnly ? elevation
+            : min(max(elevation, -TurntableCamera.elevationLimit), TurntableCamera.elevationLimit)
         target.azimuth = (abs(normal.x) + abs(normal.z)) > 1e-5 ? atan2(normal.x, normal.z) : 0
         target.target = originF
         target.distance = max(renderer.camera.distance, 14)
-        if draftingOnly {
+        if viewModel.planarNavigationOnly {
+            let up = plane.yAxis
+            target.upVector = simd_normalize(SIMD3<Float>(Float(up.x), Float(up.y), Float(up.z)))
             target.projection = .orthographic
             cameraAnimator?.setImmediately(to: target)
         } else { cameraAnimator?.animate(to: target, duration: 0.4) }

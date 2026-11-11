@@ -60,6 +60,9 @@ import Testing
         #expect(model.orthographicEnabled && camera.projections.last == true)
         #expect(document.exchangeChangeCount == changes)
         model.planarNavigationOnly = false
+        #expect(model.planarNavigationOnly && model.activeSketch?.id == sketch)
+        model.finishSketch()
+        #expect(!model.planarNavigationOnly)
         model.applyStandardView(.right)
         #expect(camera.standards == [.right])
     }

@@ -157,3 +157,131 @@ private let accuracy = 1e-6
     #expect(InstrumentVec3(1e-12, 0, 0).normalized() == nil)
     #expect(InstrumentVec3(.infinity, 0, 0).normalized() == nil)
 }
+
+@Test func levelModeUsesPhysicalGravityWithHysteresis() {
+    func gravity(degreesFromVertical: Double) -> InstrumentVec3 {
+        let angle = degreesFromVertical * .pi / 180
+        return InstrumentVec3(0, -cos(angle) * 9.80665, -sin(angle) * 9.80665)
+    }
+    var mode = InstrumentLevelDisplayMode.dualAxis
+    mode = InstrumentMath.levelDisplayMode(gravity: gravity(degreesFromVertical: 16), previous: mode)
+    #expect(mode == .dualAxis)
+    mode = InstrumentMath.levelDisplayMode(gravity: gravity(degreesFromVertical: 14), previous: mode)
+    #expect(mode == .bar)
+    for angle in [16.0, 14, 21, 16] {
+        mode = InstrumentMath.levelDisplayMode(gravity: gravity(degreesFromVertical: angle), previous: mode)
+        #expect(mode == .bar)
+    }
+    mode = InstrumentMath.levelDisplayMode(gravity: gravity(degreesFromVertical: 23), previous: mode)
+    #expect(mode == .dualAxis)
+    for angle in [21.0, 16] {
+        mode = InstrumentMath.levelDisplayMode(gravity: gravity(degreesFromVertical: angle), previous: mode)
+        #expect(mode == .dualAxis)
+    }
+    for flat in [InstrumentVec3(0, 0, -9.80665), InstrumentVec3(0, 0, 9.80665)] {
+        #expect(InstrumentMath.levelDisplayMode(gravity: flat, previous: .bar) == .dualAxis)
+    }
+    // iPad portrait and either iPhone landscape edge all enter the same mode.
+    for upright in [InstrumentVec3(0, -1, 0), InstrumentVec3(0, 1, 0),
+                    InstrumentVec3(1, 0, 0), InstrumentVec3(-1, 0, 0)] {
+        #expect(InstrumentMath.levelDisplayMode(gravity: upright, previous: .dualAxis) == .bar)
+    }
+}
+
+@Test func interfaceOrientationMapsBubbleTowardTheRaisedScreenEdge() throws {
+    let lean = 12.0 * .pi / 180
+    let s = sin(lean), c = cos(lean)
+    // Explicit device-frame fixtures. Interface landscape-left puts the bottom
+    // on the left: device +Y is screen-right, and device -X is screen-top.
+    let poses: [(InstrumentScreenOrientation, InstrumentVec3, InstrumentVec3)] = [
+        (.portrait, InstrumentVec3(s, 0, c), InstrumentVec3(0, s, c)),
+        (.portraitUpsideDown, InstrumentVec3(-s, 0, c), InstrumentVec3(0, -s, c)),
+        (.landscapeLeft, InstrumentVec3(0, s, c), InstrumentVec3(-s, 0, c)),
+        (.landscapeRight, InstrumentVec3(0, -s, c), InstrumentVec3(s, 0, c))
+    ]
+    for (orientation, rightRaised, topRaised) in poses {
+        let right = InstrumentMath.screenVector(rightRaised, orientation: orientation)
+        let rightBubble = try #require(InstrumentMath.bubblePosition(up: right))
+        let rightAngles = try #require(InstrumentMath.levelAngles(up: right))
+        #expect(abs(rightBubble.x - s) < accuracy && abs(rightBubble.y) < accuracy)
+        #expect(abs(rightAngles.x - 12) < accuracy && abs(rightAngles.y) < accuracy)
+        let top = InstrumentMath.screenVector(topRaised, orientation: orientation)
+        let topBubble = try #require(InstrumentMath.bubblePosition(up: top))
+        let topAngles = try #require(InstrumentMath.levelAngles(up: top))
+        #expect(abs(topBubble.y - s) < accuracy && abs(topBubble.x) < accuracy)
+        #expect(abs(topAngles.y - 12) < accuracy && abs(topAngles.x) < accuracy)
+    }
+}
+
+@Test func uprightBarCentersAndTracksBothSignsInEveryInterfaceOrientation() throws {
+    let lean = 7.0 * .pi / 180
+    let s = sin(lean), c = cos(lean)
+    let poses: [(InstrumentScreenOrientation, InstrumentVec3, InstrumentVec3, InstrumentVec3)] = [
+        (.portrait, InstrumentVec3(0, -1, 0), InstrumentVec3(-s, -c, 0), InstrumentVec3(s, -c, 0)),
+        (.portraitUpsideDown, InstrumentVec3(0, 1, 0), InstrumentVec3(s, c, 0), InstrumentVec3(-s, c, 0)),
+        (.landscapeLeft, InstrumentVec3(1, 0, 0), InstrumentVec3(c, -s, 0), InstrumentVec3(c, s, 0)),
+        (.landscapeRight, InstrumentVec3(-1, 0, 0), InstrumentVec3(-c, s, 0), InstrumentVec3(-c, -s, 0))
+    ]
+    for (orientation, centered, rightRaised, leftRaised) in poses {
+        let zero = try #require(InstrumentMath.barLevelAngle(gravity: centered, orientation: orientation))
+        let positive = try #require(InstrumentMath.barLevelAngle(gravity: rightRaised, orientation: orientation))
+        let negative = try #require(InstrumentMath.barLevelAngle(gravity: leftRaised, orientation: orientation))
+        #expect(abs(zero) < accuracy)
+        #expect(abs(positive - 7) < accuracy)
+        #expect(abs(negative + 7) < accuracy)
+        #expect(InstrumentMath.barBubblePosition(angleDegrees: positive)! > 0)
+        #expect(InstrumentMath.barBubblePosition(angleDegrees: negative)! < 0)
+    }
+    // A locked interface may be upside down physically. Raising its right edge
+    // must still move the bubble right, rather than folding the sign at 180°.
+    let upsideDown = try #require(InstrumentMath.barLevelAngle(gravity: InstrumentVec3(-s, c, 0), orientation: .portrait))
+    #expect(abs(upsideDown - 7) < accuracy)
+}
+
+@Test func uprightBarZeroPreservesPhysicalModeAndMeasuresRollAfterCalibration() throws {
+    let upright = try #require(InstrumentQuaternion.rotation(axis: InstrumentVec3(1, 0, 0), angleRadians: -.pi / 2))
+    let referenceRoll = try #require(InstrumentQuaternion.rotation(axis: InstrumentVec3(0, 0, 1), angleRadians: -5 * .pi / 180))
+    let currentRoll = try #require(InstrumentQuaternion.rotation(axis: InstrumentVec3(0, 0, 1), angleRadians: -12 * .pi / 180))
+    let reference = try #require(referenceRoll.multiplied(by: upright))
+    let current = try #require(currentRoll.multiplied(by: upright))
+    let referenceUp = try #require(InstrumentMath.upVector(attitude: reference))
+    let currentUp = try #require(InstrumentMath.upVector(attitude: current))
+    let gravity = InstrumentVec3(-currentUp.x * 9.80665, -currentUp.y * 9.80665, -currentUp.z * 9.80665)
+    let calibrated = try #require(InstrumentMath.barLevelAngle(gravity: gravity, referenceUp: referenceUp, orientation: .portrait))
+    #expect(abs(calibrated - 7) < accuracy)
+    let rezeroed = try #require(InstrumentMath.barLevelAngle(gravity: gravity, referenceUp: currentUp, orientation: .portrait))
+    #expect(abs(rezeroed) < accuracy)
+    let zeroedUp = try #require(InstrumentMath.relativeUp(current: current, reference: current))
+    #expect(abs(zeroedUp.z - 1) < accuracy)
+    #expect(InstrumentMath.levelDisplayMode(gravity: gravity, previous: .dualAxis) == .bar)
+    // Clearing the reference returns to the physical horizontal edge's 12°.
+    let cleared = try #require(InstrumentMath.barLevelAngle(gravity: gravity, orientation: .portrait))
+    #expect(abs(cleared - 12) < accuracy)
+}
+
+@Test func uprightBarCalibrationUsesTheCurrentScreenEdge() throws {
+    let reference = InstrumentVec3(-cos(5 * .pi / 180), sin(5 * .pi / 180), 0)
+    let current = InstrumentVec3(-cos(12 * .pi / 180), sin(12 * .pi / 180), 0)
+    let gravity = InstrumentVec3(-current.x, -current.y, 0)
+    let left = try #require(InstrumentMath.barLevelAngle(gravity: gravity, referenceUp: reference, orientation: .landscapeLeft))
+    let right = try #require(InstrumentMath.barLevelAngle(gravity: gravity, referenceUp: reference, orientation: .landscapeRight))
+    #expect(abs(left - 7) < accuracy)
+    #expect(abs(right + 7) < accuracy)
+}
+
+@Test func uprightBarBoundsTravelAndRejectsInvalidReadings() {
+    #expect(InstrumentMath.barBubblePosition(angleDegrees: 0) == 0)
+    #expect(InstrumentMath.barBubblePosition(angleDegrees: 5) == 0.5)
+    #expect(InstrumentMath.barBubblePosition(angleDegrees: -5) == -0.5)
+    #expect(InstrumentMath.barBubblePosition(angleDegrees: 90) == 1)
+    #expect(InstrumentMath.barBubblePosition(angleDegrees: -180) == -1)
+    #expect(InstrumentMath.barBubblePosition(angleDegrees: .nan) == nil)
+    #expect(InstrumentMath.barBubblePosition(angleDegrees: .infinity) == nil)
+    for invalid in [InstrumentVec3(0, 0, 0), InstrumentVec3(.nan, -1, 0),
+                    InstrumentVec3(0, .infinity, 0), InstrumentVec3(.greatestFiniteMagnitude, 0, 0)] {
+        #expect(InstrumentMath.barLevelAngle(gravity: invalid, orientation: .portrait) == nil)
+        #expect(InstrumentMath.levelDisplayMode(gravity: invalid, previous: .bar) == .bar)
+        #expect(InstrumentMath.levelDisplayMode(gravity: invalid, previous: .dualAxis) == .dualAxis)
+    }
+    #expect(InstrumentMath.barLevelAngle(gravity: InstrumentVec3(0, -1, 0), referenceUp: InstrumentVec3(0, 0, 0), orientation: .portrait) == nil)
+}

@@ -10,6 +10,19 @@ public struct MeetingPCMFrame: Sendable {
     public let data: Data
     public let frameCount: Int
     public let sampleRate: Double
+    /// Native measured energy for the existing utterance gate. No second
+    /// microphone, recognizer or timeline is involved.
+    public var rms: Float {
+        guard frameCount > 0, data.count == frameCount * MemoryLayout<Float>.size else { return 0 }
+        return data.withUnsafeBytes { bytes in
+            var sum: Float = 0
+            for index in 0..<frameCount {
+                let sample = bytes.loadUnaligned(fromByteOffset: index * MemoryLayout<Float>.size, as: Float.self)
+                sum += sample * sample
+            }
+            return sqrt(sum / Float(frameCount))
+        }
+    }
     public init(copying buffer: AVAudioPCMBuffer) throws {
         let count = Int(buffer.frameLength), channels = Int(buffer.format.channelCount)
         guard (1...16_384).contains(count), (1...16).contains(channels),
@@ -82,7 +95,7 @@ public actor MeetingPCMChunkRecorder {
         return configuration.directory.appendingPathComponent("\(configuration.filePrefix)-\(session.description)-pcm.m4a")
     }
     public var currentTime: Double { sampleRate.map { Double(frames) / $0 } ?? 0 }
-    public func append(_ frame: MeetingPCMFrame) throws -> MeetingPCMChunk? {
+    public func append(_ frame: MeetingPCMFrame, endOfUtterance: Bool = false) throws -> MeetingPCMChunk? {
         guard !closed else { throw MeetingError.captureSessionEnded(session) }
         guard frame.data.count == frame.frameCount * MemoryLayout<Float>.size else { throw MeetingError.captureBackendFailed("Invalid PCM data length.") }
         if let sampleRate, sampleRate != frame.sampleRate {
@@ -113,7 +126,8 @@ public actor MeetingPCMChunkRecorder {
         }
         try original?.write(from: buffer); try chunk?.write(from: buffer)
         frames += Int64(frame.frameCount)
-        if Double(frames - chunkStart) / frame.sampleRate >= chunkSeconds { return try closeChunk() }
+        let elapsed = Double(frames - chunkStart) / frame.sampleRate
+        if elapsed >= chunkSeconds || (endOfUtterance && elapsed >= 0.75) { return try closeChunk() }
         return nil
     }
     public func finish() throws -> MeetingPCMChunk? {

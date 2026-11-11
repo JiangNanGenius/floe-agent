@@ -220,3 +220,218 @@ private final class MotionCallbackProbe {
     var deliveries: [(sample: InstrumentMotionSample?, message: String?)] = []
 }
 #endif
+
+#if os(iOS)
+import AVFoundation
+
+/// Synthetic lifecycle/geometry contracts only. These tests never construct an
+/// ARView, start ARSession, request native permission, or claim a hardware hit.
+@MainActor
+struct SpatialMeasurementSessionContractTests {
+    @Test func unsupportedWorldTrackingNeverRequestsCameraOrLease() {
+        let probe = SpatialAccessProbe()
+        probe.supported = false
+        let model = SpatialMeasurementSession(access: probe.access())
+        model.requestStart()
+        #expect(model.phase == .unavailable)
+        #expect(probe.acquireCount == 0 && probe.permission == nil)
+    }
+
+    @Test func deniedCameraRecoversToExplicitStartAfterSettings() async {
+        let probe = SpatialAccessProbe()
+        probe.authorization = .denied
+        let model = SpatialMeasurementSession(access: probe.access())
+        model.requestStart()
+        #expect(model.phase == .denied && probe.lease == nil)
+        probe.authorization = .authorized
+        model.sceneBecameActive()
+        #expect(model.phase == .idle && probe.prepareCount == 0)
+        model.requestStart()
+        #expect(await waitUntil { model.phase == .running })
+        #expect(probe.prepareCount == 1 && probe.lease != nil)
+        model.stop()
+        #expect(probe.lease == nil)
+    }
+
+    @Test func firstGrantOnBackgroundQueueWaitsForTheSceneToBecomeActive() async throws {
+        let probe = SpatialAccessProbe()
+        probe.authorization = .notDetermined
+        let model = SpatialMeasurementSession(access: probe.access())
+        model.requestStart()
+        let callback = try #require(probe.permission)
+        probe.active = false
+        model.sceneBecameInactive(fullyBackground: false)
+        probe.authorization = .authorized
+        DispatchQueue(label: "qualification.spatial.permission").async { @Sendable in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            callback(true)
+        }
+        #expect(await waitUntil { model.pendingPermissionGeneration == nil })
+        #expect(model.phase == .idle && model.isStarting && probe.prepareCount == 0)
+        probe.active = true
+        model.sceneBecameActive()
+        #expect(await waitUntil { model.phase == .running })
+        model.stop()
+    }
+
+    @Test func stoppedPermissionCallbackCannotReopenOrReacquireCamera() async throws {
+        let probe = SpatialAccessProbe()
+        probe.authorization = .notDetermined
+        let model = SpatialMeasurementSession(access: probe.access())
+        model.requestStart()
+        let token = try #require(model.pendingPermissionGeneration)
+        let callback = SpatialMeasurementSession.makePermissionHandler(for: model, token: token) {
+            MainActor.assertIsolated()
+            probe.permissionAccepted = $0
+        }
+        model.stop()
+        probe.authorization = .authorized
+        DispatchQueue(label: "qualification.spatial.late-permission").async { @Sendable in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            callback(true)
+        }
+        #expect(await waitUntil { probe.permissionAccepted != nil })
+        #expect(probe.permissionAccepted == false)
+        #expect(model.phase == .idle && !model.isStarting)
+        #expect(probe.lease == nil && probe.prepareCount == 0)
+    }
+
+    @Test func stoppingDuringExternalCameraBarrierFencesItsLateReceipt() async throws {
+        let probe = SpatialAccessProbe()
+        probe.holdPreparation = true
+        let model = SpatialMeasurementSession(access: probe.access())
+        defer { probe.completePreparation(false); model.stop() }
+        model.requestStart()
+        guard await waitUntil({ probe.preparationGate != nil }) else {
+            Issue.record("The injected camera barrier was not reached"); return
+        }
+        let pending = try #require(model.preparation)
+        model.stop()
+        probe.completePreparation(true)
+        await pending.value
+        #expect(model.phase == .idle && !model.isStarting)
+        #expect(probe.lease == nil)
+    }
+
+    @Test func busyCameraKeepsTheOtherOwnersLeaseAndDoesNotAskPermission() {
+        let probe = SpatialAccessProbe()
+        let foreignLease = OpticsCaptureLease()
+        probe.lease = foreignLease
+        probe.authorization = .notDetermined
+        let model = SpatialMeasurementSession(access: probe.access())
+        model.requestStart()
+        #expect(model.phase == .cameraBusy && !model.isStarting)
+        #expect(probe.lease == foreignLease)
+        #expect(probe.permission == nil && probe.prepareCount == 0)
+        model.stop()
+        #expect(probe.lease == foreignLease)
+    }
+
+    @Test func emptyModeEditsDuplicatePointsAndTrackingLossDoNotInventMeasurements() async {
+        let probe = SpatialAccessProbe()
+        let model = SpatialMeasurementSession(access: probe.access())
+        defer { model.stop() }
+        model.setMode(.area)
+        model.setMode(.length)
+        #expect(model.readout.segmentLengths.isEmpty && model.readout.totalLength == 0)
+        model.requestStart()
+        #expect(await waitUntil { model.phase == .running })
+        let first = sample(0, 0)
+        model.updateTracking(.limited("insufficientFeatures"))
+        #expect(!model.record(first))
+        model.updateTracking(.normal)
+        #expect(!model.canPlacePoint, "Tracking alone is not a native raycast hit")
+        #expect(model.record(first))
+        #expect(!model.record(first))
+        #expect(model.samples.count == 1 && model.readout.totalLength == 0)
+        #expect(model.record(sample(1, 0)))
+        #expect(model.readout.totalLength == 1)
+        model.updateTracking(.notAvailable)
+        #expect(!model.record(sample(2, 0)))
+        model.pause()
+        #expect(probe.lease == nil && model.samples.count == 2)
+        model.undo()
+        model.undo()
+        #expect(model.samples.isEmpty && model.readout.segmentLengths.isEmpty)
+        model.setMode(.area)
+        #expect(model.readout.area == nil && !model.readout.canClose)
+    }
+
+    @Test func detectedCoplanarAnchorChangesKeepAreaAndClosingEdgeComplete() async {
+        let probe = SpatialAccessProbe()
+        let model = SpatialMeasurementSession(access: probe.access())
+        defer { model.stop() }
+        model.requestStart()
+        #expect(await waitUntil { model.phase == .running })
+        model.updateTracking(.normal)
+        model.setMode(.area)
+        #expect(!model.record(sample(0, 0, estimated: true)))
+        for point in [sample(0, 0), sample(1, 0), sample(1, 1), sample(0, 1)] {
+            #expect(model.record(point))
+        }
+        #expect(model.readout.area == 1 && model.readout.totalLength == 3)
+        #expect(model.readout.canClose)
+        model.closePolygon()
+        #expect(model.polygonClosed && model.readout.totalLength == 4)
+        #expect(model.readout.segmentLengths.count == 4)
+        model.undo()
+        #expect(!model.polygonClosed && model.samples.count == 4)
+        #expect(model.readout.totalLength == 3)
+        model.clear()
+        #expect(model.samples.isEmpty && model.readout.area == nil)
+    }
+
+    private func sample(_ x: Float, _ z: Float, estimated: Bool = false) -> SpatialMeasurementSample {
+        SpatialMeasurementSample(id: UUID(), position: SIMD3(x, 0, z), planeID: estimated ? nil : UUID(),
+                                 surfaceNormal: estimated ? nil : SIMD3(0, 1, 0), estimated: estimated)
+    }
+
+    private func waitUntil(_ condition: @MainActor () -> Bool) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        while !condition(), clock.now < deadline, !Task.isCancelled {
+            do { try await Task.sleep(for: .milliseconds(10)) } catch { break }
+        }
+        return condition()
+    }
+}
+
+@MainActor
+private final class SpatialAccessProbe {
+    var supported = true
+    var authorization: AVAuthorizationStatus = .authorized
+    var active = true
+    var lease: OpticsCaptureLease?
+    var acquireCount = 0
+    var prepareCount = 0
+    var permission: (@Sendable (Bool) -> Void)?
+    var permissionAccepted: Bool?
+    var holdPreparation = false
+    var preparationGate: CheckedContinuation<Bool, Never>?
+
+    func access() -> SpatialMeasurementSession.Access {
+        .init(supported: { self.supported }, authorization: { self.authorization },
+              requestPermission: { self.permission = $0 }, active: { self.active },
+              acquire: {
+                  guard self.lease == nil else { return nil }
+                  let lease = OpticsCaptureLease()
+                  self.lease = lease
+                  self.acquireCount += 1
+                  return lease
+              }, owns: { self.lease == $0 },
+              prepare: { lease in
+                  self.prepareCount += 1
+                  if self.holdPreparation {
+                      return await withCheckedContinuation { self.preparationGate = $0 }
+                  }
+                  return self.lease == lease
+              }, release: { if self.lease == $0 { self.lease = nil } })
+    }
+
+    func completePreparation(_ ready: Bool) {
+        let gate = preparationGate
+        preparationGate = nil
+        gate?.resume(returning: ready)
+    }
+}
+#endif

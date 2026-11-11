@@ -67,7 +67,14 @@ import FloeTools
         await NotesRepository.shared.setStoreOverride(store)
         var record: PersonalContentRecord?, directory: URL?, conversations: [UUID] = []
         @MainActor func cleanup() async {
-            if let record { await MeetingProjectSession.prepareForDeletion(id: record.id) }
+            if let record {
+                do { try await MeetingProjectSession.prepareForDeletion(id: record.id) }
+                catch {
+                    Issue.record(error, "Meeting fixture cleanup could not confirm the recording stopped; files retained")
+                    await NotesRepository.shared.setStoreOverride(previous)
+                    return
+                }
+            }
             for id in conversations { try? await environment.conversationStore.deleteConversation(id: id) }
             await NotesRepository.shared.setStoreOverride(previous)
             if let directory { try? FileManager.default.removeItem(at: directory) }
@@ -197,7 +204,14 @@ import FloeTools
         await NotesRepository.shared.setStoreOverride(store)
         var meetingID: UUID?
         @MainActor func cleanup() async {
-            if let meetingID { await MeetingProjectSession.prepareForDeletion(id: meetingID) }
+            if let meetingID {
+                do { try await MeetingProjectSession.prepareForDeletion(id: meetingID) }
+                catch {
+                    Issue.record(error, "Meeting fixture cleanup could not confirm the recording stopped; files retained")
+                    await NotesRepository.shared.setStoreOverride(previous)
+                    return
+                }
+            }
             await NotesRepository.shared.setStoreOverride(previous)
             try? FileManager.default.removeItem(at: temporary)
         }

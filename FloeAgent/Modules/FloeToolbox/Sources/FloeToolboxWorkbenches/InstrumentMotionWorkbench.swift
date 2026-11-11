@@ -26,6 +26,7 @@ public struct InstrumentMotionExportDocument: FileDocument {
     #if os(iOS)
     @Environment(\.locale) private var locale
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var lease: InstrumentMotionLease?
     @State private var session = InstrumentMotionSession()
     @State private var userPaused = false
@@ -38,21 +39,26 @@ public struct InstrumentMotionExportDocument: FileDocument {
     private var running: Bool { lease.map { service.isActive($0) } ?? false }
     private var sample: InstrumentMotionSample? { session.latest }
     private var euler: InstrumentEulerAngles? { sample.flatMap { InstrumentMath.eulerDegrees(attitude: $0.attitude) } }
+    private var screenUp: InstrumentVec3? {
+        sample.map { InstrumentMath.screenVector($0.up, orientation: .current) }
+    }
+    private var levelAngles: InstrumentLevelAngles? { screenUp.flatMap { InstrumentMath.levelAngles(up: $0) } }
 
     public var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 680 && geometry.size.width > geometry.size.height
+                && !dynamicTypeSize.isAccessibilitySize
             Group {
                 if wide {
                     HStack(spacing: 0) {
-                        chartPanel.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ScrollView { visualPanel }.frame(maxWidth: .infinity, maxHeight: .infinity)
                         Divider()
                         ScrollView { readoutPanel.padding(24) }.frame(width: 320)
                     }
                 } else {
                     ScrollView {
                         VStack(spacing: 24) {
-                            chartPanel.frame(height: 420)
+                            visualPanel
                             readoutPanel.padding(.horizontal, 20)
                         }.padding(.vertical, 20)
                     }
@@ -86,6 +92,31 @@ public struct InstrumentMotionExportDocument: FileDocument {
         lease = nil
     }
 
+    private var visualPanel: some View {
+        VStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(workbenchText("水平球", "Bubble level", locale))
+                    .font(.subheadline.weight(.medium))
+                InstrumentLevelBubbleCanvas(bubble: screenUp.flatMap { InstrumentMath.bubblePosition(up: $0) },
+                                            level: (levelAngles?.tilt ?? 90) < 1, active: running)
+                    .frame(width: 180, height: 180)
+                    .frame(maxWidth: .infinity)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(motionBubbleAccessibilityLabel)
+            .accessibilityIdentifier("toolbox.motion.bubble")
+            chartPanel.frame(minHeight: 320)
+        }
+        .padding(20)
+    }
+
+    private var motionBubbleAccessibilityLabel: String {
+        guard let levelAngles else { return workbenchText("水平球无读数", "The bubble level has no reading", locale) }
+        let x = String(format: "%+.1f", levelAngles.x)
+        let y = String(format: "%+.1f", levelAngles.y)
+        return workbenchText("水平球：左右 \(x) 度，前后 \(y) 度", "Bubble level: left–right \(x) degrees, top–bottom \(y) degrees", locale)
+    }
+
     private var chartPanel: some View {
         VStack(spacing: 20) {
             InstrumentCurveChart(
@@ -115,7 +146,6 @@ public struct InstrumentMotionExportDocument: FileDocument {
                 active: running
             )
         }
-        .padding(20)
         .accessibilityElement(children: .contain)
     }
 

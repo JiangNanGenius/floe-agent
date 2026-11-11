@@ -34,6 +34,7 @@ import SwiftUI
 
 struct CommandShortcutsView: View {
     @Bindable var viewModel: EditorViewModel
+    var draftingOnly = false
 
     /// Spec §8.4's Single Key Action. With Command Search chosen, a bare
     /// letter is a keystroke for the LAUNCHER, so the bare-key hotkeys are not
@@ -106,11 +107,11 @@ struct CommandShortcutsView: View {
                     .keyboardShortcut(.cancelAction)
                     .accessibilityHidden(true)
             } else if viewModel.canExitSketchWithEscape {
-                Button { viewModel.finishSketch() } label: { EmptyView() }
+                Button { if draftingOnly { viewModel.deselectSketchTool() } else { viewModel.finishSketch() } } label: { EmptyView() }
                     .keyboardShortcut(.cancelAction)
                     .accessibilityHidden(true)
             }
-            ForEach(CommandRegistry.routableChordedCommands) { command in
+            ForEach(CommandRegistry.routableChordedCommands.filter { !draftingOnly || CADDraftingCommandAvailability.allows($0.id) }) { command in
                 if let chord = command.chord, let key = chord.keyEquivalent,
                    !(launcherOwnsBareKeys && chord.isBareKey) {
                     Button { viewModel.runCommand(command.id) } label: { EmptyView() }

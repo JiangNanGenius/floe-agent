@@ -556,6 +556,51 @@ extension MeetingDatabase {
         }
     }
 
+    /// Apply measured native speaker spans to this original's exact lineage.
+    /// Text, timing, source IDs and explicit user assignments are untouched.
+    func applyRecordingSpeakers(meeting: MeetingID, original: CaptureSessionID,
+                                window: MediaTimeRange, spans: [RecordingSpeakerSpan]) throws -> Int {
+        guard window.duration <= 31, spans.count <= 512 else { throw MeetingError.invalidTimeRange(start: window.start, end: window.end) }
+        for span in spans {
+            _ = try MediaTimeRange(start: span.range.start, end: span.range.end)
+            guard span.range.start >= window.start - 0.001, span.range.end <= window.end + 0.001 else {
+                throw MeetingError.invalidTimeRange(start: span.range.start, end: span.range.end)
+            }
+        }
+        do {
+            return try pool.write { db in
+                guard let owner = try CaptureSessionRecord.fetchOne(db, key: original.description),
+                      owner.meetingID == meeting.description, owner.originSessionID == nil else {
+                    throw MeetingError.captureSessionEnded(original)
+                }
+                for span in spans {
+                    guard let speaker = try SpeakerRecord.fetchOne(db, key: span.speaker.description),
+                          speaker.meetingID == meeting.description else { throw MeetingError.speakerNotFound(span.speaker) }
+                }
+                var lineage: Set<String> = [original.description]
+                for row in try CaptureSessionRecord
+                    .filter(Column("meetingID") == meeting.description && Column("originSessionID") == original.description)
+                    .fetchAll(db) { lineage.insert(row.id) }
+                let established = try Self.userEstablishedSpeakerIDs(in: db, meeting: meeting)
+                let rows = try TranscriptSegmentRecord
+                    .filter(Column("meetingID") == meeting.description && Column("superseded") == false)
+                    .filter(Column("startSeconds") >= window.start - 0.001 && Column("endSeconds") <= window.end + 0.001)
+                    .fetchAll(db)
+                var changed = 0
+                for row in rows where lineage.contains(row.sessionID) && !row.speakerCorrected && !established.contains(row.speakerID ?? "") {
+                    let range = try MediaTimeRange(start: row.startSeconds, end: row.endSeconds)
+                    guard let candidate = RecordingSpeakerSpan.unambiguousSpeaker(for: range, spans: spans),
+                          row.speakerID != candidate.description else { continue }
+                    try db.execute(sql: "UPDATE transcript_segments SET speakerID = ? WHERE id = ? AND meetingID = ?",
+                                   arguments: [candidate.description, row.id, meeting.description])
+                    changed += 1
+                }
+                return changed
+            }
+        } catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
     /// User speaker correction. A nil speaker clears the attribution; a real
     /// speaker must belong to this meeting. Marks the segment speaker-corrected
     /// so a later canonical pass never overwrites the user's choice. Durable
