@@ -359,13 +359,34 @@ internal class PhoneControlSession(
         latest = null
         fence.onPageChanged()
         suppressOwnInput()
-        return try {
-            service.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or Intent.FLAG_ACTIVITY_NO_USER_ACTION))
-            PhoneControlRuntime.publish()
-            PhoneControlResult.Ok(PhoneControlActionResult("launch", PhoneControlDispatch.ACCEPTED,
-                null, null, null, "Launch requested. Observe the target app before further actions."))
-        } catch (_: Exception) { PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED) }
+        // Isolate the ONE OS dispatch from post-start publication. Only the
+        // closed known non-dispatch exceptions may become a retryable
+        // rejection; any other exception after the call was attempted is an
+        // unknown outcome and must not permit a duplicate launch.
+        val target = intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or
+            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
+        val dispatch = try {
+            service.startActivity(target)
+            PhoneControlDispatch.ACCEPTED
+        } catch (_: ActivityNotFoundException) {
+            return PhoneControlResult.Failed(
+                PhoneControlFailure.ACTION_REJECTED,
+                "The authorized target has no launchable activity",
+            )
+        } catch (_: SecurityException) {
+            return PhoneControlResult.Failed(
+                PhoneControlFailure.ACTION_REJECTED,
+                "The authorized target refused the activity launch",
+            )
+        } catch (_: Exception) {
+            return PhoneControlResult.Failed(
+                PhoneControlFailure.INTERNAL_ERROR,
+                "The activity launch outcome is unknown; do not repeat launch",
+            )
+        }
+        runCatching { PhoneControlRuntime.publish() }
+        return PhoneControlResult.Ok(PhoneControlActionResult("launch", dispatch,
+            null, null, null, "Launch requested. Observe the target app before further actions."))
     }
 
     /**

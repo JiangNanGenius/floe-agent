@@ -551,8 +551,8 @@ final class G09R2AgentGenerationLifetimeTests: XCTestCase {
     func testTerminalUnknownOutcomeIsNotResurrectedByDeterministicFile() async throws {
         let fixture = try await makeFixture()
         let seeded = try await seedPreparingImageJob(
-            fixture, state: .expired, lastError: "outcomeUnknown",
-            createdAt: Date().addingTimeInterval(-600),
+            fixture, createdAt: Date().addingTimeInterval(-600),
+            state: .expired, lastError: "outcomeUnknown",
             receiptSha256: FloeDigest.sha256Hex(Self.pngBytes))
         _ = try writeDeterministicImage(fixture, jobID: seeded.id, index: 1)
 

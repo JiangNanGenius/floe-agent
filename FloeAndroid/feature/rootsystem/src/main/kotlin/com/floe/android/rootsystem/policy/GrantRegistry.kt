@@ -62,6 +62,28 @@ class GrantRegistry(
         ) {
             return Registration.Rejected("grant_management_shape")
         }
+        val uiPresent = request.operations.any { SystemOperation.isUiOperation(it) }
+        if (uiPresent) {
+            if (request.uiTargets.isEmpty()) return Registration.Rejected("ui_target_required")
+            if (SystemOperation.UI_OBSERVE in request.operations && !request.uiScreenAllowed) {
+                return Registration.Rejected("ui_scope")
+            }
+            if (SystemOperation.UI_ACT in request.operations && !request.uiScreenAllowed) {
+                return Registration.Rejected("ui_scope")
+            }
+            if (SystemOperation.UI_SCREENSHOT in request.operations &&
+                (!request.uiScreenAllowed || !request.uiScreenshotAllowed)
+            ) {
+                return Registration.Rejected("ui_scope")
+            }
+        } else if (request.uiTargets.isNotEmpty()) {
+            return Registration.Rejected("grant_shape")
+        }
+        if (request.scopes.isEmpty() &&
+            request.operations.any { !SystemOperation.isUiOperation(it) }
+        ) {
+            return Registration.Rejected("grant_shape")
+        }
         val scopeIds = HashSet<String>()
         for (scope in request.scopes) {
             if (!scopeIds.add(scope.scopeId)) return Registration.Rejected("scope_duplicate")
@@ -93,6 +115,15 @@ class GrantRegistry(
         ) {
             return Verdict.Rejected("management")
         }
+        if (SystemOperation.isUiOperation(operation)) {
+            if (grant.request.uiTargets.isEmpty()) return Verdict.Rejected("ui_target_required")
+            if (!grant.request.uiScreenAllowed) return Verdict.Rejected("ui_scope")
+            if (operation == SystemOperation.UI_SCREENSHOT &&
+                !grant.request.uiScreenshotAllowed
+            ) {
+                return Verdict.Rejected("ui_scope")
+            }
+        }
         if (scopeId != null) {
             val scope = grant.request.scopes.firstOrNull { it.scopeId == scopeId }
                 ?: return Verdict.Rejected("scope_unknown")
@@ -108,6 +139,19 @@ class GrantRegistry(
     /** Selected installed-app target ceiling for the app-state operations. */
     fun packageTargets(claim: OperationClaim): Set<String>? = synchronized(this) {
         grants[claim.grantId]?.request?.packageTargets
+    }
+
+    /** Selected device-app target ceiling for typed UI observe/act/screenshot. */
+    fun uiTargets(claim: OperationClaim): Set<String>? = synchronized(this) {
+        grants[claim.grantId]?.request?.uiTargets
+    }
+
+    fun uiScreenAllowed(claim: OperationClaim): Boolean = synchronized(this) {
+        grants[claim.grantId]?.request?.uiScreenAllowed == true
+    }
+
+    fun uiScreenshotAllowed(claim: OperationClaim): Boolean = synchronized(this) {
+        grants[claim.grantId]?.request?.uiScreenshotAllowed == true
     }
 
     /**

@@ -33,6 +33,8 @@ object PhoneControlScreenshotGuidance {
         val userStopped: Boolean,
         val taskPaused: Boolean,
         val runtimeEpochReady: Boolean,
+        /** The active backend is the display-only ADB UI bridge. */
+        val adbDisplayOnly: Boolean = false,
     ) {
         private val baseReady: Boolean
             get() = runtimeEpochReady && serviceUsable && taskArmed &&
@@ -40,7 +42,8 @@ object PhoneControlScreenshotGuidance {
 
         /** Android 14+ window capture needs only the exact-task screen scope. */
         val windowCaptureReady: Boolean
-            get() = baseReady && support == PhoneControlScreenshotSupport.WINDOW
+            get() = baseReady && support == PhoneControlScreenshotSupport.WINDOW &&
+                !adbDisplayOnly
 
         /**
          * Display capture needs the separate whole-screen capture setting on every
@@ -55,10 +58,11 @@ object PhoneControlScreenshotGuidance {
             get() = displayCaptureReady || windowCaptureReady
 
         val modeLabel: String
-            get() = when (support) {
-                PhoneControlScreenshotSupport.WINDOW -> "window_or_display"
-                PhoneControlScreenshotSupport.DISPLAY -> "display_only"
-                PhoneControlScreenshotSupport.NONE -> "none"
+            get() = when {
+                support == PhoneControlScreenshotSupport.NONE -> "none"
+                adbDisplayOnly -> "display_only"
+                support == PhoneControlScreenshotSupport.WINDOW -> "window_or_display"
+                else -> "display_only"
             }
 
         /** Compact status line: potential support and CURRENT consent state. */
@@ -93,6 +97,13 @@ object PhoneControlScreenshotGuidance {
                     "is reported independently. In Settings > Device > Screen content " +
                     "choose This task (or Until stopped). This task ends with this run; " +
                     "a refusal does not change your selected apps."
+            adbDisplayOnly && !wholeScreenConsent ->
+                "The active ADB structured-UI backend captures the display only. Turn on " +
+                    "Allow whole-screen capture in Settings > Device > Screen content; a " +
+                    "window observationId is refused instead of widened."
+            adbDisplayOnly ->
+                "Ready. The ADB structured-UI backend captures the display only; omit " +
+                    "observationId. A window observationId is refused instead of widened."
             support == PhoneControlScreenshotSupport.DISPLAY && !wholeScreenConsent ->
                 "Android 11-13 capture the display only: also turn on whole-screen " +
                     "screenshots in Settings > Device > Screen content. Window capture " +

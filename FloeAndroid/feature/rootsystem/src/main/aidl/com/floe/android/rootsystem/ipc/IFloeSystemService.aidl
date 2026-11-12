@@ -84,4 +84,21 @@ interface IFloeSystemService {
     // ------------------------------------------------------------------
     Bundle readSettings(in Bundle request);
     Bundle writeSettings(in Bundle request);
+
+    // ------------------------------------------------------------------
+    // Wire 4 additions, appended after every position above. Released 108
+    // already carried VERSION=3, so these typed UI transactions must be a
+    // NEW protocol revision (v4); no earlier transaction is renumbered and a
+    // verified v3 helper is stopped/replaced through its old stopOwnedService
+    // position before this revision is used.
+    //
+    // uiStatus is authenticated maintenance (no task grant) and proves the
+    // actual live bridge. The other four are task-granted typed operations
+    // limited to the selected device-app UI targets and live screen scope.
+    // ------------------------------------------------------------------
+    Bundle uiStatus(in Bundle request);
+    Bundle uiObserve(in Bundle request);
+    Bundle uiAct(in Bundle request);
+    Bundle uiScreenshot(in Bundle request);
+    Bundle uiCancel(in Bundle request);
 }

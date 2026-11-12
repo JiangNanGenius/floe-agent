@@ -292,6 +292,9 @@ sealed interface DeviceAccessRootUi {
     data class Error(val message: String, val code: String? = null) : DeviceAccessRootUi
 }
 
+/** Actual live structured-UI source after the readiness round-trip. */
+enum class DeviceAccessStructuredUiUi { ACCESSIBILITY, ADB_UI_AUTOMATION, NONE }
+
 data class DeviceAccessActiveTaskUi(
     val title: String,
     val phase: DeviceAccessTaskPhaseUi,
@@ -309,6 +312,8 @@ data class DeviceAccessUiError(
 data class DeviceAccessPresentationState(
     val accessibility: DeviceAccessAccessibilityUi = DeviceAccessAccessibilityUi.Off,
     val adb: DeviceAccessAdbUi = DeviceAccessAdbUi.Off,
+    /** Actual structured source for device.observe/act, not a promise. */
+    val structuredUi: DeviceAccessStructuredUiUi = DeviceAccessStructuredUiUi.NONE,
     val root: DeviceAccessRootUi = DeviceAccessRootUi.Off,
     val screenScope: DeviceAccessScreenScopeUi = DeviceAccessScreenScopeUi.OFF,
     val activeTask: DeviceAccessActiveTaskUi? = null,
@@ -932,6 +937,16 @@ fun DeviceAccessSettingsPage(
     val accessibilityStatus = stringResource(
         DeviceAccessPresentation.accessibilityStatusRes(state.accessibility))
     val adbStatus = stringResource(DeviceAccessPresentation.adbStatusRes(state.adb))
+    val structuredUiStatus = stringResource(
+        when (state.structuredUi) {
+            DeviceAccessStructuredUiUi.ACCESSIBILITY ->
+                R.string.device_access_structured_ui_accessibility
+            DeviceAccessStructuredUiUi.ADB_UI_AUTOMATION ->
+                R.string.device_access_structured_ui_adb
+            DeviceAccessStructuredUiUi.NONE ->
+                R.string.device_access_structured_ui_none
+        },
+    )
     val rootStatus = stringResource(DeviceAccessPresentation.rootStatusRes(state.root))
 
     Column(
@@ -942,6 +957,11 @@ fun DeviceAccessSettingsPage(
     ) {
         FloeText(
             stringResource(R.string.device_access_intro),
+            style = Floe.typography.metadata,
+            color = colors.secondaryLabel,
+        )
+        FloeText(
+            structuredUiStatus,
             style = Floe.typography.metadata,
             color = colors.secondaryLabel,
         )

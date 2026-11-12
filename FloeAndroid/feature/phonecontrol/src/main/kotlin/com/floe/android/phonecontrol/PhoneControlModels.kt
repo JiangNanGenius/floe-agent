@@ -326,6 +326,10 @@ data class PhoneControlObservation(
     val selectionLimited: Boolean = false,
     /** A text budget/per-field cap shortened or withheld a captured field. */
     val textLimited: Boolean = false,
+    /** The real structured source that produced this page. */
+    val backend: PhoneControlBackend = PhoneControlBackend.ACCESSIBILITY,
+    /** Bounded provenance token; never a model-invented source. */
+    val provenance: String = "nativeTree",
 ) {
     /**
      * Honest, deduplicated truncation reasons for model-facing copy. Empty only
@@ -453,6 +457,26 @@ enum class PhoneControlSwipeDirection { UP, DOWN, LEFT, RIGHT }
 
 enum class PhoneControlDispatch { NOT_DISPATCHED, ACCEPTED, REJECTED, PARTIAL, UNKNOWN }
 
+/** Structured observation backend. ADB is a structure source, not vision. */
+enum class PhoneControlBackend(val wireName: String) {
+    ACCESSIBILITY("accessibilityService"),
+    ADB_UI_AUTOMATION("adbUiAutomation"),
+    ;
+
+    companion object {
+        fun fromObservationId(observationId: String): PhoneControlBackend? = when {
+            observationId.startsWith(ADB_OBSERVATION_PREFIX) -> ADB_UI_AUTOMATION
+            observationId.isBlank() -> null
+            else -> ACCESSIBILITY
+        }
+
+        fun fromWire(value: String?): PhoneControlBackend? =
+            entries.firstOrNull { it.wireName == value || it.name == value }
+
+        const val ADB_OBSERVATION_PREFIX = "adbui-"
+    }
+}
+
 /**
  * Honest action receipt: framework acceptance and a fresh observation, never
  * a claim that the app performed the user's intended semantic operation.
@@ -464,7 +488,41 @@ data class PhoneControlActionResult(
     val observation: PhoneControlObservation?,
     val screenChanged: Boolean?,
     val note: String?,
+    /** Real dispatch mechanism (accessibilityAction/inputTap/...), when known. */
+    val method: String? = null,
 )
+
+/**
+ * Honest classification of one post-dispatch foreground read for the typed
+ * background document VIEW.
+ *
+ * `.target` means the requested package's window was actually observed in the
+ * foreground after the OS accepted the start. It is NOT proof that the viewer
+ * decoded, played or imported the content. `.other` means a readable, ordinary
+ * app/home window was foreground instead, so the requested viewer did not
+ * become visible. `.unknown` means the active page could not be attributed
+ * (secure/opaque/protected window, observation unavailable or a different
+ * package outside the live ceiling), so no claim either way is made.
+ */
+enum class PhoneControlDocumentViewerForeground { TARGET, OTHER, UNKNOWN }
+
+/**
+ * Pure, Android-free classification used by the Full host after a document
+ * VIEW. Protected system/credential windows and this App's own window are
+ * treated as unknown because a viewer may legitimately sit behind them; an
+ * unrelated ordinary app is the only definite "not this viewer" signal.
+ */
+fun classifyDocumentViewerForeground(
+    expectedPackage: String,
+    observedPackage: String?,
+): PhoneControlDocumentViewerForeground = when {
+    observedPackage.isNullOrEmpty() -> PhoneControlDocumentViewerForeground.UNKNOWN
+    observedPackage == expectedPackage -> PhoneControlDocumentViewerForeground.TARGET
+    PhoneControlPolicy.isProtectedPackage(observedPackage) ||
+        PhoneControlPolicy.isFloePackage(observedPackage) ->
+        PhoneControlDocumentViewerForeground.UNKNOWN
+    else -> PhoneControlDocumentViewerForeground.OTHER
+}
 
 /**
  * In-memory JPEG bytes. The App host must commit them to its authorized
@@ -479,6 +537,12 @@ class PhoneControlScreenshot(
     val height: Int,
     val capturedAtElapsedRealtimeMillis: Long,
     val windowId: Int?,
+    /** Original captured geometry before the bounded downscale. */
+    val originalWidth: Int = width,
+    val originalHeight: Int = height,
+    /** Display rotation at capture; 0 when the backend does not report it. */
+    val rotation: Int = 0,
+    val displayId: Int = 0,
 ) {
     val byteCount: Int get() = bytes.size
 }
@@ -521,6 +585,8 @@ enum class PhoneControlUnavailable {
     /** Android 10 and older expose no IME-action node operation. */
     IME_ACTION_UNSUPPORTED,
     LAUNCH_TARGET_UNAVAILABLE,
+    /** No live/verified structured UI backend is ready for this operation. */
+    STRUCTURED_UI_NOT_READY,
 }
 
 enum class PhoneControlFailure {

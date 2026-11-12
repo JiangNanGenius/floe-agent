@@ -61,6 +61,7 @@ internal class SystemOperations(
     // service: the runtime component is a sibling applicationId.
     private val ownPackages = identity.protectedPackages
     private val captureSessions = RootCaptureSessions(context)
+    private val uiOperations = UiOperations(context, identity)
 
     /**
      * Digest-named staged paths with an in-flight operation. The maintenance
@@ -1645,8 +1646,60 @@ internal class SystemOperations(
         captureSessions.cancel(requestId)
     }
 
+    // --------------------------------------------------------------- typed UI
+
+    fun uiSupported(): Boolean = uiOperations.supported()
+
+    fun uiStatus(): com.floe.android.rootsystem.UiBackendStatus = uiOperations.status()
+
+    fun uiObserve(
+        claim: com.floe.android.rootsystem.OperationClaim,
+        targets: Set<String>,
+        request: com.floe.android.rootsystem.UiObserveRequest,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.UiObservation =
+        uiOperations.observe(claim, targets, request, cancelled)
+
+    fun uiAct(
+        claim: com.floe.android.rootsystem.OperationClaim,
+        targets: Set<String>,
+        request: com.floe.android.rootsystem.UiActRequest,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.UiActResult =
+        uiOperations.act(claim, targets, request, cancelled)
+
+    fun uiScreenshotBegin(
+        claim: com.floe.android.rootsystem.OperationClaim,
+        targets: Set<String>,
+        request: com.floe.android.rootsystem.UiScreenshotRequest,
+        cancelled: () -> Boolean,
+    ): com.floe.android.rootsystem.UiScreenshotInfo =
+        uiOperations.screenshotBegin(claim, targets, request, cancelled)
+
+    fun uiScreenshotRead(
+        claim: com.floe.android.rootsystem.OperationClaim,
+        screenshotId: String,
+        offset: Int,
+        maxBytes: Int,
+    ): com.floe.android.rootsystem.UiScreenshotChunk =
+        uiOperations.screenshotRead(claim, screenshotId, offset, maxBytes)
+
+    fun uiScreenshotClose(
+        claim: com.floe.android.rootsystem.OperationClaim,
+        screenshotId: String,
+    ): Boolean = uiOperations.screenshotClose(claim, screenshotId)
+
+    fun cancelUi(claim: com.floe.android.rootsystem.OperationClaim) {
+        uiOperations.cancel(claim)
+    }
+
+    fun cancelUi(requestId: String) {
+        uiOperations.cancel(requestId)
+    }
+
     fun close() {
         captureSessions.close()
+        uiOperations.close()
     }
 
     fun networkDiagnostics(): NetworkDiagnostics {

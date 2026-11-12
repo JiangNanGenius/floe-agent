@@ -783,6 +783,261 @@ internal class FloeSystemServiceBinder(
         }
     }
 
+    // ------------------------------------------------------------ typed UI
+
+    override fun uiStatus(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        return try {
+            val status = operations.uiStatus()
+            BinderProtocol.ok().apply {
+                putBoolean(BinderProtocol.KEY_UI_READY, status.ready)
+                putBoolean(BinderProtocol.KEY_UI_LIVE, status.live)
+                status.mode?.let { putString(BinderProtocol.KEY_UI_MODE, it) }
+                putInt(BinderProtocol.KEY_SERVER_UID, status.effectiveUid)
+                putInt(BinderProtocol.KEY_PROTOCOL, status.protocolVersion)
+                putStringArray(
+                    BinderProtocol.KEY_CAPABILITIES,
+                    status.capabilities.take(64).toTypedArray(),
+                )
+                putString(BinderProtocol.KEY_UI_SCREEN_SUPPORT, status.screenSupport)
+                status.reason?.let { putString(BinderProtocol.KEY_UI_REASON, it) }
+                putLong(
+                    BinderProtocol.KEY_UI_USER_INTERACTION,
+                    status.userInteractionElapsedRealtimeMillis,
+                )
+                putLong(BinderProtocol.KEY_UI_TTL, status.observationTtlMillis)
+                putInt(BinderProtocol.KEY_UI_MAX_NODE_LIMIT, status.maxNodes)
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun uiObserve(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.UI_OBSERVE)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.UI_OBSERVE, null, write = false)) {
+            return BinderProtocol.failure("denied")
+        }
+        val targets = registry.uiTargets(claim) ?: return BinderProtocol.failure("ui_target_required")
+        val req = request!!
+        val observe = com.floe.android.rootsystem.UiObserveRequest(
+            maxNodes = req.getInt(
+                BinderProtocol.KEY_UI_MAX_NODES,
+                250,
+            ).coerceIn(1, BinderProtocol.MAX_UI_NODES),
+            maxDepth = req.getInt(BinderProtocol.KEY_UI_MAX_DEPTH, 32).coerceIn(0, 32),
+            includeInvisible = req.getBoolean(BinderProtocol.KEY_UI_INCLUDE_INVISIBLE, false),
+            textBudgetChars = req.getInt(
+                BinderProtocol.KEY_UI_TEXT_BUDGET,
+                24_000,
+            ).coerceIn(0, 64_000),
+        )
+        return try {
+            val observation = operations.uiObserve(claim, targets, observe) {
+                registry.isCancelled(claim.requestId)
+            }
+            if (registry.isCancelled(claim.requestId)) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putBundle(
+                        BinderProtocol.KEY_UI_OBSERVATION,
+                        BinderProtocol.uiObservationBundle(observation),
+                    )
+                }
+            }
+        } catch (e: UiOperations.UiException) {
+            BinderProtocol.failure(e.code)
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun uiAct(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.UI_ACT)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.UI_ACT, null, write = true)) {
+            return BinderProtocol.failure("denied")
+        }
+        val targets = registry.uiTargets(claim) ?: return BinderProtocol.failure("ui_target_required")
+        val req = request!!
+        val decoded = BinderProtocol.decodeUiActFields(
+            observationId = req.getString(BinderProtocol.KEY_UI_OBSERVATION_ID),
+            nodeRef = req.getString(BinderProtocol.KEY_UI_NODE_REF),
+            actionWire = req.getString(BinderProtocol.KEY_UI_ACTION),
+            direction = req.getString(BinderProtocol.KEY_UI_DIRECTION)?.take(16),
+            targetPackage = req.getString(BinderProtocol.KEY_PACKAGE_NAME)?.take(255),
+            sensitiveText = req.getString(BinderProtocol.KEY_UI_SENSITIVE_TEXT),
+            sensitiveTextIntent = req.getBoolean(
+                BinderProtocol.KEY_UI_SENSITIVE_TEXT_INTENT,
+                false,
+            ),
+            targets = targets,
+        )
+        val fields = when (decoded) {
+            is BinderProtocol.UiActDecode.Failure -> {
+                return BinderProtocol.failure(decoded.code)
+            }
+            is BinderProtocol.UiActDecode.Ok -> decoded.fields
+        }
+        val typed = com.floe.android.rootsystem.UiActRequest(
+            observationId = fields.observationId,
+            nodeRef = fields.nodeRef,
+            action = fields.action,
+            direction = fields.direction,
+            targetPackage = fields.targetPackage,
+            sensitiveText = fields.sensitiveText,
+            sensitiveTextIntent = fields.sensitiveTextIntent,
+        )
+        return try {
+            val result = operations.uiAct(claim, targets, typed) {
+                registry.isCancelled(claim.requestId)
+            }
+            if (registry.isCancelled(claim.requestId) &&
+                result.dispatch == com.floe.android.rootsystem.UiDispatchOutcome.NOT_DISPATCHED
+            ) {
+                BinderProtocol.failure("cancelled")
+            } else {
+                BinderProtocol.ok().apply {
+                    putString(BinderProtocol.KEY_UI_ACTION, result.action)
+                    putString(BinderProtocol.KEY_UI_DISPATCH, result.dispatch.name)
+                    result.method?.let { putString(BinderProtocol.KEY_UI_METHOD, it) }
+                    result.screenChanged?.let {
+                        putBoolean(BinderProtocol.KEY_UI_SCREEN_CHANGED, it)
+                    }
+                    result.observation?.let {
+                        putBundle(
+                            BinderProtocol.KEY_UI_OBSERVATION,
+                            BinderProtocol.uiObservationBundle(it),
+                        )
+                    }
+                    result.detailCode?.let {
+                        putString(BinderProtocol.KEY_UI_DETAIL_CODE, it)
+                    }
+                    result.detail?.let { putString(BinderProtocol.KEY_UI_DETAIL, it.take(240)) }
+                }
+            }
+        } catch (e: UiOperations.UiException) {
+            BinderProtocol.failure(e.code)
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    override fun uiScreenshot(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.UI_SCREENSHOT)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.UI_SCREENSHOT, null, write = false)) {
+            return BinderProtocol.failure("denied")
+        }
+        val targets = registry.uiTargets(claim) ?: return BinderProtocol.failure("ui_target_required")
+        if (!registry.uiScreenshotAllowed(claim)) return BinderProtocol.failure("ui_screenshot_scope")
+        val req = request!!
+        return when (req.getString(BinderProtocol.KEY_UI_MODE) ?: "begin") {
+            "begin" -> try {
+                val info = operations.uiScreenshotBegin(
+                    claim,
+                    targets,
+                    com.floe.android.rootsystem.UiScreenshotRequest(
+                        observationId = req.getString(
+                            BinderProtocol.KEY_UI_OBSERVATION_ID,
+                        )?.take(64),
+                        maxBytes = req.getInt(
+                            BinderProtocol.KEY_MAX_BYTES,
+                            1_500_000,
+                        ).coerceIn(32_768, BinderProtocol.MAX_UI_SCREENSHOT_BYTES),
+                        maxDimension = req.getInt(
+                            BinderProtocol.KEY_UI_MAX_DIMENSION,
+                            1_600,
+                        ).coerceIn(320, 2_048),
+                        quality = req.getInt(
+                            BinderProtocol.KEY_UI_QUALITY,
+                            75,
+                        ).coerceIn(25, 90),
+                    ),
+                ) { registry.isCancelled(claim.requestId) }
+                if (registry.isCancelled(claim.requestId)) {
+                    BinderProtocol.failure("cancelled")
+                } else {
+                    BinderProtocol.ok().apply {
+                        putString(BinderProtocol.KEY_UI_SCREENSHOT_ID, info.screenshotId)
+                        putString(BinderProtocol.KEY_UI_MIME, info.mimeType)
+                        putInt(BinderProtocol.KEY_UI_WIDTH, info.width)
+                        putInt(BinderProtocol.KEY_UI_HEIGHT, info.height)
+                        putInt(BinderProtocol.KEY_UI_ORIGINAL_WIDTH, info.originalWidth)
+                        putInt(BinderProtocol.KEY_UI_ORIGINAL_HEIGHT, info.originalHeight)
+                        putInt(BinderProtocol.KEY_UI_ROTATION, info.rotation)
+                        putInt(BinderProtocol.KEY_UI_DISPLAY_ID, info.displayId)
+                        putInt(BinderProtocol.KEY_UI_BYTES_TOTAL, info.bytesTotal)
+                        putLong(BinderProtocol.KEY_UI_CAPTURED_AT, info.capturedAtElapsed)
+                        putString(BinderProtocol.KEY_UI_BACKEND, info.backend)
+                        putString(BinderProtocol.KEY_UI_PROVENANCE, info.provenance)
+                    }
+                }
+            } catch (e: UiOperations.UiException) {
+                BinderProtocol.failure(e.code)
+            } catch (e: SystemOperations.OpException) {
+                BinderProtocol.failure(e.code)
+            } catch (_: Throwable) {
+                BinderProtocol.failure("io")
+            }
+            "read" -> try {
+                val id = req.getString(BinderProtocol.KEY_UI_SCREENSHOT_ID)?.take(64)
+                    ?: return BinderProtocol.failure("ui_screenshot")
+                val chunk = operations.uiScreenshotRead(
+                    claim,
+                    id,
+                    req.getInt(BinderProtocol.KEY_OFFSET, 0),
+                    req.getInt(BinderProtocol.KEY_MAX_BYTES, 64 * 1024)
+                        .coerceIn(1, BinderProtocol.MAX_UI_SCREENSHOT_CHUNK),
+                )
+                BinderProtocol.ok().apply {
+                    putByteArray(BinderProtocol.KEY_UI_CHUNK, chunk.bytes)
+                    putBoolean(BinderProtocol.KEY_UI_DONE, chunk.done)
+                    putInt(BinderProtocol.KEY_UI_BYTES_READ, chunk.bytesRead)
+                }
+            } catch (e: UiOperations.UiException) {
+                BinderProtocol.failure(e.code)
+            } catch (_: Throwable) {
+                BinderProtocol.failure("io")
+            }
+            "close" -> try {
+                val id = req.getString(BinderProtocol.KEY_UI_SCREENSHOT_ID)?.take(64)
+                    ?: return BinderProtocol.failure("ui_screenshot")
+                if (operations.uiScreenshotClose(claim, id)) {
+                    BinderProtocol.ok()
+                } else {
+                    BinderProtocol.failure("screenshot_unknown")
+                }
+            } catch (_: Throwable) {
+                BinderProtocol.failure("io")
+            }
+            else -> BinderProtocol.failure("ui_mode")
+        }
+    }
+
+    override fun uiCancel(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.UI_CANCEL)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.UI_CANCEL, null, write = false)) {
+            return BinderProtocol.failure("denied")
+        }
+        registry.cancel(claim.requestId)
+        operations.cancelUi(claim)
+        return BinderProtocol.ok()
+    }
+
     private fun permissionSetBundle(
         receipt: com.floe.android.rootsystem.PermissionSetReceipt,
     ): Bundle = Bundle().apply {
@@ -949,6 +1204,7 @@ internal class FloeSystemServiceBinder(
         requireCaller()
         if (requestId.isNullOrBlank() || requestId.length > 128) return
         operations.cancelPacketCaptures(requestId)
+        operations.cancelUi(requestId)
         registry.cancel(requestId)
     }
 
@@ -986,6 +1242,16 @@ internal class FloeSystemServiceBinder(
         add(com.floe.android.rootsystem.policy.PermissionOpsPolicy.CAPABILITY_APPOPS_UID)
         add(if (mode == AccessPolicy.MODE_ROOT) "root.uid0" else "adb.shell")
         if (mode == AccessPolicy.MODE_ROOT) add("capture.root")
+        // Advertised only when the service actually carries a constructible
+        // UiAutomation bridge. The App still performs the live uiStatus
+        // round-trip (mode, UID, protocol, capability) before discovery.
+        if (operations.uiSupported()) {
+            add("ui.automation")
+            add("ui.observe")
+            add("ui.act")
+            add("ui.screenshot")
+            add("ui.display")
+        }
     }
 
     private fun callerAllowed(): Boolean =
@@ -1045,4 +1311,5 @@ internal class FloeSystemServiceBinder(
         if (scope.writable && ProtectedTargets.isReadOnlySystemPath(root.path)) return "scope_read_only"
         return null
     }
+
 }

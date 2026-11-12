@@ -219,7 +219,7 @@ internal object PhoneTaskPresentation {
         runID: UUID,
     ): Boolean = isRunning && selectedRunMatches(selectedRunID, runID)
 
-    const val CODE_STOP_SETTLING = "phone_stop_settling"
+    const val CODE_STOP_SETTLING = "device_stop_settling"
     const val CODE_NO_LIVE_TASK = "no_live_task"
 }
 

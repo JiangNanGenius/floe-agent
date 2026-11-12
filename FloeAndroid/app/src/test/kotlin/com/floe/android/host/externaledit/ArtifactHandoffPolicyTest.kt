@@ -183,7 +183,7 @@ class ArtifactHandoffPolicyTest {
         assertTrue(ArtifactHandoffPolicy.canIssueLaunch(record.copy(
             phase = ArtifactHandoffPhase.PAUSED,
             launchAttempt = ArtifactHandoffLaunchAttempt.REJECTED,
-            errorCode = "phoneArmRequired")))
+            errorCode = "deviceArmRequired")))
         assertTrue(ArtifactHandoffPolicy.canResume(record))
         assertFalse(ArtifactHandoffPolicy.canResume(
             record.copy(phase = ArtifactHandoffPhase.FINISHED)))

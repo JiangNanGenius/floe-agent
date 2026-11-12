@@ -70,6 +70,14 @@ internal class LinuxRuntimeOperations(
     private val census: ProcCensus
     /** Bounded install/preparation cancellation lane (never a per-session stop). */
     private val cancelPreparation = AtomicBoolean()
+    /**
+     * TRUE only after the constructor's existing `recover()` (and the rest of
+     * the original init) completed. `RuntimeKernel.status` exposes this bit so
+     * a successor-process generation can be used as ownership proof only when
+     * its real whole-UID recovery/census actually ran. It is never set from a
+     * timer, a status read, a counter or a caller value.
+     */
+    private val recoveryProven = AtomicBoolean(false)
     private val installID = AtomicReference<String?>()
     // G07.3A: EVERY in-flight shell.start wire request id (concurrent starts
     // are admitted). A session-less stop is validated ONLY against one of
@@ -252,6 +260,9 @@ internal class LinuxRuntimeOperations(
             configure()
             progress.set(installedProgress())
         }
+        // The original init completed: recover() above proved whole-UID
+        // quiescence. Only now may status advertise successor-recovery proof.
+        recoveryProven.set(true)
     }
 
     private fun recover() {
@@ -260,6 +271,8 @@ internal class LinuxRuntimeOperations(
             "Runtime process recovery is incomplete; environment retained"
         }
     }
+
+    override fun hasProvenRecovery(): Boolean = recoveryProven.get()
 
     override fun hasOwnedWork(): Boolean =
         installID.get() != null || activePreflightID.get() != null ||
@@ -659,42 +672,36 @@ internal class LinuxRuntimeOperations(
                 check(!isCancelled())
             }
             val workspace = ownedPath(descriptor.getString("workspaceRoot"))
-            // ONE workspace owner per project imports/exports; participant
-            // sessions must name a LIVE owner of the SAME project. A hint that
-            // cannot be validated is refused, never silently treated as an
-            // owner (which would re-import over live guest files).
+            // ONE workspace owner per project imports/exports. The client
+            // reuse hint is ADVISORY: a stale hint (owner settled or a
+            // previous runtime generation) must not deadlock a live task.
+            // The runtime re-resolves the ONE authoritative live owner of
+            // this exact project, joins a retained deferred export, or
+            // starts a normal new owner; it refuses while a retained owner
+            // still owns the slot, so files are never swapped under it.
             val requestedShared = reuse?.optString("mode") == "shared"
+            val expectedOwner = reuse?.optString("ownerSessionID")?.takeIf { it.isNotEmpty() }
             val ownerLeaseID = workspaceOwners[projectID]
-            var sharedOwner: Running? = null
-            if (requestedShared) {
-                val expectedOwner = reuse?.optString("ownerSessionID")?.takeIf { it.isNotEmpty() }
-                sharedOwner = expectedOwner?.let { running[it] }
-                    ?.takeIf { !it.finished.get() && it.workspaceOwner && it.projectID == projectID }
-                // The owner may already have stopped while its deferred export
-                // is still retained; existing live participants keep the same
-                // guest workspace addressable.
-                // The owner may already have stopped while its deferred export
-                // is retained; the shared guest tree is still the live truth.
-                val deferredLive = deferredExports.containsKey(projectID)
-                require(sharedOwner != null || deferredLive) { "workspaceOwnerUnavailable" }
-            } else if (ownerLeaseID != null) {
-                sharedOwner = running[ownerLeaseID]
-                    ?.takeIf { !it.finished.get() && it.workspaceOwner && it.projectID == projectID }
-                if (sharedOwner == null && deferredExports.containsKey(projectID)) {
-                    // The owner stopped while participants remained: this session
-                    // joins the same deferred workspace, not a new import.
-                    sharedOwner = null
-                }
+            // Only a STILL-RUNNING owner entry is a retained owner. A map
+            // value whose Running was already released is a transient/stale
+            // entry (finish removes Running before the map), not a reason to
+            // refuse a live task indefinitely.
+            val retainedOwnerLeaseID = ownerLeaseID?.takeIf { id ->
+                running[id]?.finished?.get() == false
             }
-            val isReuseParticipant = when {
-                requestedShared -> true
-                sharedOwner != null -> true
-                // A retained deferred export means the guest tree is still the
-                // live truth: a new session joins it (never a fresh import),
-                // even when the owner already stopped and no same-project
-                // participant remains. The last global session exports it.
-                else -> deferredExports.containsKey(projectID)
-            }
+            val liveProjectOwners = running.values.filter {
+                it.projectID == projectID && it.workspaceOwner && !it.finished.get()
+            }.map { it.lease.id }
+            val admission = resolveWorkspaceAdmission(
+                requestedShared = requestedShared,
+                expectedOwnerSessionID = expectedOwner,
+                projectOwnerLeaseID = retainedOwnerLeaseID,
+                liveProjectOwnerLeaseIDs = liveProjectOwners,
+                deferredLive = deferredExports.containsKey(projectID),
+            )
+            admission.refusal?.let { error(it) }
+            val sharedOwner: Running? = admission.ownerLeaseID?.let { running[it] }
+            val isReuseParticipant = admission.participant
             var workspaceSession: RuntimeWorkspaceSession? = null
             var imported: WorkspaceImportReceipt? = null
             var importMillis = 0L
@@ -1005,14 +1012,22 @@ internal class LinuxRuntimeOperations(
             val prepareMillis = SystemClock.elapsedRealtime() - prepareStart
             check(!cancelled())
             val workspace = ownedPath(descriptor.getString("workspaceRoot"))
-            val ownerLeaseID = workspaceOwners[projectID]
-            var sharedOwner: Running? = ownerLeaseID?.let { running[it] }
-                ?.takeIf { !it.finished.get() && it.workspaceOwner && it.projectID == projectID }
-            val isReuseParticipant = when {
-                sharedOwner != null -> true
-                deferredExports.containsKey(projectID) -> true
-                else -> false
+            val liveProjectOwners = running.values.filter {
+                it.projectID == projectID && it.workspaceOwner && !it.finished.get()
+            }.map { it.lease.id }
+            val retainedOwnerLeaseID = workspaceOwners[projectID]?.takeIf { id ->
+                running[id]?.finished?.get() == false
             }
+            val admission = resolveWorkspaceAdmission(
+                requestedShared = false,
+                expectedOwnerSessionID = null,
+                projectOwnerLeaseID = retainedOwnerLeaseID,
+                liveProjectOwnerLeaseIDs = liveProjectOwners,
+                deferredLive = deferredExports.containsKey(projectID),
+            )
+            admission.refusal?.let { error(it) }
+            val sharedOwner: Running? = admission.ownerLeaseID?.let { running[it] }
+            val isReuseParticipant = admission.participant
             var workspaceSession: RuntimeWorkspaceSession? = null
             var imported: WorkspaceImportReceipt? = null
             var importMillis = 0L
@@ -2166,6 +2181,72 @@ internal class LinuxRuntimeOperations(
     companion object {
         /** Hard ceiling: 2 interactive + ONE shared Agent/run execution slot. */
         const val MAX_CONCURRENT_WORKLOADS = 5
+
+        /**
+         * Closed admission answer for ONE start against the runtime's OWN
+         * authoritative project workspace state. A client `workspaceReuse`
+         * hint is advisory: it is never trusted as proof that its named lease
+         * is still live, and a stale hint (the original owner already
+         * settled/retired) must not deadlock the task with
+         * `workspaceOwnerUnavailable`. The runtime re-resolves the ONE live
+         * owner of the request's exact project, or joins a retained deferred
+         * export, or admits this start as the project's new owner. It refuses
+         * only when a retained/unknown owner still owns the project slot or
+         * when more than one live owner is observed (inconsistent state).
+         * No project is inferred from the UI/first selection: projectID
+         * always came from the trusted start payload.
+         */
+        internal data class WorkspaceAdmission(
+            val ownerLeaseID: String?,
+            val participant: Boolean,
+            val refusal: String?,
+        )
+
+        internal fun resolveWorkspaceAdmission(
+            requestedShared: Boolean,
+            expectedOwnerSessionID: String?,
+            projectOwnerLeaseID: String?,
+            liveProjectOwnerLeaseIDs: Collection<String>,
+            deferredLive: Boolean,
+        ): WorkspaceAdmission {
+            // A `mode=shared` request MUST name an owner lease. A malformed
+            // shape is not the stale-owner case; keep the original refusal.
+            if (requestedShared && expectedOwnerSessionID.isNullOrEmpty()) {
+                return WorkspaceAdmission(null, false, "workspaceOwnerUnavailable")
+            }
+            val live = liveProjectOwnerLeaseIDs.distinct()
+            if (live.size > 1) {
+                // Two live owners for one project is never resolved by
+                // choosing one: fail closed and let the caller retry after
+                // the inconsistent owner settles.
+                return WorkspaceAdmission(null, false, "workspaceOwnerUnavailable")
+            }
+            val liveOwner = live.singleOrNull()
+            if (liveOwner != null) {
+                // Both an ordinary start and ANY shared hint (including a
+                // stale one naming an old generation) join the runtime's
+                // actual live project owner. The named hint is only a hint.
+                return WorkspaceAdmission(liveOwner, participant = true, refusal = null)
+            }
+            if (deferredLive) {
+                // The owner stopped while participants remained: the guest
+                // tree is still the live truth and the last global session
+                // owns the export.
+                return WorkspaceAdmission(null, participant = true, refusal = null)
+            }
+            if (projectOwnerLeaseID != null) {
+                // A retained/unknown owner still owns the project slot (for
+                // example an unacknowledged native release). Starting a new
+                // owner here could swap files under an unproven owner, so it
+                // stays refused until that owner really settles.
+                return WorkspaceAdmission(null, false, "workspaceOwnerUnavailable")
+            }
+            // No live owner, no deferred tree, and no retained owner: this
+            // start becomes the project's new owner and performs the normal
+            // import. A stale shared hint naming a settled session is thus
+            // harmless; no grant, run or epoch authority is bypassed.
+            return WorkspaceAdmission(null, participant = false, refusal = null)
+        }
 
         /**
          * The ONE command-deadline anchor for an admitted workload.

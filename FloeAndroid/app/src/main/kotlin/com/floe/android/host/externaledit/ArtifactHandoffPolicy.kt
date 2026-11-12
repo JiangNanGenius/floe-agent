@@ -326,6 +326,18 @@ internal object ArtifactHandoffPolicy {
     }
 
     /**
+     * Bounded post-dispatch visibility token. This is separate from
+     * [launchStateName]: `accepted` only means the OS accepted the start.
+     * A target window actually observed in the foreground is still not proof
+     * that a viewer decoded/played/imported the content.
+     */
+    fun viewerStateName(record: ArtifactHandoffRecord): String = when (record.viewerVisible) {
+        true -> "visible"
+        false -> "notVisible"
+        null -> "unknown"
+    }
+
+    /**
      * Foreground wins for ordinary UI use; a visibly different Floe task stays
      * a foreground requirement; only a genuinely backgrounded App may use the
      * optional Phone route, and its absence fails closed.
@@ -346,11 +358,15 @@ internal object ArtifactHandoffPolicy {
 
     /**
      * A NEW call for the same owner/source must not restage/replay around an
-     * active record whose OS launch outcome was never recorded. Only an
-     * explicit finish/cancel clears it.
+     * active record whose OS launch outcome was never recorded, nor around an
+     * accepted launch whose target window was read as a different ordinary
+     * foreground (it may still appear). Only an explicit finish/cancel clears
+     * either blocking state.
      */
     fun blocksNewLaunch(record: ArtifactHandoffRecord): Boolean =
-        record.launchAttempt == ArtifactHandoffLaunchAttempt.UNKNOWN && canResume(record)
+        (record.launchAttempt == ArtifactHandoffLaunchAttempt.UNKNOWN ||
+            (record.launchAttempt == ArtifactHandoffLaunchAttempt.ACCEPTED &&
+                record.viewerVisible == false)) && canResume(record)
 
     fun canResume(record: ArtifactHandoffRecord): Boolean =
         record.phase in setOf(ArtifactHandoffPhase.STAGED, ArtifactHandoffPhase.LAUNCHED,

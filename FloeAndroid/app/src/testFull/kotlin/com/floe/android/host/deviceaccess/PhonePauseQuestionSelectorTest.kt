@@ -27,6 +27,15 @@ class PhonePauseQuestionSelectorTest {
         assertEquals("nonce-1", question.answerNonce)
     }
 
+    @Test fun canonicalDevicePauseCopyStillResolvesTheQuestion() {
+        // The current mailbox emits "Device control is paused..."; older
+        // persisted questions use the exact legacy spelling. Both are
+        // accepted, but only with the exact options/label shape.
+        val question = PhonePauseQuestionSelector.select(
+            wire(text = "Device control is paused. Allow this task to continue?"), pause).single()
+        assertEquals("request-1.native-qualified-id", question.questionId)
+    }
+
     @Test fun unrelatedModelQuestionOrOldPauseCannotBeAnswered() {
         assertTrue(PhonePauseQuestionSelector.select(wire(call = "model-ask"), pause).isEmpty())
         assertTrue(PhonePauseQuestionSelector.select(wire(local = "phone-control-paused-${UUID.randomUUID()}"), pause).isEmpty())

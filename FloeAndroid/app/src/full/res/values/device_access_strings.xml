@@ -7,6 +7,9 @@
     <string name="device_access_status_label">Status</string>
     <string name="device_access_root_enable">Enable root access</string>
     <string name="device_access_intro">Authorize device access as needed. The assistant can enter passwords provided for the task without reading existing field contents.</string>
+    <string name="device_access_structured_ui_accessibility">Page structure: Accessibility service (preferred)</string>
+    <string name="device_access_structured_ui_adb">Page structure: verified ADB service</string>
+    <string name="device_access_structured_ui_none">Page structure: no verified backend; enable Accessibility or start the ADB service.</string>
 
     <string name="device_access_accessibility_section">Device control (Accessibility)</string>
     <string name="device_access_accessibility_disclosure">Device control reads the visible page’s node tree and acts only for the task you start.</string>
@@ -268,4 +271,34 @@
     <string name="device_access_system_settings_result">Applied %1$d changes; %2$d failed.</string>
     <string name="device_access_system_settings_failed">Could not apply changes. Check the connection and access settings, then try again.</string>
     <string name="device_access_targets_lookup_failed">Couldn\'t read apps. Try again.</string>
+
+    <!-- Compact, truthful floating-control status. It names the task, the
+         current/last real device operation and its actual settled state. It
+         never contains typed text, credentials, node content or a fake
+         pointer trail, and an accepted launch is never presented as rendered. -->
+    <string name="device_automation_status_active">Device control active</string>
+    <string name="device_automation_status_format">%1$s · %2$s</string>
+    <string name="device_automation_status_note_format">%1$s · %2$s\n%3$s</string>
+    <string name="device_automation_state_running">Running</string>
+    <string name="device_automation_state_waiting">Waiting for you</string>
+    <string name="device_automation_state_done">Done</string>
+    <string name="device_automation_state_failed">Failed</string>
+    <string name="device_automation_state_unknown">Outcome unknown</string>
+    <string name="device_automation_state_cancelled">Stopped</string>
+    <string name="device_automation_action_observe">Reading screen</string>
+    <string name="device_automation_action_act">Device action</string>
+    <string name="device_automation_action_screenshot">Screenshot</string>
+    <string name="device_automation_action_open">Opening file</string>
+    <string name="device_automation_action_click">Tap</string>
+    <string name="device_automation_action_set_text">Type</string>
+    <string name="device_automation_action_scroll">Scroll</string>
+    <string name="device_automation_action_swipe">Swipe</string>
+    <string name="device_automation_action_focus">Focus</string>
+    <string name="device_automation_action_commit">Confirm</string>
+    <string name="device_automation_action_back">Back</string>
+    <string name="device_automation_action_home">Home</string>
+    <string name="device_automation_action_launch">Open app</string>
+    <string name="device_automation_viewer_visible">Viewer window shown</string>
+    <string name="device_automation_viewer_not_visible">Viewer window not observed</string>
+    <string name="device_automation_viewer_unverified">Viewer outcome not verified</string>
 </resources>

@@ -130,6 +130,12 @@ internal class PlatformToolHostPump(
     private val transport: PlatformToolsTransport = NativePlatformToolsTransport,
     private val timing: Timing = Timing(),
     private val autoAdmission: () -> String = { "{}" },
+    /** Bounded, trusted lifecycle notifications for the optional floating
+     * control. They are UI-only: no authority, grant, retry or buffer is
+     * created here, and the callback receives only the real claimed ticket
+     * plus its already-sanitized outcome. */
+    private val onToolStarted: (PlatformToolCall) -> Unit = {},
+    private val onToolFinished: (PlatformToolCall, PlatformToolOutcome) -> Unit = { _, _ -> },
 ) {
     internal data class Timing(
         val nextPollMillis: Int = 250,
@@ -314,6 +320,7 @@ internal class PlatformToolHostPump(
             return
         }
         target.inFlight.set(call)
+        runCatching { onToolStarted(call) }
         val outcome = try {
             val budget = when (call.tool) {
                 DeviceAccessToolCatalog.SYSTEM_PACKAGES_STAGE,
@@ -341,6 +348,7 @@ internal class PlatformToolHostPump(
         } finally {
             target.inFlight.compareAndSet(call, null)
         }
+        runCatching { onToolFinished(call, outcome) }
         if (target.stopping.get() || currentEpoch() != target.epoch ||
             transport.shouldStop(claim) == 1
         ) {

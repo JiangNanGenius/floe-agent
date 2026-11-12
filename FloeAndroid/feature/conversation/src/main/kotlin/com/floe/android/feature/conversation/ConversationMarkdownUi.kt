@@ -747,10 +747,16 @@ fun ConversationReasoningBlock(
     }
 }
 
-/** ⇄ preview: first two rendered lines of the reasoning excerpt. */
+/** Show the newest reasoning line, like the iOS disclosure. Keep the scan
+ * bounded even when the full, separately expandable reasoning is very long. */
 internal fun preview(text: String): String {
-    val lines = text.split('\n').filter { it.isNotBlank() }
-    return lines.take(2).joinToString(" ")
+    var start = text.length
+    var remaining = 512
+    while (start > 0 && remaining-- > 0) {
+        start = text.offsetByCodePoints(start, -1)
+    }
+    return text.substring(start).lineSequence()
+        .lastOrNull { it.isNotBlank() }?.trim().orEmpty()
 }
 
 /* ------------------------- interactive artifact affordance ------------------- */

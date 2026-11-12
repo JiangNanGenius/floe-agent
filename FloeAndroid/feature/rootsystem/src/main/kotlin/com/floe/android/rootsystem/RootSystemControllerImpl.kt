@@ -1143,6 +1143,163 @@ internal class RootSystemControllerImpl(
         activeClient()?.capabilities().orEmpty()
     }
 
+    // ---------------------------------------------------------------- ui tier
+
+    /**
+     * Proves the live ADB structured-UI tier instead of inferring it from a
+     * pairing record. The reply is authenticated, and the actual describe
+     * must agree on ADB mode, shell UID, the v4 protocol and the advertised
+     * operation capability before [UiBackendStatus.ready] can be true.
+     */
+    suspend fun uiBackendStatus(): UiBackendStatus = withContext(Dispatchers.IO) {
+        val client = activeClient()
+            ?: return@withContext UiBackendStatus(
+                ready = false,
+                live = false,
+                mode = null,
+                effectiveUid = -1,
+                protocolVersion = -1,
+                reason = "service_not_alive",
+            )
+        val mode = binderMode
+        val described = client.describe()
+        val protocol = described?.getInt(BinderProtocol.KEY_PROTOCOL, -1) ?: -1
+        val uid = described?.getInt(BinderProtocol.KEY_SERVER_UID, -1) ?: -1
+        val describedMode = described?.getString(BinderProtocol.KEY_SERVER_MODE)
+        if (mode != BinderProtocol.MODE_ADB || describedMode != BinderProtocol.MODE_ADB) {
+            return@withContext UiBackendStatus(
+                ready = false, live = true, mode = describedMode ?: mode,
+                effectiveUid = uid, protocolVersion = protocol,
+                reason = "adb_backend_required",
+            )
+        }
+        if (uid != AccessPolicy.UID_SHELL) {
+            return@withContext UiBackendStatus(
+                ready = false, live = true, mode = mode, effectiveUid = uid,
+                protocolVersion = protocol, reason = "uid_unverified",
+            )
+        }
+        if (protocol < BinderProtocol.VERSION) {
+            return@withContext UiBackendStatus(
+                ready = false, live = true, mode = mode, effectiveUid = uid,
+                protocolVersion = protocol, reason = "protocol_stale",
+            )
+        }
+        when (val status = client.uiStatus()) {
+            is RootResult.Ok -> status.value.copy(
+                live = true,
+                mode = mode,
+                effectiveUid = uid,
+                protocolVersion = protocol,
+                ready = status.value.ready &&
+                    status.value.mode == BinderProtocol.MODE_ADB &&
+                    status.value.effectiveUid == AccessPolicy.UID_SHELL &&
+                    status.value.protocolVersion >= BinderProtocol.VERSION &&
+                    "ui.automation" in status.value.capabilities,
+            )
+            is RootResult.Denied -> UiBackendStatus(
+                false, true, mode, uid, protocol, reason = status.code,
+            )
+            is RootResult.Unavailable -> UiBackendStatus(
+                false, false, mode, uid, protocol, reason = status.code,
+            )
+            is RootResult.Failed -> UiBackendStatus(
+                false, true, mode, uid, protocol, reason = status.code,
+            )
+        }
+    }
+
+    suspend fun uiObserve(
+        claim: OperationClaim,
+        request: UiObserveRequest,
+    ): RootResult<UiObservation> {
+        val normalized = request.copy(
+            maxNodes = request.maxNodes.coerceIn(1, BinderProtocol.MAX_UI_NODES),
+            maxDepth = request.maxDepth.coerceIn(0, 32),
+            textBudgetChars = request.textBudgetChars.coerceIn(0, 64_000),
+        )
+        return dispatch(claim, SystemOperation.UI_OBSERVE, null) { client ->
+            client.uiObserve(claim, normalized)
+        }
+    }
+
+    suspend fun uiAct(
+        claim: OperationClaim,
+        request: UiActRequest,
+    ): RootResult<UiActResult> = dispatch(
+        claim,
+        SystemOperation.UI_ACT,
+        request.targetPackage,
+    ) { client ->
+        client.uiAct(claim, request)
+    }
+
+    suspend fun uiScreenshotBegin(
+        claim: OperationClaim,
+        request: UiScreenshotRequest,
+    ): RootResult<UiScreenshotInfo> {
+        if (request.observationId != null) {
+            // The ADB tier has no genuine window-scoped capture; refuse
+            // instead of silently widening a window request to the display.
+            return RootResult.Denied("window_screenshot_unsupported")
+        }
+        val normalized = request.copy(
+            maxBytes = request.maxBytes.coerceIn(32_768, BinderProtocol.MAX_UI_SCREENSHOT_BYTES),
+            maxDimension = request.maxDimension.coerceIn(320, 2_048),
+            quality = request.quality.coerceIn(25, 90),
+        )
+        return dispatch(claim, SystemOperation.UI_SCREENSHOT, null) { client ->
+            client.uiScreenshotBegin(claim, normalized)
+        }
+    }
+
+    suspend fun uiScreenshotRead(
+        claim: OperationClaim,
+        screenshotId: String,
+        offset: Int,
+        maxBytes: Int,
+    ): RootResult<UiScreenshotChunk> = dispatch(
+        claim, SystemOperation.UI_SCREENSHOT, null,
+    ) { client ->
+        client.uiScreenshotRead(
+            claim,
+            screenshotId,
+            offset.coerceAtLeast(0),
+            maxBytes.coerceIn(1, BinderProtocol.MAX_UI_SCREENSHOT_CHUNK),
+        )
+    }
+
+    suspend fun uiScreenshotClose(
+        claim: OperationClaim,
+        screenshotId: String,
+    ): AccessActionResult {
+        if (!claim.isWellFormed()) return AccessActionResult.Denied("claim_shape")
+        val client = activeClient() ?: return AccessActionResult.Unavailable("service_not_alive")
+        val grant = grants[claim.grantId] ?: return AccessActionResult.Denied("grant_unknown")
+        if (grant.taskId != claim.taskId || grant.runId != claim.runId ||
+            grant.epoch != claim.epoch
+        ) {
+            return AccessActionResult.Denied("grant_mismatch")
+        }
+        if (System.currentTimeMillis() >= grant.expiresAtMillis) {
+            return AccessActionResult.Denied("expired")
+        }
+        if (SystemOperation.UI_SCREENSHOT !in grant.operations || !grant.uiScreenshotAllowed) {
+            return AccessActionResult.Denied("ui_scope")
+        }
+        return withContext(Dispatchers.IO) { client.uiScreenshotClose(claim, screenshotId) }
+    }
+
+    suspend fun uiCancel(claim: OperationClaim): AccessActionResult =
+        when (val result = dispatch(claim, SystemOperation.UI_CANCEL, null) { client ->
+            client.uiCancel(claim)
+        }) {
+            is RootResult.Ok -> AccessActionResult.Ok
+            is RootResult.Denied -> AccessActionResult.Denied(result.code)
+            is RootResult.Unavailable -> AccessActionResult.Unavailable(result.code)
+            is RootResult.Failed -> AccessActionResult.Failed(result.code)
+        }
+
     suspend fun readSetting(
         claim: OperationClaim,
         namespace: String,
@@ -1250,6 +1407,16 @@ internal class RootSystemControllerImpl(
         if (SystemOperation.isPackageManagement(operation) && !grant.packageManagementAllowed) {
             return RootResult.Denied("management")
         }
+        if (SystemOperation.isUiOperation(operation)) {
+            if (grant.uiTargets.isEmpty()) return RootResult.Denied("ui_target_required")
+            if (!grant.uiScreenAllowed) return RootResult.Denied("ui_scope")
+            if (operation == SystemOperation.UI_SCREENSHOT && !grant.uiScreenshotAllowed) {
+                return RootResult.Denied("ui_scope")
+            }
+            if (target != null && target !in grant.uiTargets) {
+                return RootResult.Denied("target_not_authorized")
+            }
+        }
         val client = activeClient() ?: return RootResult.Unavailable("service_not_alive")
         val result = try {
             activeRequests.add(claim.requestId)
@@ -1267,7 +1434,22 @@ internal class RootSystemControllerImpl(
             }
             return RootResult.Denied("fenced")
         }
-        if (authority.isCancelled(request)) return RootResult.Denied("cancelled")
+        if (authority.isCancelled(request)) {
+            // A UI mutation that already reached ACCEPTED/UNKNOWN must be
+            // reported so the App can require readback; hiding it as a plain
+            // cancellation would encourage a duplicate dispatch.
+            if (operation == SystemOperation.UI_ACT &&
+                result is RootResult.Ok
+            ) {
+                val value = result.value
+                if (value is UiActResult &&
+                    value.dispatch != UiDispatchOutcome.NOT_DISPATCHED
+                ) {
+                    return result
+                }
+            }
+            return RootResult.Denied("cancelled")
+        }
         return result
     }
 
@@ -1666,7 +1848,33 @@ internal class RootSystemControllerImpl(
             if (!config.allowPackageManagement) return "management_disabled"
             if (!request.packageManagementAllowed) return "management"
         }
+        val uiPresent = request.operations.any { SystemOperation.isUiOperation(it) }
+        if (uiPresent) {
+            if (request.uiTargets.isEmpty()) return "ui_target_required"
+            if (request.operations.any {
+                    it == SystemOperation.UI_OBSERVE || it == SystemOperation.UI_ACT
+                } && !request.uiScreenAllowed
+            ) {
+                return "ui_scope"
+            }
+            if (SystemOperation.UI_SCREENSHOT in request.operations &&
+                (!request.uiScreenAllowed || !request.uiScreenshotAllowed)
+            ) {
+                return "ui_scope"
+            }
+            if (request.uiTargets.any { it in protectedPackages }) {
+                return "protected_target"
+            }
+        } else if (request.uiTargets.isNotEmpty()) {
+            return "grant_shape"
+        }
+        if (request.scopes.isEmpty() &&
+            request.operations.any { !SystemOperation.isUiOperation(it) }
+        ) {
+            return "grant_shape"
+        }
         val packages = protectedPackages
+        if (request.scopes.isEmpty()) return null
         // The host configuration is the explicit user-granted ceiling. Invalid
         // entries are dropped, and an empty ceiling never means "all paths".
         val bases = config.allowedScopeBases.mapNotNull { base ->

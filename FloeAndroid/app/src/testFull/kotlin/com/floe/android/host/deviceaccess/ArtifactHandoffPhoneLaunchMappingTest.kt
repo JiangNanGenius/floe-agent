@@ -29,75 +29,75 @@ class ArtifactHandoffPhoneLaunchMappingTest {
 
     @Test
     fun acceptedStartIsTheOnlySuccess() {
-        assertEquals(ArtifactHandoffBackgroundLaunchResult.Accepted,
-            artifactHandoffPhoneLaunchResult(result(PhoneControlDispatch.ACCEPTED)))
+        assertEquals(ArtifactHandoffBackgroundLaunchResult.Accepted(),
+            artifactHandoffDeviceLaunchResult(result(PhoneControlDispatch.ACCEPTED)))
         assertEquals(ArtifactHandoffBackgroundLaunchResult.Unknown,
-            artifactHandoffPhoneLaunchResult(result(PhoneControlDispatch.UNKNOWN)))
+            artifactHandoffDeviceLaunchResult(result(PhoneControlDispatch.UNKNOWN)))
         assertEquals(ArtifactHandoffBackgroundLaunchResult.Unknown,
-            artifactHandoffPhoneLaunchResult(result(PhoneControlDispatch.PARTIAL)))
+            artifactHandoffDeviceLaunchResult(result(PhoneControlDispatch.PARTIAL)))
         assertEquals("launchRejected",
-            refused(artifactHandoffPhoneLaunchResult(result(PhoneControlDispatch.NOT_DISPATCHED))))
+            refused(artifactHandoffDeviceLaunchResult(result(PhoneControlDispatch.NOT_DISPATCHED))))
         assertEquals("launchRejected",
-            refused(artifactHandoffPhoneLaunchResult(result(PhoneControlDispatch.REJECTED))))
+            refused(artifactHandoffDeviceLaunchResult(result(PhoneControlDispatch.REJECTED))))
     }
 
     @Test
     fun definiteDispatchesMapToTypedRetryableRefusals() {
-        assertEquals("stoppedByUser", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("stoppedByUser", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.STOPPED))))
-        assertEquals("humanTakeover", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("humanTakeover", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.TAKEN_OVER))))
-        assertEquals("humanTakeover", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("humanTakeover", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.USER_TOUCH))))
-        assertEquals("deviceLocked", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("deviceLocked", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.DEVICE_LOCKED))))
-        assertEquals("phoneArmRequired", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("deviceArmRequired", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED))))
-        assertEquals("phoneArmRequired", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("deviceArmRequired", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_STALE))))
-        assertEquals("targetNotPermitted", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("targetNotPermitted", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED))))
-        assertEquals("targetNotPermitted", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("targetNotPermitted", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.PROTECTED_WINDOW))))
-        assertEquals("phoneBusy", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("deviceBusy", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN))))
-        assertEquals("phoneBusy", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("deviceBusy", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT))))
-        assertEquals("phoneServiceNotReady", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("deviceServiceNotReady", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Unavailable(PhoneControlUnavailable.SERVICE_NOT_CONNECTED))))
-        assertEquals("targetNotPermitted", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("targetNotPermitted", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Unavailable(PhoneControlUnavailable.LAUNCH_TARGET_UNAVAILABLE))))
-        assertEquals("launchRejected", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("launchRejected", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED))))
-        assertEquals("cancelled", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("cancelled", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Failed(PhoneControlFailure.CANCELLED))))
     }
 
     @Test
     fun onlyTheClosedStartRejectionIsRetryable() {
-        // The phone session emits ACTION_REJECTED ONLY for its closed
+        // The device session emits ACTION_REJECTED ONLY for its closed
         // ActivityNotFoundException/SecurityException boundary. Any other
         // start/post-start exception is INTERNAL_ERROR and therefore unknown.
-        assertEquals("launchRejected", refused(artifactHandoffPhoneLaunchResult(
+        assertEquals("launchRejected", refused(artifactHandoffDeviceLaunchResult(
             PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED))))
         assertEquals(ArtifactHandoffBackgroundLaunchResult.Unknown,
-            artifactHandoffPhoneLaunchResult(
+            artifactHandoffDeviceLaunchResult(
                 PhoneControlResult.Failed(PhoneControlFailure.OBSERVATION_FAILED)))
         assertEquals(ArtifactHandoffBackgroundLaunchResult.Unknown,
-            artifactHandoffPhoneLaunchResult(
+            artifactHandoffDeviceLaunchResult(
                 PhoneControlResult.Failed(PhoneControlFailure.GESTURE_TIMEOUT)))
         assertEquals(ArtifactHandoffBackgroundLaunchResult.Unknown,
-            artifactHandoffPhoneLaunchResult(
+            artifactHandoffDeviceLaunchResult(
                 PhoneControlResult.Failed(PhoneControlFailure.CAPTURE_SECURE_WINDOW)))
     }
 
     @Test
     fun unobservableFailuresAreUnknownNotRetryable() {
         assertEquals(ArtifactHandoffBackgroundLaunchResult.Unknown,
-            artifactHandoffPhoneLaunchResult(
+            artifactHandoffDeviceLaunchResult(
                 PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR)))
         assertEquals(ArtifactHandoffBackgroundLaunchResult.Unknown,
-            artifactHandoffPhoneLaunchResult(
+            artifactHandoffDeviceLaunchResult(
                 PhoneControlResult.Failed(PhoneControlFailure.TIMEOUT)))
     }
 

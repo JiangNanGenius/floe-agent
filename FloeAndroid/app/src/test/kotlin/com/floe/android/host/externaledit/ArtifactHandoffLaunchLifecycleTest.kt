@@ -28,6 +28,7 @@ class ArtifactHandoffLaunchLifecycleTest {
         attempt: ArtifactHandoffLaunchAttempt = ArtifactHandoffLaunchAttempt.NONE,
         key: String? = "run:call",
         errorCode: String? = null,
+        viewerVisible: Boolean? = null,
     ): ArtifactHandoffRecord {
         val accepted = attempt == ArtifactHandoffLaunchAttempt.ACCEPTED
         return ArtifactHandoffRecord(
@@ -49,6 +50,7 @@ class ArtifactHandoffLaunchLifecycleTest {
             toolLaunchConfirmed = accepted,
             launchAttempt = attempt,
             errorCode = errorCode,
+            viewerVisible = viewerVisible,
         )
     }
 
@@ -58,7 +60,7 @@ class ArtifactHandoffLaunchLifecycleTest {
             errorCode = "foregroundRequired")
         val phoneRequired = record(phase = ArtifactHandoffPhase.PAUSED,
             attempt = ArtifactHandoffLaunchAttempt.REJECTED,
-            errorCode = "phoneArmRequired")
+            errorCode = "deviceArmRequired")
         val rejectedTarget = record(phase = ArtifactHandoffPhase.PAUSED,
             attempt = ArtifactHandoffLaunchAttempt.REJECTED,
             errorCode = "targetNotPermitted")
@@ -88,7 +90,7 @@ class ArtifactHandoffLaunchLifecycleTest {
         assertFalse(ArtifactHandoffPolicy.blocksNewLaunch(record(
             phase = ArtifactHandoffPhase.PAUSED,
             attempt = ArtifactHandoffLaunchAttempt.REJECTED,
-            errorCode = "phoneArmRequired")))
+            errorCode = "deviceArmRequired")))
         assertFalse(ArtifactHandoffPolicy.blocksNewLaunch(record(
             phase = ArtifactHandoffPhase.LAUNCHED,
             attempt = ArtifactHandoffLaunchAttempt.ACCEPTED)))
@@ -173,7 +175,7 @@ class ArtifactHandoffLaunchLifecycleTest {
                 record(),
                 record(phase = ArtifactHandoffPhase.PAUSED,
                     attempt = ArtifactHandoffLaunchAttempt.REJECTED,
-                    errorCode = "phoneArmRequired"),
+                    errorCode = "deviceArmRequired"),
                 record(phase = ArtifactHandoffPhase.PAUSED,
                     attempt = ArtifactHandoffLaunchAttempt.UNKNOWN,
                     errorCode = "launchUnconfirmed"),
@@ -227,6 +229,63 @@ class ArtifactHandoffLaunchLifecycleTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             record(attempt = ArtifactHandoffLaunchAttempt.ACCEPTED).copy(launched = false)
+        }
+    }
+
+    @Test
+    fun acceptedButNotVisibleBlocksANewLaunchUntilFinishOrCancel() {
+        val acceptedInvisible = record(phase = ArtifactHandoffPhase.LAUNCHED,
+            attempt = ArtifactHandoffLaunchAttempt.ACCEPTED,
+            viewerVisible = false)
+        assertEquals("accepted",
+            ArtifactHandoffPolicy.launchStateName(acceptedInvisible))
+        assertEquals("notVisible",
+            ArtifactHandoffPolicy.viewerStateName(acceptedInvisible))
+        // The OS start is real, so this exact record can never be replayed;
+        // a second staging record for the same owner/source is also refused
+        // until the operator/model explicitly finishes or cancels.
+        assertEquals(ArtifactHandoffLaunchDisposition.ALREADY_LAUNCHED,
+            ArtifactHandoffPolicy.launchDisposition(acceptedInvisible))
+        assertTrue(ArtifactHandoffPolicy.blocksNewLaunch(acceptedInvisible))
+        assertFalse(ArtifactHandoffPolicy.blocksNewLaunch(
+            acceptedInvisible.copy(phase = ArtifactHandoffPhase.FINISHED)))
+        // A visible window or an unattempted visibility check does not block
+        // a later explicit session; the accepted record still owns its own
+        // replay protection.
+        assertFalse(ArtifactHandoffPolicy.blocksNewLaunch(
+            acceptedInvisible.copy(viewerVisible = true)))
+        assertFalse(ArtifactHandoffPolicy.blocksNewLaunch(
+            acceptedInvisible.copy(viewerVisible = null)))
+        assertEquals("visible", ArtifactHandoffPolicy.viewerStateName(
+            acceptedInvisible.copy(viewerVisible = true)))
+        assertEquals("unknown", ArtifactHandoffPolicy.viewerStateName(
+            acceptedInvisible.copy(viewerVisible = null)))
+    }
+
+    @Test
+    fun journalRoundTripsViewerVisibilityAndRejectsItBeforeAcceptance() {
+        val directory = Files.createTempDirectory("artifact-handoff-viewer").toFile()
+        try {
+            val rows = listOf(
+                record(phase = ArtifactHandoffPhase.LAUNCHED,
+                    attempt = ArtifactHandoffLaunchAttempt.ACCEPTED,
+                    viewerVisible = true),
+                record(phase = ArtifactHandoffPhase.LAUNCHED,
+                    attempt = ArtifactHandoffLaunchAttempt.ACCEPTED,
+                    viewerVisible = false),
+                record(phase = ArtifactHandoffPhase.LAUNCHED,
+                    attempt = ArtifactHandoffLaunchAttempt.ACCEPTED,
+                    viewerVisible = null),
+            )
+            for (row in rows) ArtifactHandoffJournal(directory).save(row)
+            val loaded = ArtifactHandoffJournal(directory).load().associateBy { it.id }
+            for (row in rows) assertEquals(row, loaded.getValue(row.id))
+        } finally {
+            directory.deleteRecursively()
+        }
+        // Visibility is only meaningful after an accepted OS start.
+        assertThrows(IllegalArgumentException::class.java) {
+            record(viewerVisible = true)
         }
     }
 

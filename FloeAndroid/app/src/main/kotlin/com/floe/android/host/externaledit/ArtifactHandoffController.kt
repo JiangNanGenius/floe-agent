@@ -54,7 +54,7 @@ internal data class ArtifactHandoffState(
  *    armed owner/epoch/session fence when Floe is backgrounded (for example a
  *    native viewer is already foreground). That route is typed (no Intent,
  *    flags, extras or URI authority from the model), is read-only, and never
- *    creates a grant or selection by itself. If Phone automation is not
+ *    creates a grant or selection by itself. If device automation is not
  *    armed, the reply is a typed next step to the real device.observe path.
  *
  * Launch acceptance is only "the platform accepted the explicit Activity
@@ -329,6 +329,8 @@ internal class ArtifactHandoffController(
         failure(code, nextStep)
             .put("sessionID", record.id)
             .put("launchState", ArtifactHandoffPolicy.launchStateName(record))
+            .put("viewerState", ArtifactHandoffPolicy.viewerStateName(record))
+            .put("viewerVisible", record.viewerVisible ?: JSONObject.NULL)
 
     private fun candidateArray(handlers: List<ArtifactHandoffHandler>): JSONArray =
         JSONArray(handlers.map(::candidateJson))
@@ -417,20 +419,30 @@ internal class ArtifactHandoffController(
     ): JSONObject {
         if (!allowed()) return failure("cancelled")
         val currentRunID = runID ?: throw Failure("invalidRun")
-        // An active record whose OS launch outcome was never recorded blocks
-        // ANY later open of the same owner/source, including a different
-        // session/key: staging another record would silently replay a launch
-        // that may already have reached the viewer/importer. Only an explicit
+        // An active record whose OS launch outcome was never recorded (or
+        // whose accepted launch was not observed foreground) blocks ANY later
+        // open of the same owner/source, including a different session/key:
+        // staging another record would silently replay a launch that may
+        // already have reached the viewer/importer. Only an explicit
         // finish/cancel clears it.
         records.values.firstOrNull { row ->
             sameOwner(row.owner, owner) &&
                 ArtifactHandoffPolicy.sourceMatches(row, source, path, outputID) &&
                 ArtifactHandoffPolicy.blocksNewLaunch(row)
         }?.let { unresolved ->
-            return failureFor(unresolved, "launchUnconfirmed",
-                "An earlier launch of this source has an unknown OS outcome; " +
-                    "do not open it again. Observe the target, then finish or cancel " +
-                    "that session first.")
+            val outcomeUnknown = unresolved.launchAttempt ==
+                ArtifactHandoffLaunchAttempt.UNKNOWN
+            return failureFor(unresolved,
+                if (outcomeUnknown) "launchUnconfirmed" else "viewerNotVisible",
+                if (outcomeUnknown) {
+                    "An earlier launch of this source has an unknown OS outcome; " +
+                        "do not open it again. Observe the target, then finish or cancel " +
+                        "that session first."
+                } else {
+                    "An earlier launch of this source was accepted, but the target " +
+                        "viewer window was not observed. Observe the device, then " +
+                        "finish or cancel that session before trying another target."
+                })
         }
         // Another model call cannot overwrite a launch whose OS outcome was
         // lost; the durable record retains the exact launch identity. A
@@ -776,7 +788,7 @@ internal class ArtifactHandoffController(
                     ArtifactHandoffStartDisposition.ACCEPTED) {
                     // startActivity returned before the cancellation: record
                     // the accepted start so no later open can replay it.
-                    return acceptedLaunch(inFlight)
+                    return acceptedLaunch(inFlight, viewerVisible = null)
                 }
                 throw cancelled
             } catch (failure: Failure) {
@@ -789,7 +801,8 @@ internal class ArtifactHandoffController(
             } catch (_: Exception) {
                 return when (ArtifactHandoffPolicy.startDisposition(
                     startReturned = started, knownNonDispatch = false)) {
-                    ArtifactHandoffStartDisposition.ACCEPTED -> acceptedLaunch(inFlight)
+                    ArtifactHandoffStartDisposition.ACCEPTED ->
+                        acceptedLaunch(inFlight, viewerVisible = null)
                     ArtifactHandoffStartDisposition.UNKNOWN ->
                         failureFor(inFlight, "launchUnconfirmed",
                             "The OS launch outcome is unknown; do not repeat open. " +
@@ -806,7 +819,7 @@ internal class ArtifactHandoffController(
                     }
                 }
             }
-            return acceptedLaunch(inFlight)
+            return acceptedLaunch(inFlight, viewerVisible = null)
         }
 
         val launcher = backgroundLauncher
@@ -831,7 +844,8 @@ internal class ArtifactHandoffController(
             ArtifactHandoffBackgroundLaunchResult.Unknown
         }
         return when (result) {
-            is ArtifactHandoffBackgroundLaunchResult.Accepted -> acceptedLaunch(inFlight)
+            is ArtifactHandoffBackgroundLaunchResult.Accepted ->
+                acceptedLaunch(inFlight, result.viewerVisible)
             is ArtifactHandoffBackgroundLaunchResult.Refused -> {
                 revokeReadGrant(uri)
                 val latest = inFlight.copy(launchAttempt = ArtifactHandoffLaunchAttempt.REJECTED,
@@ -866,10 +880,17 @@ internal class ArtifactHandoffController(
     private fun saveOrNull(record: ArtifactHandoffRecord): Boolean =
         runCatching { save(record) }.isSuccess
 
-    private fun acceptedLaunch(inFlight: ArtifactHandoffRecord): JSONObject {
+    private fun acceptedLaunch(
+        inFlight: ArtifactHandoffRecord,
+        viewerVisible: Boolean?,
+    ): JSONObject {
+        // The OS start was accepted. viewerVisible is the separate, bounded
+        // post-dispatch foreground read; a null value is reported as unknown
+        // and never upgraded to a display/playback claim.
         val launched = inFlight.copy(phase = ArtifactHandoffPhase.LAUNCHED,
             launched = true, toolLaunchConfirmed = true,
             launchAttempt = ArtifactHandoffLaunchAttempt.ACCEPTED, errorCode = null,
+            viewerVisible = viewerVisible,
             updatedAt = System.currentTimeMillis())
         if (!saveOrNull(launched)) {
             // The OS accepted the start but the confirmation did not persist.
@@ -937,12 +958,21 @@ internal class ArtifactHandoffController(
             .put("byteCount", row.bytes)
             .put("launched", row.launched)
             .put("launchState", ArtifactHandoffPolicy.launchStateName(row))
+            .put("viewerState", ArtifactHandoffPolicy.viewerStateName(row))
+            .put("viewerVisible", row.viewerVisible ?: JSONObject.NULL)
             .put("copyPresent", true)
             .put("copyVerified", true)
             // An UNKNOWN launch may have opened the viewer, so its read grant
             // is retained until an explicit finish/cancel/root stop.
             .put("grantRetained", row.launchAttempt == ArtifactHandoffLaunchAttempt.ACCEPTED ||
                 row.launchAttempt == ArtifactHandoffLaunchAttempt.UNKNOWN)
+            .apply {
+                if (row.viewerVisible == false) {
+                    put("nextStep", "The launch was accepted, but the target viewer window " +
+                        "was not observed. Observe the device; if the viewer did not open, " +
+                        "finish this session before trying another installed target.")
+                }
+            }
             .put("readOnly", true).put("saved", false).put("completed", false)
             .put("sourceVerifiedAtLaunch", true)
     }
@@ -962,6 +992,8 @@ internal class ArtifactHandoffController(
             .put("copyRemoved", true)
             .put("launched", latest.launched)
             .put("launchState", ArtifactHandoffPolicy.launchStateName(latest))
+            .put("viewerState", ArtifactHandoffPolicy.viewerStateName(latest))
+            .put("viewerVisible", latest.viewerVisible ?: JSONObject.NULL)
             .put("readOnly", true).put("saved", false).put("completed", false)
     }
 
@@ -993,6 +1025,15 @@ internal class ArtifactHandoffController(
         .put("byteCount", row.bytes)
         .put("launched", row.launched)
         .put("launchState", ArtifactHandoffPolicy.launchStateName(row))
+        .put("viewerState", ArtifactHandoffPolicy.viewerStateName(row))
+        .put("viewerVisible", row.viewerVisible ?: JSONObject.NULL)
+        .apply {
+            if (row.viewerVisible == false) {
+                put("nextStep", "The launch was accepted, but the target viewer window was " +
+                    "not observed. Observe the device; if the viewer did not open, finish " +
+                    "this session before trying another installed target.")
+            }
+        }
         .put("readOnly", true)
         .put("saved", false)
         .put("completed", false)

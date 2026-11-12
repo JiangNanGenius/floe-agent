@@ -11,12 +11,13 @@ import org.junit.Test
  * numbers methods by declaration order, so an insertion before the legacy
  * block would silently shift every shipped transaction; these pins fail if
  * the first nineteen methods, the appends or the wire version ever drift.
+ * VERSION is 4 because build 108 already published VERSION=3.
  */
 class BinderProtocolSettingsWireTest {
 
     @Test
-    fun wireVersionStaysThreeBecauseNothingAppendedHasShipped() {
-        assertEquals(3, BinderProtocol.VERSION)
+    fun releasedWireThreeIsAnOlderKnownWire() {
+        assertEquals(4, BinderProtocol.VERSION)
     }
 
     @Test
@@ -45,12 +46,17 @@ class BinderProtocolSettingsWireTest {
             BinderProtocol.wire3AppendedMethods +
                 BinderProtocol.wire4AppendedMethods +
                 BinderProtocol.wire5AppendedMethods +
-                BinderProtocol.wire6AppendedMethods,
+                BinderProtocol.wire6AppendedMethods +
+                BinderProtocol.wire7AppendedMethods,
             BinderProtocol.appendedMethods,
         )
-        // The settings transactions must be the LAST two positions.
-        assertEquals("readSettings", BinderProtocol.appendedMethods.dropLast(1).last())
-        assertEquals("writeSettings", BinderProtocol.appendedMethods.last())
+        // The settings block is followed by the v4 UI transactions; no
+        // earlier appended method may move.
+        assertEquals(
+            listOf("uiStatus", "uiObserve", "uiAct", "uiScreenshot", "uiCancel"),
+            BinderProtocol.wire7AppendedMethods,
+        )
+        assertEquals("uiCancel", BinderProtocol.appendedMethods.last())
         // No duplicates anywhere: a shifted method would surface here.
         assertEquals(
             BinderProtocol.appendedMethods.size,

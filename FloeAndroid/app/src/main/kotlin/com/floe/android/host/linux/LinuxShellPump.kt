@@ -123,6 +123,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val stop = AtomicBoolean()
         private val tracedStopTargets = ConcurrentHashMap.newKeySet<Stage>()
         @Volatile var sessionID: String? = null
+        /** The runtime PROCESS boot token that admitted this exact session
+         *  (from the real start reply). A later status read with a different
+         *  token proves a new component process: this lease can no longer be
+         *  addressed, so it must not keep a foreground grant forever. */
+        @Volatile var runtimeGeneration: String? = null
         /** G07.3A: a workspace export retained after this session stopped
          *  while another owned session still mounted the same workspace. The
          *  grant/lease/connection are held ONLY until the runtime reports the
@@ -425,6 +430,19 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 // the shell admission gates: it starts no shell and no command
                 // can cross this session.
                 terminalPreflight(claim, payload, acceptedEpoch); return
+            }
+            if (operation == "status") {
+                // READ-ONLY runtime process identity, never a workload
+                // admission: this needs no foreground permit, grant, lease
+                // or command. It exists so the Swift owner can prove a
+                // retained session belongs to a retired runtime process
+                // instead of guessing a release from an error string.
+                val client = RuntimeConnection(context)
+                try {
+                    client.connect().get(15, TimeUnit.SECONDS)
+                    complete(claim, 0, result(client.exchange("status")))
+                } finally { client.close() }
+                return
             }
             if (operation == "shell.start") {
                 check(!admissionClosed.get())
@@ -874,6 +892,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 scope.launch(Dispatchers.IO) { watch(owned, failedStartClaim = claim) }
                 return
             }
+            owned.runtimeGeneration = started.optString("runtimeGeneration")
+                .takeIf { it.isNotEmpty() && it.length <= 128 }
             owned.sessionID = started.getString("sessionID")
             owned.latency.mark(LinuxTerminalLatency.Phase.READY)
             RuntimeExecutionTrace.mark(Stage.PUMP_SESSION_READY)
@@ -909,6 +929,51 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 } else owned.finish(JSONObject().put("state", "quiescent"))
             }
         }
+    }
+
+    /**
+     * Retire LOCAL ownership for one session ONLY when the runtime reports a
+     * different measured process boot token than the one that admitted it.
+     * A new component process already ran the original recover/census before
+     * admitting anything, so the old lease cannot be addressed anymore. This
+     * still does NOT invent a terminal, exit or saved workspace: the recorded
+     * proof is `workspaceStatus=unknown`, and the pending failed-start claim
+     * (if any) is completed as interrupted, never as success.
+     */
+    private suspend fun finishIfRuntimeGenerationRetired(
+        owned: OwnedSession,
+        failedStartClaim: Long?,
+        status: JSONObject? = null,
+    ): Boolean {
+        if (owned.runtimeGeneration == null) return false
+        val observed = status ?: try {
+            // The bare status operation intentionally returns before a
+            // successor's LinuxRuntimeOperations exists. Use the EXISTING
+            // authorized metadata/recovery path first: its receipt is
+            // produced only after the original init (including
+            // recoverBeforeAdmission whole-UID census) completed.
+            awaitReceipt(owned, owned.exchange("install.status"))
+            owned.exchange("status")
+        } catch (_: Exception) {
+            return false
+        }
+        // The awaited receipt may have let another observer finish this exact
+        // session. Never close a second time; ending the watcher is enough.
+        if (owned.finished.get() || work[owned.controlID] !== owned) return true
+        val admitted = owned.runtimeGeneration ?: return false
+        val current = observed.optString("runtimeBootToken").takeIf { it.isNotEmpty() }
+        if (!canRetireByGeneration(admitted, current,
+                observed.optBoolean("runtimeRecoveryProven", false))) return false
+        val proof = JSONObject().put("state", "released")
+            .put("workspaceStatus", "unknown")
+            .put("generationRetired", true)
+        owned.sessionID?.let { proof.put("sessionID", it) }
+        owned.finish(proof)
+        RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
+        failedStartClaim?.let {
+            complete(it, 1, failedStartProof(owned, "runtime_start_interrupted"))
+        }
+        return true
     }
 
     private suspend fun watch(owned: OwnedSession, failedStartClaim: Long? = null) {
@@ -949,7 +1014,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                             return@withContext
                         }
                         if (receipt.optString("state") == "completed") {
-                            owned.sessionID = receipt.getJSONObject("result").getString("sessionID")
+                            val completed = receipt.getJSONObject("result")
+                            owned.runtimeGeneration = completed.optString("runtimeGeneration")
+                                .takeIf { it.isNotEmpty() && it.length <= 128 }
+                            owned.sessionID = completed.getString("sessionID")
                         }
                     }
                     val session = owned.sessionID
@@ -976,7 +1044,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     // its metadata performs runtime-UID quiescence recovery;
                     // status alone (before recovery) is never proof.
                     awaitReceipt(owned, owned.exchange("install.status"))
-                    if (!owned.exchange("status").getBoolean("active")) {
+                    val status = owned.exchange("status")
+                    if (finishIfRuntimeGenerationRetired(owned, failedStartClaim, status)) {
+                        return@withContext
+                    }
+                    if (!status.getBoolean("active")) {
                         owned.finish(JSONObject().put("state", "quiescent"))
                         RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
                         failedStartClaim?.let { complete(it, 1, failedStartProof(owned, "runtime_start_interrupted")) }
@@ -984,7 +1056,20 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     }
                 } catch (_: Exception) {
                     if (emittedStages.add(Stage.PUMP_WATCH_EXCEPTION)) RuntimeExecutionTrace.mark(Stage.PUMP_WATCH_EXCEPTION)
-                    /* unresolved means retain, never replay */
+                    // A failing poll for an owned session is exactly the
+                    // symptom of a replaced runtime process (the new process
+                    // has no such session). Ask the READ-ONLY status once and
+                    // retire the local ownership only on two real, differing
+                    // measured boot tokens. Any other failure keeps the
+                    // original retention (never replay, never timer release).
+                    try {
+                        if (finishIfRuntimeGenerationRetired(owned, failedStartClaim)) {
+                            return@withContext
+                        }
+                    } catch (_: Exception) {
+                        // A failed local close/native drain is not a release:
+                        // keep the exact session and retry on the next loop.
+                    }
                 }
                 delay(1_000)
             }
@@ -2032,6 +2117,22 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             val echoed = evidence.recovery.stringValue("runID") ?: return false
             return runCatching { UUID.fromString(echoed) == UUID.fromString(runID) }.getOrDefault(false)
         }
+
+        /** True ONLY for two real, non-empty measured process identities that
+         *  differ. An absent token (legacy/unknown) never proves retirement,
+         *  so a transient transport failure can never release ownership. */
+        internal fun runtimeGenerationRetired(admitted: String?, current: String?): Boolean =
+            admitted != null && current != null && admitted.isNotEmpty() &&
+                current.isNotEmpty() && admitted != current
+
+        /** A process-token change is necessary but NOT sufficient: the
+         *  successor must also have completed its real whole-UID recovery/
+         *  census. Absent/malformed proof retains the old ownership. */
+        internal fun canRetireByGeneration(
+            admitted: String?,
+            current: String?,
+            recoveryProven: Boolean?,
+        ): Boolean = recoveryProven == true && runtimeGenerationRetired(admitted, current)
 
         internal fun boundedCode(failure: Exception): String =
             failure.message?.takeIf { it.isNotEmpty() && it.length <= 32 &&

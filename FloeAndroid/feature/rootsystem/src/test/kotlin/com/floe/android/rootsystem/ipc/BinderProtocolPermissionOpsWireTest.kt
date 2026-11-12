@@ -7,17 +7,18 @@ import org.junit.Test
 
 /**
  * Pure regression for the wire evolution contract of the permission/AppOps
- * packet: VERSION stays 3 (no wire-3 APK ever shipped), the legacy wire-2
- * first-19 keep their exact positions, every earlier appended method stays
- * in order, and the four new transactions ride at the tail after
- * releaseStagedApk. AIDL compiler numbers methods by declaration order, so
- * these lists ARE the binary contract the privileged service answers on.
+ * packet: released build 108 already carried VERSION=3, so the UI additions
+ * are v4. The legacy wire-2 first-19 keep their exact positions, every earlier
+ * appended method stays in order, and the permission/AppOps transactions stay
+ * ahead of the new v4 UI block. AIDL compiler numbers methods by declaration
+ * order, so these lists ARE the binary contract the privileged service
+ * answers on.
  */
 class BinderProtocolPermissionOpsWireTest {
 
     @Test
-    fun versionStaysThreeWhileWireThreeIsUnshipped() {
-        assertEquals(3, BinderProtocol.VERSION)
+    fun v4AppendsAfterTheReleasedV3Block() {
+        assertEquals(4, BinderProtocol.VERSION)
     }
 
     @Test
@@ -67,7 +68,8 @@ class BinderProtocolPermissionOpsWireTest {
             BinderProtocol.wire3AppendedMethods +
                 BinderProtocol.wire4AppendedMethods +
                 BinderProtocol.wire5AppendedMethods +
-                BinderProtocol.wire6AppendedMethods,
+                BinderProtocol.wire6AppendedMethods +
+                BinderProtocol.wire7AppendedMethods,
             BinderProtocol.appendedMethods,
         )
         val all = BinderProtocol.wire2LegacyMethods + BinderProtocol.appendedMethods

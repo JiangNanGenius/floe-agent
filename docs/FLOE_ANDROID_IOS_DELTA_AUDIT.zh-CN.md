@@ -1,5 +1,22 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## 2026-11-13 设备工具链收口的增量登记（源码阶段）
+
+从上次登记的 `9225285c880d21c0e98cfe9ba8b38a5fa3161de5` 增量比较到已发行 iOS 337 固定源码 `91c7cd935387f6d88bba2d660b282fb3a8dfa9bb`。该区间涉及 `FloeAgent/` 下 328 条路径，包含测试、配置和专业工作台；路径数不等于安卓缺失功能数。Android 本次共享源码检查点为 `4d9d56102fc27ed3d9629d823edcb7cc9ac6b844`，实际 ARM64 对象编译及两库链接已通过，新增行为和设备验收分别记录，不据此关闭整体验收。
+
+本次静态复核集中于任务、工具发现、持久归属、文件和提供商合同。相关四个 Sources 目录中有 45 条变化路径：27 条存在同名 Android 适配源，18 条没有同名源，均不能由文件名或字节差异直接判成缺实现；Android 适配源并未自动吸收该区间的 iOS 改动。
+
+| 相关合同 | 当前处理与随后优先级 |
+| --- | --- |
+| 工具发现、规划和提问 | 本批先完成 `device.*` 的真实可发现性、旧别名兼容、结构化观察和可执行回退。iOS 新增按实际推理请求记录 schema 暴露状态，以及发现查询的重复匹配优化，列入下一维护包，核对 Android 的提供商预算与实际调用接线；不把历史加载状态当作本次已发出的定义。原提问和恢复差异继续保留。 |
+| Linux 生命周期与存储 | iOS 新增驻留磁盘恢复、收缩、清理作业及执行绑定重建合同。Android 使用 PRoot 文件树，不直接套用虚拟磁盘流程；本批继续验证真实恢复证明、代次及工作区归属。随后按 Android 的文件所有权补存储清理、进度、取消和回执，保留用户文件与未恢复任务。 |
+| 文件、预览与成果 | 轻量文本读取、预览、写入回执、成果重开和跨 App 返回继续作为 Android 的维护重点；iOS 的新 Reader／重型工作台不整体移入 Android。保留内置轻量编辑、Android 原生应用优先、Linux 增强执行能力的用户决定。 |
+| 提供商、语音与专业编辑器 | 推理元数据、供应商字段与实际 schema 的变化按后续接口维护处理，用户已配置的能力照常开放并报告真实错误。继续系统／云语音；新的 CAD／GIS／电子设计专业编辑能力独立登记，不扩成本批设备工具链的发包门槛。 |
+
+原 G/C/N、183 项操作和 IOS-D 编号、视觉参照及历史证据不重置。本登记只比较固定 Git 对象，没有新增 iOS 构建、设备或提供商实测，也不宣称 328 条路径已逐项移植或验收。
+
+English: This bounded source-stage registration compares the previous main anchor9225285c8 with immutable iOS337 source91c7cd935 (328 changed FloeAgent paths), against Android Shared checkpoint4d9d56. Device discovery, structured-first routing and actual recovery ownership stay in the current batch. Dispatch-specific schema metadata, Android storage maintenance and lightweight file/preview contracts are subsequent priorities. Filename differences are not missing-feature counts; heavy iOS editors and VM-disk mechanisms are not wholesale Android ports. Original item identities and evidence remain unchanged; no new iOS/device/provider acceptance is claimed.
+
 ## Alpha47 本批增量（2026-11-07）
 
 Android固定源 `ad811235194e24484cc81f8ae539b0d943bce2d9`，Alpha47/code66；组件安装返回、取消及在线完整包升级的分层证据见[交付记录](releases/ANDROID_ALPHA47_DELIVERY.md)。原G/C/N和IOS-D编号、已完成证据及未完成项保留。

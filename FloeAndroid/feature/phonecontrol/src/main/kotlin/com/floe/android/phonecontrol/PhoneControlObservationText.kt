@@ -16,8 +16,12 @@ object PhoneControlObservationText {
     private const val MAX_SUMMARY_CHARS = 1_800
     /** Reserve for the compact overflow index when many controls exist. */
     private const val OVERFLOW_RESERVE_CHARS = 300
-    /** Reserve for the honest "bounded, not absent" footer + paging hint. */
-    private const val FOOTER_RESERVE_CHARS = 170
+    /**
+     * Reserve for the honest coverage/next-step footer. This includes the
+     * existing bounded-row note plus the local structure/coverage digest; the
+     * total summary still stays inside MAX_SUMMARY_CHARS.
+     */
+    private const val FOOTER_RESERVE_CHARS = 450
     /** Reserve for a detail page's nextOffset/source footer. */
     private const val DETAIL_FOOTER_RESERVE_CHARS = 200
     private const val MAX_ROW_LABEL_CHARS = 72
@@ -39,6 +43,7 @@ object PhoneControlObservationText {
         observation.windowTitle?.replace('\n', ' ')?.replace('\r', ' ')?.take(48)?.let { out.append(" title=").append(it) }
         out.append(" window=").append(observation.windowId)
         out.append(" display=").append(observation.displayId)
+        out.append(" source=").append(observation.provenance)
         out.append(" nodes=").append(observation.nodes.size)
         if (observation.scannedNodeCount > observation.nodes.size) {
             out.append('/').append(observation.scannedNodeCount)
@@ -257,7 +262,64 @@ object PhoneControlObservationText {
                 .append(" rows (bounded; omitted rows are not absent controls; ")
                 .append("page the captured list with observationId+offset)")
         }
-        return out.toString()
+        // Bounded local structure/coverage digest. Every count is derived from
+        // the actual captured node list above; labels/hints/bounds are native
+        // AccessibilityNodeInfo facts. The only local association is the
+        // nearest-actionable-ancestor label attribution already printed on a
+        // row; it is not an invented label or a completeness/confidence claim.
+        // A short digest never means the platform has no controls.
+        val labeledCount = observation.nodes.count { node ->
+            !protectedNode(node) && ownLabels(node).isNotEmpty()
+        }
+        val capturedActionables = observation.nodes.count { actionableNode(it) }
+        val parentRelations = observation.nodes.count { it.parentRef != null }
+        val boundsCount = observation.nodes.count { !it.bounds.isEmpty }
+        val captureBounded = observation.truncated ||
+            observation.truncationReasons.isNotEmpty() ||
+            observation.scannedNodeCount > observation.nodes.size
+        val onlyTextBounded = observation.truncationReasons.isNotEmpty() &&
+            observation.truncationReasons.all { it == "text" }
+        val unreadyPage = observation.nodes.isEmpty() &&
+            observation.scannedNodeCount == 0 && !observation.navigationOnly
+        val projectionBounded = shown.size < observation.nodes.size
+        out.append("\ncoverage=capturedPage source=").append(observation.provenance)
+            .append(" assoc=structural backend=").append(observation.backend.wireName)
+            .append(" captured=").append(observation.nodes.size).append('/')
+            .append(observation.scannedNodeCount)
+            .append(" labeled=").append(labeledCount)
+            .append(" parents=").append(parentRelations)
+            .append(" bounds=").append(boundsCount)
+            .append(" actions=").append(capturedActionables)
+            .append(" rows=").append(shown.size).append('/')
+            .append(observation.nodes.size)
+        if (observation.screenshotSupport != PhoneControlScreenshotSupport.NONE) {
+            // Informational only: a valid toolbar tree does not describe
+            // pixels inside an image/canvas; the existing screenshot scope is
+            // still required if the task genuinely needs that visual content.
+            out.append(" visual=onlyIfImageContentNeeded")
+        }
+        when {
+            unreadyPage -> out.append(
+                "\nnext=observe again; page may be unready; short is not absent")
+            onlyTextBounded -> out.append(
+                "\nnext=page retained rows; long values are genuinely shortened by " +
+                    "the text cap; short is not absent")
+            captureBounded && projectionBounded -> out.append(
+                "\nnext=page observationId+offset for retained rows; refresh/scroll for bounded " +
+                    "capture; short is not absent")
+            captureBounded -> out.append(
+                "\nnext=refresh/scroll for bounded capture; short is not absent")
+            projectionBounded -> out.append(
+                "\nnext=page observationId+offset for retained rows; short is not absent")
+            else -> out.append(
+                "\nnext=all captured rows are present; short is not absent")
+        }
+        // Hard cap in addition to the row/footer reserves: the model-facing
+        // summary must never exceed its transport budget even when many
+        // four-digit counts or long labels combine.
+        val summarised = out.toString()
+        return PhoneControlText.bound(summarised, MAX_SUMMARY_CHARS).text
+            ?: summarised.take(MAX_SUMMARY_CHARS)
     }
 
     /**
@@ -277,6 +339,7 @@ object PhoneControlObservationText {
         out.append(" display=").append(observation.displayId)
         out.append(" total=").append(total)
         out.append(" offset=").append(start)
+        out.append(" source=").append(observation.provenance)
         if (observation.scannedNodeCount > total) {
             out.append(" scanned=").append(observation.scannedNodeCount)
         }

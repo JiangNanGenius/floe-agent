@@ -68,6 +68,14 @@ internal object SystemContext {
                     "Landroid/app/ContentProviderHolder;",
                     "Landroid/content/IContentProvider;",
                     "Landroid/content/AttributionSource\$Builder;",
+                    // Typed structured UI bridge (v4): the connection class and
+                    // its constructor are the same bounded entry point used by
+                    // the platform uiautomator runner. No generic shell or
+                    // arbitrary transact API is exempted.
+                    "Landroid/app/UiAutomation;",
+                    "Landroid/app/UiAutomation\$",
+                    "Landroid/app/UiAutomationConnection;",
+                    "Landroid/app/IUiAutomationConnection;",
                 ),
             )
         } catch (_: Throwable) {

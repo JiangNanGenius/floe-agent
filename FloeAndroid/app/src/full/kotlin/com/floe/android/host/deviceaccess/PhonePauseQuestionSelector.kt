@@ -28,8 +28,18 @@ internal object PhonePauseQuestionSelector {
                 if ((q["localID"] as? JsonPrimitive)?.contentOrNull != "phone-control-paused-${pause.id}") continue
                 val actualID = (q["questionID"] as? JsonPrimitive)?.contentOrNull ?: continue
                 val prompt = decoded.questions.singleOrNull { it.questionId == actualID && it.isPending } ?: continue
-                val chinese = prompt.text == "手机操作已暂停。允许这个任务继续吗？"
-                if (!chinese && prompt.text != "Phone control is paused. Allow this task to continue?") continue
+                // Current canonical pause copy plus the exact legacy spellings
+                // that a restored/older question may still carry. No prefix or
+                // fuzzy match: a model-authored lookalike stays refused.
+                val chinese = prompt.text in setOf(
+                    "设备操作已暂停。允许这个任务继续吗？",
+                    "手机操作已暂停。允许这个任务继续吗？",
+                )
+                val english = prompt.text in setOf(
+                    "Device control is paused. Allow this task to continue?",
+                    "Phone control is paused. Allow this task to continue?",
+                )
+                if (!chinese && !english) continue
                 val labels = if (chinese) listOf("继续", "保留我的控制权") else listOf("Continue", "Keep control")
                 if (prompt.allowsFreeText || prompt.options.map { it.id } != listOf("allow", "keep-control") ||
                     prompt.options.map { it.label } != labels ||

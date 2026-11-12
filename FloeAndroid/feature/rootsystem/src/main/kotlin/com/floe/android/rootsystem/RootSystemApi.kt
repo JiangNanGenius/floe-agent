@@ -165,9 +165,30 @@ enum class SystemOperation {
      * credential, accessibility or ADB keys exist in this table.
      */
     SETTINGS_WRITE,
+    /**
+     * Structured UI observation through the bounded service-owned
+     * UiAutomation bridge. This is NOT a vision operation and carries no
+     * package-management, filesystem or root authority. The live grant must
+     * carry an explicit selected-app UI target set and the live screen scope.
+     */
+    UI_OBSERVE,
+    /** One closed semantic UI action plus a fresh bounded observation. */
+    UI_ACT,
+    /** One bounded display screenshot, served as chunked bytes. */
+    UI_SCREENSHOT,
+    /** Release this request's UI screenshot/gesture state; never a reset of authority. */
+    UI_CANCEL,
     ;
 
     companion object {
+        /** Operations that require the typed UI grant/screen scope. */
+        val UI_OPERATIONS: Set<SystemOperation> = setOf(
+            UI_OBSERVE,
+            UI_ACT,
+            UI_SCREENSHOT,
+            UI_CANCEL,
+        )
+
         /** Operations gated by the user's package-management ceiling. */
         val PACKAGE_MANAGEMENT_OPERATIONS: Set<SystemOperation> = setOf(
             PACKAGE_FORCE_STOP,
@@ -208,6 +229,9 @@ enum class SystemOperation {
 
         fun isPackageManagement(operation: SystemOperation): Boolean =
             operation in PACKAGE_MANAGEMENT_OPERATIONS
+
+        fun isUiOperation(operation: SystemOperation): Boolean =
+            operation in UI_OPERATIONS
     }
 }
 
@@ -268,16 +292,47 @@ data class GrantRequest(
      * carries it, so a package-signed operation cannot be replayed UID-wide.
      */
     val appOpsUidScopeAllowed: Boolean = false,
+    /**
+     * Selected device-app UI target ceiling. This is deliberately separate
+     * from [packageTargets] (package-management/app-state) and from
+     * filesystem scopes: a UI observation/action can never ride a broader
+     * management selection. Empty means no UI operation is offered.
+     */
+    val uiTargets: Set<String> = emptySet(),
+    /** The user granted live screen structure (observe/act) for this session. */
+    val uiScreenAllowed: Boolean = false,
+    /** A separate, explicit whole-screen image ceiling for this session. */
+    val uiScreenshotAllowed: Boolean = false,
 ) {
-    fun isWellFormed(): Boolean =
-        grantId.isNotBlank() && taskId.isNotBlank() && runId.isNotBlank() &&
+    fun isWellFormed(): Boolean {
+        val uiOnly = scopes.isEmpty() && operations.isNotEmpty() &&
+            operations.all { it in SystemOperation.UI_OPERATIONS }
+        val scopeShape = when {
+            uiOnly -> true
+            scopes.isEmpty() -> false
+            else -> scopes.size in 1..8 &&
+                scopes.all {
+                    it.scopeId.isNotBlank() && it.scopeId.length <= 64 &&
+                        it.path.startsWith("/")
+                }
+        }
+        val uiPresent = operations.any { it in SystemOperation.UI_OPERATIONS }
+        val uiShape = uiTargets.size <= MAX_PACKAGE_TARGETS &&
+            uiTargets.all { PACKAGE_TARGET.matches(it) } &&
+            (!uiPresent || uiTargets.isNotEmpty()) &&
+            (!uiPresent || uiScreenAllowed) &&
+            (!uiPresent || SystemOperation.UI_SCREENSHOT !in operations ||
+                uiScreenshotAllowed) &&
+            (uiPresent || uiTargets.isEmpty())
+        return grantId.isNotBlank() && taskId.isNotBlank() && runId.isNotBlank() &&
             epoch > 0 && expiresAtMillis > 0 &&
             grantId.length <= 128 && taskId.length <= 128 && runId.length <= 128 &&
-            scopes.size in 1..8 &&
+            scopeShape &&
             operations.isNotEmpty() &&
-            scopes.all { it.scopeId.isNotBlank() && it.scopeId.length <= 64 && it.path.startsWith("/") } &&
             packageTargets.size <= MAX_PACKAGE_TARGETS &&
-            packageTargets.all { PACKAGE_TARGET.matches(it) }
+            packageTargets.all { PACKAGE_TARGET.matches(it) } &&
+            uiShape
+    }
 
     companion object {
         const val MAX_PACKAGE_TARGETS = 64
@@ -583,6 +638,209 @@ data class NetworkDiagnostics(
     val interfaces: List<InterfaceInfo>,
     val routes: List<RouteInfo>,
     val activeTransports: List<String>,
+)
+
+// --------------------------------------------------------------- typed UI
+
+/** Closed UI action vocabulary shared by the App adapter and the service. */
+enum class UiAction(val wireName: String) {
+    CLICK("click"),
+    LONG_CLICK("longClick"),
+    SET_TEXT("setText"),
+    SCROLL("scroll"),
+    SWIPE("swipe"),
+    FOCUS("focus"),
+    COMMIT("commit"),
+    BACK("back"),
+    HOME("home"),
+    LAUNCH("launch"),
+    ;
+
+    companion object {
+        fun fromWire(value: String?): UiAction? =
+            entries.firstOrNull { it.wireName == value }
+    }
+}
+
+/** Bounded node geometry in screen pixels. */
+data class UiBounds(
+    val left: Int = 0,
+    val top: Int = 0,
+    val right: Int = 0,
+    val bottom: Int = 0,
+) {
+    val width: Int get() = (right - left).coerceAtLeast(0)
+    val height: Int get() = (bottom - top).coerceAtLeast(0)
+    val valid: Boolean get() = width > 0 && height > 0
+}
+
+data class UiRangeInfo(val min: Float, val max: Float, val current: Float)
+
+/**
+ * One real AccessibilityNodeInfo-derived node. Text/description/hint are
+ * already redacted by the service for password/sensitive fields; [ref] and
+ * [path] are service-opaque locators and never authorization. [actions] is the
+ * closed set the live platform actually advertised, not inferred from class.
+ */
+data class UiNode(
+    val ref: String,
+    val parentRef: String?,
+    val depth: Int,
+    val className: String,
+    val packageName: String?,
+    val viewId: String?,
+    val text: String?,
+    val contentDescription: String?,
+    val hintText: String?,
+    val bounds: UiBounds,
+    val visible: Boolean,
+    val enabled: Boolean,
+    val clickable: Boolean,
+    val editable: Boolean,
+    val scrollable: Boolean,
+    val focusable: Boolean,
+    val focused: Boolean,
+    val selected: Boolean,
+    val checkable: Boolean,
+    val checked: Boolean,
+    val password: Boolean,
+    val redacted: Boolean,
+    val insideScrollable: Boolean,
+    val actions: Set<String>,
+    val range: UiRangeInfo?,
+    /** Service-only stable child-index path; not a model-facing capability. */
+    val path: List<Int> = emptyList(),
+)
+
+/**
+ * One bounded, authenticated structured observation. `expiresAtElapsed` is on
+ * the service's SystemClock.elapsedRealtime() domain; the App compares only
+ * after the same call round-trip and never treats the id as authority.
+ */
+data class UiObservation(
+    val observationId: String,
+    val packageName: String?,
+    val windowId: Int,
+    val windowType: Int?,
+    val windowTitle: String?,
+    val displayId: Int,
+    val rootClassName: String?,
+    val rotation: Int,
+    val capturedAtElapsed: Long,
+    val expiresAtElapsed: Long,
+    val generation: Long,
+    val userInteractionRevision: Long,
+    val nodes: List<UiNode>,
+    val scannedNodeCount: Int,
+    val truncated: Boolean,
+    val maxDepthReached: Boolean,
+    val scanLimited: Boolean,
+    val timeLimited: Boolean,
+    val selectionLimited: Boolean,
+    val textLimited: Boolean,
+    /** Whole window is a protected/Floe surface; all text is withheld. */
+    val sensitiveWindow: Boolean,
+    /** At least one password/sensitive field is present; screenshot is refused. */
+    val hasSensitiveField: Boolean = false,
+    val navigationOnly: Boolean,
+    val backend: String = "adbUiAutomation",
+    val provenance: String = "adbUiAutomation",
+)
+
+data class UiObserveRequest(
+    val maxNodes: Int = 250,
+    val maxDepth: Int = 32,
+    val includeInvisible: Boolean = false,
+    val textBudgetChars: Int = 24_000,
+)
+
+data class UiActRequest(
+    val observationId: String,
+    val nodeRef: String?,
+    val action: UiAction,
+    val direction: String? = null,
+    /** Closed package target for launch; also re-checked against the live grant. */
+    val targetPackage: String? = null,
+    /**
+     * The one-shot text payload exactly as the authorized `device.act`
+     * action supplied it. It is never stored, logged, echoed or replayed.
+     * Whether it may fill a protected field is decided ONLY by
+     * [sensitiveTextIntent], which preserves the explicit `sensitiveText`
+     * intent through the typed API/wire/controller/service.
+     */
+    val sensitiveText: String? = null,
+    /**
+     * True only when the caller explicitly used the existing `sensitiveText`
+     * parameter. Ordinary unmarked text stays false and can never enter a
+     * protected field. Appended last (default false) so the v4 UI Bundle
+     * stays forward-compatible; no new public secret alias is introduced.
+     */
+    val sensitiveTextIntent: Boolean = false,
+) {
+    /** Defence in depth: a logged/copied request never exposes the payload. */
+    override fun toString(): String =
+        "UiActRequest(observationId=$observationId, nodeRef=$nodeRef, action=$action, " +
+            "direction=$direction, targetPackage=$targetPackage, " +
+            "text=<redacted>, sensitiveTextIntent=$sensitiveTextIntent)"
+}
+
+enum class UiDispatchOutcome { NOT_DISPATCHED, ACCEPTED, UNKNOWN }
+
+data class UiActResult(
+    val action: String,
+    val dispatch: UiDispatchOutcome,
+    val method: String?,
+    val screenChanged: Boolean?,
+    val observation: UiObservation?,
+    val detailCode: String?,
+    val detail: String?,
+)
+
+data class UiScreenshotRequest(
+    val observationId: String? = null,
+    val maxBytes: Int = 1_500_000,
+    val maxDimension: Int = 1_600,
+    val quality: Int = 75,
+)
+
+data class UiScreenshotInfo(
+    val screenshotId: String,
+    val mimeType: String,
+    val width: Int,
+    val height: Int,
+    val originalWidth: Int,
+    val originalHeight: Int,
+    val rotation: Int,
+    val displayId: Int,
+    val bytesTotal: Int,
+    val capturedAtElapsed: Long,
+    val backend: String = "adbUiAutomation",
+    val provenance: String = "adbUiAutomation",
+)
+
+data class UiScreenshotChunk(
+    val bytes: ByteArray,
+    val done: Boolean,
+    val bytesRead: Int,
+)
+
+/**
+ * Live readiness of the ADB structured-UI tier. `ready` is true only after an
+ * authenticated describe/status round-trip proves ADB mode, shell UID and the
+ * appended protocol; pairing or a stale helper alone is never ready.
+ */
+data class UiBackendStatus(
+    val ready: Boolean,
+    val live: Boolean,
+    val mode: String?,
+    val effectiveUid: Int,
+    val protocolVersion: Int,
+    val capabilities: Set<String> = emptySet(),
+    val screenSupport: String = "none",
+    val reason: String? = null,
+    val userInteractionElapsedRealtimeMillis: Long = -1L,
+    val observationTtlMillis: Long = 0L,
+    val maxNodes: Int = 0,
 )
 
 /** One live root capture process and the fixed helper that produced it. */
@@ -917,6 +1175,49 @@ class RootSystemController internal constructor(
      * understands it; an empty set means no live service.
      */
     suspend fun serviceCapabilities(): Set<String> = impl.serviceCapabilities()
+
+    /**
+     * Actual live readiness of the authenticated ADB structured-UI backend.
+     * This is a maintenance read (no task grant): it proves the live service,
+     * mode, effective UID, appended protocol and advertised capability before
+     * the App may offer the ADB structure fallback. Pairing or a published
+     * old helper is never sufficient.
+     */
+    suspend fun uiBackendStatus(): UiBackendStatus = impl.uiBackendStatus()
+
+    /** One bounded structured observation through the live ADB UI backend. */
+    suspend fun uiObserve(
+        claim: OperationClaim,
+        request: UiObserveRequest = UiObserveRequest(),
+    ): RootResult<UiObservation> = impl.uiObserve(claim, request)
+
+    /** One closed semantic UI action; the service re-observes afterwards. */
+    suspend fun uiAct(
+        claim: OperationClaim,
+        request: UiActRequest,
+    ): RootResult<UiActResult> = impl.uiAct(claim, request)
+
+    /** Begin a bounded display screenshot; returns chunk-read metadata. */
+    suspend fun uiScreenshotBegin(
+        claim: OperationClaim,
+        request: UiScreenshotRequest = UiScreenshotRequest(),
+    ): RootResult<UiScreenshotInfo> = impl.uiScreenshotBegin(claim, request)
+
+    suspend fun uiScreenshotRead(
+        claim: OperationClaim,
+        screenshotId: String,
+        offset: Int,
+        maxBytes: Int,
+    ): RootResult<UiScreenshotChunk> =
+        impl.uiScreenshotRead(claim, screenshotId, offset, maxBytes)
+
+    suspend fun uiScreenshotClose(
+        claim: OperationClaim,
+        screenshotId: String,
+    ): AccessActionResult = impl.uiScreenshotClose(claim, screenshotId)
+
+    /** Cancel this exact request's UI screenshot/gesture state. */
+    suspend fun uiCancel(claim: OperationClaim): AccessActionResult = impl.uiCancel(claim)
 
     /** Read one closed settings key (system = exact current user, global = device-wide). */
     suspend fun readSetting(

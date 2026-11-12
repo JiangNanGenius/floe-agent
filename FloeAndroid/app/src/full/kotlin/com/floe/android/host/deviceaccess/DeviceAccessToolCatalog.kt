@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.deviceaccess
 
+import com.floe.android.phonecontrol.PhoneControlStructuredRouting
+
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -118,9 +120,13 @@ internal object DeviceAccessToolCatalog {
     /** Actual capability ceiling for the SAME live root epoch. */
     data class Availability(
         val accessibilityConnected: Boolean = false,
+        /** A live, verified ADB UI Automation backend (not pairing alone). */
+        val adbStructuredUiReady: Boolean = false,
         val targetPackagesSelected: Boolean = false,
         /**
-         * The phone module can capture at all on this platform (API 30+).
+         * The active structured backend can capture at all: Accessibility
+         * display capture on API 30+, or the verified ADB display bridge on
+         * API 28-29 when that backend is the live source.
          *
          * This is the POTENTIAL capability, not the task's screen consent:
          * like task arming for [DEVICE_OBSERVE]/[DEVICE_ACT], the per-call task
@@ -160,15 +166,18 @@ internal object DeviceAccessToolCatalog {
         // useful even while everything is off (the model can tell the user
         // exactly what to enable) and grants nothing.
         result += SYSTEM_ACCESS_STATUS
-        val phone = availability.accessibilityConnected &&
-            availability.targetPackagesSelected
+        val phone = PhoneControlStructuredRouting.available(
+            targetPackagesSelected = availability.targetPackagesSelected,
+            accessibilityUsable = availability.accessibilityConnected,
+            adbUiReady = availability.adbStructuredUiReady,
+        )
         if (phone) {
             result += DEVICE_OBSERVE
             result += DEVICE_ACT
             // Potential capability, not a task grant. The device's capture
             // support alone decides discoverability; the host refuses the
             // call with screen_scope_off / whole_screen_consent_required /
-            // window_screenshot_unsupported / phone_arm_required unless the
+            // window_screenshot_unsupported / device_arm_required unless the
             // live task really holds that authority.
             if (availability.screenCaptureSupported) {
                 result += DEVICE_SCREENSHOT
@@ -289,14 +298,21 @@ internal object DeviceAccessToolCatalog {
 
     private fun deviceObserve(): JSONObject = tool(
         name = DEVICE_OBSERVE,
-        description = "Observe the visible page of the active device task (phone or tablet). " +
-            "Returns the observation id, real page/window/display identity, honest observation " +
+        description = "Observe the visible page of the active device task from the actually live " +
+            "structured source (Accessibility is preferred while usable; otherwise a verified " +
+            "ADB UI Automation service). Returns backend/provenance, the observation id, real " +
+            "page/window/display identity, honest observation " +
             "bounds (truncated=scan|time|depth|selection|text) and a bounded actionable-first " +
             "list of node refs (platform-declared click/scroll, editable, scrollable). Flags " +
             "c/e/s mean the platform declares click/setText/scroll; f/F/i mark " +
             "focusable/focused/IME on inputs; '-' is read-only. Visible controls late in a wide or deep tree are kept " +
             "ahead of decorative content; the scan line reports real captured/scanned counts " +
-            "and omitted actions. When full rows run out, moreActions(c/e/s) lists usable " +
+            "and omitted actions. Pass source=adb for a NEW observation to explicitly select " +
+            "the already authorized ADB structured UI tier when Accessibility is connected but " +
+            "its structure/action is opaque or insufficient; auto remains the default and keeps " +
+            "the useful Accessibility preference. source selects an existing backend and never " +
+            "grants it. Do not pass source with observationId: retained pages stay source-pinned. " +
+            "When full rows run out, moreActions(c/e/s) lists usable " +
             "refs from the same live observation. A truncated result is honest, never a " +
             "complete tree. To read the REST of the captured node list, call device.observe " +
             "again with the SAME observationId and offset=<nextOffset> from the previous " +
@@ -312,6 +328,10 @@ internal object DeviceAccessToolCatalog {
             "already-selected one; one refusal does not change your selected apps.",
         schema = schema(
             properties = JSONObject()
+                .put("source", enum(
+                    "New-observation source only. auto keeps the default useful-Accessibility preference; adb selects the already authorized verified ADB structured UI backend and returns new ADB refs. Rejected together with observationId; paging stays source-pinned.",
+                    listOf("auto", "adb"),
+                ))
                 .put("includeInvisible", bool("Include nodes that are not visible."))
                 .put("observationId", string(
                     "Existing observation to page instead of recapturing. Omit for a new live observation. A page read never invalidates refs or extends the TTL.",
@@ -335,28 +355,35 @@ internal object DeviceAccessToolCatalog {
             "this run; after an approval wait, a takeover or any screen change, observe again first. " +
             "Only action=launch may omit observationId: launch an authorized app with action=launch " +
             "and packageName, and the existing launch path obtains current navigation state after " +
-            "approval. If a call fails with phone_observation_required, call device.observe again and " +
+            "approval. If a call fails with device_observation_required, call device.observe again and " +
             "act on its new id; never invent or reuse an older id. " +
             "Supported actions: click, setText, scroll, swipe, focus, commit, back, home, " +
-            "launch. click performs the platform ACTION_CLICK when the node reports " +
-            "clickable OR advertises that action; it never synthesizes a coordinate tap. " +
+            "launch. Actions are routed only to the backend that produced the observation; " +
+            "an old id is never replayed against the other backend. click performs the platform " +
+            "ACTION_CLICK when advertised; otherwise the real node bounds may be used for one " +
+            "typed coordinate input, and the result reports that method. " +
             "scroll uses forward/backward = toward the content's end/start " +
             "(ACTION_SCROLL_FORWARD/BACKWARD). swipe uses the finger direction " +
             "up/down/left/right and is only allowed inside a real scrollable region. focus " +
             "performs the platform focus action. commit sends the platform IME action " +
             "(search/go/done/send) to a focused or platform-advertised editable field; it " +
-            "needs Android 11+ (older platforms fail with phone_ime_action_unsupported; use " +
+            "needs Android 11+ (older platforms fail with device_ime_action_unsupported; use " +
             "the visible search/go button) and dispatch=ACCEPTED is NOT proof that a search " +
             "ran or a date value was committed. setText changes the field buffer, not the enclosing " +
             "business value: after any input verify the enclosing value, date or search " +
             "result yourself in a fresh observation. The action is dispatched once, then " +
-            "re-observed; framework acceptance is not reported as semantic success. A node " +
-            "ref from an expired or replaced observation is refused. Use only refs from the " +
+            "re-observed; framework acceptance is not reported as semantic success. If the " +
+            "active structured backend cannot perform a semantic action BEFORE dispatch, " +
+            "call device.observe without observationId and source=adb for a fresh authorized " +
+            "ADB tree; use its new refs and never replay an ACCEPTED/UNKNOWN/PARTIAL mutation. " +
+            "A node ref from an expired or replaced observation is refused. Use only refs from the " +
             "latest actual observation in this run, never from narrative or history. Node " +
             "flags c/e/s/f/F/i/p indicate click/setText/scroll/focusable/focused/" +
             "IME-enter/protected field; '-' is read-only. A label child is not automatically clickable; use " +
             "its returned actionable parent ref. " +
-            "An empty editable input is still listed as [empty input]. A p field never shows " +
+            "A dispatch result of ACCEPTED/UNKNOWN is never semantic success and requires a " +
+            "fresh observe before another action; it is never replayed automatically under " +
+            "another backend. An empty editable input is still listed as [empty input]. A p field never shows " +
             "its contents and refuses ordinary text: to fill one with a credential the user " +
             "already provided in this conversation, send action=setText with sensitiveText " +
             "(setText needs exactly one of text or sensitiveText, never both; an empty " +
@@ -397,8 +424,11 @@ internal object DeviceAccessToolCatalog {
 
     private fun deviceScreenshot(): JSONObject = tool(
         name = DEVICE_SCREENSHOT,
-        description = "Capture the current page as a real image artifact. Capture support is " +
-            "the platform's potential; live readiness is separate and checked on every call " +
+        description = "Capture the current page as a real image artifact. Accessibility capture " +
+            "is taken from the live enabled service; otherwise the verified ADB UI backend " +
+            "captures the display only. A window observationId is refused honestly when the " +
+            "active backend cannot capture a window; it is never widened to the display. " +
+            "Capture support is the platform's potential; live readiness is separate and checked on every call " +
             "(system.access.status reports screenshotSupport, mode, screenScope, " +
             "wholeScreenConsent, screenshotReady and screenshotNext; an OFF task scope and " +
             "the saved Allow whole-screen capture setting are independent). On Android 14+ pass " +
@@ -429,16 +459,18 @@ internal object DeviceAccessToolCatalog {
 
     private fun systemAccessStatus(): JSONObject = tool(
         name = SYSTEM_ACCESS_STATUS,
-        description = "Read actual Android device UI readiness (accessibility connection, " +
-            "selected app scope and user stop), embedded-ADB and root service state, the " +
+        description = "Read actual Android device UI readiness (accessibility connection or " +
+            "verified ADB structured-UI service, selected app scope, structuredUi source, " +
+            "user stop), embedded-ADB and root service state, the " +
             "user-granted file root ids, write ceiling and whether package " +
             "management is allowed. Screenshot status separates potential support " +
             "(screenshotSupport/mode: window_or_display on Android 14+, display_only on " +
-            "Android 11-13, none earlier) from current live readiness for this task " +
+            "Android 11-13, display_only for a verified ADB UI backend on Android 9-10, " +
+            "none earlier) from current live readiness for this task " +
             "(screenScope, wholeScreenConsent, screenshotReady, displayReady, windowReady, " +
             "screenshotNext). " +
             "Reports unavailable layers honestly; it never changes a permission or enables " +
-            "screen sharing. Phone UI readiness is independent of system " +
+            "screen sharing. Device UI readiness is independent of system " +
             "queries: an authorized live ADB/root service can query the system while " +
             "accessibility is disabled. If device tools are absent, check this status " +
             "and ask the user to complete Settings > Device. VNC controls a remote " +

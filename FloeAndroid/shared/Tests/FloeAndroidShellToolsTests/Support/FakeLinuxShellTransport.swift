@@ -136,10 +136,9 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
     }
 
     func shellRuntimeStatus() async throws -> LinuxShellRuntimeStatus {
-        lock.lock()
-        let error = runtimeStatusError
-        let status = runtimeStatus
-        lock.unlock()
+        let (error, status) = lock.withLock {
+            (runtimeStatusError, runtimeStatus)
+        }
         if let error { throw error }
         return status ?? LinuxShellRuntimeStatus()
     }

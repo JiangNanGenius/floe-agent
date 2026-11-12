@@ -5,6 +5,9 @@
     <string name="device_access_status_label">状态</string>
     <string name="device_access_root_enable">启用 Root 访问</string>
     <string name="device_access_intro">按需授权设备操作。助手可填写任务中已提供的密码，不读取密码框现有内容。</string>
+    <string name="device_access_structured_ui_adb">页面结构：已验证的 ADB 服务</string>
+    <string name="device_access_structured_ui_accessibility">页面结构：无障碍服务（优先）</string>
+    <string name="device_access_structured_ui_none">页面结构：无可用后端；请启用无障碍服务或启动 ADB 服务。</string>
 
     <string name="device_access_accessibility_section">设备操作（无障碍）</string>
     <string name="device_access_accessibility_disclosure">设备操作只读取当前页面的节点树，并且只在你启动的任务中执行。</string>
@@ -265,4 +268,33 @@
     <string name="device_access_system_settings_result">已应用 %1$d 项，失败 %2$d 项。</string>
     <string name="device_access_system_settings_failed">未能更改，请检查连接和授权后重试。</string>
     <string name="device_access_targets_lookup_failed">无法读取应用，请重试。</string>
+
+    <!-- 精简、真实的悬浮控制状态：只显示任务、当前/最近一次真实设备操作及
+         实际结果，不包含输入文字、凭据、节点内容或伪造的点击轨迹；系统已
+         接受启动不等于查看器已显示。 -->
+    <string name="device_automation_status_active">设备控制进行中</string>
+    <string name="device_automation_status_format">%1$s · %2$s</string>
+    <string name="device_automation_status_note_format">%1$s · %2$s\n%3$s</string>
+    <string name="device_automation_state_running">运行中</string>
+    <string name="device_automation_state_waiting">等待你操作</string>
+    <string name="device_automation_state_done">完成</string>
+    <string name="device_automation_state_failed">失败</string>
+    <string name="device_automation_state_unknown">结果未确认</string>
+    <string name="device_automation_state_cancelled">已停止</string>
+    <string name="device_automation_action_observe">读取界面</string>
+    <string name="device_automation_action_act">设备操作</string>
+    <string name="device_automation_action_screenshot">截图</string>
+    <string name="device_automation_action_open">打开文件</string>
+    <string name="device_automation_action_click">点按</string>
+    <string name="device_automation_action_set_text">输入</string>
+    <string name="device_automation_action_scroll">滚动</string>
+    <string name="device_automation_action_swipe">滑动</string>
+    <string name="device_automation_action_focus">聚焦</string>
+    <string name="device_automation_action_commit">确认</string>
+    <string name="device_automation_action_back">返回</string>
+    <string name="device_automation_action_home">主屏幕</string>
+    <string name="device_automation_action_launch">打开应用</string>
+    <string name="device_automation_viewer_visible">已看到查看器窗口</string>
+    <string name="device_automation_viewer_not_visible">未看到查看器窗口</string>
+    <string name="device_automation_viewer_unverified">查看器结果未确认</string>
 </resources>

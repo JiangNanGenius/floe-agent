@@ -27,6 +27,13 @@ internal interface RuntimeOperations {
     fun validateCancellation(request: RuntimeWire.Request)
     fun stopOwnedWork(request: RuntimeWire.Request? = null)
     fun hasOwnedWork(): Boolean
+    /**
+     * TRUE only after THIS runtime process completed its existing
+     * `recoverBeforeAdmission` whole-UID recovery/census successfully.
+     * A bare status read must never be treated as quiescence proof while a
+     * successor process is still recovering orphan guest processes.
+     */
+    fun hasProvenRecovery(): Boolean
     /** Install / first-use preflight: still exclusive with every workload. */
     fun hasExclusiveWork(): Boolean
     /**
@@ -116,6 +123,11 @@ class RuntimeKernel(context: Context) {
                 .put("resolver", RuntimeNetworkConfiguration.statusSnapshot())
                 // Process-generation identity for the host's live anchoring.
                 .put("runtimePid", runtimePid).put("runtimeBootToken", runtimeBootToken)
+                // TRUE only after the ORIGINAL RuntimeUidQuiescer recovery/
+                // census completed in LinuxRuntimeOperations.init. A status
+                // read before that proof must not let a caller retire an old
+                // process's lease/FGS while orphan guest processes remain.
+                .put("runtimeRecoveryProven", operations?.hasProvenRecovery() == true)
                 // The workload contract version is advertised ONLY when this
                 // kernel genuinely runs a single-slot executor with the
                 // exclusive-start admission below. It is the engine's own real

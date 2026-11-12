@@ -41,9 +41,14 @@ internal data class ArtifactHandoffBackgroundDocumentRequest(
  * verified copy retryable. [Unknown] means the call may have reached the OS
  * and must never be replayed. [Accepted] is only the platform's acceptance
  * of the explicit Activity start: not display, playback, edit or import.
+ * [Accepted.viewerVisible] is the optional, bounded post-dispatch foreground
+ * read: true = the exact target package's window was observed, false = a
+ * different ordinary window was observed instead, null = not attributable.
+ * Even true is not proof that the viewer decoded or played the content.
  */
 internal sealed class ArtifactHandoffBackgroundLaunchResult {
-    data object Accepted : ArtifactHandoffBackgroundLaunchResult()
+    data class Accepted(val viewerVisible: Boolean? = null) :
+        ArtifactHandoffBackgroundLaunchResult()
 
     data class Refused(
         val code: String,

@@ -154,15 +154,20 @@ fun ConversationTimelineRow(
         is TimelineRowUi.MissingFinal -> MissingFinalRow(modifier)
         TimelineRowUi.LiveReasoning -> {
             val state = holder.snapshot.value ?: return
-            val streamingLabel = stringResource(R.string.state_streaming)
+            val isStreaming = state.isRunning && state.liveStateName == "streamingModel"
+            val label = if (state.isRunning && state.liveStateName != null) {
+                runStateTitle(state.liveStateName)
+            } else {
+                stringResource(R.string.reasoning_title)
+            }
             ConversationReasoningBlock(
                 text = state.liveReasoningText,
-                isStreaming = true,
+                isStreaming = isStreaming,
                 expanded = holder.liveReasoningExpanded,
                 onToggle = holder::toggleLiveReasoning,
                 onCopyText = { holder.copyMessage(state.liveReasoningText) },
                 modifier = modifier,
-                label = streamingLabel,
+                label = label,
             )
         }
         TimelineRowUi.LiveAssistantTail -> {

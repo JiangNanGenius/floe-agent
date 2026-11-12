@@ -46,6 +46,11 @@ class DeviceActExtendedActionTest {
         )
         assertEquals(
             PhoneActionArguments.OBSERVATION_REQUIRED_CODE,
+            "device_observation_required",
+        )
+        // Historical persisted receipts keep their exact closed spelling.
+        assertEquals(
+            PhoneActionArguments.LEGACY_OBSERVATION_REQUIRED_CODE,
             "phone_observation_required",
         )
     }

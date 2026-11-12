@@ -39,10 +39,10 @@ import org.json.JSONObject
  *    conditional `required` — any `oneOf`/`if`/`then` keyword would refuse
  *    the WHOLE catalog at bind time. So the rule is decided here and the
  *    host maps [Request.MissingObservation] to the precise, static and
- *    bounded `phone_observation_required` failure code instead of folding
- *    it into `invalid_arguments` (the code intentionally keeps its legacy
- *    phone_* spelling so historical receipts stay readable; the catalog
- *    guidance names the same token with the new device.observe recovery);
+ *    bounded `device_observation_required` failure code instead of folding
+ *    it into `invalid_arguments`. The exact legacy `phone_observation_required`
+ *    spelling remains a closed decoder alias for historical persisted
+ *    receipts; new model-visible results always use the canonical token;
  *  - malformed action arguments keep the original precedence and still
  *    classify as [Request.InvalidArguments] even when `observationId` is
  *    also absent.
@@ -56,10 +56,13 @@ internal object PhoneActionArguments {
      * [BoundedResultText.token] unchanged, and the trusted catalog's
      * `device.act` description teaches the same token so the model can
      * recover with a fresh device.observe instead of guessing. The
-     * `phone_` prefix is the historical spelling retained for receipt
-     * readability across the device-namespace rename.
+     * `phone_` prefix is retained as a closed legacy decoder spelling, never
+     * emitted in new results.
      */
-    const val OBSERVATION_REQUIRED_CODE = "phone_observation_required"
+    const val OBSERVATION_REQUIRED_CODE = "device_observation_required"
+
+    /** Historical persisted spelling; recognized only by legacy decoders. */
+    const val LEGACY_OBSERVATION_REQUIRED_CODE = "phone_observation_required"
 
     /** The host-side `device.act` contract decision for one argument object. */
     sealed interface Request {

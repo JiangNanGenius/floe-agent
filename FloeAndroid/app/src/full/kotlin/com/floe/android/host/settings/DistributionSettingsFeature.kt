@@ -45,7 +45,9 @@ internal object DistributionSettingsFeature {
         return listOf(
             FloeSettingsExternalSection(
                 // Distinct from every FloeSettingsSection enum name; the host
-                // treats it as an external key, not an enum value.
+                // treats it as an external key, not an enum value. This exact
+                // persisted/navigation key is intentionally NOT renamed with
+                // user copy: old routes and stored selections keep resolving.
                 key = "x:phone_access",
                 titleRes = R.string.settings_phone,
                 icon = FloeIcons.DeviceLocal,

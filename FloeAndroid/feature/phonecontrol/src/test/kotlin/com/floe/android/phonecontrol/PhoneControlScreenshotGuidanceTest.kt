@@ -22,6 +22,7 @@ class PhoneControlScreenshotGuidanceTest {
         stopped: Boolean = false,
         paused: Boolean = false,
         epoch: Boolean = true,
+        adbDisplayOnly: Boolean = false,
     ) = PhoneControlScreenshotGuidance.Readiness(
         support = support,
         screenScopeGranted = scope,
@@ -32,6 +33,7 @@ class PhoneControlScreenshotGuidanceTest {
         userStopped = stopped,
         taskPaused = paused,
         runtimeEpochReady = epoch,
+        adbDisplayOnly = adbDisplayOnly,
     )
 
     @Test
@@ -69,6 +71,19 @@ class PhoneControlScreenshotGuidanceTest {
         assertFalse(ready.windowCaptureReady)
         assertTrue(ready.recovery().contains("without observationId"))
         assertFalse(ready.recovery().contains("window capture, or omit"))
+    }
+
+    @Test
+    fun adbBackendNeverClaimsWindowCaptureOnApi34() {
+        val ready = readiness(
+            support = PhoneControlScreenshotSupport.WINDOW,
+            whole = true,
+            adbDisplayOnly = true,
+        )
+        assertFalse(ready.windowCaptureReady)
+        assertTrue(ready.displayCaptureReady)
+        assertTrue(ready.recovery().contains("display only"))
+        assertTrue(ready.modeLabel.contains("display_only"))
     }
 
     @Test

@@ -24,21 +24,26 @@ import com.floe.android.rootsystem.SystemOperation
 object BinderProtocol {
 
     /**
-     * Wire evolution marker. 3 adds the typed package install/uninstall/stage
-     * transactions and the lifecycle-receipt parcel keys. A live service that
-     * answers describe() with an older version is a stale Floe-owned helper:
-     * the ownership policy stops and replaces it (never adopts it), even when
-     * the installed APK versionCode is unchanged, so an old parcel shape can
-     * never serve the new transactions.
+     * Wire evolution marker.
+     *
+     * Released build 108 already carried VERSION=3, so the v4 UI transactions
+     * are a genuinely new protocol revision (the old "wire 3 never shipped"
+     * comments in earlier additions are stale history and must not be reused
+     * as a reason to keep the marker unchanged). A live service that answers
+     * describe() with an older version is a stale Floe-owned helper: the
+     * ownership policy stops and replaces it (never adopts it) through its
+     * pre-v4 stopOwnedService position, even when the installed APK
+     * versionCode is unchanged, so an old parcel shape can never serve the
+     * new transactions.
      *
      * Transaction-position contract (verified source defect repair, A2):
-     * the AIDL compiler numbers methods by declaration order, so the wire-3
-     * methods are APPENDED after every wire-2 method. [wire2LegacyMethods]
-     * lists the exact legacy order and [wire3AppendedMethods] the additions;
-     * the contract tests assert both against the .aidl source so a future
+     * the AIDL compiler numbers methods by declaration order, so every
+     * appended method stays after all earlier methods. [wire2LegacyMethods]
+     * lists the exact legacy order and the `wireN*` lists the additions; the
+     * contract tests assert both against the .aidl source so a future
      * insertion can never silently shift a legacy transaction number again.
      */
-    const val VERSION = 3
+    const val VERSION = 4
 
     /**
      * Exact wire-2 method order (do not reorder; this is the binary contract
@@ -66,6 +71,15 @@ object BinderProtocol {
     )
 
     /**
+     * Wire-4 structured-UI transactions. Released build 108 carried VERSION=3,
+     * so these are a real append-only revision: `uiStatus` first (readiness)
+     * then observe/act/screenshot/cancel. Never insert before this block.
+     */
+    val wire7AppendedMethods: List<String> = listOf(
+        "uiStatus", "uiObserve", "uiAct", "uiScreenshot", "uiCancel",
+    )
+
+    /**
      * App-state methods appended after [wire3AppendedMethods]. Wire 3 has
      * never shipped publicly, so these ride the same protocol revision; the
      * legacy wire-2 positions above stay untouched.
@@ -87,7 +101,8 @@ object BinderProtocol {
 
     /** Every method appended after the legacy wire-2 block, in order. */
     val appendedMethods: List<String> =
-        wire3AppendedMethods + wire4AppendedMethods + wire5AppendedMethods + wire6AppendedMethods
+        wire3AppendedMethods + wire4AppendedMethods + wire5AppendedMethods +
+            wire6AppendedMethods + wire7AppendedMethods
 
     const val MAX_LIST = 500
     const val MAX_READ_BYTES = 1024 * 1024
@@ -166,6 +181,118 @@ object BinderProtocol {
     const val KEY_RESOLVED_UID = "resolvedUid"
     const val KEY_UID_AFTER = "uidAfter"
     const val KEY_APPOPS_UID_SCOPE = "appOpsUidScope"
+
+    // ----------------------------------------------------- typed UI (wire 4)
+    const val KEY_UI_TARGETS = "uiTargets"
+    const val KEY_UI_SCREEN = "uiScreenAllowed"
+    const val KEY_UI_SCREENSHOT = "uiScreenshotAllowed"
+    const val KEY_UI_MODE = "uiMode"
+    const val KEY_UI_OBSERVATION_ID = "uiObservationId"
+    const val KEY_UI_NODE_REF = "uiNodeRef"
+    const val KEY_UI_ACTION = "uiAction"
+    const val KEY_UI_DIRECTION = "uiDirection"
+    /**
+     * One-shot SET_TEXT payload. The historical key name is retained for the
+     * already-defined v4 Bundle; the separate intent flag below decides
+     * whether the bytes may enter a protected field. Never logged.
+     */
+    const val KEY_UI_SENSITIVE_TEXT = "uiSensitiveText"
+    /**
+     * Appended v4 Bundle extra: true only when the caller explicitly used the
+     * existing `device.act` `sensitiveText` parameter. Absent/false keeps
+     * ordinary-text behaviour, so an older in-flight Bundle stays valid and
+     * no transaction position changes.
+     */
+    const val KEY_UI_SENSITIVE_TEXT_INTENT = "uiSensitiveTextIntent"
+    const val KEY_UI_MAX_NODES = "uiMaxNodes"
+    const val KEY_UI_MAX_DEPTH = "uiMaxDepth"
+    const val KEY_UI_MAX_DIMENSION = "uiMaxDimension"
+    const val KEY_UI_QUALITY = "uiQuality"
+    const val KEY_UI_INCLUDE_INVISIBLE = "uiIncludeInvisible"
+    const val KEY_UI_TEXT_BUDGET = "uiTextBudget"
+    const val KEY_UI_OBSERVATION = "uiObservation"
+    const val KEY_UI_NODES = "uiNodes"
+    const val KEY_UI_PACKAGE = "uiPackage"
+    const val KEY_UI_WINDOW_ID = "uiWindowId"
+    const val KEY_UI_WINDOW_TYPE = "uiWindowType"
+    const val KEY_UI_WINDOW_TITLE = "uiWindowTitle"
+    const val KEY_UI_DISPLAY_ID = "uiDisplayId"
+    const val KEY_UI_ROOT_CLASS = "uiRootClass"
+    const val KEY_UI_ROTATION = "uiRotation"
+    const val KEY_UI_CAPTURED_AT = "uiCapturedAt"
+    const val KEY_UI_EXPIRES_AT = "uiExpiresAt"
+    const val KEY_UI_GENERATION = "uiGeneration"
+    const val KEY_UI_USER_REVISION = "uiUserRevision"
+    const val KEY_UI_SCANNED = "uiScanned"
+    const val KEY_UI_MAX_DEPTH_REACHED = "uiMaxDepthReached"
+    const val KEY_UI_SCAN_LIMITED = "uiScanLimited"
+    const val KEY_UI_TIME_LIMITED = "uiTimeLimited"
+    const val KEY_UI_SELECTION_LIMITED = "uiSelectionLimited"
+    const val KEY_UI_TEXT_LIMITED = "uiTextLimited"
+    const val KEY_UI_SENSITIVE_WINDOW = "uiSensitiveWindow"
+    const val KEY_UI_SENSITIVE_FIELD = "uiSensitiveField"
+    const val KEY_UI_NAVIGATION_ONLY = "uiNavigationOnly"
+    const val KEY_UI_BACKEND = "uiBackend"
+    const val KEY_UI_PROVENANCE = "uiProvenance"
+    const val KEY_UI_DISPATCH = "uiDispatch"
+    const val KEY_UI_METHOD = "uiMethod"
+    const val KEY_UI_SCREEN_CHANGED = "uiScreenChanged"
+    const val KEY_UI_DETAIL_CODE = "uiDetailCode"
+    const val KEY_UI_DETAIL = "uiDetail"
+    const val KEY_UI_SCREENSHOT_ID = "uiScreenshotId"
+    const val KEY_UI_MIME = "uiMime"
+    const val KEY_UI_WIDTH = "uiWidth"
+    const val KEY_UI_HEIGHT = "uiHeight"
+    const val KEY_UI_ORIGINAL_WIDTH = "uiOriginalWidth"
+    const val KEY_UI_ORIGINAL_HEIGHT = "uiOriginalHeight"
+    const val KEY_UI_BYTES_TOTAL = "uiBytesTotal"
+    const val KEY_UI_SCREEN_SUPPORT = "uiScreenSupport"
+    const val KEY_UI_READY = "uiReady"
+    const val KEY_UI_LIVE = "uiLive"
+    const val KEY_UI_REASON = "uiReason"
+    const val KEY_UI_USER_INTERACTION = "uiUserInteraction"
+    const val KEY_UI_TTL = "uiTtl"
+    const val KEY_UI_MAX_NODE_LIMIT = "uiMaxNodeLimit"
+    const val KEY_UI_CHUNK = "uiChunk"
+    const val KEY_UI_DONE = "uiDone"
+    const val KEY_UI_BYTES_READ = "uiBytesRead"
+    const val KEY_UI_RANGE = "uiRange"
+    const val KEY_UI_RANGE_MIN = "uiRangeMin"
+    const val KEY_UI_RANGE_MAX = "uiRangeMax"
+    const val KEY_UI_RANGE_CURRENT = "uiRangeCurrent"
+    const val KEY_UI_ACTIONS = "uiActions"
+    const val KEY_UI_PATH = "uiPath"
+    const val KEY_UI_LEFT = "uiLeft"
+    const val KEY_UI_TOP = "uiTop"
+    const val KEY_UI_RIGHT = "uiRight"
+    const val KEY_UI_BOTTOM = "uiBottom"
+    const val KEY_UI_DEPTH = "uiDepth"
+    const val KEY_UI_CLASS = "uiClass"
+    const val KEY_UI_VIEW_ID = "uiViewId"
+    const val KEY_UI_TEXT = "uiText"
+    const val KEY_UI_DESCRIPTION = "uiDescription"
+    const val KEY_UI_HINT = "uiHint"
+    const val KEY_UI_VISIBLE = "uiVisible"
+    const val KEY_UI_ENABLED = "uiEnabled"
+    const val KEY_UI_CLICKABLE = "uiClickable"
+    const val KEY_UI_EDITABLE = "uiEditable"
+    const val KEY_UI_SCROLLABLE = "uiScrollable"
+    const val KEY_UI_FOCUSABLE = "uiFocusable"
+    const val KEY_UI_FOCUSED = "uiFocused"
+    const val KEY_UI_SELECTED = "uiSelected"
+    const val KEY_UI_CHECKABLE = "uiCheckable"
+    const val KEY_UI_CHECKED = "uiChecked"
+    const val KEY_UI_PASSWORD = "uiPassword"
+    const val KEY_UI_REDACTED = "uiRedacted"
+    const val KEY_UI_INSIDE_SCROLL = "uiInsideScrollable"
+    const val MAX_UI_NODES = 400
+    const val MAX_UI_TEXT = 2_000
+    const val MAX_UI_SET_TEXT = 2_000
+    const val MAX_UI_ACTIONS = 16
+    const val MAX_UI_PATH = 64
+    val UI_DIRECTIONS: Set<String> = setOf("forward", "backward", "up", "down", "left", "right")
+    const val MAX_UI_SCREENSHOT_BYTES = 6_000_000
+    const val MAX_UI_SCREENSHOT_CHUNK = 64 * 1024
 
     // Pinned packet-capture request/reply keys (no command or arbitrary path).
     const val KEY_CAPTURE_MODE = "captureMode"
@@ -256,6 +383,15 @@ object BinderProtocol {
                     .toTypedArray(),
             )
         }
+        if (request.uiTargets.isNotEmpty()) {
+            putStringArray(
+                KEY_UI_TARGETS,
+                request.uiTargets.take(com.floe.android.rootsystem.GrantRequest.MAX_PACKAGE_TARGETS)
+                    .toTypedArray(),
+            )
+        }
+        if (request.uiScreenAllowed) putBoolean(KEY_UI_SCREEN, true)
+        if (request.uiScreenshotAllowed) putBoolean(KEY_UI_SCREENSHOT, true)
     }
 
     fun parseGrant(bundle: Bundle?): GrantRequest? {
@@ -265,11 +401,12 @@ object BinderProtocol {
         val writable = bundle.getBooleanArray(KEY_SCOPE_WRITABLE) ?: return null
         val ops = bundle.getStringArray(KEY_OPERATIONS) ?: return null
         if (ids.size != paths.size || ids.size != writable.size) return null
-        if (ids.size !in 1..8 || ops.size !in 1..SystemOperation.entries.size) return null
+        if (ids.size > 8 || ops.size !in 1..SystemOperation.entries.size) return null
         val operations = LinkedHashSet<SystemOperation>()
         for (name in ops) {
             operations.add(SystemOperation.entries.firstOrNull { it.name == name } ?: return null)
         }
+        if (ids.isEmpty() && operations.any { it !in SystemOperation.UI_OPERATIONS }) return null
         return GrantRequest(
             grantId = bundle.getString(KEY_GRANT_ID) ?: return null,
             taskId = bundle.getString(KEY_TASK_ID) ?: return null,
@@ -283,6 +420,11 @@ object BinderProtocol {
             packageTargets = (bundle.getStringArray(KEY_PACKAGE_TARGETS) ?: emptyArray())
                 .take(com.floe.android.rootsystem.GrantRequest.MAX_PACKAGE_TARGETS)
                 .toSet(),
+            uiTargets = (bundle.getStringArray(KEY_UI_TARGETS) ?: emptyArray())
+                .take(com.floe.android.rootsystem.GrantRequest.MAX_PACKAGE_TARGETS)
+                .toSet(),
+            uiScreenAllowed = bundle.getBoolean(KEY_UI_SCREEN, false),
+            uiScreenshotAllowed = bundle.getBoolean(KEY_UI_SCREENSHOT, false),
         )
     }
 
@@ -569,6 +711,305 @@ object BinderProtocol {
             putString(KEY_EFFECTIVE_MODE, state.effective.take(16))
         }
     }.toTypedArray()
+
+    // ------------------------------------------------------------ typed UI
+
+    private fun uiNodeBundle(node: com.floe.android.rootsystem.UiNode): Bundle = Bundle().apply {
+        putString("ref", node.ref.take(32))
+        node.parentRef?.let { putString("parentRef", it.take(32)) }
+        putInt(KEY_UI_DEPTH, node.depth)
+        putString(KEY_UI_CLASS, node.className.take(200))
+        node.packageName?.let { putString(KEY_UI_PACKAGE, it.take(MAX_NAME)) }
+        node.viewId?.let { putString(KEY_UI_VIEW_ID, it.take(255)) }
+        node.text?.let { putString(KEY_UI_TEXT, it.take(MAX_UI_TEXT)) }
+        node.contentDescription?.let { putString(KEY_UI_DESCRIPTION, it.take(MAX_UI_TEXT)) }
+        node.hintText?.let { putString(KEY_UI_HINT, it.take(MAX_UI_TEXT)) }
+        putInt(KEY_UI_LEFT, node.bounds.left)
+        putInt(KEY_UI_TOP, node.bounds.top)
+        putInt(KEY_UI_RIGHT, node.bounds.right)
+        putInt(KEY_UI_BOTTOM, node.bounds.bottom)
+        putBoolean(KEY_UI_VISIBLE, node.visible)
+        putBoolean(KEY_UI_ENABLED, node.enabled)
+        putBoolean(KEY_UI_CLICKABLE, node.clickable)
+        putBoolean(KEY_UI_EDITABLE, node.editable)
+        putBoolean(KEY_UI_SCROLLABLE, node.scrollable)
+        putBoolean(KEY_UI_FOCUSABLE, node.focusable)
+        putBoolean(KEY_UI_FOCUSED, node.focused)
+        putBoolean(KEY_UI_SELECTED, node.selected)
+        putBoolean(KEY_UI_CHECKABLE, node.checkable)
+        putBoolean(KEY_UI_CHECKED, node.checked)
+        putBoolean(KEY_UI_PASSWORD, node.password)
+        putBoolean(KEY_UI_REDACTED, node.redacted)
+        putBoolean(KEY_UI_INSIDE_SCROLL, node.insideScrollable)
+        putStringArray(KEY_UI_ACTIONS, node.actions.take(MAX_UI_ACTIONS).toTypedArray())
+        node.range?.let { range ->
+            putBundle(KEY_UI_RANGE, Bundle().apply {
+                putFloat(KEY_UI_RANGE_MIN, range.min)
+                putFloat(KEY_UI_RANGE_MAX, range.max)
+                putFloat(KEY_UI_RANGE_CURRENT, range.current)
+            })
+        }
+        if (node.path.isNotEmpty()) {
+            putIntArray(KEY_UI_PATH, node.path.take(MAX_UI_PATH).toIntArray())
+        }
+    }
+
+    private fun parseUiNode(item: Bundle?): com.floe.android.rootsystem.UiNode? {
+        if (item == null) return null
+        val ref = item.getString("ref")?.take(32) ?: return null
+        val range = item.getBundle(KEY_UI_RANGE)?.let {
+            com.floe.android.rootsystem.UiRangeInfo(
+                it.getFloat(KEY_UI_RANGE_MIN),
+                it.getFloat(KEY_UI_RANGE_MAX),
+                it.getFloat(KEY_UI_RANGE_CURRENT),
+            )
+        }
+        return com.floe.android.rootsystem.UiNode(
+            ref = ref,
+            parentRef = item.getString("parentRef")?.take(32),
+            depth = item.getInt(KEY_UI_DEPTH).coerceIn(0, 64),
+            className = item.getString(KEY_UI_CLASS)?.take(200).orEmpty(),
+            packageName = item.getString(KEY_UI_PACKAGE)?.take(MAX_NAME),
+            viewId = item.getString(KEY_UI_VIEW_ID)?.take(255),
+            text = item.getString(KEY_UI_TEXT)?.take(MAX_UI_TEXT),
+            contentDescription = item.getString(KEY_UI_DESCRIPTION)?.take(MAX_UI_TEXT),
+            hintText = item.getString(KEY_UI_HINT)?.take(MAX_UI_TEXT),
+            bounds = com.floe.android.rootsystem.UiBounds(
+                left = item.getInt(KEY_UI_LEFT),
+                top = item.getInt(KEY_UI_TOP),
+                right = item.getInt(KEY_UI_RIGHT),
+                bottom = item.getInt(KEY_UI_BOTTOM),
+            ),
+            visible = item.getBoolean(KEY_UI_VISIBLE),
+            enabled = item.getBoolean(KEY_UI_ENABLED),
+            clickable = item.getBoolean(KEY_UI_CLICKABLE),
+            editable = item.getBoolean(KEY_UI_EDITABLE),
+            scrollable = item.getBoolean(KEY_UI_SCROLLABLE),
+            focusable = item.getBoolean(KEY_UI_FOCUSABLE),
+            focused = item.getBoolean(KEY_UI_FOCUSED),
+            selected = item.getBoolean(KEY_UI_SELECTED),
+            checkable = item.getBoolean(KEY_UI_CHECKABLE),
+            checked = item.getBoolean(KEY_UI_CHECKED),
+            password = item.getBoolean(KEY_UI_PASSWORD),
+            redacted = item.getBoolean(KEY_UI_REDACTED),
+            insideScrollable = item.getBoolean(KEY_UI_INSIDE_SCROLL),
+            actions = (item.getStringArray(KEY_UI_ACTIONS) ?: emptyArray())
+                .take(MAX_UI_ACTIONS).map { it.take(32) }.toSet(),
+            range = range,
+            path = (item.getIntArray(KEY_UI_PATH) ?: IntArray(0))
+                .take(MAX_UI_PATH).toList(),
+        )
+    }
+
+    fun uiObservationBundle(observation: com.floe.android.rootsystem.UiObservation): Bundle =
+        Bundle().apply {
+            putString(KEY_UI_OBSERVATION_ID, observation.observationId.take(64))
+            observation.packageName?.let { putString(KEY_UI_PACKAGE, it.take(MAX_NAME)) }
+            putInt(KEY_UI_WINDOW_ID, observation.windowId)
+            observation.windowType?.let { putInt(KEY_UI_WINDOW_TYPE, it) }
+            observation.windowTitle?.let { putString(KEY_UI_WINDOW_TITLE, it.take(200)) }
+            putInt(KEY_UI_DISPLAY_ID, observation.displayId)
+            observation.rootClassName?.let { putString(KEY_UI_ROOT_CLASS, it.take(200)) }
+            putInt(KEY_UI_ROTATION, observation.rotation)
+            putLong(KEY_UI_CAPTURED_AT, observation.capturedAtElapsed)
+            putLong(KEY_UI_EXPIRES_AT, observation.expiresAtElapsed)
+            putLong(KEY_UI_GENERATION, observation.generation)
+            putLong(KEY_UI_USER_REVISION, observation.userInteractionRevision)
+            putInt(KEY_UI_SCANNED, observation.scannedNodeCount)
+            putBoolean(KEY_TRUNCATED, observation.truncated)
+            putBoolean(KEY_UI_MAX_DEPTH_REACHED, observation.maxDepthReached)
+            putBoolean(KEY_UI_SCAN_LIMITED, observation.scanLimited)
+            putBoolean(KEY_UI_TIME_LIMITED, observation.timeLimited)
+            putBoolean(KEY_UI_SELECTION_LIMITED, observation.selectionLimited)
+            putBoolean(KEY_UI_TEXT_LIMITED, observation.textLimited)
+            putBoolean(KEY_UI_SENSITIVE_WINDOW, observation.sensitiveWindow)
+            putBoolean(KEY_UI_SENSITIVE_FIELD, observation.hasSensitiveField)
+            putBoolean(KEY_UI_NAVIGATION_ONLY, observation.navigationOnly)
+            putString(KEY_UI_BACKEND, observation.backend.take(32))
+            putString(KEY_UI_PROVENANCE, observation.provenance.take(48))
+            putParcelableArray(KEY_UI_NODES, observation.nodes.take(MAX_UI_NODES).map(::uiNodeBundle).toTypedArray())
+        }
+
+    fun uiObservation(bundle: Bundle?): com.floe.android.rootsystem.UiObservation? {
+        if (bundle == null) return null
+        val id = bundle.getString(KEY_UI_OBSERVATION_ID)?.take(64) ?: return null
+        val array = bundleArray(bundle, KEY_UI_NODES) ?: return null
+        if (array.size > MAX_UI_NODES) return null
+        return com.floe.android.rootsystem.UiObservation(
+            observationId = id,
+            packageName = bundle.getString(KEY_UI_PACKAGE)?.take(MAX_NAME),
+            windowId = bundle.getInt(KEY_UI_WINDOW_ID),
+            windowType = if (bundle.containsKey(KEY_UI_WINDOW_TYPE)) {
+                bundle.getInt(KEY_UI_WINDOW_TYPE)
+            } else null,
+            windowTitle = bundle.getString(KEY_UI_WINDOW_TITLE)?.take(200),
+            displayId = bundle.getInt(KEY_UI_DISPLAY_ID),
+            rootClassName = bundle.getString(KEY_UI_ROOT_CLASS)?.take(200),
+            rotation = bundle.getInt(KEY_UI_ROTATION),
+            capturedAtElapsed = bundle.getLong(KEY_UI_CAPTURED_AT),
+            expiresAtElapsed = bundle.getLong(KEY_UI_EXPIRES_AT),
+            generation = bundle.getLong(KEY_UI_GENERATION),
+            userInteractionRevision = bundle.getLong(KEY_UI_USER_REVISION),
+            nodes = array.mapNotNull(::parseUiNode),
+            scannedNodeCount = bundle.getInt(KEY_UI_SCANNED).coerceAtLeast(0),
+            truncated = bundle.getBoolean(KEY_TRUNCATED),
+            maxDepthReached = bundle.getBoolean(KEY_UI_MAX_DEPTH_REACHED),
+            scanLimited = bundle.getBoolean(KEY_UI_SCAN_LIMITED),
+            timeLimited = bundle.getBoolean(KEY_UI_TIME_LIMITED),
+            selectionLimited = bundle.getBoolean(KEY_UI_SELECTION_LIMITED),
+            textLimited = bundle.getBoolean(KEY_UI_TEXT_LIMITED),
+            sensitiveWindow = bundle.getBoolean(KEY_UI_SENSITIVE_WINDOW),
+            hasSensitiveField = bundle.getBoolean(KEY_UI_SENSITIVE_FIELD),
+            navigationOnly = bundle.getBoolean(KEY_UI_NAVIGATION_ONLY),
+            backend = bundle.getString(KEY_UI_BACKEND)?.take(32) ?: "adbUiAutomation",
+            provenance = bundle.getString(KEY_UI_PROVENANCE)?.take(48) ?: "adbUiAutomation",
+        )
+    }
+
+    /** One already-validated typed uiAct request; text never appears in toString. */
+    class UiActFields(
+        val observationId: String,
+        val nodeRef: String?,
+        val action: com.floe.android.rootsystem.UiAction,
+        val direction: String?,
+        val targetPackage: String?,
+        val sensitiveText: String?,
+        val sensitiveTextIntent: Boolean,
+    ) {
+        override fun toString(): String =
+            "UiActFields(observationId=$observationId, nodeRef=$nodeRef, action=$action, " +
+                "direction=$direction, targetPackage=$targetPackage, " +
+                "text=<redacted>, sensitiveTextIntent=$sensitiveTextIntent)"
+    }
+
+    sealed interface UiActDecode {
+        data class Ok(val fields: UiActFields) : UiActDecode
+        data class Failure(val code: String) : UiActDecode
+    }
+
+    /**
+     * Closed decode of the appended uiAct Bundle fields exactly as the live
+     * service sees them. The explicit sensitive-intent flag travels only with
+     * ONE SET_TEXT payload; a payload on another action is refused instead of
+     * being silently discarded. Pure seam (no Bundle), so the intent contract
+     * is unit-testable without Android.
+     */
+    fun decodeUiActFields(
+        observationId: String?,
+        nodeRef: String?,
+        actionWire: String?,
+        direction: String?,
+        targetPackage: String?,
+        sensitiveText: String?,
+        sensitiveTextIntent: Boolean,
+        targets: Set<String>,
+    ): UiActDecode {
+        if (observationId != null && observationId.length > 64) {
+            return UiActDecode.Failure("ui_observation_invalid")
+        }
+        if (nodeRef != null && nodeRef.length > 32) {
+            return UiActDecode.Failure("ui_observation_invalid")
+        }
+        val action = com.floe.android.rootsystem.UiAction.fromWire(actionWire)
+            ?: return UiActDecode.Failure("ui_action")
+        if (direction != null && direction !in UI_DIRECTIONS) {
+            return UiActDecode.Failure("ui_direction")
+        }
+        if (targetPackage != null && targetPackage !in targets) {
+            return UiActDecode.Failure("target_not_authorized")
+        }
+        if (sensitiveText != null && sensitiveText.length > MAX_UI_SET_TEXT) {
+            return UiActDecode.Failure("ui_text")
+        }
+        if ((sensitiveText != null || sensitiveTextIntent) &&
+            action != com.floe.android.rootsystem.UiAction.SET_TEXT
+        ) {
+            return UiActDecode.Failure("ui_text")
+        }
+        if (sensitiveTextIntent && sensitiveText == null) {
+            return UiActDecode.Failure("ui_text")
+        }
+        return UiActDecode.Ok(
+            UiActFields(
+                observationId = observationId ?: "",
+                nodeRef = nodeRef,
+                action = action,
+                direction = direction,
+                targetPackage = targetPackage,
+                sensitiveText = sensitiveText,
+                sensitiveTextIntent = sensitiveTextIntent,
+            ),
+        )
+    }
+
+    fun uiActResult(bundle: Bundle?): com.floe.android.rootsystem.UiActResult? {
+        if (bundle == null) return null
+        val action = bundle.getString(KEY_UI_ACTION)?.take(32) ?: return null
+        val dispatch = runCatching {
+            com.floe.android.rootsystem.UiDispatchOutcome.valueOf(
+                bundle.getString(KEY_UI_DISPATCH)!!.take(24),
+            )
+        }.getOrNull() ?: return null
+        val observation = bundle.getBundle(KEY_UI_OBSERVATION)?.let(::uiObservation)
+        return com.floe.android.rootsystem.UiActResult(
+            action = action,
+            dispatch = dispatch,
+            method = bundle.getString(KEY_UI_METHOD)?.take(32),
+            screenChanged = if (bundle.containsKey(KEY_UI_SCREEN_CHANGED)) {
+                bundle.getBoolean(KEY_UI_SCREEN_CHANGED)
+            } else null,
+            observation = observation,
+            detailCode = bundle.getString(KEY_UI_DETAIL_CODE)?.take(48),
+            detail = bundle.getString(KEY_UI_DETAIL)?.take(240),
+        )
+    }
+
+    fun uiScreenshotInfo(bundle: Bundle?): com.floe.android.rootsystem.UiScreenshotInfo? {
+        if (bundle == null) return null
+        return com.floe.android.rootsystem.UiScreenshotInfo(
+            screenshotId = bundle.getString(KEY_UI_SCREENSHOT_ID)?.take(64) ?: return null,
+            mimeType = bundle.getString(KEY_UI_MIME)?.take(32) ?: return null,
+            width = bundle.getInt(KEY_UI_WIDTH),
+            height = bundle.getInt(KEY_UI_HEIGHT),
+            originalWidth = bundle.getInt(KEY_UI_ORIGINAL_WIDTH),
+            originalHeight = bundle.getInt(KEY_UI_ORIGINAL_HEIGHT),
+            rotation = bundle.getInt(KEY_UI_ROTATION),
+            displayId = bundle.getInt(KEY_UI_DISPLAY_ID),
+            bytesTotal = bundle.getInt(KEY_UI_BYTES_TOTAL),
+            capturedAtElapsed = bundle.getLong(KEY_UI_CAPTURED_AT),
+            backend = bundle.getString(KEY_UI_BACKEND)?.take(32) ?: "adbUiAutomation",
+            provenance = bundle.getString(KEY_UI_PROVENANCE)?.take(48) ?: "adbUiAutomation",
+        )
+    }
+
+    fun uiScreenshotChunk(bundle: Bundle?): com.floe.android.rootsystem.UiScreenshotChunk? {
+        if (bundle == null) return null
+        val bytes = bundle.getByteArray(KEY_UI_CHUNK) ?: ByteArray(0)
+        if (bytes.size > MAX_UI_SCREENSHOT_CHUNK) return null
+        return com.floe.android.rootsystem.UiScreenshotChunk(
+            bytes = bytes,
+            done = bundle.getBoolean(KEY_UI_DONE),
+            bytesRead = bundle.getInt(KEY_UI_BYTES_READ).coerceAtLeast(0),
+        )
+    }
+
+    fun uiBackendStatus(bundle: Bundle?): com.floe.android.rootsystem.UiBackendStatus? {
+        if (bundle == null) return null
+        return com.floe.android.rootsystem.UiBackendStatus(
+            ready = bundle.getBoolean(KEY_UI_READY),
+            live = bundle.getBoolean(KEY_UI_LIVE),
+            mode = bundle.getString(KEY_UI_MODE)?.take(16),
+            effectiveUid = bundle.getInt(KEY_SERVER_UID, -1),
+            protocolVersion = bundle.getInt(KEY_PROTOCOL, -1),
+            capabilities = (bundle.getStringArray(KEY_CAPABILITIES) ?: emptyArray())
+                .take(64).map { it.take(48) }.toSet(),
+            screenSupport = bundle.getString(KEY_UI_SCREEN_SUPPORT)?.take(16) ?: "none",
+            reason = bundle.getString(KEY_UI_REASON)?.take(48),
+            userInteractionElapsedRealtimeMillis = bundle.getLong(KEY_UI_USER_INTERACTION, -1L),
+            observationTtlMillis = bundle.getLong(KEY_UI_TTL, 0L),
+            maxNodes = bundle.getInt(KEY_UI_MAX_NODE_LIMIT, 0),
+        )
+    }
 
     /** Reply codec for the typed appops set receipt (scope-aware). */
     fun appOpsSetResult(bundle: Bundle?): com.floe.android.rootsystem.AppOpsSetReceipt? {

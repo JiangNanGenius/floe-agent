@@ -88,6 +88,11 @@ internal data class ArtifactHandoffRecord(
     val toolLaunchConfirmed: Boolean = false,
     val launchAttempt: ArtifactHandoffLaunchAttempt = ArtifactHandoffLaunchAttempt.NONE,
     val errorCode: String? = null,
+    /** Tri-state post-dispatch foreground read for the optional background
+     * VIEW. null = not attempted/not attributable; true = the exact target
+     * package's window was observed; false = a different ordinary window was
+     * observed instead. Even true is not proof the content rendered. */
+    val viewerVisible: Boolean? = null,
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     init {
@@ -114,6 +119,9 @@ internal data class ArtifactHandoffRecord(
         require(!launched || phase != ArtifactHandoffPhase.STAGED)
         require(launchAttempt != ArtifactHandoffLaunchAttempt.UNKNOWN ||
             (!launched && !toolLaunchConfirmed))
+        // Visibility is only meaningful after the one accepted OS start.
+        require(viewerVisible == null ||
+            launchAttempt == ArtifactHandoffLaunchAttempt.ACCEPTED)
         require(errorCode == null || errorCode.matches(Regex("[A-Za-z0-9_]{1,80}")))
     }
 
@@ -180,8 +188,11 @@ internal class ArtifactHandoffJournal(private val root: File) {
         private val LEGACY_NOT_DISPATCHED = setOf(
             "foregroundRequired", "targetNotPermitted", "copyChanged", "copyUnavailable",
             "cancelled", "launchRejected", "backgroundUnavailable", "phoneArmRequired",
+            "deviceArmRequired",
             "phoneTargetRequired", "phoneServiceNotReady", "phonePausedByUser",
-            "phoneFinishing", "phoneBusy", "stoppedByUser", "humanTakeover",
+            "phoneFinishing", "phoneBusy", "deviceTargetRequired",
+            "deviceServiceNotReady", "devicePausedByUser", "deviceFinishing",
+            "deviceBusy", "stoppedByUser", "humanTakeover",
             "deviceLocked", "deviceRunUnavailable", "invalidRequest",
         )
 
@@ -206,6 +217,7 @@ internal class ArtifactHandoffJournal(private val root: File) {
             put("toolLaunchConfirmed", record.toolLaunchConfirmed)
             put("launchAttempt", record.launchAttempt.name)
             record.errorCode?.let { put("errorCode", it) }
+            record.viewerVisible?.let { put("viewerVisible", it) }
             put("updatedAt", record.updatedAt)
         }
 
@@ -254,6 +266,7 @@ internal class ArtifactHandoffJournal(private val root: File) {
                 toolLaunchConfirmed = confirmed,
                 launchAttempt = attempt,
                 errorCode = errorCode,
+                viewerVisible = bool("viewerVisible"),
                 updatedAt = requireNotNull(number("updatedAt")),
             )
         }

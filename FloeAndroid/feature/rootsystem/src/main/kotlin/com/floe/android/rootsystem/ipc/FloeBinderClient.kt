@@ -692,6 +692,157 @@ internal class FloeBinderClient(private val binder: IBinder) {
         }
     }
 
+    // ------------------------------------------------------------ typed UI
+
+    fun uiStatus(): RootResult<com.floe.android.rootsystem.UiBackendStatus> = try {
+        val reply = service?.uiStatus(Bundle())
+        if (BinderProtocol.isOk(reply)) {
+            val status = BinderProtocol.uiBackendStatus(reply)
+            if (status == null) RootResult.Failed("ui_status") else RootResult.Ok(status)
+        } else {
+            failed(reply)
+        }
+    } catch (_: Throwable) {
+        RootResult.Unavailable("service_died")
+    }
+
+    fun uiObserve(
+        claim: OperationClaim,
+        request: com.floe.android.rootsystem.UiObserveRequest,
+    ): RootResult<com.floe.android.rootsystem.UiObservation> {
+        val bundle = request(claim, SystemOperation.UI_OBSERVE, null).apply {
+            putInt(BinderProtocol.KEY_UI_MAX_NODES, request.maxNodes)
+            putInt(BinderProtocol.KEY_UI_MAX_DEPTH, request.maxDepth)
+            putBoolean(BinderProtocol.KEY_UI_INCLUDE_INVISIBLE, request.includeInvisible)
+            putInt(BinderProtocol.KEY_UI_TEXT_BUDGET, request.textBudgetChars)
+        }
+        return try {
+            val reply = service?.uiObserve(bundle)
+            if (BinderProtocol.isOk(reply)) {
+                val observation = reply?.getBundle(BinderProtocol.KEY_UI_OBSERVATION)
+                    ?.let(BinderProtocol::uiObservation)
+                if (observation == null) RootResult.Failed("ui_observation")
+                else RootResult.Ok(observation)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun uiAct(
+        claim: OperationClaim,
+        request: com.floe.android.rootsystem.UiActRequest,
+    ): RootResult<com.floe.android.rootsystem.UiActResult> {
+        val bundle = request(claim, SystemOperation.UI_ACT, null).apply {
+            putString(BinderProtocol.KEY_UI_OBSERVATION_ID, request.observationId)
+            if (request.nodeRef != null) {
+                putString(BinderProtocol.KEY_UI_NODE_REF, request.nodeRef)
+            }
+            putString(BinderProtocol.KEY_UI_ACTION, request.action.wireName)
+            if (request.direction != null) {
+                putString(BinderProtocol.KEY_UI_DIRECTION, request.direction)
+            }
+            if (request.targetPackage != null) {
+                putString(BinderProtocol.KEY_PACKAGE_NAME, request.targetPackage)
+            }
+            if (request.sensitiveText != null) {
+                putString(BinderProtocol.KEY_UI_SENSITIVE_TEXT, request.sensitiveText)
+            }
+            if (request.sensitiveTextIntent) {
+                // Appended v4 extra; absent means the ordinary-text path.
+                putBoolean(BinderProtocol.KEY_UI_SENSITIVE_TEXT_INTENT, true)
+            }
+        }
+        return try {
+            val reply = service?.uiAct(bundle)
+            if (BinderProtocol.isOk(reply)) {
+                val result = BinderProtocol.uiActResult(reply)
+                if (result == null) RootResult.Failed("ui_act") else RootResult.Ok(result)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun uiScreenshotBegin(
+        claim: OperationClaim,
+        request: com.floe.android.rootsystem.UiScreenshotRequest,
+    ): RootResult<com.floe.android.rootsystem.UiScreenshotInfo> {
+        val bundle = request(claim, SystemOperation.UI_SCREENSHOT, null).apply {
+            putString(BinderProtocol.KEY_UI_MODE, "begin")
+            request.observationId?.let {
+                putString(BinderProtocol.KEY_UI_OBSERVATION_ID, it)
+            }
+            putInt(BinderProtocol.KEY_MAX_BYTES, request.maxBytes)
+            putInt(BinderProtocol.KEY_UI_MAX_DIMENSION, request.maxDimension)
+            putInt(BinderProtocol.KEY_UI_QUALITY, request.quality)
+        }
+        return try {
+            val reply = service?.uiScreenshot(bundle)
+            if (BinderProtocol.isOk(reply)) {
+                val info = BinderProtocol.uiScreenshotInfo(reply)
+                if (info == null) RootResult.Failed("ui_screenshot") else RootResult.Ok(info)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun uiScreenshotRead(
+        claim: OperationClaim,
+        screenshotId: String,
+        offset: Int,
+        maxBytes: Int,
+    ): RootResult<com.floe.android.rootsystem.UiScreenshotChunk> {
+        val bundle = request(claim, SystemOperation.UI_SCREENSHOT, null).apply {
+            putString(BinderProtocol.KEY_UI_MODE, "read")
+            putString(BinderProtocol.KEY_UI_SCREENSHOT_ID, screenshotId)
+            putInt(BinderProtocol.KEY_OFFSET, offset)
+            putInt(BinderProtocol.KEY_MAX_BYTES, maxBytes)
+        }
+        return try {
+            val reply = service?.uiScreenshot(bundle)
+            if (BinderProtocol.isOk(reply)) {
+                val chunk = BinderProtocol.uiScreenshotChunk(reply)
+                if (chunk == null) RootResult.Failed("ui_screenshot") else RootResult.Ok(chunk)
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun uiScreenshotClose(
+        claim: OperationClaim,
+        screenshotId: String,
+    ): AccessActionResult = try {
+        val reply = service?.uiScreenshot(
+            request(claim, SystemOperation.UI_SCREENSHOT, null).apply {
+                putString(BinderProtocol.KEY_UI_MODE, "close")
+                putString(BinderProtocol.KEY_UI_SCREENSHOT_ID, screenshotId)
+            },
+        )
+        if (BinderProtocol.isOk(reply)) AccessActionResult.Ok
+        else AccessActionResult.Failed(BinderProtocol.code(reply) ?: "ui_screenshot")
+    } catch (_: Throwable) {
+        AccessActionResult.Unavailable("service_died")
+    }
+
+    fun uiCancel(claim: OperationClaim): AccessActionResult = try {
+        val reply = service?.uiCancel(request(claim, SystemOperation.UI_CANCEL, null))
+        if (BinderProtocol.isOk(reply)) AccessActionResult.Ok
+        else AccessActionResult.Failed(BinderProtocol.code(reply) ?: "ui_cancel")
+    } catch (_: Throwable) {
+        AccessActionResult.Unavailable("service_died")
+    }
+
     fun cancel(requestId: String) {
         try {
             service?.cancel(requestId)
@@ -728,8 +879,12 @@ internal class FloeBinderClient(private val binder: IBinder) {
             "cross_user_unsupported",
             "permission", "permission_action", "permission_not_declared",
             "permission_protected", "permission_unknown",
-            "appop_operation", "appop_mode", "shared_uid_refused" -> RootResult.Denied(code)
-            "service_died", "unavailable" -> RootResult.Unavailable(code)
+            "appop_operation", "appop_mode", "shared_uid_refused",
+            "ui_scope", "ui_target_required", "ui_target_not_authorized",
+            "ui_observation_invalid", "ui_dispatch_rejected", "rotation_changed",
+            "locked", "ui_screenshot_scope" -> RootResult.Denied(code)
+            "service_died", "unavailable", "ui_automation_unavailable", "ui_not_ready",
+            "ui_closed" -> RootResult.Unavailable(code)
             else -> RootResult.Failed(code)
         }
     }

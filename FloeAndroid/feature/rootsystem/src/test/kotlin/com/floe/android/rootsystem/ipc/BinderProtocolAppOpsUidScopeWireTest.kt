@@ -7,8 +7,8 @@ import org.junit.Test
 
 /**
  * Focused regression for the N02 AppOps UID write scope on the wire:
- *  - the AIDL transaction contract is untouched (VERSION 3, first 19 legacy
- *    positions, every appended method in order, 32 total) — the scope rides
+ *  - the AIDL transaction contract is untouched (VERSION 4, first 19 legacy
+ *    positions, every appended method in order, 37 total) — the scope rides
  *    inside the existing manageAppOps Bundle, never a new transaction;
  *  - the new request/reply/grant keys are distinct, bounded and live in the
  *    closed permission/AppOps key block.
@@ -17,14 +17,14 @@ class BinderProtocolAppOpsUidScopeWireTest {
 
     @Test
     fun wireContractIsUnchangedByTheUidScope() {
-        assertEquals(3, BinderProtocol.VERSION)
+        assertEquals(4, BinderProtocol.VERSION)
         assertEquals(19, BinderProtocol.wire2LegacyMethods.size)
         assertEquals(
             listOf("queryPermissions", "managePermissions", "queryAppOps", "manageAppOps"),
             BinderProtocol.wire5AppendedMethods,
         )
         val all = BinderProtocol.wire2LegacyMethods + BinderProtocol.appendedMethods
-        assertEquals(32, all.size)
+        assertEquals(37, all.size)
         assertEquals(all.size, all.toSet().size)
     }
 

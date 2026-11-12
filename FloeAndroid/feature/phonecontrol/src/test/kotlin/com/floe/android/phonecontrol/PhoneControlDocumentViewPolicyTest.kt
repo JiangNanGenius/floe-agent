@@ -143,4 +143,28 @@ class PhoneControlDocumentViewPolicyTest {
             PhoneControlPolicy.documentViewShapeDenial(malformed))
         assertNull(PhoneControlPolicy.documentViewShapeDenial(request()))
     }
+
+    @Test
+    fun postDispatchViewerClassIsHonestAndTriState() {
+        assertEquals(PhoneControlDocumentViewerForeground.TARGET,
+            classifyDocumentViewerForeground(gallery, gallery))
+        // A different ordinary app or the home screen is a definite "not this
+        // viewer", but the classifier returns no package text.
+        assertEquals(PhoneControlDocumentViewerForeground.OTHER,
+            classifyDocumentViewerForeground(gallery, "com.sec.android.app.launcher"))
+        assertEquals(PhoneControlDocumentViewerForeground.OTHER,
+            classifyDocumentViewerForeground(gallery, "com.example.other"))
+        // Protected/system windows and Floe's own UI may contain the viewer
+        // behind them; they are unknown, never a fabricated failure.
+        assertEquals(PhoneControlDocumentViewerForeground.UNKNOWN,
+            classifyDocumentViewerForeground(gallery, "com.android.permissioncontroller"))
+        assertEquals(PhoneControlDocumentViewerForeground.UNKNOWN,
+            classifyDocumentViewerForeground(gallery, "com.android.systemui"))
+        assertEquals(PhoneControlDocumentViewerForeground.UNKNOWN,
+            classifyDocumentViewerForeground(gallery, "com.floe.agent.full"))
+        assertEquals(PhoneControlDocumentViewerForeground.UNKNOWN,
+            classifyDocumentViewerForeground(gallery, null))
+        assertEquals(PhoneControlDocumentViewerForeground.UNKNOWN,
+            classifyDocumentViewerForeground(gallery, ""))
+    }
 }

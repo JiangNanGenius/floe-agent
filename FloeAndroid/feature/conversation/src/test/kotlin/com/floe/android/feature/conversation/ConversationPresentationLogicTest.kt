@@ -395,9 +395,17 @@ class ConversationPresentationLogicTest {
     }
 
     @Test
-    fun reasoningPreviewKeepsTwoRenderedLines() {
-        assertEquals("first second", preview("first\n\nsecond\nthird"))
+    fun reasoningPreviewFollowsTheNewestProgressLine() {
+        assertEquals("third", preview("first\n\nsecond\nthird"))
+        assertEquals("fourth", preview("first\n\nsecond\nthird\n  fourth  \n\n"))
         assertEquals("", preview("\n \n"))
+    }
+
+    @Test
+    fun reasoningPreviewBoundsLongProgressWithoutBreakingUnicode() {
+        val emoji = "\uD83D\uDE80"
+        assertEquals(emoji.repeat(512), preview(emoji.repeat(600)))
+        assertEquals("最新进度", preview("old progress\n".repeat(2_000) + "最新进度"))
     }
 
     @Test
