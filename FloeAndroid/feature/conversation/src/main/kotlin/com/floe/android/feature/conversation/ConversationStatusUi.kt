@@ -35,6 +35,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -509,6 +513,17 @@ fun ThreadContinuationBar(holder: ConversationFlowHolder, modifier: Modifier = M
     val state = holder.snapshot.value ?: return
     if (!state.canContinue) return
     val continueLabel = stringResource(R.string.action_continue)
+    val title = when (FloeContinuationPresentation.titleKey(state.liveStateName, state.continuationReasonRaw)) {
+        "state_stopped" -> R.string.state_stopped
+        "state_waiting_background_work" -> R.string.state_waiting_background_work
+        "state_failed" -> R.string.state_failed
+        "state_recovery_failed" -> R.string.state_recovery_failed
+        "state_paused" -> R.string.state_paused
+        else -> R.string.continuation_default
+    }
+    var showDetails by remember(state.selectedRunId, state.continuationReasonRaw, state.continuationDetail) {
+        mutableStateOf(false)
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -524,12 +539,30 @@ fun ThreadContinuationBar(holder: ConversationFlowHolder, modifier: Modifier = M
         )
         Column(modifier = Modifier.weight(1f)) {
             FloeText(
-                state.continuationTitle ?: stringResource(R.string.continuation_default),
+                stringResource(title),
                 style = Floe.typography.metadata,
                 color = Floe.colors.label,
             )
-            state.continuationDetail?.let { detail ->
-                FloeText(detail, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+            if (state.continuationDetail != null) {
+                FloeText(stringResource(R.string.continuation_read_issue),
+                    style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+            }
+            if (state.continuationReasonRaw != null || state.continuationDetail != null) {
+                FloeText(stringResource(if (showDetails) R.string.continuation_hide_details else R.string.continuation_details),
+                    modifier = Modifier.clickable { showDetails = !showDetails }
+                        .heightIn(min = FloeLayout.MinimumTarget)
+                        .padding(vertical = 8.dp),
+                    style = Floe.typography.metadata, color = Floe.colors.accent)
+                if (showDetails) {
+                    state.continuationReasonRaw?.let { reason ->
+                        FloeText(stringResource(R.string.continuation_reason_detail, reason),
+                            style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                    }
+                    state.continuationDetail?.let { detail ->
+                        FloeText(stringResource(R.string.continuation_read_detail, detail),
+                            style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+                    }
+                }
             }
         }
         Box(

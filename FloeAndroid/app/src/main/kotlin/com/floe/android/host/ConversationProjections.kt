@@ -144,6 +144,27 @@ class ThreadProjectionBuilder internal constructor(
     /** Run whose live tail reached its durable close boundary (never revived). */
     private var liveTailClosedFor: String? = null
     private var actionError: String? = null
+    private data class RunReason(val state: String, val reason: String?, val sequence: Long)
+    private val runReasons = LinkedHashMap<String, RunReason>()
+    private val runStreamFailures = LinkedHashMap<String, String>()
+
+    /** Display-only provenance: a read/pump error is never a run's stop reason. */
+    private fun recordRunReason(
+        runID: String, state: String, reason: String?, sequence: Long,
+        preserveMissing: Boolean = false,
+    ) {
+        val previous = runReasons[runID]
+        if (previous != null && sequence < previous.sequence) return
+        // A retired owner's snapshot can omit checkpointReason. That absence
+        // must not erase the reason already proven by its durable journal.
+        if (preserveMissing && reason == null) return
+        runReasons[runID] = RunReason(state, reason, sequence)
+        while (runReasons.size > 512) {
+            val old = runReasons.keys.firstOrNull { it != selectedRunId } ?: break
+            runReasons.remove(old)
+            runStreamFailures.remove(old)
+        }
+    }
     /**
      * D04 owned run-output cards per run, fed ONLY by the native owned
      * reader (the run's own durable toolResult records + verified
@@ -578,6 +599,8 @@ class ThreadProjectionBuilder internal constructor(
             ?: RunRowUi(page.runID, page.durableState, null, ""))
             .copy(stateName = page.durableState)
         runRevisions[page.runID] = page.revision
+        recordRunReason(page.runID, page.durableState, page.checkpointReason,
+            page.durableWatermark, preserveMissing = true)
         val approval = page.pendingApproval
         if (page.isTerminal && page.durableWatermark >= approvalFence(page.runID)) {
             // A proven terminal run cannot accept a pending decision even
@@ -910,6 +933,11 @@ class ThreadProjectionBuilder internal constructor(
     private fun recordRunEvent(frame: HostRunEventFrame, trim: Boolean = true) {
         val kind = frame.kind
         val payload = frame.payload
+        if (kind == "status" || kind == "stateChanged") {
+            payload?.string("state")?.let { state ->
+                recordRunReason(frame.runID, state, payload.string("reason"), frame.sequence)
+            }
+        }
         val list = runEvents.getOrPut(frame.runID) { mutableListOf() }
         if (list.any { it.sequence.toLong() == frame.sequence }) return
         runEventBytes.getOrPut(frame.runID) { mutableMapOf() }[frame.sequence.toInt()] = frame.bytes.coerceAtLeast(1)
@@ -1026,6 +1054,9 @@ class ThreadProjectionBuilder internal constructor(
         val retryableState = runRows[runID]?.stateName in RETRYABLE_STATES
         if (!closedHere && !retryableState) return false
         resetLiveTail(runID)
+        // This method is admitted only after native run.retry acceptance.
+        // A previous subscription's error cannot describe the new stream.
+        runStreamFailures.remove(runID)
         return true
     }
 
@@ -1244,11 +1275,15 @@ class ThreadProjectionBuilder internal constructor(
      * can show an actionable line; the durable snapshot remains authoritative.
      */
     fun eventStreamFailure(runID: String, code: String) {
-        actionError = code
+        runStreamFailures[runID] = code
+        while (runStreamFailures.size > 512) {
+            val old = runStreamFailures.keys.firstOrNull { it != selectedRunId } ?: break
+            runStreamFailures.remove(old)
+        }
     }
 
     fun eventStreamRecovered(runID: String, code: String) {
-        if (selectedRunId == runID && actionError == code) actionError = null
+        if (runStreamFailures[runID] == code) runStreamFailures.remove(runID)
     }
 
     // ------------------------------------------------ D04 run-output cards
@@ -1374,7 +1409,12 @@ class ThreadProjectionBuilder internal constructor(
         // dead-generation row (no live window), and completed/failed/
         // checkpointed/idle are durable-terminal.
         val running = selectedState != null && selectedState in ACTIVE_STATES
-        val retryable = selectedState != null && selectedState in RETRYABLE_STATES
+        val continuationReason = selected?.let { runReasons[it] }
+            ?.takeIf { it.state == selectedState }?.reason
+        val waitingForJobs = selectedState == "checkpointed" &&
+            (continuationReason == "awaiting.finite.job" ||
+                continuationReason?.startsWith("awaiting.finite.job:") == true)
+        val retryable = selectedState != null && selectedState in RETRYABLE_STATES && !waitingForJobs
         return ThreadUiState(
             session = session,
             taskTitle = taskTitle,
@@ -1390,7 +1430,7 @@ class ThreadProjectionBuilder internal constructor(
             liveStateName = selectedState,
             isRunning = running,
             isDraining = false,
-            selectedRunWaitingForJobs = false,
+            selectedRunWaitingForJobs = waitingForJobs,
             rows = rows,
             pendingApprovals = approvals,
             pendingInputs = pendingInputs.values.toList(),
@@ -1407,7 +1447,8 @@ class ThreadProjectionBuilder internal constructor(
             compactionStatus = compactionStatus,
             canContinue = retryable,
             continuationTitle = if (retryable) "Continue" else null,
-            continuationDetail = actionError,
+            continuationDetail = actionError ?: selected?.let { runStreamFailures[it] },
+            continuationReasonRaw = continuationReason,
             hasEarlierMessages = hasEarlierMessages,
             loadingEarlierMessages = false,
             loadingEventRunIds = emptySet(),
@@ -1619,6 +1660,8 @@ internal object ConversationWire {
          * local timer or ack word substitutes for it. Null = a round-1
          * page without the member (never assumed). */
         val goalReviewRaw: String? = null,
+        /** Native checkpoint cause; unrelated transport failures never fill it. */
+        val checkpointReason: String? = null,
         /** Additive queue-content repair (G04R2): the native builder's REAL
          * completeness proof for this page's `pendingInputs` window. False
          * means EVERY durable pending row (the store's pending predicate)
@@ -2083,6 +2126,7 @@ internal object ConversationWire {
                 if (resourceID != null && version != null) Revision(resourceID, version) else null
             },
             goalReviewRaw = root.string("goalReview"),
+            checkpointReason = root.string("checkpointReason"),
             pendingInputsTruncated = root.bool("pendingInputsTruncated"),
         )
     }

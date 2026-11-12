@@ -41,6 +41,11 @@
     <string name="role_user">You</string>
     <string name="role_assistant">Assistant</string>
     <string name="continuation_default">This task can continue from its last safe checkpoint.</string>
+    <string name="continuation_read_issue">An additional error is available in details.</string>
+    <string name="continuation_details">Details</string>
+    <string name="continuation_hide_details">Hide details</string>
+    <string name="continuation_reason_detail">Task reason: %1$s</string>
+    <string name="continuation_read_detail">Additional error: %1$s</string>
     <string name="state_waiting_background_work">Waiting for background work</string>
     <string name="state_contacting_provider">Contacting provider…</string>
     <string name="state_thinking">Thinking…</string>

@@ -960,6 +960,8 @@ data class ThreadUiState(
     val voiceInputAvailable: Boolean = false,
     /** C03 system/cloud TTS availability for read-aloud. */
     val voiceOutputAvailable: Boolean = false,
+    /** Original cause from this run's native snapshot or durable status event. */
+    val continuationReasonRaw: String? = null,
 )
 
 /** ⇄ ImportantFileShortcut (host-projected working set; this module never

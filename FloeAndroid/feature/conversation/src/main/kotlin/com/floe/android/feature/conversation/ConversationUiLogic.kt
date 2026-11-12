@@ -12,6 +12,18 @@ package com.floe.android.feature.conversation
 /** Semantic color ROLES (resolved through Floe.colors at render time). */
 enum class FloeStateColorRole { ACCENT, PENDING, DESTRUCTIVE, SUCCESS, UNKNOWN }
 
+/** Run causes and transport errors remain separate, including after recovery. */
+object FloeContinuationPresentation {
+    fun titleKey(stateName: String?, reason: String?): String = when {
+        stateName == "checkpointed" &&
+            reason == "runtime.agent_runtime.the_task_was_stopped_by_you" -> "state_stopped"
+        stateName == "checkpointed" &&
+            (reason == "awaiting.finite.job" || reason?.startsWith("awaiting.finite.job:") == true) ->
+            "state_waiting_background_work"
+        else -> FloeRunStateLocalizer.titleKey(stateName ?: "")
+    }
+}
+
 /**
  * ⇄ FloeApp/Chat/RunStateLocalizer.swift — the ONLY mapping from run-state
  * machine names to presentation. Views must not interpret state names

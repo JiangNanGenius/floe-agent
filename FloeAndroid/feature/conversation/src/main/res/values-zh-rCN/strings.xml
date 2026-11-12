@@ -40,6 +40,11 @@
     <string name="role_user">你</string>
     <string name="role_assistant">助手</string>
     <string name="continuation_default">该任务可以从上一个安全检查点继续。</string>
+    <string name="continuation_read_issue">另有错误，可查看详情。</string>
+    <string name="continuation_details">查看详情</string>
+    <string name="continuation_hide_details">收起详情</string>
+    <string name="continuation_reason_detail">任务原因：%1$s</string>
+    <string name="continuation_read_detail">附加错误：%1$s</string>
     <string name="state_waiting_background_work">等待后台作业</string>
     <string name="state_contacting_provider">正在连接服务商…</string>
     <string name="state_thinking">思考中…</string>
