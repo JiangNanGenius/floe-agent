@@ -142,6 +142,23 @@ final class AndroidBundledSkillGuidesTests: XCTestCase {
         }
     }
 
+    /// FS03/FS04 source contract for the Android device guide: the bounded
+    /// observation paging and generic focus/commit/scroll semantics must stay
+    /// model-visible and must never present a field-buffer update or a
+    /// framework ACCEPTED receipt as a committed business value.
+    func testAndroidDeviceGuideTeachesBoundedPagingAndRealInputCommit() throws {
+        let guide = try XCTUnwrap(
+            AndroidBundledSkillGuides.definition(id: "floe-android-device"))
+        XCTAssertEqual(guide.version, "1.1.0")
+        for token in [
+            "nextOffset", "observationId", "device.observe", "focus", "commit",
+            "ACTION_CLICK", "field buffer", "dispatch=ACCEPTED", "scrollable region",
+        ] {
+            XCTAssertTrue(guide.markdown.contains(token),
+                          "device guide must teach \(token)")
+        }
+    }
+
     func testBundledSourceIdentityScoping() throws {
         // Only floe-builtin:// rows are augmented by bundled definitions.
         var row = PersistedSkill(

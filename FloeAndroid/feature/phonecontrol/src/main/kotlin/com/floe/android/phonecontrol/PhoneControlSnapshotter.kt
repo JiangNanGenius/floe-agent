@@ -204,15 +204,22 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 request = req,
                 redactAllText = redactAllText,
                 depthLimited = walk.depthLimited,
-                nodeLimited = walk.scanLimited || stats.textLimited,
+                nodeLimited = walk.nodeLimited,
+                timeLimited = walk.timedOut,
+                fieldLimited = stats.textLimited,
             )
             val capturedActionables = shaped.nodes.count { node ->
-                node.visible && node.enabled &&
-                    (node.clickable || node.editable || node.scrollable)
+                node.visible && node.enabled && (
+                    node.clickable || node.editable || node.scrollable ||
+                        node.advertises(PhoneControlNodeAction.CLICK) ||
+                        node.actions.any { it.isScrollAction }
+                    )
             }
             val eligibleActionables = raw.count { node ->
                 node.visible && node.enabled &&
-                    (node.clickable || node.editable || node.scrollable) &&
+                    (node.clickable || node.editable || node.scrollable ||
+                        PhoneControlNodeAction.CLICK in node.actions ||
+                        node.actions.any { it.isScrollAction }) &&
                     node.depth <= req.maxDepth &&
                     (req.includeInvisible || node.visible)
             }
@@ -244,6 +251,10 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 scannedNodeCount = raw.size,
                 omittedActionableCount =
                     (eligibleActionables - capturedActionables).coerceAtLeast(0),
+                scanLimited = shaped.scanLimited,
+                timeLimited = shaped.timeLimited,
+                selectionLimited = shaped.selectionLimited,
+                textLimited = shaped.textLimited,
             )
             return PhoneControlCapture(
                 observation = observation,
@@ -310,6 +321,18 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         runCatching { node.getBoundsInScreen(bounds) }
         val scrollable = runCatching { node.isScrollable }.getOrDefault(false)
         val childCount = runCatching { node.childCount }.getOrDefault(0)
+        // Platform-declared actions/range are read from the SAME live handle.
+        // They are real metadata (never class-name inference) and are used both
+        // for honest presentation and for dispatch-time capability checks.
+        val range = runCatching {
+            node.rangeInfo?.let { info ->
+                PhoneControlRangeInfo(
+                    min = info.min,
+                    max = info.max,
+                    current = info.current,
+                ).takeIf { it.valid }
+            }
+        }.getOrNull()
         out += PhoneControlRawNode(
             path = path,
             parentPath = if (path.isEmpty()) null else path.dropLast(1),
@@ -333,11 +356,68 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             checked = runCatching { node.isChecked }.getOrDefault(false),
             password = password,
             insideScrollable = insideScrollable,
+            actions = readActions(node),
+            focusable = runCatching { node.isFocusable }.getOrDefault(false),
+            focused = runCatching { node.isFocused }.getOrDefault(false),
+            range = range,
         )
         return PhoneControlCaptureWalk.Visit(
             childCount = childCount,
             scrollable = scrollable,
         )
+    }
+
+    /**
+     * Maps the platform's advertised action list into the closed action set.
+     * Only ids the running platform actually exposes are read; version guards
+     * keep API-30 IME and API-23 directional scroll constants off older
+     * devices (API 28 is the supported floor, but the guard stays explicit).
+     */
+    private fun readActions(node: AccessibilityNodeInfo): Set<PhoneControlNodeAction> {
+        val advertised = runCatching { node.actionList }.getOrNull() ?: return emptySet()
+        if (advertised.isEmpty()) return emptySet()
+        val actions = LinkedHashSet<PhoneControlNodeAction>(minOf(advertised.size, 8))
+        for (action in advertised) {
+            when (action?.id) {
+                AccessibilityNodeInfo.ACTION_CLICK ->
+                    actions += PhoneControlNodeAction.CLICK
+                AccessibilityNodeInfo.ACTION_LONG_CLICK ->
+                    actions += PhoneControlNodeAction.LONG_CLICK
+                AccessibilityNodeInfo.ACTION_FOCUS ->
+                    actions += PhoneControlNodeAction.FOCUS
+                AccessibilityNodeInfo.ACTION_CLEAR_FOCUS ->
+                    actions += PhoneControlNodeAction.CLEAR_FOCUS
+                AccessibilityNodeInfo.ACTION_SET_TEXT ->
+                    actions += PhoneControlNodeAction.SET_TEXT
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD ->
+                    actions += PhoneControlNodeAction.SCROLL_FORWARD
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD ->
+                    actions += PhoneControlNodeAction.SCROLL_BACKWARD
+            }
+        }
+        if (Build.VERSION.SDK_INT >= 30 &&
+            advertised.any {
+                it?.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+            }
+        ) {
+            actions += PhoneControlNodeAction.IME_ENTER
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            val directional = arrayOf(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP to
+                    PhoneControlNodeAction.SCROLL_UP,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN to
+                    PhoneControlNodeAction.SCROLL_DOWN,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT to
+                    PhoneControlNodeAction.SCROLL_LEFT,
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT to
+                    PhoneControlNodeAction.SCROLL_RIGHT,
+            )
+            for ((declared, mapped) in directional) {
+                if (advertised.any { it?.id == declared.id }) actions += mapped
+            }
+        }
+        return actions
     }
 
     /** Adapter is stateless: every acquired child is recycled by the walker. */

@@ -24,6 +24,11 @@ internal data class PhoneControlRawNode(
     val password: Boolean,
     /** True when an enclosing live node is scrollable. */
     val insideScrollable: Boolean = false,
+    /** Actions actually advertised by the live node. */
+    val actions: Set<PhoneControlNodeAction> = emptySet(),
+    val focusable: Boolean = false,
+    val focused: Boolean = false,
+    val range: PhoneControlRangeInfo? = null,
 )
 
 /** Locator retained for a returned ref; resolved again against a fresh tree. */
@@ -39,6 +44,13 @@ internal data class PhoneControlNodeRecord(
     val clickable: Boolean,
     val editable: Boolean,
     val scrollable: Boolean,
+    /** Live visible/enabled flags captured with the locator. */
+    val visible: Boolean = true,
+    val enabled: Boolean = true,
+    /** Platform-declared actions used by dispatch-time capability checks. */
+    val actions: Set<PhoneControlNodeAction> = emptySet(),
+    /** Real structural fact used to keep coordinate swipes inside a scroller. */
+    val insideScrollable: Boolean = false,
 )
 
 internal data class PhoneControlShaped(
@@ -49,6 +61,10 @@ internal data class PhoneControlShaped(
     val sensitiveWindow: Boolean,
     val fingerprint: Long,
     val textChars: Int,
+    val scanLimited: Boolean = false,
+    val timeLimited: Boolean = false,
+    val selectionLimited: Boolean = false,
+    val textLimited: Boolean = false,
 )
 
 /**
@@ -68,6 +84,10 @@ internal object PhoneControlTreeShaper {
         redactAllText: Boolean,
         depthLimited: Boolean,
         nodeLimited: Boolean,
+        /** The scan deadline was reached before the tree was fully read. */
+        timeLimited: Boolean = false,
+        /** A per-field read cap shortened captured content. */
+        fieldLimited: Boolean = false,
     ): PhoneControlShaped {
         val req = request.normalized()
         val eligible = eligible(raw, req)
@@ -138,6 +158,10 @@ internal object PhoneControlTreeShaper {
                 redacted = redacted,
                 truncated = fieldTruncated || (budget.truncated && !sensitiveField),
                 insideScrollable = rawNode.insideScrollable,
+                actions = rawNode.actionSet(),
+                focusable = rawNode.focusable,
+                focused = rawNode.focused,
+                range = rawNode.range?.takeIf { it.valid },
             )
             records[ref] = PhoneControlNodeRecord(
                 ref = ref,
@@ -151,12 +175,17 @@ internal object PhoneControlTreeShaper {
                 clickable = rawNode.clickable,
                 editable = rawNode.editable,
                 scrollable = rawNode.scrollable,
+                visible = rawNode.visible,
+                enabled = rawNode.enabled,
+                actions = rawNode.actionSet(),
+                insideScrollable = rawNode.insideScrollable,
             )
             refByPath[rawNode.path] = ref
         }
 
-        val truncated = nodeLimited || depthLimited || textTruncated ||
-            budget.truncated || omittedBySelection
+        val textLimited = textTruncated || budget.truncated || fieldLimited
+        val truncated = nodeLimited || depthLimited || timeLimited ||
+            textLimited || omittedBySelection
         return PhoneControlShaped(
             nodes = nodes,
             records = records,
@@ -165,8 +194,16 @@ internal object PhoneControlTreeShaper {
             sensitiveWindow = anySensitive,
             fingerprint = fingerprint(nodes),
             textChars = budget.spent,
+            scanLimited = nodeLimited,
+            timeLimited = timeLimited,
+            selectionLimited = omittedBySelection,
+            textLimited = textLimited,
         )
     }
+
+    /** Defensive copy: callers never share a mutable action set with a node. */
+    private fun PhoneControlRawNode.actionSet(): Set<PhoneControlNodeAction> =
+        if (actions.isEmpty()) emptySet() else LinkedHashSet(actions)
 
     private fun eligible(
         raw: List<PhoneControlRawNode>,
@@ -208,10 +245,11 @@ internal object PhoneControlTreeShaper {
 
     private fun priority(node: PhoneControlRawNode): Int {
         val sensitive = node.password || PhoneControlText.isSensitiveViewId(node.viewId)
-        val actionable = node.visible && node.enabled &&
-            (node.clickable || node.editable || node.scrollable)
-        val directAction = node.visible && node.enabled && (node.clickable || node.editable)
-        val directScroll = node.visible && node.enabled && node.scrollable
+        val click = node.clickable || PhoneControlNodeAction.CLICK in node.actions
+        val scroll = node.scrollable || node.actions.any { it.isScrollAction }
+        val actionable = node.visible && node.enabled && (click || node.editable || scroll)
+        val directAction = node.visible && node.enabled && (click || node.editable)
+        val directScroll = node.visible && node.enabled && scroll
         return when {
             node.visible && node.enabled && node.editable && sensitive -> 0
             node.visible && node.enabled && node.editable -> 1

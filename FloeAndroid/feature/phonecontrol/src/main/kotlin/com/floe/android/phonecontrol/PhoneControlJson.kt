@@ -80,6 +80,10 @@ object PhoneControlJson {
             .put("nodeCount", observation.nodes.size)
             .put("scannedNodeCount", observation.scannedNodeCount)
             .put("omittedActionableCount", observation.omittedActionableCount)
+            .put("scanLimited", observation.scanLimited)
+            .put("timeLimited", observation.timeLimited)
+            .put("selectionLimited", observation.selectionLimited)
+            .put("textLimited", observation.textLimited)
             .put("nodes", nodes)
     }
 
@@ -113,6 +117,15 @@ object PhoneControlJson {
         .put("redacted", node.redacted)
         .put("truncated", node.truncated)
         .put("insideScrollable", node.insideScrollable)
+        .put("actions", JSONArray(node.actions.map { it.wireName }))
+        .put("focusable", node.focusable)
+        .put("focused", node.focused)
+        .putNullable("range", node.range?.let { range ->
+            JSONObject()
+                .put("min", range.min.toDouble())
+                .put("max", range.max.toDouble())
+                .put("current", range.current.toDouble())
+        })
 
     private fun ownerObject(owner: PhoneControlOwner): JSONObject = JSONObject()
         .put("taskID", owner.taskID.toString())

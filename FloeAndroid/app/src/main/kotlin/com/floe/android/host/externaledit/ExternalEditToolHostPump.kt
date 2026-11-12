@@ -86,7 +86,10 @@ internal class ExternalEditToolHostPump(private val host: RuntimeHost) {
     }
 
     private suspend fun execute(expected: Long, ticket: String, request: JSONObject): JSONObject {
-        require(request.keys().asSequence().toSet().all { it in setOf("action", "path", "taskID",
+        val lane = request.optString("lane", "edit")
+        if (lane == "handoff") return executeHandoff(expected, ticket, request)
+        require(lane == "edit")
+        require(request.keys().asSequence().toSet().all { it in setOf("lane", "action", "path", "taskID",
             "workspaceID", "runID", "callID", "sessionID", "chooseApplication") })
         val owner = ExternalEditOwner(request.getString("taskID"), request.getString("workspaceID"))
         val run = request.getString("runID"); require(ExternalEditOwner.validUUID(run))
@@ -98,20 +101,59 @@ internal class ExternalEditToolHostPump(private val host: RuntimeHost) {
             require(ExternalEditOwner.validUUID(it)) } else null
         require(action == "open" || session != null)
         require(!request.has("chooseApplication") || request.get("chooseApplication") is Boolean)
-        val allowed = {
-            !stopping && epoch == expected && host.nativeRootEpoch() == expected && runCatching {
-                call("externalEdit.host.canCommit", expected) { put("ticketID", ticket) }.optBoolean("allowed")
-            }.getOrDefault(false)
-        }
+        val allowed = allowedFor(expected, ticket)
         if (!allowed()) return JSONObject().put("ok", false).put("error", "cancelled")
-        val target = activity?.get()?.takeIf {
-            !it.isFinishing && !it.isDestroyed &&
-                (it.application as? FloeApplication)?.isActivityInForeground() == true &&
-                host.conversations.currentVisibleConversationId().equals(owner.taskID, true) &&
-                !it.getSystemService(KeyguardManager::class.java).isKeyguardLocked
-        }
+        val target = foregroundTarget(owner.taskID)
         return host.externalEdits.toolOperation(target, owner, action, path, session,
             request.optBoolean("chooseApplication"), "$run:$callID", allowed)
+    }
+
+    /** The read-only artifact handoff shares this pump/mailbox with the edit
+     * lane: one OS work queue, no second permission store and the same real
+     * foreground/task/epoch fences. Request fields are re-validated here; the
+     * controller never trusts a bridge payload. */
+    private suspend fun executeHandoff(expected: Long, ticket: String,
+                                       request: JSONObject): JSONObject {
+        require(request.keys().asSequence().toSet().all { it in setOf("lane", "action",
+            "source", "path", "outputID", "taskID", "workspaceID", "runID", "callID",
+            "sessionID", "targetPackage", "targetComponent") })
+        val owner = ExternalEditOwner(request.getString("taskID"), request.getString("workspaceID"))
+        val run = request.getString("runID"); require(ExternalEditOwner.validUUID(run))
+        val callID = request.getString("callID")
+        require(callID.length in 1..128 && callID.none { it.code < 32 })
+        val action = request.getString("action")
+        require(action in setOf("targets", "open", "status", "finish", "cancel"))
+        val source = request.getString("source")
+        val path = request.optString("path").takeIf { it.isNotEmpty() }
+        val outputID = request.optString("outputID").takeIf { it.isNotEmpty() }
+        require(ArtifactHandoffPolicy.validSource(source, path, outputID))
+        if (path != null) require(path.length <= 1024)
+        val session = if (request.has("sessionID")) request.getString("sessionID").also {
+            require(ArtifactHandoffPolicy.validSessionID(it)) } else null
+        require(action == "targets" || action == "open" || session != null)
+        val targetPackage = request.optString("targetPackage").takeIf { it.isNotEmpty() }
+        val targetComponent = request.optString("targetComponent").takeIf { it.isNotEmpty() }
+        require(ArtifactHandoffPolicy.validTargetFields(targetPackage, targetComponent))
+        if (action != "open") require(targetPackage == null && targetComponent == null)
+        val allowed = allowedFor(expected, ticket)
+        if (!allowed()) return JSONObject().put("ok", false).put("error", "cancelled")
+        val target = foregroundTarget(owner.taskID)
+        return host.artifactHandoffs.toolOperation(target, owner, action, source, path,
+            outputID, run, session, targetPackage, targetComponent, "$run:$callID", allowed)
+    }
+
+    private fun allowedFor(expected: Long, ticket: String): () -> Boolean = {
+        !stopping && epoch == expected && host.nativeRootEpoch() == expected && runCatching {
+            call("externalEdit.host.canCommit", expected) { put("ticketID", ticket) }
+                .optBoolean("allowed")
+        }.getOrDefault(false)
+    }
+
+    private fun foregroundTarget(taskID: String): Activity? = activity?.get()?.takeIf {
+        !it.isFinishing && !it.isDestroyed &&
+            (it.application as? FloeApplication)?.isActivityInForeground() == true &&
+            host.conversations.currentVisibleConversationId().equals(taskID, true) &&
+            !it.getSystemService(KeyguardManager::class.java).isKeyguardLocked
     }
 
     @Synchronized fun resumeAfterRefusedStop() {

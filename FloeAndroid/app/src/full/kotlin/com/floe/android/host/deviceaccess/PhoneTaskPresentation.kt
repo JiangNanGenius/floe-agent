@@ -155,6 +155,29 @@ internal object PhoneTaskPresentation {
     ): PhoneTaskLiveCandidate? = candidates.distinctBy { it.owner }.singleOrNull()
 
     /**
+     * Bounded, de-duplicated conversation ids this host may resolve through
+     * the exact holder API. Only canonical dashed UUID text is accepted, and
+     * duplicates/blank or malformed values never widen the scan. The order is
+     * the caller's order (live projection first, then the bounded active
+     * history page), so a stale projection cannot hide a real holder.
+     */
+    fun boundedCandidateIds(ids: Collection<String>, maxScan: Int): List<String> {
+        if (maxScan <= 0) return emptyList()
+        val out = ArrayList<String>(minOf(ids.size, maxScan))
+        val seen = HashSet<String>(minOf(ids.size, maxScan))
+        for (raw in ids) {
+            val id = raw.trim()
+            // The conversation host keys holders by the canonical dashed UUID
+            // text. Anything else cannot name a real stored task.
+            if (!id.isCanonicalUuidText()) continue
+            if (!seen.add(id)) continue
+            out += id
+            if (out.size >= maxScan) break
+        }
+        return out
+    }
+
+    /**
      * The ONLY holder-map keys that may name the same conversation as
      * [taskID].
      *
@@ -181,15 +204,7 @@ internal object PhoneTaskPresentation {
      */
     fun selectedRunMatches(selectedRunID: String?, runID: UUID): Boolean {
         val selected = selectedRunID ?: return false
-        if (selected.length != CANONICAL_UUID_CHARS) return false
-        for (index in selected.indices) {
-            val isDash = index == 8 || index == 13 || index == 18 || index == 23
-            if (isDash) {
-                if (selected[index] != '-') return false
-            } else if (!selected[index].isAsciiHexDigit()) {
-                return false
-            }
-        }
+        if (!selected.isCanonicalUuidText()) return false
         return selected.equals(runID.toString(), ignoreCase = true)
     }
 
@@ -212,3 +227,17 @@ private const val CANONICAL_UUID_CHARS = 36
 
 private fun Char.isAsciiHexDigit(): Boolean =
     this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
+
+/** Canonical dashed UUID text; the only conversation/holder identity form. */
+private fun String.isCanonicalUuidText(): Boolean {
+    if (length != CANONICAL_UUID_CHARS) return false
+    for (index in indices) {
+        val isDash = index == 8 || index == 13 || index == 18 || index == 23
+        if (isDash) {
+            if (this[index] != '-') return false
+        } else if (!this[index].isAsciiHexDigit()) {
+            return false
+        }
+    }
+    return true
+}

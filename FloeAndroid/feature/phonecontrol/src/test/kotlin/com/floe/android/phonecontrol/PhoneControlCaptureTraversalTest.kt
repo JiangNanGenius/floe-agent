@@ -162,6 +162,8 @@ class PhoneControlCaptureTraversalTest {
         assertEquals(10, outcome.result.visitedNodeCount)
         assertEquals(10, outcome.result.visitedPaths.size)
         assertTrue(outcome.result.scanLimited)
+        assertTrue("the node budget, not the clock, stopped the scan",
+            outcome.result.nodeLimited)
         assertFalse(outcome.result.timedOut)
         assertFalse(outcome.result.obsolete)
     }
@@ -174,6 +176,7 @@ class PhoneControlCaptureTraversalTest {
         val outcome = walk(root, maxNodes = 10)
         assertEquals(10, outcome.result.visitedNodeCount)
         assertFalse(outcome.result.scanLimited)
+        assertFalse(outcome.result.nodeLimited)
     }
 
     @Test
@@ -234,6 +237,7 @@ class PhoneControlCaptureTraversalTest {
         )
         assertTrue(outcome.result.timedOut)
         assertTrue(outcome.result.scanLimited)
+        assertFalse("the deadline is not a node-budget stop", outcome.result.nodeLimited)
         assertTrue(outcome.result.visitedNodeCount < 21)
     }
 
@@ -317,7 +321,7 @@ class PhoneControlCaptureTraversalTest {
             request = request,
             redactAllText = false,
             depthLimited = outcome.result.depthLimited,
-            nodeLimited = outcome.result.scanLimited,
+            nodeLimited = outcome.result.nodeLimited,
         )
         fun shapedNode(id: String): PhoneControlNode = shaped.nodes.single {
             it.viewId == "com.example.app:id/$id"

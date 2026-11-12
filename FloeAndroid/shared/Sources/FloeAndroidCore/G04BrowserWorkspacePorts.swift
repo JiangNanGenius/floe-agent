@@ -4,8 +4,9 @@
 // composition: the preview resource reader and the staged download sink.
 //
 // Both operate EXCLUSIVELY over the owner's authorized ACTUAL files: the
-// exact private-task root that `LinuxWorkspaceAuthority` resolves from the
-// ORIGINAL persisted record, guarded by the original `WorkspacePathGuard`
+// exact bound root that `LinuxWorkspaceAuthority` resolves from the ORIGINAL
+// persisted record (a private-task root or a managed C01 project), guarded by
+// the original `WorkspacePathGuard`
 // (traversal/secret/`..` refusal, symlink-escape refusal via
 // resolving-symlinks containment) and revalidated before and after every
 // suspension against the ordinary persisted task + currently SELECTED
@@ -39,7 +40,12 @@ struct G04BrowserWorkspaceLadder: Sendable {
     let installed: G02InstalledComposition
 
     /// Revalidate the exact triple against the ORIGINAL records and return
-    /// the guarded service for the task's CURRENT private-task root.
+    /// the guarded service for the task's CURRENT bound root. Both persisted
+    /// Android shapes are accepted exactly as `G04LiveWorkspaceAccess` and
+    /// the workspace facade already accept them: the original private-task
+    /// root and a managed C01 project. Nothing here guesses a path: the
+    /// project row must pass `C01ProjectRootLayout.isManagedProject`, and
+    /// `LinuxWorkspaceAuthority` re-derives the canonical root.
     func service(for owner: BrowserOwnerID, cancellation: CancellationToken) async throws -> WorkspaceFileService {
         try cancellation.throwIfCancelled()
         guard G02NativeRootEpoch.readback() == epoch,
@@ -58,6 +64,7 @@ struct G04BrowserWorkspaceLadder: Sendable {
                   let workspace = try await installed.cluster.workspaceStore
                     .workspace(id: owner.workspaceID),
                   workspace.kind == .privateTask
+                    || C01ProjectRootLayout.isManagedProject(workspace)
             else { throw G04DocumentError.ownerChanged }
             try cancellation.throwIfCancelled()
             guard let binding = await LinuxWorkspaceAuthority.resolveWorkspace(

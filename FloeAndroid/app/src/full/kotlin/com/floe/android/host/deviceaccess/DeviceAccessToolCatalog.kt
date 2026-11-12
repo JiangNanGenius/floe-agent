@@ -29,8 +29,10 @@ import org.json.JSONObject
  * summary plus up to eight 192-byte evidence lines. The tools below therefore
  * return a compact digest (page identity + actionable node refs, file/process
  * rows, bounded text previews with byte offsets) instead of pretending to
- * stream an unbounded tree. No raw shell, code-execution or arbitrary-command
- * tool exists here.
+ * stream an unbounded tree. `device.observe` can additionally page its
+ * RETAINED observation in the same bounded envelope; every page revalidates
+ * the exact owner/fence/TTL/package scope and never recaptures the screen.
+ * No raw shell, code-execution or arbitrary-command tool exists here.
  */
 internal object DeviceAccessToolCatalog {
 
@@ -288,22 +290,37 @@ internal object DeviceAccessToolCatalog {
     private fun deviceObserve(): JSONObject = tool(
         name = DEVICE_OBSERVE,
         description = "Observe the visible page of the active device task (phone or tablet). " +
-            "Returns the observation id, real page/window/display identity and a bounded " +
-            "actionable-first list of node refs (clickable/editable/scrollable). Visible " +
-            "controls late in a wide or deep tree (toolbar actions, FABs, empty inputs) are " +
-            "kept ahead of decorative grid/content nodes; the scan line reports actual " +
-            "captured/scanned counts and any omitted actions. When full rows run out, " +
-            "moreActions(c/e/s) still lists usable refs from the same live observation. A " +
-            "truncated result is honest, never a complete tree. includeInvisible only adds " +
-            "hidden nodes at lower priority; it is not needed to find visible controls. " +
-            "Password fields, secure windows and the lock screen are never read. A fresh " +
-            "observation invalidates older refs. Pass the returned observation= id as " +
-            "observationId on the next device.act: every device.act action except launch " +
+            "Returns the observation id, real page/window/display identity, honest observation " +
+            "bounds (truncated=scan|time|depth|selection|text) and a bounded actionable-first " +
+            "list of node refs (platform-declared click/scroll, editable, scrollable). Flags " +
+            "c/e/s mean the platform declares click/setText/scroll; f/F/i mark " +
+            "focusable/focused/IME on inputs; '-' is read-only. Visible controls late in a wide or deep tree are kept " +
+            "ahead of decorative content; the scan line reports real captured/scanned counts " +
+            "and omitted actions. When full rows run out, moreActions(c/e/s) lists usable " +
+            "refs from the same live observation. A truncated result is honest, never a " +
+            "complete tree. To read the REST of the captured node list, call device.observe " +
+            "again with the SAME observationId and offset=<nextOffset> from the previous " +
+            "page: pages are bounded (ref, class, depth/parent, flags, view id, " +
+            "text/desc/hint, row relation, range/current value, advertised actions, bounds) " +
+            "and read the retained observation only - they do not re-read the screen, " +
+            "change refs, extend the TTL or replace the observation. Omit observationId " +
+            "for a fresh observation. includeInvisible only adds hidden nodes at lower " +
+            "priority. Password fields, secure windows and the lock screen are never read. " +
+            "A fresh observation invalidates older refs. Pass the returned observation= id " +
+            "as observationId on the next device.act: every device.act action except launch " +
             "requires it. If the page is not a selected app, select that app or launch an " +
             "already-selected one; one refusal does not change your selected apps.",
         schema = schema(
             properties = JSONObject()
-                .put("includeInvisible", bool("Include nodes that are not visible.")),
+                .put("includeInvisible", bool("Include nodes that are not visible."))
+                .put("observationId", string(
+                    "Existing observation to page instead of recapturing. Omit for a new live observation. A page read never invalidates refs or extends the TTL.",
+                    1, 64,
+                ))
+                .put("offset", integer(
+                    "Zero-based node row to start this bounded detail page at (0-400). Requires observationId; pass the previous page's nextOffset.",
+                    0, 400,
+                )),
             required = emptyList(),
         ),
         risks = listOf("controlsGUI", "sendsDataToProvider"),
@@ -320,13 +337,25 @@ internal object DeviceAccessToolCatalog {
             "and packageName, and the existing launch path obtains current navigation state after " +
             "approval. If a call fails with phone_observation_required, call device.observe again and " +
             "act on its new id; never invent or reuse an older id. " +
-            "Supported actions: click, setText, scroll, swipe, back, home, " +
-            "launch. The action is dispatched once, then re-observed; framework " +
-            "acceptance is not reported as semantic success. A node ref from an " +
-            "expired or replaced observation is refused. Use only refs from the latest " +
-            "actual observation in this run, never from narrative or history. Node flags " +
-            "c/e/s/p indicate click/setText/scroll/protected field; '-' is read-only. A label child " +
-            "is not automatically clickable; use its returned actionable parent ref. " +
+            "Supported actions: click, setText, scroll, swipe, focus, commit, back, home, " +
+            "launch. click performs the platform ACTION_CLICK when the node reports " +
+            "clickable OR advertises that action; it never synthesizes a coordinate tap. " +
+            "scroll uses forward/backward = toward the content's end/start " +
+            "(ACTION_SCROLL_FORWARD/BACKWARD). swipe uses the finger direction " +
+            "up/down/left/right and is only allowed inside a real scrollable region. focus " +
+            "performs the platform focus action. commit sends the platform IME action " +
+            "(search/go/done/send) to a focused or platform-advertised editable field; it " +
+            "needs Android 11+ (older platforms fail with phone_ime_action_unsupported; use " +
+            "the visible search/go button) and dispatch=ACCEPTED is NOT proof that a search " +
+            "ran or a date value was committed. setText changes the field buffer, not the enclosing " +
+            "business value: after any input verify the enclosing value, date or search " +
+            "result yourself in a fresh observation. The action is dispatched once, then " +
+            "re-observed; framework acceptance is not reported as semantic success. A node " +
+            "ref from an expired or replaced observation is refused. Use only refs from the " +
+            "latest actual observation in this run, never from narrative or history. Node " +
+            "flags c/e/s/f/F/i/p indicate click/setText/scroll/focusable/focused/" +
+            "IME-enter/protected field; '-' is read-only. A label child is not automatically clickable; use " +
+            "its returned actionable parent ref. " +
             "An empty editable input is still listed as [empty input]. A p field never shows " +
             "its contents and refuses ordinary text: to fill one with a credential the user " +
             "already provided in this conversation, send action=setText with sensitiveText " +
@@ -340,9 +369,14 @@ internal object DeviceAccessToolCatalog {
                 .put("observationId", string("Required for every action except launch: the id from the latest device.observe observation= line. Omit only for action=launch; back and home also require it.", 1, 64))
                 .put("action", enum(
                     "Action to perform.",
-                    listOf("click", "setText", "scroll", "swipe", "back", "home", "launch"),
+                    listOf(
+                        "click", "setText", "scroll", "swipe", "focus", "commit",
+                        "back", "home", "launch",
+                    ),
                 ))
-                .put("nodeRef", string("Node ref for click/setText/scroll/swipe.", 1, 16))
+                .put("nodeRef", string(
+                    "Node ref for click/setText/scroll/swipe/focus/commit.", 1, 16,
+                ))
                 .put("text", string(
                     "Ordinary replacement text for setText (max 2000 characters). Refused on a protected (p) field; use sensitiveText there. The value is redacted from persisted arguments.", 0, 2000,
                 ))

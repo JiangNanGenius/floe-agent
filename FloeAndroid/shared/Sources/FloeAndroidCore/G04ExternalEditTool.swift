@@ -21,7 +21,7 @@ struct G04ExternalEditTool: AgentTool {
         let chooseApplication: Bool?
     }
     static let name = "workspace.externalEdit"
-    static let toolDescription = "Open a task workspace file in an installed Android editor using a recoverable copy. Actions: open, status (check actual saved bytes), finish (check and revoke the editor grant), cancel (revoke and retain recovery copies). Supply the same path and returned sessionID for later actions. Opening or returning from an app does NOT mean editing finished. saved is true only after verified file content changed; sourcePending means the attached original still needs saving. For automated editing, when device tools are available, first call device.observe and resolve screen-handover questions while the owning task is foreground; then open the editor and observe its actual page. UI actions retain the configured approval policy. Returning to Floe for approval invalidates old external node refs: never replay them or assume the editor is still foreground. Do not guess a shared-storage path for the private edit copy or replace its session with an app launcher. Retain the session and report the required handover if its editor is no longer reachable. Check status after a save/return; do not poll in a tight loop. If a foreground handover is required, wait for the user. No URI, task, workspace or environment IDs may be supplied."
+    static let toolDescription = "Open a task workspace file in an installed Android editor using a recoverable copy. Actions: open, status (check actual saved bytes), finish (check and revoke the editor grant), cancel (revoke and retain recovery copies). Supply the same path and returned sessionID for later actions. Opening or returning from an app does NOT mean editing finished. saved is true only after verified file content changed; sourcePending means the attached original still needs saving. For a READ-ONLY preview/import of a task-owned artifact (video, image, PDF, audio, text or calendar .ics), use workspace.artifactHandoff instead; it never grants write access or claims a save. For automated editing, when device tools are available, first call device.observe and resolve screen-handover questions while the owning task is foreground; then open the editor and observe its actual page. UI actions retain the configured approval policy. Returning to Floe for approval invalidates old external node refs: never replay them or assume the editor is still foreground. Do not guess a shared-storage path for the private edit copy or replace its session with an app launcher. Retain the session and report the required handover if its editor is no longer reachable. Check status after a save/return; do not poll in a tight loop. If a foreground handover is required, wait for the user. No URI, task, workspace or environment IDs may be supplied."
     static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["open","status","finish","cancel"]},"path":{"type":"string","minLength":1,"maxLength":1024},"sessionID":{"type":"string","maxLength":36},"chooseApplication":{"type":"boolean"}},"required":["action","path"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
@@ -112,5 +112,15 @@ struct G04ExternalEditTool: AgentTool {
         registry.register(AnyAgentTool(Self(routing: routing)).withAvailability {
             routing.isLive() && routing.mailbox.isReady(epoch: routing.epoch)
         })
+        // The read-only artifact handoff is installed at the SAME composition
+        // point because it shares the one ExternalEditHostMailbox/pump and the
+        // identical task/root epoch/resolveOwner/access authority. It is a
+        // distinct tool and record lane: no write grant, no edit/save claim.
+        G04ArtifactHandoffTool.install(routing: G04ArtifactHandoffRouting(
+            epoch: routing.epoch,
+            isLive: routing.isLive,
+            resolveOwner: routing.resolveOwner,
+            access: routing.access,
+            mailbox: routing.mailbox), registry: registry)
     }
 }

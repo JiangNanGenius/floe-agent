@@ -134,6 +134,25 @@ data class PhoneControlScreenshotRequest(
     )
 }
 
+/**
+ * One typed, App-owned read-only document VIEW request.
+ *
+ * This is NOT a general Intent API: it carries no action, category, flags,
+ * extras, URI authority choice or mutable data. The Full host constructs every
+ * field from an already verified handoff record; [uri] must be the App's own
+ * `externaledits` FileProvider URI for its private working copy. The launch
+ * path attaches only FLAG_GRANT_READ_URI_PERMISSION plus ClipData, proves the
+ * exact installed ACTION_VIEW component again, and never claims that a viewer
+ * displayed the file or an importer saved it.
+ */
+data class PhoneControlDocumentViewRequest(
+    val uri: String,
+    val mimeType: String,
+    val packageName: String,
+    val className: String,
+    val displayName: String,
+)
+
 /** Screen coordinates in pixels, captured from the observed layout. */
 data class PhoneControlBounds(
     val left: Int,
@@ -145,6 +164,67 @@ data class PhoneControlBounds(
     val height: Int get() = (bottom - top).coerceAtLeast(0)
     val isEmpty: Boolean get() = width <= 0 || height <= 0
     fun contains(x: Int, y: Int): Boolean = x in left until right && y in top until bottom
+}
+
+/**
+ * Closed subset of actions the PLATFORM declares for one node
+ * (`AccessibilityNodeInfo.actionList`). This is real metadata read from the
+ * live node, not an inference from its class name. It lets dispatch use an
+ * advertised ACTION_CLICK/ACTION_SCROLL when the corresponding `isClickable`/
+ * `isScrollable` flag is false, while the model-facing projection says what is
+ * actually advertised instead of pretending a capability.
+ */
+enum class PhoneControlNodeAction {
+    CLICK,
+    LONG_CLICK,
+    FOCUS,
+    CLEAR_FOCUS,
+    IME_ENTER,
+    SET_TEXT,
+    SCROLL_FORWARD,
+    SCROLL_BACKWARD,
+    SCROLL_UP,
+    SCROLL_DOWN,
+    SCROLL_LEFT,
+    SCROLL_RIGHT,
+    ;
+
+    /** True for the directional/legacy scroll actions the platform declares. */
+    val isScrollAction: Boolean
+        get() = this == SCROLL_FORWARD || this == SCROLL_BACKWARD ||
+            this == SCROLL_UP || this == SCROLL_DOWN ||
+            this == SCROLL_LEFT || this == SCROLL_RIGHT
+
+    /** Stable compact token used by the bounded detail projection. */
+    val wireName: String
+        get() = when (this) {
+            CLICK -> "click"
+            LONG_CLICK -> "longClick"
+            FOCUS -> "focus"
+            CLEAR_FOCUS -> "clearFocus"
+            IME_ENTER -> "ime"
+            SET_TEXT -> "setText"
+            SCROLL_FORWARD -> "scrollForward"
+            SCROLL_BACKWARD -> "scrollBackward"
+            SCROLL_UP -> "scrollUp"
+            SCROLL_DOWN -> "scrollDown"
+            SCROLL_LEFT -> "scrollLeft"
+            SCROLL_RIGHT -> "scrollRight"
+        }
+}
+
+/**
+ * Platform-declared numeric range (`AccessibilityNodeInfo.rangeInfo`), for
+ * example a slider or a number wheel. It is the real current value the platform
+ * exposes, never a value guessed from the label.
+ */
+data class PhoneControlRangeInfo(
+    val min: Float,
+    val max: Float,
+    val current: Float,
+) {
+    val valid: Boolean
+        get() = min.isFinite() && max.isFinite() && current.isFinite() && max >= min
 }
 
 data class PhoneControlNode(
@@ -179,7 +259,17 @@ data class PhoneControlNode(
      * presentation metadata and grants no action.
      */
     val insideScrollable: Boolean = false,
+    /** Actions the platform actually advertises for this node. */
+    val actions: Set<PhoneControlNodeAction> = emptySet(),
+    /** Platform focus attribute; the action list remains the dispatch truth. */
+    val focusable: Boolean = false,
+    val focused: Boolean = false,
+    /** Real platform range/value metadata when the control exposes it. */
+    val range: PhoneControlRangeInfo? = null,
 ) {
+    /** True only when the live platform node advertised this action. */
+    fun advertises(action: PhoneControlNodeAction): Boolean = action in actions
+
     /** Never dump observed text into a diagnostic/log line. */
     override fun toString(): String =
         "PhoneControlNode(ref=$ref, class=$className, viewId=$viewId, bounds=$bounds, " +
@@ -228,12 +318,55 @@ data class PhoneControlObservation(
      * the omission is also reflected in [truncated].
      */
     val omittedActionableCount: Int = 0,
+    /** The live scan stopped at [PhoneControlLimits.MAX_SCAN_NODES]. */
+    val scanLimited: Boolean = false,
+    /** The live scan stopped at [PhoneControlLimits.SCAN_TIME_BUDGET_MS]. */
+    val timeLimited: Boolean = false,
+    /** Eligible nodes were dropped by the bounded actionable-first selection. */
+    val selectionLimited: Boolean = false,
+    /** A text budget/per-field cap shortened or withheld a captured field. */
+    val textLimited: Boolean = false,
 ) {
+    /**
+     * Honest, deduplicated truncation reasons for model-facing copy. Empty only
+     * when the capture and the retained node set are both complete. Never
+     * implies that omitted rows are absent platform controls.
+     */
+    val truncationReasons: List<String>
+        get() {
+            val reasons = ArrayList<String>(5)
+            if (scanLimited) reasons += "scan"
+            if (timeLimited) reasons += "time"
+            if (maxDepthReached) reasons += "depth"
+            if (selectionLimited) reasons += "selection"
+            if (textLimited) reasons += "text"
+            return reasons
+        }
+
     /** Summary only; use PhoneControlJson for an explicit structured payload. */
     override fun toString(): String =
         "PhoneControlObservation(id=$observationId, package=$packageName, window=$windowId, " +
             "nodeCount=${nodes.size}, sensitive=$sensitiveWindow, " +
             "navigationOnly=$navigationOnly)"
+}
+
+/**
+ * One bounded page of the captured observation's node list, read from the
+ * retained observation (never a new screen read). [nextOffset] is the exact
+ * `offset` for the next page, or null on the last page.
+ */
+data class PhoneControlDetailPage(
+    val observationId: String,
+    val offset: Int,
+    val rows: Int,
+    val total: Int,
+    val nextOffset: Int?,
+    val text: String,
+    /** The retained observation's existing TTL; pages never extend it. */
+    val expiresAtElapsedRealtimeMillis: Long = 0L,
+) {
+    override fun toString(): String =
+        "PhoneControlDetailPage(observation=$observationId, offset=$offset, rows=$rows, total=$total)"
 }
 
 sealed interface PhoneControlAction {
@@ -281,6 +414,25 @@ sealed interface PhoneControlAction {
         val direction: PhoneControlSwipeDirection,
     ) : PhoneControlAction {
         override val wireName: String get() = "swipe"
+    }
+
+    /**
+     * Moves input focus to a node whose live platform metadata declares focus
+     * support. It changes no text and performs no business action.
+     */
+    data class Focus(val nodeRef: String) : PhoneControlAction {
+        override val wireName: String get() = "focus"
+    }
+
+    /**
+     * Sends the platform IME action (search/go/done/send/next) to a live,
+     * editable, currently focused or platform-advertised field. Android 11+
+     * only: older platforms expose no such action and report unavailable.
+     * Framework acceptance is never proof that a search ran or a date value
+     * was committed; the caller verifies the result by re-observing.
+     */
+    data class Commit(val nodeRef: String) : PhoneControlAction {
+        override val wireName: String get() = "commit"
     }
 
     data object Back : PhoneControlAction {
@@ -351,6 +503,9 @@ enum class PhoneControlDenial {
     NODE_NOT_CLICKABLE,
     NODE_NOT_EDITABLE,
     NODE_NOT_SCROLLABLE,
+    NODE_DISABLED,
+    NODE_NOT_FOCUSABLE,
+    NODE_NOT_FOCUSED,
     SENSITIVE_FIELD,
     PROTECTED_WINDOW,
     INVALID_ARGUMENT,
@@ -363,6 +518,8 @@ enum class PhoneControlUnavailable {
     SCREENSHOT_UNSUPPORTED,
     WINDOW_SCREENSHOT_UNSUPPORTED,
     GESTURE_UNSUPPORTED,
+    /** Android 10 and older expose no IME-action node operation. */
+    IME_ACTION_UNSUPPORTED,
     LAUNCH_TARGET_UNAVAILABLE,
 }
 

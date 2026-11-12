@@ -3,11 +3,15 @@ package com.floe.android.phonecontrol
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -107,7 +111,7 @@ internal class PhoneControlSession(
         var note: String? = null
     }
 
-    private enum class NodeRequirement { CLICK, SET_TEXT, SCROLL, SWIPE }
+    private enum class NodeRequirement { CLICK, SET_TEXT, SCROLL, SWIPE, FOCUS, COMMIT }
 
     // ---------------------------------------------------------------------
     // Observation
@@ -236,6 +240,81 @@ internal class PhoneControlSession(
         return PhoneControlResult.Ok(capture.observation)
     }
 
+    /**
+     * One bounded page of the RETAINED observation named by [observationId].
+     * This is a read of data that was already authorized and captured: it never
+     * performs a new screen read, never replaces the session's latest record,
+     * never bumps a generation and never extends the observation TTL. The exact
+     * owner, fence/page generation, TTL and current package scope are
+     * revalidated before a page is returned.
+     */
+    fun detail(
+        principal: PhoneControlPrincipal,
+        grant: PhoneControlGrant,
+        observationId: String,
+        offset: Int,
+        complete: (PhoneControlResult<PhoneControlDetailPage>) -> Unit,
+    ) {
+        if (closed) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
+            return
+        }
+        PhoneControlPolicy.grantDenial(principal, grant)?.let {
+            complete(PhoneControlResult.Denied(it))
+            return
+        }
+        if (inFlightId != null) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT))
+            return
+        }
+        lockedDenial()?.let { complete(it); return }
+        val record = latest
+        if (record == null || record.observation.observationId != observationId) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION))
+            return
+        }
+        if (record.observation.owner != principal.owner) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN))
+            return
+        }
+        verdictDenial(
+            fence.validate(
+                PhoneControlFence.Ticket(
+                    owner = record.observation.owner,
+                    fenceGeneration = record.observation.fenceGeneration,
+                    pageGeneration = record.observation.pageGeneration,
+                ),
+            ),
+        )?.let {
+            complete(it)
+            return
+        }
+        if (SystemClock.elapsedRealtime() > record.observation.expiresAtElapsedRealtimeMillis) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.OBSERVATION_EXPIRED))
+            return
+        }
+        // The live grant may have narrowed its package scope since capture.
+        PhoneControlPolicy.observationDenial(
+            packageName = record.observation.packageName,
+            effectivePackages = PhoneControlPolicy.effectivePackages(principal, grant),
+            homePackage = homePackage(),
+            allowGlobalNavigation = grant.allowGlobalNavigation,
+            navigationMetadataOnly = record.observation.navigationOnly,
+        )?.let {
+            complete(PhoneControlResult.Denied(it))
+            return
+        }
+        if (offset < 0 || offset > PhoneControlLimits.MAX_NODES) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT))
+            return
+        }
+        complete(
+            PhoneControlResult.Ok(
+                PhoneControlObservationText.detail(record.observation, offset),
+            ),
+        )
+    }
+
     fun arm(principal: PhoneControlPrincipal): PhoneControlResult<PhoneControlStatus> {
         if (closed) return PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED)
         if (inFlightId != null || unlocker.isSettling) {
@@ -263,7 +342,13 @@ internal class PhoneControlSession(
         if (inFlightId != null) return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
         lockedDenial()?.let { return it }
         PhoneControlPolicy.grantDenial(principal, grant)?.let { return PhoneControlResult.Denied(it) }
-        if (packageName !in grant.allowedPackages) return PhoneControlResult.Denied(PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED)
+        // Same effective/non-Floe/protected target rule as device.act launch:
+        // the live grant can narrow the caller's request and can never list
+        // Floe/system-installer identities as launchable targets.
+        PhoneControlPolicy.launchDenial(
+            packageName,
+            PhoneControlPolicy.effectivePackages(principal, grant),
+        )?.let { return PhoneControlResult.Denied(it) }
         when (val claim = fence.claim(principal.owner)) {
             is PhoneControlFence.Claim.Blocked -> return PhoneControlResult.Denied(PhoneControlPolicy.denialForBlocker(claim.blocker))
             PhoneControlFence.Claim.ForeignRun -> return PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN)
@@ -281,6 +366,142 @@ internal class PhoneControlSession(
             PhoneControlResult.Ok(PhoneControlActionResult("launch", PhoneControlDispatch.ACCEPTED,
                 null, null, null, "Launch requested. Observe the target app before further actions."))
         } catch (_: Exception) { PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED) }
+    }
+
+    /**
+     * Launch ONE typed App-owned read-only document VIEW while the App itself
+     * may be backgrounded.
+     *
+     * This is intentionally not a general Intent/launch API. The request is
+     * built by the trusted host from a verified handoff record; here every
+     * field is revalidated against the live grant and the exact installed
+     * component, and the only extras are the read grant flag plus ClipData.
+     * The AccessibilityService binding is what lets the real Activity start
+     * happen without an operator returning to Floe; it is the same platform
+     * exemption the existing `device.act launch` path already uses.
+     *
+     * [stillCurrent] is the host's exact native-ticket/owner/generation fence.
+     * It is checked again immediately before `startActivity`, and the session
+     * fence/observation is invalidated so no stale page survives the launch.
+     * An accepted start is NOT observed playback, import or save.
+     */
+    fun launchDocumentView(
+        principal: PhoneControlPrincipal,
+        grant: PhoneControlGrant,
+        request: PhoneControlDocumentViewRequest,
+        stillCurrent: () -> Boolean,
+        complete: (PhoneControlResult<PhoneControlActionResult>) -> Unit,
+    ) {
+        if (closed) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
+            return
+        }
+        if (inFlightId != null) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT))
+            return
+        }
+        lockedDenial()?.let { complete(it); return }
+        PhoneControlPolicy.grantDenial(principal, grant)?.let {
+            complete(PhoneControlResult.Denied(it))
+            return
+        }
+        val effective = PhoneControlPolicy.effectivePackages(principal, grant)
+        val authority = "${service.packageName}.externaledits"
+        PhoneControlPolicy.documentViewDenial(request, authority, effective)?.let {
+            complete(PhoneControlResult.Denied(it))
+            return
+        }
+        when (val claim = fence.claim(principal.owner)) {
+            is PhoneControlFence.Claim.Blocked ->
+                return complete(PhoneControlResult.Denied(
+                    PhoneControlPolicy.denialForBlocker(claim.blocker)))
+            PhoneControlFence.Claim.ForeignRun ->
+                return complete(PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN))
+            PhoneControlFence.Claim.Ok -> Unit
+        }
+        if (!stillCurrent()) {
+            complete(PhoneControlResult.Failed(PhoneControlFailure.CANCELLED))
+            return
+        }
+        val uri = Uri.parse(request.uri)
+        if (!validDocumentUri(uri, authority, request.displayName)) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT))
+            return
+        }
+        // Re-prove the EXACT selected component for this exact URI/MIME. A
+        // handler that disappeared, moved or no longer accepts the document
+        // is an honest target-unavailable, never a chooser fallback.
+        val probe = Intent(Intent.ACTION_VIEW)
+            .addCategory(Intent.CATEGORY_DEFAULT)
+            .setDataAndType(uri, request.mimeType)
+        val exactInstalled = runCatching {
+            service.packageManager.queryIntentActivities(probe, 0)
+        }.getOrDefault(emptyList()).any { info ->
+            info.activityInfo?.packageName == request.packageName &&
+                info.activityInfo?.name == request.className
+        }
+        if (!exactInstalled) {
+            complete(PhoneControlResult.Unavailable(
+                PhoneControlUnavailable.LAUNCH_TARGET_UNAVAILABLE))
+            return
+        }
+        if (!stillCurrent()) {
+            complete(PhoneControlResult.Failed(PhoneControlFailure.CANCELLED))
+            return
+        }
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, request.mimeType)
+            .setClassName(request.packageName, request.className)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            .setClipData(ClipData.newRawUri(request.displayName, uri))
+        latest = null
+        fence.onPageChanged()
+        suppressOwnInput()
+        // Last cancellation fence: a Stop/takeover that landed while the
+        // main-thread hop was pending must not produce a late viewer.
+        if (!stillCurrent()) {
+            complete(PhoneControlResult.Failed(PhoneControlFailure.CANCELLED))
+            return
+        }
+        // The OS dispatch boundary is separate from every post-start effect.
+        // Only the closed known no-dispatch exceptions are a retryable
+        // rejection; any other exception after the call was attempted has an
+        // unknown outcome and must never be replayed.
+        try {
+            service.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            complete(PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED,
+                "The target document VIEW handler is not installed"))
+            return
+        } catch (_: SecurityException) {
+            complete(PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED,
+                "The target refused the document VIEW grant"))
+            return
+        } catch (_: Exception) {
+            complete(PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR,
+                "The document VIEW outcome is unknown; do not repeat open"))
+            return
+        }
+        // startActivity returned: the OS accepted the explicit start. A status
+        // publication or caller-callback failure after this point is not a
+        // launch rejection and must not permit a duplicate VIEW.
+        runCatching { PhoneControlRuntime.publish() }
+        complete(PhoneControlResult.Ok(PhoneControlActionResult(
+            "documentView", PhoneControlDispatch.ACCEPTED, null, null, null,
+            "Launch requested. Observe the target app before further actions.")))
+    }
+
+    private fun validDocumentUri(uri: Uri, expectedAuthority: String,
+                                 displayName: String): Boolean {
+        if (uri.scheme != "content" || uri.authority != expectedAuthority ||
+            uri.query != null || uri.fragment != null
+        ) return false
+        val segments = uri.pathSegments
+        if (segments.size != 4) return false
+        if (segments[0] != "working" || segments[1] != "views") return false
+        if (runCatching { UUID.fromString(segments[2]) }.isFailure) return false
+        if (segments[3] != displayName) return false
+        return segments.none { it.isEmpty() || it == "." || it == ".." }
     }
 
     // ---------------------------------------------------------------------
@@ -309,6 +530,18 @@ internal class PhoneControlSession(
         }
         lockedDenial()?.let {
             complete(it)
+            return
+        }
+        // The IME-action node operation is public API 30+. Older supported
+        // platforms have no equivalent node action, so report that honestly
+        // instead of pretending a click/search succeeded.
+        if (action is PhoneControlAction.Commit && Build.VERSION.SDK_INT < 30) {
+            complete(
+                PhoneControlResult.Unavailable(
+                    PhoneControlUnavailable.IME_ACTION_UNSUPPORTED,
+                    "IME action submission needs Android 11 or newer on this device",
+                ),
+            )
             return
         }
         val record = latest
@@ -384,10 +617,40 @@ internal class PhoneControlSession(
             action = action,
         )?.let { return PhoneControlResult.Denied(it) }
         when (action) {
-            is PhoneControlAction.Click ->
-                record.records[action.nodeRef] ?: return PhoneControlResult.Denied(
+            is PhoneControlAction.Click -> {
+                val node = record.records[action.nodeRef]
+                    ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                if (!node.visible) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                }
+                if (!node.enabled) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_DISABLED)
+                }
+            }
+            is PhoneControlAction.Focus -> {
+                val node = record.records[action.nodeRef]
+                    ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                if (!node.visible) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                }
+                if (!node.enabled) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_DISABLED)
+                }
+            }
+            is PhoneControlAction.Commit -> {
+                val node = record.records[action.nodeRef] ?: return PhoneControlResult.Denied(
                     PhoneControlDenial.NODE_UNAVAILABLE,
                 )
+                if (!node.visible) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                }
+                if (!node.enabled) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_DISABLED)
+                }
+                if (!node.editable) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_NOT_EDITABLE)
+                }
+            }
             is PhoneControlAction.SetText -> {
                 if (action.text.length > PhoneControlLimits.MAX_SET_TEXT_CHARS) {
                     return PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT)
@@ -395,6 +658,12 @@ internal class PhoneControlSession(
                 val node = record.records[action.nodeRef] ?: return PhoneControlResult.Denied(
                     PhoneControlDenial.NODE_UNAVAILABLE,
                 )
+                if (!node.visible) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                }
+                if (!node.enabled) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_DISABLED)
+                }
                 if (!node.editable) return PhoneControlResult.Denied(PhoneControlDenial.NODE_NOT_EDITABLE)
                 PhoneControlPolicy.fieldActionDenial(
                     node,
@@ -407,14 +676,26 @@ internal class PhoneControlSession(
                 val node = record.records[action.nodeRef] ?: return PhoneControlResult.Denied(
                     PhoneControlDenial.NODE_UNAVAILABLE,
                 )
-                if (!node.scrollable) return PhoneControlResult.Denied(
-                    PhoneControlDenial.NODE_NOT_SCROLLABLE,
-                )
+                if (!node.visible) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                }
+                if (!node.enabled) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_DISABLED)
+                }
+                if (!node.scrollable && node.actions.none { it.isScrollAction }) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_NOT_SCROLLABLE)
+                }
             }
             is PhoneControlAction.Swipe -> {
                 val node = record.records[action.nodeRef] ?: return PhoneControlResult.Denied(
                     PhoneControlDenial.NODE_UNAVAILABLE,
                 )
+                if (!node.visible) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+                }
+                if (!node.enabled) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_DISABLED)
+                }
                 PhoneControlPolicy.fieldActionDenial(node)?.let {
                     return PhoneControlResult.Denied(it)
                 }
@@ -423,6 +704,13 @@ internal class PhoneControlSession(
                 val span = if (horizontal) node.bounds.width else node.bounds.height
                 if (span < PhoneControlLimits.MIN_SWIPE_PX) {
                     return PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT)
+                }
+                // A coordinate swipe is a scroll gesture, not a synthetic tap:
+                // only perform it inside a real scrollable region (the node
+                // itself, an enclosing scroller, an advertised scroll action,
+                // or a captured scrollable descendant).
+                if (!insideScrollableRegion(record, node, action.nodeRef)) {
+                    return PhoneControlResult.Denied(PhoneControlDenial.NODE_NOT_SCROLLABLE)
                 }
             }
             PhoneControlAction.Back, PhoneControlAction.Home -> {
@@ -475,6 +763,14 @@ internal class PhoneControlSession(
             is PhoneControlAction.Swipe -> swipeAction(
                 effective, record, action.nodeRef, action.direction, opId,
             )
+            is PhoneControlAction.Focus -> nodeAction(
+                effective, record, action.nodeRef, NodeRequirement.FOCUS, opId,
+                actionName = action.wireName, scrollDirection = null, setText = null,
+            )
+            is PhoneControlAction.Commit -> nodeAction(
+                effective, record, action.nodeRef, NodeRequirement.COMMIT, opId,
+                actionName = action.wireName, scrollDirection = null, setText = null,
+            )
             PhoneControlAction.Back -> globalAction(record, ACCESSIBILITY_GLOBAL_BACK, "back", opId)
             PhoneControlAction.Home -> globalAction(record, ACCESSIBILITY_GLOBAL_HOME, "home", opId)
             is PhoneControlAction.Launch -> launchAction(record, action.packageName, opId)
@@ -520,8 +816,28 @@ internal class PhoneControlSession(
                     return
                 }
                 suppressOwnInput()
+                var dispatchNote: String? = null
                 val accepted = when (requirement) {
-                    NodeRequirement.CLICK -> node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    NodeRequirement.CLICK -> {
+                        val flagClickable = runCatching { node.isClickable }.getOrDefault(false)
+                        val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (ok && !flagClickable) {
+                            dispatchNote = "platform ACTION_CLICK accepted " +
+                                "(isClickable=false); re-observe the effect"
+                        }
+                        ok
+                    }
+                    NodeRequirement.FOCUS -> node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                    // Android 11+ only; perform() refuses older platforms before
+                    // any claim is taken. The guard also keeps the constant off
+                    // older runtimes.
+                    NodeRequirement.COMMIT -> if (Build.VERSION.SDK_INT >= 30) {
+                        node.performAction(
+                            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+                        )
+                    } else {
+                        false
+                    }
                     // Exact bytes go to the framework once, including a
                     // sensitive credential: nothing here logs, echoes,
                     // persists or blindly retries the payload.
@@ -550,10 +866,22 @@ internal class PhoneControlSession(
                         "the framework refused the node action; no blind retry",
                     )
                 } else {
+                    val note = dispatchNote ?: when (requirement) {
+                        NodeRequirement.SET_TEXT ->
+                            "setText accepted; field buffer only, not a committed value; " +
+                                "verify the enclosing value by observing"
+                        NodeRequirement.FOCUS ->
+                            "focus accepted; verify the focused field/IME by re-observation"
+                        NodeRequirement.COMMIT ->
+                            "IME action accepted; not proof a search/date committed; " +
+                                "re-observe the result"
+                        else ->
+                            "framework accepted the action; re-observation is the effect check"
+                    }
                     completeAfterDispatch(
                         record, opId, actionName, PhoneControlDispatch.ACCEPTED, null,
                         null,
-                        "framework accepted the action; re-observation is the effect check",
+                        note,
                     )
                 }
             } finally {
@@ -772,6 +1100,9 @@ internal class PhoneControlSession(
         if (!runCatching { node.isVisibleToUser }.getOrDefault(false)) {
             return PhoneControlDenial.NODE_UNAVAILABLE
         }
+        if (!runCatching { node.isEnabled }.getOrDefault(false)) {
+            return PhoneControlDenial.NODE_DISABLED
+        }
         if (!nodeRecord.bounds.isEmpty) {
             val rect = Rect()
             node.getBoundsInScreen(rect)
@@ -786,9 +1117,17 @@ internal class PhoneControlSession(
             effective,
         )?.let { return it }
         return when (requirement) {
+            // The platform's own ACTION_CLICK advertisement is real declared
+            // capability; a View that reports isClickable=false can still
+            // expose it. Model-facing flags say click when either is present.
             NodeRequirement.CLICK ->
-                if (runCatching { node.isClickable }.getOrDefault(false)) null
-                else PhoneControlDenial.NODE_NOT_CLICKABLE
+                if (runCatching { node.isClickable }.getOrDefault(false) ||
+                    advertised(node, AccessibilityNodeInfo.ACTION_CLICK)
+                ) {
+                    null
+                } else {
+                    PhoneControlDenial.NODE_NOT_CLICKABLE
+                }
             NodeRequirement.SET_TEXT -> when {
                 !runCatching { node.isEditable }.getOrDefault(false) ->
                     PhoneControlDenial.NODE_NOT_EDITABLE
@@ -801,10 +1140,82 @@ internal class PhoneControlSession(
                 else -> null
             }
             NodeRequirement.SCROLL ->
-                if (runCatching { node.isScrollable }.getOrDefault(false)) null
-                else PhoneControlDenial.NODE_NOT_SCROLLABLE
+                if (runCatching { node.isScrollable }.getOrDefault(false) ||
+                    advertisedScroll(node)
+                ) {
+                    null
+                } else {
+                    PhoneControlDenial.NODE_NOT_SCROLLABLE
+                }
+            NodeRequirement.FOCUS ->
+                if (runCatching { node.isFocusable }.getOrDefault(false) ||
+                    advertised(node, AccessibilityNodeInfo.ACTION_FOCUS)
+                ) {
+                    null
+                } else {
+                    PhoneControlDenial.NODE_NOT_FOCUSABLE
+                }
+            NodeRequirement.COMMIT -> when {
+                !runCatching { node.isEditable }.getOrDefault(false) ->
+                    PhoneControlDenial.NODE_NOT_EDITABLE
+                // The IME action targets the focused editor. A field that
+                // advertises the action itself is a platform-declared
+                // capability even before it is focused; otherwise require real
+                // focus (API 33 also exposes the input-method target flag).
+                runCatching { node.isFocused }.getOrDefault(false) ||
+                    inputMethodTarget(node) ||
+                    advertisedImeEnter(node) -> null
+                else -> PhoneControlDenial.NODE_NOT_FOCUSED
+            }
             NodeRequirement.SWIPE -> null
         }
+    }
+
+    /** True only when the live node advertises this exact platform action. */
+    private fun advertised(node: AccessibilityNodeInfo, actionId: Int): Boolean =
+        runCatching { node.actionList.any { it?.id == actionId } }.getOrDefault(false)
+
+    private fun advertisedScroll(node: AccessibilityNodeInfo): Boolean =
+        runCatching {
+            node.actionList.any { action -> action?.id?.let { it in SCROLL_ACTION_IDS } == true }
+        }.getOrDefault(false)
+
+    private fun advertisedImeEnter(node: AccessibilityNodeInfo): Boolean =
+        Build.VERSION.SDK_INT >= 30 &&
+            advertised(node, AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+
+    private fun inputMethodTarget(node: AccessibilityNodeInfo): Boolean =
+        Build.VERSION.SDK_INT >= 33 &&
+            runCatching { node.isInputMethodTarget }.getOrDefault(false)
+
+    /**
+     * A coordinate swipe may only run inside a real scrollable region: the
+     * node, an enclosing scroll container, an advertised scroll action, or a
+     * captured scrollable descendant. It never synthesizes a tap on a
+     * read-only node.
+     */
+    private fun insideScrollableRegion(
+        record: ObservationRecord,
+        node: PhoneControlNodeRecord,
+        nodeRef: String,
+    ): Boolean {
+        if (node.scrollable || node.insideScrollable ||
+            node.actions.any { it.isScrollAction }
+        ) {
+            return true
+        }
+        val byRef = record.observation.nodes.associateBy { it.ref }
+        for (candidate in record.observation.nodes) {
+            if (!candidate.scrollable && candidate.actions.none { it.isScrollAction }) continue
+            var parent = candidate.parentRef
+            var hops = 0
+            while (parent != null && hops < PhoneControlLimits.MAX_DEPTH) {
+                if (parent == nodeRef) return true
+                parent = byRef[parent]?.parentRef
+                hops++
+            }
+        }
+        return false
     }
 
     private fun resolveNode(
@@ -1719,5 +2130,20 @@ internal class PhoneControlSession(
     private companion object {
         const val ACCESSIBILITY_GLOBAL_BACK = AccessibilityService.GLOBAL_ACTION_BACK
         const val ACCESSIBILITY_GLOBAL_HOME = AccessibilityService.GLOBAL_ACTION_HOME
+
+        /**
+         * Platform-declared scroll ids. ACTION_SCROLL_UP/DOWN/LEFT/RIGHT are
+         * public since API 23 (below the 28 floor); they are read through the
+         * AccessibilityAction object because the int constants on
+         * AccessibilityNodeInfo are not part of the current public surface.
+         */
+        val SCROLL_ACTION_IDS: Set<Int> = setOf(
+            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD,
+            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD,
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id,
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id,
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id,
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id,
+        )
     }
 }

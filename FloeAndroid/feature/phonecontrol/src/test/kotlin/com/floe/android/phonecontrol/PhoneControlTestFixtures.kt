@@ -61,6 +61,10 @@ internal fun testNode(
     redacted: Boolean = false,
     truncated: Boolean = false,
     insideScrollable: Boolean = false,
+    actions: Set<PhoneControlNodeAction> = emptySet(),
+    focusable: Boolean = false,
+    focused: Boolean = false,
+    range: PhoneControlRangeInfo? = null,
 ): PhoneControlNode = PhoneControlNode(
     ref = ref,
     parentRef = parentRef,
@@ -84,6 +88,10 @@ internal fun testNode(
     redacted = redacted,
     truncated = truncated,
     insideScrollable = insideScrollable,
+    actions = actions,
+    focusable = focusable,
+    focused = focused,
+    range = range,
 )
 
 internal fun testObservation(
@@ -92,6 +100,14 @@ internal fun testObservation(
     observationId: String = "observation-1",
     packageName: String? = "com.example.app",
     sensitiveWindow: Boolean = nodes.any { it.password || it.redacted },
+    truncated: Boolean = false,
+    maxDepthReached: Boolean = false,
+    scannedNodeCount: Int = nodes.size,
+    omittedActionableCount: Int = 0,
+    scanLimited: Boolean = false,
+    timeLimited: Boolean = false,
+    selectionLimited: Boolean = false,
+    textLimited: Boolean = false,
 ): PhoneControlObservation = PhoneControlObservation(
     observationId = observationId,
     owner = owner,
@@ -108,8 +124,14 @@ internal fun testObservation(
     sensitiveWindow = sensitiveWindow,
     screenshotSupport = PhoneControlScreenshotSupport.DISPLAY,
     nodes = nodes,
-    truncated = false,
-    maxDepthReached = false,
+    truncated = truncated,
+    maxDepthReached = maxDepthReached,
+    scannedNodeCount = scannedNodeCount,
+    omittedActionableCount = omittedActionableCount,
+    scanLimited = scanLimited,
+    timeLimited = timeLimited,
+    selectionLimited = selectionLimited,
+    textLimited = textLimited,
 )
 
 internal fun testRawNode(
@@ -128,6 +150,10 @@ internal fun testRawNode(
     scrollable: Boolean = false,
     password: Boolean = false,
     insideScrollable: Boolean = false,
+    actions: Set<PhoneControlNodeAction> = emptySet(),
+    focusable: Boolean = false,
+    focused: Boolean = false,
+    range: PhoneControlRangeInfo? = null,
 ): PhoneControlRawNode = PhoneControlRawNode(
     path = path,
     parentPath = if (path.isEmpty()) null else path.dropLast(1),
@@ -149,4 +175,8 @@ internal fun testRawNode(
     checked = false,
     password = password,
     insideScrollable = insideScrollable,
+    actions = actions,
+    focusable = focusable,
+    focused = focused,
+    range = range,
 )

@@ -118,6 +118,16 @@ class RuntimeHost internal constructor(
     internal val externalEdits by lazy {
         com.floe.android.host.externaledit.ExternalEditController(appContext, this)
     }
+    /** Read-only artifact handoff (workspace file or this run's sealed
+     * output) to an explicitly permitted native viewer/importer. Shares the
+     * external-edit pump/mailbox, but never a write grant or an edit record. */
+    internal val artifactHandoffs by lazy {
+        com.floe.android.host.externaledit.ArtifactHandoffController(appContext, this)
+    }
+    /** Wire-only read of the EXISTING Settings > Device target-app ceiling.
+     * The Full platform extension supplies it; nil fails closed. */
+    internal var artifactHandoffTargetAuthority:
+        com.floe.android.host.externaledit.ArtifactHandoffTargetAuthority? = null
     private val externalEditToolsDelegate = lazy {
         com.floe.android.host.externaledit.ExternalEditToolHostPump(this)
     }
@@ -958,6 +968,14 @@ class RuntimeHost internal constructor(
         if (linuxDesktopOwner.isInitialized() && !linuxDesktopOwner.value.stopAndJoin()) return
         if (!prepareC07DataExchangeForRootStop()) return
         if (!prepareExternalEditToolsForRootStop()) return
+        // Read-only handoff grants are revoked and their App-private copies
+        // removed before the native root retires. Source artifacts stay with
+        // their workspace/run-output owners.
+        if (externalEditToolsDelegate.isInitialized()) {
+            runCatching { artifactHandoffs.onRootStopped() }.onFailure {
+                android.util.Log.w("FloeArtifactHandoff", "root_stop_revoke_failed")
+            }
+        }
         if (!prepareFontsForRootStop()) return
         // C03 voice owns real microphone/TTS/cloud operations; fence and join
         // them before the native root retires.

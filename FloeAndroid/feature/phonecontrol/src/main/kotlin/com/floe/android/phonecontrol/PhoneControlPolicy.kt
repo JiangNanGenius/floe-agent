@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.phonecontrol
 
+import java.util.UUID
+
 /**
  * Origin of a platform semantic interaction event (click/scroll). Closed
  * enum for attribution/diagnostics only — it never carries event text, node
@@ -189,6 +191,91 @@ internal object PhoneControlPolicy {
         return null
     }
 
+    /**
+     * Structural gate for the ONE typed background document VIEW:
+     * App-owned content URI, single concrete MIME, exact package/class and a
+     * bounded inert display name. It accepts no flags, extras, action or
+     * authority from the caller.
+     */
+    fun documentViewShapeDenial(request: PhoneControlDocumentViewRequest): PhoneControlDenial? {
+        if (packageDenial(request.packageName) != null) return PhoneControlDenial.INVALID_ARGUMENT
+        if (!validDocumentMime(request.mimeType) ||
+            !validDocumentClass(request.className) ||
+            !validDocumentDisplayName(request.displayName)
+        ) {
+            return PhoneControlDenial.INVALID_ARGUMENT
+        }
+        return null
+    }
+
+    /**
+     * Full gate for the typed background document VIEW. [expectedAuthority]
+     * is the App's own `${applicationId}.externaledits`; [effectivePackages]
+     * is the live grant/principal intersection, so a revoked selection or a
+     * narrowed grant refuses even when the record was staged earlier.
+     *
+     * System resolver identities and Floe's own App/runtime family are always
+     * refused as protected windows, never silently replaced by a chooser.
+     */
+    fun documentViewDenial(
+        request: PhoneControlDocumentViewRequest,
+        expectedAuthority: String,
+        effectivePackages: Set<String>,
+    ): PhoneControlDenial? {
+        documentViewShapeDenial(request)?.let { return it }
+        if (!validDocumentUri(request.uri, expectedAuthority)) {
+            return PhoneControlDenial.INVALID_ARGUMENT
+        }
+        val packageName = request.packageName
+        if (packageName == "android" ||
+            packageName.startsWith("com.android.internal.") ||
+            packageName == "com.android.intentresolver" ||
+            isProtectedPackage(packageName) ||
+            isFloePackage(packageName)
+        ) {
+            return PhoneControlDenial.PROTECTED_WINDOW
+        }
+        if (packageName !in effectivePackages) {
+            return PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED
+        }
+        return null
+    }
+
+    private fun validDocumentUri(uri: String, expectedAuthority: String): Boolean {
+        if (expectedAuthority.isEmpty() || expectedAuthority.length > 255 ||
+            expectedAuthority.any { it.isWhitespace() || it.code < 33 || it == '/' }
+        ) return false
+        if (uri.length !in 24..2048 || !uri.startsWith("content://") ||
+            uri.any { it.isWhitespace() || it.code < 32 || it == '\\' } ||
+            uri.contains('?') || uri.contains('#')
+        ) return false
+        val rest = uri.substring("content://".length)
+        if (rest.substringBefore('/') != expectedAuthority) return false
+        val path = rest.substringAfter('/', "")
+        if (!path.startsWith("working/views/") || path.contains("//")) return false
+        val segments = path.split('/')
+        if (segments.size < 4 || segments.any { it.isEmpty() || it == "." || it == ".." }) {
+            return false
+        }
+        return runCatching { UUID.fromString(segments[2]) }.isSuccess
+    }
+
+    private fun validDocumentMime(value: String): Boolean =
+        value.length in 3..127 && value.count { it == '/' } == 1 &&
+            !value.contains('*') &&
+            value.none { it.code < 33 || it.code > 126 } &&
+            value.none { it == ';' || it == ',' || it == '\\' || it == '\'' || it == '"' } &&
+            value.substringBefore('/').isNotEmpty() && value.substringAfter('/').isNotEmpty()
+
+    private fun validDocumentClass(value: String): Boolean =
+        value.length in 1..512 && value.none {
+            it.code < 32 || it.code == 127 || it.isWhitespace() || it == '/' || it == '\\'
+        }
+
+    private fun validDocumentDisplayName(value: String): Boolean =
+        value.length in 1..160 && !value.startsWith('.') &&
+            value.none { it == '/' || it == '\\' || it.code < 32 || it.code == 127 }
+
     fun isProtectedPackage(packageName: String?): Boolean =
         packageName != null &&
             (packageName in PROTECTED_PACKAGES || isFloePackage(packageName))
@@ -297,6 +384,8 @@ internal object PhoneControlPolicy {
             is PhoneControlAction.SetText,
             is PhoneControlAction.Scroll,
             is PhoneControlAction.Swipe,
+            is PhoneControlAction.Focus,
+            is PhoneControlAction.Commit,
             -> PhoneControlDenial.PROTECTED_WINDOW
         }
     }

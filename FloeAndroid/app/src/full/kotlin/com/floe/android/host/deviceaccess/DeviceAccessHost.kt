@@ -53,15 +53,24 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import com.floe.android.host.externaledit.ArtifactHandoffBackgroundDocumentLauncher
+import com.floe.android.host.externaledit.ArtifactHandoffBackgroundDocumentRequest
+import com.floe.android.host.externaledit.ArtifactHandoffBackgroundLaunchResult
 import com.floe.android.host.settings.DistributionSettingsFeature
 import com.floe.android.phonecontrol.PhoneControlAction
+import com.floe.android.phonecontrol.PhoneControlActionResult
 import com.floe.android.phonecontrol.PhoneControlAuthority
 import com.floe.android.phonecontrol.PhoneControlBlocker
 import com.floe.android.phonecontrol.PhoneControlClient
 import com.floe.android.phonecontrol.PhoneControlDenial
+import com.floe.android.phonecontrol.PhoneControlDetailPage
+import com.floe.android.phonecontrol.PhoneControlDispatch
+import com.floe.android.phonecontrol.PhoneControlDocumentViewRequest
+import com.floe.android.phonecontrol.PhoneControlFailure
 import com.floe.android.phonecontrol.PhoneControlGrant
 import com.floe.android.phonecontrol.PhoneControlLimits
 import com.floe.android.phonecontrol.PhoneControlModule
+import com.floe.android.phonecontrol.PhoneControlNodeAction
 import com.floe.android.phonecontrol.PhoneControlObservation
 import com.floe.android.phonecontrol.PhoneControlObserveRequest
 import com.floe.android.phonecontrol.PhoneControlOwner
@@ -240,6 +249,134 @@ internal class DeviceAccessHost(
 
     private val activation = PhoneControlModule.activation(context)
     private var phoneClient: PhoneControlClient? = null
+
+    /**
+     * Read-only artifact-handoff authority: the SAME Settings > Device
+     * selected apps that authorize device GUI targets (minus identities that
+     * may never be a handoff destination) plus the typed background document
+     * route. Neither half selects, adds or persists a grant by itself; the
+     * controller still needs an explicit requested target, its own verified
+     * copy and a live owner/epoch/cancellation fence. The lane's host API
+     * exposes this exact authority (nil fails closed).
+     */
+    private val artifactHandoffDocumentLauncher =
+        object : ArtifactHandoffBackgroundDocumentLauncher {
+            override suspend fun launch(
+                request: ArtifactHandoffBackgroundDocumentRequest,
+                stillCurrent: () -> Boolean,
+            ): ArtifactHandoffBackgroundLaunchResult =
+                launchArtifactDocumentInBackground(request, stillCurrent)
+        }
+
+    private val artifactHandoffAuthority =
+        object : com.floe.android.host.externaledit.ArtifactHandoffTargetAuthority {
+            override fun allowedTargetPackages(): Set<String> = artifactHandoffTargets()
+            override fun backgroundDocumentLauncher(): ArtifactHandoffBackgroundDocumentLauncher =
+                artifactHandoffDocumentLauncher
+        }
+
+    private fun artifactHandoffTargets(): Set<String> {
+        val selected = settings.allowedPackages
+        if (selected.isEmpty()) return emptySet()
+        return selected.filterNot { packageName ->
+            packageName.isBlank() ||
+                packageName == ANDROID_SYSTEM_PACKAGE ||
+                packageName == FLOE_PACKAGE_ROOT ||
+                packageName.startsWith("$FLOE_PACKAGE_ROOT.") ||
+                packageName in HANDOFF_PROTECTED_PACKAGES
+        }.toSet()
+    }
+
+    /**
+     * Narrow Full-platform background document route for the read-only
+     * artifact handoff.
+     *
+     * It reuses the EXISTING PhoneControl session/fence: the exact task/run
+     * must still be armed, the App-private target must still be in the user's
+     * Settings > Device ceiling, the native epoch/host generation and the
+     * live handoff ticket must still match, and the service must still report
+     * this exact owner. No grant, selection, unlock or permission is created
+     * here; if automation is not armed the caller gets a typed
+     * `phoneArmRequired` next step to the real device.observe path.
+     */
+    private suspend fun launchArtifactDocumentInBackground(
+        request: ArtifactHandoffBackgroundDocumentRequest,
+        stillCurrent: () -> Boolean,
+    ): ArtifactHandoffBackgroundLaunchResult {
+        if (closed) return ArtifactHandoffBackgroundLaunchResult.Refused("runtimeStopped")
+        if (!stillCurrent()) return ArtifactHandoffBackgroundLaunchResult.Refused("cancelled")
+        if (host.nativeRootEpoch() != request.nativeEpoch ||
+            host.commandClient.generation() != request.hostGeneration
+        ) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("cancelled")
+        }
+        if (userStopped) return ArtifactHandoffBackgroundLaunchResult.Refused("stoppedByUser")
+        val owner = runCatching {
+            PhoneControlOwner(UUID.fromString(request.taskID), UUID.fromString(request.runID))
+        }.getOrNull() ?: return ArtifactHandoffBackgroundLaunchResult.Refused("invalidRequest")
+        if (pauseStateInvalid) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("phonePausedByUser")
+        }
+        if (phonePause.isPaused(owner)) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("phonePausedByUser")
+        }
+        if (settings.allowedPackages.isEmpty()) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("phoneTargetRequired",
+                "Select target apps in Settings > Device, then call device.observe for this task.")
+        }
+        if (request.packageName !in artifactHandoffTargets()) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("targetNotPermitted")
+        }
+        val client = phoneClient?.takeIf { !it.isClosed }
+            ?: return ArtifactHandoffBackgroundLaunchResult.Refused("phoneServiceNotReady")
+        if (!phoneServiceUsable()) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("phoneServiceNotReady")
+        }
+        if (phoneStatus.automationFinishing) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("phoneFinishing")
+        }
+        if (armedOwner != owner || phoneStatus.activeOwner != owner) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("phoneArmRequired",
+                "Call device.observe for this task to arm the existing Phone authorization, " +
+                    "then retry open with the returned sessionID.")
+        }
+        if (!isOwnerRunLive(owner)) {
+            return ArtifactHandoffBackgroundLaunchResult.Refused("deviceRunUnavailable")
+        }
+        val principal = PhoneControlPrincipal(
+            owner = owner,
+            epoch = request.nativeEpoch,
+            allowedPackages = settings.allowedPackages,
+            generation = request.nativeEpoch,
+            grantID = null,
+            // The handoff pump's exact native externalEdit.host.canCommit
+            // ticket is enforced by stillCurrent() at stage and immediately
+            // before the OS call. No PlatformToolCall binding is invented for
+            // this lane; owner/epoch/grant/packages are still re-authorized.
+            callID = null,
+        )
+        val phoneRequest = PhoneControlDocumentViewRequest(
+            uri = request.uri.toString(),
+            mimeType = request.mimeType,
+            packageName = request.packageName,
+            className = request.className,
+            displayName = request.displayName,
+        )
+        val result = try {
+            // Bounded like the other phone operations. A timeout is an
+            // UNOBSERVABLE launch, never a retryable refusal: the record is
+            // already marked UNKNOWN before this call.
+            withTimeoutOrNull(20_000) {
+                client.launchDocumentView(principal, phoneRequest) { stillCurrent() }
+            } ?: return ArtifactHandoffBackgroundLaunchResult.Unknown
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            return ArtifactHandoffBackgroundLaunchResult.Unknown
+        }
+        return artifactHandoffPhoneLaunchResult(result)
+    }
+
     private var rootController: RootSystemController? = null
     private var rootCredentials: com.floe.android.contracts.CredentialStore? = null
 
@@ -522,6 +659,10 @@ internal class DeviceAccessHost(
         pairingNotification.close()
         cancelPairingNotification()
         settings = loadSettings()
+        // The artifact-handoff Full extension reads the SAME target ceiling.
+        // Setting this is not a grant; it only lets that lane refuse targets
+        // outside the user's existing device-app selection.
+        host.artifactHandoffTargetAuthority = artifactHandoffAuthority
         scope.launch(io) {
             unlockConfigured = runCatching { unlockCredentials.read("device-lock")?.let {
                 it.fill(0); true
@@ -688,12 +829,23 @@ internal class DeviceAccessHost(
      */
     fun onPresentationVisible() {
         if (closed) return
+        // Entering Settings can be the first surface that inspects a restored
+        // run after process start. When no history projection exists yet, issue
+        // the same bounded read-only list refresh the chat surface uses so the
+        // exact holder lookup below has real task identities. No grant, device
+        // action or synthetic "Until stopped" scope is created here.
+        if (host.conversations.historyHolder.state.value == null) {
+            runCatching { host.conversations.refreshHistory() }
+        }
         publish()
     }
 
     fun close() {
         if (closed) return
         closed = true
+        if (host.artifactHandoffTargetAuthority === artifactHandoffAuthority) {
+            host.artifactHandoffTargetAuthority = null
+        }
         automatedOwner.getAndSet(null)?.let { phoneClient?.finishAutomation(it) }
         automationControls.clear()
         closePairingSession()
@@ -1723,12 +1875,14 @@ internal class DeviceAccessHost(
      * tasks.
      */
     private fun currentCandidate(): TaskCandidate? {
-        val visible = try {
+        // Priority 1: the chat surface that is actually visible, resolved
+        // through its real holder/run snapshot. A visible surface that is not
+        // running must NOT suppress a different live task: while Settings owns
+        // the window the visible holder may be null or a finished chat.
+        val visible = runCatching {
             host.conversations.currentVisibleConversationId()
-        } catch (_: Throwable) {
-            null
-        }
-        if (visible != null) return candidateFor(visible)
+        }.getOrNull()
+        visible?.let(::candidateFor)?.let { return it }
         return liveCandidateFallback()
     }
 
@@ -1775,10 +1929,27 @@ internal class DeviceAccessHost(
             host.conversations.historyHolder.state.value
         }.getOrNull() ?: return null
         val running = state.runningConversationIds
-        if (running.isEmpty()) return null
         // A set larger than the scan cannot be proven unique within bounds.
         if (running.size > MAX_LIVE_TASK_SCAN) return null
-        val resolved = running.mapNotNull { candidateFor(it) }
+        val liveIds = PhoneTaskPresentation.boundedCandidateIds(running, MAX_LIVE_TASK_SCAN)
+        if (liveIds.isNotEmpty()) {
+            val resolved = liveIds.mapNotNull { candidateFor(it) }
+            // Several genuinely live tasks are ambiguous; never choose one by
+            // list order or recency.
+            val unique = PhoneTaskPresentation.uniqueLiveCandidate(
+                resolved.map { PhoneTaskLiveCandidate(it.owner, it.title, it.phase) },
+            )
+            if (unique != null) return resolved.first { it.owner == unique.owner }
+            if (resolved.isNotEmpty()) return null
+            // Every projected id was stale (for example a restored run whose
+            // page ended before the history list refreshed); fall through to
+            // the actual holders of the bounded active page.
+        }
+        val activeIds = PhoneTaskPresentation.boundedCandidateIds(
+            state.items.map { it.id },
+            MAX_ACTIVE_TASK_SCAN,
+        )
+        val resolved = activeIds.mapNotNull { candidateFor(it) }
         val unique = PhoneTaskPresentation.uniqueLiveCandidate(
             resolved.map { PhoneTaskLiveCandidate(it.owner, it.title, it.phase) },
         ) ?: return null
@@ -3476,6 +3647,32 @@ internal class DeviceAccessHost(
     }
 
     private suspend fun deviceObserve(call: PlatformToolCall): PlatformToolOutcome {
+        // Paging reads the already-captured observation, not the screen. It
+        // must not trigger a new automatic arm (which would be a real
+        // foreground operation) and it keeps the exact live owner requirement.
+        val rawObservationId = call.arguments.opt("observationId")
+        if (rawObservationId != null && rawObservationId !is String) {
+            return PlatformToolOutcome.Failure("invalid_arguments")
+        }
+        val pageObservationId = (rawObservationId as? String)
+            ?.trim()?.takeIf { it.isNotEmpty() }
+        if (pageObservationId != null) {
+            if (call.arguments.optBoolean("includeInvisible", false)) {
+                // Visibility is a property of the retained capture; a page
+                // cannot change it. Refuse instead of silently ignoring it.
+                return PlatformToolOutcome.Failure(
+                    "invalid_arguments",
+                    "includeInvisible applies only to a new observation; omit observationId to recapture",
+                )
+            }
+            return deviceObserveDetail(call, pageObservationId)
+        }
+        if (call.arguments.has("offset")) {
+            return PlatformToolOutcome.Failure(
+                "invalid_arguments",
+                "offset pages an existing observation; pass its observationId, or omit offset for a new observation",
+            )
+        }
         preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = false)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
@@ -3510,13 +3707,63 @@ internal class DeviceAccessHost(
         }
     }
 
+    /**
+     * One bounded page of the retained observation. The session revalidates
+     * exact owner, fence/page generations, TTL and current package scope; the
+     * host adds only the trusted task claim and the stable failure mapping.
+     */
+    private suspend fun deviceObserveDetail(
+        call: PlatformToolCall,
+        observationId: String,
+    ): PlatformToolOutcome {
+        if (observationId.length > 64) {
+            return PlatformToolOutcome.Failure("invalid_arguments")
+        }
+        val offset = when (val raw = call.arguments.opt("offset")) {
+            null -> 0
+            is Int -> raw
+            is Long -> raw.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt() ?: -1
+            else -> -1
+        }
+        if (offset < 0 || offset > PhoneControlLimits.MAX_NODES) {
+            return PlatformToolOutcome.Failure("invalid_arguments")
+        }
+        phonePrecondition(call, requireApproval = false)?.let { return it }
+        val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
+        val principal = phonePrincipal(call)
+            ?: return PlatformToolOutcome.Failure("phone_arm_required")
+        bindPhoneCall(call)
+        return try {
+            when (val result = withTimeout(20_000) {
+                client.observeDetail(principal, observationId, offset)
+            }) {
+                is PhoneControlResult.Ok -> {
+                    if (userStopped || phonePause.isPaused(ownerOf(call)) ||
+                        armedOwner != ownerOf(call)
+                    ) {
+                        PlatformToolOutcome.Failure("phone_stopped_by_user")
+                    } else {
+                        detailOutcome(result.value)
+                    }
+                }
+                is PhoneControlResult.Denied -> deniedOutcome(result.reason)
+                is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
+                is PhoneControlResult.Failed -> failedOutcome(result)
+            }
+        } catch (_: Throwable) {
+            PlatformToolOutcome.Failure("phone_timeout")
+        } finally {
+            unbindPhoneCall(call)
+        }
+    }
+
     private suspend fun deviceAct(call: PlatformToolCall): PlatformToolOutcome {
         preparePhoneAutomation(call)?.let { return it }
         phonePrecondition(call, requireApproval = true)?.let { return it }
         val client = phoneClient ?: return PlatformToolOutcome.Failure("phone_unavailable")
         val principal = phonePrincipal(call)
             ?: return PlatformToolOutcome.Failure("phone_arm_required")
-        val dispatch = when (val request = PhoneActionArguments.request(call.arguments)) {
+        val dispatch = when (val request = DeviceActArguments.request(call.arguments)) {
             is PhoneActionArguments.Request.InvalidArguments ->
                 return PlatformToolOutcome.Failure("invalid_arguments")
             is PhoneActionArguments.Request.MissingObservation ->
@@ -3714,6 +3961,20 @@ internal class DeviceAccessHost(
             evidence = observationEvidence(observation),
         )
 
+    private fun detailOutcome(page: PhoneControlDetailPage): PlatformToolOutcome {
+        val remaining = (page.expiresAtElapsedRealtimeMillis - SystemClock.elapsedRealtime())
+            .coerceAtLeast(0)
+        return PlatformToolOutcome.Success(
+            summary = page.text,
+            evidence = listOf(
+                "observation=${page.observationId}",
+                "rows=${page.rows}/${page.total} offset=${page.offset} " +
+                    "next=${page.nextOffset ?: "none"}",
+                "expiresInMs=$remaining",
+            ),
+        )
+    }
+
     private fun actionOutcome(
         result: com.floe.android.phonecontrol.PhoneControlActionResult,
         sensitiveInput: Boolean = false,
@@ -3742,8 +4003,11 @@ internal class DeviceAccessHost(
         val remaining = (observation.expiresAtElapsedRealtimeMillis - SystemClock.elapsedRealtime())
             .coerceAtLeast(0)
         val actionables = observation.nodes.count { node ->
-            node.visible && node.enabled &&
-                (node.clickable || node.editable || node.scrollable)
+            node.visible && node.enabled && (
+                node.clickable || node.editable || node.scrollable ||
+                    node.advertises(PhoneControlNodeAction.CLICK) ||
+                    node.actions.any { it.isScrollAction }
+                )
         }
         return listOf(
             "fence=${observation.fenceGeneration}",
@@ -3755,7 +4019,9 @@ internal class DeviceAccessHost(
             "sensitive=${observation.sensitiveWindow}",
             "navigationOnly=${observation.navigationOnly}",
             "captured=${observation.nodes.size}/${observation.scannedNodeCount}" +
-                " actions=$actionables omitted=${observation.omittedActionableCount}",
+                " actions=$actionables omitted=${observation.omittedActionableCount}" +
+                " bounded=" + observation.truncationReasons.joinToString(",")
+                    .ifEmpty { "none" },
         )
     }
 
@@ -6051,6 +6317,16 @@ internal class DeviceAccessHost(
         const val KEY_ADVANCED_TARGETS = "advanced_system_targets"
         const val KEY_ADB_ENABLED = "adb_enabled"
         const val MAX_TARGET_PACKAGES = 64
+        const val ANDROID_SYSTEM_PACKAGE = "android"
+        const val FLOE_PACKAGE_ROOT = "com.floe.agent"
+        /** Never a read-only handoff destination, even if once selected. */
+        val HANDOFF_PROTECTED_PACKAGES = setOf(
+            "com.android.systemui",
+            "com.android.permissioncontroller",
+            "com.google.android.permissioncontroller",
+            "com.android.packageinstaller",
+            "com.google.android.packageinstaller",
+        )
 
         /** Settled Host outer ceiling for the nine bounded batch mutations. */
         const val HOST_BATCH_OUTER_TIMEOUT_MILLIS = 1_020_000L
@@ -6058,6 +6334,8 @@ internal class DeviceAccessHost(
         /** Exact-name advanced lookup: same shape the service already checks. */
         val ADVANCED_LOOKUP_NAME = Regex("[A-Za-z0-9._-]{1,255}")
         const val MAX_LIVE_TASK_SCAN = 8
+        /** One bounded history page; never an unbounded holder scan. */
+        const val MAX_ACTIVE_TASK_SCAN = 50
         /** The summary's own hard row cap is 40; char bound still applies. */
         const val MAX_DIGEST_NODES = 40
         const val MAX_LIST_ROWS = 24
@@ -6072,5 +6350,109 @@ internal class DeviceAccessHost(
             SystemOperation.FILE_MOVE,
             SystemOperation.FILE_DELETE,
         )
+    }
+}
+
+/**
+ * `device.act` argument parsing for the generic actions added by this packet.
+ *
+ * The existing [PhoneActionArguments] parser remains the single owner of the
+ * original action set (including the sensitive-text XOR, strict String type,
+ * size caps and the non-launch observationId rule). This thin wrapper only
+ * adds `focus` and `commit` using the same ref grammar and the same
+ * observation rule, so malformed input still classifies as InvalidArguments
+ * and a missing observation still yields the precise recoverable code.
+ */
+internal object DeviceActArguments {
+    fun request(arguments: org.json.JSONObject): PhoneActionArguments.Request {
+        val action = arguments.optString("action")
+        if (action != "focus" && action != "commit") {
+            return PhoneActionArguments.request(arguments)
+        }
+        // New actions accept only a real JSON String ref/id; org.json's
+        // optString would coerce a number/boolean into text and hide a
+        // malformed call. Original actions keep their established parser.
+        val rawRef = arguments.opt("nodeRef")
+        val nodeRef = rawRef as? String ?: return PhoneActionArguments.Request.InvalidArguments
+        if (nodeRef.isEmpty() || nodeRef.length > 16 ||
+            nodeRef.any { !it.isLetterOrDigit() }
+        ) {
+            return PhoneActionArguments.Request.InvalidArguments
+        }
+        val rawObservation = arguments.opt("observationId")
+        if (rawObservation != null && rawObservation !is String) {
+            return PhoneActionArguments.Request.InvalidArguments
+        }
+        val observationId = (rawObservation as? String).orEmpty()
+        if (observationId.isEmpty()) {
+            return PhoneActionArguments.Request.MissingObservation
+        }
+        val model = if (action == "focus") {
+            PhoneControlAction.Focus(nodeRef)
+        } else {
+            PhoneControlAction.Commit(nodeRef)
+        }
+        return PhoneActionArguments.Request.Dispatch(model, observationId)
+    }
+}
+
+/**
+ * Pure mapping from the phone session's honest action receipt to the artifact
+ * handoff's launch classification.
+ *
+ * The critical distinction is preserved: ACTION_REJECTED is emitted ONLY by
+ * the session's closed ActivityNotFoundException/SecurityException boundary
+ * (or a preflight denial), so it is DEFINITELY not dispatched and stays
+ * retryable. A post-start publication/callback failure, INTERNAL_ERROR, an
+ * UNKNOWN dispatch or any other exceptional outcome is UNKNOWN and must never
+ * be replayed.
+ */
+internal fun artifactHandoffPhoneLaunchResult(
+    result: PhoneControlResult<PhoneControlActionResult>,
+): ArtifactHandoffBackgroundLaunchResult = when (result) {
+    is PhoneControlResult.Ok -> when (result.value.dispatch) {
+        PhoneControlDispatch.ACCEPTED -> ArtifactHandoffBackgroundLaunchResult.Accepted
+        PhoneControlDispatch.UNKNOWN, PhoneControlDispatch.PARTIAL ->
+            ArtifactHandoffBackgroundLaunchResult.Unknown
+        PhoneControlDispatch.NOT_DISPATCHED, PhoneControlDispatch.REJECTED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("launchRejected")
+    }
+    is PhoneControlResult.Denied -> when (result.reason) {
+        PhoneControlDenial.STOPPED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("stoppedByUser")
+        PhoneControlDenial.TAKEN_OVER, PhoneControlDenial.USER_TOUCH ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("humanTakeover")
+        PhoneControlDenial.DEVICE_LOCKED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("deviceLocked")
+        PhoneControlDenial.SERVICE_REVOKED, PhoneControlDenial.SERVICE_DISCONNECTED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("phoneServiceNotReady")
+        PhoneControlDenial.CLIENT_CLOSED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("runtimeStopped")
+        PhoneControlDenial.FOREIGN_RUN, PhoneControlDenial.OPERATION_IN_FLIGHT ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("phoneBusy")
+        PhoneControlDenial.AUTHORIZATION_DENIED, PhoneControlDenial.AUTHORIZATION_STALE ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("phoneArmRequired",
+                "Call device.observe for this task to arm the existing Phone authorization, " +
+                    "then retry open with the returned sessionID.")
+        PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED, PhoneControlDenial.PROTECTED_WINDOW ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("targetNotPermitted")
+        PhoneControlDenial.INVALID_ARGUMENT ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("invalidRequest")
+        else -> ArtifactHandoffBackgroundLaunchResult.Refused("launchRejected")
+    }
+    is PhoneControlResult.Unavailable -> when (result.reason) {
+        PhoneControlUnavailable.SERVICE_NOT_CONNECTED,
+        PhoneControlUnavailable.SERVICE_NOT_ENABLED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("phoneServiceNotReady")
+        PhoneControlUnavailable.LAUNCH_TARGET_UNAVAILABLE ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("targetNotPermitted")
+        else -> ArtifactHandoffBackgroundLaunchResult.Refused("launchRejected")
+    }
+    is PhoneControlResult.Failed -> when (result.reason) {
+        PhoneControlFailure.ACTION_REJECTED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("launchRejected")
+        PhoneControlFailure.CANCELLED ->
+            ArtifactHandoffBackgroundLaunchResult.Refused("cancelled")
+        else -> ArtifactHandoffBackgroundLaunchResult.Unknown
     }
 }

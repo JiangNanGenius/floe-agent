@@ -176,8 +176,8 @@ public enum AndroidBundledSkillGuides {
         BundledDomainSkills.Definition(
             id: "floe-android-device",
             name: "Android Apps & Device Access",
-            description: "Use Android apps, selected device files and available ADB or Root tools with real system receipts. Install, update or uninstall apps through the typed device tools; ordinary Linux commands stay in the task environment.",
-            version: "1.0.0",
+            description: "Use Android apps, selected device files and available ADB or Root tools with real system receipts. Observe and operate real app controls through bounded device tools; install, update or uninstall apps through the typed device tools; ordinary Linux commands stay in the task environment.",
+            version: "1.1.0",
             exposed: false,
             markdown: """
             ## Android apps and device access
@@ -189,6 +189,12 @@ public enum AndroidBundledSkillGuides {
             ### Files and external apps
             - `system.files.list`/`system.files.read` inspect the exact selected root; write/move/delete require the user's writable scope. ADB cannot read arbitrary app-private data. Keep originals and verify saved results. Lightweight text/code edits belong in the existing in-app editor; use an appropriate Android app for professional editing, or the project Linux tools when more capability is needed.
             - For UI-only external-app steps use a fresh `device.observe`, then `device.act` with that observation's actual identifiers and current schema, and observe the result. Use `device.screenshot` only when the available structure is insufficient. Respect the existing user-takeover/pause and application-target controls; desktop sessions are primarily for the user, not a prerequisite for model command execution.
+            ### Observation and input discipline
+            - The first `device.observe` returns a compact, ACTIONABLE-FIRST digest plus honest capture bounds (`truncated=scan|time|depth|selection|text`). Flags `c/e/s` mean the platform declares click/setText/scroll; `f/i` mark focus/IME on inputs; `-` is read-only. `moreActions` lists usable refs that did not fit a full row. A truncated digest is not a complete tree and omitted rows are not absent controls.
+            - To read the rest of the captured node list, call `device.observe` again with the SAME `observationId` and `offset=<nextOffset>`. Pages show ref, class, depth/parent, flags, view id, text/description/hint, structural row relation, platform range/current value, advertised actions and bounds. A page read reads the retained observation only: it does not re-read the screen, invalidate refs or extend the TTL. Omit `observationId` when you need a NEW observation of the current screen.
+            - `click` uses the platform's `ACTION_CLICK`; it is valid when the node reports clickable or advertises that action, and it never synthesizes a coordinate tap. `scroll` uses `forward`/`backward` = content toward its end/start; `swipe` uses the finger direction (`up`/`down`/`left`/`right`) and only inside a real scrollable region.
+            - `setText` changes only the field buffer. It is NOT a committed business value: after filling a search box or a date field, verify the enclosing result/date yourself. Use `focus` to move input focus, and on Android 11+ `commit` to send the platform IME action (search/go/done/send) to a focused or platform-advertised editable field. `dispatch=ACCEPTED` proves only that the framework accepted the action — re-observe the actual value, selected date, results list or saved record. Never report a saved calendar event or completed search from a text readback or a toast.
+            - Never invent node refs, action ids, dates or coordinates. A stale/foreign/expired observation is refused by design: observe again instead of reusing narrative history. Read-only, password, protected and disabled controls keep their refusals.
             """
         ),
         BundledDomainSkills.Definition(

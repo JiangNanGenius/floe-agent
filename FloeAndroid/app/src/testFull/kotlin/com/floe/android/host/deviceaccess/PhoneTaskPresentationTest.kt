@@ -441,3 +441,53 @@ class PhoneTaskPresentationTest {
         assertTrue(PhoneTaskPresentation.selectedRunMatches(nativeText(runUUID), runUUID))
     }
 }
+
+    // ------------------------------------------------- candidate scan bounds
+
+    @Test
+    fun boundedCandidateIdsDeduplicatesAndKeepsTheCallerOrder() {
+        val ids = listOf(
+            "00000000-0000-0000-0000-000000000001",
+            " 00000000-0000-0000-0000-000000000002 ",
+            "00000000-0000-0000-0000-000000000001",
+            "",
+            "not a conversation id",
+            "00000000-0000-0000-0000-000000000003",
+        )
+        assertEquals(
+            listOf(
+                "00000000-0000-0000-0000-000000000001",
+                "00000000-0000-0000-0000-000000000002",
+                "00000000-0000-0000-0000-000000000003",
+            ),
+            PhoneTaskPresentation.boundedCandidateIds(ids, 8),
+        )
+    }
+
+    @Test
+    fun boundedCandidateIdsNeverExceedTheScan() {
+        val ids = (1..20).map {
+            "00000000-0000-0000-0000-${it.toString().padStart(12, '0')}"
+        }
+        assertEquals(3, PhoneTaskPresentation.boundedCandidateIds(ids, 3).size)
+        assertTrue(PhoneTaskPresentation.boundedCandidateIds(ids, 0).isEmpty())
+    }
+
+    @Test
+    fun theRestoredLiveOwnerIsUniqueAcrossMixedSpellings() {
+        val first = owner(1, 1)
+        val second = owner(2, 2)
+        val unique = PhoneTaskPresentation.uniqueLiveCandidate(
+            listOf(candidate(first), candidate(first.copy(title = "same owner"))),
+        )
+        assertEquals(first, unique?.owner)
+        assertNull(
+            PhoneTaskPresentation.uniqueLiveCandidate(
+                listOf(candidate(first), candidate(second)),
+            ),
+        )
+        assertTrue(
+            "blank-like ids are not candidates",
+            PhoneTaskPresentation.boundedCandidateIds(listOf("", " "), 8).isEmpty(),
+        )
+    }

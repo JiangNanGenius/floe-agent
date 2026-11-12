@@ -64,6 +64,34 @@ class PhoneControlClient internal constructor(
         }
     }
 
+    /**
+     * Reads one bounded page of an observation this client already captured.
+     * The page is retained session data, not a new screen read; the host still
+     * enforces the exact live task/run grant, fence generation, observation TTL
+     * and current target-package scope on every page.
+     */
+    suspend fun observeDetail(
+        principal: PhoneControlPrincipal,
+        observationId: String,
+        offset: Int,
+    ): PhoneControlResult<PhoneControlDetailPage> {
+        if (observationId.isBlank() || observationId.length > 64) {
+            return PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT)
+        }
+        if (offset < 0 || offset > PhoneControlLimits.MAX_NODES) {
+            return PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT)
+        }
+        val grant = when (val answer = authorization(principal)) {
+            is PhoneControlResult.Ok -> answer.value
+            is PhoneControlResult.Denied -> return answer
+            is PhoneControlResult.Unavailable -> return answer
+            is PhoneControlResult.Failed -> return answer
+        }
+        return dispatch { session, _, finish ->
+            session.detail(principal, grant, observationId, offset, finish)
+        }
+    }
+
     suspend fun perform(
         principal: PhoneControlPrincipal,
         observationId: String,
@@ -77,6 +105,8 @@ class PhoneControlClient internal constructor(
             is PhoneControlAction.SetText -> action.nodeRef
             is PhoneControlAction.Scroll -> action.nodeRef
             is PhoneControlAction.Swipe -> action.nodeRef
+            is PhoneControlAction.Focus -> action.nodeRef
+            is PhoneControlAction.Commit -> action.nodeRef
             PhoneControlAction.Back, PhoneControlAction.Home, is PhoneControlAction.Launch -> null
         }
         if (nodeRef != null && nodeRef.isBlank()) {
@@ -118,6 +148,44 @@ class PhoneControlClient internal constructor(
             when (val fresh = authorization(principal)) {
                 is PhoneControlResult.Ok -> finish(session.launchApplication(principal, fresh.value, packageName))
                 else -> finish(PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED))
+            }
+        }
+    }
+
+    /**
+     * The ONE typed background document VIEW. The host supplies an exact
+     * App-owned content URI, MIME, package/class and display name; the model
+     * never supplies an Intent, flags, extras or a target identity. The live
+     * authority and service fence are re-evaluated at dispatch and just
+     * before the OS call; [stillCurrent] is the host's exact native-ticket/
+     * owner/generation cancellation fence.
+     */
+    suspend fun launchDocumentView(
+        principal: PhoneControlPrincipal,
+        request: PhoneControlDocumentViewRequest,
+        stillCurrent: () -> Boolean,
+    ): PhoneControlResult<PhoneControlActionResult> {
+        if (PhoneControlPolicy.documentViewShapeDenial(request) != null) {
+            return PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT)
+        }
+        val answer = authorization(principal)
+        if (answer !is PhoneControlResult.Ok) return when (answer) {
+            is PhoneControlResult.Denied -> answer
+            is PhoneControlResult.Unavailable -> answer
+            is PhoneControlResult.Failed -> answer
+            else -> PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED)
+        }
+        if (!stillCurrent()) return PhoneControlResult.Failed(PhoneControlFailure.CANCELLED)
+        return dispatch { session, _, finish ->
+            if (!stillCurrent()) {
+                finish(PhoneControlResult.Failed(PhoneControlFailure.CANCELLED))
+            } else {
+                when (val fresh = authorization(principal)) {
+                    is PhoneControlResult.Ok -> session.launchDocumentView(
+                        principal, fresh.value, request, stillCurrent, finish)
+                    else -> finish(PhoneControlResult.Denied(
+                        PhoneControlDenial.AUTHORIZATION_DENIED))
+                }
             }
         }
     }

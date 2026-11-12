@@ -11,8 +11,9 @@ import org.junit.Test
  * N03 source-level contract: the trusted descriptors must explain the bounded
  * late-control coverage and separate potential screenshot support from the
  * CURRENT live consent/readiness, without advertising arguments or tools that
- * the host does not implement. Schema keys stay unchanged so the shared Swift
- * bind and the provider-facing closed schema remain compatible.
+ * the host does not implement. The FS03 paging and FS04 focus/commit arguments
+ * are ADDITIVE optional keys inside the same closed schema subset, so the
+ * shared Swift bind and provider-facing compatibility are preserved.
  */
 class DeviceObservationStatusContractTest {
     private fun descriptor(name: String): JSONObject {
@@ -40,8 +41,40 @@ class DeviceObservationStatusContractTest {
         assertTrue(description.contains("scanned"))
         assertTrue(description.contains("includeInvisible"))
         assertTrue(description.contains("refusal does not change your selected apps"))
+        assertTrue(description.contains("nextOffset"))
+        assertTrue(description.contains("retained observation"))
+        assertTrue(description.contains("truncated=scan"))
         assertFalse(description.contains("unlimited"))
-        assertEquals(setOf("includeInvisible"), properties(DeviceAccessToolCatalog.DEVICE_OBSERVE))
+        assertEquals(
+            setOf("includeInvisible", "observationId", "offset"),
+            properties(DeviceAccessToolCatalog.DEVICE_OBSERVE),
+        )
+    }
+
+    @Test
+    fun actDescriptorPublishesGenericFocusCommitAndRealScrollSemantics() {
+        val description = descriptor(DeviceAccessToolCatalog.DEVICE_ACT)
+            .getString("description")
+        assertTrue(description.contains("focus"))
+        assertTrue(description.contains("commit"))
+        assertTrue(description.contains("IME action"))
+        assertTrue(description.contains("Android 11+"))
+        assertTrue(description.contains("ACTION_CLICK"))
+        assertTrue(description.contains("never synthesizes a coordinate tap"))
+        assertTrue(description.contains("ACTION_SCROLL_FORWARD"))
+        assertTrue(description.contains("finger direction"))
+        assertTrue(description.contains("field buffer"))
+        assertTrue(description.contains("NOT proof"))
+        val actionEnum = descriptor(DeviceAccessToolCatalog.DEVICE_ACT)
+            .getJSONObject("schema")
+            .getJSONObject("properties")
+            .getJSONObject("action")
+            .getJSONArray("enum")
+            .let { list -> (0 until list.length()).map { list.getString(it) } }
+        assertTrue("focus" in actionEnum)
+        assertTrue("commit" in actionEnum)
+        assertTrue("click" in actionEnum)
+        assertTrue("launch" in actionEnum)
     }
 
     @Test

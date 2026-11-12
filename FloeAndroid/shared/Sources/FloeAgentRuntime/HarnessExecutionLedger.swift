@@ -3,6 +3,8 @@ import Crypto
 import FloeModels
 
 import FloeCore
+import FloeTools
+
 /// A bounded, activation-local account of work already performed. Provider
 /// tool-call pairs are necessarily detailed, but many APIs only carry the
 /// immediately preceding pair forward. This ledger gives later turns a small
@@ -53,6 +55,16 @@ struct HarnessExecutionLedger: Sendable {
             toolName == HarnessExecutionLedger.unknownOverflowSentinelToolName
                 && callFingerprint == HarnessExecutionLedger.unknownOverflowSentinelCallFingerprint
         }
+
+        /// True when this excerpt is the runtime's own "skipped duplicate /
+        /// unchanged failure after recovery" answer rather than a real tool
+        /// result. Such a receipt is conversation history, not execution
+        /// evidence, and must never be quoted as the prior evidence of a
+        /// later recovery (that is how "Prior evidence:" used to nest).
+        var isSynthesizedReplayReceipt: Bool {
+            excerpt.hasPrefix(HarnessExecutionLedger.recoveredDuplicatePrefix)
+                || excerpt.hasPrefix(HarnessExecutionLedger.recoveredFailurePrefix)
+        }
     }
 
     /// Reserved prefix for the persisted fingerprint of a dispatch whose
@@ -67,6 +79,12 @@ struct HarnessExecutionLedger: Sendable {
     /// Reserved identity pair for the saturation marker entry.
     static let unknownOverflowSentinelToolName = "__floe_harness_unknown_outcome_overflow__"
     static let unknownOverflowSentinelCallFingerprint = "saturation"
+    /// Exact wording of the runtime-synthesized recovery answers. A
+    /// checkpoint written by an earlier build can already carry one; it is
+    /// never fresh execution evidence, so a later recovery must quote the
+    /// innermost original excerpt instead of layering another prefix.
+    static let recoveredDuplicatePrefix = "Skipped duplicate completed tool call after recovery."
+    static let recoveredFailurePrefix = "Skipped unchanged failed tool call after recovery."
 
     private(set) var entries: [Entry] = []
     private let maximumEntries = 12
@@ -81,7 +99,7 @@ struct HarnessExecutionLedger: Sendable {
                 excerpt: String(record.excerpt.prefix(360)),
                 occurrenceCount: max(1, record.occurrenceCount),
                 isSideEffecting: record.isSideEffecting
-                    ?? Self.legacySideEffectingTools.contains(record.toolName)
+                    ?? Self.legacySideEffectingTools.contains(Self.toolIdentity(record.toolName))
             )
         }
     }
@@ -283,9 +301,17 @@ struct HarnessExecutionLedger: Sendable {
             isSideEffecting: isSideEffecting
         ) { return suppressed }
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
-        guard let entryIndex = entries.lastIndex(where: {
-            $0.toolName == call.toolName && $0.callFingerprint == callFingerprint
-        }) else { return nil }
+        let identity = Self.toolIdentity(call.toolName)
+        let matchingIndices = entries.indices.filter {
+            Self.toolIdentity(entries[$0].toolName) == identity
+                && entries[$0].callFingerprint == callFingerprint
+        }
+        // Prefer the real receipt over a synthetic duplicate answer written
+        // by an older build; fall back to the synthetic one only when no real
+        // evidence remains in the bounded ledger.
+        guard let entryIndex = matchingIndices.last(where: {
+            !entries[$0].isSynthesizedReplayReceipt
+        }) ?? matchingIndices.last else { return nil }
         let entry = entries[entryIndex]
         if entry.status == .ok && !entry.isSideEffecting { return nil }
         // A repair can invalidate a previous failure, but must never invalidate
@@ -294,6 +320,7 @@ struct HarnessExecutionLedger: Sendable {
             index > entryIndex
                 && entries[index].status == .ok
                 && entries[index].isSideEffecting
+                && !entries[index].isSynthesizedReplayReceipt
         }) {
             return nil
         }
@@ -301,14 +328,41 @@ struct HarnessExecutionLedger: Sendable {
             return nil
         }
         let prefix = entry.status == .ok
-            ? "Skipped duplicate completed tool call after recovery."
-            : "Skipped unchanged failed tool call after recovery."
+            ? Self.recoveredDuplicatePrefix
+            : Self.recoveredFailurePrefix
         return ToolResult(
             callID: call.id,
             status: entry.status,
-            outputSummary: prefix + " Prior evidence: " + entry.excerpt,
+            outputSummary: prefix + " Prior evidence: " + Self.originalEvidence(from: entry.excerpt),
             outputDigest: ""
         )
+    }
+
+    /// Returns the innermost real dispatch excerpt of a ledger record.
+    /// Earlier builds recorded the synthetic "skipped duplicate" answer back
+    /// into the ledger; every later recovery then prefixed that answer again,
+    /// so the excerpt grew without bound and stopped describing the actual
+    /// observation. Stripping the runtime-owned prefixes keeps the original
+    /// evidence stable across any number of recoveries while old checkpoints
+    /// remain readable. Bounded so malformed/adversarial text can never loop.
+    static func originalEvidence(from excerpt: String) -> String {
+        var value = excerpt
+        let prefixes = [recoveredDuplicatePrefix, recoveredFailurePrefix]
+        for _ in 0..<8 {
+            guard let prefix = prefixes.first(where: { value.hasPrefix($0) }) else { break }
+            var remainder = String(value.dropFirst(prefix.count))
+            let marker = " Prior evidence: "
+            if remainder.hasPrefix(marker) {
+                remainder = String(remainder.dropFirst(marker.count))
+            }
+            // A bounded/truncated record can end exactly at a synthetic
+            // prefix; keep the outer text rather than returning nothing.
+            guard !remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                break
+            }
+            value = remainder
+        }
+        return value
     }
 
     mutating func record(
@@ -417,8 +471,9 @@ struct HarnessExecutionLedger: Sendable {
             )
         }
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
+        let identity = Self.toolIdentity(call.toolName)
         guard let entry = entries.first(where: {
-            $0.toolName == call.toolName
+            Self.toolIdentity($0.toolName) == identity
                 && $0.callFingerprint == callFingerprint
                 && $0.outcomeUnknown
         }) else { return nil }
@@ -463,8 +518,9 @@ struct HarnessExecutionLedger: Sendable {
             ))
         }
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
+        let identity = Self.toolIdentity(call.toolName)
         guard let entry = entries.first(where: {
-            $0.toolName == call.toolName
+            Self.toolIdentity($0.toolName) == identity
                 && $0.callFingerprint == callFingerprint
                 && $0.outcomeUnknown
         }) else { return .noReceipt }
@@ -500,8 +556,9 @@ struct HarnessExecutionLedger: Sendable {
     /// at settle time. No-op when no receipt matches.
     mutating func dissolveUnknownOutcomeReceipt(matching call: ToolCall) {
         let callFingerprint = Self.fingerprint(call.argumentsJSON)
+        let identity = Self.toolIdentity(call.toolName)
         guard let index = entries.firstIndex(where: {
-            $0.toolName == call.toolName
+            Self.toolIdentity($0.toolName) == identity
                 && $0.callFingerprint == callFingerprint
                 && $0.outcomeUnknown
         }) else { return }
@@ -523,13 +580,18 @@ struct HarnessExecutionLedger: Sendable {
     }
 
     func promptBlock() -> String? {
-        guard !entries.isEmpty else {
+        // A synthesized recovery answer is not work that executed; the
+        // provider already received it as the paired tool result. Historical
+        // checkpoints may still contain such ledger records, so keep them out
+        // of the activation evidence shown to the model.
+        let executedEntries = entries.filter { !$0.isSynthesizedReplayReceipt }
+        guard !executedEntries.isEmpty else {
             return """
             # Activation ledger (harness generated)
             No structured tool call has executed in this activation. If the request needs external observation or action, call an appropriate tool only if it is offered in this request; otherwise state the missing capability when it prevents completion. Any prose claiming a tool result, screenshot, hash, changed state, or successful action before an entry appears here is unsupported and must not be presented as fact.
             """
         }
-        let lines = entries.suffix(8).map { entry in
+        let lines = executedEntries.suffix(8).map { entry in
             let repeats = entry.occurrenceCount > 1 ? " x\(entry.occurrenceCount)" : ""
             return "- \(entry.toolName) [\(entry.status.rawValue)] call=\(entry.callFingerprint) result=\(entry.resultFingerprint)\(repeats): \(entry.excerpt)"
         }
@@ -558,6 +620,18 @@ struct HarnessExecutionLedger: Sendable {
         return String(combined.prefix(360))
     }
 
+    /// The runtime's ONE closed rename authority (`FloeTools.ToolAliasTable`,
+    /// shared with the registry, ceilings and redaction). Recovery matching
+    /// must resolve the same tool identity the executor resolves, so a
+    /// completed or unknown receipt stored under the pre-rename `phone.act`
+    /// spelling protects a canonical `device.act` retry — and the reverse —
+    /// instead of letting a legacy-name original replay become a second side
+    /// effect. Unknown names pass through unchanged; this never broadens the
+    /// alias set and does not replace the permission/unknown-outcome checks.
+    static func toolIdentity(_ name: String) -> String {
+        ToolAliasTable.canonical(name)
+    }
+
     private static func fingerprint(_ data: Data) -> String {
         let canonical: Data
         if let object = try? JSONSerialization.jsonObject(with: data),
@@ -579,8 +653,11 @@ struct HarnessExecutionLedger: Sendable {
 
     /// Only used when restoring checkpoints written before the effect bit was
     /// persisted. New checkpoints always carry the descriptor-derived value.
+    /// `device.act` and its closed pre-rename spelling are unambiguously
+    /// side-effecting, so a legacy receipt can never be mistaken for a
+    /// read-only observation and silently replayed.
     private static let legacySideEffectingTools: Set<String> = [
         "ssh.execute", "ssh.updateHost", "vnc.connect", "vnc.reconnect",
-        "vnc.disconnect"
+        "vnc.disconnect", "device.act"
     ]
 }

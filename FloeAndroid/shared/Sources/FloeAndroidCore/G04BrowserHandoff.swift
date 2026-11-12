@@ -115,13 +115,13 @@ public final class G04BrowserHandoffBridge: @unchecked Sendable {
 
 /// Revalidates the exact native ownership triple against the ORIGINAL
 /// persisted records: an ordinary (non-temporary) conversation, the task's
-/// CURRENTLY SELECTED workspace, and the private-task root the ORIGINAL
-/// authority resolves. Model/page data never reaches this; only the
-/// composition installs the closure. A released root/epoch answers false
-/// everywhere (fail closed), and non-private-task (managed project/SAF)
-/// write layers stay refused until Main wires their ORIGINAL source
-/// binding through the workspace source coordinator — this never guesses a
-/// first project or a temporary directory.
+/// CURRENTLY SELECTED workspace, and the bound root the ORIGINAL authority
+/// resolves. Model/page data never reaches this; only the composition
+/// installs the closure. A released root/epoch answers false everywhere
+/// (fail closed). Both persisted Android shapes are accepted exactly as
+/// `G04LiveWorkspaceAccess`/the workspace facade accept them: the original
+/// private-task root and a managed C01 project. External/bookmark layers
+/// still fail closed; this never guesses a first project or temporary dir.
 enum G04BrowserOwnerAuthority {
     static func revalidate(owner: BrowserOwnerID) async -> Bool {
         guard G02NativeRootEpoch.readback() == owner.rootEpoch,
@@ -139,6 +139,7 @@ enum G04BrowserOwnerAuthority {
                   let workspace = try await installed.cluster.workspaceStore
                     .workspace(id: owner.workspaceID),
                   workspace.kind == .privateTask
+                    || C01ProjectRootLayout.isManagedProject(workspace)
             else { return false }
             guard let binding = await LinuxWorkspaceAuthority.resolveWorkspace(
                 conversationID: owner.taskID),

@@ -48,12 +48,15 @@ internal object PhoneControlCaptureWalk {
     data class Result(
         val visitedNodeCount: Int,
         val depthLimited: Boolean,
+        /** True when either the node budget or the deadline stopped the scan. */
         val scanLimited: Boolean,
         val timedOut: Boolean,
         val obsolete: Boolean,
         val cancelled: Boolean,
         /** Real tree paths in visit order; exposed for focused unit tests. */
         val visitedPaths: List<List<Int>>,
+        /** True only when the node budget (not the deadline) stopped the scan. */
+        val nodeLimited: Boolean = false,
     )
 
     private data class LevelEntry(
@@ -84,6 +87,7 @@ internal object PhoneControlCaptureWalk {
         var visited = 0
         var depthLimited = false
         var scanLimited = false
+        var nodeLimited = false
         var timedOut = false
         var obsolete = false
         var cancelled = false
@@ -162,6 +166,7 @@ internal object PhoneControlCaptureWalk {
                         // Every enqueued entry has at least one child, so the
                         // node budget has real pending work behind it.
                         scanLimited = true
+                        nodeLimited = true
                         break
                     }
                     val parent = cursor.resolve(entry.path)
@@ -179,6 +184,7 @@ internal object PhoneControlCaptureWalk {
                         try {
                             if (visited >= nodeLimit) {
                                 scanLimited = true
+                                nodeLimited = true
                                 break
                             }
                             val childPath = entry.path + index
@@ -228,6 +234,7 @@ internal object PhoneControlCaptureWalk {
             obsolete = obsolete,
             cancelled = cancelled,
             visitedPaths = paths,
+            nodeLimited = nodeLimited,
         )
     }
 

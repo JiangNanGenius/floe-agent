@@ -678,6 +678,14 @@ public actor FloeAgentRuntime {
     /// boundary; a normal fresh run may legitimately observe the same path
     /// again after a mutation.
     private var resumedFromCheckpoint = false
+    /// True while the activation is still standing exactly on the restored
+    /// provider/tool-result boundary. The provider can regenerate the
+    /// interrupted response's calls only there; once this activation has
+    /// settled any genuinely new call (or completed a model turn), an
+    /// identical request is a new operation and must reach the executor.
+    /// This is deliberately a protocol boundary, not a timer or a cleared
+    /// boolean: unknown-outcome receipts still suppress at any time.
+    private var recoveryReplayBoundaryActive = false
     private var forcedStopReason: AgentEvent.StopReason?
     private var isFinalizingWithoutTools = false
     /// Structured logging for run diagnostics (state transitions, approval
@@ -1375,6 +1383,7 @@ public actor FloeAgentRuntime {
             }
         }
         resumedFromCheckpoint = true
+        recoveryReplayBoundaryActive = true
         // A resumed activation is a fresh progress epoch: cycle history from
         // the interrupted activation must not stop the recovered route, which
         // may legitimately continue after external state changed meanwhile.
@@ -1485,18 +1494,35 @@ public actor FloeAgentRuntime {
                 await emit(.toolResult(restored))
                 continue
             }
-            if let recovered = executionLedger.recoveredResult(
-                for: call,
-                isSideEffecting: isSideEffecting
-            ) {
+            // Only a call that provably never crossed the executor boundary
+            // may reuse an earlier completed route's evidence. A pending call
+            // whose lifecycle says `dispatched` (or a legacy checkpoint with
+            // no lifecycle metadata) may already have changed the real world,
+            // even when the same route also completed on an earlier turn; it
+            // must stay an honest unknown outcome instead of being disguised
+            // as a skipped duplicate.
+            let neverDispatched = lifecycle?.phase == .recorded
+                || lifecycle?.phase == .approved
+            var isSyntheticRecoveryResult = false
+            if neverDispatched,
+               let recovered = executionLedger.recoveredResult(
+                   for: call,
+                   isSideEffecting: isSideEffecting
+               ) {
+                // The restored model re-requested a route that already
+                // completed before the interruption. Reuse that evidence and
+                // keep the provider pair, but never record the synthetic
+                // answer as a fresh dispatch.
                 result = recovered
-            } else if lifecycle?.phase == .recorded || lifecycle?.phase == .approved {
+                isSyntheticRecoveryResult = true
+            } else if neverDispatched {
                 result = ToolResult(
                     callID: call.id,
                     status: .failed,
                     outputSummary: "The tool call was recorded but never dispatched. No external action started; re-plan from current state without treating this as a failed side effect.",
                     outputDigest: ""
                 )
+                isSyntheticRecoveryResult = true
             } else {
                 let retryGuidance = isSideEffecting
                     ? "Inspect current external state before deciding whether any action should be retried; the real-world outcome is unknown."
@@ -1514,13 +1540,15 @@ public actor FloeAgentRuntime {
             }
             pendingToolResults.append(result)
             pairedIDs.insert(call.id)
-            executionLedger.record(
-                call: call,
-                result: result,
-                isSideEffecting: isSideEffecting,
-                outcomeUnknown: outcomeUnknown,
-                outcomeUnknownReason: .interruptedDispatch
-            )
+            if !isSyntheticRecoveryResult {
+                executionLedger.record(
+                    call: call,
+                    result: result,
+                    isSideEffecting: isSideEffecting,
+                    outcomeUnknown: outcomeUnknown,
+                    outcomeUnknownReason: .interruptedDispatch
+                )
+            }
             setToolLifecycle(call: call, phase: .resultCommitted)
             // Recovery outcomes belong in the durable task timeline as well
             // as the provider pair. Otherwise a finished run leaves its old
@@ -1967,6 +1995,7 @@ public actor FloeAgentRuntime {
             latestProviderDispatchEnvelope = nil
             latestProviderDispatchRequest = nil
             providerRetryRequest = nil
+            recoveryReplayBoundaryActive = false
         }
         // Sink callbacks perform durable persistence and therefore suspend.
         // A user cancel/pause can win during that suspension; never revive a
@@ -2754,6 +2783,10 @@ public actor FloeAgentRuntime {
                 error: nil
             )
             clearCompletedProviderDispatch()
+            // A completed turn that requested no tool is a new conversation
+            // step, not the regenerated interrupted response; any later call
+            // is new work even if its arguments match an earlier completion.
+            recoveryReplayBoundaryActive = false
             await finishOrSteer(stopReason: forcedStopReason ?? completion.stopReason)
             return
         }
@@ -3112,9 +3145,11 @@ public actor FloeAgentRuntime {
               !streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
-        let receipts = executionLedger.entries.map {
-            ActionClaimGate.Receipt(toolName: $0.toolName, status: $0.status)
-        }
+        let receipts = executionLedger.entries
+            .filter { !$0.isSynthesizedReplayReceipt }
+            .map {
+                ActionClaimGate.Receipt(toolName: $0.toolName, status: $0.status)
+            }
         return ActionClaimGate().evaluate(
             claim: streamText,
             receipts: receipts,
@@ -3534,6 +3569,7 @@ public actor FloeAgentRuntime {
                 $0.status == .ok
                     && !$0.outcomeUnknown
                     && !$0.isUnknownOutcomeOverflowSentinel
+                    && !$0.isSynthesizedReplayReceipt
             }
             .suffix(8)
             .map {
@@ -4197,6 +4233,12 @@ public actor FloeAgentRuntime {
         var blockedNoProgressCallIDs: Set<String> = []
         var suppressedCallIDs: Set<String> = []
         var firstCallIDByRoute: [String: String] = [:]
+        // The restored replay admission covers exactly the calls settled
+        // while the activation still stands on the restored boundary. The
+        // first batch that contains any non-replay call proves the model is
+        // producing new work; later identical requests are new operations.
+        let allowsRecoveryReplay = recoveryReplayBoundaryActive
+        var recoveredReplayCallIDs: Set<String> = []
 
         // Record the complete provider batch first. Even if the iteration
         // budget expires during resolution, every structured call must still
@@ -4357,14 +4399,18 @@ public actor FloeAgentRuntime {
                 continue
             }
             if resumedFromCheckpoint,
+               allowsRecoveryReplay,
                let recovered = executionLedger.recoveredResult(
                    for: call,
                    isSideEffecting: candidateIsSideEffecting
                ) {
                 // A provider can regenerate a completed call after a stream
-                // interruption. Preserve the provider pairing, but do not
-                // cross the executor/approval boundary a second time.
+                // interruption, but only while this activation still stands
+                // on the restored tool-result boundary. Preserve the provider
+                // pairing, and remember that this reply is synthetic so it is
+                // never re-recorded as fresh execution evidence.
                 resultsByID[call.id] = recovered
+                recoveredReplayCallIDs.insert(call.id)
                 continue
             }
             // plan.submit is an internal, run-scoped persistence hand-off and
@@ -4485,7 +4531,14 @@ public actor FloeAgentRuntime {
                 outputSummary: "Harness failed to settle this tool call; no result was produced.",
                 outputDigest: ""
             )
-            result = finalizeToolResult(result, for: call)
+            // A recovered replay answers a regenerated provider call; it is
+            // not a new execution. Never stamp it with fresh dispatch
+            // provenance, never capture it as evidence, and never let it
+            // advance the loop guard's progress epoch.
+            let isRecoveredReplay = recoveredReplayCallIDs.contains(call.id)
+            if !isRecoveredReplay {
+                result = finalizeToolResult(result, for: call)
+            }
             // Capability lifetime check. A runner can be unregistered,
             // disabled or replaced while its call is in flight (dynamic source
             // teardown, MCP refresh, credential change). A late result no
@@ -4541,7 +4594,8 @@ public actor FloeAgentRuntime {
                 call: call,
                 result: result,
                 isSideEffecting: executedIsSideEffecting,
-                stopLimit: configuration.unchangedToolOutcomeLimit
+                stopLimit: configuration.unchangedToolOutcomeLimit,
+                countsAsProgress: !isRecoveredReplay
             ) {
                 noProgressDetected = noProgressDetected || guardrail.shouldStop
                 result.outputSummary += "\n\nHarness warning: \(guardrail.message)"
@@ -4549,33 +4603,53 @@ public actor FloeAgentRuntime {
             if blockedNoProgressCallIDs.contains(call.id) {
                 noProgressDetected = true
             }
-            // Capture the FULL post-redaction result BEFORE the checkpoint's
-            // compact projection shrinks it. The bytes live under the task's
-            // existing artifact root; `tools.readResult` can page them later.
-            phoneObservationReviewCache.record(call: call, result: result, outcomeUnknown: outcomeUnknown)
-            if call.toolName != ToolResultPagingTool.name {
-                let receipt = await retainCapturedResult(call, result: result)
-                if let receipt {
-                    result.captureInfo = Self.captureInfo(from: receipt)
+            if !isRecoveredReplay {
+                // Capture the FULL post-redaction result BEFORE the
+                // checkpoint's compact projection shrinks it. The bytes live
+                // under the task's existing artifact root; `tools.readResult`
+                // can page them later.
+                phoneObservationReviewCache.record(
+                    call: call, result: result, outcomeUnknown: outcomeUnknown
+                )
+                if call.toolName != ToolResultPagingTool.name {
+                    let receipt = await retainCapturedResult(call, result: result)
+                    if let receipt {
+                        result.captureInfo = Self.captureInfo(from: receipt)
+                    }
                 }
+            }
+            if call.toolName != ToolResultPagingTool.name {
                 result = result.durableProjection()
             }
             pendingToolResults.append(result)
-            executionLedger.record(
-                call: call,
-                result: result,
-                isSideEffecting: executedIsSideEffecting,
-                outcomeUnknown: outcomeUnknown,
-                outcomeUnknownReason: .capabilityRemoved
-            )
-            if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
+            if !isRecoveredReplay {
+                executionLedger.record(
+                    call: call,
+                    result: result,
+                    isSideEffecting: executedIsSideEffecting,
+                    outcomeUnknown: outcomeUnknown,
+                    outcomeUnknownReason: .capabilityRemoved
+                )
+            }
+            if !isRecoveredReplay, result.status == .ok,
+               Self.isConversationHistoryTool(call.toolName) {
                 historyLookupSucceededInRun = true
             }
-            if Self.isConversationHistoryTool(call.toolName) {
+            if !isRecoveredReplay, Self.isConversationHistoryTool(call.toolName) {
                 historyLookupAttemptedInRun = true
             }
             setToolLifecycle(call: call, phase: .resultCommitted)
             orderedResults.append((call, result))
+        }
+        // The restored replay boundary ends as soon as this batch settled
+        // any call that was not a recovery receipt. From that point the
+        // activation has produced new evidence, so an identical request is a
+        // deliberate new operation rather than a regenerated interrupted
+        // response. A batch consisting only of replay receipts keeps the
+        // boundary for the next response, which is still the same restored
+        // model turn.
+        if calls.contains(where: { !recoveredReplayCallIDs.contains($0.id) }) {
+            recoveryReplayBoundaryActive = false
         }
         // Batch-level non-progress cycle check. A,B,A,B alternation against
         // unchanged outcomes resets the per-route epoch counters each step,
@@ -6293,7 +6367,8 @@ struct ToolLoopGuard {
         call: ToolCall,
         result: ToolResult,
         isSideEffecting: Bool,
-        stopLimit: Int = 3
+        stopLimit: Int = 3,
+        countsAsProgress: Bool = true
     ) -> ToolLoopGuardrailDecision? {
         // The batch-level cycle key keeps both the canonical route and the
         // observable outcome, so genuinely changing observations break the
@@ -6313,8 +6388,12 @@ struct ToolLoopGuard {
                 )
             }
         } else if result.status == .ok {
-            consecutiveFailuresByTool[call.toolName] = 0
-            lastFailureExcerptByTool[call.toolName] = nil
+            // Only a real dispatch clears a failure streak; a synthesized
+            // recovery answer explicitly did not execute.
+            if countsAsProgress {
+                consecutiveFailuresByTool[call.toolName] = 0
+                lastFailureExcerptByTool[call.toolName] = nil
+            }
         }
         let arguments = Self.canonicalDigest(call.argumentsJSON)
         let observableOutput = result.outputDigest.isEmpty
@@ -6345,9 +6424,11 @@ struct ToolLoopGuard {
         // A successful mutation, an explicit wait, or a materially changed
         // observation establishes progress and opens a fresh epoch. This
         // keeps the guard focused on unchanged retries instead of imposing a
-        // hidden total-round limit on productive agent work.
+        // hidden total-round limit on productive agent work. A synthesized
+        // recovery answer is not progress: it was explicitly not executed.
         let isExplicitWait = call.toolName == "wait" || call.toolName.hasSuffix(".wait")
-        if result.status == .ok,
+        if countsAsProgress,
+           result.status == .ok,
            (isSideEffecting || isExplicitWait) {
             currentBatchHadProgress = true
             advanceProgressEpoch()
