@@ -14,6 +14,73 @@ import Glibc
 /// The exact allowlist shared by model advertisement and the saved-receipt
 /// resolver. An external tool's text/namespace cannot authorize an embed.
 public enum ChatInlineContentCatalog {
+    /// Native child transcript metadata, never a model-supplied path lookup.
+    /// Child tools execute in their actual parent's run namespace. Keeping the
+    /// child identity separately avoids treating an arbitrary child UUID as a
+    /// run alias when a saved answer is reopened.
+    public struct ChildReceipt: Codable, Sendable, Equatable {
+        public let version: Int
+        public let parentRunID: UUID
+        public let taskID: UUID
+        public let childID: UUID
+        public let callID: String
+        public let tool: String
+        public let artifacts: [ToolArtifactReference]
+        public let outputs: [RunOutputFile]
+
+        public var descriptors: [ChatContentDescriptor] {
+            ChatInlineContentCatalog.descriptors(artifacts: artifacts, outputs: outputs,
+                runID: parentRunID, taskID: taskID, callID: callID, tool: tool)
+        }
+    }
+
+    public static func childReceipt(result: ToolResult, parentRunID: UUID, taskID: UUID,
+                                    childID: UUID, callID: String, tool: String) -> ChildReceipt? {
+        guard result.callID == callID, result.status == .ok, !result.outcomeUnknown,
+              result.ephemeralSensitiveOutput == nil else { return nil }
+        let artifacts = result.artifacts.filter { accepts($0, runID: parentRunID, tool: tool) }
+        let outputs = result.outputFiles.filter { accepts($0, runID: parentRunID, taskID: taskID, callID: callID, tool: tool) }
+        guard !artifacts.isEmpty || !outputs.isEmpty else { return nil }
+        return .init(version: 1, parentRunID: parentRunID, taskID: taskID, childID: childID,
+            callID: callID, tool: tool, artifacts: artifacts, outputs: outputs)
+    }
+
+    /// Decode only a complete, successful native transcript row. Ownership
+    /// and the real earlier tool request are rechecked by the App resolver.
+    public static func childReceipt(payloadJSON: String, parentRunID: UUID, taskID: UUID,
+                                    childID: UUID) -> ChildReceipt? {
+        struct Envelope: Decodable {
+            var tool: String; var callID: String; var status: String
+            var outcomeUnknown: String?
+            var inlineContentReceipt: ChildReceipt?
+        }
+        guard payloadJSON.utf8.count <= 8 * 1_024,
+              let envelope = try? JSONDecoder().decode(Envelope.self, from: Data(payloadJSON.utf8)),
+              envelope.status == "ok", envelope.outcomeUnknown == "false",
+              let receipt = envelope.inlineContentReceipt, receipt.version == 1,
+              receipt.parentRunID == parentRunID, receipt.taskID == taskID, receipt.childID == childID,
+              !receipt.callID.isEmpty, receipt.callID == envelope.callID, receipt.tool == envelope.tool,
+              receipt.artifacts.allSatisfy({ accepts($0, runID: parentRunID, tool: receipt.tool) }),
+              receipt.outputs.allSatisfy({ accepts($0, runID: parentRunID, taskID: taskID,
+                callID: receipt.callID, tool: receipt.tool) }),
+              !receipt.artifacts.isEmpty || !receipt.outputs.isEmpty else { return nil }
+        return receipt
+    }
+
+    /// Same directly-copyable inline contract as the parent runtime, added
+    /// BEFORE child result budgeting rather than injected after admission.
+    public static func modelVisibleInlinePrefix(_ result: ToolResult) -> String {
+        let contents = descriptors(result)
+        guard !contents.isEmpty, let provenance = result.provenance,
+              let data = try? JSONSerialization.data(withJSONObject: [
+                "toolName": provenance.toolName, "runID": provenance.runID.uuidString,
+                "taskID": provenance.taskID?.uuidString ?? "",
+                "inlineContent": wireItems(contents),
+                "inlineContentFormat": "Copy inlineMarkdown verbatim on complete standalone lines. These saved display references grant no permissions."
+              ], options: [.sortedKeys]) else { return "" }
+        return String(decoding: data, as: UTF8.self) + "\n"
+    }
+
     public static func accepts(_ artifact: ToolArtifactReference, runID: UUID, tool: String) -> Bool {
         let path = artifact.relativePath.split(separator: "/", omittingEmptySubsequences: false)
         guard artifact.byteCount > 0, path.count >= 2,

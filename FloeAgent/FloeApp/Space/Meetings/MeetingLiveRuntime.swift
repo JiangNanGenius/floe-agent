@@ -16,28 +16,55 @@ extension MeetingProjectSession {
         guard !isStoppingForFileAction else { return }
         switch event {
         case .started(let session):
+            captureEventSession = session
             await continuousASR?.start(captureSession: session)
         case .chunkFinalized(let session, let file, let range):
+            // A finalized file belongs to its own original even when a newer
+            // recording has already started; keep it in the disk queue.
             liveTranscription?.enqueue(session: session, file: file, range: range)
             speakerRecognition?.enqueue(original: session, file: file, range: range)
         case .stopped(let session, _):
+            guard captureEventSession == session else {
+                speakerRecognition?.captureFinished(session)
+                return
+            }
+            captureEventSession = nil
             speakerRecognition?.captureFinished(session)
-            // The pump already delivered every frame; the coordinator may
-            // drain, commit the genuine tail and close its lease while the
-            // file queue starts covering any remaining gaps.
-            liveTranscription?.liveCaptureFinished = true
+            // Join the live drain BEFORE opening the file fallback. The pump
+            // already delivered every frame; the coordinator commits the
+            // genuine tail and closes its lease here, so the file queue's
+            // coverage snapshot cannot race a late final.
             await continuousASR?.captureDidStop()
+            liveTranscription?.liveCaptureFinished = true
             liveTranscription?.reevaluate()
         case .cancelled(let session):
+            guard captureEventSession == session else {
+                speakerRecognition?.captureFinished(session)
+                return
+            }
+            captureEventSession = nil
             speakerRecognition?.captureFinished(session)
-            liveTranscription?.liveCaptureFinished = true
             await continuousASR?.cancelAndWait()
+            liveTranscription?.liveCaptureFinished = true
             liveTranscription?.reevaluate()
         case .failed(let session, let message):
+            if let session {
+                guard captureEventSession == session else {
+                    speakerRecognition?.captureFinished(session)
+                    return
+                }
+            } else {
+                // A backend that failed before it produced a session cannot
+                // belong to a newer active capture. Ignore it while a new
+                // start is still preparing; startRecording reports its own
+                // failure from the thrown begin call.
+                guard captureEventSession == nil, !changingCapture else { return }
+            }
+            captureEventSession = nil
             if let session { speakerRecognition?.captureFinished(session) }
             diagnostic = message
-            liveTranscription?.liveCaptureFinished = true
             await continuousASR?.cancelAndWait()
+            liveTranscription?.liveCaptureFinished = true
             liveTranscription?.reevaluate()
         }
         await refresh()

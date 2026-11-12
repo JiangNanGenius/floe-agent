@@ -31,13 +31,13 @@ public struct WorkspaceCreateFileTool: AgentTool {
 
     public static let name = "workspace.createFile"
     public static let toolDescription =
-        "Create a new workspace file with the given content. Fails without overwriting when the file already exists; pass overwrite=true to replace the existing file, or use writeFile for updates. Prefer the .md extension for documents, notes, and reports; use a different extension only when the caller explicitly requires a specific format. For long text, create a new draft with empty content, append bounded chunks with the previous returned SHA as expectedSHA256, then use workspace.writeFile(sourcePath, expectedSourceSHA256) to finalize without resending the document. Keep the draft until final verification."
+        "Create a new plain-text workspace file of any UTF-8 text type: TXT, CSV/TSV, Markdown, source code, scripts, HTML/CSS/JS, JSON/YAML/XML, LaTeX, configuration, or an extensionless/unknown-extension file. Fails without overwriting when the file already exists; pass overwrite=true to replace the existing file, or use writeFile for updates. Parent directories are created automatically for local/mounted workspace targets. For long text, create a new draft with empty content, append bounded chunks with the previous returned SHA as expectedSHA256, then use workspace.writeFile(sourcePath, expectedSourceSHA256) to finalize without resending the document. Keep the draft until final verification."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative path for the new file"},
-        "content": {"type": "string", "description": "Full file content (UTF-8)"},
+        "path": {"type": "string", "description": "Workspace-relative path for the new plain-text file; any UTF-8 text extension, or no extension"},
+        "content": {"type": "string", "description": "Full UTF-8 text content"},
         "overwrite": {"type": "boolean", "description": "Replace the file when it already exists (default false)"}
       },
       "required": ["path", "content"],
@@ -132,14 +132,14 @@ public struct WorkspaceWriteFileTool: AgentTool {
 
     public static let name = "workspace.writeFile"
     public static let toolDescription =
-        "Write UTF-8 text natively. Supply exactly one of content or sourcePath. For a long document, create a new draft, append bounded chunks with the previous SHA as expectedSHA256, then finalize using sourcePath and its final expectedSourceSHA256; no Linux or giant JSON body is needed. sourcePath is a local/mounted workspace text file and remains unchanged. Source finalization is create-only without a target precondition; for an existing target pass its observed expectedSHA256/expectedMtime. Conflicts and pre-commit cancellation leave the target untouched. saved=true means do not repeat the write even if preview=unavailable."
+        "Write any UTF-8 plain-text workspace file natively: source code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Supply exactly one of content or sourcePath. The commit preserves the exact UTF-8 bytes supplied, including a leading BOM and the original CRLF/LF newlines; local writes are atomic. For a long document, create a new draft, append bounded chunks with the previous SHA as expectedSHA256, then finalize using sourcePath and its final expectedSourceSHA256; no Linux or giant JSON body is needed. sourcePath is a local/mounted workspace text file and remains unchanged. Source finalization is create-only without a target precondition; for an existing target pass its observed expectedSHA256/expectedMtime. Conflicts and pre-commit cancellation leave the target untouched. saved=true means do not repeat the write even if preview=unavailable."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative target path"},
+        "path": {"type": "string", "description": "Workspace-relative target path for any plain-text file"},
         "content": {"type": "string", "description": "New full UTF-8 text; omit when sourcePath is supplied"},
-        "sourcePath": {"type": "string", "description": "Existing local/mounted workspace text draft; mutually exclusive with content; never deleted"},
+        "sourcePath": {"type": "string", "description": "Existing local/mounted workspace text draft of any text type; mutually exclusive with content; never deleted"},
         "expectedSourceSHA256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$", "description": "Required with sourcePath: exact final SHA returned by append/metadata"},
         "expectedMtime": {"type": "number", "description": "Observed target mtime in seconds since 1970"},
         "expectedSHA256": {"type": "string", "description": "Observed target SHA; stale values fail without overwrite"}
@@ -266,13 +266,13 @@ public struct WorkspaceApplyPatchTool: AgentTool {
 
     public static let name = "workspace.applyPatch"
     public static let toolDescription =
-        "Apply a single-file unified diff to a workspace file. Hunks apply sequentially; if any hunk fails, the file is left untouched. Multi-file patches are rejected."
+        "Apply a single-file unified diff to any UTF-8 plain-text workspace file: code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Hunks apply sequentially; if any hunk fails, the file is left untouched. Multi-file patches are rejected. BOM and CRLF bytes are preserved when the hunk context matches them."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative file path to patch"},
-        "patch": {"type": "string", "description": "Unified diff (diff -u subset) for this one file"}
+        "path": {"type": "string", "description": "Workspace-relative plain-text file path to patch"},
+        "patch": {"type": "string", "description": "Unified diff (diff -u subset) for this one file; context must match the file's BOM/CRLF bytes"}
       },
       "required": ["path", "patch"],
       "additionalProperties": false

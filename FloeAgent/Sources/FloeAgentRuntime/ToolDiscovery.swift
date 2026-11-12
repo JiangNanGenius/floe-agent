@@ -31,7 +31,7 @@ final class DispatchedToolSchemaState: @unchecked Sendable {
 /// Provider-independent deferred schemas. Search uses only executable tools
 /// already inside this run's permission/skill ceiling.
 enum ToolDiscovery {
-    static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "goal.create", "goal.read", "exec.shell", "user.ask", "task.wait"]
+    static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "checklist.resetPlan", "goal.create", "goal.read", "exec.shell", "user.ask", "task.wait"]
     static let name = "tools.search"
     static let listName = "tools.list"
     static var listDescriptor: ToolCatalog.Descriptor {

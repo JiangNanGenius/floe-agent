@@ -3,8 +3,9 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// One place decides which surface may load a file. Text and code files are the
-// only documents the Monaco/CodeBlitz workbench may read or write; Office,
+// One place decides which surface may load a file. Text, code, extensionless
+// and unknown-extension candidates are the only paths the text workbench may
+// read or write, and their bytes are still probed before load/save; Office,
 // PDF, CAD, image, media and archive files must be routed to their native
 // viewer/editor. The classifier is intentionally Foundation-only so both the
 // FloeWorkspace package and the App target can depend on the same rules and so
@@ -51,25 +52,38 @@ public enum WorkspaceTextPolicyDecision: Equatable, Sendable {
 public enum WorkspaceTextPolicy {
     /// Extensions the code/text workbench owns. Mirrors the App's
     /// `WorkspaceFileType` so a file can never be text in one surface and
-    /// binary in another.
+    /// binary in another. The lists are deliberately broad but not exhaustive:
+    /// an unlisted extension is still classified as `.unknown` and may open as
+    /// text after the bounded UTF-8 content probe, so ordinary plain text is
+    /// never excluded merely because its extension is uncommon.
     public static let textExtensions: Set<String> = [
-        "txt", "md", "markdown", "json", "jsonc", "swift", "py",
-        "js", "mjs", "cjs", "jsx", "ts", "tsx", "c", "h", "m",
-        "mm", "cc", "cpp", "cxx", "hpp", "html", "htm", "css",
-        "scss", "xml", "yaml", "yml", "toml", "sh", "bash", "zsh",
-        "fish", "log", "csv", "rs", "go", "java", "kt", "kts",
-        "sql", "rb", "php", "pl", "lua", "dart", "vue", "svelte",
-        "gradle", "properties", "ini", "conf", "env", "gitignore",
-        "dockerfile", "makefile", "patch", "diff"
+        "txt", "text", "md", "markdown", "mdown", "mkd", "rst", "org",
+        "adoc", "asciidoc", "textile", "log", "csv", "tsv", "psv",
+        "srt", "vtt", "json", "jsonc", "json5", "jsonl", "ndjson",
+        "geojson", "ipynb", "plist", "yaml", "yml", "toml", "ini",
+        "cfg", "conf", "cnf", "properties", "env", "lock", "tex",
+        "latex", "bib", "sty", "cls", "bst", "m3u", "m3u8",
+        "xcconfig", "entitlements", "strings", "stringsdict",
+        "pbxproj", "xcscheme", "xcworkspacedata", "storyboard", "xib",
+        "patch", "diff", "desktop", "service", "reg", "inf", "spec"
     ]
 
     public static let codeExtensions: Set<String> = [
-        "json", "jsonc", "swift", "py", "js", "mjs", "cjs", "jsx",
-        "ts", "tsx", "c", "h", "m", "mm", "cc", "cpp", "cxx",
-        "hpp", "html", "htm", "css", "scss", "xml", "yaml", "yml",
-        "toml", "sh", "bash", "zsh", "fish", "rs", "go", "java",
-        "kt", "kts", "sql", "rb", "php", "pl", "lua", "dart",
-        "vue", "svelte", "gradle", "properties", "ini", "conf"
+        "swift", "m", "mm", "c", "h", "cc", "cpp", "cxx", "hpp",
+        "hh", "hxx", "cs", "fs", "fsx", "vb", "java", "kt", "kts",
+        "scala", "groovy", "gradle", "clj", "cljs", "cljc", "edn",
+        "ex", "exs", "erl", "hrl", "hs", "lhs", "ml", "mli", "jl",
+        "r", "rmd", "py", "pyi", "pyw", "rb", "php", "pl", "pm",
+        "raku", "lua", "tcl", "sh", "bash", "zsh", "fish", "ps1",
+        "psm1", "bat", "cmd", "awk", "sed", "js", "mjs", "cjs",
+        "jsx", "ts", "tsx", "vue", "svelte", "astro", "html", "htm",
+        "css", "scss", "sass", "less", "xml", "xsl", "xslt", "sql",
+        "graphql", "gql", "proto", "go", "rs", "dart", "zig", "nim",
+        "v", "sv", "svh", "vhd", "vhdl", "asm", "s", "f", "f90",
+        "f95", "for", "pas", "lisp", "lsp", "scm", "ss", "rkt",
+        "sol", "tf", "tfvars", "hcl", "nix", "cmake", "mk", "am",
+        "ac", "m4", "vim", "el", "coffee", "purs", "properties",
+        "ini", "conf", "json", "jsonc", "yaml", "yml", "toml"
     ]
 
     public static let officeExtensions: Set<String> = [
@@ -110,13 +124,21 @@ public enum WorkspaceTextPolicy {
         "mobileprovision", "keystore", "ttf", "otf", "woff", "woff2"
     ]
 
-    /// True when the workbench/editor may treat the path as text solely from
-    /// its extension.
-    public static func isTextualPath(_ relativePath: String) -> Bool {
-        switch kind(forPath: relativePath) {
+    /// True when this kind may open in a text surface. Unknown extensions stay
+    /// eligible and are accepted only after the bounded UTF-8 probe below; the
+    /// path extension alone is never enough to decode or rewrite bytes.
+    public static func isTextualKind(_ kind: WorkspaceFileKind) -> Bool {
+        switch kind {
         case .text, .code, .unknown: true
         default: false
         }
+    }
+
+    /// True when the workbench/editor may treat the path as a text candidate
+    /// from its extension. Unknown extensions are candidates; their bytes are
+    /// still classified before load/save.
+    public static func isTextualPath(_ relativePath: String) -> Bool {
+        isTextualKind(kind(forPath: relativePath))
     }
 
     public static func kind(forPath relativePath: String) -> WorkspaceFileKind {
@@ -125,8 +147,13 @@ public enum WorkspaceTextPolicy {
         // Extension-less well-known text files (Makefile, Dockerfile, …).
         if ext.isEmpty {
             switch name {
-            case "makefile", "dockerfile", "license", "readme", "notice",
-                 "changelog", "gitignore", "gitattributes", "editorconfig":
+            case "makefile", "dockerfile", "containerfile", "license",
+                 "readme", "notice", "changelog", "authors", "contributors",
+                 "copying", "install", ".gitignore", ".gitattributes",
+                 ".editorconfig", ".babelrc", ".swiftformat", ".prettierrc",
+                 ".eslintrc", "rakefile", "gemfile", "podfile", "brewfile",
+                 "vagrantfile", "jenkinsfile", "procfile", "justfile",
+                 "taskfile":
                 return .text
             default:
                 return .unknown
@@ -164,11 +191,37 @@ public enum WorkspaceTextPolicy {
         kind(forPath: relativePath) == .media
     }
 
-    /// Binary detection for text surfaces. A NUL byte or invalid UTF-8 means
-    /// the bytes must never be decoded as text or written back as text.
+    /// The UTF-8 byte-order mark. Foundation's UTF-8 decoder consumes a
+    /// leading BOM, so a decoding path that writes the returned String back
+    /// would silently drop it. `decodeUTF8` re-attaches it as U+FEFF so a
+    /// complete read/modify/write stays byte-exact.
+    public static let utf8BOM: [UInt8] = [0xEF, 0xBB, 0xBF]
+
+    public static func startsWithUTF8BOM(_ data: Data) -> Bool {
+        guard data.count >= utf8BOM.count else { return false }
+        return data[data.startIndex] == utf8BOM[0]
+            && data[data.startIndex + 1] == utf8BOM[1]
+            && data[data.startIndex + 2] == utf8BOM[2]
+    }
+
+    /// Decodes a complete UTF-8 text sample. Returns nil for NUL-bearing or
+    /// invalid UTF-8 bytes; these must never be silently coerced to text.
+    /// A leading UTF-8 BOM is retained in the returned String so
+    /// `Data(text.utf8)` reproduces the original bytes (BOM included) and
+    /// UTF-8 readers can report an exact round-trip.
+    public static func decodeUTF8(_ data: Data) -> String? {
+        guard !data.contains(0),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        // Foundation consumes exactly one leading UTF-8 BOM. Re-attach it
+        // unconditionally so even a second literal U+FEFF is preserved.
+        return startsWithUTF8BOM(data) ? "\u{FEFF}" + text : text
+    }
+
+    /// Binary detection for text surfaces. A NUL byte, invalid UTF-8 or an
+    /// otherwise undecodable byte sequence means the bytes must never be
+    /// decoded as text or written back as text.
     public static func isUTF8Text(_ data: Data) -> Bool {
-        if data.contains(0) { return false }
-        return String(data: data, encoding: .utf8) != nil
+        decodeUTF8(data) != nil
     }
 
     /// The single decision the native IDE bridge consults before a read or a

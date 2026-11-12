@@ -117,12 +117,26 @@ public actor SQLiteChatPreferenceStore: ChatPreferenceStore {
         }
     }
 
+    /// Existing mode-only writers preserve the Plan acknowledgement, just
+    /// like every other sibling field in this snapshot.
     public func updatePreferredExecutionMode(
         _ rawMode: String?,
         conversationID: UUID
     ) async throws {
         try await merge(conversationID: conversationID) { snapshot in
             snapshot.preferredExecutionMode = rawMode
+        }
+    }
+
+    /// Mode and its Plan presentation acknowledgement commit atomically.
+    public func updatePreferredExecutionMode(
+        _ rawMode: String?,
+        conversationID: UUID,
+        lastPresentedPlanRevision: String?
+    ) async throws {
+        try await merge(conversationID: conversationID) { snapshot in
+            snapshot.preferredExecutionMode = rawMode
+            snapshot.lastPresentedPlanRevision = lastPresentedPlanRevision
         }
     }
 

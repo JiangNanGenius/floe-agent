@@ -122,6 +122,10 @@ struct ActionClaimGateTests {
             "未能创建文件，原因是存储空间不足。",
             "我没有保存这个文件。",
             "I could not save the file.",
+            "The write is blocked by the read-only task policy; no file was created.",
+            "No new file was created.",
+            "The file was not created.",
+            "Neither document was saved.",
             "你好，需要我做什么？",
             "The document is open in the editor."
         ]
@@ -131,6 +135,9 @@ struct ActionClaimGateTests {
                 Comment(rawValue: text)
             )
         }
+        #expect(gate.evaluate(claim: "No file was created, but the document was saved.",
+            receipts: [], correctiveRetries: 0) == .requestCorrection,
+            "A negated clause must not hide a separate positive completion claim")
     }
 }
 

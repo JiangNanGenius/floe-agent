@@ -33,7 +33,8 @@ enum ChatInlineContentResolutionError: Error, Equatable { case unavailable, wron
 /// from the actual saved conversation, run header and completion/message.
 enum ChatInlineContentResolver {
     static func resolve(_ reference: ChatContentReference, scope: ChatInlineContentScope,
-                        conversations: any ConversationStore, runs: any RunStore) async throws -> ResolvedChatInlineContent {
+                        conversations: any ConversationStore, runs: any RunStore,
+                        children: (any ChildRunStoring)? = nil) async throws -> ResolvedChatInlineContent {
         guard !scope.isTemporary, let conversation = try await conversations.conversation(id: scope.conversationID),
               conversation.purpose != .temporary else { throw ChatInlineContentResolutionError.wrongOwner }
         if reference.kind == .attachment {
@@ -92,10 +93,78 @@ enum ChatInlineContentResolver {
             guard let next = page.map(\.sequence).max(), next > sequence else { break }
             sequence = next
         }
+        // A child uses the parent's real run namespace for native writes.
+        // Follow ONLY that run's durable child relations, never an arbitrary
+        // child-id alias, a global artifact index or the first matching file.
+        var receiptOwners: [ChildRunRecord] = []
+        if let children {
+            for child in try await children.children(parentRunID: run.id) {
+                try Task.checkCancellation()
+                guard owns(child, parentRunID: run.id, taskID: scope.conversationID) else { continue }
+                var after = 0
+                var requests: [String: String] = [:]
+                while true {
+                    let page = try await children.entries(childRunID: child.id, afterSequence: after, limit: 100)
+                    guard !page.entries.isEmpty else { break }
+                    for entry in page.entries {
+                        try Task.checkCancellation()
+                        guard entry.childRunID == child.id, entry.sequence > after else { throw ChatInlineContentResolutionError.wrongOwner }
+                        if entry.kind == .toolRequest,
+                           entry.payloadJSON.utf8.count <= ChildRunPayload.maximumEntryBytes,
+                           let fields = ChildRunPayload.decodedObject(entry.payloadJSON),
+                           let call = fields["callID"] as? String, !call.isEmpty,
+                           let tool = fields["tool"] as? String, !tool.isEmpty {
+                            requests[call] = tool
+                        }
+                        guard entry.kind == .toolResult,
+                              let receipt = ChatInlineContentCatalog.childReceipt(payloadJSON: entry.payloadJSON,
+                                parentRunID: run.id, taskID: scope.conversationID, childID: child.id),
+                              requests[receipt.callID] == receipt.tool else { continue }
+                        let candidate = try candidate(reference, artifacts: receipt.artifacts, outputs: receipt.outputs,
+                            runID: run.id, taskID: scope.conversationID, callID: receipt.callID, tool: receipt.tool)
+                        if let candidate {
+                            guard found == nil || found == candidate else { throw ChatInlineContentResolutionError.conflictingReceipts }
+                            found = candidate
+                            if !receiptOwners.contains(where: { $0.id == child.id }) { receiptOwners.append(child) }
+                        }
+                    }
+                    guard let next = page.entries.last?.sequence, next > after else { break }
+                    after = next
+                    if page.nextSequence == nil { break }
+                }
+            }
+            let currentChildren = receiptOwners.isEmpty ? [] : try await children.children(parentRunID: run.id)
+            for owner in receiptOwners {
+                guard let current = currentChildren.first(where: { $0.id == owner.id }),
+                      owns(current, parentRunID: run.id, taskID: scope.conversationID),
+                      current.startedAt == owner.startedAt, current.delegateCallID == owner.delegateCallID else {
+                    throw ChatInlineContentResolutionError.wrongOwner
+                }
+            }
+        }
         guard try await conversations.conversation(id: scope.conversationID) != nil,
               try await runs.run(id: run.id)?.conversationID == scope.conversationID,
               let found else { throw ChatInlineContentResolutionError.unavailable }
         return found
+    }
+    static func owns(_ child: ChildRunRecord, parentRunID: UUID, taskID: UUID) -> Bool {
+        child.parentRunID == parentRunID && child.conversationID == taskID && child.rootRunID == taskID
+            && child.delegateCallID?.isEmpty == false
+    }
+    private static func candidate(_ reference: ChatContentReference, artifacts: [ToolArtifactReference],
+        outputs: [RunOutputFile], runID: UUID, taskID: UUID, callID: String, tool: String) throws -> ResolvedChatInlineContent? {
+        switch reference.kind {
+        case .artifact:
+            let matches = artifacts.filter { $0.id.uuidString == reference.contentID && ChatInlineContentCatalog.accepts($0, runID: runID, tool: tool) }
+            guard matches.dropFirst().allSatisfy({ $0 == matches.first }) else { throw ChatInlineContentResolutionError.conflictingReceipts }
+            return matches.first.map { .artifact($0, runID: runID, tool: tool) }
+        case .output:
+            let matches = outputs.filter { $0.outputID == reference.contentID && ChatInlineContentCatalog.accepts($0,
+                runID: runID, taskID: taskID, callID: callID, tool: tool) }
+            guard matches.dropFirst().allSatisfy({ $0 == matches.first }) else { throw ChatInlineContentResolutionError.conflictingReceipts }
+            return matches.first.map { .output($0, .init(runID: runID, conversationID: taskID, callID: callID, toolName: tool)) }
+        case .attachment: return nil
+        }
     }
     static func payload(_ event: RunEventRecord) -> [String: String]? {
         guard event.payloadJSON.utf8.count <= 2 * 1_024 * 1_024 else { return nil }
@@ -140,6 +209,7 @@ private struct ChatContentListTool: AgentTool {
             afterSequence: args.afterSequence ?? 0, limit: args.limit ?? 32,
             scanLimit: args.eventLimit ?? (args.runID == nil ? 100 : 50),
             conversations: environment.conversationStore, runs: environment.runStore,
+            children: SQLiteChildRunStore(database: environment.database),
             checkCancellation: { try cancellation.throwIfCancelled(); try Task.checkCancellation() })
         return ToolExecutionOutput(digesting: String(decoding: data, as: UTF8.self), maximumSummaryCharacters: 65_536)
     }

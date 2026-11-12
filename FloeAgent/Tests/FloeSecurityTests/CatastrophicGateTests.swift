@@ -196,16 +196,34 @@ struct ApprovalPolicyTests {
 
     @Test("Appending and replacing text share the existing workspace edit approval boundary")
     func automaticTextEdits() async throws {
+        actor Backend: ModelApprovalPolicy.DecisionBackend {
+            private(set) var calls = 0
+            func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+                calls += 1
+                return .deny(reason: "Remote review remains authoritative")
+            }
+        }
+        let backend = Backend(), reviewed = AutomaticApprovalPolicy(backend: backend)
         for name in ["workspace.appendFile", "workspace.replaceText"] {
             let proposed = try action(riskLabels: ["writesFiles"], toolName: name)
             let policy = AutomaticApprovalPolicy()
             #expect(!policy.requiresModelReview(proposed))
             #expect(try await policy.decide(proposed).permitsExecution)
+            #expect(!reviewed.requiresModelReview(proposed))
+            #expect(try await reviewed.decide(proposed).permitsExecution)
             guard case .escalateToHuman = try await HumanApprovalPolicy().decide(proposed) else {
                 Issue.record("Ask mode must remain explicit")
                 continue
             }
+            let remote = try action(hostID: UUID(), riskLabels: ["writesFiles"], toolName: name)
+            #expect(reviewed.requiresModelReview(remote))
+            #expect(!(try await reviewed.decide(remote).permitsExecution))
+            guard case .escalateToHuman = try await policy.decide(remote) else {
+                Issue.record("A remote target must not inherit the local text exemption")
+                continue
+            }
         }
+        #expect(await backend.calls == 2, "Only the two remote calls need model review")
     }
 
     @Test("Session inventory follows the existing read-only inspection boundary")

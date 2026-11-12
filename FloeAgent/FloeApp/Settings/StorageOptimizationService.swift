@@ -5,6 +5,65 @@ import Combine
 import FloeCore
 import FloeExecution
 
+/// Closed diagnostic vocabulary only. Attributed owner suffixes are removed;
+/// unknown strings are counted, never persisted or exported as text.
+enum StorageOptimizationDiagnosticVocabulary {
+    static let resultCodes: Set<String> = [
+        "busy", "cancelled", "cancelled-after-swap",
+        "clone-unavailable", "compressed-source", "crash-injected",
+        "directory-open-failed", "empty-source", "fsync-failed",
+        "hard-linked", "identity-changed", "immutable-source",
+        "injected-failure", "insufficient-reclaim", "insufficient-space",
+        "invalid-request", "journal-conflict", "journal-corrupt",
+        "journal-exists", "journal-open-failed", "journal-write-failed",
+        "maintenance-unavailable", "metadata-failed", "metadata-unavailable",
+        "metadata-verification-failed", "needs-inspection", "not-regular-file",
+        "optimization-stopped", "optimized", "oversized-source",
+        "owner-unknown", "punch-failed", "punch-unsupported",
+        "read-failed", "recovery-pending", "recovery-required",
+        "source-changed", "source-identity-mismatch", "source-not-eligible",
+        "source-open-failed", "stage-create-failed", "stage-exists",
+        "stage-identity-mismatch", "swap-unsupported", "symbolic-link",
+        "truncate-failed", "unsupported-mode", "unsupported-platform",
+        "verification-failed", "write-failed", "xattr-limit-exceeded"
+    ]
+    static let ownerCodes: Set<String> = [
+        "closure_native_admission_not_exclusive", "closure_sources_incomplete", "coordinator_unavailable",
+        "fd_audit_time_budget", "fd_audit_unsupported", "fd_flags_unknown",
+        "fd_identity_unknown", "fd_instance_changed", "fd_path_unknown",
+        "fd_table_bound_unknown", "filesystem_evidence_incomplete", "filesystem_lease_registry_unmeasured",
+        "filesystem_lease_trace", "filesystem_runtime_trace", "fresh_owner_evidence_unavailable",
+        "integrator_evidence_incomplete", "integrator_held_lease", "integrator_preparation_active",
+        "integrator_provider_unavailable", "integrator_queued_admissions", "integrator_registry_lease",
+        "integrator_scope_unknown", "legacy_lease_state_unknown", "legacy_native_fd_still_open",
+        "legacy_queue_state_unknown", "legacy_readonly_connection_not_closed", "legacy_registry_bound_or_read_failed",
+        "legacy_registry_field_unknown", "legacy_registry_identity_changed", "legacy_registry_identity_unknown",
+        "legacy_registry_not_readonly", "legacy_registry_readonly_evidence_failed", "legacy_registry_readonly_open_failed",
+        "legacy_registry_schema_unknown", "legacy_registry_shape_unknown", "legacy_registry_snapshot_failed",
+        "legacy_registry_table_missing", "legacy_registry_table_unknown", "legacy_shm_identity_unknown",
+        "legacy_shm_shape_unknown", "legacy_wal_identity_unknown", "legacy_wal_not_in_snapshot",
+        "legacy_wal_shape_unknown", "native_closed_receipt_unavailable", "native_owner_close_unproven",
+        "native_owner_sources_changed", "owner_evidence_incomplete",
+        "reference_active_environment", "reference_active_unattributed", "reference_fingerprint_missing",
+        "reference_live_unknown_unattributed", "reference_projection_incomplete", "reference_projection_threw",
+        "reference_projection_unavailable", "reference_unknown_environment", "registry_evidence_incomplete",
+        "registry_lifecycle_lock", "registry_lifecycle_transaction", "registry_owner_state_unknown",
+        "registry_pending_stop", "registry_provider_unavailable", "registry_quarantined",
+        "registry_session", "registry_shared_start", "registry_starting",
+        "registry_teardown", "selected_disk_fd_open", "startup_recovery_active"
+    ]
+    static let serviceCodes: Set<String> = [
+        "inventory-incomplete", "sources-not-eligible", "no-covered-sources", "recovery-resolved"
+    ]
+    static let stages: Set<String> = [
+        "recovery-check", "inventory", "disk-admission", "counting", "staging", "verifying", "committing", "retiring"
+    ]
+    static func code(_ raw: String) -> String? {
+        let head = String(raw.split(separator: ":", maxSplits: 1).first ?? "")
+        return resultCodes.contains(head) || ownerCodes.contains(head) || serviceCodes.contains(head) ? head : nil
+    }
+}
+
 struct StorageOptimizationState: Codable, Sendable {
     enum Phase: String, Codable, Sendable {
         case idle, checking, optimizing, cancelling, completed, cancelled, blocked, unavailable
@@ -25,6 +84,107 @@ struct StorageOptimizationState: Codable, Sendable {
     var finishedAt: Date?
     var appBuildFingerprint: String?
     var inventoryEvidence: StorageOptimizationInventoryEvidence?
+    // Optional additions keep receipts written before this change readable.
+    var lastStage: String?
+    var lastStageObservedAt: Date?
+    var lastProcessedBytes: Int64?
+    var lastTotalBytes: Int64?
+    var lastResultCode: String?
+    var verifiedNoGainCount: Int?
+    var coveredSourceCount: Int?
+    var eligibleSourceCount: Int?
+    var unrecognizedDiagnosticCodeCount: Int?
+
+    enum TerminalDisposition: String {
+        case notCovered, eligibilityBlocked, methodUnavailable, verifiedNoGain, recoveryPending, recovered, busy, stopped, optimized
+    }
+
+    var safeDetails: [String: Int] {
+        var result: [String: Int] = [:]
+        for (raw, value) in details {
+            guard let code = StorageOptimizationDiagnosticVocabulary.code(raw), value > 0 else { continue }
+            result[code] = min(1_000_000, (result[code] ?? 0) + min(1_000_000, value))
+        }
+        return result
+    }
+    var terminalDisposition: TerminalDisposition? {
+        guard phase == .completed || phase == .blocked else { return nil }
+        let codes = Set(safeDetails.keys)
+        if lastResultCode == "recovery-resolved" { return .recovered }
+        if !codes.isDisjoint(with: ["recovery-pending", "recovery-required", "needs-inspection"]) { return .recoveryPending }
+        if codes.contains("busy") { return .busy }
+        if !codes.isDisjoint(with: ["unsupported-platform", "unsupported-mode", "clone-unavailable", "punch-unsupported", "swap-unsupported"]) { return .methodUnavailable }
+        if coveredSourceCount == 0, attempted == 0 { return .notCovered }
+        if phase == .blocked {
+            return !codes.isDisjoint(with: ["inventory-incomplete", "sources-not-eligible", "source-not-eligible", "owner-unknown"])
+                ? .eligibilityBlocked : .stopped
+        }
+        if attempted > 0, optimized == 0, verifiedNoGainCount == attempted { return .verifiedNoGain }
+        if optimized > 0, attempted >= optimized, attempted - optimized == max(0, verifiedNoGainCount ?? 0) { return .optimized }
+        return .stopped
+    }
+    var terminalNotice: String? {
+        switch terminalDisposition {
+        case .notCovered:
+            return FloeL10n.isChinese ? "此入口未发现可整理的历史磁盘，其他资料未改动。" : "This tool found no historical disks it can optimize. Other data was left unchanged."
+        case .eligibilityBlocked:
+            return FloeL10n.isChinese ? "历史资料仍需核对，尚未优化。请上传反馈日志。" : "Historical data needs further checks before optimization. Send a diagnostic report."
+        case .methodUnavailable:
+            return FloeL10n.isChinese ? "当前无法使用所需的无损整理方式，资料已保留。请上传反馈日志。" : "The required lossless optimization method is unavailable. Data was kept; send a diagnostic report."
+        case .verifiedNoGain:
+            return FloeL10n.isChinese ? "已核对这些磁盘，未发现可无损缩减的空间。资料已保留。" : "These disks were verified, with no space that could be reduced losslessly. Data was kept."
+        case .recoveryPending:
+            return FloeL10n.isChinese ? "有未完成的整理需要恢复，资料已保留。请稍后重试；若仍失败，请上传反馈日志。" : "An unfinished optimization needs recovery. Data was kept. Try again later; if it persists, send a diagnostic report."
+        case .recovered:
+            return FloeL10n.isChinese ? "上次中断的整理已恢复，资料已保留。可再次整理以继续检查。" : "The interrupted optimization was recovered and data was kept. Start again to continue checking."
+        case .busy:
+            return FloeL10n.isChinese ? "环境仍在使用，尚未优化。请结束相关运行后重试。" : "The environment is still in use. End the related activity, then try again."
+        case .stopped:
+            return FloeL10n.isChinese ? "本次整理未完成或结果详情未记录，资料已保留。请上传反馈日志。" : "Optimization did not finish or its detailed result was not recorded. Data was kept; send a diagnostic report."
+        case .optimized, .none: return nil
+        }
+    }
+    mutating func recordDiagnostic(_ raw: String) {
+        guard let code = StorageOptimizationDiagnosticVocabulary.code(raw) else {
+            unrecognizedDiagnosticCodeCount = min(1_000_000, max(0, min(1_000_000, unrecognizedDiagnosticCodeCount ?? 0)) + 1)
+            return
+        }
+        details[code] = min(1_000_000, max(0, min(1_000_000, details[code] ?? 0)) + 1)
+    }
+    mutating func recordResult(code: String, diagnosticCodes: [String] = [], verifiedUnchanged: Bool = false) {
+        lastResultCode = StorageOptimizationDiagnosticVocabulary.code(code)
+        recordDiagnostic(code)
+        for code in diagnosticCodes.prefix(32) { recordDiagnostic(code) }
+        // Only the adapter's full verification + converged unchanged receipt
+        // establishes no gain. The error string alone never does.
+        if code == "insufficient-reclaim", verifiedUnchanged {
+            verifiedNoGainCount = min(1_000_000, max(0, min(1_000_000, verifiedNoGainCount ?? 0)) + 1)
+        }
+    }
+    @discardableResult
+    mutating func recordStage(_ stage: String, processed: Int64? = nil, total: Int64? = nil) -> Bool {
+        guard StorageOptimizationDiagnosticVocabulary.stages.contains(stage) else { return false }
+        let changed = lastStage != stage
+        lastStage = stage; lastStageObservedAt = Date()
+        if processed == nil, total == nil { lastProcessedBytes = nil; lastTotalBytes = nil }
+        if let total { lastTotalBytes = max(0, total) }
+        if let processed { lastProcessedBytes = min(max(0, processed), lastTotalBytes ?? Int64.max) }
+        return changed
+    }
+    func sanitizedDiagnostics() -> Self {
+        var copy = self
+        let unknown = details.keys.filter { StorageOptimizationDiagnosticVocabulary.code($0) == nil }.count
+        copy.details = safeDetails
+        copy.unrecognizedDiagnosticCodeCount = min(1_000_000, max(0, min(1_000_000, unrecognizedDiagnosticCodeCount ?? 0)) + min(1_000_000, unknown))
+        copy.lastResultCode = lastResultCode.flatMap(StorageOptimizationDiagnosticVocabulary.code)
+        if let lastStage, !StorageOptimizationDiagnosticVocabulary.stages.contains(lastStage) { copy.lastStage = nil }
+        copy.verifiedNoGainCount = verifiedNoGainCount.map { max(0, min(1_000_000, $0)) }
+        copy.coveredSourceCount = coveredSourceCount.map { max(0, min(1_000_000, $0)) }
+        copy.eligibleSourceCount = eligibleSourceCount.map { max(0, min(1_000_000, $0)) }
+        if let value = lastProcessedBytes { copy.lastProcessedBytes = max(0, min(value, lastTotalBytes.map { max(0, $0) } ?? Int64.max)) }
+        if let value = lastTotalBytes { copy.lastTotalBytes = max(0, value) }
+        return copy
+    }
 
     /// Capture only fixed vocabulary and aggregates. A partial inventory is
     /// useful fault evidence, never permission to optimize any of its entries.
@@ -123,6 +283,7 @@ final class StorageOptimizationService: ObservableObject {
     private var operation: Task<Void, Never>?
     private var cancellation: RuntimeV2OptimizationCancellation?
     private var generation: UUID?
+    private var lastDiagnosticPersistUptime: TimeInterval = 0
     private static let savedResultKey = "floe.storage.legacyOptimization.lastResult.v1"
     private static let maximumSnapshotBytes = 16_384
 
@@ -150,8 +311,15 @@ final class StorageOptimizationService: ObservableObject {
             guard let self else { return }
             let report = await adapter.recoverBeforeUse()
             guard self.generation == id else { return }
-            if report.outcome == .blocked { self.state.phase = .blocked }
-            else if report.outcome == .resolved { self.state.phase = .completed }
+            if report.outcome == .blocked {
+                self.state.phase = .blocked
+                self.state.recordStage("recovery-check")
+                self.state.recordResult(code: "recovery-pending")
+            } else if report.outcome == .resolved {
+                self.state.phase = .completed
+                self.state.recordStage("recovery-check")
+                self.state.recordResult(code: "recovery-resolved")
+            }
             else {
                 // A launch-time no-op recovery must not relabel the last
                 // failed/cancelled optimization as an idle/successful one.
@@ -160,7 +328,6 @@ final class StorageOptimizationService: ObservableObject {
                 default: self.state.phase = previousPhase
                 }
             }
-            if report.outcome == .resolved { self.state.details["recovery-resolved", default: 0] += 1 }
             self.operation = nil
             self.persistResult()
             if report.outcome != .notNeeded, report.intentID != nil { await self.settled() }
@@ -194,10 +361,13 @@ final class StorageOptimizationService: ObservableObject {
         var firstHostFree: Int64?
         var lastHostFree: Int64?
         do {
+            state.recordStage("recovery-check")
+            persistResult()
             let recovery = await adapter.recoverBeforeUse()
             guard self.generation == generation else { return }
             refreshNeeded = recovery.outcome != .notNeeded && recovery.intentID != nil
             guard recovery.outcome != .blocked else {
+                state.recordResult(code: "recovery-pending")
                 state.phase = .blocked; finish(generation: generation)
                 if refreshNeeded { await settled() }
                 return
@@ -207,6 +377,8 @@ final class StorageOptimizationService: ObservableObject {
                 if refreshNeeded { await settled() }
                 return
             }
+            state.recordStage("inventory")
+            persistResult()
             let report = try await adapter.inventory()
             guard self.generation == generation else { return }
             guard state.admitInventory(report, cancellationRequested: cancellation.isCancelled) else {
@@ -218,6 +390,13 @@ final class StorageOptimizationService: ObservableObject {
                 $0.isReviewableForBytePreservingMaintenance
                     && $0.relativeDirectory.hasPrefix("recovery/quarantine/runtime-vm-")
             }
+            // Observation only: this does not broaden the existing candidate
+            // filter or authorize retirement of other legacy environment data.
+            state.coveredSourceCount = report.records.filter {
+                $0.relativeDirectory.hasPrefix("recovery/quarantine/runtime-vm-")
+            }.count
+            state.eligibleSourceCount = candidates.count
+            if state.coveredSourceCount == 0 { state.recordDiagnostic("no-covered-sources") }
             state.total = report.records.count
             state.skipped = report.records.count - candidates.count
             if candidates.isEmpty && !report.records.isEmpty {
@@ -229,20 +408,32 @@ final class StorageOptimizationService: ObservableObject {
                 if cancellation.isCancelled { break }
                 state.phase = .optimizing; state.corePhase = nil; state.fraction = nil
                 state.attempted += 1
+                let attempt = state.attempted
+                state.recordStage("disk-admission")
+                persistResult()
                 refreshNeeded = true
                 let progressGate = StorageOptimizationProgressGate()
                 let result = await adapter.optimize(record, cancellation: cancellation) { [weak self] progress in
                     guard progressGate.accepts(progress) else { return }
                     Task { @MainActor [weak self] in
-                        guard let self, self.generation == generation, self.operation != nil else { return }
+                        guard let self, self.generation == generation, self.operation != nil,
+                              (self.state.phase == .optimizing || self.state.phase == .cancelling),
+                              self.state.attempted == attempt else { return }
                         self.state.corePhase = progress.phase.rawValue
                         self.state.fraction = progress.totalBytes > 0
                             ? min(1, max(0, Double(progress.processedBytes) / Double(progress.totalBytes))) : nil
+                        let changed = self.state.recordStage(progress.phase.rawValue,
+                            processed: progress.processedBytes, total: progress.totalBytes)
+                        // Persist a real phase boundary or coarse heartbeat,
+                        // never every progress tick or a synthetic phase.
+                        if changed || ProcessInfo.processInfo.systemUptime - self.lastDiagnosticPersistUptime >= 5 {
+                            self.persistResult()
+                        }
                     }
                 }
                 guard self.generation == generation else { return }
-                state.details[result.code, default: 0] += 1
-                for code in result.diagnosticCodes { state.details[code, default: 0] += 1 }
+                state.recordResult(code: result.code, diagnosticCodes: result.diagnosticCodes,
+                    verifiedUnchanged: result.verifiedUnchanged)
                 if let measured = result.report {
                     state.optimized += 1
                     if firstHostFree == nil { firstHostFree = measured.volumeAvailableBytesBefore }
@@ -268,7 +459,10 @@ final class StorageOptimizationService: ObservableObject {
             }
         } catch {
             state.phase = cancellation.isCancelled || error is CancellationError ? .cancelled : .blocked
-            state.details[RuntimeV2RecoveryOptimizationAdapter.code(error), default: 0] += 1
+            let ownerCodes: [String]
+            if case RuntimeV2MaintenanceError.ownerEvidenceIncomplete(let codes) = error { ownerCodes = codes }
+            else { ownerCodes = [] }
+            state.recordResult(code: RuntimeV2RecoveryOptimizationAdapter.code(error), diagnosticCodes: ownerCodes)
         }
         finish(generation: generation)
         // Exactly one mutation invalidation/refresh after this owned operation,
@@ -286,15 +480,16 @@ final class StorageOptimizationService: ObservableObject {
         // UI cache only, never a lease/closure/idle attestation. No ids/paths,
         // sidecars, content, credentials or per-disk digest are persisted here.
         Self.persistSnapshot(state, to: defaults)
+        lastDiagnosticPersistUptime = ProcessInfo.processInfo.systemUptime
     }
 
     static func persistSnapshot(_ state: StorageOptimizationState, to defaults: UserDefaults) {
-        guard let data = try? JSONEncoder().encode(state), data.count <= maximumSnapshotBytes else { return }
+        guard let data = try? JSONEncoder().encode(state.sanitizedDiagnostics()), data.count <= maximumSnapshotBytes else { return }
         defaults.set(data, forKey: savedResultKey)
     }
     static func readSnapshot(from defaults: UserDefaults) -> StorageOptimizationState? {
         guard let data = defaults.data(forKey: savedResultKey), data.count <= maximumSnapshotBytes else { return nil }
-        return try? JSONDecoder().decode(StorageOptimizationState.self, from: data)
+        return (try? JSONDecoder().decode(StorageOptimizationState.self, from: data))?.sanitizedDiagnostics()
     }
 
     /// Only the already-persisted operation receipt is exported. Reading a
@@ -308,6 +503,8 @@ final class StorageOptimizationService: ObservableObject {
             return ISO8601DateFormatter().string(from: value)
         }
         func count(_ value: Int) -> String { String(max(0, value)) }
+        func optionalCount(_ value: Int?) -> String { value.map(count) ?? "unrecorded" }
+        func bytes(_ value: Int64?) -> String { value.map { String(max(0, $0)) } ?? "unrecorded" }
         let rawBuild = value.appBuildFingerprint ?? ""
         let build = !rawBuild.isEmpty && rawBuild.utf8.count <= 40
             && rawBuild.utf8.allSatisfy { (48...57).contains($0) || $0 == 46 } ? rawBuild : "unrecorded"
@@ -316,6 +513,22 @@ final class StorageOptimizationService: ObservableObject {
             "optimization_finished_at: \(date(value.finishedAt))", "optimization_phase: \(value.phase.rawValue)",
             "optimization_attempted: \(count(value.attempted))", "optimization_optimized: \(count(value.optimized))",
             "optimization_skipped: \(count(value.skipped))"]
+        // Include pre-inventory and adapter failures before the early return.
+        // All strings come from the closed vocabulary; attributed values,
+        // NSError text, paths and disk identities are never exported.
+        lines += ["optimization_last_stage: \(value.lastStage ?? "unrecorded")",
+            "optimization_last_stage_at: \(date(value.lastStageObservedAt))",
+            "optimization_last_processed_bytes: \(bytes(value.lastProcessedBytes))",
+            "optimization_last_total_bytes: \(bytes(value.lastTotalBytes))",
+            "optimization_last_result_code: \(value.lastResultCode ?? "unrecorded")",
+            "optimization_terminal_disposition: \(value.terminalDisposition?.rawValue ?? "unrecorded")",
+            "optimization_covered_sources: \(optionalCount(value.coveredSourceCount))",
+            "optimization_eligible_sources: \(optionalCount(value.eligibleSourceCount))",
+            "optimization_verified_no_gain: \(optionalCount(value.verifiedNoGainCount))",
+            "optimization_unknown_diagnostic_codes: \(optionalCount(value.unrecognizedDiagnosticCodeCount))"]
+        for key in value.safeDetails.keys.sorted() {
+            lines.append("optimization_result.\(key): \(count(value.safeDetails[key] ?? 0))")
+        }
         guard let inventory = value.inventoryEvidence else {
             return (lines + ["optimization_inventory: not_recorded_in_this_receipt"]).joined(separator: "\n")
         }

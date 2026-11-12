@@ -82197,19 +82197,70 @@
         }
       }
     },
+    "settings.data_management_view.file_usage_estimate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estimated file usage"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件占用估算"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.partial_file_estimate": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial file estimate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分文件估算"
+          }
+        }
+      }
+    },
+    "settings.data_management_view.shared_files_included": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Already included above."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已计入上方占用。"
+          }
+        }
+      }
+    },
     "settings.data_management_view.floe_total_usage": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Floe total usage"
+            "value": "File space used"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Floe 总占用"
+            "value": "文件所占空间"
           }
         }
       }
@@ -83138,13 +83189,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Shared file capacity"
+            "value": "Shareable files"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "共享文件容量"
+            "value": "可共享文件"
           }
         }
       }
@@ -142851,6 +142902,102 @@
           "stringUnit": {
             "state": "translated",
             "value": "内存"
+          }
+        }
+      }
+    },
+    "execution.shared.gpu_memory": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graphics memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图形内存"
+          }
+        }
+      }
+    },
+    "execution.shared.gpu_current": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current graphics memory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前图形内存"
+          }
+        }
+      }
+    },
+    "execution.shared.gpu_pending": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The new graphics memory setting (%@) will apply at the next start."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新的图形内存设置（%@）将在下次启动时生效。"
+          }
+        }
+      }
+    },
+    "execution.shared.gpu_limited": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graphics memory was adjusted to this device's capacity."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图形内存已按设备能力调整。"
+          }
+        }
+      }
+    },
+    "execution.shared.gpu_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restart the runtime to apply the graphics memory setting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新启动运行环境以应用图形内存设置。"
+          }
+        }
+      }
+    },
+    "execution.shared.gpu_update_image": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update the runtime component to use graphics memory settings."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新运行组件以使用图形内存设置。"
           }
         }
       }

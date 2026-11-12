@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
-// W7 continuous live recognition — App-level coordinator candidate tests.
+// W7 continuous live recognition — App-level coordinator tests.
 //
-// Verification status: this file is part of the W7 predevelopment scope but
-// is NOT yet wired into the FloeAppTests or FloePredevelopmentTests target
-// (project.yml lists every test file explicitly and this lane may not edit
-// project.yml). Add
-//   - path: Tests/FloeAppTests/MeetingContinuousASRTests.swift
-// next to MeetingSpeakerIntegrationTests.swift and regenerate the project.
-// Until then it compiles out on macOS (UIKit gate) and the covered logic is
-// validated by the FloeMeetings module tests
-// (ContinuousLiveTranscriptionTests) plus provider tests
-// (VolcengineASRTests utterance separation).
+// This file is listed in project.yml for the FloeAppTests target. It compiles
+// out on macOS (UIKit gate); its FloeMeetings core coverage is in
+// ContinuousLiveTranscriptionTests, and provider wire contracts are covered by
+// VolcengineASRTests. The App-level cases below drive a scripted live adapter
+// without a real microphone, network or provider call.
 #if canImport(UIKit)
 import Foundation
 import Testing
@@ -18,6 +13,7 @@ import AVFoundation
 import FloeCore
 import FloeMeetings
 import FloeMeetingsAV
+@testable import FloeProviders
 @testable import FloeApp
 
 @Suite("Meeting continuous live recognition")
@@ -34,7 +30,8 @@ struct MeetingContinuousASRTests {
 
     private func fixture(
         limitBytes: Int64 = MeetingContinuousASR.domainWireLimitBytes,
-        startEngine: Bool = true
+        startEngine: Bool = true,
+        profile: ASRProfile = .volcengine(billingRoute: .agentPlan)
     ) async throws -> Fixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("meeting-continuous-" + UUID().uuidString)
@@ -43,7 +40,7 @@ struct MeetingContinuousASRTests {
         let meetingID = try await service.createMeeting(title: "Continuous")
         let adapter = MeetingFakeLiveAdapter()
         let route = MeetingLiveTranscriptionRoute(
-            profile: .volcengine(billingRoute: .agentPlan),
+            profile: profile,
             credential: "synthetic-plan-key",
             adapter: adapter)
         let asr = MeetingContinuousASR(
@@ -231,7 +228,11 @@ struct MeetingContinuousASRTests {
                 return .init(segments: [.init(start: 0, end: 4,
                     text: "the complete fallback sentence", words: [], speaker: nil)], language: "en")
             }, onChange: {})
-        queue.liveGate = { (active: false, coverage: fixture.asr.coveredSnapshot()) }
+        queue.liveGate = {
+            MeetingLiveCoverageGate(
+                session: fixture.captureSession, active: false,
+                coverage: fixture.asr.coveredSnapshot())
+        }
         queue.enqueue(session: fixture.captureSession, file: chunk.file, range: chunkRange)
         await queue.waitUntilIdle()
         #expect(calls == 1 && queue.unfinishedCount == 0)
@@ -294,6 +295,131 @@ struct MeetingContinuousASRTests {
         await fixture.service.endLiveTranscription(lease)
         _ = try await fixture.service.cancelCapture()
     }
+
+    private func silentFrame(seconds: Double, rate: Double = 16_000) throws -> MeetingPCMFrame {
+        let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32,
+            sampleRate: rate, channels: 1, interleaved: false))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(seconds * rate)))
+        buffer.frameLength = AVAudioFrameCount(seconds * rate)
+        return try MeetingPCMFrame(copying: buffer)
+    }
+
+    private func waitForPartial(_ fixture: Fixture, _ expected: String) async -> String? {
+        let deadline = Date().addingTimeInterval(2)
+        var last: String?
+        while Date() < deadline {
+            last = await fixture.service.currentPartials(meeting: fixture.meetingID).last?.text
+            if last == expected { return last }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return last
+    }
+
+    /// Provider deltas are hypotheses. The visible draft is the confirmed
+    /// cumulative prefix and does not replace itself with a single latest
+    /// delta (the "strange characters while speaking" defect).
+    @Test func livePartialDeltasBecomeAStableCumulativeDraft() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.asr.offer(try sineFrame(seconds: 0.5))
+        let domain = try await fixture.adapter.onlyDomain()
+        await domain.deliverPartial("你")
+        await domain.deliverPartial("好")
+        #expect(await waitForPartial(fixture, "你") == "你")
+        await domain.deliverPartial("，世界")
+        #expect(await waitForPartial(fixture, "你好") == "你好",
+                "the later hypothesis confirms the cumulative prefix, not its new trailing delta")
+        await domain.deliverPartial("你好，世界。", replacesPartial: true)
+        #expect(await waitForPartial(fixture, "你好，世界") == "你好，世界")
+        await fixture.asr.cancelAndWait()
+        _ = try await fixture.service.cancelCapture()
+    }
+
+    /// A live engine without provider utterance timing (OpenAI-compatible
+    /// realtime) still produces a real final for the one request domain the
+    /// client explicitly opened and closed. Commit its actual fed source span.
+    @Test func timinglessFinalCommitsTheFedDomainSpan() async throws {
+        let profile = ASRProfile.openAICompatible()
+        let timing = try #require(profile.liveCapabilities?.timing)
+        #expect(timing == ASRTimingProvenance.none)
+        let fixture = try await fixture(profile: profile)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.asr.offer(try sineFrame(seconds: 1))
+        let domain = try await fixture.adapter.onlyDomain()
+        await domain.deliverFinalText("hello world")
+        await fixture.asr.captureDidStop()
+        let rows = try await fixture.service.transcript(meeting: fixture.meetingID)
+        try #require(rows.count == 1)
+        #expect(rows[0].text == "hello world")
+        #expect(abs(rows[0].range.start) < 0.001)
+        #expect(abs(rows[0].range.end - 1) < 0.01)
+        #expect(fixture.asr.coveredSnapshot() == [rows[0].range])
+        #expect(!fixture.asr.isLiveActive, "the stop joins the final commit before file fallback")
+        _ = try await fixture.service.cancelCapture()
+    }
+
+    /// The same final on a domain with no measured voiced audio is a
+    /// hallucination candidate and must not create a saved row.
+    @Test func silentDomainFinalIsNotCommitted() async throws {
+        let fixture = try await fixture(profile: .openAICompatible())
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.asr.offer(try silentFrame(seconds: 1))
+        let domain = try await fixture.adapter.onlyDomain()
+        await domain.deliverFinalText("Thank you for watching!")
+        await fixture.asr.captureDidStop()
+        #expect(try await fixture.service.transcript(meeting: fixture.meetingID).isEmpty)
+        _ = try await fixture.service.cancelCapture()
+    }
+
+    @Test func partialBufferAccumulatesDeltasAndPublishesConfirmedPrefix() {
+        var buffer = MeetingContinuousASR.MeetingLivePartialBuffer()
+        #expect(buffer.ingest("你", replacesPartial: false) == nil)
+        #expect(buffer.ingest("好", replacesPartial: false) == "你")
+        #expect(buffer.ingest("，世界", replacesPartial: false) == "你好",
+                "accumulated delta confirms the previous full hypothesis; the new suffix stays unconfirmed")
+        #expect(buffer.ingest("你好，世界。", replacesPartial: true) == "你好，世界")
+    }
+
+    @Test func chunkVoiceGateKeepsShortSpeechAndRejectsSilence() {
+        #expect(!MeetingAudioActivity.hasVoice(samples: [Float](repeating: 0, count: 16_000)))
+        var samples = [Float](repeating: 0, count: 16_000)
+        for index in 4_000..<5_600 {
+            samples[index] = Float(sin(Double(index) * .pi * 2 * 220 / 16_000)) * 0.05
+        }
+        #expect(MeetingAudioActivity.hasVoice(samples: samples),
+                "a 0.1 s low-volume utterance inside a silent chunk remains real speech")
+    }
+
+    @Test func voiceProfileRejectsSegmentsInASilentTail() {
+        var windows = [Bool](repeating: false, count: 40) // 2 s at 50 ms
+        for index in 0..<10 { windows[index] = true } // speech only in 0–0.5 s
+        let profile = MeetingVoiceProfile(windows: windows, duration: 2)
+        #expect(profile.hasVoice(start: 0.1, end: 0.4))
+        #expect(!profile.hasVoice(start: 1.2, end: 1.8),
+                "a provider sentence placed in a silent tail is not committed")
+    }
+
+    @Test func volcengineSpeakerAttributionUsesTheDocumentedTwoPassFields() throws {
+        let audio = ASRVendorAudioInput(
+            data: Data(), format: .pcm, sampleRate: 16_000,
+            channelCount: 1, durationSeconds: nil, mimeType: "audio/L16")
+        let plain = try VolcengineASRAdapter.configuration(
+            modelID: "doubao-seed-asr-2.0", input: audio, live: true)
+        let plainRequest = try #require(
+            (try JSONSerialization.jsonObject(with: plain) as? [String: Any])?["request"] as? [String: Any])
+        #expect(plainRequest["enable_nonstream"] == nil)
+        let opted = try VolcengineASRAdapter.configuration(
+            modelID: "doubao-seed-asr-2.0", input: audio, live: true,
+            enableSpeakerAttribution: true)
+        let request = try #require(
+            (try JSONSerialization.jsonObject(with: opted) as? [String: Any])?["request"] as? [String: Any])
+        #expect(request["enable_speaker_info"] as? Bool == true)
+        #expect(request["show_utterances"] as? Bool == true)
+        #expect(request["enable_nonstream"] as? Bool == true,
+                "bigmodel_async requires two-pass VAD for speaker labels")
+        #expect(request["ssd_version"] as? String == "200")
+    }
 }
 
 private actor MeetingFakeCaptureBackend: MeetingCaptureBackend {
@@ -320,18 +446,32 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
     final class MeetingFakeEventBox: @unchecked Sendable {
         let lock = NSLock()
         var pendingFinal: ASRLiveEvent?
+        var partialSink: (@Sendable (String, Bool) async -> Void)?
     }
     final class MeetingFakeSession: ASRLiveSession, @unchecked Sendable {
         nonisolated let turnID: UUID
         nonisolated let events: ASRBoundedEventStream<ASRLiveEvent>
         private let domain: ScriptedDomain
         private var fed = 0
+        private var sequence = 0
         init(domain: ScriptedDomain) {
             self.domain = domain
             self.turnID = domain.request.turnID
             self.events = ASRBoundedEventStream(capacity: 64)
         }
         func feed(_ audio: Data) async throws { fed += audio.count }
+        func deliverPartial(_ text: String, replacesPartial: Bool) async throws {
+            sequence += 1
+            if replacesPartial {
+                try await events.send(.partialReplacement(
+                    turnID: turnID, itemID: turnID.uuidString,
+                    transcript: text, sequence: sequence))
+            } else {
+                try await events.send(.partial(
+                    turnID: turnID, itemID: turnID.uuidString,
+                    delta: text, sequence: sequence))
+            }
+        }
         func endUtterance() async throws {
             guard fed > 0 else { throw ASRTranscriptionError.emptyResult }
             let pending = domain.box.lock.withLock { domain.box.pendingFinal }
@@ -358,6 +498,11 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
 
     func startLiveSession(_ request: ASRLiveSessionRequest, credential: String) async throws -> any ASRLiveSession {
         let domain = ScriptedDomain(request: request)
+        let session = MeetingFakeSession(domain: domain)
+        domain.box.partialSink = { [weak session] text, replaces in
+            guard let session else { return }
+            try? await session.deliverPartial(text, replacesPartial: replaces)
+        }
         let waiters = lock.withLock {
             let index = domains.count
             domains.append(domain)
@@ -365,7 +510,7 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
         }
         let handle = MeetingFakeDomainHandle(box: domain.box)
         for waiter in waiters { waiter.resume(returning: handle) }
-        return MeetingFakeSession(domain: domain)
+        return session
     }
 
     func domain(at index: Int) async throws -> MeetingFakeDomainHandle {
@@ -393,6 +538,17 @@ private struct MeetingFakeDomainHandle: Sendable {
             box.pendingFinal = ASRLiveEvent.final(
                 turnID: UUID(), itemID: nil, transcript: "final",
                 speaker: nil, utterances: utterances, sequence: 1)
+        }
+    }
+    func deliverPartial(_ text: String, replacesPartial: Bool = false) async {
+        let sink = box.lock.withLock { box.partialSink }
+        await sink?(text, replacesPartial)
+    }
+    func deliverFinalText(_ text: String, speaker: String? = nil) async {
+        box.lock.withLock {
+            box.pendingFinal = ASRLiveEvent.final(
+                turnID: UUID(), itemID: nil, transcript: text,
+                speaker: speaker, utterances: nil, sequence: 1)
         }
     }
 }

@@ -13,13 +13,26 @@ struct MeetingLayoutObservation: UIViewRepresentable {
     var geometryInsets: EdgeInsets
     var todoFocused: Bool
     var editingComposerCount: Int
+    var compactInput: Bool
+    var wideSplit: Bool
+    var notesWidth: CGFloat
+    var sideWidth: CGFloat?
+    var showsPlayer: Bool
+    var recording: Bool
+    var savedRecordingCount: Int
+    var transcriptBubbles: Int
 
     func makeUIView(context: Context) -> Probe { Probe() }
     func updateUIView(_ view: Probe, context: Context) {
-        view.fields = ["geometrySize": NSCoder.string(for: geometrySize),
+        var fields: [String: Any] = ["geometrySize": NSCoder.string(for: geometrySize),
             "geometryGlobalFrame": NSCoder.string(for: geometryFrame),
             "geometrySafeArea": "\(geometryInsets)", "todoFocused": todoFocused,
-            "editingComposerCount": editingComposerCount]
+            "editingComposerCount": editingComposerCount, "compactInput": compactInput,
+            "wideSplit": wideSplit, "notesWidth": "\(notesWidth)",
+            "showsPlayer": showsPlayer, "recording": recording,
+            "savedRecordingCount": savedRecordingCount, "transcriptBubbles": transcriptBubbles]
+        if let sideWidth { fields["sideWidth"] = "\(sideWidth)" }
+        view.fields = fields
         view.sample("update")
     }
     static func dismantleUIView(_ view: Probe, coordinator: ()) { view.stop() }

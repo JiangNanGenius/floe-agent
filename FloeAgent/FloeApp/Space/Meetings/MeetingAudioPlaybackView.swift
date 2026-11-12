@@ -13,12 +13,40 @@ import SwiftUI
 /// or the view goes away.
 struct MeetingAudioPlaybackView: View {
     let player: AVPlayer
+    let title: String?
     let onClose: () -> Void
     @State private var model = MeetingAudioPlaybackModel()
     @Environment(\.scenePhase) private var scenePhase
 
+    init(player: AVPlayer, title: String? = nil, onClose: @escaping () -> Void) {
+        self.player = player
+        self.title = title
+        self.onClose = onClose
+    }
+
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Label(title ?? t("回放", "Playback"), systemImage: "waveform")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("meeting.playback.title")
+                Spacer(minLength: 8)
+                HStack(spacing: 3) {
+                    Text(model.positionText).foregroundStyle(.primary)
+                    Text("/").foregroundStyle(.tertiary)
+                    Text(model.durationText).foregroundStyle(.secondary)
+                }
+                .font(.caption.monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(t("播放时间", "Playback time"))
+                .accessibilityValue(model.accessibilityPosition)
+                .accessibilityIdentifier("meeting.playback.time")
+            }
+
             Slider(value: position, in: sliderRange, onEditingChanged: { editing in
                 if editing { model.beginScrubbing() } else { model.endScrubbing() }
             })
@@ -28,13 +56,7 @@ struct MeetingAudioPlaybackView: View {
             .accessibilityHint(t("上下轻扫可调整播放位置", "Swipe up or down to adjust playback position"))
             .accessibilityIdentifier("meeting.playback.slider")
 
-            HStack(spacing: 2) {
-                transportButton(
-                    model.isPlaying ? t("暂停", "Pause") : t("播放", "Play"),
-                    systemImage: model.isPlaying ? "pause.fill" : "play.fill",
-                    identifier: "meeting.playback.playPause",
-                    prominent: true
-                ) { model.togglePlayback() }
+            HStack(spacing: 4) {
                 transportButton(
                     t("后退 15 秒", "Back 15 seconds"),
                     systemImage: "gobackward.15",
@@ -42,21 +64,17 @@ struct MeetingAudioPlaybackView: View {
                 ) { model.skip(by: -15) }
                 .disabled(!model.canSeek)
                 transportButton(
+                    model.isPlaying ? t("暂停", "Pause") : t("播放", "Play"),
+                    systemImage: model.isPlaying ? "pause.fill" : "play.fill",
+                    identifier: "meeting.playback.playPause",
+                    prominent: true
+                ) { model.togglePlayback() }
+                transportButton(
                     t("前进 15 秒", "Forward 15 seconds"),
                     systemImage: "goforward.15",
                     identifier: "meeting.playback.forward15"
                 ) { model.skip(by: 15) }
                 .disabled(!model.canSeek)
-                HStack(spacing: 3) {
-                    Text(model.positionText).foregroundStyle(.primary)
-                    Text("/").foregroundStyle(.tertiary)
-                    Text(model.durationText).foregroundStyle(.secondary)
-                }
-                .font(.caption.monospacedDigit())
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .accessibilityHidden(true)
-                .accessibilityIdentifier("meeting.playback.time")
                 Spacer(minLength: 4)
                 Button(action: onClose) {
                     Image(systemName: "xmark.circle.fill")
@@ -69,10 +87,10 @@ struct MeetingAudioPlaybackView: View {
                 .accessibilityIdentifier("meeting.playback.close")
             }
         }
+        .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
-        .padding(.leading, 10)
-        .padding(.trailing, 2)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
         .accessibilityElement(children: .contain)
@@ -136,6 +154,7 @@ final class MeetingAudioPlaybackModel {
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
     @ObservationIgnored private var timeControlObservation: NSKeyValueObservation?
+    @ObservationIgnored private var currentItemObservation: NSKeyValueObservation?
     @ObservationIgnored private var durationObservation: NSKeyValueObservation?
     private var pendingSeekTarget: Double?
     @ObservationIgnored private var seekGeneration = 0
@@ -219,13 +238,14 @@ final class MeetingAudioPlaybackModel {
     }
 
     func skip(by seconds: Double) {
-        guard canSeek else { return }
-        seek(to: (pendingSeekTarget ?? currentTime) + seconds)
+        guard canSeek, !isScrubbing else { return }
+        seek(to: displayTime + seconds)
     }
 
     func pauseForBackground() {
         player?.pause()
         isPlaying = false
+        isScrubbing = false
     }
 
     private func installObservers(on player: AVPlayer) {
@@ -247,9 +267,33 @@ final class MeetingAudioPlaybackModel {
                 if self.isPlaying != playing { self.isPlaying = playing }
             }
         }
-        guard let item = player.currentItem else {
-            duration = 0
-            canSeek = false
+        currentItemObservation = player.observe(
+            \.currentItem, options: [.new]
+        ) { [weak self] observed, _ in
+            Task { @MainActor in
+                guard let self, self.player === observed else { return }
+                self.installItemObservers(for: observed.currentItem)
+            }
+        }
+        // Install the item observers synchronously so an end notification
+        // posted immediately after attach cannot race the first KVO callback.
+        installItemObservers(for: player.currentItem)
+    }
+
+    /// A player may attach before or after its item exists. Item-bound
+    /// observers are replaced with the item so a late duration or end event
+    /// still reaches this exact player, and a replaced item cannot fire into
+    /// the new one.
+    private func installItemObservers(for item: AVPlayerItem?) {
+        durationObservation?.invalidate()
+        durationObservation = nil
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        endObserver = nil
+        guard let item else {
+            if duration != 0 { duration = 0 }
+            if canSeek { canSeek = false }
             return
         }
         durationObservation = item.observe(\.duration, options: [.initial, .new]) { [weak self] item, _ in
@@ -269,6 +313,7 @@ final class MeetingAudioPlaybackModel {
                 self.playbackDidEnd()
             }
         }
+        refreshTiming()
     }
 
     private func timeDidAdvance(_ time: CMTime) {
@@ -355,6 +400,8 @@ final class MeetingAudioPlaybackModel {
         endObserver = nil
         timeControlObservation?.invalidate()
         timeControlObservation = nil
+        currentItemObservation?.invalidate()
+        currentItemObservation = nil
         durationObservation?.invalidate()
         durationObservation = nil
     }
@@ -367,6 +414,7 @@ final class MeetingAudioPlaybackModel {
             NotificationCenter.default.removeObserver(endObserver)
         }
         timeControlObservation?.invalidate()
+        currentItemObservation?.invalidate()
         durationObservation?.invalidate()
     }
 

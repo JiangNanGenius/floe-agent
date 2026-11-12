@@ -12,8 +12,8 @@ public enum PlanToolDenialReason: String, Sendable, Codable, Hashable {
 /// Capability filter used both while constructing provider schemas and
 /// immediately before execution. It is deliberately independent of model
 /// instructions: a forged tool call still reaches `decision(for:)`.
-/// Native user questions are the one main-run interaction exception; they
-/// do not authorize execution or expose other internal draft mutations.
+/// Native questions and the exact main-run checklist reset are narrow
+/// internal metadata exceptions. Neither grants external mutation authority.
 public struct PlanToolPolicy: Sendable {
     public init() {}
 
@@ -22,7 +22,7 @@ public struct PlanToolPolicy: Sendable {
         case .readOnly:
             return .success(())
         case .internalState:
-            if descriptor.name == UserAskTool.name,
+            if [UserAskTool.name, TaskResetPlanTool.name].contains(descriptor.name),
                descriptor.executionBoundary == .mainRunOnly,
                !descriptor.isSideEffecting,
                descriptor.riskLabels.isEmpty,

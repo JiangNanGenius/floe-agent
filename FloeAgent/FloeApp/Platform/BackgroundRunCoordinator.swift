@@ -15,6 +15,42 @@ import FloeTools
 import FloeAgentRuntime
 import FloeIOSAutomation
 
+/// Only the existing terminal/outbox delivery path uses this adapter. Tests
+/// replace the system center with an in-memory receipt sink; production keeps
+/// the same notification identifiers, content, authorization and deep links.
+@MainActor
+struct TaskTerminalNotificationDelivery {
+    struct Reference {
+        var identifier: String
+        var deepLink: BackgroundWorkDeepLink
+    }
+    var add: @MainActor (TaskTerminalEvent) async throws -> Void
+    var remove: @MainActor ([String]) -> Void
+    var existing: @MainActor () async -> [Reference]
+    var persistsOutbox = true
+    var authorization: (@MainActor () async -> NotificationAuthorizationState)? = nil
+
+    static let system = Self(add: { event in
+        let content = UNMutableNotificationContent()
+        content.title = event.title
+        content.body = event.body
+        content.sound = .default
+        content.userInfo = event.deepLink.userInfo
+        try await UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: event.identifier, content: content, trigger: nil))
+    }, remove: { identifiers in
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
+    }, existing: {
+        let pending = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        let delivered = await UNUserNotificationCenter.current().deliveredNotifications()
+        return (pending + delivered.map(\.request)).compactMap { request in
+            guard let link = BackgroundWorkDeepLink.parse(request.content.userInfo) else { return nil }
+            return Reference(identifier: request.identifier, deepLink: link)
+        }
+    })
+}
+
 extension Notification.Name {
     static let floeOpenConversation = Notification.Name("org.floeagent.open-conversation")
     /// Deep link for Linux session/service work: the app presents the
@@ -175,6 +211,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var pushRefreshResults: [UUID: Bool] = [:]
     private nonisolated let userQuestionAnswers: AppUserQuestionIntegration
     struct ActiveRun {
+        let activationID = UUID()
         let conversationID: UUID?
         let title: String
         /// When this workload first reported itself; used for the completion
@@ -341,6 +378,24 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var scheduleReminderScheduleIDs: Set<UUID> = []
     private var notificationOutbox = TaskNotificationOutbox()
     private var notificationDeliveryFence = TaskNotificationDeliveryFence()
+    private let terminalNotificationDelivery: TaskTerminalNotificationDelivery
+    private var notificationDeliveryTasks: [String: (owner: UUID, event: TaskTerminalEvent, task: Task<Void, Never>)] = [:]
+    private var notificationRetirementTasks: [UUID: (owner: UUID, task: Task<Void, Never>)] = [:]
+    private var latestStartedNotificationRun: [UUID: UUID] = [:]
+    private var pendingRunFinishOwners: [UUID: UUID] = [:]
+    private var pendingRunFinishTasks: [UUID: (owner: UUID, task: Task<Void, Never>)] = [:]
+    #if DEBUG
+    var runFinishValidationBarrierForTesting: (@MainActor () async -> Void)?
+    var continuedTaskCompletionForTesting: (@MainActor (Bool) -> Void)?
+    func hasActiveRunForTesting(_ runID: UUID) -> Bool { activeRuns[runID] != nil }
+    func runIsSuspendedForTesting(_ runID: UUID) -> Bool { activeRuns[runID]?.isAwaitingUserAttention == true }
+    var queuedTerminalEventsForTesting: [TaskTerminalEvent] { notificationOutbox.pending }
+    func waitForRunNotificationWorkForTesting() async {
+        for entry in Array(pendingRunFinishTasks.values) { await entry.task.value }
+        for entry in Array(notificationRetirementTasks.values) { await entry.task.value }
+        for entry in Array(notificationDeliveryTasks.values) { await entry.task.value }
+    }
+    #endif
     private var notificationAuthorization: NotificationAuthorizationState = .notDetermined
     private var linuxPortCenter: LinuxPortForwardCenter { .shared }
     private var linuxMetricsSamplers: [String: LinuxGuestMetricsSampler] = [:]
@@ -1015,8 +1070,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         return true
     }
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, notificationDelivery: TaskTerminalNotificationDelivery = .system) {
         self.environment = environment
+        self.terminalNotificationDelivery = notificationDelivery
         self.userQuestionAnswers = environment.userQuestions
         if let data = UserDefaults.standard.data(
             forKey: Self.visualSurfacePolicyDefaultsKey
@@ -1031,7 +1087,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // keep-alive list is imported once and then removed.
         LinuxBackgroundRunPreferences.migrateLegacyIfNeeded()
         self.linuxBackgroundPreferences = LinuxBackgroundRunPreferences.load()
-        self.notificationOutbox = TaskNotificationOutboxStore.load()
+        self.notificationOutbox = notificationDelivery.persistsOutbox ? TaskNotificationOutboxStore.load() : TaskNotificationOutbox()
         super.init()
         Task { [weak self] in
             await self?.refreshNotificationAuthorizationAndFlush()
@@ -1092,6 +1148,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         /// registration; in-memory activity/PiP tracking still runs.
         publishesContent: Bool = true
     ) {
+        if publishesContent {
+            // A resumed run may keep its ID. Retire the former attempt before
+            // the duplicate-owner shortcut, not only after a suspended run.
+            pendingRunFinishOwners[runID] = nil
+            latestStartedNotificationRun[conversationID] = runID
+            retireObsoleteConversationTerminals(conversationID: conversationID, currentRunID: runID)
+        }
         // Session publication and launch recovery can report the same durable
         // run more than once. Re-preparing PiP for that duplicate stopped the
         // player that was still loading, so no generation ever reached ready.
@@ -1247,6 +1310,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// frame never implies that a tool or the remote model made progress.
     func didReceiveActivity(runID: UUID, at date: Date = Date(), characters: Int = 0, tokensPerSecond: Double? = nil) {
         guard var active = activeRuns[runID] else { return }
+        pendingRunFinishOwners[runID] = nil
         active.lastActivityAt = max(active.lastActivityAt, date)
         if characters > 0 {
             if date.timeIntervalSince(active.outputWindowStartedAt) > 5 {
@@ -1284,8 +1348,43 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         notificationDeliveryFence.invalidate(identifier: identifier)
         notificationOutbox.discard(identifier: identifier)
         persistNotificationOutbox()
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [identifier])
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
+        terminalNotificationDelivery.remove([identifier])
+        if let banner = TaskBannerCenter.shared.banner,
+           banner.deepLink.kind == .modelRun, banner.deepLink.runID == runID {
+            TaskBannerCenter.shared.dismiss(id: banner.id)
+        }
+    }
+
+    private func retireObsoleteConversationTerminals(conversationID: UUID, currentRunID: UUID) {
+        var runIDs: Set<UUID> = [currentRunID]
+        for event in notificationOutbox.pending + notificationDeliveryTasks.values.map(\.event) {
+            if event.kind.isTerminal, event.deepLink.kind == .modelRun,
+               event.deepLink.conversationID == conversationID, let id = event.deepLink.runID { runIDs.insert(id) }
+        }
+        for id in runIDs { discardObsoleteRunTerminalNotification(runID: id) }
+        if let banner = TaskBannerCenter.shared.banner,
+           banner.deepLink.kind == .modelRun, banner.deepLink.conversationID == conversationID {
+            TaskBannerCenter.shared.dismiss(id: banner.id)
+        }
+        let owner = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.notificationRetirementTasks[conversationID]?.owner == owner {
+                    self.notificationRetirementTasks[conversationID] = nil
+                }
+            }
+            let references = await self.terminalNotificationDelivery.existing()
+            guard self.latestStartedNotificationRun[conversationID] == currentRunID else { return }
+            for reference in references {
+                guard reference.deepLink.kind == .modelRun,
+                      reference.deepLink.conversationID == conversationID,
+                      let id = reference.deepLink.runID, id != currentRunID,
+                      reference.identifier == "run.\(id.uuidString).terminal" else { continue }
+                self.discardObsoleteRunTerminalNotification(runID: id)
+            }
+        }
+        notificationRetirementTasks[conversationID] = (owner, task)
     }
 
     /// Live tool activity for the floating surface. `finished` clears the
@@ -1293,6 +1392,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     func didUpdateTool(runID: UUID, name: String, outcome: ToolSurfaceOutcome) {
         guard var active = activeRuns[runID] else { return }
         let wasAwaitingUserAttention = active.isAwaitingUserAttention
+        pendingRunFinishOwners[runID] = nil
         switch outcome {
         case .started:
             active.currentToolName = name
@@ -1388,7 +1488,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         active.isGenerating = isGenerating && (isRuntimeActivity || !wasAwaitingUserAttention)
         active.progress = progress
         // Real progress proves the run resumed after a suspension.
-        if isRuntimeActivity { active.isAwaitingUserAttention = false }
+        if isRuntimeActivity {
+            active.isAwaitingUserAttention = false
+            pendingRunFinishOwners[runID] = nil
+        }
         activeRuns[runID] = active
         if isRuntimeActivity { resumeContinuedEligibility(runID: runID, active: active) }
         if #available(iOS 26.0, *),
@@ -1438,6 +1541,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // its persistent device-input ownership without fencing other tasks.
         environment.iosBridgeIntegration.suspendRun(runID: runID)
         guard var active = activeRuns[runID] else { return }
+        pendingRunFinishOwners[runID] = nil
         active.stage = message
         active.progress = max(active.progress, 60)
         // A suspension is the run waiting for the user: it stays visible in
@@ -1515,28 +1619,61 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     func didFinish(runID: UUID, succeeded: Bool, message: String?) {
-        // Durable schedule-completion bridge BEFORE the work record is torn
-        // down: a scheduled run's real terminal state settles its occurrence,
-        // and only a SUCCESSFUL upstream run enqueues after-success work.
-        Task { [weak self] in
-            await self?.recordScheduleRunCompletion(
-                runID: runID, succeeded: succeeded, message: message)
+        guard let active = activeRuns[runID] else { return }
+        // Media uses its own durable job owner; temporary runs have no durable
+        // model-run row. Their existing non-notifying lifecycle stays intact.
+        guard !succeeded, active.publishesContent, let conversationID = active.conversationID else {
+            finishReportedRun(runID: runID, outcome: succeeded ? .succeeded : .failed, message: message)
+            return
         }
-        finishRun(
-            runID: runID,
-            outcome: succeeded ? .succeeded : .failed,
-            message: message
-        )
+        let owner = UUID(), activationID = active.activationID
+        pendingRunFinishOwners[runID] = owner
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.pendingRunFinishTasks[runID]?.owner == owner { self.pendingRunFinishTasks[runID] = nil }
+                if self.pendingRunFinishOwners[runID] == owner { self.pendingRunFinishOwners[runID] = nil }
+            }
+            let record = try? await self.environment.runStore.run(id: runID)
+            #if DEBUG
+            if let barrier = self.runFinishValidationBarrierForTesting { await barrier() }
+            #endif
+            guard self.pendingRunFinishOwners[runID] == owner,
+                  let current = self.activeRuns[runID], current.activationID == activationID,
+                  current.conversationID == conversationID else { return }
+            guard let record, record.id == runID, record.conversationID == conversationID,
+                  record.endedAt != nil, let conclusion = TaskRunConclusion.from(state: record.state) else {
+                // A provider/tool/invocation error is not an ended round. Do
+                // not remove its owner or irreversibly complete the OS task
+                // with success:false while retries or persistence continue.
+                self.discardObsoleteRunTerminalNotification(runID: runID)
+                return
+            }
+            switch conclusion {
+            case .completed: self.finishReportedRun(runID: runID, outcome: .succeeded, message: nil)
+            case .failed: self.finishReportedRun(runID: runID, outcome: .failed, message: message)
+            case .cancelled: self.didCancel(runID: runID, message: nil)
+            case .checkpointed:
+                self.didSuspend(runID: runID,
+                    message: FloeL10n.l("remote.conversation_center.task_saved_waiting_for_you_to"))
+            }
+        }
+        pendingRunFinishTasks[runID] = (owner, task)
+    }
+
+    private func finishReportedRun(runID: UUID, outcome: TerminalOutcome, message: String?) {
+        pendingRunFinishOwners[runID] = nil
+        Task { [weak self] in
+            await self?.recordScheduleRunCompletion(runID: runID, succeeded: outcome.succeeded,
+                message: message, cancelled: outcome == .cancelled)
+        }
+        finishRun(runID: runID, outcome: outcome, message: message)
     }
 
     /// The user (or the system) cancelled the run. The work record and the
     /// durable notification both report cancellation instead of a failure.
     func didCancel(runID: UUID, message: String?) {
-        Task { [weak self] in
-            await self?.recordScheduleRunCompletion(
-                runID: runID, succeeded: false, message: message, cancelled: true)
-        }
-        finishRun(runID: runID, outcome: .cancelled, message: message)
+        finishReportedRun(runID: runID, outcome: .cancelled, message: message)
     }
 
     private func finishRun(runID: UUID, outcome: TerminalOutcome, message: String?) {
@@ -1940,7 +2077,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// after the system permission prompt resolves, so a terminal event that
     /// arrived before the answer is still delivered.
     func refreshNotificationAuthorizationAndFlush() async {
-        let state = await Self.currentNotificationAuthorization()
+        let state: NotificationAuthorizationState
+        if let authorization = terminalNotificationDelivery.authorization { state = await authorization() }
+        else { state = await Self.currentNotificationAuthorization() }
         notificationAuthorization = state
         let presentable = notificationOutbox.takePresentable(canPresent: state.canPresentAlert)
         for event in presentable {
@@ -1965,6 +2104,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             let current = await reconciledQueuedRunNotification(event)
             guard notificationDeliveryFence.isCurrent(identifier: event.identifier, owner: validationOwner) else { continue }
             if let current { post(current) }
+            else if event.deepLink.kind == .modelRun, let runID = event.deepLink.runID {
+                discardObsoleteRunTerminalNotification(runID: runID)
+            }
             else {
                 notificationDeliveryFence.invalidate(identifier: event.identifier)
                 notificationOutbox.discard(identifier: event.identifier)
@@ -2023,46 +2165,54 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     private func post(_ event: TaskTerminalEvent) {
         let deliveryOwner = notificationDeliveryFence.begin(identifier: event.identifier)
-        let content = UNMutableNotificationContent()
-        content.title = event.title
-        content.body = event.body
-        content.sound = .default
-        content.userInfo = event.deepLink.userInfo
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: event.identifier, content: content, trigger: nil
-        )) { [weak self] error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard self.notificationDeliveryFence.finish(identifier: event.identifier, owner: deliveryOwner) else { return }
-                if let error {
-                    self.notificationOutbox.recordSchedulingFailure(
-                        identifier: event.identifier,
-                        reason: error.localizedDescription,
-                        wasAuthorizationBlocked: false
-                    )
-                    // A system-side scheduling error must not lose the event —
-                    // unless the user already acted on it (tap → discard), in
-                    // which case resurrecting the queue entry would alert a
-                    // second time.
-                    if self.userHandledNotificationIdentifiers[event.identifier] == nil {
-                        _ = self.notificationOutbox.enqueue(event, canPresent: false)
-                    } else {
-                        FloeLogger(category: .app).info(
-                            "notificationResurrectionSkipped identifier=\(event.identifier) reason=alreadyHandled"
-                        )
-                    }
-                    FloeLogger(category: .app).warning(
-                        "notificationSchedulingFailed identifier=\(event.identifier) reason=\(error.localizedDescription)"
-                    )
-                } else {
-                    self.notificationOutbox.recordSchedulingSuccess(identifier: event.identifier)
+        let preceding = notificationDeliveryTasks[event.identifier]?.task
+        let task = Task { [weak self] in
+            // Serialize system adds for ONE identifier. An obsolete add must
+            // finish and be removed before its replacement can reach the OS.
+            // This also prevents a late cleanup from deleting a newer alert.
+            await preceding?.value
+            guard let self else { return }
+            defer {
+                if self.notificationDeliveryTasks[event.identifier]?.owner == deliveryOwner {
+                    self.notificationDeliveryTasks[event.identifier] = nil
                 }
-                self.persistNotificationOutbox()
             }
+            guard self.notificationDeliveryFence.isCurrent(identifier: event.identifier, owner: deliveryOwner) else { return }
+            let validated = await self.reconciledQueuedRunNotification(event)
+            guard self.notificationDeliveryFence.isCurrent(identifier: event.identifier, owner: deliveryOwner) else { return }
+            guard let current = validated else {
+                if let runID = event.deepLink.runID, event.deepLink.kind == .modelRun {
+                    self.discardObsoleteRunTerminalNotification(runID: runID)
+                }
+                return
+            }
+            do {
+                try await self.terminalNotificationDelivery.add(current)
+                guard self.notificationDeliveryFence.finish(identifier: event.identifier, owner: deliveryOwner) else {
+                    self.terminalNotificationDelivery.remove([event.identifier])
+                    return
+                }
+                self.notificationOutbox.recordSchedulingSuccess(identifier: event.identifier)
+            } catch {
+                guard self.notificationDeliveryFence.finish(identifier: event.identifier, owner: deliveryOwner) else {
+                    self.terminalNotificationDelivery.remove([event.identifier])
+                    return
+                }
+                self.notificationOutbox.recordSchedulingFailure(identifier: event.identifier,
+                    reason: error.localizedDescription, wasAuthorizationBlocked: false)
+                if self.userHandledNotificationIdentifiers[event.identifier] == nil {
+                    _ = self.notificationOutbox.enqueue(current, canPresent: false)
+                }
+                FloeLogger(category: .app).warning(
+                    "notificationSchedulingFailed identifier=\(event.identifier) reason=\(error.localizedDescription)")
+            }
+            self.persistNotificationOutbox()
         }
+        notificationDeliveryTasks[event.identifier] = (deliveryOwner, event, task)
     }
 
     private func persistNotificationOutbox() {
+        guard terminalNotificationDelivery.persistsOutbox else { return }
         TaskNotificationOutboxStore.save(notificationOutbox)
     }
 
@@ -2076,7 +2226,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         case .cancelled: reported = .cancelled
         case .actionRequired, .durationAdvisory: return event
         }
-        guard let actual = await resolvedTerminalOutcome(reported, runID: runID) else { return nil }
+        guard let actual = await resolvedTerminalOutcome(reported, runID: runID, conversationID: conversationID) else { return nil }
         let kind: TaskTerminalEventKind = switch actual {
         case .succeeded: .completed
         case .failed: .failed
@@ -2220,13 +2370,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// message string.
     private func resolvedTerminalOutcome(
         _ outcome: TerminalOutcome,
-        runID: UUID
+        runID: UUID,
+        conversationID: UUID
     ) async -> TerminalOutcome? {
-        guard let record = try? await environment.runStore.run(id: runID) else {
-            // A missing/unavailable durable record cannot verify a failure.
-            // In particular, storage suspension is not task failure.
-            return nil
+        guard let record = try? await environment.runStore.run(id: runID),
+              record.id == runID, record.conversationID == conversationID,
+              record.endedAt != nil, activeRuns[runID] == nil else { return nil }
+        if let current = latestStartedNotificationRun[conversationID] {
+            guard current == runID else { return nil }
+        } else {
+            // Cold-process outbox flush has no RAM owner: use the bounded,
+            // authoritative latest task-run row, not error text or its age.
+            guard let recent = try? await environment.runStore.recentRuns(conversationID: conversationID, limit: 1),
+                  recent.first?.id == runID else { return nil }
         }
+        guard activeRuns[runID] == nil,
+              latestStartedNotificationRun[conversationID].map({ $0 == runID }) ?? true else { return nil }
         switch TaskRunConclusion.from(state: record.state) {
         case .completed: return .succeeded
         case .failed: return .failed
@@ -2277,7 +2436,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             guard let self else { return }
             let policy = try? await SQLiteWorkspaceStore(database: self.environment.database)
                 .taskPolicy(conversationID: conversationID)
-            let resolved = await self.resolvedTerminalOutcome(reportedOutcome, runID: runID)
+            let resolved = await self.resolvedTerminalOutcome(reportedOutcome, runID: runID, conversationID: conversationID)
             guard self.notificationDeliveryFence.isCurrent(identifier: identifier, owner: validationOwner) else { return }
             guard let outcome = resolved else {
                 self.discardObsoleteRunTerminalNotification(runID: runID)
@@ -2308,7 +2467,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             case .failed: String(localized: "background.run.failure_body")
             case .cancelled: String(localized: "background.run.cancelled_body")
             }
-            guard self.notificationDeliveryFence.isCurrent(identifier: identifier, owner: validationOwner) else { return }
+            guard self.notificationDeliveryFence.isCurrent(identifier: identifier, owner: validationOwner),
+                  self.latestStartedNotificationRun[conversationID].map({ $0 == runID }) ?? true else { return }
             self.enqueueTerminalNotification(
                 event: .modelRunTerminal(
                     runID: runID,
@@ -3814,6 +3974,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     @available(iOS 26.0, *)
     private func finishContinuedTasks(success: Bool, finalStage: String? = nil) {
+        #if DEBUG
+        continuedTaskCompletionForTesting?(success)
+        #endif
         // The shared continued task is the session's real qualification: any
         // finish (explicit release, expiration, preference-off) returns the
         // session's displayed state to truth. Idempotent and seam-free, so

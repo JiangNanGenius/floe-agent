@@ -32,6 +32,10 @@ import FloeTools
     var speakerRecognition: MeetingSpeakerRecognition?
     var isStoppingForFileAction = false
     private var captureIntent = UUID()
+    /// Session whose capture events may change the live/file queue state.
+    /// A late stopped/cancelled callback from a previous recording must not
+    /// clear the current recording's live state.
+    var captureEventSession: CaptureSessionID?
     var isUpdatingMinutes = false
     var rollingSummaryGeneration = UUID()
     private var captureSettlement: Task<Void, Never>?
@@ -91,14 +95,47 @@ import FloeTools
         guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalContentError.invalidProject }
         let service = MeetingService(database: try MeetingDatabase(path: file.path))
         let meeting = try await service.meeting(MeetingID(id))
+        // A force-quit or process death leaves the capture row active even
+        // though no microphone writer survived. Preserve every original and
+        // turn those rows into ordinary stopped recordings so replay, full-file
+        // transcription and chunk retry remain reachable.
+        var recoveryFailure: String?
+        do {
+            let stale = try await service.sessions(meeting: MeetingID(id))
+            for snapshot in stale where snapshot.kind == .liveRecording
+                && [.pending, .capturing, .stopping].contains(snapshot.state) {
+                let configuration = CaptureConfiguration(
+                    directory: snapshot.directory ?? directory.appendingPathComponent("Recordings"))
+                let original = snapshot.sourceFile.map { URL(fileURLWithPath: $0) }
+                    ?? (try? MeetingPCMChunkRecorder.originalURL(
+                        configuration: configuration, session: snapshot.id))
+                let resolved = original?.standardizedFileURL.resolvingSymlinksInPath()
+                let available: Bool
+                if let resolved, resolved.path.hasPrefix(directory.path + "/") {
+                    let values = try? resolved.resourceValues(
+                        forKeys: [.isRegularFileKey, .fileSizeKey])
+                    available = values?.isRegularFile == true
+                        && (values?.fileSize ?? 0) > 0
+                } else {
+                    available = false
+                }
+                _ = try await service.recoverInterruptedLiveCapture(
+                    snapshot.id, meeting: MeetingID(id), originalAvailable: available)
+            }
+        } catch { recoveryFailure = error.localizedDescription }
         let value = MeetingProjectSession(id: id, root: directory, service: service, meeting: meeting, environment: environment)
+        if let recoveryFailure { value.diagnostic = recoveryFailure }
         value.liveTranscription = try MeetingLiveTranscription(meetingID: MeetingID(id), root: directory,
             service: service, audio: environment.assistantAudioService, onChange: { [weak value] in
                 await value?.liveTranscriptDidChange()
             })
         value.liveTranscription?.liveGate = { [weak value] in
-            guard let asr = value?.continuousASR, asr.isLiveActive else { return (false, []) }
-            return (true, asr.coveredSnapshot())
+            guard let asr = value?.continuousASR, asr.isLiveActive,
+                  let session = asr.liveCaptureSession else {
+                return MeetingLiveCoverageGate(session: nil, active: false, coverage: [])
+            }
+            return MeetingLiveCoverageGate(
+                session: session, active: true, coverage: asr.coveredSnapshot())
         }
         do {
             value.speakerRecognition = try MeetingSpeakerRecognition(meeting: MeetingID(id), root: directory, service: service,
@@ -171,6 +208,10 @@ import FloeTools
     }
     func startRecording() async {
         guard !isStoppingForFileAction, !changingCapture, !isRecording else { return }
+        // Any stopped/cancelled callback still queued for the previous
+        // capture is stale once a new recording begins. The new .started
+        // event installs its own session identity.
+        captureEventSession = nil
         let intent = UUID(); captureIntent = intent
         changingCapture = true; diagnostic = nil
         defer { changingCapture = false }
@@ -184,12 +225,22 @@ import FloeTools
             try audio.acquireRecording(); audioHeld = true
             configureLiveTranscription()
             await prepareContinuousASR()
+            #if canImport(WhisperKit)
+            if continuousASR == nil {
+                // The file fallback needs the shared local model. Warm the
+                // same residency the first chunk will use; this is best
+                // effort and never blocks recording or changes the route.
+                Task { _ = await SpeechRecognitionRuntime.live.warmUp() }
+            }
+            #endif
             await speakerRecognition?.prepare()
             guard !isStoppingForFileAction, captureIntent == intent else { throw CancellationError() }
             try Task.checkCancellation()
             let directory = root.appendingPathComponent("Recordings")
             if let asr = continuousASR {
                 await backend.setASRFeed { [weak asr] frame in asr?.offer(frame) }
+            } else {
+                await backend.setASRFeed(nil)
             }
             guard !isStoppingForFileAction, captureIntent == intent else { throw CancellationError() }
             liveTranscription?.liveCaptureFinished = false
@@ -418,25 +469,51 @@ import FloeTools
                 let result = try await environment.assistantAudioService.transcribe(
                     fileURL: file, language: .automatic,
                     serviceID: intelligence.transcriptionServiceID ?? AssistantAudioService.ID.transcriptionEnhanced,
-                    requiresTiming: true, enableSpeakerAttribution: true, progress: { [weak self] fraction in
+                    requiresTiming: true, enableSpeakerAttribution: true,
+                    allowLocalFallback: false, progress: { [weak self] fraction in
                     Task { @MainActor in
                         guard let self, self.generation == token else { return }
                         self.progress = min(1, max(0, fraction))
                     }
                 })
-                guard !result.segments.isEmpty else { throw PersonalContentError.invalidProject }
-                // The whole-original diarization is the canonical post-record
-                // view. Its labels bind in this recognition request's own domain
-                // (independent from every per-chunk request domain).
+                // A text-only provider result is real text without segment
+                // timing. Anchor it to the measured original interval; never
+                // discard it merely because no word timestamps exist. A
+                // provider can also place a plausible sentence in a silent
+                // tail; the client's measured voice profile rejects only
+                // those ranges and keeps real short/quiet speech.
+                let voice = await MeetingAudioActivity.profile(file: file)
                 var inputs: [CanonicalTranscriptInput] = []
-                for segment in result.segments {
-                    try Task.checkCancellation()
-                    guard generation == token else { throw CancellationError() }
-                    let speaker = try await service.resolveEngineSpeaker(
-                        meeting: MeetingID(id), scope: segment.recognitionRequestID?.uuidString ?? recognitionRequestID, label: segment.speaker)
-                    inputs.append(CanonicalTranscriptInput(
-                        startSeconds: segment.start, endSeconds: segment.end,
-                        text: segment.text, speakerID: speaker))
+                if result.segments.isEmpty {
+                    let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { throw PersonalContentError.invalidProject }
+                    let interval = try await AudioFileProbe.durationRange(file)
+                    if let voice, !voice.hasVoice(
+                        start: interval.start, end: interval.end, margin: 0.2) {
+                        throw AssistantAudioError.noSpeechRecognized
+                    }
+                    inputs = [.init(startSeconds: interval.start, endSeconds: interval.end,
+                                    text: text, speakerID: nil)]
+                } else {
+                    // The whole-original diarization is the canonical
+                    // post-record view. Its labels bind in this recognition
+                    // request's own domain (independent from every per-chunk
+                    // request domain).
+                    for segment in result.segments {
+                        try Task.checkCancellation()
+                        guard generation == token else { throw CancellationError() }
+                        guard segment.start.isFinite, segment.end.isFinite,
+                              segment.end > segment.start else { continue }
+                        if let voice, !voice.hasVoice(
+                            start: segment.start, end: segment.end, margin: 0.25) {
+                            continue
+                        }
+                        let speaker = try await service.resolveEngineSpeaker(
+                            meeting: MeetingID(id), scope: segment.recognitionRequestID?.uuidString ?? recognitionRequestID, label: segment.speaker)
+                        inputs.append(CanonicalTranscriptInput(
+                            startSeconds: segment.start, endSeconds: segment.end,
+                            text: segment.text, speakerID: speaker))
+                    }
                 }
                 // Reconcile against every analysis session that belongs to
                 // this original recording (per-chunk sessions, any earlier
@@ -536,14 +613,19 @@ import FloeTools
     /// the transcription provider the user selected.
     var speakerAttributionCapability: FloeMeetings.CapabilityState {
         get async {
-            if let diagnostic = speakerRecognition?.diagnostic { return .degraded(note: diagnostic) }
-            let status = await MeetingSpeakerModelStore.shared.status()
-            if status == .ready { return .available }
+            // The selected provider's real capability is independent from the
+            // optional on-device pack. A failed local preparation must not
+            // label a cloud service that does return speaker labels as
+            // unavailable or degraded.
             let serviceID = intelligence.transcriptionServiceID ?? AssistantAudioService.ID.transcriptionEnhanced
             let audio = environment.assistantAudioService
             let profile = serviceID == AssistantAudioService.ID.transcriptionCloud
                 ? audio.cloudASRSettings.readyProfiles.first : audio.cloudASRSettings.profile(forServiceID: serviceID)
-            if let profile, profile.fileCapabilities.supportsSpeakerAttribution || profile.liveCapabilities?.supportsSpeakerAttribution == true { return .available }
+            if let profile, profile.fileCapabilities.supportsSpeakerAttribution
+                || profile.liveCapabilities?.supportsSpeakerAttribution == true { return .available }
+            if let diagnostic = speakerRecognition?.diagnostic { return .degraded(note: diagnostic) }
+            let status = await MeetingSpeakerModelStore.shared.status()
+            if status == .ready { return .available }
             switch status {
             case .downloading:
                 return .degraded(note: IDELanguageRunText.t("正在准备本地说话人识别，录音与转写继续。", "Preparing local speaker recognition. Recording and transcription continue."))

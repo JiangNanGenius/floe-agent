@@ -29,7 +29,7 @@ public enum BundledDomainSkills {
         public var toolNames: [String] {
             switch id {
             case "floe-image-edit", "floe-svg": return ["exec.shell"]
-            case "floe-text-edit": return ["exec.shell", "workspace.applyPatch", "workspace.writeFile"]
+            case "floe-text-edit": return ["workspace.readFile", "workspace.inspectFileMetadata", "workspace.createFile", "workspace.appendFile", "workspace.replaceText", "workspace.applyPatch", "workspace.writeFile"]
             default: break
             }
             let pattern = #"(?<![A-Za-z0-9_.-])[a-z][A-Za-z0-9]*(?:\.[a-zA-Z][A-Za-z0-9]*)+(?![A-Za-z0-9_.*-])"#
@@ -287,53 +287,21 @@ public enum BundledDomainSkills {
         ),
         Definition(
             id: "floe-text-edit",
-            name: "Text Edit Recipes",
-            description: "Append and exact-replace recipes that replaced workspace.appendFile and workspace.replaceText.",
+            name: "Native Text Editing",
+            description: "Native UTF-8 text editing with exact replacements, bounded drafts and verified commits.",
             version: "1.1.0",
             exposed: false,
             markdown: """
-            ## Deterministic text edits
-            `workspace.appendFile` and `workspace.replaceText` were retired in favor of `workspace.applyPatch`/`workspace.writeFile` plus these two exact recipes. Run them with `python3` through `exec.shell`, initializing `inputJSON` from JSON stdin first; every write is concurrency-checked against `expectedSHA256`.
-            ### Append (exact source)
-            ```python
-            import hashlib, json, os
-            data = input
-            path = data["path"]
-            if os.path.isabs(path) or ".." in path.split("/"):
-                raise ValueError("workspace-relative paths only")
-            raw = open(path, "rb").read()
-            if b"\\x00" in raw:
-                raise ValueError("binary file")
-            text = raw.decode("utf-8")
-            if data.get("expectedSHA256") and hashlib.sha256(raw).hexdigest() != data["expectedSHA256"]:
-                raise RuntimeError("stale expectedSHA256; re-read the file")
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(text + data["content"])
-            print(json.dumps({"path": path, "bytes": len((text + data["content"]).encode())}))
-            ```
-            ### Replace (exact source)
-            `oldText` must match exactly `expectedOccurrences` times (default 1); otherwise nothing is written.
-            ```python
-            import hashlib, json, os
-            data = input
-            path = data["path"]
-            if os.path.isabs(path) or ".." in path.split("/"):
-                raise ValueError("workspace-relative paths only")
-            raw = open(path, "rb").read()
-            if b"\\x00" in raw:
-                raise ValueError("binary file")
-            text = raw.decode("utf-8")
-            if data.get("expectedSHA256") and hashlib.sha256(raw).hexdigest() != data["expectedSHA256"]:
-                raise RuntimeError("stale expectedSHA256; re-read the file")
-            occurrences = text.count(data["oldText"])
-            expected = int(data.get("expectedOccurrences", 1))
-            if occurrences != expected:
-                raise ValueError(f"expected {expected} matches, found {occurrences}")
-            updated = text.replace(data["oldText"], data["newText"])
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(updated)
-            print(json.dumps({"path": path, "occurrences": occurrences}))
-            ```
+            ## Native plain-text edits
+            Prefer the native workspace tools for every UTF-8 plain-text type: TXT, CSV/TSV, source code, scripts, HTML/CSS/JS, JSON/YAML/XML, LaTeX, configuration, and extensionless or unknown-extension text. Linux is not required for these edits.
+            - Read with `workspace.readFile` using its bounded continuation; a truncated page is not the complete file. Use `workspace.inspectFileMetadata` to inspect the actual file and its digest.
+            - Create new text with `workspace.createFile`. Append exact text with `workspace.appendFile`; replace an exact range with `workspace.replaceText`, supplying `oldText`, `newText` and `expectedOccurrences` (default 1). A mismatch must leave the original unchanged.
+            - Use `workspace.applyPatch` for contextual edits and `workspace.writeFile` for a verified replacement. Preserve the source's UTF-8 BOM and CRLF/LF bytes; do not convert encodings or force binary files through the text tools.
+            - Pass the observed complete-file `expectedSHA256` for existing-file mutations. A concurrent edit requires re-reading and replanning, not blindly replacing that precondition.
+            ### Large text: bounded draft and verified commit
+            Create an empty task-owned draft with `workspace.createFile`, then append bounded chunks with `workspace.appendFile`. Each chunk uses the previous returned SHA as `expectedSHA256`. Retrying the SAME chunk must keep that SAME precondition so it cannot append twice; inspect an unknown result before retrying.
+            Finalize with `workspace.writeFile(path, sourcePath, expectedSourceSHA256)` using the draft's final SHA and the observed target `expectedSHA256` when replacing an existing target. Keep the draft until the final write and output verification succeed; never resend the whole large document as one unbounded tool argument.
+            These tools retain the task's workspace/path ownership, revision and permission checks. A Notes scratch file is not an editable Notes document or an authorized attachment; use the granted Notes tools for those operations.
             """
         ),
         Definition(

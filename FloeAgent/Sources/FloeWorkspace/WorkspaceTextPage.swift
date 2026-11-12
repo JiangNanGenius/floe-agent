@@ -20,13 +20,22 @@ enum WorkspaceTextPage {
         guard let first = data.first, first & 0xc0 != 0x80 else {
             throw WorkspaceToolError.invalidArguments("offset must be a UTF-8 boundary; use nextOffset from the previous page")
         }
+        // Content classification is bounded to this page and is not based on
+        // the path extension. Binary bytes are refused instead of being
+        // returned as text or silently converted on a later write.
+        guard !data.contains(0) else {
+            throw WorkspaceToolError.invalidArguments(
+                "Expected UTF-8 text; the file contains binary NUL bytes. Use the native viewer/tool for this format")
+        }
         let bounded = Data(data.prefix(min(limit, WorkspaceFileService.readChunkBytes)))
         // A valid UTF-8 scalar has at most four bytes. Trim at most three
         // incomplete suffix bytes; an invalid interior remains an error.
         for trim in 0...min(3, bounded.count) {
             let visible = bounded.prefix(bounded.count - trim)
             guard !visible.isEmpty else { break }
-            if let text = String(data: visible, encoding: .utf8) {
+            // decodeUTF8 keeps a leading UTF-8 BOM as U+FEFF, so the page
+            // text and bytesReturned still account for the real bytes.
+            if let text = WorkspaceTextPolicy.decodeUTF8(Data(visible)) {
                 let end = offset + visible.count
                 return FileContent(text: text, truncated: end < totalBytes,
                     totalLines: text.reduce(into: 1) { if $1 == "\n" { $0 += 1 } },

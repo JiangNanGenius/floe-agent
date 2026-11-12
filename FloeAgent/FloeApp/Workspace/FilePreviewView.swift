@@ -14,6 +14,44 @@ import FloeImages
 import FloeWorkspace
 import FloeCAD
 
+/// Unknown extensions are candidates, not a text verdict. Validate the
+/// complete stream with the existing reader codecs, using bounded chunks.
+/// Only a content/encoding refusal routes to Quick Look; read failures,
+/// permissions, size limits and cancellation keep their real errors.
+enum WorkspacePreviewContentProbe {
+    static func usesTextReader(source: any ReaderByteSource, limits: ReaderLimits = .default,
+                               cancellation: ReaderCancellation = .never) throws -> Bool {
+        try cancellation.throwIfCancelled()
+        guard source.byteLength >= 0 else { throw ReaderError.sourceUnavailable("Invalid file size") }
+        guard source.byteLength <= limits.maxFileBytes else { throw ReaderError.fileTooLarge(limit: limits.maxFileBytes) }
+        if source.byteLength == 0 { return true }
+        let sampleCount = Int(min(source.byteLength, 64 * 1_024))
+        let sample = try source.read(offset: 0, length: sampleCount)
+        guard sample.count == sampleCount else { throw ReaderError.sourceUnavailable("Incomplete preview read") }
+        guard let probe = ReaderTextCodec.probe(sample) else { return false }
+        var candidates = [probe.encoding]
+        if probe.encoding == .utf8, !probe.fromBOM, ReaderTextCodec.gb18030CodecAvailable { candidates.append(.gb18030) }
+        for encoding in candidates {
+            let start = encoding == probe.encoding ? probe.bomLength : 0
+            var validator = ReaderTextValidator(encoding: encoding, startOffset: Int64(start),
+                rejectsNUL: encoding.isASCIICompatible)
+            var offset = Int64(start), valid = true
+            while offset < source.byteLength {
+                try cancellation.throwIfCancelled()
+                let count = Int(min(Int64(64 * 1_024), source.byteLength - offset))
+                let bytes = try source.read(offset: offset, length: count)
+                guard bytes.count == count else { throw ReaderError.sourceUnavailable("Incomplete preview read") }
+                let last = offset + Int64(count) == source.byteLength
+                if validator.consume(bytes, isLast: last) != nil { valid = false; break }
+                offset += Int64(count)
+            }
+            try cancellation.throwIfCancelled()
+            if valid { return true }
+        }
+        return false
+    }
+}
+
 /// Previews one workspace file. Loaded through WorkspaceCenter's guarded
 /// file service; offers edit (text files), Quick Look, and "add to
 /// conversation context".
@@ -49,6 +87,7 @@ struct FilePreviewView: View {
     @State private var nativeOfficeURL: URL?
     @State private var content: FileContent?
     @State private var textPreviewSource: TextReaderSource?
+    @State private var unknownBinaryContent = false
     @State private var pdfURL: URL?
     @State private var binaryPreviewURL: URL?
     @State private var loadError: String?
@@ -895,7 +934,7 @@ struct FilePreviewView: View {
     }
 
     private var isTextual: Bool {
-        WorkspaceFileType.isText(displayedPath)
+        WorkspaceFileType.isText(displayedPath) && !unknownBinaryContent
     }
 
     private var isOfficeDocument: Bool {
@@ -1533,6 +1572,7 @@ struct FilePreviewView: View {
         loadError = nil
         content = nil
         textPreviewSource = nil
+        unknownBinaryContent = false
         pdfURL = nil
         binaryPreviewURL = nil
         nativeOfficeURL = nil
@@ -1775,12 +1815,43 @@ struct FilePreviewView: View {
             } catch { loadError = error.localizedDescription }
             return
         }
+        var admittedTextSource: TextReaderSource?
+        var admittedRemoteBytes: Data?
+        if WorkspaceFileType.kind(for: path) == .unknown {
+            do {
+                let workspaceID = center.currentWorkspace?.id
+                let workspaceRoot = center.fileService?.guardResolver.rootURL
+                var source = readingSource
+                let bytes = try await source.makeBytes()
+                let limits = source.limits
+                let worker = Task.detached(priority: .utility) {
+                    try WorkspacePreviewContentProbe.usesTextReader(source: bytes.source, limits: limits, cancellation: .task())
+                }
+                let isText = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                try Task.checkCancellation()
+                guard displayedPath == path, center.currentWorkspace?.id == workspaceID,
+                      center.fileService?.guardResolver.rootURL == workspaceRoot else { return }
+                unknownBinaryContent = !isText
+                if isText {
+                    // Retain the actual admitted snapshot instead of fetching
+                    // a different remote version for the reader a second time.
+                    source.makeBytes = { bytes }
+                    admittedTextSource = source
+                } else if let remote = bytes.source as? ReaderDataByteSource {
+                    admittedRemoteBytes = remote.data
+                }
+            } catch is CancellationError { return }
+            catch ReaderError.cancelled { return }
+            catch { loadError = error.localizedDescription; return }
+        }
         guard isTextual else {
             // Embed the read-only renderer directly in the inspector. Full
             // Office editing remains a separate native-engine qualification.
             do {
                 if center.isCloudWorkspacePath(path) || center.isNetworkWorkspacePath(path) {
-                    let bytes = try await center.readRemotePreview(relativePath: path)
+                    let bytes: Data
+                    if let admittedRemoteBytes { bytes = admittedRemoteBytes }
+                    else { bytes = try await center.readRemotePreview(relativePath: path) }
                     try Task.checkCancellation()
                     binaryPreviewURL = try remotePreview.store(bytes, fileName: name)
                 } else if let service = center.fileService {
@@ -1797,7 +1868,7 @@ struct FilePreviewView: View {
             // text surface itself always reads the original in bounded pages.
             if isHTML { content = try await center.readFile(relativePath: path) }
             try Task.checkCancellation()
-            textPreviewSource = readingSource
+            textPreviewSource = admittedTextSource ?? readingSource
             await center.recordRecentFile(relativePath: path, displayName: name)
         } catch let error as WorkspaceToolError {
             loadError = error.errorDescription ?? error.localizedDescription

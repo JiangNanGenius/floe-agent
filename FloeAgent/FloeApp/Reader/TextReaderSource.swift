@@ -273,13 +273,14 @@ enum SavedFileTextPreviewPolicy {
     @MainActor static func ownedBytes(document: WorkspaceFileChangePreview, artifact: ToolArtifactReference,
         scope: ChatInlineContentScope, conversations: any ConversationStore, runs: any RunStore,
         workspaces: any WorkspaceStore, artifactRoot: URL,
+        children: (any ChildRunStoring)? = nil,
         acquireRoot: @MainActor (WorkspaceRecord) async throws -> GlobalWorkspaceReadLease) async throws -> TextReaderBytes {
         guard !scope.isTemporary else { throw CocoaError(.fileReadNoPermission) }
         let parts = artifact.relativePath.split(separator: "/")
         guard parts.count == 3, parts[0] == "ChangeArtifacts", let runID = UUID(uuidString: String(parts[1])),
               let reference = ChatContentReference(kind: .artifact, ownerID: runID, contentID: artifact.id.uuidString),
               case .artifact(let actual, let ownerRun, let tool) = try await ChatInlineContentResolver.resolve(reference,
-                scope: scope, conversations: conversations, runs: runs), actual == artifact, ownerRun == runID,
+                scope: scope, conversations: conversations, runs: runs, children: children), actual == artifact, ownerRun == runID,
               let run = try await runs.run(id: runID), run.conversationID == scope.conversationID,
               let binding = run.executionBinding, binding.conversationID == scope.conversationID,
               binding.target.backend == .linuxVM, !binding.target.environmentID.isEmpty,
@@ -330,6 +331,7 @@ enum SavedFileTextPreviewPolicy {
                 return try await ownedBytes(document: document, artifact: artifact, scope: scope,
                     conversations: environment.conversationStore, runs: environment.runStore,
                     workspaces: SQLiteWorkspaceStore(database: environment.database), artifactRoot: FloeArtifactStore.root(),
+                    children: SQLiteChildRunStore(database: environment.database),
                     acquireRoot: { workspace in try await environment.workspaceCenter.acquireMemorySourceRoot(workspace) })
             })
     }

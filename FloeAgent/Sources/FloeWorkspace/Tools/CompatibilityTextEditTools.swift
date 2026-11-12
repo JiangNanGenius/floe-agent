@@ -1,3 +1,10 @@
+// FloeWorkspace — Exact plain-text append/replace tools.
+//
+// These were previously registered as compatibility-only aliases even though
+// the runtime prompt already directed ordinary plain-text work to them. They
+// are now first-class model-facing tools; the filename is retained so the
+// existing target membership and build inputs stay stable.
+
 import Foundation
 import FloeCore
 import FloeTools
@@ -12,8 +19,8 @@ public struct WorkspaceAppendFileTool: AgentTool {
         }
     }
     public static let name = "workspace.appendFile"
-    public static let toolDescription = "Append UTF-8 text to an existing workspace text file, including HTML, Python, source, configuration and Markdown. Preserves the complete original file and rejects concurrent edits and binary input. For long text, append bounded chunks to a new draft; always pass the previous returned SHA as expectedSHA256. Repeating a chunk with the SAME expectedSHA256 conflicts without appending twice. Never replace that precondition merely to retry. Finalize with workspace.writeFile(sourcePath, expectedSourceSHA256). Prefer this native tool over Linux for plain text."
-    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expectedSHA256":{"type":"string","description":"SHA of the complete file BEFORE this mutation; required for safe chunk retries, never advance it when resending the same chunk"}},"required":["path","content"],"additionalProperties":false}"#
+    public static let toolDescription = "Append UTF-8 text to any existing plain-text workspace file: source code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Preserves the complete original bytes (including a UTF-8 BOM and CRLF newlines) and rejects concurrent edits and binary input. For long text, append bounded chunks to a new draft; always pass the previous returned SHA as expectedSHA256. Repeating a chunk with the SAME expectedSHA256 conflicts without appending twice. Never replace that precondition merely to retry. Finalize with workspace.writeFile(sourcePath, expectedSourceSHA256). Prefer this native tool over Linux for plain text."
+    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative path to an existing UTF-8 text file"},"content":{"type":"string","description":"Exact UTF-8 text to append"},"expectedSHA256":{"type":"string","description":"SHA of the complete file BEFORE this mutation; required for safe chunk retries, never advance it when resending the same chunk"}},"required":["path","content"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true
     private let environment: WorkspaceToolEnvironment
@@ -39,8 +46,8 @@ public struct WorkspaceReplaceTextTool: AgentTool {
         }
     }
     public static let name = "workspace.replaceText"
-    public static let toolDescription = "Replace exact text in any UTF-8 workspace file (HTML, Python, source, config, Markdown). Use the complete old text of a range. Requires exactly expectedOccurrences matches (default 1); mismatches and concurrent edits leave the file untouched."
-    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"},"oldText":{"type":"string","minLength":1},"newText":{"type":"string"},"expectedOccurrences":{"type":"integer","minimum":1},"expectedSHA256":{"type":"string","description":"SHA of the complete file BEFORE this mutation; required for safe chunk retries, never advance it when resending the same chunk"}},"required":["path","oldText","newText"],"additionalProperties":false}"#
+    public static let toolDescription = "Replace exact text in any UTF-8 plain-text workspace file: source code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Use the complete old text of a range. Requires exactly expectedOccurrences matches (default 1); mismatches, binary input and concurrent edits leave the file untouched; BOM/CRLF bytes outside the replaced range are preserved."
+    public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative path to an existing UTF-8 text file"},"oldText":{"type":"string","minLength":1,"description":"Exact existing text to replace; include enough context to identify the intended range"},"newText":{"type":"string","description":"Replacement text"},"expectedOccurrences":{"type":"integer","minimum":1,"description":"Exact number of matches required (default 1)"},"expectedSHA256":{"type":"string","description":"SHA of the complete file BEFORE this mutation; required for safe chunk retries, never advance it when resending the same chunk"}},"required":["path","oldText","newText"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true
     private let environment: WorkspaceToolEnvironment

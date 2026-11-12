@@ -196,7 +196,13 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     private func scan(evidence: RuntimeV2MaintenanceOwnerEvidence) async throws -> LegacyRecoveryInventoryReport {
         let references = LegacyRecoveryReferenceSnapshot(
             capturedAt: evidence.capturedAt,
-            isComplete: evidence.isComplete && evidence.references.isComplete
+            // This readonly inventory answers the DB reference question, not
+            // owner admission. A missing registry/integrator/closure source
+            // must not turn a complete reference projection into "unknown".
+            // optimize() still acquires exclusive native admission and a fresh
+            // closed-owner receipt before any rewrite can start.
+            isComplete: evidence.references.isComplete && evidence.references.blockers.isEmpty
+                && !evidence.references.fingerprint.isEmpty
                 && evidence.references.unattributedActiveCount == 0
                 && evidence.references.unattributedLiveUnknownCount == 0,
             referencedEnvironmentIDs: Set(evidence.references.activeEnvironmentIDs + evidence.references.unknownEnvironmentIDs),

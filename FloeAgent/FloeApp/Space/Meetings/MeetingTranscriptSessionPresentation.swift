@@ -3,7 +3,56 @@
 import Foundation
 import FloeMeetings
 
+/// Minimal, view-independent transcription state for the meeting workbench.
+/// It deliberately distinguishes capture, live recognition, file fallback and
+/// retry instead of exposing one global "processing" flag per chunk.
+struct MeetingTranscriptionStatus: Equatable, Sendable {
+    enum Phase: String, Sendable, Equatable {
+        case idle
+        case recordingLive
+        case recordingFallback
+        case finalizing
+        case transcribing
+        case needsRetry
+        case paused
+    }
+    let phase: Phase
+    let isRecording: Bool
+    let isLive: Bool
+    let unfinishedChunks: Int
+    let failedChunks: Int
+
+    var isBusy: Bool {
+        phase == .finalizing || phase == .transcribing
+    }
+}
+
 extension MeetingProjectSession {
+    var transcriptionStatus: MeetingTranscriptionStatus {
+        let live = liveTranscription
+        let liveActive = isRecording && continuousASR?.isLiveActive == true
+        let unfinished = live?.unfinishedCount ?? 0
+        let failed = live?.failedCount ?? 0
+        func value(_ phase: MeetingTranscriptionStatus.Phase) -> MeetingTranscriptionStatus {
+            .init(phase: phase, isRecording: isRecording, isLive: liveActive,
+                  unfinishedChunks: unfinished, failedChunks: failed)
+        }
+        if changingCapture, !isRecording { return value(.finalizing) }
+        if isRecording {
+            guard live?.enabled != false else { return value(.paused) }
+            if live?.requiresRetry == true { return value(.needsRetry) }
+            if liveActive { return value(.recordingLive) }
+            return value(.recordingFallback)
+        }
+        if let live {
+            if live.requiresRetry { return value(.needsRetry) }
+            if live.isWorking || live.waitingForService { return value(.transcribing) }
+            if !live.enabled, unfinished > 0 { return value(.paused) }
+        }
+        if isProcessing { return value(.transcribing) }
+        return value(.idle)
+    }
+
     var displayTranscriptFragments: [MeetingTranscriptFragment] {
         transcript.map { segment in
             MeetingTranscriptFragment(id: segment.id.rawValue, meetingID: segment.meetingID.rawValue,

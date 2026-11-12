@@ -2,6 +2,7 @@ import Foundation
 import Crypto
 import GRDB
 import FloeCore
+import FloeModels
 import FloePersistence
 
 /// Ordinary execution progress. This is never authorization to start Goal
@@ -27,11 +28,15 @@ public struct TaskChecklist: Codable, Sendable, Equatable {
     public var title: String
     public var steps: [Step]
     public var updatedAt: Date
-    public var isFinished: Bool { steps.allSatisfy(\.isTerminal) }
+    /// Native reset tombstone; optional so existing revision JSON decodes.
+    /// Its prior steps remain untouched in earlier revisions.
+    public var wasReset: Bool? = nil
+    public var isFinished: Bool { wasReset != true && steps.allSatisfy(\.isTerminal) }
     public var completedCount: Int { steps.filter { $0.status == .completed }.count }
     public var cancelledCount: Int { steps.filter { $0.status == .cancelled }.count }
     /// Never counts cancelled work as completed or invents an active step.
     public var progressSummary: String {
+        if wasReset == true { return FloeL10n.isChinese ? "计划已重置" : "Checklist reset" }
         let cancelled = cancelledCount > 0 ? FloeL10n.plural("runtime.task_checklist_store.items_canceled", count: cancelledCount) : ""
         return FloeL10n.l("runtime.task_checklist_store.items_complete", completedCount, steps.count, cancelled)
     }
@@ -39,6 +44,7 @@ public struct TaskChecklist: Codable, Sendable, Equatable {
     /// Tells the model exactly what the next updatePlan is allowed to do, so
     /// a finished checklist is closed out instead of appended to forever.
     public var lifecycleHint: String {
+        if wasReset == true { return "Checklist reset; previous revisions are preserved, not completed. Submit a fresh steps array for this task." }
         if isFinished {
             return "CHECKLIST FINISHED (\(completedCount)/\(steps.count) completed). Your next checklist.updatePlan with a fresh steps array starts a NEW checklist; do not carry these settled steps. Their history stays in the revisions table."
         }
@@ -133,10 +139,11 @@ public actor TaskChecklistStore {
         return try await latest(conversationID: id)
     }
 
-    public func latest(conversationID: UUID) async throws -> TaskChecklist? {
+    public func latest(conversationID: UUID, includeReset: Bool = false) async throws -> TaskChecklist? {
         try await database.reader { db in
             guard let body = try String.fetchOne(db, sql: "SELECT body_json FROM task_checklist_revisions WHERE conversation_id = ? ORDER BY revision DESC LIMIT 1", arguments: [conversationID.uuidString]) else { return nil }
-            return try JSONDecoder().decode(TaskChecklist.self, from: Data(body.utf8))
+            let value = try JSONDecoder().decode(TaskChecklist.self, from: Data(body.utf8))
+            return value.wasReset == true && !includeReset ? nil : value
         }
     }
 
@@ -160,7 +167,9 @@ public actor TaskChecklistStore {
             if let expected = update.expectedRevision, expected != currentRevision {
                 throw FloeError.validationFailed("Checklist changed: current revision is \(currentRevision). Do not re-read the plan; retry checklist.updatePlan with expectedRevision=\(currentRevision) and the same intended changes, or omit expectedRevision to write over the current revision.")
             }
-            if let previous, !previous.isFinished {
+            // Each round owns its progress. A new run preserves the prior
+            // revision as history; only this same run must carry open steps.
+            if let previous, previous.runID == runID, !previous.isFinished, previous.wasReset != true {
                 let openIDs = previous.steps.filter { !$0.isTerminal }.map(\.id)
                 if update.startNew {
                     throw FloeError.validationFailed("Finish or explicitly cancel these unfinished steps before starting a new checklist: \(openIDs.joined(separator: ", "))")
@@ -179,4 +188,47 @@ public actor TaskChecklistStore {
             return checklist
         }
     }
+
+    /// Reset only the current task's revision from an executing native main
+    /// run. The same operation/digest returns its original receipt even after
+    /// later work; a stale revision or superseded run cannot erase new work.
+    public func reset(expectedRevision: Int, runID: UUID, conversationID: UUID,
+                      operationID: String) async throws -> TaskChecklist {
+        guard expectedRevision > 0, !operationID.isEmpty, operationID.utf8.count <= 256 else {
+            throw FloeError.validationFailed("Provide the observed checklist revision and a durable call identity")
+        }
+        let digest = FloeDigest.sha256Hex(Data("checklist.resetPlan.v1:\(expectedRevision)".utf8))
+        return try await database.writer { db in
+            guard let run = try Row.fetchOne(db, sql: "SELECT conversation_id, state, ended_at FROM runs WHERE id = ?", arguments: [runID.uuidString]),
+                  run["conversation_id"] as String == conversationID.uuidString else { throw FloeError.unauthorized }
+            if let existing = try Row.fetchOne(db,
+                sql: "SELECT request_digest, body_json FROM task_checklist_revisions WHERE run_id = ? AND operation_id = ?",
+                arguments: [runID.uuidString, operationID]) {
+                guard existing["request_digest"] as String == digest else {
+                    throw FloeError.validationFailed("This call identity was already used with different checklist arguments")
+                }
+                return try JSONDecoder().decode(TaskChecklist.self, from: Data((existing["body_json"] as String).utf8))
+            }
+            let ended: String? = run["ended_at"]
+            let latestRun = try String.fetchOne(db, sql: "SELECT id FROM runs WHERE conversation_id = ? AND ended_at IS NULL ORDER BY started_at DESC, rowid DESC LIMIT 1", arguments: [conversationID.uuidString])
+            guard ended == nil, TaskRunConclusion.isRuntimeActivity(state: run["state"] as String), latestRun == runID.uuidString else {
+                throw FloeError.validationFailed("Only the current executing task run may reset its checklist")
+            }
+            guard let body = try String.fetchOne(db,
+                sql: "SELECT body_json FROM task_checklist_revisions WHERE conversation_id = ? ORDER BY revision DESC LIMIT 1",
+                arguments: [conversationID.uuidString]) else { throw FloeError.validationFailed("This task has no checklist to reset") }
+            let previous = try JSONDecoder().decode(TaskChecklist.self, from: Data(body.utf8))
+            guard previous.conversationID == conversationID, previous.revision == expectedRevision else {
+                throw FloeError.validationFailed("Checklist changed; read its current revision before resetting")
+            }
+            var reset = TaskChecklist(conversationID: conversationID, runID: runID,
+                revision: previous.revision + 1, title: previous.title, steps: [], updatedAt: Date())
+            reset.wasReset = true
+            let encoded = String(decoding: try JSONEncoder().encode(reset), as: UTF8.self)
+            try db.execute(sql: "INSERT INTO task_checklist_revisions (conversation_id, revision, run_id, operation_id, request_digest, body_json) VALUES (?, ?, ?, ?, ?, ?)",
+                arguments: [conversationID.uuidString, reset.revision, runID.uuidString, operationID, digest, encoded])
+            return reset
+        }
+    }
+
 }

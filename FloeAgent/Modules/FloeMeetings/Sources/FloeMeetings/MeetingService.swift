@@ -169,6 +169,39 @@ public actor MeetingService {
         return cancelled
     }
 
+    /// Finalize a live capture row left active by a previous process. A new
+    /// MeetingService can never own that old microphone writer; the original
+    /// file is preserved and the row becomes an ordinary stopped recording so
+    /// playback, retry and full-file transcription remain available. An
+    /// actually active capture in THIS process is never recovered.
+    @discardableResult
+    public func recoverInterruptedLiveCapture(
+        _ id: CaptureSessionID,
+        meeting: MeetingID,
+        originalAvailable: Bool
+    ) async throws -> Bool {
+        guard startReservation?.session != id, activeMeetings[id] == nil else { return false }
+        guard await capture.activeSession != id else { return false }
+        let sessions = try await database.sessions(meeting: meeting)
+        guard let snapshot = sessions.first(where: { $0.id == id }),
+              snapshot.kind == .liveRecording,
+              [.pending, .capturing, .stopping].contains(snapshot.state) else { return false }
+        // A stale lease cannot exist in a new process, but revoke it if this
+        // service did observe one (for example a tool-created service).
+        if let leaseID = liveLeaseBySession[id], let state = liveLeases[leaseID] {
+            state.permit.revoke()
+            clearLivePartial(state)
+            liveLeases[leaseID] = nil
+            liveLeaseBySession[id] = nil
+        }
+        try await database.finishCapture(
+            id,
+            meeting: meeting,
+            state: originalAvailable ? .stopped : .failed,
+            reason: originalAvailable ? .recovered : nil)
+        return true
+    }
+
     private func persistTerminal(_ outcome: MeetingCaptureController.Outcome) async throws {
         guard let meeting = activeMeetings[outcome.session] else { return }
         closedSessions.insert(outcome.session)

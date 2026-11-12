@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import Foundation
 import Testing
+import GRDB
 import FloeCore
 import FloeModels
 import FloePersistence
@@ -36,11 +37,19 @@ struct PlanGoalControlTests {
             lock.withLock { values.append(value); streams.append(stream) }
         }
         var all: [ProviderStreamRequest] { lock.withLock { values } }
-        func complete(at index: Int) -> Bool {
+        func complete(at index: Int, text: String = "The owned round finished without an external action.") -> Bool {
             let stream = lock.withLock { streams.indices.contains(index) ? streams[index] : nil }
             guard let stream else { return false }
-            stream.yield(.textDelta(.init(text: "The owned round finished without an external action.")))
+            stream.yield(.textDelta(.init(text: text)))
             stream.yield(.completed(.init(stopReason: .endTurn)))
+            stream.finish()
+            return true
+        }
+        func emitTool(at index: Int, call: ToolCall) -> Bool {
+            let stream = lock.withLock { streams.indices.contains(index) ? streams[index] : nil }
+            guard let stream else { return false }
+            stream.yield(.toolRequest(call))
+            stream.yield(.completed(.init(stopReason: .toolUse)))
             stream.finish()
             return true
         }
@@ -172,6 +181,324 @@ struct PlanGoalControlTests {
             "The real round did not terminate and release its owner (state=\(final?.state ?? "missing"), ended=\(final?.endedAt != nil), owned=\(f.center.hasLiveOwner(runID: runID)))")
     }
 
+    private func emitTool(_ f: Fixture, at index: Int, name: String, arguments: [String: Any],
+                          callID: String = UUID().uuidString) async throws -> ProviderStreamRequest {
+        let call = try ToolCall(id: callID, toolName: name,
+            argumentsJSON: JSONSerialization.data(withJSONObject: arguments), scope: .local)
+        try #require(f.requests.emitTool(at: index, call: call))
+        return try await waitForRequest(f, after: index + 1)
+    }
+
+    /// A 16K request can legitimately defer a provider schema while exact
+    /// discovery delivers its entire callable contract in the paired result.
+    /// Neither catalog membership nor a name-only teaser counts as delivery.
+    private func hasCompleteCallableContract(_ request: ProviderStreamRequest, name: String) -> Bool {
+        if request.toolSchemas.contains(where: { $0.name == name }) { return true }
+        guard let descriptor = ToolCatalog.descriptor(named: name) else { return false }
+        return request.toolResults.contains { result in
+            result.output.contains("Complete schema for \(name) (complete arguments below;")
+                && result.output.contains("parametersJSON: " + descriptor.parametersJSON)
+        }
+    }
+
+    private func ownedRoot(_ f: Fixture, conversationID: UUID) async throws -> URL {
+        let store = SQLiteWorkspaceStore(database: f.environment.database)
+        let owner = try #require(try await store.workspaceID(conversationID: conversationID))
+        let record = try #require(try await store.workspace(id: owner))
+        try #require(record.kind == .privateTask && record.internalRelativePath == "PrivateTasks/\(conversationID.uuidString)")
+        let lease = try await f.environment.workspaceCenter.acquireMemorySourceRoot(record)
+        let root = lease.root; await lease.release(); return root
+    }
+
+    private func stopOwnedFixtureRuns(_ f: Fixture, conversationID: UUID, root: URL?) async {
+        let runs = (try? await f.environment.runStore.runs(conversationID: conversationID)) ?? []
+        for run in runs where f.center.hasLiveOwner(runID: run.id) { await f.center.cancel(runID: run.id) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while runs.contains(where: { f.center.hasLiveOwner(runID: $0.id) }), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        if let root, !runs.contains(where: { f.center.hasLiveOwner(runID: $0.id) }) {
+            try? FileManager.default.removeItem(at: root)
+        }
+    }
+
+    private func verifyPlanExecutionHandoff(planningStillActive: Bool, readOnly: Bool = false) async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Plan handoff native dispatch fixture")
+        let taskStore = SQLiteWorkspaceStore(database: f.environment.database)
+        try await taskStore.saveTaskPolicy(.init(conversationID: conversation.id,
+            approvalMode: readOnly ? "readOnly" : TaskApprovalMode.fullAccess.rawValue))
+        try await f.center.setPreferredExecutionMode(.plan, for: conversation.id)
+        let planning = try await f.center.startRun(goal: "Plan a native report file, then wait for confirmation", in: conversation.id,
+            provider: f.provider, model: f.model, executionMode: .plan, startOrigin: .explicitUserAction)
+        var root: URL?
+        do {
+            let first = try await waitForRequest(f, after: 0)
+            root = try await ownedRoot(f, conversationID: conversation.id)
+            #expect(first.toolSchemas.contains { $0.name == PlanSubmission.toolName })
+            let submission = PlanSubmission(title: "Save the agreed report", summary: "Review the report write before execution",
+                sections: [.init(title: "Write", body: "Create plan-execution.txt with native-write-confirmed")],
+                acceptanceCriteria: [.init(text: "File is correct", verification: "Read its actual bytes")], executionRecommendation: .normal)
+            let args = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(submission)) as? [String: Any])
+            _ = try await emitTool(f, at: 0, name: PlanSubmission.toolName, arguments: args, callID: "submit-plan")
+            let source = try #require(try await f.environment.intelligenceStore.latestPlan(conversationID: conversation.id))
+            #expect(source.status == .ready && f.center.hasLiveOwner(runID: planning.runID))
+            let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+            await view.load()
+            #expect(view.agentMode == .agent && view.latestPlan?.status == .ready)
+            #expect(f.requests.all.count == 2)
+            #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+            #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).isEmpty)
+            if !planningStillActive {
+                try #require(f.requests.complete(at: 1, text: "The plan is ready for confirmation."))
+                _ = try await waitForEnd(f, runID: planning.runID); _ = await planning.result.value
+                await view.load()
+            }
+            view.selectAgentMode(.agent) // exact reported workaround must not be required to Stop
+            let requestCount = f.requests.all.count
+            await view.acceptLatestPlan(as: .normal)
+            try #require(view.actionError == nil, "Native handoff failed: \(view.actionError ?? "")")
+            let executionID = try #require(view.selectedRunID)
+            #expect(executionID != planning.runID && view.agentMode == .agent)
+            let execution = try #require(try await f.environment.runStore.run(id: executionID))
+            let old = try #require(try await f.environment.runStore.run(id: planning.runID))
+            #expect(execution.conversationMode == ConversationMode.chat.rawValue)
+            #expect(old.conversationMode == ConversationMode.plan.rawValue && !f.center.hasLiveOwner(runID: old.id))
+            let request = try await waitForRequest(f, after: requestCount)
+            #expect(request.diagnosticRunID == executionID.uuidString)
+            #expect(!request.toolSchemas.contains { $0.name == PlanSubmission.toolName })
+            let discovered = try await emitTool(f, at: requestCount, name: ToolDiscovery.name,
+                arguments: ["query": "workspace.createFile"], callID: "discover-native-write")
+            #expect(discovered.allToolNames.contains("workspace.createFile") == !readOnly)
+            #expect(hasCompleteCallableContract(discovered, name: "workspace.createFile") == !readOnly)
+            // Execute a real native tool, including its real authorization gate.
+            _ = try await emitTool(f, at: requestCount + 1, name: "workspace.createFile",
+                arguments: ["path": "plan-execution.txt", "content": "native-write-confirmed"], callID: "native-write")
+            let actualRoot = try await ownedRoot(f, conversationID: conversation.id); root = actualRoot
+            let file = actualRoot.appendingPathComponent("plan-execution.txt")
+            let events = try await f.environment.runStore.events(runID: executionID, afterSequence: 0, limit: 200)
+            let result = try #require(events.first { event in
+                event.kind == .toolResult && ConversationCenter.decodePayload(event.payloadJSON)["tool"] == "workspace.createFile"
+            })
+            #expect(ConversationCenter.decodePayload(result.payloadJSON)["status"] == (readOnly ? "denied" : "ok"))
+            if readOnly { #expect(!FileManager.default.fileExists(atPath: file.path)) }
+            else { #expect(try Data(contentsOf: file) == Data("native-write-confirmed".utf8)) }
+            #expect(try await taskStore.taskPolicy(conversationID: conversation.id).approvalMode
+                == (readOnly ? "readOnly" : TaskApprovalMode.fullAccess.rawValue))
+            try #require(f.requests.complete(at: requestCount + 2,
+                text: readOnly ? "The write is blocked by the read-only task policy; no file was created." : "The native file was saved and its bytes verified."))
+            _ = try await waitForEnd(f, runID: executionID)
+            #expect(try await f.environment.intelligenceStore.latestPlan(conversationID: conversation.id)?.status == .accepted)
+            #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).isEmpty)
+        } catch { await stopOwnedFixtureRuns(f, conversationID: conversation.id, root: root); throw error }
+        await stopOwnedFixtureRuns(f, conversationID: conversation.id, root: root)
+    }
+
+    @Test("Active Plan submit -> Agent selection -> Execute really writes without a manual Stop")
+    func activePlanExecutesNewAuthorizedRunWithoutManualStop() async throws {
+        try await verifyPlanExecutionHandoff(planningStillActive: true)
+    }
+
+    @Test("A terminal Plan also executes a distinct authorized run without message resubmission")
+    func terminalPlanExecutesNewAuthorizedRunWithoutNewMessage() async throws {
+        try await verifyPlanExecutionHandoff(planningStillActive: false)
+    }
+
+    @Test("Confirmed execution retains the task's real read-only ceiling")
+    func planExecutionPreservesReadOnlyTaskCeilingAtActualDispatch() async throws {
+        try await verifyPlanExecutionHandoff(planningStillActive: true, readOnly: true)
+    }
+
+    @Test("Execute Plan never cancels an unrelated live Agent owner")
+    func planHandoffRefusesNonPlanningOwnerWithoutStoppingIt() async throws {
+        let f = try await fixture(), conversation = try await f.center.createConversation(title: "Keep existing Agent owner")
+        let current = try await f.center.startRun(goal: "Keep this ordinary round running", in: conversation.id,
+            provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        do {
+            _ = try await waitForRequest(f, after: 0)
+            let plan = PlanDraft(conversationID: conversation.id, status: .ready, title: "Pending", summary: "Only execute on explicit confirmation",
+                sections: [.init(title: "Inspect", body: "Inspect the report", order: 0)], acceptanceCriteria: [.init(text: "Verified", verification: "Read the inspection result")])
+            try await f.environment.intelligenceStore.savePlanRevision(plan)
+            let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+            await view.load(); await view.acceptLatestPlan(as: .normal)
+            #expect(view.actionError != nil && f.center.hasLiveOwner(runID: current.runID))
+            #expect(try await f.environment.intelligenceStore.latestPlan(conversationID: conversation.id)?.status == .ready)
+            #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+            #expect(f.requests.all.count == 1)
+        } catch { await f.center.cancel(runID: current.runID); throw error }
+        await f.center.cancel(runID: current.runID)
+    }
+
+    @Test("The native handoff fences competing send/queue and expires its token on exit")
+    func planHandoffSerializesLaunchAndQueueWithoutGrantingAuthority() async throws {
+        let f = try await fixture(), conversation = try await f.center.createConversation(title: "Plan handoff serialization")
+        let plan = PlanDraft(conversationID: conversation.id, status: .ready, title: "Pending", summary: "No implicit execution")
+        try await f.environment.intelligenceStore.savePlanRevision(plan)
+        let center = f.center, gate = Gate(), id = conversation.id
+        let transition = Task { @MainActor in
+            try await center.withPlanExecutionHandoff(plan, in: id) { token in await gate.hold(); return token }
+        }
+        try await waitForGate(gate)
+        do {
+            await #expect(throws: (any Error).self) {
+                try await center.startRun(goal: "Competing send", in: id, provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+            }
+            await #expect(throws: (any Error).self) {
+                try await center.submitRunningInput(content: "Competing queue", in: id, expectedRunID: UUID(), mode: .queue,
+                    selectedModelID: f.model.id, workspaceID: nil, executionMode: .agent, attachments: [])
+            }
+            #expect(try await f.environment.runStore.runs(conversationID: id).isEmpty)
+            #expect(try await center.runningInputStore(for: id).pending(conversationID: id).isEmpty)
+        } catch { await gate.release(); _ = try? await transition.value; throw error }
+        await gate.release()
+        let expired = try await transition.value
+        await #expect(throws: (any Error).self) {
+            try await center.startRun(goal: "Expired token", in: id, provider: f.provider, model: f.model,
+                planExecutionHandoffID: expired, startOrigin: .explicitUserAction)
+        }
+        #expect(f.requests.all.isEmpty)
+    }
+
+    @Test("Unjoined planning preparation leaves a retryable card instead of starting execution")
+    func planHandoffOwnerExitFailureRetainsPendingPlan() async throws {
+        let f = try await fixture(), conversation = try await f.center.createConversation(title: "Unjoined Plan owner")
+        let gate = Gate()
+        f.center.launchTestHooks.deferredTaskBody = { await gate.hold() }
+        let planning = try await f.center.startRun(goal: "Planning is still preparing", in: conversation.id,
+            provider: f.provider, model: f.model, executionMode: .plan, startOrigin: .explicitUserAction)
+        try await waitForGate(gate)
+        let plan = PlanDraft(conversationID: conversation.id, status: .ready, title: "Pending", summary: "Keep pending on failure",
+            sections: [.init(title: "Inspect", body: "Inspect", order: 0)], acceptanceCriteria: [.init(text: "Inspected", verification: "Read the inspection result")])
+        try await f.environment.intelligenceStore.savePlanRevision(plan)
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); await view.acceptLatestPlan(as: .normal)
+        #expect(view.actionError != nil && !view.isAcceptingPlan)
+        #expect(try await f.environment.intelligenceStore.latestPlan(conversationID: conversation.id)?.status == .ready)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        #expect(f.requests.all.isEmpty)
+        f.center.launchTestHooks.deferredTaskBody = nil
+        await gate.release(); _ = await planning.result.value
+        #expect(!f.center.hasLiveOwner(runID: planning.runID))
+    }
+
+    @Test("Checklist progress observes actual updates and leaves the top on terminal and a new run")
+    func checklistTopIsLiveRunScopedAndTerminalDoesNotFakeCompletion() async throws {
+        let f = try await fixture(), conversation = try await f.center.createConversation(title: "Owned checklist lifecycle")
+        try await SQLiteWorkspaceStore(database: f.environment.database).saveTaskPolicy(.init(
+            conversationID: conversation.id, approvalMode: TaskApprovalMode.fullAccess.rawValue))
+        let started = try await f.center.startRun(goal: "Create a local fixture file and report the unavailable second step", in: conversation.id,
+            provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        var root: URL?
+        do {
+            _ = try await waitForRequest(f, after: 0)
+            root = try await ownedRoot(f, conversationID: conversation.id)
+            _ = try await emitTool(f, at: 0, name: ToolDiscovery.name,
+                arguments: ["queries": ["workspace.createFile", TaskUpdatePlanTool.name]])
+            _ = try await emitTool(f, at: 1, name: "workspace.createFile",
+                arguments: ["path": "checklist-evidence.txt", "content": "owned-evidence"])
+            _ = try await emitTool(f, at: 2, name: TaskUpdatePlanTool.name, arguments: ["title": "Real progress", "steps": [
+                ["id": "write", "title": "Write file", "status": "completed", "evidence": ["checklist-evidence.txt"]],
+                ["id": "followup", "title": "Needs user's missing choice", "status": "blocked", "evidence": []]
+            ]])
+            let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+            await view.load()
+            // load starts the same asynchronous live subscription used by
+            // the UI; wait for its first snapshot rather than inspect it
+            // before that MainActor task has had a chance to run.
+            let projectionDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+            while !view.isRunning, f.center.hasLiveOwner(runID: started.runID),
+                  ContinuousClock.now < projectionDeadline {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            let shown = try #require(view.presentedTaskChecklist)
+            #expect(shown.runID == started.runID && shown.completedCount == 1 && !shown.isFinished)
+            #expect(try Data(contentsOf: try #require(root).appendingPathComponent("checklist-evidence.txt")) == Data("owned-evidence".utf8))
+            try #require(f.requests.complete(at: 3, text: "The local file is verified. The remaining step is blocked pending the user's missing choice."))
+            _ = try await waitForEnd(f, runID: started.runID)
+            await view.load()
+            #expect(view.presentedTaskChecklist == nil)
+            let retained = try #require(try await TaskChecklistStore(database: f.environment.database).latest(conversationID: conversation.id))
+            #expect(retained.completedCount == 1 && retained.steps.last?.status == .blocked && !retained.isFinished)
+            let next = try await f.center.startRun(goal: "A new ordinary question without changing the previous checklist", in: conversation.id,
+                provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+            _ = try await waitForRequest(f, after: 4)
+            view.selectedRunID = next.runID
+            await view.load()
+            #expect(view.selectedRunID == next.runID && view.presentedTaskChecklist == nil)
+            #expect(view.taskChecklist?.runID == started.runID)
+            try #require(f.requests.complete(at: 4, text: "No additional work was requested."))
+            _ = try await waitForEnd(f, runID: next.runID)
+        } catch { await stopOwnedFixtureRuns(f, conversationID: conversation.id, root: root); throw error }
+        await stopOwnedFixtureRuns(f, conversationID: conversation.id, root: root)
+    }
+
+    @Test("Plan mode discovers and really dispatches native reset; old history/Goal/chat survive")
+    func planResetIsDiscoverableDispatchedAndDurablyRebuildable() async throws {
+        let f = try await fixture(), conversation = try await f.center.createConversation(title: "Native checklist reset dispatch")
+        try await SQLiteWorkspaceStore(database: f.environment.database).saveTaskPolicy(.init(
+            conversationID: conversation.id, approvalMode: TaskApprovalMode.fullAccess.rawValue))
+        let started = try await f.center.startRun(goal: "Reset only this task's current checklist, retain its history", in: conversation.id,
+            provider: f.provider, model: f.model, executionMode: .plan, startOrigin: .explicitUserAction)
+        let store = TaskChecklistStore(database: f.environment.database)
+        var root: URL?
+        do {
+            _ = try await waitForRequest(f, after: 0)
+            root = try await ownedRoot(f, conversationID: conversation.id)
+            let initial = try await store.update(.init(title: "Unfinished original", steps: [
+                .init(id: "keep", title: "Still pending", status: .pending)
+            ]), runID: started.runID, operationID: "native-seed")
+            let messageIDs = try await f.environment.conversationStore.messages(conversationID: conversation.id).map(\.id)
+            let goal = ConversationGoal(conversationID: conversation.id, objective: "Separate retained Goal",
+                acceptanceCriteria: [.init(text: "No loss")], steps: [.init(title: "Keep", order: 0)])
+            try await f.environment.intelligenceStore.saveGoal(goal)
+            let loaded = try await emitTool(f, at: 0, name: ToolDiscovery.name,
+                arguments: ["query": TaskResetPlanTool.name], callID: "find-reset")
+            #expect(loaded.allToolNames.contains(TaskResetPlanTool.name))
+            #expect(hasCompleteCallableContract(loaded, name: TaskResetPlanTool.name))
+            #expect(!loaded.allToolNames.contains(TaskUpdatePlanTool.name))
+            #expect(!hasCompleteCallableContract(loaded, name: TaskUpdatePlanTool.name))
+            _ = try await emitTool(f, at: 1, name: TaskResetPlanTool.name,
+                arguments: ["expectedRevision": initial.revision], callID: "reset-current")
+            let reset = try #require(try await store.latest(conversationID: conversation.id, includeReset: true))
+            #expect(reset.wasReset == true && reset.steps.isEmpty && reset.revision == initial.revision + 1)
+            #expect(try await store.latest(conversationID: conversation.id) == nil)
+            let events = try await f.environment.runStore.events(runID: started.runID, afterSequence: 0, limit: 200)
+            let result = try #require(events.first { event in
+                event.kind == .toolResult && ConversationCenter.decodePayload(event.payloadJSON)["tool"] == TaskResetPlanTool.name
+            })
+            #expect(ConversationCenter.decodePayload(result.payloadJSON)["status"] == "ok")
+            // Persistent storage, not payload wording, proves actual dispatch.
+            let oldBody = try await f.environment.database.reader { db in
+                try String.fetchOne(db, sql: "SELECT body_json FROM task_checklist_revisions WHERE conversation_id = ? AND revision = ?",
+                    arguments: [conversation.id.uuidString, initial.revision])
+            }
+            let prior = try JSONDecoder().decode(TaskChecklist.self, from: Data(try #require(oldBody).utf8))
+            #expect(prior.steps == initial.steps && prior.completedCount == 0)
+            #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).contains { $0.id == goal.id })
+            let kept = try await f.environment.conversationStore.messages(conversationID: conversation.id).map(\.id)
+            #expect(messageIDs.allSatisfy(kept.contains))
+            let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+            await view.load(); #expect(view.presentedTaskChecklist == nil)
+            // Rebuild with the existing native store API. No model-only Plan
+            // update privilege is added: the executing Plan remains Plan.
+            let rebuilt = try await store.update(.init(expectedRevision: reset.revision, title: "Rebuilt", steps: [
+                .init(id: "new", title: "New pending work")], startNew: true), runID: started.runID, operationID: "native-rebuild")
+            #expect(rebuilt.steps.map(\.id) == ["new"] && rebuilt.revision == reset.revision + 1)
+            let operation = try await f.environment.database.reader { db in
+                try String.fetchOne(db, sql: "SELECT operation_id FROM task_checklist_revisions WHERE conversation_id = ? AND revision = ?",
+                    arguments: [conversation.id.uuidString, reset.revision])
+            }
+            let replay = try await store.reset(expectedRevision: initial.revision, runID: started.runID,
+                conversationID: conversation.id, operationID: try #require(operation))
+            #expect(replay.revision == reset.revision && replay.wasReset == true)
+            #expect(try await store.latest(conversationID: conversation.id)?.revision == rebuilt.revision)
+            #expect(try await f.environment.runStore.run(id: started.runID)?.conversationMode == ConversationMode.plan.rawValue)
+            try #require(f.requests.complete(at: 2, text: "The checklist reset is verified; its original steps and separate Goal remain preserved."))
+            _ = try await waitForEnd(f, runID: started.runID)
+        } catch { await stopOwnedFixtureRuns(f, conversationID: conversation.id, root: root); throw error }
+        await stopOwnedFixtureRuns(f, conversationID: conversation.id, root: root)
+    }
+
     @Test("Home inline and expanded sends persist Plan before navigation and really offer read-only tools")
     func homeInlineAndExpandedPlanKeepReadOnlyExecutionAndPreference() async throws {
         let f = try await fixture()
@@ -212,15 +539,15 @@ struct PlanGoalControlTests {
             for schema in request.toolSchemas where schema.name != PlanSubmission.toolName {
                 let descriptor = try #require(descriptors[schema.name],
                     "No executable or native runtime descriptor for \(schema.name)")
-                if schema.name == UserAskTool.name {
-                    // This exact main-run interaction was already Plan's
-                    // deliberate internal-state exception. No other internal
+                if [UserAskTool.name, TaskResetPlanTool.name].contains(schema.name) {
+                    // These exact main-run interactions are narrow Plan
+                    // internal-state exceptions. No other internal
                     // mutation is admitted by the corrected wire assertion.
                     #expect(descriptor.effect == .internalState)
                     #expect(descriptor.executionBoundary == .mainRunOnly)
                     #expect(!descriptor.isSideEffecting && descriptor.riskLabels.isEmpty && !descriptor.requiresHostScope)
                     if case .failure = PlanToolPolicy().decision(for: descriptor) {
-                        Issue.record("The native question must satisfy Plan's existing narrow exception")
+                        Issue.record("The native metadata helper must satisfy Plan's exact narrow exception")
                     }
                 } else { #expect(descriptor.effect == .readOnly) }
             }

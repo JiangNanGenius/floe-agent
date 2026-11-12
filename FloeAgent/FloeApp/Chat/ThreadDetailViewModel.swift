@@ -188,22 +188,16 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published var executionTarget: AgentExecutionTarget = .local
     /// How the next run behaves (agent vs chat-only).
     @Published var agentMode: AgentExecutionMode = .agent
-    /// The plan revision for which the user deliberately selected a different
-    /// composer mode. Session refreshes must not invent an exit from Plan or
-    /// overwrite this explicit per-turn choice.
-    private var explicitModePlanRevision: Int?
-    private var isAcceptingPlan = false
+    /// A pending card already presented for this conversation. A later
+    /// explicit Plan selection acknowledges that same card, so reloads and
+    /// view reconstruction cannot mistake it for a newly generated plan.
+    private var lastPresentedPlanRevision: String?
+    @Published private(set) var isAcceptingPlan = false
     /// True when this view already resolved the conversation's remembered
     /// composer mode (first load) or the user selected one. Later transient
     /// reloads keep the current RAM selection instead of re-reading a write
     /// that may still be in flight.
     private var hasResolvedPreferredMode = false
-    /// True when the resolved mode is authoritative: a remembered explicit
-    /// choice, or a fail-closed resolution (unreadable/unread failed) that
-    /// must keep the least-privilege Chat ceiling. Legacy conversations keep
-    /// the historical Plan auto-reconcile rule; an authoritative mode is the
-    /// user's latest intent and must never be replaced by a background path.
-    private var preferredModeIsAuthoritative = false
     /// Monotonic identity of explicit selections: a slow first-load restore
     /// must never overwrite a newer user toggle.
     private var modeSelectionGeneration = 0
@@ -742,9 +736,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 latestPlan = try await center.environment.intelligenceStore
                     .latestPlan(conversationID: conversationID)
             }
-            // Restore Plan mode while an unfinished plan is still awaiting
-            // review, so leaving and reopening a task never silently drops
-            // the mode it was running in.
+            // Finish Plan input once when a new pending card is presented.
+            // This changes the next-input mode only, never starts execution.
             reconcilePlanComposerMode()
             stage = "goalLoad"
             activeGoal = isTemporary ? nil : Self.preferredGoal(
@@ -795,7 +788,7 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         hasResolvedPreferredMode = true
         agentMode = resolution.mode
-        preferredModeIsAuthoritative = resolution.isRemembered || resolution.needsRepair || resolution.readFailed
+        lastPresentedPlanRevision = resolution.lastPresentedPlanRevision
         guard resolution.needsRepair || resolution.readFailed else { return nil }
         return FloeL10n.l("chat.thread_detail_view_model.saved_mode_unreadable")
     }
@@ -1386,7 +1379,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // while it runs cannot restore an already-sent prompt.
             launchAccepted = true
             if executionMode == .goal {
-                finishGoalComposerSetup(selection: modeSelectionAtSend)
+                finishExecutionComposerSetup(selection: modeSelectionAtSend)
             }
             if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
                 commit.acceptLaunch()
@@ -1446,20 +1439,26 @@ final class ThreadDetailViewModel: ObservableObject {
     /// recreated view restores it instead of the historical Agent default.
     /// Temporary sessions stay RAM-only (the center refuses durable writes).
     func selectAgentMode(_ mode: AgentExecutionMode) {
-        explicitModePlanRevision = latestPlan.flatMap(Self.activePlanRevision)
-        let changed = agentMode != mode
+        let presentedRevision = latestPlan.flatMap { plan in
+            plan.conversationID == conversationID ? Self.presentedPlanRevision(plan) : nil
+        } ?? lastPresentedPlanRevision
+        let changed = agentMode != mode || presentedRevision != lastPresentedPlanRevision || !hasResolvedPreferredMode
         agentMode = mode
-        guard changed else { return }
+        lastPresentedPlanRevision = presentedRevision
+        // Even reselecting the same mode is a newer explicit intent while a
+        // confirmation/restore is suspended. Its handoff must not override it.
         modeSelectionGeneration &+= 1
         hasResolvedPreferredMode = true
-        preferredModeIsAuthoritative = true
+        guard changed else { return }
         guard !isTemporary else { return }
         let conversationID = conversationID
         let selection = modeSelectionGeneration
         Task { @MainActor [weak self] in
-            guard let self else { return }
+            guard let self, self.modeSelectionGeneration == selection,
+                  self.agentMode == mode, self.lastPresentedPlanRevision == presentedRevision else { return }
             do {
-                try await self.center.setPreferredExecutionMode(mode, for: conversationID)
+                try await self.center.setPreferredExecutionMode(mode, for: conversationID,
+                    lastPresentedPlanRevision: presentedRevision)
             } catch {
                 // The visible choice is kept (the center also retains it in
                 // RAM for the next restore). Only report while this exact
@@ -1472,9 +1471,9 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
-    private func finishGoalComposerSetup(selection: Int) {
-        // Only the input's selection changes. The accepted run keeps .goal,
-        // and a newer explicit choice made during launch always wins.
+    private func finishExecutionComposerSetup(selection: Int) {
+        // Only the next-input selection changes. The accepted run keeps its
+        // explicit Agent/Goal contract; a newer user selection always wins.
         guard selection == modeSelectionGeneration else { return }
         selectAgentMode(.agent)
     }
@@ -1484,7 +1483,7 @@ final class ThreadDetailViewModel: ObservableObject {
         let selection = pendingGoalSetupModeSelection
         pendingGoalSetupID = nil
         pendingGoalSetupModeSelection = nil
-        if let selection { finishGoalComposerSetup(selection: selection) }
+        if let selection { finishExecutionComposerSetup(selection: selection) }
     }
 
     // MARK: - Temporary chat actions
@@ -1698,21 +1697,29 @@ final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
-    private static func activePlanRevision(_ plan: PlanDraft) -> Int? {
-        (plan.status == .awaitingInput || plan.status == .ready) ? plan.revision : nil
+    private static func presentedPlanRevision(_ plan: PlanDraft) -> String? {
+        guard plan.status == .awaitingInput || plan.status == .ready else { return nil }
+        return "\(plan.id.uuidString):\(plan.revision)"
     }
 
     private func reconcilePlanComposerMode() {
-        // An authoritative composer choice (restored from the durable
-        // snapshot, made in this view, or a fail-closed resolution) is the
-        // user's latest intent: an unfinished plan must not silently replace
-        // it when the thread is reopened. Legacy conversations without a
-        // saved choice keep the historical Plan restore rule exactly.
-        guard !preferredModeIsAuthoritative else { return }
-        guard let plan = latestPlan,
-              let revision = Self.activePlanRevision(plan),
-              explicitModePlanRevision != revision else { return }
-        agentMode = .plan
+        guard !isTemporary, let plan = latestPlan, plan.conversationID == conversationID,
+              let revision = Self.presentedPlanRevision(plan),
+              lastPresentedPlanRevision != revision else { return }
+        lastPresentedPlanRevision = revision
+        // A new card completes Plan input, not the plan's authorization.
+        // Chat/Goal choices (including fail-closed Chat) remain untouched.
+        if agentMode == .plan { selectAgentMode(.agent) }
+    }
+
+    /// The top strip belongs to the current live round, never to historical
+    /// conversation metadata. Retiring it does not complete or erase steps.
+    var presentedTaskChecklist: TaskChecklist? {
+        guard let checklist = taskChecklist, checklist.conversationID == conversationID,
+              let run = selectedRun, checklist.runID == run.id,
+              isRunning, center.hasLiveOwner(runID: run.id),
+              !RunStateLocalizer.isTerminal(run.state), !checklist.isFinished else { return nil }
+        return checklist
     }
 
     /// Cancels the selected run.
@@ -2158,7 +2165,7 @@ final class ThreadDetailViewModel: ObservableObject {
             actionError = FloeL10n.l("chat.thread_detail_view_model.the_plan_still_needs_revision_and")
             return
         }
-        guard !isAcceptingPlan, !isRunning,
+        guard !isAcceptingPlan,
               let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
             return
@@ -2168,12 +2175,14 @@ final class ThreadDetailViewModel: ObservableObject {
         let selectedExecution = execution ?? latestPlan.executionRecommendation ?? .normal
         let modeSelectionAtStart = modeSelectionGeneration
         do {
-            let receipt = try await center.confirmPlan(latestPlan, in: conversationID, execution: selectedExecution)
-            self.latestPlan = receipt.snapshot.plan
-            if let goal = receipt.goal { activeGoal = goal }
-            await center.nativeConversationDidChange(conversationID)
-            try await launchConfirmedPlan(receipt, provider: provider, model: model,
-                                          modeSelectionAtStart: modeSelectionAtStart)
+            try await center.withPlanExecutionHandoff(latestPlan, in: conversationID) { token in
+                let receipt = try await self.center.confirmPlan(latestPlan, in: self.conversationID, execution: selectedExecution)
+                self.latestPlan = receipt.snapshot.plan
+                if let goal = receipt.goal { self.activeGoal = goal }
+                await self.center.nativeConversationDidChange(self.conversationID)
+                try await self.launchConfirmedPlan(receipt, provider: provider, model: model,
+                    modeSelectionAtStart: modeSelectionAtStart, handoffID: token)
+            }
         } catch {
             let message = error.localizedDescription
             // A failed confirmation transaction leaves the ready draft. A
@@ -2193,7 +2202,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Only an explicit history-card action retries a confirmation whose run
     /// was never inserted. Existing runs retain their ordinary Continue path.
     func retryConfirmedPlan(_ snapshot: PlanConfirmationSnapshot) async {
-        guard snapshot.plan.conversationID == conversationID, !isAcceptingPlan, !isRunning else { return }
+        guard snapshot.plan.conversationID == conversationID, !isAcceptingPlan else { return }
         guard let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
             actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
             return
@@ -2211,8 +2220,10 @@ final class ThreadDetailViewModel: ObservableObject {
             }
             let receipt = try await center.environment.intelligenceStore.planConfirmationForLaunch(
                 snapshot, conversationID: conversationID)
-            try await launchConfirmedPlan(receipt, provider: provider, model: model,
-                                          modeSelectionAtStart: modeSelectionAtStart)
+            try await center.withPlanExecutionHandoff(receipt.snapshot.plan, in: conversationID) { token in
+                try await self.launchConfirmedPlan(receipt, provider: provider, model: model,
+                    modeSelectionAtStart: modeSelectionAtStart, handoffID: token)
+            }
         } catch {
             let message = error.localizedDescription
             await load()
@@ -2222,7 +2233,7 @@ final class ThreadDetailViewModel: ObservableObject {
 
     private func launchConfirmedPlan(
         _ receipt: PlanConfirmationReceipt, provider: ProviderProfile, model: ModelProfile,
-        modeSelectionAtStart: Int
+        modeSelectionAtStart: Int, handoffID: UUID
     ) async throws {
         let confirmation = receipt.snapshot
         if let existing = try await center.runStore(for: conversationID).run(id: confirmation.executionRunID) {
@@ -2241,11 +2252,10 @@ final class ThreadDetailViewModel: ObservableObject {
             newRunID: confirmation.executionRunID,
             reusingUserMessageID: confirmation.messageID,
             expectedGoal: receipt.goal.map { (id: $0.id, revision: $0.revision ?? 1) },
+            planExecutionHandoffID: handoffID,
             startOrigin: .explicitUserAction
         )
-        if confirmation.execution == .goal {
-            finishGoalComposerSetup(selection: modeSelectionAtStart)
-        }
+        finishExecutionComposerSetup(selection: modeSelectionAtStart)
         locallyStoppedRunIDs.remove(started.runID)
         selectedRunID = started.runID
         await load()
@@ -2548,8 +2558,8 @@ final class ThreadDetailViewModel: ObservableObject {
                 }
                 self.latestPlan = snapshot.latestPlan
                 self.taskChecklist = snapshot.taskChecklist
-                // Keep Plan mode in sync when a plan becomes ready or still
-                // awaits input, so reopening never drops the active mode.
+                // Observe each pending card once; an old card cannot undo
+                // a subsequent explicit Plan selection.
                 self.reconcilePlanComposerMode()
                 self.activeGoal = snapshot.activeGoal
                 self.taskPolicy = snapshot.taskPolicy

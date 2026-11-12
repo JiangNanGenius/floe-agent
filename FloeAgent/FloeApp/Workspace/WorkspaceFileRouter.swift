@@ -38,8 +38,10 @@ enum WorkspaceFileRouter {
     static func destination(for relativePath: String) -> WorkspaceFileDestination {
         switch WorkspaceTextPolicy.kind(forPath: relativePath) {
         case .text, .code, .unknown:
-            // Unknown extensions stay text-previewable; the IDE bridge
-            // additionally sniffs the bytes before any write.
+            // Unknown extensions and extensionless names stay text-previewable;
+            // the native editor and reader additionally classify the bytes
+            // under the shared text policy before any load or write, so binary
+            // content falls back instead of being decoded.
             .codeEditor
         case .office:
             .officeEditor

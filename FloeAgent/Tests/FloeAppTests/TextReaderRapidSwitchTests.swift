@@ -237,6 +237,41 @@ final class TextReaderRapidSwitchTests: XCTestCase {
         XCTAssertFalse(outgoing.isAppending)
     }
 
+    func testUnknownFileContentProbeKeepsWholeUnicodeAndBOMTextInNativeReader() throws {
+        let text = String(repeating: "中文🙂 boundary\n", count: 24_000) + "FULL-EOF"
+        let bytes = Data(WorkspaceTextPolicy.utf8BOM) + Data(text.utf8)
+        XCTAssertTrue(try WorkspacePreviewContentProbe.usesTextReader(source: ReaderDataByteSource(data: bytes)))
+        let decoded = try XCTUnwrap(WorkspaceTextPolicy.decodeUTF8(bytes))
+        XCTAssertEqual(bytes, Data(decoded.utf8), "Classification must not drop a BOM or rewrite the source")
+        var utf16 = Data([0xFF, 0xFE]); utf16.append(try XCTUnwrap(text.data(using: .utf16LittleEndian)))
+        XCTAssertTrue(try WorkspacePreviewContentProbe.usesTextReader(source: ReaderDataByteSource(data: utf16)))
+        XCTAssertTrue(try WorkspacePreviewContentProbe.usesTextReader(source: ReaderDataByteSource(data: Data())))
+    }
+
+    func testUnknownBinaryWithTextPrefixOrMalformedTailRoutesToQuickLook() throws {
+        let textPrefix = Data(String(repeating: "Plain prefix\n", count: 12_000).utf8)
+        let binaryFiles = [textPrefix + Data([0, 1, 2, 3]), textPrefix + Data([0xFF]),
+            Data(WorkspaceTextPolicy.utf8BOM) + textPrefix + Data([0xF0, 0x9F])]
+        for bytes in binaryFiles {
+            XCTAssertFalse(try WorkspacePreviewContentProbe.usesTextReader(source: ReaderDataByteSource(data: bytes)),
+                "A valid first 64 KiB must not conceal binary or an invalid final scalar")
+        }
+        XCTAssertFalse(try WorkspacePreviewContentProbe.usesTextReader(source: ReaderDataByteSource(data: Data([0x89, 0x50, 0x4E, 0x47, 0, 0, 0]))))
+    }
+
+    func testUnknownFileProbePreservesReadFailureSizeLimitAndCancellation() throws {
+        struct FailedSource: ReaderByteSource {
+            let byteLength: Int64 = 10
+            func read(offset: Int64, length: Int) throws -> Data { throw ReaderError.sourceUnavailable("synthetic unavailable") }
+        }
+        XCTAssertThrowsError(try WorkspacePreviewContentProbe.usesTextReader(source: FailedSource())) {
+            XCTAssertEqual($0 as? ReaderError, .sourceUnavailable("synthetic unavailable"))
+        }
+        XCTAssertThrowsError(try WorkspacePreviewContentProbe.usesTextReader(source: ReaderDataByteSource(data: Data("text".utf8)),
+            cancellation: ReaderCancellation { true })) { XCTAssertEqual($0 as? ReaderError, .cancelled) }
+        XCTAssertThrowsError(try WorkspacePreviewContentProbe.usesTextReader(source: ReaderDataByteSource(data: Data("text".utf8)),
+            limits: ReaderLimits(maxFileBytes: 3))) { XCTAssertEqual($0 as? ReaderError, .fileTooLarge(limit: 3)) }
+    }
 }
 
 /// Local position store so this test never touches UserDefaults.

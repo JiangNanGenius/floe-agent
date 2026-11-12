@@ -28,6 +28,10 @@ enum WorkspaceTextEdit {
             try check(expectedSHA256, actual: digest)
             let updated = try transform(original)
             let data = Data(updated.utf8)
+            guard !data.contains(0) else {
+                throw WorkspaceToolError.invalidArguments(
+                    "Text edits cannot contain NUL bytes; use a binary/document tool for binary data: \(path)")
+            }
             guard data.count <= environment.maxWriteBytes else {
                 throw WorkspaceToolError.tooLarge(limit: environment.maxWriteBytes)
             }
@@ -46,6 +50,10 @@ enum WorkspaceTextEdit {
         let digest = WorkspaceFileService.sha256Hex(of: Data(original.utf8))
         try check(expectedSHA256, actual: digest)
         let updated = try transform(original)
+        guard !Data(updated.utf8).contains(0) else {
+            throw WorkspaceToolError.invalidArguments(
+                "Text edits cannot contain NUL bytes; use a binary/document tool for binary data: \(path)")
+        }
         try context.cancellation.throwIfCancelled()
         try Task.checkCancellation()
         let outcome = try service.writeFile(path, content: updated, expectedSHA256: digest, cancellation: context.cancellation)
@@ -55,7 +63,7 @@ enum WorkspaceTextEdit {
     }
 
     static func decode(_ data: Data) throws -> String {
-        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
+        guard let text = WorkspaceTextPolicy.decodeUTF8(data) else {
             throw WorkspaceToolError.invalidArguments("Expected a UTF-8 text file; use a dedicated document or media tool for binary files")
         }
         return text

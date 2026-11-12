@@ -111,7 +111,16 @@ struct ActionClaimGate: Sendable {
                 let distance = min(40, text.distance(from: text.startIndex, to: matchRange.lowerBound))
                 let prefixStart = text.index(matchRange.lowerBound, offsetBy: -distance)
                 let prefix = String(text[prefixStart..<matchRange.lowerBound])
-                if !englishNegations.contains(where: prefix.contains) {
+                // A negated subject is not a completed action. Keep this
+                // anchored to this match so "No file was created, but the
+                // document was saved" still checks the later success claim.
+                let negatedObject = prefix.range(of:
+                    #"\b(?:no|neither)\s+(?:new\s+)?(?:file|document|note|spreadsheet|text file|script|image|photo|page|folder)s?\s*$"#,
+                    options: .regularExpression) != nil
+                let negatedAuxiliary = text[matchRange].range(of: #"\b(?:not|never)\b"#,
+                    options: .regularExpression) != nil
+                if !negatedObject, !negatedAuxiliary,
+                   !englishNegations.contains(where: prefix.contains) {
                     return true
                 }
             }

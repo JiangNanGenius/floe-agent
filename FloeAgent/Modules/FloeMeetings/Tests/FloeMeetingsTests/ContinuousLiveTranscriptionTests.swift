@@ -97,6 +97,54 @@ final class ContinuousLiveTranscriptionTests: XCTestCase {
                        "a rotated domain continues media time at its first accepted frame")
     }
 
+    func testDomainAccountsOnlyMeasuredVoicedFrames() {
+        var domain = MeetingLiveASRDomain(
+            sourceSampleRate: 16_000, startFrame: 0, wireLimitBytes: 1_000_000)
+        domain.account(frameCount: 16_000, wireBytes: 32_000)
+        XCTAssertEqual(domain.voicedMediaSeconds, 0, accuracy: 0.000_001,
+                       "silence contributes no voiced media")
+        domain.account(frameCount: 1_600, wireBytes: 3_200, voicedFrameCount: 1_600)
+        XCTAssertEqual(domain.voicedMediaSeconds, 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(domain.fedMediaSeconds, 1.1, accuracy: 0.000_001,
+                       "voiced accounting never changes the media clock")
+    }
+
+    func testInterruptedLiveCaptureRecoversOnlyWhenTheOriginalIsAvailable() async throws {
+        let (service, meeting) = try await makeService()
+        let backend = FakeCaptureBackend()
+        let session = try await service.startCapture(
+            meeting: meeting, backend: backend,
+            configuration: .init(directory: URL(fileURLWithPath: NSTemporaryDirectory())))
+        // A fresh service over the same database models the next process:
+        // the old microphone writer is gone.
+        let reopened = MeetingService(database: try MeetingDatabase(path: dbURL.path))
+        let recovered = try await reopened.recoverInterruptedLiveCapture(
+            session, meeting: meeting, originalAvailable: true)
+        XCTAssertTrue(recovered)
+        let snapshots = try await reopened.sessions(meeting: meeting)
+        XCTAssertEqual(snapshots.first?.state, .stopped)
+        XCTAssertEqual(snapshots.first?.stopReason, .recovered)
+        let rewritten = try await reopened.recoverInterruptedLiveCapture(
+            session, meeting: meeting, originalAvailable: true)
+        XCTAssertFalse(rewritten, "a terminal row is never rewritten")
+        _ = try? await service.cancelCapture()
+    }
+
+    func testInterruptedLiveCaptureWithoutAudioBecomesFailed() async throws {
+        let (service, meeting) = try await makeService()
+        let session = try await service.startCapture(
+            meeting: meeting, backend: FakeCaptureBackend(),
+            configuration: .init(directory: URL(fileURLWithPath: NSTemporaryDirectory())))
+        let reopened = MeetingService(database: try MeetingDatabase(path: dbURL.path))
+        let recovered = try await reopened.recoverInterruptedLiveCapture(
+            session, meeting: meeting, originalAvailable: false)
+        XCTAssertTrue(recovered)
+        let snapshots = try await reopened.sessions(meeting: meeting)
+        XCTAssertEqual(snapshots.first?.state, .failed)
+        XCTAssertNil(snapshots.first?.stopReason)
+        _ = try? await service.cancelCapture()
+    }
+
     func testDomainAccountingIncludesResamplerFlushWithoutInventingSourceFrames() {
         var domain = MeetingLiveASRDomain(
             sourceSampleRate: 16_000, startFrame: 0, wireLimitBytes: 1_000_000)

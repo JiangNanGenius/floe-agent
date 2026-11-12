@@ -637,8 +637,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.16"
-        CURRENT_PROJECT_VERSION: "337"
+        MARKETING_VERSION: "1.8.17"
+        CURRENT_PROJECT_VERSION: "338"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -721,8 +721,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.16"
-        CURRENT_PROJECT_VERSION: "337"
+        MARKETING_VERSION: "1.8.17"
+        CURRENT_PROJECT_VERSION: "338"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -772,8 +772,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.16"
-        CURRENT_PROJECT_VERSION: "337"
+        MARKETING_VERSION: "1.8.17"
+        CURRENT_PROJECT_VERSION: "338"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -816,8 +816,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.16"
-        CURRENT_PROJECT_VERSION: "337"
+        MARKETING_VERSION: "1.8.17"
+        CURRENT_PROJECT_VERSION: "338"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -869,8 +869,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.16"
-        CURRENT_PROJECT_VERSION: "337"
+        MARKETING_VERSION: "1.8.17"
+        CURRENT_PROJECT_VERSION: "338"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -981,6 +981,7 @@ targets:
       - path: Tests/FloeAppTests/MeetingSpeakerIntegrationTests.swift
       - path: Tests/FloeAppTests/MeetingContinuousASRTests.swift
       - path: Tests/FloeAppTests/MeetingAudioPlaybackLifecycleTests.swift
+      - path: Tests/FloeAppTests/MeetingRecordingPresentationTests.swift
       - path: Tests/FloeAppTests/FileSpeechTranscriberTests.swift
       - path: Tests/FloeAppTests/ConversationPreparationLifecycleTests.swift
       - path: Tests/FloeAppTests/PlanGoalControlTests.swift
@@ -1872,6 +1873,10 @@ targets:
       - path: Tests/FloePersistenceTests/TaskExecutionBindingStoreTests.swift
       - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
       - path: Tests/FloeWorkspaceTests/LargeTextFileToolsTests.swift
+      - path: Tests/FloeWorkspaceTests/FileToolsTests.swift
+      - path: Tests/FloeWorkspaceTests/IDENativeTextWorkspaceTests.swift
+      - path: Tests/FloeSecurityTests/CatastrophicGateTests.swift
+      - path: Tests/FloeSkillsTests/OfficialSkillHubTests.swift
       - path: Tests/FloeAppTests/WorkspaceReadPageCatalogTests.swift
       - path: Tests/FloePersistenceTests/ModelConfigurationStoreTests.swift
       - path: Tests/FloeAppTests/SetupGuideLaunchRegressionTests.swift
@@ -1912,9 +1917,14 @@ targets:
       - path: Tests/FloeAppTests/MeetingSpeakerIntegrationTests.swift
       - path: Tests/FloeAppTests/MeetingContinuousASRTests.swift
       - path: Tests/FloeAppTests/MeetingAudioPlaybackLifecycleTests.swift
+      - path: Tests/FloeAppTests/MeetingRecordingPresentationTests.swift
+      - path: Modules/FloeMeetings/Tests/FloeMeetingsTests/ContinuousLiveTranscriptionTests.swift
+      - path: Modules/FloeMeetings/Tests/FloeMeetingsTests/TestServices.swift
+      - path: Modules/FloeMeetings/Tests/FloeMeetingsTests/TestSupport.swift
       - path: Tests/FloeAppTests/FileSpeechTranscriberTests.swift
       - path: Tests/FloeAppTests/ConversationPreparationLifecycleTests.swift
       - path: Tests/FloeAppTests/PlanGoalControlTests.swift
+      - path: Tests/FloeAppTests/ChatModeRestorationTests.swift
       - path: Tests/FloeAppTests/RunOutputFileViewTests.swift
       - path: Tests/FloeAppTests/TextReaderRapidSwitchTests.swift
       - path: Tests/FloePersistenceTests/RunLaunchStoreTests.swift
@@ -2038,6 +2048,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/UserQuestionModeContractTests.swift
       - path: Tests/FloeAgentRuntimeTests/AgentPromptLayerTests.swift
       - path: Tests/FloeAgentRuntimeTests/HarnessPlanningTests.swift
+      - path: Tests/FloeAgentRuntimeTests/TaskChecklistTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolLoopHardeningTests.swift
       - path: Tests/FloeAgentRuntimeTests/UserQuestionContinuingDeadlineTests.swift
       - path: Tests/FloeModelsTests/UserQuestionContinuingDeadlineModelTests.swift

@@ -3,6 +3,7 @@
 import Darwin
 import Foundation
 import XCTest
+import FloeCore
 import FloeExecution
 @testable import FloeApp
 
@@ -164,6 +165,155 @@ import FloeExecution
         XCTAssertEqual(report.rootIdentity?.inode, UInt64(identity.st_ino))
         XCTAssertEqual(report.rootIdentity?.device, UInt64(bitPattern: Int64(identity.st_dev)))
         XCTAssertEqual(report.diskContentBytesRead, 0)
+    }
+
+    func testAdapterOwnerFailuresPersistAndReachBoundedFeedbackWithoutAttribution() throws {
+        let marker = "synthetic-private-attribution/5BF7D933-7736-4675-BB2D-B10520710D82"
+        var state = StorageOptimizationState(phase: .blocked, attempted: 1, appBuildFingerprint: "1.8.16.337")
+        state.recordStage("disk-admission")
+        state.recordResult(code: "owner-unknown", diagnosticCodes: [
+            "legacy_registry_identity_changed:" + marker,
+            "registry_session:" + marker,
+            "unknown-" + marker
+        ])
+        let store = try defaults()
+        StorageOptimizationService.persistSnapshot(state, to: store)
+        let persisted = try XCTUnwrap(StorageOptimizationService.readSnapshot(from: store))
+        XCTAssertEqual(persisted.details["owner-unknown"], 1)
+        XCTAssertEqual(persisted.details["legacy_registry_identity_changed"], 1)
+        XCTAssertEqual(persisted.details["registry_session"], 1)
+        XCTAssertEqual(persisted.unrecognizedDiagnosticCodeCount, 1)
+        XCTAssertEqual(persisted.terminalDisposition, .eligibilityBlocked)
+        let text = StorageOptimizationService.diagnosticText(defaults: store)
+        // These must survive even if failure preceded a completed inventory.
+        XCTAssertTrue(text.contains("optimization_inventory: not_recorded_in_this_receipt"))
+        XCTAssertTrue(text.contains("optimization_last_stage: disk-admission"))
+        XCTAssertTrue(text.contains("optimization_last_result_code: owner-unknown"))
+        XCTAssertTrue(text.contains("optimization_result.legacy_registry_identity_changed: 1"))
+        XCTAssertFalse(text.contains(marker))
+        let bounded = FeedbackUploadService.boundedDiagnostics(DiagnosticsExporter.render(sections: [
+            .init(id: .storageSnapshot, body: text),
+            .init(id: .recentLog, body: String(repeating: "bounded log\n", count: 20_000))
+        ]))
+        XCTAssertTrue(bounded.contains("optimization_result.legacy_registry_identity_changed: 1"))
+        XCTAssertTrue(bounded.contains("optimization_last_result_code: owner-unknown"))
+        XCTAssertFalse(bounded.contains(marker))
+    }
+
+    func testActualCoreProgressVocabularySurvivesLiveProgressClearAndRelaunch() throws {
+        var state = StorageOptimizationState(phase: .optimizing, attempted: 1)
+        let counting = StorageSparseDiskRewriteProgress(phase: .counting, processedBytes: 32, totalBytes: 128)
+        XCTAssertTrue(state.recordStage(counting.phase.rawValue, processed: counting.processedBytes, total: counting.totalBytes))
+        let verifying = StorageSparseDiskRewriteProgress(phase: .verifying, processedBytes: 96, totalBytes: 128)
+        XCTAssertTrue(state.recordStage(verifying.phase.rawValue, processed: verifying.processedBytes, total: verifying.totalBytes))
+        state.corePhase = verifying.phase.rawValue; state.fraction = 0.75
+        state.recordResult(code: "write-failed")
+        state.phase = .blocked
+        // finish clears only live UI progress, not the observed phase receipt.
+        state.corePhase = nil; state.fraction = nil; state.finishedAt = Date()
+        let store = try defaults()
+        StorageOptimizationService.persistSnapshot(state, to: store)
+        let persisted = try XCTUnwrap(StorageOptimizationService.readSnapshot(from: store))
+        XCTAssertNil(persisted.corePhase)
+        XCTAssertNil(persisted.fraction)
+        XCTAssertEqual(persisted.lastStage, "verifying")
+        XCTAssertNotNil(persisted.lastStageObservedAt)
+        XCTAssertEqual(persisted.lastProcessedBytes, 96)
+        XCTAssertEqual(persisted.lastTotalBytes, 128)
+        let text = StorageOptimizationService.diagnosticText(defaults: store)
+        XCTAssertTrue(text.contains("optimization_last_stage: verifying"))
+        XCTAssertTrue(text.contains("optimization_last_processed_bytes: 96"))
+        XCTAssertTrue(text.contains("optimization_last_total_bytes: 128"))
+        XCTAssertTrue(text.contains("optimization_last_result_code: write-failed"))
+        XCTAssertFalse(state.recordStage("synthetic-untrusted-stage"))
+        XCTAssertEqual(state.lastStage, "verifying")
+        XCTAssertTrue(state.recordStage("disk-admission"))
+        XCTAssertNil(state.lastProcessedBytes, "A new disk must not inherit the previous disk's counters")
+        XCTAssertNil(state.lastTotalBytes)
+    }
+
+    func testTerminalOutcomesDistinguishCoverageEligibilityPrimitiveAndVerifiedNoGain() {
+        var uncovered = StorageOptimizationState(phase: .completed)
+        uncovered.coveredSourceCount = 0; uncovered.eligibleSourceCount = 0
+        uncovered.recordDiagnostic("no-covered-sources")
+        XCTAssertEqual(uncovered.terminalDisposition, .notCovered)
+
+        var ineligible = StorageOptimizationState(phase: .blocked, details: ["sources-not-eligible": 1])
+        ineligible.coveredSourceCount = 1; ineligible.eligibleSourceCount = 0
+        XCTAssertEqual(ineligible.terminalDisposition, .eligibilityBlocked)
+
+        var unsupported = StorageOptimizationState(phase: .blocked, attempted: 1)
+        unsupported.recordResult(code: "clone-unavailable")
+        XCTAssertEqual(unsupported.terminalDisposition, .methodUnavailable)
+
+        var unverified = StorageOptimizationState(phase: .completed, attempted: 1)
+        unverified.recordResult(code: "insufficient-reclaim")
+        XCTAssertEqual(unverified.terminalDisposition, .stopped)
+        XCTAssertNil(unverified.verifiedNoGainCount)
+
+        var noGain = StorageOptimizationState(phase: .completed, attempted: 1)
+        noGain.recordResult(code: "insufficient-reclaim", verifiedUnchanged: true)
+        XCTAssertEqual(noGain.terminalDisposition, .verifiedNoGain)
+        XCTAssertEqual(noGain.verifiedNoGainCount, 1)
+        for state in [uncovered, ineligible, unsupported, unverified, noGain] {
+            XCTAssertNotNil(state.terminalNotice)
+        }
+    }
+
+    func testRecoveryReceiptDoesNotKeepShowingResolvedPendingFailure() {
+        var state = StorageOptimizationState(phase: .blocked)
+        state.recordResult(code: "recovery-pending")
+        XCTAssertEqual(state.terminalDisposition, .recoveryPending)
+        state.phase = .completed
+        state.recordStage("recovery-check")
+        state.recordResult(code: "recovery-resolved")
+        XCTAssertEqual(state.terminalDisposition, .recovered)
+        XCTAssertEqual(state.details["recovery-pending"], 1, "Preserve the original failure evidence")
+        XCTAssertNotNil(state.terminalNotice)
+    }
+
+    func testOldCompletedReceiptDoesNotInventCoverageStageOrVerifiedNoGain() throws {
+        let state = StorageOptimizationState(phase: .completed, attempted: 1, details: ["insufficient-reclaim": 1])
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+        for key in ["lastStage", "lastStageObservedAt", "lastProcessedBytes", "lastTotalBytes", "lastResultCode",
+                    "verifiedNoGainCount", "coveredSourceCount", "eligibleSourceCount", "unrecognizedDiagnosticCodeCount"] {
+            object.removeValue(forKey: key)
+        }
+        let store = try defaults()
+        store.set(try JSONSerialization.data(withJSONObject: object), forKey: "floe.storage.legacyOptimization.lastResult.v1")
+        let persisted = try XCTUnwrap(StorageOptimizationService.readSnapshot(from: store))
+        XCTAssertEqual(persisted.phase, .completed)
+        XCTAssertEqual(persisted.details["insufficient-reclaim"], 1)
+        XCTAssertNil(persisted.lastStage)
+        XCTAssertNil(persisted.coveredSourceCount)
+        XCTAssertNil(persisted.verifiedNoGainCount)
+        XCTAssertEqual(persisted.terminalDisposition, .stopped)
+        let text = StorageOptimizationService.diagnosticText(defaults: store)
+        XCTAssertTrue(text.contains("optimization_last_stage: unrecorded"))
+        XCTAssertTrue(text.contains("optimization_covered_sources: unrecorded"))
+        XCTAssertTrue(text.contains("optimization_verified_no_gain: unrecorded"))
+        XCTAssertTrue(text.contains("optimization_result.insufficient-reclaim: 1"))
+    }
+
+    func testUntrustedDiagnosticKeysAreRemovedBeforeBoundedSnapshotStorage() throws {
+        var state = StorageOptimizationState(phase: .blocked, details: ["owner-unknown": Int.max])
+        for index in 0..<400 { state.details["synthetic-private-key-\(index)"] = 1 }
+        state.unrecognizedDiagnosticCodeCount = Int.max
+        state.recordDiagnostic("synthetic-private-added")
+        state.recordDiagnostic("owner-unknown:synthetic-private-attribute")
+        state.lastResultCode = "untrusted-result:synthetic-private-value"
+        state.lastStage = "synthetic-private-stage"
+        let store = try defaults()
+        StorageOptimizationService.persistSnapshot(state, to: store)
+        let encoded = try XCTUnwrap(store.data(forKey: "floe.storage.legacyOptimization.lastResult.v1"))
+        XCTAssertLessThanOrEqual(encoded.count, 16_384)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("synthetic-private"))
+        let persisted = try XCTUnwrap(StorageOptimizationService.readSnapshot(from: store))
+        XCTAssertEqual(persisted.details, ["owner-unknown": 1_000_000])
+        XCTAssertEqual(persisted.unrecognizedDiagnosticCodeCount, 1_000_000)
+        XCTAssertNil(persisted.lastResultCode)
+        XCTAssertNil(persisted.lastStage)
+        XCTAssertFalse(StorageOptimizationService.diagnosticText(defaults: store).contains("synthetic-private"))
     }
 }
 #endif

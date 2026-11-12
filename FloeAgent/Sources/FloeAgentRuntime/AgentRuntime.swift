@@ -1638,30 +1638,36 @@ public actor FloeAgentRuntime {
         await quiesceCancellingRun()
     }
 
-    /// The checklist reminder nags on evidence, not on a fixed clock: it
-    /// fires when work outruns the durable plan, and goes quiet the moment
-    /// the plan catches up. It never replaces the model's judgement on
-    /// whether the task warrants a checklist at all.
+    /// Progress guidance is bounded and scoped to the current run. No
+    /// reminder mutates steps or treats a tool count as completion evidence.
+    static func checklistFreshnessReminder(checklist: TaskChecklist?, runID: UUID,
+                                           workCallsSinceUpdate: Int) -> String? {
+        guard let checklist, checklist.runID == runID, checklist.wasReset != true else {
+            guard workCallsSinceUpdate >= 3 else { return nil }
+            return "This round has no current checklist. For multi-step work use checklist.updatePlan and keep statuses current at step boundaries; skip a checklist for a simple request. A previous round's checklist is history, not current progress. If the user resets it, use checklist.resetPlan with the observed revision; never mark missing evidence completed."
+        }
+        if checklist.isFinished {
+            guard workCallsSinceUpdate >= 2 else { return nil }
+            return "This round's checklist is already settled. For new work submit a fresh steps array; do not reopen completed steps or claim a Goal is complete from checklist progress."
+        }
+        guard workCallsSinceUpdate >= 2 else { return nil }
+        let open = checklist.steps.filter { !$0.isTerminal }.map(\.id).joined(separator: ", ")
+        return "Update this round's checklist from paired results at the completed step boundary; unfinished IDs: [\(open)]. Record completed only with actual supporting results, otherwise keep pending/inProgress or explain blocked/cancelled. Carry unfinished IDs; do not erase or pretend they completed. Reconcile progress before the final answer; do not re-read an unchanged plan."
+    }
+
     private func registerPlanFreshnessReminder() {
-        guard configuration.planChecklistProvider != nil else { return }
+        guard configuration.planChecklistProvider != nil, configuration.conversationMode != .plan else { return }
         reminderCenter.register(variant: "planFreshness") { [weak self] context in
             guard let self else { return nil }
-            // One reminder per stretch of unplanned work; not every dispatch.
-            if let last = context.lastInjectedAtToolCall, context.toolCallCount - last < 8 { return nil }
+            if let last = context.lastInjectedAtToolCall, context.toolCallCount - last < 3 { return nil }
             let entries = await self.ledgerEntriesSnapshot()
-            let lastUpdateIndex = entries.lastIndex { $0.toolName == "checklist.updatePlan" && $0.status == .ok }
-            let callsSinceUpdate = entries.count - (lastUpdateIndex.map { $0 + 1 } ?? 0)
-            guard let checklist = await self.configuration.planChecklistProvider?() else {
-                guard context.toolCallCount >= 10 else { return nil }
-                return "This run has made \(context.toolCallCount) tool calls without a durable checklist. If this is multi-step work, record the plan with checklist.updatePlan so progress survives interruption and compaction; skip it for a simple request."
-            }
-            if checklist.isFinished {
-                guard context.toolCallCount > 0 else { return nil }
-                return "The checklist \"\(checklist.title)\" is finished (\(checklist.completedCount)/\(checklist.steps.count) completed). For a new task submit a fresh steps array — a new checklist starts automatically; do not append to the finished list."
-            }
-            guard callsSinceUpdate >= 8 else { return nil }
-            let open = checklist.steps.filter { !$0.isTerminal }.map(\.id).joined(separator: ", ")
-            return "Plan freshness: \(callsSinceUpdate) tool calls since your last successful checklist.updatePlan; unfinished steps: [\(open)]. If the plan drifted, update it now (carry those IDs or mark them cancelled; completed steps may be omitted). If it is accurate, keep going — do not re-read it."
+            let lastUpdate = entries.lastIndex { ["checklist.updatePlan", "checklist.resetPlan"].contains($0.toolName) && $0.status == .ok }
+            let work = entries.dropFirst(lastUpdate.map { $0 + 1 } ?? 0).filter {
+                !$0.toolName.hasPrefix("tools.") && !$0.toolName.hasPrefix("checklist.")
+                    && !$0.toolName.hasPrefix("skill.") && $0.toolName != "user.ask"
+            }.count
+            return Self.checklistFreshnessReminder(checklist: await self.configuration.planChecklistProvider?(),
+                runID: self.runID, workCallsSinceUpdate: work)
         }
     }
 

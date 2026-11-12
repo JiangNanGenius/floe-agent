@@ -49,8 +49,20 @@ struct FileToolsTests {
             try content.write(to: url, atomically: true, encoding: .utf8)
         }
 
+        func writeData(_ relative: String, _ data: Data) throws {
+            let url = root.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+        }
+
         func read(_ relative: String) throws -> String {
             try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
+        }
+
+        func readData(_ relative: String) throws -> Data {
+            try Data(contentsOf: root.appendingPathComponent(relative))
         }
 
         func exists(_ relative: String) -> Bool {
@@ -60,9 +72,22 @@ struct FileToolsTests {
 
     private func makeFixture() throws -> Fixture { try Fixture() }
 
+    /// First `key=value` token on the tool summary's header line.
+    private func field(_ name: String, in summary: String) throws -> String {
+        let header = summary.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        let token = header.split(separator: " ").first { $0.hasPrefix(name + "=") }
+        return String(try #require(token).dropFirst(name.count + 1))
+    }
+
+    /// Tool read output after its header line (the actual page text).
+    private func pageBody(_ summary: String) throws -> String {
+        let lines = summary.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        return lines.count == 2 ? String(lines[1]) : ""
+    }
+
     // MARK: Registration
 
-    @Test("Registration wires all eleven tools into catalog and registry")
+    @Test("Registration wires every workspace tool into catalog and registry")
     func registration() throws {
         let fixture = try makeFixture()
         let registry = ToolRunnerRegistry()
@@ -74,9 +99,13 @@ struct FileToolsTests {
             "workspace.applyPatch", "workspace.moveFile", "workspace.deleteFile",
             "workspace.createDirectory", "workspace.copyFile", "workspace.appendFile", "workspace.replaceText"
         ]
+        let registeredNames = Set(registry.allDescriptors.map(\.name))
+        let catalogNames = Set(ToolCatalog.allDescriptors.map(\.name))
         for name in expected {
             #expect(ToolCatalog.descriptor(named: name) != nil, "descriptor missing for \(name)")
             #expect(registry.runner(named: name) != nil, "runner missing for \(name)")
+            #expect(registeredNames.contains(name), "model-facing runner descriptor missing for \(name)")
+            #expect(catalogNames.contains(name), "model-facing catalog descriptor missing for \(name)")
         }
         let read = ToolCatalog.descriptor(named: "workspace.readFile")
         #expect(read?.isSideEffecting == false)
@@ -84,6 +113,26 @@ struct FileToolsTests {
         let delete = ToolCatalog.descriptor(named: "workspace.deleteFile")
         #expect(delete?.isSideEffecting == true)
         #expect(delete?.riskLabels == [.writesFiles, .deletesFiles])
+    }
+
+    @Test("Model-facing text contracts describe general plain text, not Markdown-only files")
+    func generalTextContracts() {
+        let create = ToolCatalog.descriptor(named: "workspace.createFile")
+        #expect(create?.toolDescription.contains("Prefer the .md extension") == false)
+        for phrase in ["plain-text", "source code", "scripts", "LaTeX", "extensionless"] {
+            #expect(create?.toolDescription.localizedCaseInsensitiveContains(phrase) == true,
+                    "createFile contract is missing \(phrase)")
+        }
+        let read = ToolCatalog.descriptor(named: "workspace.readFile")
+        #expect(read?.toolDescription.localizedCaseInsensitiveContains("extensionless") == true)
+        let write = ToolCatalog.descriptor(named: "workspace.writeFile")
+        #expect(write?.toolDescription.localizedCaseInsensitiveContains("source code") == true)
+        let append = ToolCatalog.descriptor(named: "workspace.appendFile")
+        #expect(append?.toolDescription.localizedCaseInsensitiveContains("unknown-extension") == true)
+        let replace = ToolCatalog.descriptor(named: "workspace.replaceText")
+        #expect(replace?.toolDescription.localizedCaseInsensitiveContains("unknown-extension") == true)
+        let patch = ToolCatalog.descriptor(named: "workspace.applyPatch")
+        #expect(patch?.toolDescription.localizedCaseInsensitiveContains("plain-text") == true)
     }
 
     // MARK: listDirectory
@@ -451,6 +500,193 @@ struct FileToolsTests {
         _ = metadataTool // metadata tool used indirectly via service above
     }
 
+    // MARK: general plain-text matrix
+
+    @Test("Every plain-text type supports create, read, append, replace, write and diff-based editing")
+    func plainTextMatrix() async throws {
+        let fixture = try makeFixture()
+        let create = WorkspaceCreateFileTool(environment: fixture.environment)
+        let read = WorkspaceReadFileTool(environment: fixture.environment)
+        let append = WorkspaceAppendFileTool(environment: fixture.environment)
+        let replace = WorkspaceReplaceTextTool(environment: fixture.environment)
+        let write = WorkspaceWriteFileTool(environment: fixture.environment)
+        let patch = WorkspaceApplyPatchTool(environment: fixture.environment)
+        let service = try fixture.environment.makeService()
+
+        let cases: [(path: String, text: String)] = [
+            ("scripts/job.py", "#!/usr/bin/env python3\nprint('你好')\n"),
+            ("web/page.html", "<!doctype html>\n<html><body>你好</body></html>\n"),
+            ("web/style.css", "body { color: #123456; }\n"),
+            ("web/app.js", "const 名称 = 'Floe';\nconsole.log(名称);\n"),
+            ("data/data.json", "{\"name\":\"测试\",\"count\":1}\n"),
+            ("data/config.yaml", "name: 测试\nitems:\n  - first\n"),
+            ("data/table.csv", "名称,数量\n苹果,2\n"),
+            ("docs/paper.tex", "\\documentclass{article}\n\\begin{document}\n你好\n\\end{document}\n"),
+            ("docs/main.swift", "let 名称 = \"Floe\"\nprint(名称)\n"),
+            ("docs/notes.txt", "plain text\n"),
+            ("docs/README", "extensionless text\n"),
+            ("docs/mystery.xyz", "unknown extension text\n"),
+            ("文档/待办", "中文路径与无扩展名\n")
+        ]
+
+        for (index, item) in cases.enumerated() {
+            let created = try await create.execute(
+                .init(path: item.path, content: item.text), context: fixture.context)
+            #expect(try fixture.read(item.path) == item.text, "create failed for \(item.path)")
+
+            let firstRead = try await read.execute(.init(path: item.path), context: fixture.context)
+            #expect(try pageBody(firstRead.summary) == item.text, "read failed for \(item.path)")
+            #expect(try field("totalBytes", in: firstRead.summary) == String(item.text.utf8.count))
+
+            let appendedText = "\nappended-\(index)"
+            let appended = try await append.execute(
+                .init(path: item.path, content: appendedText,
+                      expectedSHA256: try field("sha256", in: created.summary)),
+                context: fixture.context)
+            #expect(try fixture.read(item.path) == item.text + appendedText,
+                    "append failed for \(item.path)")
+
+            let replaced = try await replace.execute(
+                .init(path: item.path, oldText: "appended-\(index)", newText: "替换-\(index)",
+                      expectedSHA256: try field("sha256", in: appended.summary)),
+                context: fixture.context)
+            let replacedText = item.text + "\n替换-\(index)"
+            #expect(try fixture.read(item.path) == replacedText,
+                    "replace failed for \(item.path)")
+
+            let finalText = "final-\(index)-\(item.path)\n"
+            _ = try await write.execute(
+                .init(path: item.path, content: finalText,
+                      expectedSHA256: try field("sha256", in: replaced.summary)),
+                context: fixture.context)
+            #expect(try fixture.read(item.path) == finalText, "write failed for \(item.path)")
+
+            let patchedText = finalText + "patched\n"
+            let diff = service.diff(original: finalText, modified: patchedText, label: item.path)
+            #expect(!diff.isEmpty)
+            _ = try await patch.execute(.init(path: item.path, patch: diff), context: fixture.context)
+            #expect(try fixture.read(item.path) == patchedText, "patch failed for \(item.path)")
+
+            // Independent reread through a fresh guard/service, not the writer.
+            let fresh = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: fixture.root))
+            #expect(try fresh.readFileForEditing(item.path).text == patchedText)
+        }
+    }
+
+    @Test("UTF-8 BOM, CRLF and multibyte bytes survive append, replace, write and patch")
+    func bomAndCRLFRoundTrip() async throws {
+        let fixture = try makeFixture()
+        let read = WorkspaceReadFileTool(environment: fixture.environment)
+        let append = WorkspaceAppendFileTool(environment: fixture.environment)
+        let replace = WorkspaceReplaceTextTool(environment: fixture.environment)
+        let write = WorkspaceWriteFileTool(environment: fixture.environment)
+        let patch = WorkspaceApplyPatchTool(environment: fixture.environment)
+
+        var original = Data(WorkspaceTextPolicy.utf8BOM)
+        original.append(Data("第一行\r\nsecond line\r\n".utf8))
+        try fixture.writeData("docs/编码.tex", original)
+
+        // The read path preserves the BOM as U+FEFF instead of silently
+        // consuming it, so the complete text is byte-exact.
+        let firstRead = try await read.execute(.init(path: "docs/编码.tex"), context: fixture.context)
+        #expect(try pageBody(firstRead.summary).hasPrefix("\u{FEFF}"))
+        #expect(try field("bytes", in: firstRead.summary) == String(original.count))
+        let editing = try fixture.environment.makeService().readFileForEditing("docs/编码.tex")
+        #expect(editing.text.hasPrefix("\u{FEFF}"))
+        #expect(Data(editing.text.utf8) == original)
+
+        let appendSuffix = "第三行 😀\r\n"
+        let appended = try await append.execute(
+            .init(path: "docs/编码.tex", content: appendSuffix,
+                  expectedSHA256: WorkspaceFileService.sha256Hex(of: original)),
+            context: fixture.context)
+        var expected = original
+        expected.append(Data(appendSuffix.utf8))
+        #expect(try fixture.readData("docs/编码.tex") == expected)
+
+        let replaced = try await replace.execute(
+            .init(path: "docs/编码.tex", oldText: "second line", newText: "SECOND line",
+                  expectedSHA256: try field("sha256", in: appended.summary)),
+            context: fixture.context)
+        // String(decoding:) keeps the leading U+FEFF byte-for-byte; the
+        // Foundation String(data:encoding:.utf8) initializer would strip it.
+        expected = Data(String(decoding: expected, as: UTF8.self).replacingOccurrences(
+            of: "second line", with: "SECOND line").utf8)
+        #expect(try fixture.readData("docs/编码.tex") == expected)
+        #expect(expected.starts(with: Data(WorkspaceTextPolicy.utf8BOM)))
+
+        let finalText = "\u{FEFF}final\r\nline\r\n"
+        _ = try await write.execute(
+            .init(path: "docs/编码.tex", content: finalText,
+                  expectedSHA256: try field("sha256", in: replaced.summary)),
+            context: fixture.context)
+        #expect(try fixture.readData("docs/编码.tex") == Data(finalText.utf8))
+
+        let service = try fixture.environment.makeService()
+        let patchedText = finalText + "patched\r\n"
+        let diff = service.diff(original: finalText, modified: patchedText, label: "docs/编码.tex")
+        #expect(!diff.isEmpty)
+        _ = try await patch.execute(.init(path: "docs/编码.tex", patch: diff), context: fixture.context)
+        #expect(try fixture.readData("docs/编码.tex") == Data(patchedText.utf8))
+    }
+
+    @Test("Binary and UTF-16 reads/edits are refused without changing the original bytes")
+    func binaryAndNonUTF8Refused() async throws {
+        let fixture = try makeFixture()
+        let read = WorkspaceReadFileTool(environment: fixture.environment)
+        let append = WorkspaceAppendFileTool(environment: fixture.environment)
+        let replace = WorkspaceReplaceTextTool(environment: fixture.environment)
+        let service = try fixture.environment.makeService()
+
+        let binary = Data([0x50, 0x4B, 0x03, 0x04, 0x00, 0xFF, 0xFE])
+        try fixture.writeData("docs/blob.xyz", binary)
+        for call in [
+            { try await read.execute(.init(path: "docs/blob.xyz"), context: fixture.context) },
+            { try await append.execute(.init(path: "docs/blob.xyz", content: "x"), context: fixture.context) },
+            { try await replace.execute(.init(path: "docs/blob.xyz", oldText: "P", newText: "Q"), context: fixture.context) }
+        ] as [() async throws -> ToolExecutionOutput] {
+            do {
+                _ = try await call()
+                Issue.record("binary content must be refused")
+            } catch let error as WorkspaceToolError {
+                guard case .invalidArguments = error else {
+                    Issue.record("expected invalidArguments, got \(error)")
+                    return
+                }
+            }
+        }
+        #expect(try fixture.readData("docs/blob.xyz") == binary)
+        #expect(throws: WorkspaceToolError.self) { _ = try service.readFileForEditing("docs/blob.xyz") }
+
+        let utf16 = "\u{FEFF}hello 你好"
+        let utf16Data = try #require(utf16.data(using: .utf16))
+        try fixture.writeData("docs/utf16.txt", utf16Data)
+        do {
+            _ = try await append.execute(.init(path: "docs/utf16.txt", content: "x"), context: fixture.context)
+            Issue.record("non-UTF-8 text must not be silently converted")
+        } catch let error as WorkspaceToolError {
+            guard case .invalidArguments = error else {
+                Issue.record("expected invalidArguments, got \(error)")
+                return
+            }
+        }
+        #expect(try fixture.readData("docs/utf16.txt") == utf16Data)
+
+        // Text tools never create NUL-bearing (binary) content.
+        let create = WorkspaceCreateFileTool(environment: fixture.environment)
+        do {
+            _ = try await create.execute(
+                .init(path: "docs/nul.txt", content: "a\u{0}b"), context: fixture.context)
+            Issue.record("NUL content must be refused")
+        } catch let error as WorkspaceToolError {
+            guard case .invalidArguments = error else {
+                Issue.record("expected invalidArguments, got \(error)")
+                return
+            }
+        }
+        #expect(!fixture.exists("docs/nul.txt"))
+    }
+
     // MARK: applyPatch
 
     @Test("applyPatch applies hunks and reports counts")
@@ -774,9 +1010,12 @@ struct FileToolsTests {
             cancellation: CancellationToken()
         )
         let tool = WorkspaceReadFileTool(environment: fixture.environment)
+        let append = WorkspaceAppendFileTool(environment: fixture.environment)
 
         let allowed = try await tool.execute(.init(path: "allowed/readme.txt"), context: context)
         #expect(allowed.summary.contains("allowed"))
+        _ = try await append.execute(.init(path: "allowed/readme.txt", content: "!"), context: context)
+        #expect(try fixture.read("allowed/readme.txt") == "allowed!")
 
         for path in ["secret.txt", "allowed/../secret.txt", "allowed/sub/../../secret.txt"] {
             do {
@@ -789,6 +1028,16 @@ struct FileToolsTests {
                 }
             }
         }
+        do {
+            _ = try await append.execute(.init(path: "secret.txt", content: "x"), context: context)
+            Issue.record("append must respect the task file scope ceiling")
+        } catch let error as FloeError {
+            guard case .validationFailed = error else {
+                Issue.record("expected validationFailed, got \(error)")
+                return
+            }
+        }
+        #expect(try fixture.read("secret.txt") == "secret")
     }
 
     // MARK: Cancellation
@@ -810,6 +1059,18 @@ struct FileToolsTests {
             #expect(error == .cancelled)
         }
         #expect(!fixture.exists("never.txt"))
+
+        try fixture.write("existing.txt", "original")
+        let appendTool = WorkspaceAppendFileTool(environment: fixture.environment)
+        do {
+            _ = try await appendTool.execute(
+                .init(path: "existing.txt", content: "never"), context: context
+            )
+            Issue.record("expected cancellation before append")
+        } catch let error as FloeError {
+            #expect(error == .cancelled)
+        }
+        #expect(try fixture.read("existing.txt") == "original")
     }
 
     // MARK: Missing workspace

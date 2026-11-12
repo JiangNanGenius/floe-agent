@@ -102,7 +102,14 @@ struct OfficialSkillHubTests {
         #expect(guide.toolNames == ["exec.shell"])
     }
     let text = try #require(BundledDomainSkills.all.first { $0.id == "floe-text-edit" })
-    #expect(Set(text.toolNames) == ["exec.shell", "workspace.applyPatch", "workspace.writeFile"])
+    #expect(Set(text.toolNames) == ["workspace.readFile", "workspace.inspectFileMetadata",
+        "workspace.createFile", "workspace.appendFile", "workspace.replaceText",
+        "workspace.applyPatch", "workspace.writeFile"])
+    #expect(!text.markdown.contains("were retired") && !text.markdown.contains("```python"))
+    #expect(text.markdown.contains("expectedOccurrences"))
+    #expect(text.markdown.contains("bounded chunks") && text.markdown.contains("SAME precondition"))
+    #expect(text.markdown.contains("sourcePath") && text.markdown.contains("expectedSourceSHA256"))
+    #expect(text.markdown.contains("expectedSHA256") && text.markdown.contains("Keep the draft"))
     let shell = try #require(BundledDomainSkills.all.first { $0.id == "floe-shell" })
     #expect(!shell.toolNames.contains("ssh.shell"))
     #expect(shell.toolNames.contains("exec.shell"))

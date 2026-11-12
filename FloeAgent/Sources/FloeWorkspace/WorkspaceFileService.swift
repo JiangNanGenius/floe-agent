@@ -328,11 +328,13 @@ public struct WorkspaceFileService: Sendable {
         guard data.count <= guardResolver.maxWriteBytes else {
             throw WorkspaceToolError.tooLarge(limit: guardResolver.maxWriteBytes)
         }
-        guard Self.looksLikeText(data) else {
+        // Content classification is bounded by the shared text policy (the
+        // read itself is already capped above). A leading UTF-8 BOM is kept
+        // as U+FEFF so read/modify/write remains byte-exact; invalid UTF-8 or
+        // NUL-bearing bytes are refused, never decoded lossily.
+        guard let text = WorkspaceTextPolicy.decodeUTF8(data) else {
             throw WorkspaceToolError.invalidArguments("file is not editable text: \(path)")
         }
-
-        let text = try WorkspaceTextEdit.decode(data)
         return FileContent(
             text: text,
             truncated: false,
@@ -954,6 +956,13 @@ public struct WorkspaceFileService: Sendable {
 
     private func performWrite(_ url: URL, path: String, content: String) throws -> WriteOutcome {
         let data = Data(content.utf8)
+        // Text tools only write plain text. A NUL byte makes the result binary
+        // and unreadable by the same tools, so refuse it before the atomic
+        // commit; binary producers use createBinaryFile/import paths instead.
+        guard !data.contains(0) else {
+            throw WorkspaceToolError.invalidArguments(
+                "Text writes cannot contain NUL bytes; use a binary/document tool for binary data: \(path)")
+        }
         try guardResolver.assertWritableSize(bytes: data.count)
         try guardResolver.assertWritable(url)
         let parent = url.deletingLastPathComponent()

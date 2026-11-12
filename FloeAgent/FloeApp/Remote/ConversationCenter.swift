@@ -1346,6 +1346,9 @@ final class ConversationCenter: ObservableObject {
         var conversationID: UUID?
     }
     private var pendingRunPreparations: [UUID: PendingRunPreparation] = [:]
+    /// A native Execute Plan gesture owns only launch serialization, never
+    /// tool permission. Other sends/queued work cannot race its Plan->Agent handoff.
+    private var planExecutionHandoffs: [UUID: UUID] = [:]
     // Removed only on an exact invocation's handoff/cleanup. A service that
     // was constructed but rejected before start must not strand its lease.
     private var pendingRunResources: [UUID: ConversationRunResourceLease] = [:]
@@ -1401,6 +1404,7 @@ final class ConversationCenter: ObservableObject {
     private var pendingPreferredExecutionModes: [UUID: AgentExecutionMode] = [:]
     /// Latest explicit selection remains authoritative after its write settles.
     private var latestPreferredExecutionModes: [UUID: AgentExecutionMode] = [:]
+    private var latestPreferredPlanRevisions: [UUID: String] = [:]
 
     /// Ordered per-conversation write gates: rapid mode toggles persist in
     /// selection order, so the LAST choice wins instead of a slower earlier
@@ -3673,7 +3677,7 @@ final class ConversationCenter: ObservableObject {
         /// choice (durable snapshot or not-yet-landed RAM choice) OR a
         /// fail-closed resolution that must keep the least-privilege Chat
         /// ceiling. Legacy conversations (no evidence at all) keep the
-        /// historical Agent default and their Plan reconcile behavior.
+        /// historical Agent default; Plan presentation is reconciled separately.
         var isRemembered: Bool
         /// True when a saved choice exists but its raw value is unreadable.
         /// The resolver fails closed to `.chat` (never Agent authority) and
@@ -3684,6 +3688,8 @@ final class ConversationCenter: ObservableObject {
         /// the composer shows the same notice; an explicit Agent choice
         /// remains available to the user.
         var readFailed: Bool
+        /// One pending card already presented with this mode selection.
+        var lastPresentedPlanRevision: String? = nil
 
         static let legacyDefaultAgent = PreferredExecutionModeResolution(
             mode: .agent, isRemembered: false, needsRepair: false, readFailed: false)
@@ -3708,7 +3714,8 @@ final class ConversationCenter: ObservableObject {
                 enqueuePreferredModeRetry(latest, conversationID: conversationID)
             }
             return PreferredExecutionModeResolution(
-                mode: latest, isRemembered: true, needsRepair: false, readFailed: false)
+                mode: latest, isRemembered: true, needsRepair: false, readFailed: false,
+                lastPresentedPlanRevision: latestPreferredPlanRevisions[conversationID])
         }
         let state: ChatPreferencesReadState
         do {
@@ -3719,7 +3726,8 @@ final class ConversationCenter: ObservableObject {
                     enqueuePreferredModeRetry(latest, conversationID: conversationID)
                 }
                 return PreferredExecutionModeResolution(
-                    mode: latest, isRemembered: true, needsRepair: false, readFailed: false)
+                    mode: latest, isRemembered: true, needsRepair: false, readFailed: false,
+                lastPresentedPlanRevision: latestPreferredPlanRevisions[conversationID])
             }
             FloeLogger(category: .persistence).warning(
                 "chatPreferredModeReadFailed conversation=\(conversationID.uuidString)"
@@ -3734,7 +3742,8 @@ final class ConversationCenter: ObservableObject {
                 enqueuePreferredModeRetry(latest, conversationID: conversationID)
             }
             return PreferredExecutionModeResolution(
-                mode: latest, isRemembered: true, needsRepair: false, readFailed: false)
+                mode: latest, isRemembered: true, needsRepair: false, readFailed: false,
+                lastPresentedPlanRevision: latestPreferredPlanRevisions[conversationID])
         }
         return resolution(for: state, conversationID: conversationID)
     }
@@ -3773,7 +3782,8 @@ final class ConversationCenter: ObservableObject {
                     mode: .chat, isRemembered: true, needsRepair: true, readFailed: false)
             }
             return PreferredExecutionModeResolution(
-                mode: mode, isRemembered: true, needsRepair: false, readFailed: false)
+                mode: mode, isRemembered: true, needsRepair: false, readFailed: false,
+                lastPresentedPlanRevision: snapshot.lastPresentedPlanRevision)
         }
     }
 
@@ -3788,7 +3798,8 @@ final class ConversationCenter: ObservableObject {
     /// and the error is rethrown so the composer shows one actionable notice.
     func setPreferredExecutionMode(
         _ mode: AgentExecutionMode,
-        for conversationID: UUID
+        for conversationID: UUID,
+        lastPresentedPlanRevision: String? = nil
     ) async throws {
         if isTemporaryConversation(conversationID) { return }
         let generation = (preferredExecutionModeWriteGenerations[conversationID] ?? 0) &+ 1
@@ -3797,6 +3808,7 @@ final class ConversationCenter: ObservableObject {
         // write is in flight must answer this choice, not the older durable
         // mode.
         latestPreferredExecutionModes[conversationID] = mode
+        latestPreferredPlanRevisions[conversationID] = lastPresentedPlanRevision
         pendingPreferredExecutionModes[conversationID] = mode
         let write = enqueuePreferredModeWrite(
             mode, conversationID: conversationID, generation: generation)
@@ -3826,7 +3838,8 @@ final class ConversationCenter: ObservableObject {
             await previous?.value
             guard preferredExecutionModeWriteGenerations[conversationID] == generation,
                   pendingPreferredExecutionModes[conversationID] == mode else { return }
-            try await persistPreferredExecutionMode(mode, conversationID: conversationID)
+            try await persistPreferredExecutionMode(mode, conversationID: conversationID,
+                lastPresentedPlanRevision: latestPreferredPlanRevisions[conversationID])
             if preferredExecutionModeWriteGenerations[conversationID] == generation,
                pendingPreferredExecutionModes[conversationID] == mode {
                 pendingPreferredExecutionModes[conversationID] = nil
@@ -3858,11 +3871,12 @@ final class ConversationCenter: ObservableObject {
     /// first-round seed.
     private func persistPreferredExecutionMode(
         _ mode: AgentExecutionMode,
-        conversationID: UUID
+        conversationID: UUID,
+        lastPresentedPlanRevision: String?
     ) async throws {
         let store = SQLiteChatPreferenceStore(database: environment.database)
         try await store.updatePreferredExecutionMode(
-            mode.rawValue, conversationID: conversationID)
+            mode.rawValue, conversationID: conversationID, lastPresentedPlanRevision: lastPresentedPlanRevision)
     }
 
     /// True when this run already carries a frozen chat reasoning decision
@@ -5453,6 +5467,78 @@ final class ConversationCenter: ObservableObject {
         try await captureIngressSecrets(captures, owner: .conversation(conversationID))
     }
 
+    private func planHandoffBusy() -> FloeError {
+        .validationFailed(IDELanguageRunText.t("计划正在准备执行，请稍后重试。", "The plan is preparing to run. Try again shortly."))
+    }
+
+    /// Explicit native confirmation only. Keep the old run's immutable Plan
+    /// checkpoint, quiesce its exact owners, then start a distinct execution.
+    /// Failure releases the launch fence; the saved pending/history card remains.
+    func withPlanExecutionHandoff<T: Sendable>(
+        _ plan: PlanDraft, in conversationID: UUID,
+        operation: @MainActor (UUID) async throws -> T
+    ) async throws -> T {
+        guard plan.conversationID == conversationID, !isTemporaryConversation(conversationID),
+              planExecutionHandoffs[conversationID] == nil,
+              let current = try await environment.intelligenceStore.latestPlan(conversationID: conversationID),
+              current.id == plan.id, current.revision == plan.revision, current.digest == plan.digest else {
+            throw planHandoffBusy()
+        }
+        // Recheck after the store await: a second scene may have won.
+        guard planExecutionHandoffs[conversationID] == nil else { throw planHandoffBusy() }
+        let token = UUID()
+        planExecutionHandoffs[conversationID] = token
+        defer { if planExecutionHandoffs[conversationID] == token { planExecutionHandoffs[conversationID] = nil } }
+        try await settlePlanningRunsForExecution(conversationID: conversationID)
+        try Task.checkCancellation()
+        return try await operation(token)
+    }
+
+    private func settlePlanningRunsForExecution(conversationID: UUID) async throws {
+        var ids = Set(runServices.values.filter { $0.conversationID == conversationID }.map(\.runID))
+        ids.formUnion(activeRuns.values.filter { $0.conversationID == conversationID }.map(\.id))
+        ids.formUnion(pendingRunPreparations.compactMap { $0.value.conversationID == conversationID ? $0.key : nil })
+        let identities = runInvocationOwnership.identities(conversationID: conversationID)
+        ids.formUnion(runInvocationOwnership.tokens(matching: identities).map(\.runID))
+        if let waiting = await awaitingDependencyRun(conversationID: conversationID) { ids.insert(waiting.id) }
+        guard ids.count <= 32 else { throw planHandoffBusy() }
+        let store = runStore(for: conversationID)
+        var records: [RunRecord] = []
+        for id in ids {
+            guard let record = try await store.run(id: id), record.conversationID == conversationID,
+                  record.conversationMode == ConversationMode.plan.rawValue else {
+                // Never stop an Agent/Goal, unknown preparation, or another task.
+                throw FloeError.validationFailed(IDELanguageRunText.t(
+                    "请先完成或停止当前操作，再执行计划。", "Finish or stop the current operation before running the plan."))
+            }
+            records.append(record)
+        }
+        for record in records where !["completed", "failed", "cancelled"].contains(record.state) {
+            await cancel(runID: record.id)
+            // Unlike the general Stop affordance, a confirmed handoff cannot
+            // swallow a failed durable parked-wait cancellation and keep going.
+            try await cancelParkedRuntimeWait(runID: record.id)
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ids.contains(where: { hasLiveOwner(runID: $0) }), ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard !ids.contains(where: { hasLiveOwner(runID: $0) }) else { throw planHandoffBusy() }
+        for record in records {
+            guard let settled = try await store.run(id: record.id), settled.conversationID == conversationID,
+                  settled.conversationMode == ConversationMode.plan.rawValue else { throw planHandoffBusy() }
+            if !["completed", "failed", "cancelled"].contains(settled.state) {
+                // A cold parked planning round has no live actor to save its
+                // terminal row. Retain its checkpoint and cancel only this run.
+                try await store.updateRunState(id: record.id, state: "cancelled", endedAt: Date())
+                _ = try await store.appendEvent(runID: record.id, kind: .status,
+                    payloadJSON: #"{"state":"cancelled","reason":"explicitPlanExecutionHandoff"}"#)
+            }
+        }
+        publishSession(conversationID)
+    }
+
     /// Launches a new run and returns immediately. The task result covers
     /// the complete run; the run itself is persisted at the beginning of
     /// `ConversationRunService.start`, before provider I/O starts.
@@ -5473,8 +5559,12 @@ final class ConversationCenter: ObservableObject {
         reusingUserMessageID: UUID? = nil,
         executionEnvironmentID: String? = nil,
         expectedGoal: (id: UUID, revision: Int)? = nil,
+        planExecutionHandoffID: UUID? = nil,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
+        if let owner = planExecutionHandoffs[conversationID] {
+            guard owner == planExecutionHandoffID else { throw planHandoffBusy() }
+        } else if planExecutionHandoffID != nil { throw planHandoffBusy() }
         if case .goalContinuation = startOrigin, goalControlConversations.contains(conversationID) {
             throw FloeError.validationFailed(IDELanguageRunText.t("目标正在更新，请稍后继续。", "The goal is updating. Continue shortly."))
         }
@@ -6506,6 +6596,7 @@ final class ConversationCenter: ObservableObject {
         executionMode: AgentExecutionMode,
         attachments: [AttachmentRef]
     ) async throws {
+        guard planExecutionHandoffs[conversationID] == nil else { throw planHandoffBusy() }
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else { throw CancellationError() }
         let preparationID = beginLaunch(conversationID: conversationID)
         defer { finishLaunch(preparationID) }
@@ -6950,6 +7041,7 @@ final class ConversationCenter: ObservableObject {
     }
 
     private func launchNextQueuedInput(conversationID: UUID) async {
+        guard planExecutionHandoffs[conversationID] == nil else { return }
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else { return }
         do { try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID) }
         catch { return }
@@ -9144,6 +9236,7 @@ final class ConversationCenter: ObservableObject {
         ChatReasoningDraftStore.shared.removeDrafts(for: conversationIDs)
         for conversationID in conversationIDs {
             latestPreferredExecutionModes[conversationID] = nil
+            latestPreferredPlanRevisions[conversationID] = nil
             pendingPreferredExecutionModes[conversationID] = nil
             preferredExecutionModeWriteGenerations[conversationID] = nil
             preferredExecutionModeWriteGates[conversationID] = nil
@@ -10757,7 +10850,7 @@ final class ConversationCenter: ObservableObject {
                     checklistChanged = false
                     switch lifecycle {
                     case .requested(let call), .started(let call):
-                        if call.toolName == "checklist.updatePlan" { checklistCalls.insert(call.id) }
+                        if ["checklist.updatePlan", "checklist.resetPlan"].contains(call.toolName) { checklistCalls.insert(call.id) }
                         toolNamesByCallID[call.id] = call.toolName
                         if TaskRunConclusion.isRuntimeActivity(state: snapshot.stateName), !snapshot.isTerminal {
                             self.environment.backgroundRunCoordinator.didUpdateTool(runID: runID, name: call.toolName, outcome: .started)
@@ -10819,7 +10912,8 @@ final class ConversationCenter: ObservableObject {
         // Read the authoritative revision, not an idempotent tool retry's older
         // receipt. Never query the database for each streamed token.
         do {
-            if let checklist = try await TaskChecklistStore(database: environment.database).latest(conversationID: conversationID) {
+            if let checklist = try await TaskChecklistStore(database: environment.database).latest(conversationID: conversationID, includeReset: true),
+               checklist.conversationID == conversationID, checklist.runID == runID {
                 environment.backgroundRunCoordinator.didUpdateChecklist(runID: runID, checklist: checklist)
             }
         } catch {

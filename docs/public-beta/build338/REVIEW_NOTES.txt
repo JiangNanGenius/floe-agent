@@ -1,0 +1,9 @@
+Floe Agent 1.8.17 (338) — internal repair candidate
+
+This build is authorized for the existing internal Floe QA group only. It must not be submitted to external TestFlight or formal App Store review by this delivery.
+
+Focus: continuous meeting transcription and playback; plan-to-Agent execution and checklist lifecycle; large text file cards and native text editing; data-preserving storage optimization after migration; truthful task notifications during retry, suspension and cancellation.
+
+Existing documents, installed software and legacy recovery disks remain preserved. Storage estimates are not a promise of reclaimed space. Cloud services use the user's own provider configuration; availability and microphone quality require device acceptance.
+
+此构建仅供现有 Floe QA 内部测试，本轮不提交公开 TestFlight 或正式 App Store 审核。具体测试项目见已冻结的双语版本说明与 TestFlight 测试说明。

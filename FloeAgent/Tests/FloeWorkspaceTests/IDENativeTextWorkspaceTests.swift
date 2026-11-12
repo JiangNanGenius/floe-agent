@@ -29,8 +29,19 @@ private struct NativeTextFixture {
         return service
     }
 
+    func writeData(_ relativePath: String, _ data: Data) throws {
+        let url = root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
     var onDisk: (String) throws -> String {
         { relativePath in try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8) }
+    }
+
+    var onDiskData: (String) throws -> Data {
+        { relativePath in try Data(contentsOf: root.appendingPathComponent(relativePath)) }
     }
 }
 
@@ -38,10 +49,35 @@ private struct NativeTextFixture {
 struct IDENativeTextPolicyTests {
     @Test("Text, code and unknown extensions default to the native editor")
     func nativeDefaults() {
-        for path in ["note.txt", "README.md", "Sources/Main.swift", "data.json", "script.sh", "weird.xyz", "Makefile"] {
+        for path in [
+            "note.txt", "README.md", "Sources/Main.swift", "data.json",
+            "script.sh", "weird.xyz", "Makefile", "paper.tex", "data.csv",
+            "page.html", "style.css", "app.js", "config.yaml", "NOTES",
+            "docs/🧪-实验", "docs/unknown.qqq"
+        ] {
             #expect(IDENativeTextPolicy.defaultSurface(forPath: path) == .native, "\(path) should be native")
             #expect(IDENativeTextPolicy.supportsNativeEditing(path))
         }
+    }
+
+    @Test("Common plain-text extensions and extensionless names classify as text")
+    func commonTextClassification() {
+        let textual = [
+            "note.txt", "data.csv", "data.tsv", "paper.tex", "paper.latex",
+            "refs.bib", "page.html", "style.css", "app.js", "app.ts",
+            "config.yaml", "config.toml", "data.json", "data.jsonl",
+            "main.swift", "script.py", "README", "LICENSE", "Makefile",
+            "Dockerfile", ".gitignore", "docs/mystery.xyz"
+        ]
+        for path in textual {
+            #expect(WorkspaceTextPolicy.isTextualPath(path), "\(path) should be a text candidate")
+        }
+        #expect(WorkspaceTextPolicy.kind(forPath: "paper.tex") == .text)
+        #expect(WorkspaceTextPolicy.kind(forPath: "main.swift") == .code)
+        #expect(WorkspaceTextPolicy.kind(forPath: "docs/mystery.xyz") == .unknown)
+        #expect(WorkspaceTextPolicy.kind(forPath: "image.png") == .image)
+        #expect(WorkspaceTextPolicy.kind(forPath: "firmware.bin") == .binary)
+        #expect(WorkspaceTextPolicy.kind(forPath: "report.docx") == .office)
     }
 
     @Test("Typed non-text documents are routed to the Web workbench baseline")
@@ -214,6 +250,56 @@ struct IDENativeTextBufferTests {
         let cold = try #require(await reopened.open("notes/中文.txt"))
         #expect(cold.text == "第一行\n已编辑 emoji 😀\n")
         #expect(!cold.isDirty)
+    }
+
+    @Test("UTF-8 BOM and CRLF survive load, edit, save and cold reopen")
+    func bomAndCRLFRoundTrip() async throws {
+        let fixture = try NativeTextFixture()
+        defer { fixture.remove() }
+        var original = Data(WorkspaceTextPolicy.utf8BOM)
+        original.append(Data("第一行\r\nsecond line\r\n".utf8))
+        try fixture.writeData("notes/编码.tex", original)
+
+        let workspace = IDENativeTextWorkspace(files: fixture.service)
+        let buffer = try #require(await workspace.open("notes/编码.tex"))
+        #expect(buffer.isLoaded)
+        #expect(buffer.text.hasPrefix("\u{FEFF}"))
+        #expect(Data(buffer.text.utf8) == original)
+        #expect(try fixture.onDiskData("notes/编码.tex") == original)
+
+        buffer.text = "\u{FEFF}第一行\r\n已编辑 emoji 😀\r\n"
+        let report = await workspace.saveAll()
+        #expect(report.isClean)
+        let expected = Data(buffer.text.utf8)
+        #expect(expected.starts(with: Data(WorkspaceTextPolicy.utf8BOM)))
+        #expect(try fixture.onDiskData("notes/编码.tex") == expected)
+
+        let reopened = IDENativeTextWorkspace(files: fixture.service)
+        let cold = try #require(await reopened.open("notes/编码.tex"))
+        #expect(cold.text == buffer.text)
+        #expect(!cold.isDirty)
+    }
+
+    @Test("Unknown-extension and extensionless text loads natively while binary content falls back")
+    func unknownExtensionUsesContentProbe() async throws {
+        let fixture = try NativeTextFixture()
+        defer { fixture.remove() }
+        _ = try fixture.write("docs/README", "extensionless text\n")
+        _ = try fixture.write("docs/mystery.xyz", "unknown extension text\n")
+        try fixture.writeData("docs/binary.xyz", Data([0x50, 0x4B, 0x00, 0xFF, 0xFE]))
+
+        let workspace = IDENativeTextWorkspace(files: fixture.service)
+        let extensionless = try #require(await workspace.open("docs/README"))
+        #expect(extensionless.isLoaded)
+        #expect(extensionless.text == "extensionless text\n")
+        let unknown = try #require(await workspace.open("docs/mystery.xyz"))
+        #expect(unknown.isLoaded)
+        #expect(unknown.text == "unknown extension text\n")
+        let binary = try #require(await workspace.open("docs/binary.xyz"))
+        #expect(!binary.isLoaded)
+        #expect(binary.fallbackReason == .binaryContent)
+        #expect(!(await binary.save(service: fixture.service)))
+        #expect(try fixture.onDiskData("docs/binary.xyz") == Data([0x50, 0x4B, 0x00, 0xFF, 0xFE]))
     }
 
     @Test("An agent edit between load and save opens the conflict review and preserves the draft")

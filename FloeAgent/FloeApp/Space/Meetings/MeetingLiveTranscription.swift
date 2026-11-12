@@ -33,6 +33,16 @@ struct MeetingChunkTranscript: Sendable {
     let language: String?
 }
 
+/// The live gate belongs to exactly one capture session. A paused recording
+/// and its resumed successor share the same media coordinate origin (both
+/// start at 0), so coverage from the current session must never be applied to
+/// an older session's chunks.
+struct MeetingLiveCoverageGate: Sendable {
+    let session: CaptureSessionID?
+    let active: Bool
+    let coverage: [MediaTimeRange]
+}
+
 /// Disk-backed work queue owned by the meeting service/session, not a View.
 /// One ASR request at a time; completed results survive stop and navigation.
 @MainActor @Observable final class MeetingLiveTranscription {
@@ -61,19 +71,20 @@ struct MeetingChunkTranscript: Sendable {
     /// ranges the live domain has not fully covered yet WAIT instead of
     /// paying for a duplicate transcription; on stop/degradation everything
     /// pending becomes eligible and the coverage filters prevent duplicates.
-    var liveGate: (@MainActor @Sendable () -> (active: Bool, coverage: [MediaTimeRange]))?
+    var liveGate: (@MainActor @Sendable () -> MeetingLiveCoverageGate)?
     var liveCaptureFinished = false
 
-    /// Snapshot of what the live domain has already committed, queried on the
-    /// MainActor when the coordinator reports a change.
-    private var liveCoverage: [MediaTimeRange] {
-        liveGate?().coverage ?? []
+    /// Live coverage only for the capture session it was measured on.
+    private func liveCoverage(for session: CaptureSessionID) -> [MediaTimeRange] {
+        guard let gate = liveGate?(), gate.active, gate.session == session else { return [] }
+        return gate.coverage
     }
 
-    private func liveCovers(_ range: MediaTimeRange) -> Bool {
+    private func liveCovers(_ range: MediaTimeRange, coverage: [MediaTimeRange]) -> Bool {
         let epsilon = 0.001
+        guard !coverage.isEmpty else { return false }
         var cursor = range.start
-        for interval in liveCoverage.sorted(by: { $0.start < $1.start }) {
+        for interval in coverage.sorted(by: { $0.start < $1.start }) {
             if interval.end + epsilon < cursor { continue }
             if interval.start > cursor + epsilon { return false }
             cursor = max(cursor, interval.end)
@@ -94,20 +105,36 @@ struct MeetingChunkTranscript: Sendable {
     private static func decode(file: URL, serviceID: String?, audio: AssistantAudioService,
                                relay: MeetingFilePartialRelay?) async throws -> MeetingChunkTranscript {
         await audio.refreshAvailability()
+        let requested = serviceID?.trimmingCharacters(in: .whitespacesAndNewlines)
         let route: String
-        if let serviceID, !serviceID.isEmpty { route = serviceID }
+        if let requested, !requested.isEmpty { route = requested }
         else {
-            guard audio.services.contains(where: { $0.id == AssistantAudioService.ID.transcriptionEnhanced && $0.ready }) else {
+            // The meeting picker's empty selection is the on-device model.
+            // Never borrow the global dictation route here: the source choice
+            // shown in the meeting is the source actually used.
+            guard audio.services.contains(where: {
+                $0.id == AssistantAudioService.ID.transcriptionEnhanced && $0.ready
+            }) else {
                 throw MeetingError.captureBackendFailed(IDELanguageRunText.t("录音已保存。请在会议设置中选择转写服务，再重试未完成片段。", "The recording is saved. Choose a transcription service in meeting settings, then retry unfinished chunks."))
             }
             route = AssistantAudioService.ID.transcriptionEnhanced
         }
+        // A silent/non-human gap is a completed observation. Never send it to
+        // a recognizer that can hallucinate a plausible video outro or a
+        // bracketed sound tag; measured client audio decides.
+        guard await MeetingAudioActivity.hasVoice(file: file) else {
+            FloeLogger(category: .providers).info("meetingTranscriptionSkipped reason=noVoicedAudio")
+            return MeetingChunkTranscript(segments: [], language: nil)
+        }
         do {
             // Meetings opt in to provider speaker separation; adapters
             // only send the diarization flag for engines that support it,
-            // and local engines honestly return no labels.
+            // and local engines honestly return no labels. A cloud failure
+            // stays a visible retry instead of silently becoming local text.
             let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route,
-                                                    requiresTiming: true, enableSpeakerAttribution: true, onPartial: { relay?.offer($0) })
+                                                    requiresTiming: true, enableSpeakerAttribution: true,
+                                                    allowLocalFallback: false,
+                                                    onPartial: { relay?.offer($0) })
             return try await transcript(result, from: file)
         } catch AssistantAudioError.noSpeechRecognized {
             // Silence is a completed observation, not a broken recording.
@@ -148,7 +175,11 @@ struct MeetingChunkTranscript: Sendable {
                 chunks[index].state = .unconfirmed
                 chunks[index].error = IDELanguageRunText.t("上次转写结果尚未确认，可检查后重试。", "The previous transcription is unconfirmed. Check it before retrying.")
             }
-            requiresRetry = chunks.contains { [.failed, .unconfirmed].contains($0.state) }
+            // Any unfinished entry (pending, transcribing, decoded, failed or
+            // unconfirmed) is recoverable work. A previous process may have
+            // stopped before ever starting a pending chunk; the UI must offer
+            // the explicit retry path for it instead of leaving it silent.
+            requiresRetry = chunks.contains { $0.state != .complete }
         }
     }
     var pendingCount: Int { chunks.filter { [.pending, .transcribing, .decoded].contains($0.state) }.count }
@@ -223,11 +254,13 @@ struct MeetingChunkTranscript: Sendable {
     private func firstEligibleChunkIndex() -> Int? {
         chunks.firstIndex { chunk in
             guard [.pending, .decoded].contains(chunk.state) else { return false }
-            guard let gate = liveGate?(), gate.active, !liveCaptureFinished else { return true }
-            // Live is healthy and the capture is running: wait until the live
-            // domain fully covers this chunk (or the capture stops). Fully
-            // covered chunks are eligible and complete without a request.
-            return liveCovers(chunk.range)
+            guard let gate = liveGate?(), gate.active, !liveCaptureFinished,
+                  gate.session == chunk.originalSessionID else { return true }
+            // Live is healthy for THIS original and the capture is running:
+            // wait until the live domain fully covers this chunk (or the
+            // capture stops). Older/paused sessions are never covered by the
+            // current live timeline.
+            return liveCovers(chunk.range, coverage: gate.coverage)
         }
     }
 
@@ -300,6 +333,7 @@ struct MeetingChunkTranscript: Sendable {
         let whole = plan.requests.count == 1
             && abs(plan.requests[0].range.start - chunks[index].range.start) < 0.001
             && abs(plan.requests[0].range.end - chunks[index].range.end) < 0.001
+        var droppedSilentSegments = 0
         let file = root.appendingPathComponent(chunks[index].file).standardizedFileURL.resolvingSymlinksInPath()
         guard file.path.hasPrefix(root.resolvingSymlinksInPath().path + "/") else { throw PersonalContentError.outsideLibrary }
         if chunks[index].analysisSessionID == nil {
@@ -336,7 +370,7 @@ struct MeetingChunkTranscript: Sendable {
         // a completed chunk, or a user-corrected row — and is never
         // duplicated or overwritten here.
         let lineageRows = try await service.committedSegments(meeting: meetingID, original: item.originalSessionID)
-        let coverage = liveCoverage
+        let coverage = liveCoverage(for: item.originalSessionID)
         func overlapsCommitted(_ start: Double, _ end: Double) -> Bool {
             let epsilon = 0.001
             return lineageRows.contains { $0.range.end > start + epsilon && $0.range.start < end - epsilon }
@@ -344,12 +378,21 @@ struct MeetingChunkTranscript: Sendable {
         }
         if whole {
             guard let decoded = item.decoded else { throw PersonalContentError.invalidProject }
+            let voice = decoded.isEmpty
+                ? nil : await MeetingAudioActivity.profile(file: file)
             for segment in decoded {
                 try check(epoch)
                 let start = item.range.start + max(0, segment.start)
                 let end = min(item.range.end, item.range.start + segment.end)
                 guard start.isFinite, end.isFinite, end > start,
                       !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                // A provider can place a plausible sentence in a silent tail
+                // of an otherwise non-silent chunk. The client's own measured
+                // speech profile decides whether this exact range has voice.
+                guard Self.segmentHasVoice(segment, profile: voice) else {
+                    droppedSilentSegments += 1
+                    continue
+                }
                 let range = try MediaTimeRange(start: start, end: end)
                 if overlapsCommitted(start, end) { continue }
                 // Provider speaker labels restart on every request. Bind them
@@ -378,6 +421,8 @@ struct MeetingChunkTranscript: Sendable {
                     try? FileManager.default.removeItem(at: request.url)
                     throw error
                 }
+                let voice = result.segments.isEmpty
+                    ? nil : await MeetingAudioActivity.profile(file: request.url)
                 try? FileManager.default.removeItem(at: request.url)
                 try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
                 for segment in result.segments {
@@ -385,6 +430,10 @@ struct MeetingChunkTranscript: Sendable {
                     let end = min(request.range.end, request.range.start + segment.end)
                     guard start.isFinite, end.isFinite, end > start,
                           !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                    guard Self.segmentHasVoice(segment, profile: voice) else {
+                        droppedSilentSegments += 1
+                        continue
+                    }
                     let range = try MediaTimeRange(start: start, end: end)
                     if overlapsCommitted(start, end) { continue }
                     let scope = segment.recognitionRequestID?.uuidString ?? chunks[index].requestKey?.uuidString ?? analysis.description
@@ -399,7 +448,23 @@ struct MeetingChunkTranscript: Sendable {
         try check(epoch); index = chunks.firstIndex(where: { $0.id == id })!
         chunks[index].state = .complete; chunks[index].error = nil; try save()
         diagnostic = nil
+        if droppedSilentSegments > 0 {
+            FloeLogger(category: .providers).info(
+                "meetingTranscriptionDroppedSilentSegments count=\(droppedSilentSegments)")
+        }
     }
+
+    private static func segmentHasVoice(
+        _ segment: TimedSpeechSegment,
+        profile: MeetingVoiceProfile?
+    ) -> Bool {
+        // Unreadable audio keeps the provider result; the real error must
+        // surface instead of being misclassified as silence.
+        guard let profile else { return true }
+        return profile.hasVoice(
+            start: segment.start, end: segment.end, margin: 0.2)
+    }
+
     /// Decoder revisions replace one RAM-only partial. The bounded relay
     /// never queues one task per token, invents timestamps or persists drafts.
     private func decodeChunk(_ file: URL, analysis: CaptureSessionID, epoch: UUID) async throws -> MeetingChunkTranscript {
@@ -482,7 +547,7 @@ extension MeetingLiveTranscription {
         let lineageRows = try await service.committedSegments(meeting: meetingID, original: item.originalSessionID)
         var reserved = MeetingCoverageMap()
         for row in lineageRows { try? reserved.commit(row.range) }
-        for span in liveCoverage { try? reserved.commit(span) }
+        for span in liveCoverage(for: item.originalSessionID) { try? reserved.commit(span) }
         let gaps = reserved.uncoveredSubranges(of: item.range)
         guard !gaps.isEmpty else { return MeetingChunkTranscriptPlan(requests: []) }
         if gaps.count == 1, abs(gaps[0].start - item.range.start) < 0.001,
@@ -514,6 +579,142 @@ extension MeetingLiveTranscription {
             }
         }
         return MeetingChunkTranscriptPlan(requests: requests)
+    }
+}
+
+/// One chunk/file's measured speech activity in 50 ms windows. The profile is
+/// used for two separate decisions: whether to call a recognizer at all, and
+/// whether a provider segment actually covers real speech. A segment placed
+/// in a silent tail can then be dropped even when another part of the chunk
+/// contained speech — the exact shape of repeated video-outro hallucinations.
+struct MeetingVoiceProfile: Sendable, Equatable {
+    static let windowSeconds = 0.05
+    let windows: [Bool]
+    let duration: Double
+
+    func hasVoice(start: Double, end: Double, margin: Double = 0.2) -> Bool {
+        voicedWindowCount(start: start, end: end, margin: margin) > 0
+    }
+
+    func voicedWindowCount(start: Double, end: Double, margin: Double = 0.2) -> Int {
+        guard !windows.isEmpty, duration > 0,
+              start.isFinite, end.isFinite, margin.isFinite else { return 0 }
+        let lower = max(0, min(duration, start - margin))
+        let upper = max(lower, min(duration, max(start, end) + margin))
+        let first = max(0, Int((lower / Self.windowSeconds).rounded(.down)))
+        let last = min(windows.count - 1,
+                       Int((upper / Self.windowSeconds).rounded(.up)) - 1)
+        guard first <= last else { return 0 }
+        return windows[first...last].reduce(0) { $0 + ($1 ? 1 : 0) }
+    }
+}
+
+/// Client-side speech activity. This is deliberately only an energy/voiced
+/// duration gate: it prevents an empty or silent input from reaching a model
+/// that can hallucinate a plausible sentence, while a real short or quiet
+/// utterance above the shared voice gate is retained.
+enum MeetingAudioActivity {
+    static let voicedRMS: Float = 0.002
+    static let minimumVoicedSamples = 1_600 // 0.1 s at 16 kHz
+    static let minimumVoicedWindows = 2 // two 50 ms windows
+    static let windowSamples = 800 // 50 ms at 16 kHz
+
+    static func hasVoice(samples: [Float]) -> Bool {
+        guard !samples.isEmpty else { return false }
+        var voiced = 0
+        var offset = 0
+        while offset < samples.count {
+            let end = min(samples.count, offset + windowSamples)
+            var energy: Float = 0
+            for index in offset..<end {
+                let value = samples[index]
+                if value.isFinite { energy += value * value }
+            }
+            let count = end - offset
+            if count > 0, (energy / Float(count)).squareRoot() >= voicedRMS {
+                voiced += count
+                if voiced >= minimumVoicedSamples { return true }
+            }
+            offset = end
+        }
+        return false
+    }
+
+    /// Speech activity for one bounded chunk. Unreadable files return `true`
+    /// so the ordinary transcription error surfaces instead of being
+    /// misreported as silence.
+    static func hasVoice(file: URL) async -> Bool {
+        guard let profile = await profile(file: file, maximumDuration: 120) else {
+            return true
+        }
+        return profile.voicedWindowCount(
+            start: 0, end: profile.duration, margin: 0) >= minimumVoicedWindows
+    }
+
+    /// Streaming 50 ms voice profile. `nil` means the audio could not be
+    /// inspected or exceeds the bound; callers must not silently treat that
+    /// as silence.
+    static func profile(file: URL, maximumDuration: Double = 4 * 3_600) async -> MeetingVoiceProfile? {
+        let asset = AVURLAsset(url: file)
+        guard let duration = try? await asset.load(.duration).seconds,
+              duration.isFinite, duration > 0, duration <= maximumDuration,
+              let track = try? await asset.loadTracks(withMediaType: .audio).first else {
+            return nil
+        }
+        let reader: AVAssetReader
+        do { reader = try AVAssetReader(asset: asset) } catch { return nil }
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        guard reader.canAdd(output) else { return nil }
+        reader.add(output)
+        guard reader.startReading() else { return nil }
+        defer { reader.cancelReading() }
+        var carry: [Float] = []
+        var windows: [Bool] = []
+        var totalSamples = 0
+        while reader.status == .reading {
+            guard let sample = output.copyNextSampleBuffer() else { break }
+            defer { CMSampleBufferInvalidate(sample) }
+            let count = CMSampleBufferGetNumSamples(sample)
+            guard count > 0, count <= 400_000,
+                  let block = CMSampleBufferGetDataBuffer(sample),
+                  CMBlockBufferGetDataLength(block) == count * MemoryLayout<Float>.size else { continue }
+            var values = [Float](repeating: 0, count: count)
+            let status = values.withUnsafeMutableBytes { bytes in
+                CMBlockBufferCopyDataBytes(block, atOffset: 0,
+                    dataLength: bytes.count, destination: bytes.baseAddress!)
+            }
+            guard status == kCMBlockBufferNoErr else { continue }
+            totalSamples += count
+            carry.append(contentsOf: values)
+            var offset = 0
+            while offset + windowSamples <= carry.count {
+                var energy: Float = 0
+                for index in offset..<(offset + windowSamples) {
+                    let value = carry[index]
+                    if value.isFinite { energy += value * value }
+                }
+                windows.append((energy / Float(windowSamples)).squareRoot() >= voicedRMS)
+                offset += windowSamples
+            }
+            if offset > 0 { carry = Array(carry[offset...]) }
+        }
+        guard reader.status != .failed else { return nil }
+        if !carry.isEmpty {
+            var energy: Float = 0
+            for value in carry where value.isFinite { energy += value * value }
+            windows.append((energy / Float(carry.count)).squareRoot() >= voicedRMS)
+        }
+        return MeetingVoiceProfile(
+            windows: windows,
+            duration: Double(totalSamples) / 16_000)
     }
 }
 

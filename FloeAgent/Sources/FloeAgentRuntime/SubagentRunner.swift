@@ -432,6 +432,36 @@ public struct SubagentRunner: Sendable {
             }
         }
 
+        /// The human-readable summary may shrink; typed file receipts must
+        /// remain whole. A nested object is protected by the existing 8 KiB
+        /// transcript codec. If it cannot fit, record an incomplete transcript
+        /// and retain the ordinary result without advertising an unreadable ref.
+        func appendToolResult(call: ToolCall, result: ToolResult,
+                              identity: ChildExecutionIdentity?) async -> ChatInlineContentCatalog.ChildReceipt? {
+            var object: [String: Any] = ["tool": call.toolName, "callID": call.id,
+                "status": result.status.rawValue, "outcomeUnknown": result.outcomeUnknown ? "true" : "false",
+                "digest": result.outputDigest, "output": String(result.outputSummary.prefix(2 * 1024))]
+            var receipt: ChatInlineContentCatalog.ChildReceipt?
+            if let identity, identity.childID == record.id, identity.parentRunID == record.parentRunID,
+               identity.rootTaskID == record.conversationID {
+                receipt = ChatInlineContentCatalog.childReceipt(result: result, parentRunID: record.parentRunID,
+                    taskID: record.conversationID, childID: record.id, callID: call.id, tool: call.toolName)
+            }
+            do {
+                if let receipt {
+                    object["inlineContentReceipt"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(receipt))
+                }
+                let json = try ChildRunPayload.boundedObject(object,
+                    requiredKeys: ["tool", "callID", "status", "outcomeUnknown", "digest", "inlineContentReceipt"])
+                return await append(.toolResult, json) ? receipt : nil
+            } catch {
+                recordFailure("encode(toolResult.inlineContent)", error)
+                object.removeValue(forKey: "inlineContentReceipt")
+                _ = await append(.toolResult, SubagentRunner.jsonPayload(object))
+                return nil
+            }
+        }
+
         /// Result entry first, then the terminal row. The store's writer is
         /// serial and both calls are awaited, so a terminal child record
         /// implies the tail (including `.result`) is already committed. If any
@@ -1223,11 +1253,15 @@ public struct SubagentRunner: Sendable {
                     for item in dispatched {
                         resultsByCallID[item.call.id] = item.result
                     }
-                    let executed: [(call: ToolCall, result: ToolResult)] = calls.map { call in
-                        (call: call, result: resultsByCallID[call.id] ?? ToolResult(
+                    var executed: [(call: ToolCall, result: ToolResult)] = calls.map { call in
+                        var result = resultsByCallID[call.id] ?? ToolResult(
                             callID: call.id, status: .failed,
                             outputSummary: "Missing execution result", outputDigest: ""
-                        ))
+                        )
+                        // Only this canonical child handoff may author its
+                        // inline provenance, and only after the receipt saves.
+                        result.provenance = nil
+                        return (call: call, result: result)
                     }
                     // Persist the real per-iteration transcript: the
                     // assistant step, each requested call and each REAL tool
@@ -1247,14 +1281,15 @@ public struct SubagentRunner: Sendable {
                                 "arguments": String(decoding: call.argumentsJSON.prefix(4 * 1024), as: UTF8.self)
                             ]))
                         }
-                        for item in executed {
-                            await persistence.append(.toolResult, Self.jsonPayload([
-                                "tool": item.call.toolName,
-                                "callID": item.call.id,
-                                "status": item.result.status.rawValue,
-                                "digest": item.result.outputDigest,
-                                "output": String(item.result.outputSummary.prefix(2 * 1024))
-                            ]))
+                        for index in executed.indices {
+                            let item = executed[index]
+                            if let receipt = await persistence.appendToolResult(call: item.call, result: item.result,
+                                identity: canonicalChild ? context.childExecution?.identity : nil) {
+                                executed[index].result.provenance = .init(
+                                    sourceID: FloeDigest.sha256Hex(Data((receipt.parentRunID.uuidString + receipt.callID + receipt.tool).utf8)),
+                                    toolName: receipt.tool, runID: receipt.parentRunID, taskID: receipt.taskID,
+                                    parentCallID: context.childExecution?.identity.delegateCallID)
+                            }
                         }
                     }
                     pendingSettled = executed
@@ -2026,6 +2061,7 @@ public struct SubagentRunner: Sendable {
         // or a paging page carries no receipt, so no hash of a run id is
         // fabricated for it.
         var wireInputs: [ToolResultSelectionInput] = []
+        var inlinePrefixes: [String: String] = [:]
         var clippedSettled: [(call: ToolCall, result: ToolResult)] = []
         var truncatedOutputs = 0
         for item in pendingSettled {
@@ -2097,6 +2133,8 @@ public struct SubagentRunner: Sendable {
                 // separate durable replay projection stays bounded.
                 if durableWasClipped { truncatedOutputs += 1 }
             }
+            let inlinePrefix = ChatInlineContentCatalog.modelVisibleInlinePrefix(item.result)
+            inlinePrefixes[item.call.id] = inlinePrefix
             wireInputs.append(ToolResultSelectionInput(
                 callID: item.call.id,
                 toolName: item.call.toolName,
@@ -2141,6 +2179,21 @@ public struct SubagentRunner: Sendable {
         let resultChannelOverhead = pendingSettled.reduce(0) {
             $0 + resultOverheadBytes + wireEscapedBytes($1.call.id)
         }
+        // Display metadata is not part of the retained capture: reserve and
+        // weigh it separately, so tools.readResult offsets still address the
+        // exact captured bytes. A complete metadata header is never sliced.
+        let inlineBytes = inlinePrefixes.values.reduce(0) { $0 + $1.utf8.count }
+        func selectingResults(budget: Int) -> ToolResultSelection {
+            var plan = ToolResultPlanner.plan(inputs: wireInputs, budgetBytes: max(0, budget - inlineBytes))
+            for index in plan.items.indices {
+                let prefix = inlinePrefixes[plan.items[index].callID] ?? ""
+                plan.items[index].output = prefix + plan.items[index].output
+                plan.items[index].sentBytes += prefix.utf8.count
+            }
+            plan.sentBytes += inlineBytes
+            plan.requestedBytes += inlineBytes
+            return plan
+        }
         // Same contract as the parent runtime: size the actual request
         // sections (base messages, complete schemas, output reservation,
         // images if a future child message carries them) with
@@ -2163,10 +2216,7 @@ public struct SubagentRunner: Sendable {
                 )
             )
         )
-        var wirePlan = ToolResultPlanner.plan(
-            inputs: wireInputs,
-            budgetBytes: wireResultBudget
-        )
+        var wirePlan = selectingResults(budget: wireResultBudget)
         var resultWireBytes = selectedResultLedgerBytes(wirePlan.items)
         // The planner allocates raw UTF-8 bytes; the real wire adds JSON
         // escaping. If that escaped weight does not fit, shrink the raw
@@ -2179,10 +2229,7 @@ public struct SubagentRunner: Sendable {
             let overflow = used + pendingCallBytes + reasoningBytes
                 + resultWireBytes - wireCeilingBytes
             wireResultBudget = max(0, wireResultBudget - max(1, overflow))
-            wirePlan = ToolResultPlanner.plan(
-                inputs: wireInputs,
-                budgetBytes: wireResultBudget
-            )
+            wirePlan = selectingResults(budget: wireResultBudget)
             resultWireBytes = selectedResultLedgerBytes(wirePlan.items)
             shrinkAttempts += 1
         }
@@ -2269,13 +2316,14 @@ public struct SubagentRunner: Sendable {
         var candidates = replayedPairs
         for item in priorSettled {
             var result = item.result
-            if result.outputSummary.utf8.count > maximumResultBytes {
+            let inlinePrefix = ChatInlineContentCatalog.modelVisibleInlinePrefix(result)
+            if !inlinePrefix.isEmpty || result.outputSummary.utf8.count > maximumResultBytes {
                 result = ToolResult(
                     callID: result.callID,
                     status: result.status,
-                    outputSummary: boundedPrefix(
+                    outputSummary: inlinePrefix + boundedPrefix(
                         result.outputSummary,
-                        maxBytes: maximumResultBytes,
+                        maxBytes: max(0, maximumResultBytes - inlinePrefix.utf8.count),
                         marker: "\n[tool output truncated]"
                     ),
                     outputDigest: result.outputDigest,

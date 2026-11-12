@@ -198,7 +198,7 @@ struct ThreadDetailView: View {
                     .padding(.horizontal, 12).padding(.vertical, 4)
                     .background(.bar)
                 }
-                if let checklist = viewModel.taskChecklist {
+                if let checklist = viewModel.presentedTaskChecklist {
                     checklistStatus(checklist)
                 }
                 if presentedPendingPlan != nil {
@@ -648,7 +648,9 @@ struct ThreadDetailView: View {
                             Task { await viewModel.acceptLatestPlan(as: .goal) }
                         }
                         .buttonStyle(.bordered)
+                        if viewModel.isAcceptingPlan { ProgressView().controlSize(.small) }
                     }
+                    .disabled(viewModel.isAcceptingPlan)
                 }
             }
         }

@@ -22,9 +22,12 @@ enum WorkspaceFileType {
         WorkspaceTextPolicy.kind(forPath: relativePath)
     }
 
+    /// Text preview surfaces must include unknown extensions: the bounded
+    /// reader/content probe decides whether those bytes are text, not the
+    /// extension alone. Binary content still fails in the reader and is never
+    /// decoded or written back as text.
     static func isText(_ relativePath: String) -> Bool {
-        let kind = kind(for: relativePath)
-        return kind == .text || kind == .code
+        WorkspaceTextPolicy.isTextualPath(relativePath)
     }
 
     static func isCode(_ relativePath: String) -> Bool {
@@ -56,12 +59,10 @@ enum WorkspaceFileType {
     }
 
     /// The code workbench is the only editor allowed to read and write the
-    /// bytes of this file as text.
+    /// bytes of this file as text. Unknown extensions are candidates; the
+    /// editor's full-file UTF-8 probe refuses binary bytes at load/save.
     static func allowsCodeEditing(_ relativePath: String) -> Bool {
-        switch kind(for: relativePath) {
-        case .text, .code: true
-        default: false
-        }
+        WorkspaceTextPolicy.isTextualPath(relativePath)
     }
 
     static func isMarkdown(_ relativePath: String) -> Bool {

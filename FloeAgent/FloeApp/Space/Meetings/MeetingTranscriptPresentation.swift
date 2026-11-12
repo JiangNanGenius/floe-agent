@@ -49,7 +49,7 @@ struct MeetingTranscriptBubble: Equatable, Sendable, Identifiable {
 enum MeetingTranscriptPresentation {
     /// Display grouping, separate from capture chunk size and persisted rows.
     struct Limits: Sendable {
-        var maximumGap: Double = 2
+        var maximumGap: Double = 4
         var maximumDuration: Double = 45
         var maximumCharacters: Int = 480
         var maximumFragments: Int = 20
@@ -63,6 +63,36 @@ enum MeetingTranscriptPresentation {
             else { return speaker.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : current }
         }
         return nil
+    }
+    /// Only durable rows form readable paragraphs. Live partials are displayed
+    /// in their own draft card so a provider revision never inserts, removes or
+    /// re-identifies a confirmed bubble.
+    static func confirmedBubbles(_ input: [MeetingTranscriptFragment], speakers: [MeetingTranscriptSpeaker] = [],
+                                 originalSessions: [UUID: UUID] = [:], limits: Limits = Limits()) -> [MeetingTranscriptBubble] {
+        bubbles(input.filter(\.isFinal), speakers: speakers, originalSessions: originalSessions, limits: limits)
+    }
+    /// Sanitized live draft text. Provider partials can contain replacement or
+    /// control scalars between revisions; those are never rendered as a word.
+    /// Real text is returned untouched (apart from outer whitespace and a
+    /// defensive display bound); punctuation alone is not a readable draft.
+    static func liveDraft(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var hasReadableUnit = false
+        for scalar in trimmed.unicodeScalars {
+            if scalar.value == 0xFFFD { return nil }
+            if scalar == "\n" || scalar == "\t" { continue }
+            let category = scalar.properties.generalCategory
+            if category == .control || category == .format || category == .privateUse || category == .unassigned {
+                return nil
+            }
+            if scalar.properties.isAlphabetic || scalar.properties.numericType != nil {
+                hasReadableUnit = true
+            }
+        }
+        guard hasReadableUnit else { return nil }
+        return String(trimmed.prefix(2_000))
     }
     static func bubbles(_ input: [MeetingTranscriptFragment], speakers suppliedSpeakers: [MeetingTranscriptSpeaker] = [],
                         originalSessions: [UUID: UUID] = [:], limits: Limits = Limits()) -> [MeetingTranscriptBubble] {
@@ -155,4 +185,104 @@ struct MeetingTranscriptFollowState: Equatable, Sendable {
     /// not become an instruction to drag a reader away from earlier speech.
     var shouldScrollForContentUpdate: Bool { followsLive }
     mutating func returnToLive() { followsLive = true }
+}
+
+/// One capture row projected for the recorder deck. Imported media is not a
+/// live recording and never contributes to the meeting's recorded duration.
+struct MeetingRecordingSpan: Equatable, Sendable {
+    var isLiveRecording: Bool
+    var isActive: Bool
+    var duration: Double?
+    var startedAt: Date?
+}
+
+/// Independent capture and transcription state for the bottom deck. A
+/// transcription failure never changes the primary capture phase, and a live
+/// recording never claims to be a finished transcript.
+struct MeetingCapturePresentation: Equatable, Sendable {
+    enum Phase: Equatable, Sendable {
+        case ready, preparing, recording, finishing, paused, saved
+    }
+    enum Transcription: Equatable, Sendable {
+        case off, idle, live, fallback, waiting, retry, savedPass
+    }
+    let phase: Phase
+    let transcription: Transcription
+    let elapsedSeconds: Double
+    let savedRecordingCount: Int
+    let canRetryTranscription: Bool
+
+    static func resolve(
+        isRecording: Bool,
+        isPaused: Bool,
+        isChangingCapture: Bool,
+        transcriptionEnabled: Bool,
+        isTranscribing: Bool,
+        transcriptionLive: Bool,
+        waitingForService: Bool,
+        requiresRetry: Bool,
+        unfinishedCount: Int,
+        isProcessingSavedRecording: Bool,
+        spans: [MeetingRecordingSpan],
+        now: Date
+    ) -> Self {
+        let phase: Phase
+        if isChangingCapture {
+            phase = isRecording ? .finishing : .preparing
+        } else if isRecording {
+            phase = .recording
+        } else if isPaused {
+            phase = .paused
+        } else if savedRecordings(in: spans) > 0 {
+            phase = .saved
+        } else {
+            phase = .ready
+        }
+        let saved = phase == .saved || phase == .ready
+        let transcription: Transcription
+        if waitingForService {
+            transcription = .waiting
+        } else if saved && isProcessingSavedRecording {
+            transcription = .savedPass
+        } else if isTranscribing {
+            transcription = transcriptionLive ? .live : .fallback
+        } else if requiresRetry || (saved && unfinishedCount > 0) {
+            transcription = .retry
+        } else if !transcriptionEnabled {
+            transcription = .off
+        } else {
+            transcription = .idle
+        }
+        return Self(
+            phase: phase,
+            transcription: transcription,
+            elapsedSeconds: effectiveSeconds(in: spans, now: now),
+            savedRecordingCount: savedRecordings(in: spans),
+            canRetryTranscription: saved && !isChangingCapture && !isProcessingSavedRecording
+                && (requiresRetry || (!transcriptionEnabled && unfinishedCount > 0))
+        )
+    }
+
+    /// Sum finalized live spans and the one active span. An active row has no
+    /// duration until stop; its wall-clock elapsed time is used only then.
+    /// Imported files and duplicate duration/elapsed accounting are excluded.
+    static func effectiveSeconds(in spans: [MeetingRecordingSpan], now: Date) -> Double {
+        var total = 0.0
+        for span in spans where span.isLiveRecording {
+            if let duration = span.duration, duration.isFinite, duration > 0 {
+                total += duration
+                continue
+            }
+            guard span.isActive, let startedAt = span.startedAt else { continue }
+            let elapsed = now.timeIntervalSince(startedAt)
+            if elapsed.isFinite, elapsed > 0 { total += elapsed }
+        }
+        return total.isFinite ? total : 0
+    }
+
+    private static func savedRecordings(in spans: [MeetingRecordingSpan]) -> Int {
+        spans.filter {
+            $0.isLiveRecording && !$0.isActive && ($0.duration ?? 0).isFinite && ($0.duration ?? 0) > 0
+        }.count
+    }
 }

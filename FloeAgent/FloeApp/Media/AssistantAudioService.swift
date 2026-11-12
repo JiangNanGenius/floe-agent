@@ -508,6 +508,11 @@ final class AssistantAudioService: ObservableObject {
         serviceID: String? = nil,
         requiresTiming: Bool = false,
         enableSpeakerAttribution: Bool = false,
+        /// File tools keep the historical cloud-first local recovery. A
+        /// meeting sets this to false so its explicitly selected source is
+        /// the source that actually produced the text; a failure becomes a
+        /// visible retry instead of a silent provider switch.
+        allowLocalFallback: Bool = true,
         onPartial: @escaping @Sendable (String) -> Void = { _ in },
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> AssistantAudioTranscriptionResult {
@@ -578,6 +583,7 @@ final class AssistantAudioService: ObservableObject {
                     fileURL: fileURL, language: language, descriptor: descriptor,
                     requiresTiming: requiresTiming,
                     enableSpeakerAttribution: enableSpeakerAttribution,
+                    allowLocalFallback: allowLocalFallback,
                     progress: progress)
             }
             throw AssistantAudioError.serviceUnavailable(descriptor.id)
@@ -590,6 +596,7 @@ final class AssistantAudioService: ObservableObject {
         descriptor: AssistantAudioServiceDescriptor,
         requiresTiming: Bool,
         enableSpeakerAttribution: Bool,
+        allowLocalFallback: Bool,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> AssistantAudioTranscriptionResult {
         guard let profile = cloudASRSettings.profile(forServiceID: descriptor.id) else {
@@ -625,8 +632,9 @@ final class AssistantAudioService: ObservableObject {
             // A text-only model cannot be turned into caption alignment. Use
             // the local timed model for this request when it is installed;
             // otherwise return the honest plain text result (no segments).
-            if CloudASRTimingPolicy.requiresLocalTimedFallback(
-                requiresTiming: requiresTiming, result: result),
+            if allowLocalFallback,
+               CloudASRTimingPolicy.requiresLocalTimedFallback(
+                   requiresTiming: requiresTiming, result: result),
                let timed = try? await localTranscription(
                    fileURL: fileURL, language: language, preferApple: false,
                    progress: progress),
@@ -654,8 +662,9 @@ final class AssistantAudioService: ObservableObject {
             try Task.checkCancellation()
             // Cloud-first, local fallback for file work. Never substitute a
             // different cloud billing route. A local result may be text-only
-            // when timing is unavailable; plain text remains usable.
-            if let local = try? await localTranscription(
+            // when timing is unavailable; plain text remains usable. A
+            // meeting opts out so the selected source is never replaced.
+            if allowLocalFallback, let local = try? await localTranscription(
                 fileURL: fileURL, language: language, preferApple: false,
                 progress: progress) {
                 return AssistantAudioTranscriptionResult(

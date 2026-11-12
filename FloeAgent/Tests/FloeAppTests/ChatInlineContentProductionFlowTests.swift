@@ -11,6 +11,8 @@ import FloeSecurity
 import FloePersistence
 import FloeAgentRuntime
 import FloeMarkdown
+import FloeWorkspace
+import FloeEnvironments
 @testable import FloeApp
 
 /// Only provider transport is scripted. The real runtime, registered tool,
@@ -349,6 +351,215 @@ extension ChatInlineContentProductionFlowTests {
             "foreignTaskID": foreignTask.uuidString, "foreignRunID": foreignRun.uuidString, "foreignProbeDeleted": true]
         let data = try JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys])
         FileHandle.standardOutput.write(Data("FLOE_INLINE_MULTITYPE_FIXTURE|".utf8) + data + Data("\n".utf8))
+    }
+}
+/// Only the provider transport is scripted. The two file operations, parent
+/// delegation, child dispatcher, durable transcript and answer persistence
+/// use production services; no artifact/output receipt is fabricated here.
+private final class InlineFileCardTransport: ProviderAdapter, @unchecked Sendable {
+    enum Mode: Sendable { case files(path: String, draft: String, digest: String), delegate }
+    let protocolKind: ModelProtocol = .openAIResponses
+    private let mode: Mode
+    private let runID: UUID
+    private let taskID: UUID
+    private let lock = NSLock()
+    private var turn = 0
+    init(mode: Mode, runID: UUID, taskID: UUID) { self.mode = mode; self.runID = runID; self.taskID = taskID }
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+        lock.lock(); let step = turn; turn += 1; lock.unlock()
+        return AsyncThrowingStream { continuation in
+            do {
+                func call(_ id: String, _ name: String, _ args: [String: Any]) throws {
+                    continuation.yield(.toolRequest(try ToolCall(id: id, toolName: name,
+                        argumentsJSON: JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]), scope: .local)))
+                    continuation.yield(.completed(.init(stopReason: .toolUse)))
+                }
+                func reference(_ id: String, tool: String) throws -> String {
+                    let output = try #require(request.toolResults.first { $0.callID == id }?.output
+                        ?? request.replayedToolPairs.first { $0.call.id == id }?.result.outputSummary)
+                    let first = try #require(output.split(separator: "\n").first)
+                    let envelope = try #require(JSONSerialization.jsonObject(with: Data(first.utf8)) as? [String: Any])
+                    #expect(envelope["runID"] as? String == runID.uuidString)
+                    #expect(envelope["taskID"] as? String == taskID.uuidString)
+                    #expect(envelope["toolName"] as? String == tool)
+                    let items = try #require(envelope["inlineContent"] as? [[String: String]])
+                    return try #require(items.first?["inlineMarkdown"])
+                }
+                switch mode {
+                case .files(let path, let draft, let digest):
+                    if step == 0 {
+                        try call("finalize", WorkspaceWriteFileTool.name,
+                            ["path": path, "sourcePath": draft, "expectedSourceSHA256": digest])
+                    } else if step == 1 {
+                        _ = try reference("finalize", tool: WorkspaceWriteFileTool.name)
+                        try call("publish", WorkspacePublishOutputTool.name, ["path": path])
+                    } else if step == 2 {
+                        // Both references must exist in THIS request, after
+                        // the first result moved into actual replay history.
+                        let cards = try [reference("finalize", tool: WorkspaceWriteFileTool.name),
+                            reference("publish", tool: WorkspacePublishOutputTool.name)]
+                        #expect(cards.count == 2)
+                        continuation.yield(.textDelta(.init(text: "Saved file before.\n\n" + cards.joined(separator: "\n\n") + "\n\nSaved file after.")))
+                        continuation.yield(.completed(.init(stopReason: .endTurn)))
+                    } else { throw FloeError.validationFailed("Unexpected file-card transport turn") }
+                case .delegate:
+                    if step == 0 {
+                        try call("file-child", "delegate", ["task": "Finalize and publish the supplied text draft. Copy both returned inlineMarkdown values into the final answer.", "type": "execute", "maxIterations": 6])
+                    } else if step == 1 {
+                        let output = try #require(request.toolResults.first { $0.callID == "file-child" }?.output)
+                        #expect(output.contains("status=ok"))
+                        // Read the real child handoff; no cross-transport map.
+                        let cards = output.split(separator: "\n").map(String.init).filter { $0.hasPrefix("![") && $0.contains("floe-content://") }
+                        #expect(cards.count == 2)
+                        continuation.yield(.textDelta(.init(text: "Parent before.\n\n" + cards.joined(separator: "\n\n") + "\n\nParent after.")))
+                        continuation.yield(.completed(.init(stopReason: .endTurn)))
+                    } else { throw FloeError.validationFailed("Unexpected delegation transport turn") }
+                }
+                continuation.finish()
+            } catch { continuation.finish(throwing: error) }
+        }
+    }
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+}
+
+extension ChatInlineContentProductionFlowTests {
+    @Test func mainLargeTXTExactCardsPersistReopenAndReadEOF() async throws {
+        try await verifyFileCards(byteCount: 262_144, extension: "txt", child: false)
+    }
+    @Test func child410KTXTExactCardsPersistReopenAndReadEOF() async throws {
+        try await verifyFileCards(byteCount: 410_687, extension: "txt", child: true)
+    }
+    @Test func HTMLAndScriptCardsUseTextReaderAfterMainAndChildReopen() async throws {
+        try await verifyFileCards(byteCount: 262_144, extension: "html", child: true)
+        try await verifyFileCards(byteCount: 410_687, extension: "js", child: false)
+    }
+
+    private func verifyFileCards(byteCount: Int, extension suffix: String, child: Bool) async throws {
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("FileCardFlow-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let databaseURL = scratch.appendingPathComponent("saved.sqlite")
+        let database = try DatabaseManager(path: databaseURL); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)
+        let children = SQLiteChildRunStore(database: database), workspaces = SQLiteWorkspaceStore(database: database)
+        let task = UUID(), runID = UUID(), now = Date()
+        try await conversations.saveConversation(.init(id: task, title: "Isolated file-card fixture", createdAt: now, updatedAt: now))
+        let workspace = try await workspaces.ensureWorkspace(conversationID: task, title: "Isolated file-card fixture")
+        let center = WorkspaceCenter(environment: AppEnvironment.preview(), publishesSharedState: false)
+        let rootLease = try await center.acquireTaskRoot(workspace, conversationID: task)
+        let root = rootLease.url
+        let artifactRoot = try FloeArtifactStore.root()
+        defer {
+            rootLease.release()
+            try? FileManager.default.removeItem(at: root)
+            for namespace in ["ChangeArtifacts", "RunOutputs"] {
+                try? FileManager.default.removeItem(at: artifactRoot.appendingPathComponent(namespace).appendingPathComponent(runID.uuidString))
+            }
+        }
+        let header = suffix == "html" ? "<!doctype html><meta charset=\"utf-8\"><p>中文🙂</p>\n<!--" : "// 中文🙂 exact file-card fixture\n"
+        let tail = suffix == "html" ? "FILE-CARD-EOF-->" : "\nFILE-CARD-EOF"
+        // More than 20,000 real lines uses the writer's bounded saved-file
+        // preview fallback instead of manufacturing a preview receipt in a
+        // fixture. Every byte still comes from real guarded file tools.
+        let unit = suffix == "html" ? "内容\n" : "// data\n"
+        let bodyBytes = byteCount - header.utf8.count - tail.utf8.count
+        let text = header + String(repeating: unit, count: bodyBytes / unit.utf8.count)
+            + String(repeating: "x", count: bodyBytes % unit.utf8.count) + tail
+        let bytes = Data(text.utf8)
+        #expect(bytes.count == byteCount)
+        let draft = "分块草稿.txt", path = "中文资料/完整 #1%（原件）." + suffix
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("中文资料"), withIntermediateDirectories: true)
+        let toolEnvironment = WorkspaceToolEnvironment(rootProvider: { root })
+        let preparation = ToolContext(runID: runID, toolCallID: "prepare-draft", workspaceRootURL: root,
+            cancellation: CancellationToken(), conversationID: task)
+        _ = try await WorkspaceCreateFileTool(environment: toolEnvironment).execute(.init(path: draft, content: ""), context: preparation)
+        var pending = text[...], appended = Data()
+        while !pending.isEmpty {
+            let chunk = String(pending.prefix(32_000)); pending = pending.dropFirst(chunk.count)
+            let previous = FloeDigest.sha256Hex(appended)
+            _ = try await WorkspaceAppendFileTool(environment: toolEnvironment).execute(
+                .init(path: draft, content: chunk, expectedSHA256: previous), context: preparation)
+            appended.append(Data(chunk.utf8))
+        }
+        #expect(appended == bytes)
+        let registry = ToolRunnerRegistry()
+        _ = registerWorkspaceTools(rootProvider: { root }, registry: registry)
+        let executor = CatalogToolExecutor(runners: registry)
+        let provider = ProviderProfile(id: UUID(), kind: .custom, wireProtocol: .openAIResponses,
+            baseURL: URL(string: "https://localhost:8443")!, secretRef: nil, region: nil,
+            nonSecretHeaders: [:], isEnabled: true, allowsPlainHTTP: false, createdAt: now, updatedAt: now, syncRevision: 0)
+        let model = ModelProfile(id: UUID(), providerID: provider.id, remoteModelID: "isolated-file-card-transport",
+            displayName: "File-card transport", limits: .init(contextTokens: 128_000, maxOutputTokens: 4_096),
+            pricing: nil, capabilities: [.text, .tools], isEnabled: true)
+        let files = InlineFileCardTransport(mode: .files(path: path, draft: draft, digest: FloeDigest.sha256Hex(bytes)), runID: runID, taskID: task)
+        let parent: any ProviderAdapter
+        var allowed: Set<String> = [WorkspaceWriteFileTool.name, WorkspacePublishOutputTool.name]
+        if child {
+            allowed.insert("delegate")
+            let runners = SubagentRunnerRegistry()
+            registerDelegateTool(registry: registry, runners: runners)
+            await runners.register(SubagentRunner(provider: provider, model: model, adapter: files, credentials: .init(),
+                executor: executor, childRunStore: children, checkpointStore: children), for: runID)
+            parent = InlineFileCardTransport(mode: .delegate, runID: runID, taskID: task)
+        } else { parent = files }
+        let binding = TaskExecutionBinding(conversationID: task,
+            target: .init(environmentID: EnvironmentRegistry.sharedContainerID, backend: .linuxVM, operatingSystem: "linux", architecture: "arm64"))
+        let service = ConversationRunService(configuration: .init(conversationID: task, provider: provider, model: model,
+            allowedToolNames: allowed, workspaceRootURL: root, maxProviderRetries: 0,
+            environmentID: EnvironmentRegistry.sharedContainerID, executionBinding: binding),
+            adapter: parent, policy: TaskFullAccessPolicy(), executor: executor,
+            conversationStore: conversations, runStore: runs, runID: runID)
+        try await service.start(goal: "Finalize the exact draft; publish it and copy the returned file cards.")
+        #expect(await service.snapshot().stateName == "completed")
+        let reopened = try DatabaseManager(path: databaseURL)
+        let savedConversations = SQLiteConversationStore(database: reopened), savedRuns = SQLiteRunStore(database: reopened)
+        let savedChildren = SQLiteChildRunStore(database: reopened), savedWorkspaces = SQLiteWorkspaceStore(database: reopened)
+        let message = try #require(try await savedConversations.messages(conversationID: task).last { $0.role == "assistant" && $0.runID == runID })
+        let references = InlineContentBlockParser.parse(message.content).compactMap { block -> ChatContentReference? in
+            guard case .reference(_, let uri) = block.content else { return nil }; return ChatContentReference(uri)
+        }
+        #expect(references.count == 2)
+        #expect(Set(references.map { $0.kind.rawValue }) == ["artifact", "output"])
+        let scope = ChatInlineContentScope(conversationID: task, isTemporary: false)
+        for reference in references {
+            #expect(reference.ownerID == runID)
+            let resolved = try await ChatInlineContentResolver.resolve(reference, scope: scope,
+                conversations: savedConversations, runs: savedRuns, children: savedChildren)
+            switch resolved {
+            case .artifact(let artifact, let actualRun, let tool):
+                let verified = try VerifiedChatInlineArtifact.load(artifact, runID: actualRun, tool: tool, root: artifactRoot)
+                let preview = try JSONDecoder().decode(WorkspaceFileChangePreview.self, from: verified.data)
+                #expect(preview.path == path && preview.byteCount == byteCount && preview.truncated)
+                #expect(preview.sha256 == FloeDigest.sha256Hex(bytes))
+                let full = try await SavedFileTextPreviewPolicy.ownedBytes(document: preview, artifact: artifact, scope: scope,
+                    conversations: savedConversations, runs: savedRuns, workspaces: savedWorkspaces, artifactRoot: artifactRoot,
+                    children: savedChildren, acquireRoot: { try await center.acquireMemorySourceRoot($0) })
+                #expect(try full.source.read(offset: 0, length: byteCount) == bytes)
+            case .output(let output, let context):
+                #expect(output.displayName == (path as NSString).lastPathComponent)
+                #expect(output.byteCount == byteCount && output.sha256 == FloeDigest.sha256Hex(bytes))
+                let source = RunOutputTextPreviewPolicy.source(receipt: output, context: context, artifactRoot: artifactRoot)
+                #expect(source.markdown == false)
+                let full = try await source.makeBytes()
+                #expect(try full.source.read(offset: 0, length: byteCount) == bytes)
+                #expect(try full.source.read(offset: Int64(byteCount - tail.utf8.count), length: tail.utf8.count) == Data(tail.utf8))
+            case .attachment: Issue.record("A producer file card unexpectedly became an attachment")
+            }
+        }
+        var cursor: String?, listed = Set<String>(), pages = 0
+        repeat {
+            let data = try await ChatInlineContentIndex.page(taskID: task, cursor: cursor, limit: 1, scanLimit: 2,
+                conversations: savedConversations, runs: savedRuns, children: savedChildren)
+            let page = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            listed.formUnion((page["contents"] as? [[String: String]] ?? []).compactMap { $0["inlineMarkdown"] })
+            cursor = page["nextCursor"] as? String; pages += 1
+            #expect(pages < 100)
+            if pages >= 100 { throw FloeError.validationFailed("File-card listing did not terminate") }
+        } while cursor != nil
+        #expect(Set(references.map { $0.markdown(title: $0.kind == .artifact ? "Saved file preview" : (path as NSString).lastPathComponent) }).isSubset(of: listed))
+        #expect(try await savedRuns.run(id: runID)?.state == "completed")
+        #expect(try Data(contentsOf: root.appendingPathComponent(path)) == bytes)
+        #expect(try Data(contentsOf: root.appendingPathComponent(draft)) == bytes)
     }
 }
 #endif

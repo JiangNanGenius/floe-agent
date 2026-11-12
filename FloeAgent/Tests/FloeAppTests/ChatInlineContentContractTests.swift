@@ -122,6 +122,90 @@ struct ChatInlineContentContractTests {
         var changed = receipt; changed.outputID = String(repeating: "a", count: 64)
         #expect(!ChatInlineContentCatalog.accepts(changed, runID: run, taskID: task, callID: "audio-call", tool: "studio.run"))
     }
+
+    @Test func childTypedReceiptsRequireExactRelationRequestSuccessAndWholeMetadata() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)
+        let children = SQLiteChildRunStore(database: database), task = UUID()
+        try await conversations.saveConversation(.init(id: task, title: "Child receipt negatives", createdAt: Date(), updatedAt: Date()))
+        let artifactRoot = try FloeArtifactStore.root()
+        let environment = WorkspaceToolEnvironment(rootProvider: { root })
+        for variant in ["valid", "noRequest", "unknown", "failed", "foreignTask", "foreignParent", "wrongChild", "wrongTool"] {
+            let run = UUID(), child = UUID(), call = "native-child-write"
+            defer { try? FileManager.default.removeItem(at: artifactRoot.appendingPathComponent("ChangeArtifacts/" + run.uuidString)) }
+            try await runs.saveRun(.init(id: run, conversationID: task, state: "completed", goal: "Owned child", startedAt: Date()))
+            _ = try await children.register(.init(id: child, parentRunID: run, rootRunID: task, conversationID: task,
+                childIndex: 0, kind: "execute", taskSummary: "Real file writer", state: .completed, delegateCallID: "real-delegate"))
+            let output = try await WorkspaceWriteFileTool(environment: environment).execute(
+                .init(path: variant + ".txt", content: "Real child file\n"),
+                context: .init(runID: run, toolCallID: call, workspaceRootURL: root, cancellation: CancellationToken(), conversationID: task))
+            #expect((output.exitStatus ?? 0) == 0)
+            let result = ToolResult(callID: call, status: .ok, outputSummary: output.summary,
+                outputDigest: output.fullOutputSHA256, artifacts: output.artifacts)
+            let receipt = try #require(ChatInlineContentCatalog.childReceipt(result: result, parentRunID: run,
+                taskID: task, childID: child, callID: call, tool: WorkspaceWriteFileTool.name))
+            var receiptJSON = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(receipt)) as? [String: Any])
+            if variant == "foreignTask" { receiptJSON["taskID"] = UUID().uuidString }
+            if variant == "foreignParent" { receiptJSON["parentRunID"] = UUID().uuidString }
+            if variant == "wrongChild" { receiptJSON["childID"] = UUID().uuidString }
+            if variant == "wrongTool" { receiptJSON["tool"] = "untrusted.file" }
+            if variant != "noRequest" {
+                // Real long CJK argument projections add a Bool `truncated`
+                // marker. Pairing must read typed fields, not fail by decoding
+                // this valid mixed JSON as [String: String].
+                let request = try ChildRunPayload.boundedObject(["callID": call, "tool": WorkspaceWriteFileTool.name,
+                    "arguments": String(repeating: "中文长正文", count: 4_000)], requiredKeys: ["callID", "tool"])
+                #expect(ChildRunPayload.decodedObject(request)?["truncated"] as? Bool == true)
+                try await children.appendEntry(id: child, kind: .toolRequest, payloadJSON: request)
+            }
+            let payload = try ChildRunPayload.boundedObject(["tool": WorkspaceWriteFileTool.name,
+                "callID": call, "status": variant == "failed" ? "failed" : "ok",
+                "outcomeUnknown": variant == "unknown" ? "true" : "false", "digest": result.outputDigest,
+                "output": String(repeating: "中文结果摘要", count: 3_000), "inlineContentReceipt": receiptJSON],
+                requiredKeys: ["tool", "callID", "status", "outcomeUnknown", "digest", "inlineContentReceipt"])
+            #expect(payload.utf8.count <= ChildRunPayload.maximumEntryBytes)
+            if variant == "valid" {
+                #expect(ChatInlineContentCatalog.childReceipt(payloadJSON: payload, parentRunID: run, taskID: task, childID: child) == receipt)
+            }
+            try await children.appendEntry(id: child, kind: .toolResult, payloadJSON: payload)
+            let artifact = try #require(output.artifacts.first)
+            let reference = try #require(ChatContentReference(kind: .artifact, ownerID: run, contentID: artifact.id.uuidString))
+            if variant == "unknown" {
+                // Main-run listing must not advertise an unknown mutation
+                // that the actual open path correctly refuses either.
+                _ = try await runs.appendEvent(runID: run, kind: .toolResult, payloadJSON: String(decoding:
+                    JSONSerialization.data(withJSONObject: ["id": call, "tool": WorkspaceWriteFileTool.name,
+                        "status": "ok", "outcomeUnknown": "true",
+                        "artifactRefsJSON": String(decoding: JSONEncoder().encode([artifact]), as: UTF8.self)]), as: UTF8.self))
+            }
+            let scope = ChatInlineContentScope(conversationID: task, isTemporary: false)
+            if variant == "valid" {
+                #expect(try await ChatInlineContentResolver.resolve(reference, scope: scope, conversations: conversations,
+                    runs: runs, children: children) == .artifact(artifact, runID: run, tool: WorkspaceWriteFileTool.name))
+                let verified = try VerifiedChatInlineArtifact.load(artifact, runID: run, tool: WorkspaceWriteFileTool.name, root: artifactRoot)
+                var tampered = verified.data; tampered[tampered.startIndex] ^= 1
+                try tampered.write(to: verified.fileURL)
+                #expect(throws: (any Error).self) {
+                    try VerifiedChatInlineArtifact.load(artifact, runID: run, tool: WorkspaceWriteFileTool.name, root: artifactRoot)
+                }
+                let childAlias = try #require(ChatContentReference(kind: .artifact, ownerID: child, contentID: artifact.id.uuidString))
+                await #expect(throws: ChatInlineContentResolutionError.wrongOwner) {
+                    try await ChatInlineContentResolver.resolve(childAlias, scope: scope, conversations: conversations, runs: runs, children: children)
+                }
+            } else {
+                await #expect(throws: ChatInlineContentResolutionError.unavailable) {
+                    try await ChatInlineContentResolver.resolve(reference, scope: scope, conversations: conversations, runs: runs, children: children)
+                }
+                let listing = try await ChatInlineContentIndex.page(taskID: task, runID: run,
+                    conversations: conversations, runs: runs, children: children)
+                let page = try #require(JSONSerialization.jsonObject(with: listing) as? [String: Any])
+                #expect((page["contents"] as? [[String: String]])?.isEmpty == true)
+                #expect(page["hasMore"] as? Bool == false)
+            }
+            #expect(try await runs.run(id: run)?.state == "completed")
+        }
+    }
     @Test func previewUnsupportedMissingAndCorruptStatesDoNotRewriteCompletedRun() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let database = try DatabaseManager.inMemory(); try await database.migrate()

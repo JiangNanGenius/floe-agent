@@ -5,6 +5,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import FloeCore
 import FloeModels
+import FloePersistence
 import FloeTools
 import FloeMarkdown
 
@@ -140,7 +141,8 @@ private struct ChatInlineContentView: View {
                     throw ChatInlineContentResolutionError.unavailable
                 }
                 let value = try await ChatInlineContentResolver.resolve(reference, scope: scope,
-                    conversations: environment.conversationStore, runs: environment.runStore)
+                    conversations: environment.conversationStore, runs: environment.runStore,
+                    children: SQLiteChildRunStore(database: environment.database))
                 var artifact: VerifiedChatInlineArtifact?
                 if case .artifact(let ref, let runID, let tool) = value {
                     let worker = Task.detached(priority: .utility) {

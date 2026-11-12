@@ -331,10 +331,14 @@ public struct VolcengineASRAdapter: ASRTranscribing, ASRLiveTranscribing {
         ]
         // Speaker separation is opt-in per request: the docs require
         // `enable_speaker_info` together with `show_utterances`, after which
-        // each utterance carries a `speaker_id`. Both the file replay and the
-        // live `bigmodel_async` stream use the same request shape.
+        // each utterance carries a `speaker_id`. The optimized bidirectional
+        // `bigmodel_async` route additionally requires the two-pass VAD
+        // re-recognition and the speaker model selector; without them the
+        // provider accepts the request but returns no speaker labels.
         if enableSpeakerAttribution {
             request["enable_speaker_info"] = true
+            request["enable_nonstream"] = true
+            request["ssd_version"] = "200"
         }
         let root: [String: Any] = [
             "user": ["uid": "floe-ios", "platform": "iOS"],

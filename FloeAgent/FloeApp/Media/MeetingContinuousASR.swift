@@ -17,7 +17,7 @@ import FloeMeetingsAV
 /// are never backpressured; uncovered ranges are transcribed later by the
 /// existing file-chunk queue, deduplicated against the committed coverage.
 final class MeetingContinuousASR: @unchecked Sendable {
-    enum SealReason: Sendable {
+    enum SealReason: Sendable, Equatable {
         case rotation, overflow, failure, stop
     }
 
@@ -31,12 +31,22 @@ final class MeetingContinuousASR: @unchecked Sendable {
     static let domainWireLimitBytes: Int64 = 20 * 1_024 * 1_024
     static let frameBufferCapacity = 128
     static let domainFinishTimeoutSeconds: Double = 30
+    /// A normal stop should not keep the file fallback waiting for the full
+    /// rotation deadline when the provider is already gone.
+    static let stopTailTimeoutSeconds: Double = 10
     static let degradedRetryDelaySeconds: Double = 15
+    /// Speech-like source energy. Aligned with the shared voice gate so quiet
+    /// speech still counts while pure silence can never become a transcript.
+    static let voicedRMSThreshold: Float = 0.002
+    /// A provider final from a domain with less real voiced audio than this
+    /// is a silence/noise hallucination candidate, not a committed utterance.
+    static let minimumVoicedSeconds: Double = 0.1
 
     struct Metrics: Sendable {
         var domains = 0
         var reconnects = 0
         var droppedFrames = 0
+        var silentUtterances = 0
         var lastError: String?
     }
 
@@ -63,6 +73,7 @@ final class MeetingContinuousASR: @unchecked Sendable {
     private var cancelled = false
     private var coverage = MeetingCoverageMap()
     private var liveActive = false
+    private var liveSession: CaptureSessionID?
     private var metrics = Metrics()
 
     // Engine-side state (single engine task only; the lease value is
@@ -72,6 +83,14 @@ final class MeetingContinuousASR: @unchecked Sendable {
     private var currentDomain: MeetingLiveASRDomain?
     private var eventBoxes: [UUID: DomainEventBox] = [:]
     private var resampler: MeetingPCMDownsampler?
+    // Engine-owned measured voice activity for the CURRENT request domain.
+    // It filters provider utterances that were placed in a silent tail even
+    // when another part of the domain contained speech.
+    private var voiceWindows: [Bool] = []
+    private var voiceWindowRate: Double = 16_000
+    private var voiceWindowSamples = 0
+    private var voiceWindowVoiced = false
+    private var voiceSourceSamples: Int64 = 0
     private var lease: LiveTranscriptionLease?
     private let wireLimitBytes: Int64
     private var consecutiveOpenFailures = 0
@@ -138,6 +157,12 @@ final class MeetingContinuousASR: @unchecked Sendable {
         return liveActive
     }
 
+    /// The capture session whose media timeline this live coverage belongs to.
+    nonisolated var liveCaptureSession: CaptureSessionID? {
+        lock.lock(); defer { lock.unlock() }
+        return liveSession
+    }
+
     nonisolated var metricsSnapshot: Metrics {
         lock.lock(); defer { lock.unlock() }
         return metrics
@@ -154,12 +179,20 @@ final class MeetingContinuousASR: @unchecked Sendable {
             lease = nil
         }
         guard let lease else {
-            lock.withLock { liveActive = false }
+            lock.withLock {
+                liveActive = false
+                liveSession = nil
+            }
             return
         }
         self.lease = lease
-        engine = Task { [weak self] in
-            await self?.runEngine(lease: lease)
+        lock.withLock { liveSession = captureSession }
+        // Strong ownership for the engine lifetime: replacing the session's
+        // coordinator while an old drain is still committing the final tail
+        // must not deallocate the object (and leak its service lease). The
+        // task releases the coordinator when the engine finishes.
+        engine = Task { [self] in
+            await runEngine(lease: lease)
         }
     }
 
@@ -167,6 +200,12 @@ final class MeetingContinuousASR: @unchecked Sendable {
     /// the buffered tail, commits the genuine finish tail of the last domain,
     /// then closes the lease. Concurrency with the capture controller is
     /// safe: the lease is exactly the trusted same-capture tail path.
+    ///
+    /// Joining here is the fence between the live tail and the file fallback:
+    /// the chunk queue may only start covering gaps after every final of this
+    /// capture has been offered to the database. The caller is normally the
+    /// MainActor; awaiting the engine suspends it, so the engine's own
+    /// `onChange` callback can re-enter that actor.
     func captureDidStop() async {
         let parked = lock.withLock {
             pumpFinished = true
@@ -175,6 +214,7 @@ final class MeetingContinuousASR: @unchecked Sendable {
             return parked
         }
         parked?.resume()
+        await engine?.value
     }
 
     /// Join a normally stopped coordinator without revoking its finish tail.
@@ -216,6 +256,12 @@ final class MeetingContinuousASR: @unchecked Sendable {
             // audio instead of idling before the microphone produces frames;
             // after a seal the loop top reopens exactly once per iteration.
             if currentDomain == nil {
+                // A stopped pump with nothing left to feed must not open a
+                // pointless provider request just to close it again.
+                if pumpIsFinished, peekFrame() == nil, !overflowSealPending {
+                    await finishEngine(lease: lease)
+                    return
+                }
                 guard await openDomain(lease: lease) else {
                     if lockAnchorForDomain().sourceRate == nil {
                         await park()
@@ -270,7 +316,13 @@ final class MeetingContinuousASR: @unchecked Sendable {
                 }
                 do {
                     try await session.feed(pcm)
-                    currentDomain?.account(frameCount: frame.frameCount, wireBytes: pcm.count)
+                    let voicedFrames = frame.rms >= Self.voicedRMSThreshold
+                        ? frame.frameCount : 0
+                    currentDomain?.account(
+                        frameCount: frame.frameCount,
+                        wireBytes: pcm.count,
+                        voicedFrameCount: voicedFrames)
+                    accountVoice(frame)
                 } catch {
                     await sealDomain(reason: .failure, lease: lease)
                 }
@@ -289,7 +341,10 @@ final class MeetingContinuousASR: @unchecked Sendable {
         currentSession = nil
         currentDomain = nil
         await service.endLiveTranscription(lease)
-        lock.withLock { liveActive = false }
+        lock.withLock {
+            liveActive = false
+            liveSession = nil
+        }
         await onChange()
     }
 
@@ -327,6 +382,16 @@ final class MeetingContinuousASR: @unchecked Sendable {
         return cancelled
     }
 
+    private var overflowSealPending: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return overflowSealRequested
+    }
+
+    private var pumpIsFinished: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return pumpFinished
+    }
+
     private func park() async {
         await withCheckedContinuation { continuation in
             lock.lock()
@@ -350,6 +415,43 @@ final class MeetingContinuousASR: @unchecked Sendable {
         return DomainAnchor(
             startFrame: buffer.first?.startFrame ?? offeredFrames,
             sourceRate: sourceRate)
+    }
+
+    private func resetVoiceProfile(rate: Double) {
+        voiceWindows = []
+        voiceWindowRate = rate.isFinite && rate > 0 ? rate : 16_000
+        voiceWindowSamples = 0
+        voiceWindowVoiced = false
+        voiceSourceSamples = 0
+    }
+
+    /// Build 50 ms activity windows from the exact source frames accepted by
+    /// the current request domain. Only a real voiced frame marks its window,
+    /// so provider text in an all-silent window is rejected later.
+    private func accountVoice(_ frame: MeetingPCMFrame) {
+        guard voiceWindowRate.isFinite, voiceWindowRate > 0, frame.frameCount > 0 else { return }
+        let windowSize = max(1, Int(voiceWindowRate * 0.05))
+        var remaining = frame.frameCount
+        let voiced = frame.rms >= Self.voicedRMSThreshold
+        while remaining > 0 {
+            let take = min(remaining, max(1, windowSize - voiceWindowSamples))
+            voiceWindowSamples += take
+            remaining -= take
+            if voiced { voiceWindowVoiced = true }
+            voiceSourceSamples += Int64(take)
+            if voiceWindowSamples >= windowSize {
+                voiceWindows.append(voiceWindowVoiced)
+                voiceWindowSamples = 0
+                voiceWindowVoiced = false
+            }
+        }
+    }
+
+    private var voiceProfile: MeetingVoiceProfile? {
+        guard !voiceWindows.isEmpty, voiceWindowRate > 0 else { return nil }
+        return MeetingVoiceProfile(
+            windows: voiceWindows,
+            duration: Double(voiceSourceSamples) / voiceWindowRate)
     }
 
     @discardableResult
@@ -376,6 +478,7 @@ final class MeetingContinuousASR: @unchecked Sendable {
             let box = DomainEventBox()
             eventBoxes[scope] = box
             currentSession = session
+            resetVoiceProfile(rate: rate)
             currentDomain = MeetingLiveASRDomain(
                 scope: scope,
                 sourceSampleRate: rate,
@@ -399,8 +502,14 @@ final class MeetingContinuousASR: @unchecked Sendable {
 
     private func pauseWhileDegraded() async {
         lock.withLock { liveActive = false }
-        // Cancellation-aware: throws immediately when the engine is cancelled.
-        try? await Task.sleep(nanoseconds: UInt64(Self.degradedRetryDelaySeconds * 1_000_000_000))
+        // Cancellation/stop-aware bounded wait. A single unstructured sleep
+        // would make cancel/deletion wait the full backoff; this loop observes
+        // the flags every 100 ms.
+        let steps = max(1, Int(Self.degradedRetryDelaySeconds * 10))
+        for _ in 0..<steps {
+            if cancellationRequested || pumpIsFinished { return }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
     }
 
     private func reportDegraded(error: Error) {
@@ -435,11 +544,22 @@ final class MeetingContinuousASR: @unchecked Sendable {
     ) {
         Task { [weak self, weak box] in
             guard let self, let box else { return }
+            var partial = MeetingLivePartialBuffer()
             do {
                 for try await event in session.events {
                     switch event.kind {
                     case .partial:
-                        try? await self.service.updateLivePartial(lease, text: event.text)
+                        // Provider deltas are not drafts by themselves. Keep
+                        // the full hypothesis in this request domain and only
+                        // publish a prefix that a later hypothesis confirmed,
+                        // so a revision never becomes a flickering one-word
+                        // transcript.
+                        if let text = partial.ingest(
+                            event.text, replacesPartial: event.replacesPartial),
+                           !text.isEmpty {
+                            try? await self.service.updateLivePartial(
+                                lease, text: text)
+                        }
                     case .final:
                         box.lock.withLock { box.final = event }
                     case .failed:
@@ -460,16 +580,22 @@ final class MeetingContinuousASR: @unchecked Sendable {
         let box = eventBoxes[domain.scope]
         if domain.framesFed > 0 {
             try? await session.endUtterance()
-            let deadline = Date().addingTimeInterval(Self.domainFinishTimeoutSeconds)
+            let timeout = reason == .stop
+                ? Self.stopTailTimeoutSeconds : Self.domainFinishTimeoutSeconds
+            let deadline = Date().addingTimeInterval(timeout)
             var final: ASRLiveEvent?
             var failure: ASRTranscriptionError?
             while Date() < deadline {
+                // Cancellation/deletion must not wait for a dead provider's
+                // finish deadline. Stop is NOT cancellation: it keeps waiting
+                // for the genuine tail within the bounded stop-tail budget.
+                if cancellationRequested { break }
                 let snapshot = box?.snapshot()
                 if let value = snapshot?.final { final = value; break }
                 if let value = snapshot?.failure { failure = value; break }
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
-            if let final {
+            if let final, !cancellationRequested {
                 await commitFinal(final, domain: domain, lease: lease)
             } else if reason != .stop {
                 lock.withLock {
@@ -483,7 +609,13 @@ final class MeetingContinuousASR: @unchecked Sendable {
         currentDomain = nil
         lock.withLock {
             if reason != .stop { metrics.reconnects += 1 }
-            liveActive = false
+            // Keep live ownership across a rotation/overflow while the pump
+            // is still running. Otherwise the file fallback can start on a
+            // chunk that the next domain is about to transcribe. A failed
+            // domain or a finished capture releases the gate immediately.
+            if reason == .stop || reason == .failure {
+                liveActive = false
+            }
         }
         // A sealed domain leaves no visible partial behind.
         try? await service.updateLivePartial(lease, text: "")
@@ -494,18 +626,75 @@ final class MeetingContinuousASR: @unchecked Sendable {
         domain: MeetingLiveASRDomain,
         lease: LiveTranscriptionLease
     ) async {
-        // Honest timing boundary (same policy as file work): without real
-        // per-utterance times there is NO commit. Fabricating a [0, fedSpan]
-        // row from the fed-audio length would invent provider timestamps;
-        // the uncovered range stays for the file fallback path instead.
-        guard let separated = event.utterances, !separated.isEmpty else { return }
+        // Silence/noise is not speech. A provider can emit a plausible final
+        // for an empty or non-human segment; committing it would create the
+        // same repeated-video-outro and bracket-sound hallucinations that are
+        // visible in saved transcripts. Only client-measured voiced audio may
+        // become a row. Quiet speech above the shared voice gate still counts.
+        guard domain.voicedMediaSeconds >= Self.minimumVoicedSeconds else {
+            lock.withLock { metrics.lastError = "final without voiced audio ignored" }
+            return
+        }
         let mediaLimit = domain.startMediaSeconds + domain.fedMediaSeconds
+        let separated = event.utterances ?? []
+        let measuredVoice = voiceProfile
+        if separated.isEmpty {
+            // Some real live engines (the OpenAI-compatible realtime path)
+            // provide a final transcript without provider utterance timings.
+            // The client opened the request on the first fed frame and ended
+            // it explicitly, so [request start, fed source span] is a real
+            // client-known utterance boundary, not an invented provider
+            // timestamp. Providers that promise utterance timing keep the
+            // stricter behavior below and leave a missing result to the file
+            // fallback.
+            let text = event.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Unwrap before comparing: `.none` on an optional timing value
+            // means Optional.none and would reject every configured engine
+            // whose actual timing provenance is ASRTimingProvenance.none.
+            guard let timing = route.profile.liveCapabilities?.timing,
+                  timing == .none,
+                  !text.isEmpty,
+                  let range = try? MediaTimeRange(
+                    start: domain.startMediaSeconds, end: mediaLimit) else { return }
+            let speaker: SpeakerID?
+            if let label = event.speaker {
+                speaker = try? await service.resolveEngineSpeaker(
+                    meeting: meetingID, scope: domain.scope.uuidString, label: label)
+            } else {
+                speaker = nil
+            }
+            let key = "\(domain.scope.uuidString)|whole|\(domain.framesFed)"
+            do {
+                let saved = try await service.commitLiveFinal(
+                    lease, text: text, range: range,
+                    speaker: speaker, language: nil, utteranceKey: key)
+                if let saved {
+                    lock.withLock { try? coverage.commit(saved.range) }
+                }
+                await onChange()
+            } catch {
+                lock.withLock { metrics.lastError = String(describing: error) }
+            }
+            return
+        }
         for utterance in separated {
             guard !utterance.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             let start = domain.mediaSeconds(wireMilliseconds: utterance.startMilliseconds)
             let end = min(domain.mediaSeconds(wireMilliseconds: utterance.endMilliseconds), mediaLimit)
             guard start.isFinite, end.isFinite, end > start,
                   let range = try? MediaTimeRange(start: start, end: end) else { continue }
+            // A provider can return an utterance for a silent tail. The
+            // client's own source-frame activity decides whether this exact
+            // span contains voice; real short/quiet speech stays above the
+            // shared gate and is retained.
+            if let measuredVoice,
+               !measuredVoice.hasVoice(
+                   start: start - domain.startMediaSeconds,
+                   end: end - domain.startMediaSeconds,
+                   margin: 0.25) {
+                lock.withLock { metrics.silentUtterances += 1 }
+                continue
+            }
             let speaker: SpeakerID?
             if let label = utterance.speaker {
                 speaker = try? await service.resolveEngineSpeaker(
@@ -536,17 +725,58 @@ final class MeetingContinuousASR: @unchecked Sendable {
         }
     }
 
+    /// Provider live events are hypotheses, not display-ready sentences.
+    /// Deltas are accumulated; a replacement replaces the current hypothesis.
+    /// Only the longest common prefix of the last two hypotheses is published,
+    /// so an unconfirmed trailing token never appears as a one-word flicker.
+    /// The final event still commits the complete provider text.
+    struct MeetingLivePartialBuffer: Sendable {
+        private var hypothesis = ""
+        private var previous = ""
+        private var published = ""
+
+        mutating func ingest(_ text: String, replacesPartial: Bool) -> String? {
+            if replacesPartial {
+                hypothesis = text
+            } else {
+                hypothesis += text
+            }
+            let stable = Self.commonPrefix(previous, hypothesis)
+            previous = hypothesis
+            let value = stable.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, value != published else { return nil }
+            published = value
+            return value
+        }
+
+        static func commonPrefix(_ lhs: String, _ rhs: String) -> String {
+            var result = String()
+            result.reserveCapacity(min(lhs.count, rhs.count))
+            var left = lhs.startIndex
+            var right = rhs.startIndex
+            while left < lhs.endIndex, right < rhs.endIndex, lhs[left] == rhs[right] {
+                result.append(lhs[left])
+                lhs.formIndex(after: &left)
+                rhs.formIndex(after: &right)
+            }
+            return result
+        }
+    }
+
     /// Explicit diagnostics for the meeting diagnostics surface: domain and
     /// reconnect counts stay visible without touching the ordinary UI.
     nonisolated var metricsDescription: String {
         let snapshot = metricsSnapshot
         let reconnects = snapshot.reconnects
         let dropped = snapshot.droppedFrames
-        guard snapshot.domains > 0 || reconnects > 0 || dropped > 0 || snapshot.lastError != nil else { return "" }
+        let silent = snapshot.silentUtterances
+        guard snapshot.domains > 0 || reconnects > 0 || dropped > 0
+            || silent > 0 || snapshot.lastError != nil else { return "" }
         var parts: [String] = []
         parts.append(IDELanguageRunText.t("实时转写域 \(snapshot.domains)", "live domains \(snapshot.domains)"))
         if reconnects > 0 { parts.append(IDELanguageRunText.t("重连 \(reconnects)", "reconnects \(reconnects)")) }
         if dropped > 0 { parts.append(IDELanguageRunText.t("丢帧 \(dropped)", "dropped frames \(dropped)")) }
+        if silent > 0 { parts.append(IDELanguageRunText.t("忽略静音片段 \(silent)", "silent segments ignored \(silent)")) }
         if let lastError = snapshot.lastError {
             parts.append(IDELanguageRunText.t("最近错误", "last error") + ": \(lastError)")
         }

@@ -18,6 +18,98 @@ struct TaskChecklistTests {
         #expect(try JSONDecoder().decode(TaskChecklistUpdate.self, from: Data(explicit.utf8)).startNew)
     }
 
+    @Test func resetArchivesUnfinishedHistoryAndAllowsFreshRebuild() async throws {
+        let (db, task, run) = try await fixture()
+        try await SQLiteRunStore(database: db).updateRunState(id: run, state: "executingTool", endedAt: nil)
+        let store = TaskChecklistStore(database: db)
+        let original = try await store.update(.init(title: "Keep original history", steps: [
+            .init(id: "a", title: "Not proven", status: .pending), .init(id: "b", title: "Blocked", status: .blocked)
+        ]), runID: run, operationID: "original")
+        let messageID = UUID()
+        try await SQLiteConversationStore(database: db).appendMessage(.init(id: messageID, conversationID: task,
+            role: "user", content: "Keep this message", createdAt: Date(), runID: run))
+        let goals = SQLiteIntelligenceStore(database: db)
+        let goal = ConversationGoal(conversationID: task, objective: "Keep this distinct Goal",
+            acceptanceCriteria: [.init(text: "Verified")], steps: [.init(title: "Unfinished", order: 0)])
+        try await goals.saveGoal(goal)
+        let reset = try await store.reset(expectedRevision: original.revision, runID: run, conversationID: task, operationID: "reset")
+        #expect(reset.wasReset == true && reset.steps.isEmpty && !reset.isFinished && reset.completedCount == 0)
+        #expect(try await store.latest(conversationID: task) == nil)
+        #expect(try await store.latest(conversationID: task, includeReset: true)?.revision == reset.revision)
+        let rebuilt = try await store.update(.init(expectedRevision: reset.revision, title: "New current plan",
+            steps: [.init(id: "new", title: "New unfinished work")], startNew: true), runID: run, operationID: "rebuilt")
+        #expect(rebuilt.revision == reset.revision + 1 && rebuilt.steps.map(\.id) == ["new"] && !rebuilt.isFinished)
+        let bodies = try await db.reader { db in
+            try String.fetchAll(db, sql: "SELECT body_json FROM task_checklist_revisions WHERE conversation_id = ? ORDER BY revision", arguments: [task.uuidString])
+        }
+        let history = try bodies.map { try JSONDecoder().decode(TaskChecklist.self, from: Data($0.utf8)) }
+        #expect(history.count == 3 && history[0].steps == original.steps && history[0].completedCount == 0)
+        #expect(history[1].wasReset == true && history[2].steps == rebuilt.steps)
+        #expect(try await goals.goals(conversationID: task).map(\.id) == [goal.id])
+        #expect(try await SQLiteConversationStore(database: db).messages(conversationID: task).contains { $0.id == messageID })
+    }
+
+    @Test func resetReplayAndStaleOrForeignCallsCannotEraseNewPlan() async throws {
+        let (db, task, run) = try await fixture(), store = TaskChecklistStore(database: db)
+        let runs = SQLiteRunStore(database: db)
+        try await runs.updateRunState(id: run, state: "executingTool", endedAt: nil)
+        let initial = try await store.update(.init(title: "Before", steps: [.init(id: "old", title: "Preserved")]), runID: run, operationID: "initial")
+        let firstReset = try await store.reset(expectedRevision: initial.revision, runID: run, conversationID: task, operationID: "reset-call")
+        let fresh = try await store.update(.init(title: "After reset", steps: [.init(id: "new", title: "Must remain")]), runID: run, operationID: "fresh")
+        let replay = try await store.reset(expectedRevision: initial.revision, runID: run, conversationID: task, operationID: "reset-call")
+        #expect(replay.wasReset == true && replay.revision == firstReset.revision)
+        #expect(try await store.latest(conversationID: task)?.revision == fresh.revision)
+        await #expect(throws: (any Error).self) { try await store.reset(expectedRevision: fresh.revision, runID: run, conversationID: task, operationID: "reset-call") }
+        await #expect(throws: (any Error).self) { try await store.reset(expectedRevision: initial.revision, runID: run, conversationID: task, operationID: "stale-call") }
+        await #expect(throws: (any Error).self) { try await store.reset(expectedRevision: fresh.revision, runID: run, conversationID: UUID(), operationID: "foreign-task") }
+        try await runs.updateRunState(id: run, state: "completed", endedAt: Date())
+        let nextRun = UUID()
+        try await runs.saveRun(.init(id: nextRun, conversationID: task, state: "executingTool", goal: "New round", startedAt: Date()))
+        await #expect(throws: (any Error).self) { try await store.reset(expectedRevision: initial.revision, runID: nextRun, conversationID: task, operationID: "reset-call") }
+        #expect(try await store.latest(conversationID: task)?.steps == fresh.steps)
+    }
+
+    @Test func resetRejectsTerminalAndSupersededRunWithoutDroppingProgress() async throws {
+        let (db, task, run) = try await fixture(), store = TaskChecklistStore(database: db)
+        let runs = SQLiteRunStore(database: db)
+        try await runs.updateRunState(id: run, state: "executingTool", endedAt: nil)
+        let initial = try await store.update(.init(title: "Current", steps: [.init(id: "keep", title: "Keep unfinished")]), runID: run, operationID: "seed")
+        let later = UUID()
+        try await runs.saveRun(.init(id: later, conversationID: task, state: "executingTool", goal: "New owner", startedAt: Date().addingTimeInterval(1)))
+        await #expect(throws: (any Error).self) { try await store.reset(expectedRevision: initial.revision, runID: run, conversationID: task, operationID: "superseded") }
+        try await runs.updateRunState(id: later, state: "failed", endedAt: Date())
+        await #expect(throws: (any Error).self) { try await store.reset(expectedRevision: initial.revision, runID: later, conversationID: task, operationID: "terminal") }
+        #expect(try await store.latest(conversationID: task)?.steps == initial.steps)
+    }
+
+    @Test func resetHasRegisteredSchemaAndOnlyItsExactMainRunPlanException() async throws {
+        let (db, task, run) = try await fixture()
+        let store = TaskChecklistStore(database: db), registry = ToolRunnerRegistry()
+        registerTaskChecklistTools(store: store, registry: registry)
+        let executor = CatalogToolExecutor(runners: registry)
+        let descriptor = try #require(executor.descriptor(named: TaskResetPlanTool.name))
+        #expect(descriptor.effect == .internalState && descriptor.executionBoundary == .mainRunOnly)
+        #expect(!descriptor.isSideEffecting && descriptor.riskLabels.isEmpty && !descriptor.requiresHostScope)
+        let schema = try #require(JSONSerialization.jsonObject(with: Data(descriptor.parametersJSON.utf8)) as? [String: Any])
+        #expect(schema["required"] as? [String] == ["expectedRevision"])
+        let policy = PlanToolPolicy()
+        #expect(policy.allowedDescriptors(from: [descriptor]).map(\.name) == [TaskResetPlanTool.name])
+        let update = try #require(executor.descriptor(named: TaskUpdatePlanTool.name))
+        #expect(policy.allowedDescriptors(from: [update]).isEmpty)
+        var forged = descriptor; forged.executionBoundary = .any
+        #expect(policy.allowedDescriptors(from: [forged]).isEmpty)
+        forged = descriptor; forged.isSideEffecting = true
+        #expect(policy.allowedDescriptors(from: [forged]).isEmpty)
+        #expect(ToolDiscovery.matches(query: TaskResetPlanTool.name, descriptors: [descriptor]).contains { $0.name == TaskResetPlanTool.name })
+        let tool = TaskResetPlanTool(store: store)
+        #expect(throws: (any Error).self) { try tool.validate(.init(expectedRevision: 0)) }
+        // A raw registry or wrapper context cannot mint the main-run origin.
+        await #expect(throws: (any Error).self) {
+            try await tool.execute(.init(expectedRevision: 1), context: .init(runID: run,
+                toolCallID: "forged", cancellation: CancellationToken(), conversationID: task))
+        }
+    }
+
     /// Build 242 device receipt (`bench_2c`): a completed step carrying five
     /// evidence references was correctly rejected, then the retried model calls
     /// failed at the JSON layer. These bounds stay strict and are guarded with
@@ -110,6 +202,51 @@ struct TaskChecklistTests {
         #expect(try await store.latest(conversationID: task) == second)
         // A late retry returns its own original receipt, not a newer snapshot.
         #expect(try await store.update(request, runID: run, operationID: "call-1") == first)
+    }
+
+    @Test func newRunStartsFreshChecklistWhileSameRunKeepsUnfinishedSteps() async throws {
+        let (db, task, firstRun) = try await fixture()
+        let store = TaskChecklistStore(database: db)
+        let firstRequest = TaskChecklistUpdate(expectedRevision: 0, title: "Previous round",
+            steps: [.init(id: "old-pending", title: "No completion evidence")])
+        let first = try await store.update(firstRequest, runID: firstRun, operationID: "first")
+        let oldBody = try #require(try await db.reader { db in
+            try String.fetchOne(db, sql: "SELECT body_json FROM task_checklist_revisions WHERE conversation_id = ? AND revision = ?",
+                arguments: [task.uuidString, first.revision])
+        })
+        let runs = SQLiteRunStore(database: db)
+        try await runs.updateRunState(id: firstRun, state: "completed", endedAt: Date())
+        let nextRun = UUID()
+        try await runs.saveRun(.init(id: nextRun, conversationID: task, state: "running",
+            goal: "Independent next round", startedAt: Date()))
+        let reopened = TaskChecklistStore(database: db)
+        let freshRequest = TaskChecklistUpdate(expectedRevision: first.revision, title: "Current round",
+            steps: [.init(id: "new-pending", title: "Current work")])
+        // The revision is still task-wide CAS even though the steps are run-owned.
+        await #expect(throws: (any Error).self) {
+            try await reopened.update(.init(expectedRevision: 0, title: "Stale",
+                steps: freshRequest.steps), runID: nextRun, operationID: "stale")
+        }
+        let fresh = try await reopened.update(freshRequest, runID: nextRun, operationID: "fresh")
+        #expect(fresh.runID == nextRun && fresh.revision == first.revision + 1)
+        #expect(fresh.steps.map(\.id) == ["new-pending"] && !fresh.isFinished)
+        for startNew in [false, true] {
+            await #expect(throws: (any Error).self) {
+                try await reopened.update(.init(expectedRevision: fresh.revision, title: "Drop unfinished work",
+                    steps: [.init(id: "replacement", title: "Must not replace the same run")], startNew: startNew),
+                    runID: nextRun, operationID: "drop-\(startNew)")
+            }
+        }
+        let replay = try await reopened.update(firstRequest, runID: firstRun, operationID: "first")
+        #expect(replay.runID == firstRun && replay.revision == first.revision && replay.steps == first.steps)
+        let history = try await db.reader { db in
+            try String.fetchAll(db, sql: "SELECT body_json FROM task_checklist_revisions WHERE conversation_id = ? ORDER BY revision",
+                arguments: [task.uuidString])
+        }
+        #expect(history.count == 2 && history.first == oldBody)
+        let original = try JSONDecoder().decode(TaskChecklist.self, from: Data(oldBody.utf8))
+        #expect(original.steps.first?.status == .pending && original.completedCount == 0)
+        #expect(try await reopened.latest(conversationID: task)?.steps == fresh.steps)
     }
 
     @Test func unfinishedStepsCannotDisappearAndCompletionNeedsEvidence() async throws {

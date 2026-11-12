@@ -200,6 +200,31 @@ struct MeetingLiveTranscriptionRecoveryTests {
         #expect(AssistantAudioService.mapASRError(.httpStatus(500)) == .transcriptionFailed)
     }
 
+    /// A paused recording and its resumed successor both start their media
+    /// timeline at zero. Coverage measured on the new capture must never make
+    /// an older session's chunk look transcribed (or block it forever).
+    @Test func liveCoverageOfAnotherCaptureNeverCoversAnOlderChunk() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var calls = 0
+        let queue = try MeetingLiveTranscription(meetingID: fixture.meetingID, root: fixture.root, service: fixture.service,
+            transcribeChunk: { _, _ in
+                calls += 1
+                return .init(segments: [.init(start: 0, end: 0.5,
+                    text: "older session", words: [])], language: "en")
+            }, onChange: {})
+        let chunk = try #require(fixture.chunks.first)
+        queue.liveGate = {
+            MeetingLiveCoverageGate(
+                session: CaptureSessionID(), active: true, coverage: [chunk.range])
+        }
+        queue.enqueue(session: fixture.original, file: chunk.file, range: chunk.range)
+        await queue.waitUntilIdle()
+        #expect(calls == 1, "another capture's coverage must not be applied")
+        #expect(queue.chunks.first?.state == .complete)
+        #expect(try await fixture.service.transcript(meeting: fixture.meetingID).count == 1)
+    }
+
     @Test func textOnlyCloudResultKeepsTextWithMeasuredSourceIntervalAndNoInventedWordTimes() async throws {
         let fixture = try await fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }

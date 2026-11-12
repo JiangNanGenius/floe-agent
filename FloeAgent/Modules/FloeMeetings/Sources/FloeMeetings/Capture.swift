@@ -20,6 +20,10 @@ public enum CaptureStopReason: String, Sendable, Codable {
     case userStopped
     case finished
     case timeout
+    /// A previous process ended while this capture was still marked active.
+    /// The original file is preserved and the session is finalized as stopped
+    /// so it can be played and transcribed again.
+    case recovered
 }
 
 public struct CaptureConfiguration: Sendable, Codable {

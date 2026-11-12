@@ -37,8 +37,11 @@ public func registerWorkspaceTools(
     ToolCatalog.register(WorkspaceSearchFilesTool.self)
     ToolCatalog.register(WorkspaceInspectMetadataTool.self)
     ToolCatalog.register(WorkspaceCreateFileTool.self)
-    ToolCatalog.register(WorkspaceAppendFileTool.self, compatibilityOnly: true)
-    ToolCatalog.register(WorkspaceReplaceTextTool.self, compatibilityOnly: true)
+    // Append and replace are first-class native text operations, not hidden
+    // compatibility aliases: prompts already direct ordinary plain-text work
+    // to them, so the model-facing catalog must offer their schemas too.
+    ToolCatalog.register(WorkspaceAppendFileTool.self)
+    ToolCatalog.register(WorkspaceReplaceTextTool.self)
     ToolCatalog.register(WorkspaceWriteFileTool.self)
     ToolCatalog.register(WorkspaceApplyPatchTool.self)
     ToolCatalog.register(WorkspaceMoveFileTool.self)
@@ -54,8 +57,8 @@ public func registerWorkspaceTools(
     registry.register(WorkspaceSearchFilesTool(environment: environment))
     registry.register(WorkspaceInspectMetadataTool(environment: environment))
     registry.register(WorkspaceCreateFileTool(environment: environment))
-    registry.register(WorkspaceAppendFileTool(environment: environment), compatibilityOnly: true)
-    registry.register(WorkspaceReplaceTextTool(environment: environment), compatibilityOnly: true)
+    registry.register(WorkspaceAppendFileTool(environment: environment))
+    registry.register(WorkspaceReplaceTextTool(environment: environment))
     registry.register(WorkspaceWriteFileTool(environment: environment))
     registry.register(WorkspaceApplyPatchTool(environment: environment))
     registry.register(WorkspaceMoveFileTool(environment: environment))

@@ -20,8 +20,14 @@ struct LargeTextFileToolsTests {
         func write(_ path: String, _ text: String) throws {
             try text.write(to: root.appendingPathComponent(path), atomically: true, encoding: .utf8)
         }
+        func writeData(_ path: String, _ data: Data) throws {
+            try data.write(to: root.appendingPathComponent(path), options: .atomic)
+        }
         func read(_ path: String) throws -> String {
             try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+        func readData(_ path: String) throws -> Data {
+            try Data(contentsOf: root.appendingPathComponent(path))
         }
         deinit {
             try? FileManager.default.removeItem(at: root)
@@ -187,6 +193,39 @@ struct LargeTextFileToolsTests {
         }
         #expect(try f.read("target.txt") == "keep me")
         #expect(try f.read("draft.txt") == longText)
+    }
+
+    @Test("A 1 MiB BOM+CRLF draft appends in bounded chunks and finalizes byte-exactly")
+    func largeBOMCRLFChunkedWrite() async throws {
+        let f = try Fixture()
+        let create = WorkspaceCreateFileTool(environment: f.environment)
+        let append = WorkspaceAppendFileTool(environment: f.environment)
+        let created = try await create.execute(.init(path: "draft.tex", content: "\u{FEFF}"), context: f.context)
+        var digest = try field("sha256", in: created.summary)
+        let chunk = String(repeating: "中文 😀 code()\r\n", count: 3_000) // ~60 KiB UTF-8
+        #expect(chunk.utf8.count < 65_536)
+        var expected = Data(WorkspaceTextPolicy.utf8BOM)
+        for _ in 0..<20 {
+            let output = try await append.execute(
+                .init(path: "draft.tex", content: chunk, expectedSHA256: digest),
+                context: f.context)
+            digest = try field("sha256", in: output.summary)
+            expected.append(Data(chunk.utf8))
+            #expect(output.summary.contains("saved=true"))
+        }
+        #expect(expected.count > 1_000_000)
+        #expect(try f.readData("draft.tex") == expected)
+        #expect(try f.readData("draft.tex").starts(with: Data(WorkspaceTextPolicy.utf8BOM)))
+
+        let final = WorkspaceWriteFileTool(environment: f.environment)
+        let target = try await final.execute(
+            .init(path: "final.tex", sourcePath: "draft.tex", expectedSourceSHA256: digest),
+            context: f.context)
+        #expect(target.summary.contains("saved=true"))
+        #expect(try f.readData("final.tex") == expected)
+        // Foundation's contentsOf initializer consumes the BOM; the raw
+        // bytes above are the authoritative round-trip evidence.
+        #expect(try f.read("draft.tex") == String(decoding: expected.dropFirst(3), as: UTF8.self))
     }
 
     @Test("Actual create/write/append/replace/patch commits survive a real optional artifact-storage failure")

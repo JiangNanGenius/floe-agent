@@ -17,17 +17,17 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
     private var pump: Task<Void, Never>?
     private var sink: (@Sendable (CaptureEvent) -> Void)?
     /// Second consumer of the same copied frames (the continuous live-ASR
-    /// coordinator). Called synchronously from the pump after the recorder;
+    /// coordinator). Lock-protected so the pump calls it without an actor hop;
     /// the closure itself is non-blocking, so a slow or absent recognizer can
     /// never backpressure the microphone, the lossless original or the chunks.
-    private var asrFeed: (@Sendable (MeetingPCMFrame) -> Void)?
+    private nonisolated let asrFeed = MeetingASRFeedBox()
 
     func setASRFeed(_ feed: (@Sendable (MeetingPCMFrame) -> Void)?) {
-        asrFeed = feed
+        asrFeed.set(feed)
     }
 
-    private func feedASR(_ frame: MeetingPCMFrame) {
-        asrFeed?(frame)
+    nonisolated private func feedASR(_ frame: MeetingPCMFrame) {
+        asrFeed.get()?(frame)
     }
 
     func begin(session: CaptureSessionID, configuration: CaptureConfiguration,
@@ -35,8 +35,17 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
         guard self.session == nil else { throw MeetingError.captureAlreadyActive(self.session!) }
         epoch += 1; let generation = epoch
         self.session = session; self.sink = sink
-        let channel = AsyncStream<MeetingPCMFrame>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        let writer = try MeetingPCMChunkRecorder(configuration: configuration, session: session, chunkSeconds: 3)
+        // Bound by real audio duration, not by a transient disk/encoder stall:
+        // 128 copied frames cover roughly 2.7 s at a typical tap size. An
+        // overflow still fails honestly rather than silently dropping audio.
+        let channel = AsyncStream<MeetingPCMFrame>.makeStream(bufferingPolicy: .bufferingOldest(128))
+        // The VAD flush owns ordinary sentence boundaries. The time cap is a
+        // safety bound for truly continuous speech, not a 3 s sentence
+        // cutter; 12 s keeps one request sentence-shaped while still bounding
+        // a single decode.
+        let chunkSeconds: Double = 12
+        let writer = try MeetingPCMChunkRecorder(
+            configuration: configuration, session: session, chunkSeconds: chunkSeconds)
         self.writer = writer
         let tap = MeetingPCMStreamTap(continuation: channel.continuation) { [weak self] reason in
             Task { await self?.fail(reason, generation: generation) }
@@ -56,10 +65,18 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
                     utterance.silenceTailSamplesRequired = max(1, Int(frame.sampleRate * 0.55))
                     utterance.process(rms: frame.rms, samples: frame.frameCount)
                     if let chunk = try await writer.append(frame, endOfUtterance: utterance.shouldFlush) {
-                        utterance.noteDecoded()
+                        // A VAD flush is a sentence boundary; a time-capped
+                        // chunk is not. Only the former resets the gate, so
+                        // a pause just after the cap still flushes the same
+                        // utterance instead of merging it into the next cap.
+                        if chunk.range.duration < chunkSeconds - 0.05 {
+                            utterance.noteDecoded()
+                        }
                         await self?.deliver(chunk, generation: generation)
                     }
-                    await self?.feedASR(frame)
+                    // No actor hop: the box's short lock is the only shared
+                    // state, and the recognizer queues a bounded frame.
+                    self?.feedASR(frame)
                 }
             } catch { await self?.fail(error.localizedDescription, generation: generation) }
         }
@@ -100,7 +117,21 @@ actor MeetingSharedPCMBackend: MeetingCaptureBackend {
         capturer?.stop(); await tap?.cancelAudio(); await writer?.cancel()
         sink?(.failed(session: old, message: reason)); clear()
     }
-    private func clear() { session = nil; sink = nil; capturer = nil; tap = nil; writer = nil; pump = nil; asrFeed = nil }
+    private func clear() {
+        session = nil; sink = nil; capturer = nil; tap = nil; writer = nil; pump = nil
+        asrFeed.set(nil)
+    }
+}
+
+private final class MeetingASRFeedBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var feed: (@Sendable (MeetingPCMFrame) -> Void)?
+    func set(_ value: (@Sendable (MeetingPCMFrame) -> Void)?) {
+        lock.withLock { feed = value }
+    }
+    func get() -> (@Sendable (MeetingPCMFrame) -> Void)? {
+        lock.withLock { feed }
+    }
 }
 
 private final class MeetingPCMStreamTap: SpeechTranscribing, @unchecked Sendable {

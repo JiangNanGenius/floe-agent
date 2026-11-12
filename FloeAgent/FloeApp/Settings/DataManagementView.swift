@@ -37,6 +37,15 @@ struct DataManagementView: View {
         let releaseCount: Int
     }
 
+    private func fileUsageTitle(_ report: StorageDiagnosticReport) -> String {
+        if report.isPartial || report.changedOrVanishedCount > 0 {
+            return FloeL10n.l("settings.data_management_view.partial_file_estimate")
+        }
+        return FloeL10n.l(report.totalBasis == .measuredExtents
+            ? "settings.data_management_view.floe_total_usage"
+            : "settings.data_management_view.file_usage_estimate")
+    }
+
     var body: some View {
         Form {
             LinuxCacheCleanupSettingsSection(
@@ -92,7 +101,7 @@ struct DataManagementView: View {
                     // it is never added again. Device-wide capacity is not
                     // shown on this page.
                     StorageUsageRow(
-                        title: FloeL10n.l("settings.data_management_view.floe_total_usage"),
+                        title: fileUsageTitle(report),
                         icon: "internaldrive",
                         bytes: report.combinedBytes,
                         emphasized: true
@@ -144,14 +153,9 @@ struct DataManagementView: View {
             }
 
             if let report = storage.report, report.hasSharedEstimates {
-                // A dedicated section for Floe's SHARED/cloneable data (VM
-                // runtime images, environments, shared project resources),
-                // separate from Floe's own usage and the cleanup scope. The
-                // ordinary page shows only the plain section name and the
-                // measured file capacity of what the census identified as
-                // sharing capable: never the whole Floe file total, never the
-                // device capacity, and no technical footnotes (the lower-bound
-                // and per-root details stay available in the opened details).
+                // This is the allocated size of sharing-capable file buckets,
+                // including their private blocks, not a measured shared-block
+                // footprint. It is already included in the overview once.
                 Section {
                     StorageUsageRow(
                         title: FloeL10n.l("settings.data_management_view.shared_file_capacity"),
@@ -160,6 +164,8 @@ struct DataManagementView: View {
                     )
                 } header: {
                     Text("settings.data_management_view.shared_files")
+                } footer: {
+                    Text("settings.data_management_view.shared_files_included")
                 }
             }
 

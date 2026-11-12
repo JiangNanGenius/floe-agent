@@ -307,7 +307,7 @@ public struct WorkspaceReadFileTool: AgentTool {
 
     public static let name = "workspace.readFile"
     public static let toolDescription =
-        "Read up to 64 KiB of a workspace file. On a task running on the paired Mac, an absolute Mac path is also accepted, including a file outside the task workspace. Returns a complete UTF-8 page with bytes, totalBytes and nextOffset; pass nextOffset as offset until it is none. Do not guess offsets or count characters as bytes. Prefer this native tool for text reads rather than starting Linux."
+        "Read up to 64 KiB of any UTF-8 plain-text workspace file: source code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT/logs, configuration, or an extensionless/unknown-extension file. Binary or otherwise non-text bytes (including Office/PDF/media containers) are refused here; use their dedicated tools. On a task running on the paired Mac, an absolute Mac path is also accepted, including a file outside the task workspace. Returns a complete UTF-8 page with bytes, totalBytes and nextOffset; a leading UTF-8 BOM is included in the page text so a later write can reproduce it exactly. Pass nextOffset as offset until it is none. Do not guess offsets or count characters as bytes. Prefer this native tool for text reads rather than starting Linux."
     public static let parametersJSON = #"""
     {
       "type": "object",

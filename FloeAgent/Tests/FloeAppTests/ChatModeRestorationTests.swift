@@ -16,6 +16,7 @@ import GRDB
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeAgentRuntime
 @testable import FloeApp
 
 @Suite("FloeApp.ChatModeRestoration")
@@ -246,6 +247,90 @@ struct ChatModeRestorationTests {
         await view.load()
         #expect(view.agentMode == .chat)
         #expect(view.actionError != nil)
+    }
+
+    @Test("A new plan exits Plan once; explicit re-entry survives repeats and a fresh center")
+    func presentedPlanExitsOnceAndManualPlanSurvivesDurableReopen() async throws {
+        let f = try await makeFixture(), id = try await makeConversation(f)
+        try await f.center.setPreferredExecutionMode(.plan, for: id)
+        let view = ThreadDetailViewModel(conversationID: id, center: f.center)
+        await view.load()
+        #expect(view.agentMode == .plan)
+        await view.load() // no generated plan / a failed generation changes nothing
+        #expect(view.agentMode == .plan)
+        let plan = PlanDraft(conversationID: id, status: .ready, title: "Review first", summary: "Keep the decision pending",
+            sections: [.init(title: "Write", body: "Save the report", order: 0)],
+            acceptanceCriteria: [.init(text: "Saved", verification: "Read it")])
+        try await f.environment.intelligenceStore.savePlanRevision(plan)
+        await view.load()
+        #expect(view.agentMode == .agent && view.latestPlan?.status == .ready)
+        try await waitForSavedMode("agent", fixture: f, conversationID: id)
+        #expect(try await snapshot(f, id)?.lastPresentedPlanRevision == "\(plan.id.uuidString):\(plan.revision)")
+        #expect(try await f.environment.runStore.runs(conversationID: id).isEmpty)
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: id).isEmpty)
+        view.selectAgentMode(.plan)
+        try await waitForSavedMode("plan", fixture: f, conversationID: id)
+        await view.load(); await view.load()
+        #expect(view.agentMode == .plan)
+        // A fresh center has no RAM selection cache: this proves durable ack.
+        let reopened = ThreadDetailViewModel(conversationID: id, center: ConversationCenter(environment: f.environment))
+        await reopened.load()
+        #expect(reopened.agentMode == .plan)
+        let revised = plan.revised(status: .ready, title: "Refined plan")
+        try await f.environment.intelligenceStore.savePlanRevision(revised)
+        await reopened.load()
+        #expect(reopened.agentMode == .agent && reopened.latestPlan?.revision == revised.revision)
+        reopened.selectAgentMode(.plan)
+        // A replacement identity also presents once, not just a different title.
+        let replacement = PlanDraft(conversationID: id, revision: revised.revision + 1, status: .awaitingInput,
+            title: "Replacement", summary: "A user decision is still needed")
+        try await f.environment.intelligenceStore.savePlanRevision(replacement)
+        await reopened.load()
+        #expect(reopened.agentMode == .agent && reopened.latestPlan?.status == .awaitingInput)
+        #expect(try await f.environment.runStore.runs(conversationID: id).isEmpty)
+    }
+
+    @Test("Plan presentation never promotes Chat, Goal, corrupt preferences or another conversation")
+    func planPresentationDoesNotOverrideOtherModesOrTaskScope() async throws {
+        let f = try await makeFixture()
+        for raw in ["chat", "goal", "unrecognized-mode"] {
+            let id = try await makeConversation(f)
+            try await store(f).updatePreferredExecutionMode(raw, conversationID: id)
+            let plan = PlanDraft(conversationID: id, status: .ready, title: "Pending", summary: "No automatic execution")
+            try await f.environment.intelligenceStore.savePlanRevision(plan)
+            let view = ThreadDetailViewModel(conversationID: id, center: f.center)
+            await view.load()
+            #expect(view.agentMode == (raw == "goal" ? .goal : .chat))
+            if raw == "unrecognized-mode" { #expect(view.actionError != nil) }
+        }
+        let unrelated = try await makeConversation(f)
+        try await f.center.setPreferredExecutionMode(.plan, for: unrelated)
+        let untouched = ThreadDetailViewModel(conversationID: unrelated, center: f.center)
+        await untouched.load()
+        #expect(untouched.latestPlan == nil && untouched.agentMode == .plan)
+        #expect(try await f.environment.runStore.runs(conversationID: unrelated).isEmpty)
+    }
+
+    @Test("Legacy JSON and atomic reasoning updates preserve the mode's Plan acknowledgement")
+    func planAcknowledgementIsBackwardCompatibleAndAtomicWithMode() async throws {
+        let legacy = try JSONDecoder().decode(ChatConversationPreferences.self,
+            from: Data(#"{"chatReasoning":"low","preferredExecutionMode":"plan"}"#.utf8))
+        #expect(legacy.lastPresentedPlanRevision == nil && legacy.preferredExecutionMode == "plan")
+        let f = try await makeFixture(), id = try await makeConversation(f)
+        let marker = UUID().uuidString + ":7"
+        try await f.center.setPreferredExecutionMode(.agent, for: id, lastPresentedPlanRevision: marker)
+        try await store(f).updateChatReasoning(.high, conversationID: id)
+        let first = try #require(try await snapshot(f, id))
+        #expect(first.lastPresentedPlanRevision == marker && first.preferredExecutionMode == "agent" && first.chatReasoning == .high)
+        let modeStore: any ChatPreferenceStore = store(f)
+        try await modeStore.updatePreferredExecutionMode("chat", conversationID: id)
+        let modeOnly = try #require(try await snapshot(f, id))
+        #expect(modeOnly.lastPresentedPlanRevision == marker && modeOnly.preferredExecutionMode == "chat" && modeOnly.chatReasoning == .high)
+        try await f.center.setPreferredExecutionMode(.plan, for: id, lastPresentedPlanRevision: marker)
+        let freshCenter = ConversationCenter(environment: f.environment)
+        let restored = await freshCenter.preferredExecutionMode(for: id)
+        #expect(restored.mode == .plan && restored.lastPresentedPlanRevision == marker)
+        #expect(try await snapshot(f, id)?.chatReasoning == .high)
     }
 
     // MARK: - First-round seed (Home typed chat / new voice chat)

@@ -303,7 +303,10 @@ public struct StorageCensusReport: Sendable, Equatable, Codable {
     /// sum must never be shown as a bound.
     public var measuredExclusiveLowerBoundBytes: Int64? {
         guard diagnostics.cloneAttributeSupport == .supported,
-              diagnostics.cloneAttributeFailureCount == 0 else { return nil }
+              diagnostics.cloneAttributeFailureCount == 0,
+              // Without file identity, hard links may have contributed twice;
+              // their sum cannot safely be called a physical lower bound.
+              diagnostics.identityUnavailableCount == 0 else { return nil }
         return diagnostics.measuredPrivateBytes
     }
 

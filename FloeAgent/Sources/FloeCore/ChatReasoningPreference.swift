@@ -58,8 +58,9 @@ public struct ChatConversationPreferences: Sendable, Codable, Hashable {
     /// Semantics every reader must honor:
     /// - `nil` (legacy row / never chosen) = no explicit choice was saved;
     ///   such conversations keep the historical Agent default.
-    /// - A recognized raw value is an explicit user choice and must be
-    ///   restored, never replaced by a background path.
+    /// - A recognized raw value restores the next-input choice. A newly
+    ///   presented pending plan may finish Plan input once; its revision
+    ///   marker preserves a later explicit return to Plan.
     /// - A present but unrecognized value is NOT legacy data: it must fail
     ///   closed to the least-privilege chat ceiling (with one actionable
     ///   notice), never silently fall back to Agent authority.
@@ -68,13 +69,19 @@ public struct ChatConversationPreferences: Sendable, Codable, Hashable {
     /// field must merge atomically (`ChatPreferenceStore` field updates) so
     /// this value and `chatReasoning` can never erase each other.
     public var preferredExecutionMode: String?
+    /// Native presentation acknowledgement (plan id + revision), saved with
+    /// the next-input mode. It grants no execution or tool permission.
+    /// Optional for all pre-existing JSON snapshots; no backfill is needed.
+    public var lastPresentedPlanRevision: String?
 
     public init(
         chatReasoning: ChatReasoningPreference? = nil,
-        preferredExecutionMode: String? = nil
+        preferredExecutionMode: String? = nil,
+        lastPresentedPlanRevision: String? = nil
     ) {
         self.chatReasoning = chatReasoning
         self.preferredExecutionMode = preferredExecutionMode
+        self.lastPresentedPlanRevision = lastPresentedPlanRevision
     }
 
     public var effectiveChatReasoning: ChatReasoningPreference {

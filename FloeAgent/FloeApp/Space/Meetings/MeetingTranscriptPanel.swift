@@ -12,6 +12,7 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
     let onRenameSpeaker: (Speaker) -> Void
     let onInsert: (String) -> Void
     let onOpenMedia: () -> Void
+    let onOpenSettings: () -> Void
     let liveStatus: LiveStatus
     @State private var following = MeetingTranscriptFollowState()
     @State private var userScrolling = false
@@ -26,37 +27,99 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
         attributionNote != nil && !session.transcript.isEmpty
     }
 
+    private var bubbles: [MeetingTranscriptBubble] { session.panelConfirmedTranscriptBubbles }
+    private var liveDraft: String? { session.panelLiveTranscriptDraft }
+    private var isLiveTranscription: Bool { session.transcriptionStatus.isLive }
+    private var transcriptionBadgeText: String? {
+        let status = session.transcriptionStatus
+        if status.isLive { return t("实时", "Live") }
+        switch status.phase {
+        case .recordingFallback, .finalizing, .transcribing: return t("转写中", "Transcribing")
+        default: return nil
+        }
+    }
+    private var liveDraftIsPending: Bool {
+        liveDraft == nil && session.panelLiveTranscriptDraftRaw != nil
+    }
+
     var body: some View {
-        let bubbles = session.displayTranscriptBubbles
+        VStack(spacing: 0) {
+            transcriptHeader
+            Divider()
+            transcriptScroll
+        }
+        .task(id: session.id) { await session.observeTranscriptPartials() }
+        .task(id: session.intelligence.transcriptionServiceID) {
+            await refreshAttributionNote()
+        }
+        .onChange(of: session.speakerRecognition?.modelStatus) { _, _ in
+            Task { await refreshAttributionNote() }
+        }
+        .onChange(of: session.speakerRecognition?.diagnostic) { _, _ in
+            Task { await refreshAttributionNote() }
+        }
+        .accessibilityIdentifier("meeting.transcript")
+    }
+
+    private var transcriptHeader: some View {
+        HStack(spacing: 8) {
+            Text(t("逐字稿", "Transcript")).font(.headline)
+            if let badge = transcriptionBadgeText {
+                Label(badge, systemImage: "waveform")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.quaternary.opacity(0.45), in: Capsule())
+                    .accessibilityIdentifier("meeting.transcript.liveBadge")
+            }
+            Spacer(minLength: 4)
+            Menu {
+                Toggle(t("双语", "Bilingual"), isOn: $bilingual)
+                Button(t("翻译未处理的段落", "Translate new segments"), systemImage: "character.bubble") {
+                    session.analyze("translate")
+                }.disabled(session.isAnalyzing || session.transcript.isEmpty)
+                Divider()
+                Button(t("录音与素材", "Recordings and media"), systemImage: "waveform", action: onOpenMedia)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(t("逐字稿操作", "Transcript actions"))
+            .accessibilityIdentifier("meeting.transcript.actions")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
+    private var transcriptScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text(t("逐字稿", "Transcript")).font(.headline)
-                        Spacer()
-                        Toggle(t("双语", "Bilingual"), isOn: $bilingual).fixedSize().font(.caption)
-                    }
                     liveStatus
                     if let note = attributionNote, showsAttributionNote {
-                        Label(note, systemImage: "person.slash")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("meeting.transcript.attributionNote")
+                        HStack(spacing: 4) {
+                            Label(note, systemImage: "person.slash")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button(t("说话人设置", "Speaker settings")) { onOpenSettings() }
+                                .font(.caption.weight(.medium)).frame(minHeight: 44)
+                                .accessibilityIdentifier("meeting.transcript.speakerSettings")
+                        }
+                        .accessibilityIdentifier("meeting.transcript.attributionNote")
                     }
-                    if bilingual {
-                        Button(t("翻译未处理的段落", "Translate new segments"), systemImage: "character.bubble") {
-                            session.analyze("translate")
-                        }.disabled(session.isAnalyzing || session.transcript.isEmpty)
+                    if isLive, attributionNote == nil, !session.speakers.isEmpty {
+                        Label(t("说话人标签会随整理更新", "Speaker labels may update as the transcript settles"),
+                              systemImage: "person.2")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("meeting.transcript.speakerNote")
                     }
-                    if session.isRecording {
-                        Text(t("停止录音后可回听片段。", "Stop recording to play back a passage."))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if bubbles.isEmpty {
-                        ContentUnavailableView(t("转写会显示在这里", "The transcript appears here"), systemImage: "text.bubble",
-                            description: Text(t("录音时分段转写；也可转写已保存的录音。", "Transcribe while recording, or transcribe a saved recording.")))
-                        Button(t("录音与素材", "Recordings and media"), action: onOpenMedia)
-                    }
+                    if bubbles.isEmpty, liveDraft == nil, !liveDraftIsPending { emptyState }
                     ForEach(bubbles) { bubble in bubbleView(bubble) }
+                    if let liveDraft { draftCard(liveDraft) }
+                    else if liveDraftIsPending { draftPendingCard }
                     Color.clear.frame(height: 1).id(liveEndID)
                 }.padding(12)
             }
@@ -76,37 +139,116 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
                 if userScrolling { following.userScrolled(nearLiveEnd: near) }
             }
             .overlay(alignment: .bottomTrailing) {
-                if !following.followsLive, !bubbles.isEmpty {
+                if !following.followsLive, !bubbles.isEmpty || liveDraft != nil || liveDraftIsPending {
                     Button {
                         following.returnToLive()
                         proxy.scrollTo(liveEndID, anchor: .bottom)
                     } label: {
-                        Label(isLive ? t("回到实时", "Return to live") : t("回到最新", "Jump to latest"), systemImage: "arrow.down")
+                        Label(isLiveTranscription ? t("回到实时", "Return to live") : t("回到最新", "Jump to latest"), systemImage: "arrow.down")
                             .font(.callout.weight(.medium)).padding(.horizontal, 12).frame(minHeight: 44)
                     }
                     .buttonStyle(.borderedProminent).clipShape(Capsule()).padding(12)
                     .accessibilityIdentifier("meeting.transcript.returnToLive")
                 }
             }
-            .onChange(of: session.displayTranscriptFragments) { _, _ in
+            // A final row changes the readable transcript. A live partial is a
+            // single draft card updated in place, so it never scrolls or
+            // inserts a new bubble on every provider revision.
+            .onChange(of: bubbles.count) { _, _ in
                 if following.shouldScrollForContentUpdate { proxy.scrollTo(liveEndID, anchor: .bottom) }
+            }
+            .onChange(of: liveDraft != nil || liveDraftIsPending) { _, hasDraft in
+                if hasDraft, following.shouldScrollForContentUpdate { proxy.scrollTo(liveEndID, anchor: .bottom) }
             }
             .onAppear {
                 following.userScrolled(nearLiveEnd: isLive)
                 if isLive { proxy.scrollTo(liveEndID, anchor: .bottom) }
             }
         }
-        .task(id: session.id) { await session.observeTranscriptPartials() }
-        .task(id: session.intelligence.transcriptionServiceID) {
-            await refreshAttributionNote()
+    }
+
+    private var emptyState: some View {
+        let paused = session.liveTranscription?.enabled == false
+            || session.intelligence.liveTranscription == false
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(paused ? t("转写已暂停", "Transcription paused")
+                  : session.isRecording ? t("正在聆听…", "Listening…") : t("还没有逐字稿", "No transcript yet"),
+                  systemImage: paused ? "pause.circle" : session.isRecording ? "waveform" : "text.bubble")
+                .font(.subheadline.weight(.medium))
+            Text(paused
+                 ? t("录音会继续保存；可在会议设置中开启转写。", "The recording keeps saving; enable transcription in meeting settings.")
+                 : session.isRecording
+                 ? t("文字会先显示为草稿，确认后成为可回听的段落。", "Text appears as a draft, then becomes a saved passage you can play back.")
+                 : t("录音时自动转写，也可以转写已保存的录音。", "Transcribe while recording, or transcribe a saved recording."))
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                if paused {
+                    Button(t("会议设置", "Meeting settings"), systemImage: "slider.horizontal.3", action: onOpenSettings)
+                        .font(.callout).frame(minHeight: 44)
+                }
+                Button(t("录音与素材", "Recordings and media"), systemImage: "waveform", action: onOpenMedia)
+                    .font(.callout).frame(minHeight: 44)
+            }
         }
-        .onChange(of: session.speakerRecognition?.modelStatus) { _, _ in
-            Task { await refreshAttributionNote() }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityIdentifier("meeting.transcript.empty")
+    }
+
+    private func draftCard(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Label(isLiveTranscription ? t("实时草稿", "Live draft") : t("转写草稿", "Transcription draft"),
+                      systemImage: "waveform")
+                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text(t("可能更新", "May change"))
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            Text(text)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .onChange(of: session.speakerRecognition?.diagnostic) { _, _ in
-            Task { await refreshAttributionNote() }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground).opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                .foregroundStyle(.quaternary)
         }
-        .accessibilityIdentifier("meeting.transcript")
+        .transaction { transaction in transaction.animation = nil }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(isLiveTranscription ? t("实时草稿，可能继续更新", "Live draft, may still change") : t("转写草稿，可能继续更新", "Transcription draft, may still change"))
+        .accessibilityIdentifier("meeting.transcript.liveDraft")
+    }
+
+    /// There is live input, but the current provider revision has no readable
+    /// word yet. Show that honestly instead of a blank transcript or raw
+    /// replacement/control glyphs.
+    private var draftPendingCard: some View {
+        HStack(spacing: 8) {
+            Label(isLiveTranscription ? t("实时草稿", "Live draft") : t("转写草稿", "Transcription draft"),
+                  systemImage: "waveform")
+                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(t("正在识别…", "Recognizing…"))
+                .font(.caption).foregroundStyle(.tertiary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground).opacity(0.4), in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                .foregroundStyle(.quaternary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(isLiveTranscription ? t("实时草稿正在识别", "Live draft is recognizing") : t("转写草稿正在识别", "Transcription draft is recognizing"))
+        .accessibilityIdentifier("meeting.transcript.liveDraft.pending")
     }
 
     private func refreshAttributionNote() async {
@@ -141,9 +283,12 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
             }
             if bilingual { translations(bubble) }
         }
-        .padding(.horizontal, 14).padding(.bottom, 14).padding(.top, 2)
+        .padding(.leading, 12)
+        .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(alignment: .leading) {
+            Capsule().fill(Color.secondary.opacity(0.18)).frame(width: 2)
+        }
         .contextMenu { sourceActions(bubble) }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("meeting.transcript.bubble.\(bubble.id.uuidString)")
@@ -167,7 +312,12 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
                         }
                     }
                 }
-            } label: { Label(session.displaySpeakerLabel(speaker), systemImage: "person.fill").font(.caption.weight(.medium)).frame(minHeight: 44) }
+            } label: {
+                Label(session.displaySpeakerLabel(speaker), systemImage: "person.fill")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .frame(minHeight: 44)
+            }
             .buttonStyle(.plain)
             .accessibilityIdentifier("meeting.transcript.speaker.\(speaker.id.rawValue.uuidString)")
         }
@@ -251,7 +401,49 @@ struct MeetingTranscriptPanel<LiveStatus: View>: View {
     private func time(_ value: Double) -> String {
         guard value.isFinite, value >= 0 else { return "–" }
         let seconds = Int(min(value, Double(Int.max / 2)))
+        if seconds >= 3600 {
+            return String(format: "%d:%02d:%02d", seconds / 3600, (seconds % 3600) / 60, seconds % 60)
+        }
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+extension MeetingProjectSession {
+    /// Confirmed rows only. A RAM-only partial revision is never promoted to
+    /// a new paragraph, so bubble identity, order and text remain stable until
+    /// the durable segment actually lands.
+    var panelConfirmedTranscriptBubbles: [MeetingTranscriptBubble] {
+        let finals = displayTranscriptFragments.filter(\.isFinal)
+        guard !finals.isEmpty else { return [] }
+        var originals: [UUID: UUID] = [:]
+        for fragment in finals {
+            originals[fragment.sessionID] = originalCaptureSession(for: CaptureSessionID(fragment.sessionID)).rawValue
+        }
+        return MeetingTranscriptPresentation.confirmedBubbles(
+            finals,
+            speakers: speakers.map { .init(id: $0.id.rawValue, label: $0.label, mergedInto: $0.mergedInto?.rawValue) },
+            originalSessions: originals)
+    }
+
+    /// The single live draft is distinct from durable rows. Prefer the active
+    /// capture's partial over a background chunk draft from an older range.
+    var panelLiveTranscriptDraftRaw: String? {
+        guard isRecording || liveTranscription?.isWorking == true || isProcessing else { return nil }
+        guard liveTranscription?.enabled != false else { return nil }
+        let active = recordings.first(where: { $0.state == .capturing || $0.state == .pending || $0.state == .stopping })?.id
+        if let active {
+            return transcriptPartials.last(where: {
+                $0.sessionID == active && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            })?.text
+        }
+        return transcriptPartials.last(where: {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })?.text
+    }
+
+    var panelLiveTranscriptDraft: String? {
+        guard let raw = panelLiveTranscriptDraftRaw else { return nil }
+        return MeetingTranscriptPresentation.liveDraft(raw)
     }
 }
 #endif

@@ -38,6 +38,36 @@ public struct TaskUpdatePlanTool: AgentTool {
     }
 }
 
+public struct TaskResetPlanTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var expectedRevision: Int
+        public init(expectedRevision: Int) { self.expectedRevision = expectedRevision }
+    }
+    public static let name = "checklist.resetPlan"
+    public static let toolDescription = "Reset this task's current checklist at its observed expectedRevision, preserving every previous revision as history. Read checklist.readPlan first when the revision is unknown. Clears progress without claiming completion; never deletes chat, files, a proposal Plan or a Goal. A stale revision/run is refused. Replayed call identities return their original receipt without clearing later work. Then use checklist.updatePlan with a fresh steps array."
+    public static let parametersJSON = #"{"type":"object","properties":{"expectedRevision":{"type":"integer","minimum":1}},"required":["expectedRevision"],"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = []
+    public static let isSideEffecting = false
+    public static let toolEffect: ToolEffect = .internalState
+    public static let executionBoundary: ToolExecutionBoundary = .mainRunOnly
+    private let store: TaskChecklistStore
+    public init(store: TaskChecklistStore) { self.store = store }
+    public func validate(_ args: Arguments) throws {
+        guard args.expectedRevision > 0 else { throw FloeError.validationFailed("expectedRevision must be at least 1") }
+    }
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args); try context.cancellation.throwIfCancelled()
+        guard !context.temporaryReadOnly, !context.publicWebOnly, context.childBudget == nil,
+              let owner = context.conversationID, let call = context.toolCallID,
+              context.callOrigin?.authorizesMainOnlyCapability(toolName: Self.name, runID: context.runID, callID: call) == true else {
+            throw FloeError.unauthorized
+        }
+        let reset = try await store.reset(expectedRevision: args.expectedRevision, runID: context.runID,
+            conversationID: owner, operationID: call)
+        return try checklistOutput(reset)
+    }
+}
+
 private func checklistOutput(_ checklist: TaskChecklist?) throws -> ToolExecutionOutput {
     let data = try JSONEncoder().encode(checklist)
     var summary = String(decoding: data, as: UTF8.self)
@@ -53,8 +83,10 @@ public func registerTaskChecklistTools(store: TaskChecklistStore, goalStore: SQL
     registry: ToolRunnerRegistry = .shared) {
     ToolCatalog.register(TaskReadPlanTool.self)
     ToolCatalog.register(TaskUpdatePlanTool.self)
+    ToolCatalog.register(TaskResetPlanTool.self)
     registry.register(TaskReadPlanTool(store: store))
     registry.register(TaskUpdatePlanTool(store: store))
+    registry.register(TaskResetPlanTool(store: store))
     if let goalStore {
         ToolCatalog.register(TaskCreateGoalTool.self)
         ToolCatalog.register(TaskReadGoalTool.self)

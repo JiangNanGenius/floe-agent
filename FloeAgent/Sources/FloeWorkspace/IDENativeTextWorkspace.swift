@@ -69,8 +69,11 @@ public enum IDENativeTextPolicy {
     public static let maximumBytes = IDEWorkspaceSession.maximumFileBytes
 
     /// Default surface for a path, decided from the typed file classifier
-    /// alone. Unknown extensions are verified by content when the buffer
-    /// loads; a binary load failure falls back to the Web workbench.
+    /// alone. Unknown extensions, extensionless names and uncommon but valid
+    /// plain-text extensions are native candidates; their complete bytes are
+    /// verified by the shared UTF-8 probe when the buffer loads, and a binary
+    /// or non-UTF-8 load failure falls back instead of decoding or rewriting
+    /// the original.
     public static func defaultSurface(forPath relativePath: String) -> IDENativeTextSurface {
         let kind = WorkspaceTextPolicy.kind(forPath: relativePath)
         switch kind {

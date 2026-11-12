@@ -43,11 +43,11 @@ struct StorageOptimizationSection: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text(FloeL10n.l("settings.storage_optimization.guest_unchanged"))
                         .font(.caption).foregroundStyle(.secondary)
-                    ForEach(service.state.details.keys.sorted(), id: \.self) { code in
+                    ForEach(service.state.safeDetails.keys.sorted(), id: \.self) { code in
                         HStack {
                             Text(code).font(.caption.monospaced())
                             Spacer()
-                            Text(String(service.state.details[code] ?? 0)).font(.caption).monospacedDigit()
+                            Text(String(service.state.safeDetails[code] ?? 0)).font(.caption).monospacedDigit()
                         }.foregroundStyle(.secondary)
                     }
                 } label: {
@@ -69,11 +69,11 @@ struct StorageOptimizationSection: View {
             return FloeL10n.l("settings.storage_optimization.progress", service.state.attempted, service.state.total)
         case .cancelling: return FloeL10n.l("settings.storage_optimization.stopping")
         case .completed:
-            return service.state.optimized == 0
-                ? FloeL10n.l("settings.storage_optimization.no_change")
-                : FloeL10n.l("settings.storage_optimization.done", service.state.optimized)
+            return service.state.terminalNotice
+                ?? FloeL10n.l("settings.storage_optimization.done", service.state.optimized)
         case .cancelled: return FloeL10n.l("settings.storage_optimization.cancelled")
-        case .blocked: return service.state.inventoryNotice ?? FloeL10n.l("settings.storage_optimization.try_later")
+        case .blocked: return service.state.inventoryNotice ?? service.state.terminalNotice
+            ?? FloeL10n.l("settings.storage_optimization.try_later")
         case .unavailable:
             return FloeL10n.l(service.hasLegacyRecoveryTree
                 ? "settings.storage_optimization.try_later" : "settings.storage_optimization.no_change")

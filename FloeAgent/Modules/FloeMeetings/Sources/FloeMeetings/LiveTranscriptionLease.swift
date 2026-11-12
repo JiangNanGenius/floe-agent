@@ -190,6 +190,10 @@ public struct MeetingLiveASRDomain: Sendable, Hashable {
     public let wireLimitBytes: Int64
     public private(set) var framesFed: Int64 = 0
     public private(set) var wireBytes: Int64 = 0
+    /// Source frames whose measured energy was speech-like. A provider final
+    /// from a domain with no voiced audio is a hallucination candidate and
+    /// must not become a transcript row.
+    public private(set) var voicedFrames: Int64 = 0
 
     public init(
         scope: UUID = UUID(),
@@ -215,12 +219,25 @@ public struct MeetingLiveASRDomain: Sendable, Hashable {
         Double(wireBytes) / (2 * 16_000)
     }
 
+    public var voicedMediaSeconds: Double {
+        guard sourceSampleRate.isFinite, sourceSampleRate > 0 else { return 0 }
+        return Double(voicedFrames) / sourceSampleRate
+    }
+
     /// Account one accepted frame batch after resampling to 16 kHz PCM16.
     /// A resampler flush adds wire bytes with zero additional source frames.
-    public mutating func account(frameCount: Int, wireBytes bytes: Int) {
+    /// `voicedFrameCount` is the subset of `frameCount` whose measured
+    /// energy crossed the caller's speech gate.
+    public mutating func account(
+        frameCount: Int,
+        wireBytes bytes: Int,
+        voicedFrameCount: Int = 0
+    ) {
         guard frameCount >= 0, bytes > 0 else { return }
         framesFed += Int64(frameCount)
         wireBytes += Int64(bytes)
+        let voiced = max(0, min(frameCount, voicedFrameCount))
+        voicedFrames += Int64(voiced)
     }
 
     /// True when feeding `bytes` more would meet or exceed the budget.

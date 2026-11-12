@@ -82,28 +82,32 @@ struct MeetingProjectView: View {
     }
     private func meetingContent(compactInput: Bool) -> some View {
         GeometryReader { geometry in
+            let wide = geometry.size.width >= 820
+            let sideWidth = wide && showsInspector ? splitSideWidth(available: geometry.size.width) : nil
             VStack(spacing: 0) {
-                if compactInput { compactInputHeader(wide: geometry.size.width >= 820) }
-                else { header(wide: geometry.size.width >= 820) }
+                if compactInput { compactInputHeader() }
+                else { header(wide: wide) }
                 Divider()
-                if geometry.size.width >= 820 {
-                    let sideWidth = splitSideWidth(available: geometry.size.width)
+                if wide {
                     HStack(alignment: .top, spacing: 0) {
                         notebook(compactInput: compactInput)
-                        if showsInspector {
+                        if let sideWidth {
                             splitHandle(available: geometry.size.width, sideWidth: sideWidth)
-                            sidePanel(compactInput: compactInput).frame(width: sideWidth)
+                            sidePanel(compactInput: compactInput,
+                                      showsSectionPicker: !compactInput, available: geometry.size.width)
+                                .frame(width: sideWidth)
                         }
                     }.frame(maxHeight: .infinity)
                 } else {
-                    Picker(t("会议工作区", "Meeting workspace"), selection: $compactNotes) {
-                        Text(t("我的笔记", "My notes")).tag(true)
-                        Text(t("转写与整理", "Transcript and minutes")).tag(false)
-                    }.pickerStyle(.segmented).padding(8)
-                    if compactNotes { notebook(compactInput: compactInput) } else { sidePanel(compactInput: compactInput) }
+                    if compactNotes { notebook(compactInput: compactInput) }
+                    else {
+                        sidePanel(compactInput: compactInput,
+                                  showsSectionPicker: false, available: geometry.size.width)
+                    }
                 }
                 if let player = session.player {
-                    MeetingAudioPlaybackView(player: player, onClose: { session.stopPlayback() })
+                    MeetingAudioPlaybackView(player: player, title: playbackTitle,
+                        onClose: { session.stopPlayback() })
                 }
                 if session.isExportingDocument {
                     HStack {
@@ -121,7 +125,7 @@ struct MeetingProjectView: View {
                     }.font(.callout).padding(8)
                 }
                 if let diagnostic = session.diagnostic {
-                    DisclosureGroup(t("操作未完成，查看详情", "Unable to finish. View details")) {
+                    DisclosureGroup(t("有内容未完成，查看详情", "Something is unfinished. View details")) {
                         Text(diagnostic).font(.caption).textSelection(.enabled)
                     }.font(.footnote).padding(.horizontal).padding(.vertical, 6)
                 }
@@ -132,9 +136,17 @@ struct MeetingProjectView: View {
                 #if DEBUG
                 .background {
                     if MeetingLayoutObservation.enabled {
+                        let notesWidth = wide && showsInspector
+                            ? max(0, geometry.size.width - (sideWidth ?? 0) - 16)
+                            : geometry.size.width
                         MeetingLayoutObservation(geometrySize: geometry.size,
                             geometryFrame: geometry.frame(in: .global), geometryInsets: geometry.safeAreaInsets,
-                            todoFocused: todoFocused, editingComposerCount: composerEditingSources.count)
+                            todoFocused: todoFocused, editingComposerCount: composerEditingSources.count,
+                            compactInput: compactInput, wideSplit: wide,
+                            notesWidth: notesWidth, sideWidth: sideWidth,
+                            showsPlayer: session.player != nil, recording: session.isRecording,
+                            savedRecordingCount: session.visibleRecordings.count,
+                            transcriptBubbles: session.displayTranscriptBubbles.count)
                             .frame(width: 0, height: 0).accessibilityHidden(true)
                     }
                 }
@@ -142,91 +154,145 @@ struct MeetingProjectView: View {
         }
     }
     private func header(wide: Bool) -> some View {
-        HStack {
-            Label(session.meeting.createdAt.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
-            if !session.speakers.isEmpty {
-                Text(t("\(session.speakers.count) 位发言人", "\(session.speakers.count) speakers"))
+        HStack(spacing: 12) {
+            if wide {
+                Label(session.meeting.createdAt.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                    .foregroundStyle(.secondary)
+                if !session.speakers.isEmpty {
+                    Text(t("\(session.speakers.count) 位发言人", "\(session.speakers.count) speakers"))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                sectionMenu
             }
-            Spacer()
+            Spacer(minLength: 8)
             if wide {
                 Button(t("会议侧栏", "Meeting sidebar"), systemImage: "sidebar.right") { showsInspector.toggle() }
                     .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
                     .accessibilityValue(showsInspector ? t("已显示", "Shown") : t("已隐藏", "Hidden"))
                     .accessibilityIdentifier("meeting.inspector.toggle")
             }
-            Menu {
-                Button(t("会议设置", "Meeting settings"), systemImage: "slider.horizontal.3") { settings = true }
-                Button(t("录音与素材", "Recordings and media"), systemImage: "waveform") { recordings = true }
-                Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") { importing = true }
-                templatesMenu
-                exportMenu
-            } label: { Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44) }
-            .accessibilityLabel(t("会议操作", "Meeting actions"))
-        }.font(.caption).foregroundStyle(.secondary).padding(.horizontal)
+            meetingActionsMenu
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 48)
+        .accessibilityIdentifier("meeting.header")
     }
-    private func compactInputHeader(wide: Bool) -> some View {
+    private func compactInputHeader() -> some View {
         HStack(spacing: 8) {
-            Menu {
-                if !wide {
-                    Button(t("我的笔记", "My notes")) { compactNotes = true }
-                    Divider()
-                }
-                Picker(t("会议侧栏", "Meeting sidebar"), selection: Binding(
-                    get: { inspector }, set: { inspector = $0; showsInspector = true; compactNotes = false })) {
-                    Text(t("转写", "Transcript")).tag(0)
-                    Text(t("重点", "Highlights")).tag(1)
-                    Text(t("会议助手", "Assistant")).tag(2)
-                }
-            } label: {
-                Label(inspector == 0 ? t("转写", "Transcript") : inspector == 1 ? t("重点", "Highlights") : t("会议助手", "Assistant"),
-                      systemImage: "sidebar.right")
-                    .lineLimit(1).frame(minHeight: 44)
-            }.accessibilityIdentifier("meeting.compact.sections")
-            Spacer(minLength: 0)
-            Group {
-                if session.isRecording {
-                    Image(systemName: "record.circle.fill").foregroundStyle(.red)
-                        .accessibilityLabel(t("录音中", "Recording"))
-                    Button(t("暂停", "Pause"), systemImage: "pause") { Task { await session.pauseRecording() } }
-                        .accessibilityIdentifier("meeting.record.pause")
-                    Button(t("结束", "Finish"), systemImage: "stop.fill") { Task { await session.stopRecording() } }
-                        .accessibilityIdentifier("meeting.record.stop")
-                } else {
-                    Button(session.isPaused ? t("继续录音", "Resume") : t("开始录音", "Record"), systemImage: "record.circle") { Task { await session.startRecording() } }
-                        .accessibilityIdentifier("meeting.record")
-                    if session.isPaused {
-                        Button(t("结束", "Finish"), systemImage: "stop.fill") { session.isPaused = false }
-                            .accessibilityIdentifier("meeting.record.stop")
+            sectionMenu
+            Spacer(minLength: 4)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let presentation = capturePresentation(now: context.date)
+                HStack(spacing: 4) {
+                    if session.changingCapture {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel(t("正在处理录音", "Working with the recording"))
+                    } else {
+                        if session.isRecording {
+                            Circle().fill(.red).frame(width: 8, height: 8)
+                                .accessibilityHidden(true)
+                        } else if session.isPaused {
+                            Image(systemName: "pause.circle")
+                                .foregroundStyle(.orange)
+                                .accessibilityLabel(t("已暂停", "Paused"))
+                        }
+                        if presentation.elapsedSeconds > 0 {
+                            Text(durationText(presentation.elapsedSeconds))
+                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                .lineLimit(1).minimumScaleFactor(0.8)
+                        }
+                        compactCaptureControls
+                            .labelStyle(.iconOnly)
                     }
                 }
             }
-            .labelStyle(.iconOnly)
-            .disabled(session.changingCapture)
-            Menu {
-                Text(session.meeting.createdAt.formatted(date: .abbreviated, time: .omitted))
-                if !session.speakers.isEmpty {
-                    Text(t("\(session.speakers.count) 位发言人", "\(session.speakers.count) speakers"))
-                }
-                Divider()
-                Button(t("标记重点", "Mark moment"), systemImage: "bookmark") { Task { await session.addMarker() } }
-                    .disabled(!session.isRecording && session.playingSession == nil)
-                Button(t("录音与素材", "Recordings and media"), systemImage: "waveform") { recordings = true }
-                Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") { importing = true }
-                Button(t("会议设置", "Meeting settings"), systemImage: "slider.horizontal.3") { settings = true }
-                templatesMenu
-                exportMenu
-            } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
-                .accessibilityLabel(t("会议操作", "Meeting actions"))
+            meetingActionsMenu
         }
-        .font(.callout).padding(.horizontal, 12).background(.bar)
-        .buttonStyle(CompactMeetingButtonStyle())
+        .font(.callout).padding(.horizontal, 12).frame(minHeight: 48).background(.bar)
+        .buttonStyle(.plain)
     }
-
-    private struct CompactMeetingButtonStyle: ButtonStyle {
-        func makeBody(configuration: Configuration) -> some View {
-            configuration.label.frame(minWidth: 44, minHeight: 44)
-                .opacity(configuration.isPressed ? 0.6 : 1)
+    @ViewBuilder private var compactCaptureControls: some View {
+        if session.isRecording {
+            Button(t("暂停", "Pause"), systemImage: "pause") { Task { await session.pauseRecording() } }
+                .frame(width: 44, height: 44)
+                .accessibilityIdentifier("meeting.record.pause")
+            Button(t("结束", "Finish"), systemImage: "stop.fill") { Task { await session.stopRecording() } }
+                .frame(width: 44, height: 44)
+                .accessibilityIdentifier("meeting.record.stop")
+        } else if session.isPaused {
+            Button(t("继续录音", "Resume"), systemImage: "record.circle") { Task { await session.startRecording() } }
+                .frame(width: 44, height: 44)
+                .accessibilityIdentifier("meeting.record")
+            Button(t("结束", "Finish"), systemImage: "stop.fill") { finishPausedRecording() }
+                .frame(width: 44, height: 44)
+                .accessibilityIdentifier("meeting.record.stop")
+        } else {
+            Button(t("开始录音", "Record"), systemImage: "record.circle") { Task { await session.startRecording() } }
+                .frame(width: 44, height: 44)
+                .accessibilityIdentifier("meeting.record")
         }
+    }
+    private var sectionMenu: some View {
+        Menu {
+            sectionButton(t("我的笔记", "My notes"), systemImage: "note.text", tag: 0)
+            Divider()
+            sectionButton(t("转写", "Transcript"), systemImage: "text.bubble", tag: 1)
+            sectionButton(t("重点", "Highlights"), systemImage: "bookmark", tag: 2)
+            sectionButton(t("会议助手", "Assistant"), systemImage: "sparkles", tag: 3)
+        } label: {
+            Label(sectionTitle, systemImage: sectionIcon)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1).frame(minHeight: 44)
+        }
+        .accessibilityIdentifier("meeting.compact.sections")
+    }
+    @ViewBuilder private func sectionButton(_ title: String, systemImage: String, tag: Int) -> some View {
+        Button {
+            selectSection(tag)
+        } label: {
+            if compactSection == tag { Label(title, systemImage: "checkmark") }
+            else { Label(title, systemImage: systemImage) }
+        }
+    }
+    private var compactSection: Int { compactNotes ? 0 : inspector + 1 }
+    private var sectionTitle: String {
+        switch compactSection {
+        case 0: t("我的笔记", "My notes")
+        case 1: t("转写", "Transcript")
+        case 2: t("重点", "Highlights")
+        default: t("会议助手", "Assistant")
+        }
+    }
+    private var sectionIcon: String {
+        switch compactSection {
+        case 0: "note.text"
+        case 1: "text.bubble"
+        case 2: "bookmark"
+        default: "sparkles"
+        }
+    }
+    private func selectSection(_ section: Int) {
+        if section == 0 { compactNotes = true }
+        else { compactNotes = false; inspector = section - 1; showsInspector = true }
+    }
+    @ViewBuilder private var meetingActionsMenu: some View {
+        Menu {
+            Text(session.meeting.createdAt.formatted(date: .abbreviated, time: .omitted))
+            if !session.speakers.isEmpty {
+                Text(t("\(session.speakers.count) 位发言人", "\(session.speakers.count) speakers"))
+            }
+            Divider()
+            Button(t("录音与素材", "Recordings and media"), systemImage: "waveform") { recordings = true }
+            Button(t("标记重点", "Mark moment"), systemImage: "bookmark") { Task { await session.addMarker() } }
+                .disabled(!session.isRecording && session.playingSession == nil)
+            Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") { importing = true }
+            Button(t("会议设置", "Meeting settings"), systemImage: "slider.horizontal.3") { settings = true }
+            templatesMenu
+            exportMenu
+        } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+        .accessibilityLabel(t("会议操作", "Meeting actions"))
     }
 
     private var templatesMenu: some View {
@@ -263,25 +329,51 @@ struct MeetingProjectView: View {
                     onAssistant: { inspector = 2; showsInspector = true; compactNotes = false }).id(document.id)
                     .modifier(NotesConflictAccess(session: session.notebook))
             } else {
-                ContentUnavailableView {
+                VStack(alignment: .leading, spacing: 8) {
                     Label(t("我的会议笔记", "My meeting notes"), systemImage: "note.text")
-                } actions: { Button(t("打开笔记", "Open notes")) { Task { await session.loadNotebook() } } }
+                        .font(.headline)
+                    Text(t("记下要点，或把转写和重点插入这里。",
+                           "Capture what matters, or insert transcript and highlights here."))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(t("打开笔记", "Open notes")) { Task { await session.loadNotebook() } }
+                        .frame(minHeight: 44)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .accessibilityElement(children: .contain).accessibilityIdentifier("meeting.personalNotes")
     }
-    private func sidePanel(compactInput: Bool) -> some View {
+    private func sidePanel(compactInput: Bool, showsSectionPicker: Bool, available: CGFloat) -> some View {
         VStack(spacing: 0) {
-            if !compactInput {
-                Picker(t("会议侧栏", "Meeting sidebar"), selection: $inspector) {
-                    Text(t("转写", "Transcript")).tag(0); Text(t("重点", "Highlights")).tag(1); Text(t("会议助手", "Assistant")).tag(2)
-                }.pickerStyle(.segmented).padding(10)
+            if showsSectionPicker, !compactInput {
+                HStack(spacing: 8) {
+                    Picker(t("会议侧栏", "Meeting sidebar"), selection: Binding(
+                        get: { inspector },
+                        set: { value in inspector = value; compactNotes = false; showsInspector = true })) {
+                        Text(t("转写", "Transcript")).tag(0); Text(t("重点", "Highlights")).tag(1); Text(t("会议助手", "Assistant")).tag(2)
+                    }.pickerStyle(.segmented)
+                    Button {
+                        toggleWidePanel(available: available)
+                    } label: {
+                        Image(systemName: "arrow.left.and.right")
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(t("切换转写侧栏宽度", "Toggle side panel width"))
+                    .accessibilityValue(sidePanelWidth == nil ? t("标准", "Standard") : t("加宽", "Wide"))
+                    .accessibilityIdentifier("meeting.inspector.width")
+                }.padding(10)
                 Divider()
             }
             if session.isAnalyzing {
-                HStack { ProgressView(); Text(t("正在整理", "Organizing")); Spacer()
+                HStack(spacing: 8) {
+                    Label(t("正在整理", "Organizing"), systemImage: "sparkles")
+                    Spacer()
                     Button(t("停止", "Stop")) { session.intelligenceTask?.cancel() }
-                }.font(.caption).padding()
+                        .frame(minHeight: 44)
+                }.font(.caption).padding(.horizontal, 12).padding(.vertical, 4)
             }
             Group {
                 switch inspector { case 0: transcriptPanel; case 1: highlightsPanel; default: questionsPanel(compactInput: compactInput) }
@@ -294,17 +386,23 @@ struct MeetingProjectView: View {
             onCorrect: { correctedText = $0.text; correction = $0 },
             onRenameSpeaker: { speakerName = $0.label; speaker = $0 },
             onInsert: { insert($0, ai: false) }, onOpenMedia: { recordings = true },
+            onOpenSettings: { settings = true },
             liveStatus: liveTranscriptionStatus)
     }
     /// Continuous, user-facing transcription state. Internal chunk counts,
     /// queue depths and collection scheduling stay in the diagnostics
     /// disclosure, never in the ordinary recording flow.
     private var liveTranscriptionText: String {
-        guard let live = session.liveTranscription else { return t("转写准备中", "Preparing transcription") }
-        if !live.enabled { return session.isRecording ? t("转写已暂停，录音继续", "Transcription paused; recording continues") : t("转写已暂停", "Transcription paused") }
-        if live.requiresRetry { return t("录音已保留，转写未完成", "Recording saved; transcription is unfinished") }
-        if live.waitingForService { return t("正在等待转写服务，录音继续保留", "Waiting for transcription; audio is being saved") }
-        if live.isWorking, !session.isRecording { return t("正在转写", "Transcribing") }
+        guard let live = session.liveTranscription else { return "" }
+        guard session.isRecording || session.isPaused || live.isWorking || session.isProcessing else { return "" }
+        if !live.enabled {
+            return session.isRecording || session.isPaused
+                ? t("转写已暂停，录音会继续", "Transcription paused; recording continues")
+                : t("转写已暂停", "Transcription paused")
+        }
+        if live.waitingForService {
+            return t("转写服务繁忙，稍后继续", "Transcription service is busy; it will continue")
+        }
         return ""
     }
     @ViewBuilder private var liveTranscriptionStatus: some View {
@@ -312,24 +410,22 @@ struct MeetingProjectView: View {
             let status = liveTranscriptionText
             let offersRetry = live.requiresRetry || (!live.enabled && live.unfinishedCount > 0)
             if !status.isEmpty || offersRetry {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     if !status.isEmpty {
-                        HStack(spacing: 8) {
-                            Text(status).font(.subheadline).foregroundStyle(.secondary)
-                                .accessibilityIdentifier("meeting.transcription.status")
-                            Spacer(minLength: 0)
-                        }
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("meeting.transcription.status")
                     }
                     if offersRetry {
-                        HStack {
-                            Button(t("重试转写", "Retry transcription")) {
-                                session.diagnostic = nil
-                                if session.intelligence.liveTranscription == false {
-                                    session.updateIntelligence { $0.liveTranscription = true }
-                                } else { live.retryUnfinished() }
-                            }.disabled(live.isWorking).frame(minHeight: 44)
+                        HStack(spacing: 4) {
+                            Text(t("未完成的转写可以重试", "Unfinished transcription can be retried"))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button(t("重试", "Retry")) { retryTranscription() }
+                                .font(.caption.weight(.medium)).frame(minHeight: 44)
+                                .disabled(live.isWorking)
                                 .accessibilityIdentifier("meeting.transcription.retry")
-                            Button(t("转写设置", "Transcription settings")) { settings = true }.frame(minHeight: 44)
                         }
                     }
                 }
@@ -400,39 +496,35 @@ struct MeetingProjectView: View {
     private var recorder: some View {
         VStack(spacing: 0) {
             Divider()
-            HStack(spacing: 6) {
-                Label(recorderStatusText, systemImage: recorderStatusIcon)
-                    .font(.subheadline)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(1)
-                    .foregroundStyle(session.isRecording ? Color.red : Color.secondary)
-                    .accessibilityIdentifier("meeting.recorder.status")
-                Spacer(minLength: 8)
-                HStack(spacing: 6) {
-                    recorderButton(t("录音与素材", "Recordings and media"), systemImage: "waveform",
-                        identifier: "meeting.recorder.media") { recordings = true }
-                    recorderButton(t("标记重点", "Mark moment"), systemImage: "bookmark",
-                        identifier: "meeting.recorder.marker") { Task { await session.addMarker() } }
-                        .disabled(!session.isRecording && session.playingSession == nil)
-                    if session.isRecording {
-                        recorderButton(t("暂停", "Pause"), systemImage: "pause",
-                            identifier: "meeting.record.pause") { Task { await session.pauseRecording() } }
-                        recorderButton(t("结束录音", "Finish recording"), systemImage: "stop.fill",
-                            identifier: "meeting.record.stop", prominent: true) { Task { await session.stopRecording() } }
-                    } else {
-                        recorderButton(session.isPaused ? t("继续录音", "Resume recording") : t("开始录音", "Start recording"),
-                            systemImage: "record.circle", identifier: "meeting.record", prominent: true) { Task { await session.startRecording() } }
-                        if session.isPaused {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let presentation = capturePresentation(now: context.date)
+                HStack(alignment: .center, spacing: 12) {
+                    captureStatus(presentation)
+                    Spacer(minLength: 8)
+                    HStack(spacing: 4) {
+                        recorderButton(t("录音与素材", "Recordings and media"), systemImage: "waveform",
+                            identifier: "meeting.recorder.media") { recordings = true }
+                        if session.isRecording {
+                            recorderButton(t("暂停", "Pause"), systemImage: "pause",
+                                identifier: "meeting.record.pause") { Task { await session.pauseRecording() } }
                             recorderButton(t("结束录音", "Finish recording"), systemImage: "stop.fill",
-                                identifier: "meeting.record.stop") { session.isPaused = false }
+                                identifier: "meeting.record.stop", prominent: true, tint: .red) { Task { await session.stopRecording() } }
+                        } else if session.isPaused {
+                            recorderButton(t("继续录音", "Resume recording"), systemImage: "record.circle",
+                                identifier: "meeting.record", prominent: true) { Task { await session.startRecording() } }
+                            recorderButton(t("结束录音", "Finish recording"), systemImage: "stop.fill",
+                                identifier: "meeting.record.stop") { finishPausedRecording() }
+                        } else {
+                            recorderButton(t("开始录音", "Start recording"), systemImage: "record.circle",
+                                identifier: "meeting.record", prominent: true) { Task { await session.startRecording() } }
                         }
                     }
+                    .disabled(session.changingCapture)
                 }
-                .disabled(session.changingCapture)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frame(minHeight: recorderHeight)
             }
-            .frame(minHeight: recorderHeight)
-            .padding(.horizontal, 12)
         }
         // Keep the complete bar at the bottom safe-area boundary; a minimum
         // height keeps the 44 pt targets compact, while content can grow for
@@ -442,46 +534,155 @@ struct MeetingProjectView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("meeting.recorder")
     }
+    private func captureStatus(_ presentation: MeetingCapturePresentation) -> some View {
+        HStack(spacing: 10) {
+            captureIndicator(presentation)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(captureTitle(presentation))
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                        .foregroundStyle(presentation.phase == .recording ? Color.red : Color.primary)
+                    if presentation.elapsedSeconds > 0 {
+                        Text(durationText(presentation.elapsedSeconds))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .accessibilityLabel(t("已录音 \(durationText(presentation.elapsedSeconds))",
+                                                  "Recorded \(durationText(presentation.elapsedSeconds))"))
+                            .accessibilityIdentifier("meeting.recorder.duration")
+                    }
+                }
+                if let detail = captureDetail(presentation) {
+                    HStack(spacing: 4) {
+                        Text(detail)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
+                        if presentation.canRetryTranscription {
+                            Button { retryTranscription() } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(t("重试未完成转写", "Retry unfinished transcription"))
+                            .accessibilityIdentifier("meeting.recorder.retry")
+                        }
+                    }
+                }
+            }
+            .layoutPriority(1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("meeting.recorder.status")
+    }
+    @ViewBuilder private func captureIndicator(_ presentation: MeetingCapturePresentation) -> some View {
+        switch presentation.phase {
+        case .recording:
+            Circle().fill(.red).frame(width: 10, height: 10)
+                .overlay(Circle().stroke(.red.opacity(0.25), lineWidth: 5))
+                .frame(width: 20, height: 20)
+                .accessibilityHidden(true)
+        case .paused:
+            Image(systemName: "pause.circle.fill").font(.title3).foregroundStyle(.orange)
+                .frame(width: 20, height: 20).accessibilityHidden(true)
+        case .saved:
+            Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(.green)
+                .frame(width: 20, height: 20).accessibilityHidden(true)
+        case .preparing, .finishing:
+            ProgressView().controlSize(.small).frame(width: 20, height: 20)
+                .accessibilityHidden(true)
+        case .ready:
+            Image(systemName: "mic.circle").font(.title3).foregroundStyle(.secondary)
+                .frame(width: 20, height: 20).accessibilityHidden(true)
+        }
+    }
     private var recordingSheet: some View {
         NavigationStack {
             List {
-                Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") { recordings = false; importing = true }
-                if let live = session.liveTranscription, !live.chunks.isEmpty {
-                    if live.requiresRetry || (!live.enabled && live.unfinishedCount > 0) {
-                        Button(t("重试未完成转写", "Retry unfinished transcription")) { live.retryUnfinished() }
-                            .disabled(live.isWorking)
-                    }
-                    if live.isWorking {
-                        Button(t("停止转写", "Stop transcription")) { live.cancel() }
-                    }
-                    // Internal chunk scheduling detail: only inside the
-                    // explicitly opened diagnostics group.
-                    DisclosureGroup(t("诊断详情", "Diagnostics")) {
-                        HStack {
-                            Text(t("转写进度", "Transcription progress"))
-                            Spacer()
-                            Text("\(live.chunks.filter { $0.state == .complete }.count) / \(live.chunks.count)")
-                                .font(.caption.monospacedDigit())
-                        }
-                        if let diagnostic = live.diagnostic {
-                            Text(diagnostic).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                    }.font(.footnote)
+                if let diagnostic = session.diagnostic {
+                    Section {
+                        Text(diagnostic).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Button(t("清除提示", "Clear message")) { session.diagnostic = nil }
+                    } header: { Text(t("需要处理", "Needs attention")) }
                 }
-                if session.isProcessing {
-                    ProgressView(value: session.progress) { Text(t("正在转写", "Transcribing")) }
-                    Button(t("停止转写", "Stop transcription")) { session.cancelProcessing() }
+                Section {
+                    if session.isRecording {
+                        Button(role: .destructive) {
+                            Task { await session.stopRecording() }
+                        } label: {
+                            Label(t("结束录音", "Finish recording"), systemImage: "stop.fill")
+                        }
+                        .accessibilityIdentifier("meeting.recordings.stop")
+                    }
+                    Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") {
+                        recordings = false; importing = true
+                    }
+                    if session.isProcessing {
+                        ProgressView(value: session.progress) { Text(t("正在转写录音", "Transcribing recording")) }
+                        Button(t("停止转写", "Stop transcription")) { session.cancelProcessing() }
+                    }
                 }
-                ForEach(session.visibleRecordings) { recording in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label(recording.sourceFile.map { URL(fileURLWithPath: $0).lastPathComponent } ?? t("现场录音", "Recording"), systemImage: "waveform")
-                        if let seconds = recording.durationSeconds { Text(time(seconds)).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
-                        HStack {
-                            Button(t("播放", "Play")) { session.play(recording); recordings = false }
-                            Button(t("转写", "Transcribe")) { session.transcribe(recording); inspector = 0; compactNotes = false }.disabled(session.isProcessing)
-                            if let file = try? session.mediaFile(for: recording) { ShareLink(item: file) { Text(t("导出原片", "Export source")) } }
-                        }.disabled(recording.state != .stopped)
-                    }.padding(.vertical, 6)
+                Section(t("录音", "Recordings")) {
+                    if session.visibleRecordings.isEmpty {
+                        Text(t("还没有录音。可以导入音视频，或在这里开始一段新录音。",
+                               "No recordings yet. Import audio or video, or start a new recording here."))
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    ForEach(session.visibleRecordings) { recording in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Label(recording.sourceFile.map { URL(fileURLWithPath: $0).lastPathComponent }
+                                      ?? t("现场录音", "Recording"), systemImage: "waveform")
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Text(recordingStateLabel(recording.state))
+                                    .font(.caption)
+                                    .foregroundStyle(recording.state == .stopped ? Color.secondary : Color.red)
+                            }
+                            if let seconds = recording.durationSeconds {
+                                Text(time(seconds)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 4) {
+                                Button(t("播放", "Play")) { session.play(recording); recordings = false }
+                                    .disabled(session.isRecording)
+                                Button(t("转写", "Transcribe")) {
+                                    session.transcribe(recording); inspector = 0; compactNotes = false
+                                }.disabled(session.isProcessing || session.isRecording)
+                                if let file = try? session.mediaFile(for: recording) {
+                                    ShareLink(item: file) { Text(t("导出原片", "Export source")) }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .font(.callout)
+                            .disabled(recording.state != .stopped)
+                        }.padding(.vertical, 6)
+                    }
+                }
+                if let live = session.liveTranscription, !live.chunks.isEmpty || live.diagnostic != nil {
+                    Section(t("实时转写", "Live transcription")) {
+                        if live.requiresRetry || (!live.enabled && live.unfinishedCount > 0) {
+                            Button(t("重试未完成转写", "Retry unfinished transcription")) { retryTranscription() }
+                                .disabled(live.isWorking)
+                        }
+                        if live.isWorking {
+                            Button(t("停止转写", "Stop transcription")) { live.cancel() }
+                        }
+                        // Internal chunk scheduling detail: only inside the
+                        // explicitly opened diagnostics group.
+                        DisclosureGroup(t("诊断详情", "Diagnostics")) {
+                            HStack {
+                                Text(t("转写进度", "Transcription progress"))
+                                Spacer()
+                                Text("\(live.chunks.filter { $0.state == .complete }.count) / \(live.chunks.count)")
+                                    .font(.caption.monospacedDigit())
+                            }
+                            if let diagnostic = live.diagnostic {
+                                Text(diagnostic).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }.font(.footnote)
+                    }
                 }
             }.navigationTitle(t("录音与素材", "Recordings and media"))
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(t("完成", "Done")) { recordings = false } } }
@@ -504,7 +705,8 @@ struct MeetingProjectView: View {
                                  + (separatesSpeakers ? t(" · 区分说话人", " · Speaker labels") : "")).tag(service.id)
                         }
                     }
-                    Text(t("默认保留本地录音；云端转写需在这里明确选择已有服务。", "Recordings stay local. Cloud transcription uses a service you explicitly select here."))
+                    Text(t("录音保留在本机；云端转写只使用这里明确选择的服务。能否区分说话人取决于该服务，或使用下方本机说话人识别。",
+                           "Recordings stay on this device; cloud transcription uses only the service selected here. Speaker labels depend on that service or on on-device speaker recognition below."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section(t("说话人", "Speakers")) {
@@ -557,39 +759,109 @@ struct MeetingProjectView: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(t("完成", "Done")) { settings = false } } }
         }
     }
-    private var recorderStatusText: String {
-        if session.isRecording {
-            if session.liveTranscription?.requiresRetry == true { return t("录音中 · 转写待重试", "Recording · Retry transcription") }
-            if session.liveTranscription?.waitingForService == true { return t("录音中 · 等待转写", "Recording · Waiting to transcribe") }
-            if session.liveTranscription?.enabled == false { return t("录音中 · 转写已暂停", "Recording · Transcription paused") }
-            if session.liveTranscription?.isWorking == true { return t("录音中 · 转写中", "Recording · Transcribing") }
-            return t("录音中", "Recording")
+    private func capturePresentation(now: Date) -> MeetingCapturePresentation {
+        let live = session.liveTranscription
+        let status = session.transcriptionStatus
+        let isTranscribing: Bool
+        if session.changingCapture {
+            isTranscribing = false
+        } else {
+            switch status.phase {
+            case .recordingLive, .recordingFallback, .finalizing, .transcribing:
+                isTranscribing = true
+            case .idle, .needsRetry, .paused:
+                isTranscribing = false
+            }
         }
-        if session.isPaused {
-            if session.liveTranscription?.requiresRetry == true { return t("已暂停 · 转写待重试", "Paused · Retry transcription") }
-            if session.liveTranscription?.waitingForService == true { return t("已暂停 · 等待转写", "Paused · Waiting to transcribe") }
-            if session.liveTranscription?.enabled == false { return t("已暂停 · 转写已暂停", "Paused · Transcription paused") }
-            if session.liveTranscription?.isWorking == true { return t("已暂停 · 转写中", "Paused · Transcribing") }
-            return t("已暂停", "Paused")
+        let spans = session.recordings.map { recording in
+            MeetingRecordingSpan(
+                isLiveRecording: recording.kind == .liveRecording,
+                isActive: session.isRecording
+                    && (recording.state == .capturing || recording.state == .pending || recording.state == .stopping),
+                duration: recording.state == .stopped ? recording.durationSeconds : nil,
+                startedAt: recording.startedAt)
         }
-        if session.liveTranscription?.requiresRetry == true { return t("录音已保留 · 转写待重试", "Saved · retry transcription") }
-        if session.liveTranscription?.waitingForService == true { return t("等待转写服务", "Waiting for transcription") }
-        if session.liveTranscription?.isWorking == true { return t("正在转写", "Transcribing") }
-        return t("准备录音", "Ready to record")
+        return .resolve(
+            isRecording: session.isRecording,
+            isPaused: session.isPaused,
+            isChangingCapture: session.changingCapture,
+            transcriptionEnabled: session.intelligence.liveTranscription != false && live?.enabled != false,
+            isTranscribing: isTranscribing,
+            transcriptionLive: !session.changingCapture && status.isLive,
+            waitingForService: !session.changingCapture && live?.waitingForService == true,
+            requiresRetry: status.phase == .needsRetry,
+            unfinishedCount: status.unfinishedChunks,
+            isProcessingSavedRecording: session.isProcessing,
+            spans: spans,
+            now: now)
     }
-    private var recorderStatusIcon: String {
-        if session.isRecording { return "record.circle.fill" }
-        if session.isPaused { return "pause.circle" }
-        if let live = session.liveTranscription, live.isWorking || live.requiresRetry || live.waitingForService {
-            return "text.bubble"
+    private func captureTitle(_ presentation: MeetingCapturePresentation) -> String {
+        switch presentation.phase {
+        case .ready: t("准备录音", "Ready to record")
+        case .preparing: t("正在准备录音", "Preparing recording")
+        case .recording: t("录音中", "Recording")
+        case .finishing: t("正在结束并保存", "Finishing and saving")
+        case .paused: t("已暂停", "Paused")
+        case .saved: t("录音已保存", "Recording saved")
         }
-        return "mic"
     }
+    private func captureDetail(_ presentation: MeetingCapturePresentation) -> String? {
+        switch presentation.transcription {
+        case .off:
+            return t("仅录音", "Audio only")
+        case .idle:
+            if presentation.phase == .recording || presentation.phase == .preparing
+                || presentation.phase == .finishing { return nil }
+            if presentation.savedRecordingCount > 0 {
+                return presentation.savedRecordingCount == 1
+                    ? t("1 段录音 · 可回放", "1 recording · Ready to play")
+                    : t("\(presentation.savedRecordingCount) 段录音 · 可回放", "\(presentation.savedRecordingCount) recordings · Ready to play")
+            }
+            return nil
+        case .live:
+            return t("实时转写中", "Live transcription")
+        case .fallback:
+            return presentation.phase == .recording
+                ? t("录音继续，文字稍后补全", "Recording continues; text may arrive later")
+                : t("正在转写录音", "Transcribing recording")
+        case .waiting:
+            return t("转写服务繁忙，稍后继续", "Transcription service is busy; it will continue")
+        case .retry:
+            switch presentation.phase {
+            case .recording, .paused:
+                return t("转写未完成，录音会保留", "Transcription is unfinished; the audio is preserved")
+            case .preparing:
+                return t("转写未完成，录音准备中", "Transcription is unfinished; the recording is being prepared")
+            case .finishing:
+                return t("转写未完成，正在保存录音", "Transcription is unfinished; the recording is being saved")
+            case .saved, .ready:
+                return t("转写未完成，录音已保存", "Transcription is unfinished; the recording is saved")
+            }
+        case .savedPass:
+            return t("正在整理录音文字", "Organizing the recording's text")
+        }
+    }
+    private var playbackTitle: String? {
+        guard let id = session.playingSession,
+              let recording = session.visibleRecordings.first(where: { $0.id == id }) else { return nil }
+        if let path = recording.sourceFile { return URL(fileURLWithPath: path).lastPathComponent }
+        return t("现场录音", "Recording")
+    }
+    private func retryTranscription() {
+        session.diagnostic = nil
+        if session.intelligence.liveTranscription == false {
+            session.updateIntelligence { $0.liveTranscription = true }
+        } else {
+            session.liveTranscription?.retryUnfinished()
+        }
+    }
+    private func finishPausedRecording() { session.isPaused = false }
     private func recorderButton(
         _ title: String,
         systemImage: String,
         identifier: String,
         prominent: Bool = false,
+        tint: Color = .accentColor,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -597,7 +869,7 @@ struct MeetingProjectView: View {
                 .font(.system(size: 18, weight: prominent ? .semibold : .regular))
                 .foregroundStyle(prominent ? Color.white : Color.primary)
                 .frame(width: 32, height: 32)
-                .background(prominent ? Color.accentColor : Color.clear, in: Circle())
+                .background(prominent ? tint : Color.clear, in: Circle())
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
@@ -606,15 +878,20 @@ struct MeetingProjectView: View {
         .accessibilityIdentifier(identifier)
     }
     private func splitSideWidth(available: CGFloat) -> CGFloat {
-        let preferred = sidePanelWidth ?? min(640, max(400, available * 0.5))
+        let preferred = sidePanelWidth ?? min(720, max(440, available * 0.56))
         return clampedSideWidth(preferred, available: available)
     }
     private func clampedSideWidth(_ width: CGFloat, available: CGFloat) -> CGFloat {
         let handle: CGFloat = 16
-        let minimumNotes: CGFloat = 360
-        let minimumSide: CGFloat = 380
+        let minimumNotes: CGFloat = 340
+        let minimumSide: CGFloat = 420
         let maximumSide = max(minimumSide, available - minimumNotes - handle)
         return min(max(width, minimumSide), maximumSide)
+    }
+    private func toggleWidePanel(available: CGFloat) {
+        let maximum = clampedSideWidth(available - 340 - 16, available: available)
+        let current = sidePanelWidth ?? splitSideWidth(available: available)
+        sidePanelWidth = current >= maximum - 1 ? nil : maximum
     }
     private func splitAccessibilityValue(available: CGFloat, sideWidth: CGFloat) -> String {
         guard available > 0 else { return "" }
@@ -655,8 +932,23 @@ struct MeetingProjectView: View {
     }
     private func insert(_ text: String, ai: Bool) { Task { do { try await session.appendToNotebook(text, aiGenerated: ai) } catch { session.diagnostic = error.localizedDescription } } }
     private func t(_ zh: String, _ en: String) -> String { IDELanguageRunText.t(zh, en) }
-    private func time(_ seconds: Double) -> String {
-        let value = max(0, Int(seconds.isFinite ? seconds : 0)); return String(format: "%02d:%02d", value / 60, value % 60)
+    private func durationText(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+        let value = Int(min(seconds, Double(Int.max / 2)))
+        if value >= 3600 {
+            return String(format: "%d:%02d:%02d", value / 3600, (value % 3600) / 60, value % 60)
+        }
+        return String(format: "%02d:%02d", value / 60, value % 60)
+    }
+    private func time(_ seconds: Double) -> String { durationText(seconds) }
+    private func recordingStateLabel(_ state: CaptureSessionState) -> String {
+        switch state {
+        case .stopped: t("已保存", "Saved")
+        case .pending, .capturing: t("录音中", "Recording")
+        case .stopping: t("正在保存", "Saving")
+        case .cancelled: t("已取消", "Cancelled")
+        case .failed: t("录音失败", "Recording failed")
+        }
     }
 }
 #endif

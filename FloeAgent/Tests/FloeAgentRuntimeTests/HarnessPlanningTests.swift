@@ -614,6 +614,29 @@ struct HarnessPlanningTests {
         #expect(denial?.status == .denied)
     }
 
+    @Test("Checklist guidance settles real steps and keeps reset distinct from Goal completion")
+    func checklistStepSettlementAndResetGuidance() {
+        let prompt = AgentPromptComposer.compose(mode: .chat, runtimeContext: "Authorized native task tools")
+        #expect(prompt.contains("checklist.updatePlan") && prompt.contains("checklist.resetPlan"))
+        #expect(prompt.contains("Never mark pending steps completed from a stop event"))
+        #expect(prompt.contains("Reset is neither execution evidence nor Goal completion"))
+    }
+
+    @Test("Progress reminders are bounded, run scoped, and cannot mark missing evidence complete")
+    func checklistFreshnessIsOwnedAndEvidenceBounded() {
+        let run = UUID()
+        let checklist = TaskChecklist(conversationID: UUID(), runID: run, revision: 1, title: "Work",
+            steps: [.init(id: "inspect", title: "Inspect", status: .pending)], updatedAt: Date())
+        #expect(FloeAgentRuntime.checklistFreshnessReminder(checklist: checklist, runID: run, workCallsSinceUpdate: 1) == nil)
+        let owned = FloeAgentRuntime.checklistFreshnessReminder(checklist: checklist, runID: run, workCallsSinceUpdate: 2)
+        #expect(owned?.contains("unfinished IDs: [inspect]") == true)
+        #expect(owned?.contains("completed only with actual supporting results") == true)
+        #expect(FloeAgentRuntime.checklistFreshnessReminder(checklist: checklist, runID: UUID(), workCallsSinceUpdate: 2) == nil)
+        let old = FloeAgentRuntime.checklistFreshnessReminder(checklist: checklist, runID: UUID(), workCallsSinceUpdate: 3)
+        #expect(old?.contains("previous round's checklist is history") == true)
+        #expect(!checklist.isFinished && checklist.completedCount == 0)
+    }
+
     @Test("Goal completion requires steps, evidence, review, and confirmation")
     func goalCompletionGate() {
         let evidence = GoalEvidence(kind: .testResult, reference: "test", summary: "passed")

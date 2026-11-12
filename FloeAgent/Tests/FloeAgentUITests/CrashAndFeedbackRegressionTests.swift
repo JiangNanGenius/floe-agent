@@ -245,6 +245,25 @@ struct CrashAndFeedbackRegressionTests {
         #expect(try await policy.decide(action(document.id)).permitsExecution)
         #expect(!(try await policy.decide(action(other.id)).permitsExecution))
         #expect(!(try await policy.decide(action(document.id, tool: "shell.run")).permitsExecution))
+        for name in ["workspace.appendFile", "workspace.replaceText"] {
+            #expect(NotesAssistantToolCatalog.toolNames.contains(name))
+            #expect(NotesAssistantToolCatalog.scopedAutoGrantToolNames.contains(name))
+            let arguments = name == "workspace.appendFile"
+                ? #"{"path":"draft.txt","content":"owned text"}"#
+                : #"{"path":"draft.txt","oldText":"old","newText":"new"}"#
+            let local = try ToolCall(id: UUID().uuidString, toolName: name,
+                argumentsJSON: Data(arguments.utf8),
+                scope: .local)
+            #expect(try await policy.decide(.init(toolCall: local, riskLabels: ["writesFiles"],
+                userGoal: "Edit this task's scratch text", hostAndPathScope: .local)).permitsExecution)
+            let remoteScope = ToolScope.host(UUID())
+            let remote = try ToolCall(id: UUID().uuidString, toolName: name,
+                argumentsJSON: local.argumentsJSON, scope: remoteScope)
+            #expect(!(try await policy.decide(.init(toolCall: remote, riskLabels: ["writesFiles"],
+                userGoal: "Edit text", hostAndPathScope: remoteScope)).permitsExecution))
+        }
+        #expect(!NotesAssistantToolCatalog.toolNames.contains("workspace.deleteFile"))
+        #expect(!NotesAssistantToolCatalog.toolNames.contains("ssh.execute"))
         try await store.bindAssistant(conversationID: replacement, documentID: document.id, canEdit: true)
         #expect(!(try await policy.decide(action(document.id)).permitsExecution))
         #expect(try await store.document(document.id) == document)

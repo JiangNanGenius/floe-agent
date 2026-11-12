@@ -159,5 +159,109 @@ struct MeetingAudioPlaybackLifecycleTests {
         #expect(releasedModel == nil)
         #expect(fixture.player.rate == 0)
     }
+
+    @Test("The transport exposes a measured timeline and clamps both skips")
+    func transportTimelineAndSkipsRespectDuration() async throws {
+        let fixture = PlayerFixture(duration: 65)
+        let model = MeetingAudioPlaybackModel()
+        defer { model.detach() }
+        model.attach(to: fixture.player)
+        try #require(model.canSeek)
+        #expect(model.duration == 65)
+        #expect(model.positionText == "00:00")
+        #expect(model.durationText == "01:05")
+        #expect(model.accessibilityPosition == "00:00 / 01:05")
+        model.skip(by: 100)
+        #expect(model.displayTime == 65)
+        #expect(model.positionText == "01:05")
+        model.skip(by: -100)
+        #expect(model.displayTime == 0)
+        #expect(model.positionText == "00:00")
+    }
+
+    @Test("A player with no item still offers close and an honest unknown timeline")
+    func emptyPlayerIsNotPresentedAsSeekable() {
+        let model = MeetingAudioPlaybackModel()
+        defer { model.detach() }
+        model.attach(to: AVPlayer())
+        #expect(!model.canSeek)
+        #expect(model.duration == 0)
+        #expect(model.durationText == "--:--")
+        #expect(model.positionText == "00:00")
+        model.beginScrubbing()
+        model.updateScrub(10)
+        #expect(model.displayTime == 0)
+        #expect(!model.isScrubbing)
+    }
+
+    @Test("Backgrounding ends a scrub without committing a new position")
+    func backgroundingEndsScrub() async throws {
+        let fixture = PlayerFixture(duration: 40)
+        let model = MeetingAudioPlaybackModel()
+        defer { model.detach() }
+        model.attach(to: fixture.player)
+        try #require(model.canSeek)
+        model.beginScrubbing()
+        model.updateScrub(12)
+        #expect(model.isScrubbing && model.displayTime == 12)
+        model.pauseForBackground()
+        #expect(!model.isScrubbing)
+        #expect(model.displayTime == model.currentTime)
+        #expect(model.currentTime == 0)
+    }
+}
+
+@Suite("Meeting transcript draft presentation", .serialized)
+struct MeetingTranscriptDraftPresentationTests {
+    private func fragment(_ text: String, start: Double? = 0, end: Double? = 1,
+                          id: UUID = UUID(), final: Bool = true,
+                          meetingID: UUID, sessionID: UUID) -> MeetingTranscriptFragment {
+        .init(id: id, meetingID: meetingID, sessionID: sessionID, speakerID: nil,
+              start: start, end: end, text: text, isFinal: final)
+    }
+
+    @Test("Live partial revisions never become confirmed bubbles")
+    func confirmedTranscriptIgnoresLiveDraft() {
+        let meetingID = UUID(), sessionID = UUID()
+        let first = fragment("First sentence.", start: 0, end: 1,
+                             meetingID: meetingID, sessionID: sessionID)
+        let draftID = UUID()
+        let old = fragment("Hel", start: nil, end: nil, id: draftID, final: false,
+                           meetingID: meetingID, sessionID: sessionID)
+        let new = fragment("Hello", start: nil, end: nil, id: draftID, final: false,
+                           meetingID: meetingID, sessionID: sessionID)
+        let confirmed = MeetingTranscriptPresentation.confirmedBubbles([first, old, new])
+        #expect(confirmed.count == 1)
+        #expect(confirmed.first?.text == "First sentence.")
+        #expect(confirmed.first?.hasLiveTail == false)
+        let revised = MeetingTranscriptPresentation.confirmedBubbles([first, new])
+        #expect(revised == confirmed)
+        // The general projection still keeps a live tail for callers that
+        // explicitly choose to render it; only the confirmed API is stable.
+        let withDraft = MeetingTranscriptPresentation.bubbles([first, old, new])
+        #expect(withDraft.count == 1)
+        #expect(withDraft.first?.hasLiveTail == true)
+        #expect(withDraft.first?.text == "First sentence. Hello")
+        // A draft from another capture must remain separate, even within the
+        // same meeting. Do not weaken that production ownership boundary to
+        // make a fixture with random per-fragment sessions coalesce.
+        let anotherCapture = fragment("Other recording", start: nil, end: nil, final: false,
+                                      meetingID: meetingID, sessionID: UUID())
+        let isolated = MeetingTranscriptPresentation.bubbles([first, anotherCapture])
+        #expect(isolated.count == 2)
+        #expect(isolated.first?.hasLiveTail == false)
+        #expect(isolated.last?.hasLiveTail == true)
+    }
+
+    @Test("Live draft rejects replacement/control text without altering real speech")
+    func liveDraftIsAReadableProjection() {
+        #expect(MeetingTranscriptPresentation.liveDraft("  hello  ") == "hello")
+        #expect(MeetingTranscriptPresentation.liveDraft("你好，世界") == "你好，世界")
+        #expect(MeetingTranscriptPresentation.liveDraft("\u{FFFD}") == nil)
+        #expect(MeetingTranscriptPresentation.liveDraft("\u{0}hello") == nil)
+        #expect(MeetingTranscriptPresentation.liveDraft("...") == nil)
+        #expect(MeetingTranscriptPresentation.liveDraft("   ") == nil)
+        #expect(MeetingTranscriptPresentation.liveDraft(nil) == nil)
+    }
 }
 #endif

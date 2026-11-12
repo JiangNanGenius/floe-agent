@@ -234,6 +234,13 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if DeterministicLocalApprovalPolicy.requiresPDFConsentReview(action) { return false }
         if DeterministicLocalApprovalPolicy.isExempt(action) { return true }
         if action.isPreapprovedSkillPythonRequest { return true }
+        if ["workspace.appendFile", "workspace.replaceText"].contains(action.toolCall.toolName) {
+            // Match ordinary native text writes without making a remote
+            // target exempt. Runtime/path/read-only gates remain authoritative.
+            guard case .local = action.toolCall.scope,
+                  case .local = action.hostAndPathScope else { return false }
+            return true
+        }
         let alwaysExempt: Set<String> = [
             "image.inspect", "image.ocr", "image.barcode.scan", "image.generate",
             "canvas.generate", "canvas.assetImport",
@@ -490,6 +497,14 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     ) -> ApprovalDecision {
         if DeterministicLocalApprovalPolicy.requiresPDFConsentReview(action) {
             return .escalateToHuman(reason: "PDF rasterization or credential use requires explicit consent review")
+        }
+        if ["workspace.appendFile", "workspace.replaceText"].contains(action.toolCall.toolName) {
+            // These local text exemptions must not fall back to an allow
+            // for remote writes when no review backend is available.
+            guard case .local = action.toolCall.scope,
+                  case .local = action.hostAndPathScope else {
+                return .escalateToHuman(reason: unavailableReason)
+            }
         }
         let risks = action.riskLabels
         let requiresReview: Set<String> = [
