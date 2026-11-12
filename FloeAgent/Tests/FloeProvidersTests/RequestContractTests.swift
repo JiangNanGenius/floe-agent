@@ -1252,7 +1252,7 @@ struct RequestContractTests {
         })
     }
 
-    @Test("Diagnostic run identity survives clock refresh but never reaches wire or checkpoint")
+    @Test("Diagnostic run identity survives clock refresh but never reaches the wire")
     func diagnosticRunIdentityIsLogOnly() throws {
         var request = syntheticChatRequest()
         request.diagnosticRunID = "run-fixture-only"
@@ -1261,10 +1261,8 @@ struct RequestContractTests {
         let body = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: refreshed))
         let wire = String(decoding: try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]), as: UTF8.self)
         #expect(!wire.contains("run-fixture-only"))
-        // The durable dispatch snapshot intentionally has no diagnostic field:
-        // it is correlation metadata for logs, not recovery or wire content.
-        let snapshot = ProviderDispatchRequestSnapshot(request: refreshed)
-        #expect(snapshot.request().diagnosticRunID == nil)
+        // Durable snapshot coverage belongs to ProviderRecoveryTests in the
+        // Runtime module; this Providers test remains independent of Runtime.
     }
 
     @Test("Official Ark preserves disjoint tagged unions, refs, constraints and opaque values")
@@ -1473,15 +1471,18 @@ extension RequestContractTests {
         var url = try OpenAIChatCompletionsAdapter().buildURLRequest(request: request, credentials: .init())
         url.httpBody = try OpenAIChatCompletionsAdapter().prepareBody(from: request).data
         var recovery = ThinkingFieldCompatibility()
-        let replacement = try #require(recovery.replacementRequest(url, status: 400, body: rootThinkingRejection))
+        let projectedRequest = recovery.replacementRequest(url, status: 400, body: rootThinkingRejection)
+        let replacement = try #require(projectedRequest)
         var before = try #require(JSONSerialization.jsonObject(with: url.httpBody!) as? [String: Any])
         before["thinking"] = nil
         let after = try #require(JSONSerialization.jsonObject(with: replacement.httpBody!) as? [String: Any])
         #expect(NSDictionary(dictionary: before).isEqual(to: after))
         #expect(replacement.url == url.url && replacement.httpMethod == url.httpMethod && replacement.value(forHTTPHeaderField: "X-Contract") == "preserve")
-        #expect(recovery.replacementRequest(url, status: 400, body: rootThinkingRejection) == nil)
+        let exhaustedRequest = recovery.replacementRequest(url, status: 400, body: rootThinkingRejection)
+        #expect(exhaustedRequest == nil)
         var afterOutput = ThinkingFieldCompatibility(); afterOutput.observeStreamEvent()
-        #expect(afterOutput.replacementRequest(url, status: 400, body: rootThinkingRejection) == nil)
+        let afterOutputRequest = afterOutput.replacementRequest(url, status: 400, body: rootThinkingRejection)
+        #expect(afterOutputRequest == nil)
     }
 
     @Test("Actual Chat transport retries a rejected field once and preserves tool history and a single new call")

@@ -14,13 +14,16 @@ struct ProviderRecoveryTests {
     @Test("Dispatch snapshots round-trip every reasoning field without changing the request")
     func reasoningSnapshotRoundTrip() throws {
         let provider = TestFixtures.localhostProvider()
-        let request = ProviderStreamRequest(provider: provider, model: TestFixtures.testModel(providerID: provider.id),
+        var request = ProviderStreamRequest(provider: provider, model: TestFixtures.testModel(providerID: provider.id),
             messages: [], contentMessages: [.init(role: "assistant", content: [.text("answer")], reasoningContent: "historical reasoning")],
             pendingAssistantReasoning: "tool-batch reasoning")
+        request.diagnosticRunID = "run-fixture-only"
         let snapshot = ProviderDispatchRequestSnapshot(request: request)
+        #expect(snapshot.request().diagnosticRunID == nil)
         let restored = try JSONDecoder().decode(ProviderDispatchRequestSnapshot.self, from: JSONEncoder().encode(snapshot)).request()
         #expect(restored.effectiveMessages == request.effectiveMessages)
         #expect(restored.pendingAssistantReasoning == "tool-batch reasoning")
+        #expect(restored.diagnosticRunID == nil)
         let message = ConversationMessage(role: "assistant", content: "answer", reasoningContent: "exact")
         #expect(try JSONDecoder().decode(ConversationMessage.self, from: JSONEncoder().encode(message)) == message)
     }
