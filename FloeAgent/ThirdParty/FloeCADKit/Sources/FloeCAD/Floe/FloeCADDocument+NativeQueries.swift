@@ -1162,6 +1162,24 @@ public extension FloeCADDocument {
 
     // MARK: Export
 
+    /// The same native sketch writer used by the 2D editor. A standalone
+    /// sketch is not an empty 3D engineering page and needs no B-rep body.
+    /// Hosts keep their saved-identity and publication fences around this read.
+    func nativeSketchDXFData(sketchID: UUID)
+        -> Result<(data: Data, note: String), CADDocumentError> {
+        guard !isClosed,
+              let sketch = session.document.sketches.first(where: { $0.id.raw == sketchID }) else {
+            return .failure(CADDocumentError(code: "sketch_not_found",
+                message: "Choose an existing sketch ID from this original."))
+        }
+        guard !sketch.entities.isEmpty else {
+            return .failure(CADDocumentError(code: "empty_sketch",
+                message: "The selected sketch has no geometry to export."))
+        }
+        let bytes = Data(DXFKit.exportSketch(entities: sketch.entities, plane: sketch.plane).utf8)
+        return .success((bytes, "Standalone 2D sketch (DXF, mm)"))
+    }
+
     /// Exact/format export bytes for the native document. STEP writes exact
     /// closed solids only; IGES writes exact closed solids AND open surface
     /// bodies (`Body.surfaceBRep`); mesh-only bodies are skipped and reported

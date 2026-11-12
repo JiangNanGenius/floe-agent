@@ -131,16 +131,36 @@ actor GlobalSourceMemoryService {
             } while cursor != nil
         } catch { /* Index preparation is not user recall and never reinforces a memory. */ }
     }
+    /// Read the actual memory store, not the derived source index. Lifecycle
+    /// maintenance keeps pin, owner retention and expiry policy authoritative;
+    /// all canonical scopes admitted by hybrid recall remain candidates.
+    private func activeMemoryCorpusIsEmpty(now: Date) async throws -> Bool {
+        try await memories.maintainMemoryLifecycle(now: now)
+        var cursor: String?
+        repeat {
+            try Task.checkCancellation()
+            let page = try await memories.listMemories(.init(status: .active, cursor: cursor, limit: 100))
+            if page.entries.contains(where: { $0.expiresAt.map { $0 > now } ?? true }) { return false }
+            // An expired pinned row may remain active. Finish every real page
+            // before concluding that no unexpired candidate remains.
+            cursor = page.nextCursor
+        } while cursor != nil
+        return true
+    }
     func recallMemories(_ query: String, context: GlobalSourceSearchContext) async throws -> [HybridMemoryRecallItem] {
+        let now = Date()
+        if embedding != nil, try await activeMemoryCorpusIsEmpty(now: now) { return [] }
         let vector = try? await embedding?.embedding(for: query)
         return try await memories.hybridRecall(.init(query: query, workspaceID: context.workspaceID, conversationID: context.conversationID,
-            queryEmbedding: vector ?? nil, modelIdentifier: embedding?.modelIdentifier, modelRevision: embedding?.modelRevision, limit: context.limit))
+            queryEmbedding: vector ?? nil, modelIdentifier: embedding?.modelIdentifier, modelRevision: embedding?.modelRevision, limit: context.limit), now: now)
     }
     func browseMemories(_ query: String, context: GlobalSourceSearchContext) async throws -> [HybridMemoryRecallItem] {
+        let now = Date()
+        if embedding != nil, try await activeMemoryCorpusIsEmpty(now: now) { return [] }
         let vector = try? await embedding?.embedding(for: query)
         return try await memories.browseMemories(.init(query: query, workspaceID: context.workspaceID,
             conversationID: context.conversationID, queryEmbedding: vector ?? nil,
-            modelIdentifier: embedding?.modelIdentifier, modelRevision: embedding?.modelRevision, limit: context.limit))
+            modelIdentifier: embedding?.modelIdentifier, modelRevision: embedding?.modelRevision, limit: context.limit), now: now)
     }
     func recordMemoryUse(_ ids: [UUID], runID: UUID) async { await memories.recordMemoryUse(ids, runID: runID) }
     func readSource(_ id: String, offset: Int = 0, limit: Int = 4_000) async throws -> GlobalSourceHit {
@@ -203,15 +223,17 @@ actor GlobalSourceMemoryService {
         let lexical = try await index.lexical(query)
         var ranked: [String: (GlobalSourceDescriptor, GlobalSourceChunk, Double, Bool)] = [:]
         for (rank, value) in lexical.enumerated() { ranked[value.1.id] = (value.0, value.1, 1 / Double(60 + rank + 1), false) }
-        if let embedding, let vector = try? await embedding.embedding(for: query) {
+        if let embedding {
             let candidates = try await index.semanticCandidates(model: embedding.modelIdentifier, revision: embedding.modelRevision)
-            let ordered = candidates.compactMap { source, chunk -> (GlobalSourceDescriptor, GlobalSourceChunk, Double)? in
-                guard let stored = chunk.vector, let similarity = MemoryVectorMath.cosineSimilarity(vector, stored), similarity > 0.2 else { return nil }
-                return (source, chunk, similarity)
-            }.sorted { $0.2 > $1.2 }.prefix(80)
-            for (rank, value) in ordered.enumerated() {
-                let previous = ranked[value.1.id]
-                ranked[value.1.id] = (value.0, value.1, (previous?.2 ?? 0) + 1 / Double(60 + rank + 1), true)
+            if !candidates.isEmpty, let vector = try? await embedding.embedding(for: query) {
+                let ordered = candidates.compactMap { source, chunk -> (GlobalSourceDescriptor, GlobalSourceChunk, Double)? in
+                    guard let stored = chunk.vector, let similarity = MemoryVectorMath.cosineSimilarity(vector, stored), similarity > 0.2 else { return nil }
+                    return (source, chunk, similarity)
+                }.sorted { $0.2 > $1.2 }.prefix(80)
+                for (rank, value) in ordered.enumerated() {
+                    let previous = ranked[value.1.id]
+                    ranked[value.1.id] = (value.0, value.1, (previous?.2 ?? 0) + 1 / Double(60 + rank + 1), true)
+                }
             }
         }
         let ordered = ranked.values.sorted { lhs, rhs in

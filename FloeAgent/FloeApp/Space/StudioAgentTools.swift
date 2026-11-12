@@ -980,13 +980,25 @@ enum StudioToolOutput {
             throw FloeError.validationFailed("Unsupported CAD export format '\(format)'. Read nativeCAD and choose a real drawing "
                 + "or exchange format; nothing was exported.")
         }
+        if input.sketchID != nil,
+           !(value.record.kind == .cad2D && format == "dxf" && input.pageID == nil) {
+            throw FloeError.validationFailed("sketchID is for a standalone 2D DXF export. Use pageID for an engineering drawing; do not combine both.")
+        }
         var bytes: Data
         var note = ""
         var complete: Bool? = nil
         var included: Int? = nil
         var excluded: Int? = nil
         var formatLoss: [String] = []
-        if isDrawing {
+        if value.record.kind == .cad2D, format == "dxf" {
+            guard let sketchID = input.sketchID, input.pageID == nil else {
+                throw FloeError.validationFailed("Export this standalone 2D sketch with {expectedRevision,format:'dxf',sketchID}. Choose the actual sketch ID from studio.read; a drawing page is not a sketch.")
+            }
+            switch document.nativeSketchDXFData(sketchID: sketchID) {
+            case .success(let data, let detail): bytes = data; note = detail
+            case .failure(let error): throw FloeError.validationFailed("\(error.code): \(error.message)")
+            }
+        } else if isDrawing {
             switch await document.nativeExportDataAsync(format: format, pageID: input.pageID) {
             case .success(let data, let detail):
                 bytes = data; note = detail
@@ -1334,7 +1346,7 @@ enum StudioToolOutput {
         case .cad2D, .cad3D:
             let base = StudioTypedEditExamples.cadFormat(kind: kind, snapshot: cadState)
             if kind == .cad2D {
-                return base + " This standalone 2D original offers only sketch-side native services: updateSketchEntity, deleteSketchEntity, addSketchConstraint, updateSketchConstraint, removeSketchConstraint, setSketchDimension, removeSketchDimension, trimSketchCurve, extendSketchCurve, offsetSketchCurve, unlinkSketchOffset, projectExternalEdges, detachExternalReferences, sketch.setSupport, sketch.clearSupport, undo, redo and document.importDrawing. nativeCAD.geometryOperations is limited to sketch.create/addEntities/addText/item.setHidden; every 3D feature/mesh name is listed only in threeDOnlyGeometryOperations and is refused without change. nativeCAD.entities/constraints carry this sketch's actual rows and continuation offsets; request the next page with cad.sketchOffset/cad.entityOffset/cad.constraintOffset. Measurements are native query scope=measure (body, distance, bounds, entity, angle, area, check). Export uses studio.run action=export with a real saved drawing page. Without pageID, render/inspectFrame uses a read-only orthographic observation of this original's visible coplanar sketches; empty or ambiguous planes refuse without mutation."
+                return base + " This standalone 2D original offers only sketch-side native services: updateSketchEntity, deleteSketchEntity, addSketchConstraint, updateSketchConstraint, removeSketchConstraint, setSketchDimension, removeSketchDimension, trimSketchCurve, extendSketchCurve, offsetSketchCurve, unlinkSketchOffset, projectExternalEdges, detachExternalReferences, sketch.setSupport, sketch.clearSupport, undo, redo and document.importDrawing. nativeCAD.geometryOperations is limited to sketch.create/addEntities/addText/item.setHidden; every 3D feature/mesh name is listed only in threeDOnlyGeometryOperations and is refused without change. nativeCAD.entities/constraints carry this sketch's actual rows and continuation offsets; request the next page with cad.sketchOffset/cad.entityOffset/cad.constraintOffset. Measurements are native query scope=measure (body, distance, bounds, entity, angle, area, check). DXF export of this standalone 2D sketch uses studio.run action=export with inputJSON {expectedRevision:the exact fresh read token,format:'dxf',sketchID:an actual sketch UUID from nativeCAD.sketches}; do not pass pageID instead of a sketch. Engineering drawing formats still need a saved page with real resolvable sources. Without pageID, render/inspectFrame uses a read-only orthographic observation of this original's visible coplanar sketches; empty or ambiguous planes refuse without mutation."
             }
             return base + " This 3D original keeps its legitimate 3D feature/mesh operations; sketch edits still use explicit sketches and do not turn the work into a standalone 2D original. nativeCAD.nativeOperations also exposes the same sketch constraint/dimension/curve services and undo/redo. Export uses studio.run action=export; render/inspectFrame returns the saved drawing page PNG, never a viewport screenshot."
         case .canvas: return "CanvasEditBatch JSON: {pageID,scope:{kind:wholeDocument},operations:[{updateTitle:{nodeID:UUID,title:String}}]}. Cases insertNode(_0), updateContent(nodeID,content), updateTitle(nodeID,title), move(nodeID,center), resize(nodeID,size), insertConnection(_0), removeConnection(connectionID), removeNode(nodeID), setRegionCollapsed(regionID,isCollapsed), setPencilDrawingData(_0). Use actual IDs and Codable content from state; locked nodes cannot be unlocked."
@@ -1435,12 +1447,13 @@ private struct StudioCADExportInput: Decodable {
     let expectedRevision: StudioCADExpectedRevision
     let format: String
     let pageID: UUID?
+    let sketchID: UUID?
     let acceptPartial: Bool?
     static func decode(_ json: String?) throws -> Self {
         guard let data = json?.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["expectedRevision", "format", "pageID", "acceptPartial"]) else {
-            throw FloeError.validationFailed("export requires {expectedRevision,format,pageID?,acceptPartial?}; no paths are accepted.")
+              Set(object.keys).isSubset(of: ["expectedRevision", "format", "pageID", "sketchID", "acceptPartial"]) else {
+            throw FloeError.validationFailed("export requires {expectedRevision,format,pageID?,sketchID?,acceptPartial?}; no paths are accepted.")
         }
         let value = try JSONDecoder().decode(Self.self, from: JSONSerialization.data(withJSONObject: object))
         guard !value.format.isEmpty,

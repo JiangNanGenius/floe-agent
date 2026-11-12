@@ -163,7 +163,11 @@ import FloeCAD
             let initialEntities = try #require((before.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
             let entity = try #require((initialEntities["rows"] as? [[String: Any]])?.first)
             #expect(entity["widthMM"] as? Double == 3.5 && entity["heightMM"] as? Double == 3)
-            #expect(before.guide.contains("CURRENT managed Space 2D sketch") && before.guide.contains("Do not guess"))
+            #expect(before.guide.contains("CURRENT managed Space standalone 2D sketch original"))
+            for required in ["this projectID", "exact fresh read revision", "not a guessed file or cad.document binding",
+                             "sketch.rename", "actual ID", "document.save"] {
+                #expect(before.guide.contains(required))
+            }
             let rename = try StudioTypedEditExamples.encode(StudioCADRenameCommand(op: .sketch, args: .init(id: sketchID, name: "Renamed drawing")))
             try await edit(id, revision: before.revision, command: rename, context: context)
             let after = try await read(id, context, cad: query)

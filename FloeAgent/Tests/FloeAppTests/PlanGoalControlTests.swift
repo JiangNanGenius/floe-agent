@@ -17,6 +17,17 @@ struct PlanGoalControlTests {
         private var values: [ProviderStreamRequest] = []
         private var streams: [AsyncThrowingStream<AgentEvent, Error>.Continuation] = []
         private var configuredBudgets: [UUID: GoalBudgets] = [:]
+        private let preparationStarted = ContinuousClock.now
+        private var preparationPhases: [String] = []
+        func recordPreparation(runID: UUID, stage: String) {
+            let elapsed = preparationStarted.duration(to: .now).components
+            let milliseconds = elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000
+            lock.withLock {
+                if preparationPhases.count == 64 { preparationPhases.removeFirst() }
+                preparationPhases.append("\(runID.uuidString.prefix(8)) \(stage) +\(milliseconds)ms")
+            }
+        }
+        var preparationDiagnostic: String { lock.withLock { preparationPhases.joined(separator: "; ") } }
         func recordBudget(runID: UUID, budget: GoalBudgets?) { lock.withLock { configuredBudgets[runID] = budget } }
         func budget(runID: UUID) -> GoalBudgets? { lock.withLock { configuredBudgets[runID] } }
         func append(_ value: ProviderStreamRequest, stream: AsyncThrowingStream<AgentEvent, Error>.Continuation) {
@@ -104,7 +115,8 @@ struct PlanGoalControlTests {
         while f.requests.all.count <= count, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(2))
         }
-        let request = try #require(f.requests.all.dropFirst(count).first, "The real runtime never reached the scripted provider")
+        let request = try #require(f.requests.all.dropFirst(count).first,
+            "The real runtime never reached the scripted provider. Native preparation: \(f.requests.preparationDiagnostic)")
         try #require(request.diagnosticRunID != nil, "An auxiliary request cannot stand in for the admitted round")
         return request
     }
@@ -181,6 +193,11 @@ struct PlanGoalControlTests {
     @Test("Plan-to-Goal uses the accepted implementation contract and keeps planning history and original constraints")
     func acceptedPlanGoalUsesImplementationContract() async throws {
         let f = try await fixture()
+        let preparationRequests = f.requests
+        f.center.launchTestHooks.didPrepareServiceStage = { runID, stage in
+            preparationRequests.recordPreparation(runID: runID, stage: stage)
+        }
+        defer { f.center.launchTestHooks.didPrepareServiceStage = nil }
         let conversation = try await f.center.createConversation(title: "Accepted implementation")
         let plan = PlanDraft(conversationID: conversation.id, status: .ready,
             title: "Deliver the playable fixture", summary: "PLANNING_ONLY_MARKER: only confirm the plan; do not implement yet",

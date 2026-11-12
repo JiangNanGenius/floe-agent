@@ -1432,6 +1432,9 @@ final class ConversationCenter: ObservableObject {
         var didReleaseTaskRoot: (@Sendable () -> Void)?
         /// Observe the actual native configuration passed to a new service.
         var didConfigureGoalBudget: (@Sendable (UUID, GoalBudgets?) -> Void)?
+        /// Fixed native phase names only; an opt-in hosted test can locate a
+        /// preparation delay without logging prompts, credentials or files.
+        var didPrepareServiceStage: (@Sendable (UUID, String) -> Void)?
     }
     var launchTestHooks = LaunchTestHooks()
 
@@ -3977,6 +3980,9 @@ final class ConversationCenter: ObservableObject {
         // Temporary conversations run through the SAME runtime with RAM-only
         // stores, no workspace lease, no personalization/memory recall, and a
         // strict read-only tool ceiling — never a parallel runtime.
+        func preparationStage(_ stage: String) {
+            launchTestHooks.didPrepareServiceStage?(runID, stage)
+        }
         let isTemporary = temporaryAuthority ?? isTemporaryConversation(conversationID)
         // Join the saved settings at the actual launch boundary as well as
         // bootstrap. An early failed read or a restored/synced configuration
@@ -4166,6 +4172,7 @@ final class ConversationCenter: ObservableObject {
         try Task.checkCancellation()
         try await launchTestHooks.afterTaskRootAcquired?(taskRootLease?.url)
         try Task.checkCancellation()
+        preparationStage("begin:execution_binding")
         let runWorkspaceRoot = taskRootLease?.url ?? notesScratchRoot
         var workspaceAttachmentPaths = taskRootLease.map {
             importRunAttachments(currentUserAttachments, into: $0.url)
@@ -4234,8 +4241,11 @@ final class ConversationCenter: ObservableObject {
             runExecutionEnvironmentID = nil
         }
 
+        preparationStage("end:execution_binding")
+        preparationStage("begin:native_compositions")
         await environment.biologyComposition.prepare()
         await environment.latexComposition.prepare()
+        preparationStage("end:native_compositions")
         let catalogExecutor = CatalogToolExecutor()
         let availableDescriptors = catalogExecutor.allDescriptors
         let skills: SkillsCenter.RuntimeSelection
@@ -4256,6 +4266,7 @@ final class ConversationCenter: ObservableObject {
             activeGoal = nil
             contentOverlay = .empty
         } else {
+            preparationStage("begin:skills")
             let skillPreparationCancellation = CancellationToken()
             let installed = await withTaskCancellationHandler {
                 await environment.skillsCenter.runtimeSelection(runID: runID,
@@ -4267,12 +4278,16 @@ final class ConversationCenter: ObservableObject {
                 let originals = (try? await MacOriginalSkillsCenter.shared.runtimeSelection(runID: runID)) ?? .none
                 skills = SkillsCenter.mergedRuntimeSelection([installed, originals])
             } else { skills = installed }
+            preparationStage("end:skills")
+            preparationStage("begin:personalization")
             personalization = await runtimePersonalizationContext(
                 query: memoryQuery,
                 workspaceID: canonicalWorkspaceID,
                 conversationID: conversationID,
                 memoryUseLease: memoryUseLease
             )
+            preparationStage("end:personalization")
+            preparationStage("begin:plan_goal_overlay")
             let storedPlan = try? await environment.intelligenceStore.latestPlan(conversationID: conversationID)
             if var executionPlan = storedPlan, executionPlan.status == .accepted,
                effectiveExecutionMode.conversationMode != .plan {
@@ -4297,6 +4312,8 @@ final class ConversationCenter: ObservableObject {
                 locale: FloeL10n.currentLanguageCode
             )
         }
+        preparationStage("end:plan_goal_overlay")
+        preparationStage("begin:tool_projection")
         let taskPolicyToolNames: Set<String>? = {
             let hasExplicitRestriction = taskPolicy.allowedToolNames != nil
                 || taskPolicy.approvalMode == "readOnly"
@@ -4471,6 +4488,8 @@ final class ConversationCenter: ObservableObject {
         // Native Toolbox authority is frozen from this conversation's exact
         // selected connection. All prior task/skill/provider ceilings remain
         // authoritative, and unrelated tasks discover no Toolbox sessions.
+        preparationStage("end:tool_projection")
+        preparationStage("begin:toolbox_and_environment")
         let nativeToolboxNames = try await environment.toolboxCenter.freeze(runID: runID, conversationID: conversationID)
         let toolboxCeiling = allowedToolNames ?? Set(availableDescriptors.map(\.name))
         allowedToolNames = toolboxCeiling.subtracting(ToolboxCenter.toolNames)
@@ -4510,6 +4529,8 @@ final class ConversationCenter: ObservableObject {
         // fact (like the workspace root): model arguments address records
         // inside the store but never mint authority, and a missing key or an
         // invalid project id fails closed.
+        preparationStage("end:toolbox_and_environment")
+        preparationStage("begin:typed_service_stores")
         var serviceStorePaths = environment.workbenchCenter.typedServiceStorePaths
         serviceStorePaths.merge(environment.biologyComposition.typedServiceStorePaths) { _, native in native }
         serviceStorePaths.merge(environment.latexComposition.typedServiceStorePaths) { _, native in native }
@@ -4535,6 +4556,8 @@ final class ConversationCenter: ObservableObject {
         // Sendable handles for the terminal-boundary dependency projection:
         // both are actors, so the @Sendable configuration closure can consult
         // the durable truth without capturing the app environment.
+        preparationStage("end:typed_service_stores")
+        preparationStage("begin:runtime_configuration")
         let runDependencyStore = SQLiteRunDependencyStore(database: environment.database)
         let jobServiceForRun = environment.backgroundJobService
         // Metadata only: the callback runs after the durable run has been
@@ -4650,6 +4673,8 @@ final class ConversationCenter: ObservableObject {
             configuration.goalBudgets = activeGoal.budgets
         }
         launchTestHooks.didConfigureGoalBudget?(runID, configuration.goalBudgets)
+        preparationStage("end:runtime_configuration")
+        preparationStage("begin:subagent_registry")
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
                 provider: provider,
@@ -4673,6 +4698,8 @@ final class ConversationCenter: ObservableObject {
             ),
             for: runID
         )
+        preparationStage("end:subagent_registry")
+        preparationStage("begin:document_contexts")
         let notesContext: String?
         if isTemporary {
             // A temporary chat is never bound to a Notes document.
@@ -4705,6 +4732,7 @@ final class ConversationCenter: ObservableObject {
         // leaves the arguments untouched in RAM through the ceiling and any
         // public web tool execution; nothing temporary is ever persisted to
         // the vault. The ordinary closure keeps the existing behavior.
+        preparationStage("end:document_contexts")
         let credentialVault = environment.credentialVault
         let credentialOwner: CredentialOwner = if canonicalWorkspace?.kind == .project,
                                                   let canonicalWorkspaceID {
@@ -4729,6 +4757,7 @@ final class ConversationCenter: ObservableObject {
         // reserved attempt, not a technical prompt in the user's transcript.
         // A matching attempt with missing/corrupt input fails before provider
         // I/O; later ordinary runs receive no stale authoring instructions.
+        preparationStage("begin:authoring_context")
         let authoringInstructions: String?
         if isTemporary {
             authoringInstructions = nil
@@ -4741,6 +4770,8 @@ final class ConversationCenter: ObservableObject {
                 expectedAttempt: authoring?.attempt?.token
             )
         }
+        preparationStage("end:authoring_context")
+        preparationStage("begin:experience_guidance")
         let experienceGuidance: String?
         if isTemporary || runSurface != .ordinary
             || !configuration.toolsEnabled || !model.capabilities.contains(.tools) {
@@ -4761,6 +4792,7 @@ final class ConversationCenter: ObservableObject {
         }
         // Bind browser-data consent to this actual run's immutable endpoint,
         // never to a different conversation currently visible in Settings.
+        preparationStage("end:experience_guidance")
         let browserRecipient = Self.browserRecipientIdentity(for: provider)
         BrowserProviderTrustCoordinator.shared.bindProvider(
             runID: runID, conversationID: conversationID, identity: browserRecipient
@@ -4768,6 +4800,7 @@ final class ConversationCenter: ObservableObject {
         BrowserProviderTrustCoordinator.shared.setCurrentProvider(browserRecipient)
         let userInputProjection = modelInputProjection(for: runID, conversationID: conversationID)
         try Task.checkCancellation()
+        preparationStage("begin:service_and_approval")
         let service = ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider, ownerRunID: runID),
@@ -4862,6 +4895,7 @@ final class ConversationCenter: ObservableObject {
                 userInputProjection.close()
             }
         )
+        preparationStage("end:service_and_approval")
         resourceOwnershipTransferred = true
         if runInvocationOwnership.hasOwner(runID) {
             pendingRunResources[runID] = taskRootResources

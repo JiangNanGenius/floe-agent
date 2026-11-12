@@ -141,6 +141,130 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
 
 @Suite("FloeAgentRuntime.StateMachine", .serialized)
 struct AgentRuntimeTests {
+    /// Exercise production assembly and native tools.search, not a mirror of
+    /// schema admission. Many discoverable groups make the late index alone
+    /// exceed a 16k request while the unchanged task/system context fits.
+    private func runLateDirectoryBudgetCase(window: Int, compactDirectory: Bool) async throws {
+        func text(_ message: ProviderMessage) -> String {
+            message.content.compactMap { part in
+                if case .text(let value) = part { return value }
+                return nil
+            }.joined(separator: "\n")
+        }
+        let provider = TestFixtures.localhostProvider()
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "bounded-discovery-fixture",
+            displayName: "Bounded discovery", limits: .init(contextTokens: window, maxOutputTokens: 2_048),
+            capabilities: [.text, .tools])
+        let executor = MockExecutor()
+        registerEcho(in: executor)
+        executor.descriptors["audio.inspect"] = .init(name: "audio.inspect", toolDescription: "Inspect a waveform.",
+            parametersJSON: #"{"type":"object","properties":{},"additionalProperties":false}"#,
+            riskLabels: [], isSideEffecting: false)
+        for index in 0..<500 {
+            let name = "catalog_\(index)_" + String(repeating: "capability", count: 4) + ".read"
+            executor.descriptors[name] = .init(name: name, toolDescription: "A discoverable read-only capability.",
+                parametersJSON: #"{"type":"object","properties":{},"additionalProperties":false}"#,
+                riskLabels: [], isSideEffecting: false)
+        }
+        let goal = "Inspect the waveform using audio.inspect, then follow the authorized inspection workflow. USER-TASK-MARKER"
+        let protectedContext = "WORK=owned-original; ENVIRONMENT=selected-environment; PERMISSION=read-only; "
+            + String(repeating: "p", count: 24_000)
+        let directory = ToolDiscovery.index(executor.allDescriptors,
+            wireSafeNames: CompatToolNames.usesWireSafeNames(provider))
+        // This independently proves the small-window pressure is caused by
+        // late metadata, rather than a fixture whose user input cannot fit.
+        let original = [ProviderMessage(role: "system", content: [.text(protectedContext)]),
+                        ProviderMessage(role: "user", content: [.text(goal)])]
+        let originalSize = ProviderRequestSizer.measure(messages: original, schemas: [],
+            contextWindowTokens: window, reservedOutputTokens: 2_048)
+        #expect(originalSize.messageTokens + originalSize.reservedOutputTokens + originalSize.safetyMarginTokens < window)
+        if compactDirectory {
+            let withFullDirectory = original + [.init(role: "system", content: [.text(directory)])]
+            let size = ProviderRequestSizer.measure(messages: withFullDirectory, schemas: [],
+                contextWindowTokens: window, reservedOutputTokens: 2_048)
+            #expect(size.messageTokens + size.reservedOutputTokens + size.safetyMarginTokens > window)
+        }
+        let adapter = MockAdapter()
+        let search = try TestFixtures.toolCall(id: "budget-search", toolName: ToolDiscovery.name,
+            arguments: #"{"query":"test.echo"}"#)
+        let echo = try TestFixtures.toolCall(id: "budget-echo", arguments: #"{"text":"authorized-result"}"#)
+        adapter.script = [
+            [.reasoningSummary(.init(text: "Inspect the authorized result before continuing.")),
+             .toolRequest(search), .completed(.init(stopReason: .toolUse))],
+            [.toolRequest(echo), .completed(.init(stopReason: .toolUse))],
+            [.textDelta(.init(text: "Done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: model),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: executor,
+            checkpointStore: MockCheckpointStore(), liveSystemContext: { protectedContext })
+        try await runtime.start(goal: goal)
+        #expect(await runtime.state.name == "completed")
+        try #require(adapter.requests.count == 3)
+        let expectedNames = Set(executor.allDescriptors.map(\.name)
+            + [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name])
+        for request in adapter.requests {
+            #expect(Set(request.allToolNames) == expectedNames)
+            #expect(request.effectiveMessages.contains { message in
+                message.role == "user" && text(message) == goal
+            })
+            let context = request.effectiveMessages.filter { $0.role == "system" }.map(text).joined(separator: "\n")
+            #expect(context.contains(protectedContext))
+            #expect(context.contains("Substep capability rule"))
+            if compactDirectory { #expect(!context.contains(directory)) }
+            else { #expect(context.contains(directory)) }
+            let size = ProviderRequestSizer.measure(messages: request.effectiveMessages, schemas: request.toolSchemas,
+                replayedToolPairs: request.replayedToolPairs, contextWindowTokens: window, reservedOutputTokens: 2_048)
+            // Independently count the pending call/result/reasoning identity
+            // framing the public sizer deliberately keeps outside messages.
+            let pendingBytes = request.pendingToolCalls.isEmpty ? 0
+                : (request.pendingAssistantReasoning?.utf8.count ?? 0) + 64
+                    + request.pendingToolCalls.reduce(0) { $0 + $1.id.utf8.count + $1.toolName.utf8.count + $1.argumentsJSON.count + 128 }
+            let replayIdentityTokens = request.replayedToolPairs.reduce(0) { count, pair in
+                count + (pair.call.id.utf8.count + pair.call.toolName.utf8.count + pair.result.callID.utf8.count + 130) / 3
+            }
+            let resultTokens = request.toolResults.reduce(0) { $0 + ($1.output.utf8.count + 2) / 3 }
+            let total = size.messageTokens + size.schemaTokens + size.replayTokens + size.reservedOutputTokens
+                + size.safetyMarginTokens + (pendingBytes + 2) / 3 + replayIdentityTokens + resultTokens
+            #expect(total <= window)
+            for schema in request.toolSchemas {
+                let descriptor = executor.descriptor(named: schema.name)
+                    ?? ToolDiscovery.runtimeDescriptors(publicWebOnly: false).first { $0.name == schema.name }
+                #expect(schema.parametersJSON == descriptor?.parametersJSON)
+                #expect((try JSONSerialization.jsonObject(with: Data(schema.parametersJSON.utf8))) is [String: Any])
+            }
+        }
+        #expect(!adapter.requests[0].toolSchemas.contains { $0.name == "test.echo" })
+        let followup = adapter.requests[1]
+        #expect(followup.pendingToolCalls.map(\.id) == [search.id])
+        #expect(followup.toolResults.map(\.callID) == [search.id])
+        #expect(followup.pendingAssistantReasoning?.contains("authorized result") == true)
+        #expect(followup.toolSchemas.contains { $0.name == "test.echo" })
+        #expect(adapter.requests[2].pendingToolCalls.map(\.id) == [echo.id])
+        #expect(adapter.requests[2].toolResults.map(\.callID) == [echo.id])
+        #expect(executor.executedCalls.map(\.id) == [echo.id])
+    }
+
+    @Test("Late discoverable metadata fits a real 16k dispatch and preserves call-result pairs")
+    func lateDiscoveryDirectoryFits16KWithoutLosingAuthorityOrPairs() async throws {
+        try await runLateDirectoryBudgetCase(window: 16_384, compactDirectory: true)
+        // Tool-free dispatches are not an exception to the final budget guard.
+        let provider = TestFixtures.localhostProvider(), adapter = MockAdapter()
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "bounded-tool-free-fixture",
+            displayName: "Bounded tool-free", limits: .init(contextTokens: 16_384, maxOutputTokens: 2_048),
+            capabilities: [.text])
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: model, toolsEnabled: false),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore(), liveSystemContext: { String(repeating: "x", count: 50_000) })
+        try await runtime.start(goal: "Keep this exact user input")
+        #expect(adapter.requests.isEmpty)
+        #expect(await runtime.state.name == "failed")
+    }
+
+    @Test("A normal 128k window retains the full discovery directory and complete loaded schemas")
+    func largeWindowKeepsFullDiscoveryDirectoryAndCompleteSchemas() async throws {
+        try await runLateDirectoryBudgetCase(window: 128_000, compactDirectory: false)
+    }
+
     @Test("Approval authority survives long tool output and excludes forged user lines")
     func approvalAuthorityUsesMessageRoles() {
         let messages = [ConversationMessage(role: "user", content: "配置指定主机的 VNC")]

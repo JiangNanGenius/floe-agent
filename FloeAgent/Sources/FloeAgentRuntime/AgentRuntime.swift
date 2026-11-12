@@ -2972,6 +2972,7 @@ public actor FloeAgentRuntime {
         // offered whole when the window can carry it; otherwise it is deferred
         // honestly and history compaction has already had its chance.
         var schemaDeferredNote: String?
+        var deferredDiscoveryDirectory: String?
         var borrowedDiscoveryReserve = false
         if supportsTools {
             let alwaysKeep: Set<String> = [
@@ -3039,8 +3040,7 @@ public actor FloeAgentRuntime {
                     .prefix(24)
                     .map { CompatToolNames.wireName($0, for: configuration.provider) }
                     .joined(separator: ", ")
-                schemaDeferredNote = "This model window carries \(plan.offered.count) complete tool definition(s); "
-                    + "\(deferredNames.count) more were deferred so every offered schema stays complete"
+                schemaDeferredNote = "\(deferredNames.count) tool definitions were deferred so every offered schema stays complete"
                     + (deferredNames.count > 24 ? " (first 24: \(display))" : ": \(display)")
                     + (plan.oversized.isEmpty
                         ? "."
@@ -3108,24 +3108,13 @@ public actor FloeAgentRuntime {
                 contentMessages[index].content.append(.text(note))
             }
         }
-        if supportsTools, let schemaDeferredNote {
-            if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
-                legacyMessages[index].content += "\n\n" + schemaDeferredNote
-                contentMessages[index].content.append(.text(schemaDeferredNote))
-            } else {
-                legacyMessages.insert((role: "system", content: schemaDeferredNote), at: 0)
-                contentMessages.insert(ProviderMessage(role: "system", content: [.text(schemaDeferredNote)]), at: 0)
-            }
-        }
         // Local adapters build their own admitted tool metadata. Keep runtime
         // state and receipts, without appending a second full cloud directory.
-        if supportsTools, configuration.provider.kind != .local, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
-            let discovery = ToolDiscovery.index(
+        if supportsTools, configuration.provider.kind != .local {
+            deferredDiscoveryDirectory = ToolDiscovery.index(
                 discoverableDescriptors,
                 wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider)
             )
-            legacyMessages[index].content += "\n\n" + discovery
-            contentMessages[index].content.append(.text(discovery))
         }
         // Turn-bound capability guidance for EVERY provider kind. Local
         // adapters skip the full cloud directory above, but the bounded
@@ -3268,6 +3257,86 @@ public actor FloeAgentRuntime {
                 ]))
             }
         }
+        // All mandatory context is now present, including the current native
+        // work/environment route, images, ledger, reminders and time. Only the
+        // rediscoverable directory/deferral prose may yield to this budget.
+        // Never trim user/Goal/permission messages or tool evidence to fit it.
+        let windowTokens = configuration.model.limits.contextTokens
+        let outputTokens = Self.contextOutputReservation(limits: configuration.model.limits)
+        let pendingMetadataTokens = (Self.pendingCallMetadataBytes(
+            calls: pendingToolCalls,
+            reasoning: pendingToolCalls.isEmpty ? nil : ToolReplayPlanner.boundedReasoning(responseReasoning)
+        ) + 2) / 3
+        let resultReserveTokens = min(windowTokens / 3, max(1_024, windowTokens / 4))
+        let planSchemas: [ToolSchemaDescriptor] = supportsTools && configuration.conversationMode == .plan
+            ? [.init(name: PlanSubmission.toolName, description: PlanSubmission.toolDescription,
+                     parametersJSON: PlanSubmission.parametersJSON)] : []
+        let minimumDiscovery = catalogDescriptors.first { $0.name == ToolDiscovery.name }
+        let minimumSchemas = (supportsTools ? minimumDiscovery.map {
+            [ToolSchemaDescriptor(name: $0.name, description: Self.providerToolDescription($0),
+                                  parametersJSON: $0.parametersJSON)]
+        } ?? [] : []) + planSchemas
+        var optionalDirectoryBlocks: [(full: String, fallback: String?)] = []
+        if supportsTools, let schemaDeferredNote {
+            optionalDirectoryBlocks.append((schemaDeferredNote, nil))
+        }
+        if supportsTools, let directory = deferredDiscoveryDirectory {
+            let search = CompatToolNames.wireName(ToolDiscovery.name, for: configuration.provider)
+            let list = CompatToolNames.wireName(ToolDiscovery.listName, for: configuration.provider)
+            optionalDirectoryBlocks.append((directory,
+                "Use \(list) for this run's complete authorized tool inventory and \(search) to load complete definitions by exact name or capability. Deferred schemas remain installed and callable; permissions and prerequisites still apply."))
+        }
+        for block in optionalDirectoryBlocks {
+            for text in [block.full, block.fallback].compactMap({ $0 }) {
+                var proposed = contentMessages
+                if let index = proposed.firstIndex(where: { $0.role == "system" }) {
+                    proposed[index].content.append(.text(text))
+                } else {
+                    proposed.insert(.init(role: "system", content: [.text(text)]), at: 0)
+                }
+                let size = ProviderRequestSizer.measure(messages: modelInputWireMessages(proposed),
+                    schemas: minimumSchemas, contextWindowTokens: windowTokens,
+                    reservedOutputTokens: outputTokens)
+                guard size.availableToolResultTokens >= resultReserveTokens + pendingMetadataTokens else { continue }
+                contentMessages = proposed
+                if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+                    legacyMessages[index].content += "\n\n" + text
+                } else {
+                    legacyMessages.insert((role: "system", content: text), at: 0)
+                }
+                break
+            }
+        }
+        if supportsTools, configuration.provider.kind != .local {
+            // Re-admit WHOLE schemas against effective wire messages, not the
+            // earlier pre-guidance estimate. The native discovery schema may
+            // borrow only from the result reserve, just as at first admission.
+            let size = ProviderRequestSizer.measure(messages: modelInputWireMessages(contentMessages),
+                schemas: planSchemas, contextWindowTokens: windowTokens,
+                reservedOutputTokens: outputTokens)
+            let discoveryCost = minimumDiscovery.map(ToolSchemaOfferPlanner.tokenCost) ?? 0
+            let schemaBudget = ToolSchemaOfferPlanner.availableTokenBudget(
+                contextWindowTokens: windowTokens,
+                reservedOutputTokens: outputTokens + size.safetyMarginTokens + size.schemaTokens + pendingMetadataTokens,
+                messageTokens: size.messageTokens, imageTokens: 0, replayTokens: 0,
+                toolResultReserveTokens: resultReserveTokens, minimumDiscoveryTokens: discoveryCost)
+            let plan = ToolSchemaOfferPlanner.plan(descriptors: catalogDescriptors, tokenBudget: schemaBudget,
+                alwaysKeep: [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name],
+                discoveryName: ToolDiscovery.name)
+            let hasUsableSchema = discoveryCost > 0
+                ? plan.offered.contains(where: { $0.name == ToolDiscovery.name })
+                : catalogDescriptors.isEmpty || !plan.offered.isEmpty
+            guard hasUsableSchema else {
+                await failRun(message: FloeL10n.isChinese
+                    ? "当前对话没有足够空间使用工具。请精简对话或选择更大上下文的模型。"
+                    : "There is not enough context space to use tools. Shorten the conversation or choose a model with a larger context window.",
+                    recoverable: true)
+                return
+            }
+            borrowedDiscoveryReserve = borrowedDiscoveryReserve
+                || schemaBudget > max(0, size.availableToolResultTokens - resultReserveTokens - pendingMetadataTokens)
+            catalogDescriptors = plan.offered
+        }
         // The paging page is already bounded by its own renderer and must not
         // be re-summarized. Identity comes from the runtime's own pending
         // calls, never from the result text or a model argument.
@@ -3286,13 +3355,7 @@ public actor FloeAgentRuntime {
                     description: Self.providerToolDescription($0),
                     parametersJSON: $0.parametersJSON
                 )
-            } + (configuration.conversationMode == .plan ? [
-                ToolSchemaDescriptor(
-                    name: PlanSubmission.toolName,
-                    description: PlanSubmission.toolDescription,
-                    parametersJSON: PlanSubmission.parametersJSON
-                )
-            ] : [])
+            } + planSchemas
             : []
         let selectionInputs = await makeToolResultSelectionInputs(
             pagingCallIDs: pendingPagingCallIDs
@@ -3418,21 +3481,62 @@ public actor FloeAgentRuntime {
                     $0.callID == $1.callID && $0.output == $1.output
                 })
         )
-        if disclosesModelInput || borrowedDiscoveryReserve {
-            // A reserve loan is not permission to exceed the assembled wire
-            // request: recheck actual late-added guidance, schemas and replay.
+        if configuration.provider.kind == .local {
+            // The local adapter admits the actual bounded/native prompt after
+            // selecting complete schemas and folding history/evidence. Keep
+            // the existing disclosure/reserve fence; raw cloud accounting is
+            // not the local model's final prepared prompt.
+            if disclosesModelInput || borrowedDiscoveryReserve {
+                // A reserve loan is not permission to exceed the assembled wire
+                // request: recheck actual late-added guidance, schemas and replay.
+                let actualSize = ProviderRequestSizer.measure(messages: wireRequest.effectiveMessages,
+                    schemas: wireRequest.toolSchemas, replayedToolPairs: wireRequest.replayedToolPairs,
+                    contextWindowTokens: configuration.model.limits.contextTokens,
+                    reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits))
+                let fixed = actualSize.messageTokens + actualSize.schemaTokens + actualSize.replayTokens
+                    + actualSize.reservedOutputTokens + actualSize.safetyMarginTokens
+                guard fixed <= actualSize.contextWindowTokens,
+                      wireRequest.toolResults.reduce(0, { $0 + $1.output.utf8.count }) <= min(actualSize.toolResultBudgetBytes, Self.maximumProviderToolResultBytes) else {
+                    let message = borrowedDiscoveryReserve
+                        ? (FloeL10n.isChinese ? "当前对话没有足够空间使用工具。请精简对话或选择更大上下文的模型。"
+                            : "There is not enough context space to use tools. Shorten the conversation or choose a model with a larger context window.")
+                        : "The disclosed user input does not fit this model's context window. Use an existing credential reference or a larger context model."
+                    await failRun(message: message, recoverable: true)
+                    return
+                }
+            }
+        } else {
+            // Every cloud dispatch (including ordinary/tool-free/retry)
+            // must fit its actual wire payload. Late metadata, disclosure and
+            // a discovery-reserve loan cannot bypass this final barrier.
             let actualSize = ProviderRequestSizer.measure(messages: wireRequest.effectiveMessages,
                 schemas: wireRequest.toolSchemas, replayedToolPairs: wireRequest.replayedToolPairs,
                 contextWindowTokens: configuration.model.limits.contextTokens,
                 reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits))
+            let pendingTokens = (Self.pendingCallMetadataBytes(calls: wireRequest.pendingToolCalls,
+                reasoning: wireRequest.pendingAssistantReasoning) + 2) / 3
+            // The sizer charges replay arguments/reasoning/body. Add the
+            // actual identity/framing bytes it intentionally does not count.
+            let replayEnvelopeTokens = wireRequest.replayedToolPairs.reduce(0) { count, pair in
+                count + (pair.call.id.utf8.count + pair.call.toolName.utf8.count
+                    + pair.result.callID.utf8.count + 128 + 2) / 3
+            }
+            let resultTokens = wireRequest.toolResults.reduce(0) { count, item in
+                count + (item.output.utf8.count + 2) / 3
+            }
             let fixed = actualSize.messageTokens + actualSize.schemaTokens + actualSize.replayTokens
                 + actualSize.reservedOutputTokens + actualSize.safetyMarginTokens
+                + pendingTokens + replayEnvelopeTokens + resultTokens
             guard fixed <= actualSize.contextWindowTokens,
-                  wireRequest.toolResults.reduce(0, { $0 + $1.output.utf8.count }) <= min(actualSize.toolResultBudgetBytes, Self.maximumProviderToolResultBytes) else {
-                let message = borrowedDiscoveryReserve
-                    ? (FloeL10n.isChinese ? "当前对话没有足够空间使用工具。请精简对话或选择更大上下文的模型。"
-                        : "There is not enough context space to use tools. Shorten the conversation or choose a model with a larger context window.")
-                    : "The disclosed user input does not fit this model's context window. Use an existing credential reference or a larger context model."
+                  wireRequest.toolResults.reduce(0, { $0 + $1.output.utf8.count }) <= Self.maximumProviderToolResultBytes else {
+                let message: String
+                if disclosesModelInput && !borrowedDiscoveryReserve {
+                    message = "The disclosed user input does not fit this model's context window. Use an existing credential reference or a larger context model."
+                } else {
+                    message = FloeL10n.isChinese
+                        ? "当前对话超出模型的上下文空间。请精简对话或选择更大上下文的模型。"
+                        : "The current conversation exceeds this model's context window. Shorten the conversation or choose a model with a larger context window."
+                }
                 await failRun(message: message, recoverable: true)
                 return
             }

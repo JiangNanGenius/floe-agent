@@ -203,25 +203,10 @@ import FloePersistence
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("CADImport-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: root.appendingPathComponent("Drawings"), withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: root) }
-            let bytes = Data("dxf-source".utf8)
+            // Real source bytes go through the configured native drawing decoder.
+            let bytes = Data("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n5\nA1\n8\n0\n10\n0\n20\n0\n30\n0\n11\n25\n21\n0\n31\n0\n0\nENDSEC\n0\nEOF\n".utf8)
             let digest = CADSketchTransferEnvelope.digest(bytes)
             try bytes.write(to: root.appendingPathComponent("Drawings/test.dxf"))
-            let snapshot = CADSketchTransferSnapshot(
-                schemaVersion: 1, format: "dxf", drawingVersion: "AC1027", draftRevision: 0,
-                insertionUnits: 4, unitName: "mm", unitScaleMM: 1,
-                selectedHandles: ["L1"], selectedLayers: ["0"],
-                sourcePlane: CADSketchTransferPlane(origin: [0, 0, 0], xAxis: [1, 0, 0], yAxis: [0, 1, 0]),
-                curves: [CADSketchTransferCurve(
-                    kind: .line, handle: "L1", layer: "0", sourceEntityType: "LINE",
-                    ocs: CADSketchTransferOCS(normal: [0, 0, 1], elevation: 0),
-                    start: [0, 0], end: [25, 0], center: nil, radius: nil,
-                    startAngle: nil, sweepAngle: nil)],
-                omissions: [])
-            let envelope = try CADSketchTransferEnvelope(
-                purpose: .modelSketch, sourceName: "test.dxf", sourceSHA256: digest,
-                sourceBytes: bytes, snapshot: snapshot)
-            document.drawingSketchDecoder = { _, _ in envelope }
-            defer { document.drawingSketchDecoder = nil }
             let query: [String: Any] = ["sketchID": sketchID]
             var taskContext = context
             taskContext.workspaceRootURL = root
@@ -276,12 +261,10 @@ import FloePersistence
 
     @Test func cadRenderAndExportUseTheSavedDrawingPageAndPublishRealBytes() async throws {
         try await withWork(kind: "cad2D") { id, _, document, context, _ in
-            let sketchID = "00000000-0000-0000-0000-000000000000"
-            _ = document.execute(["op": "sketch.create", "args": ["name": "Export sheet"]])
+            try #require(document.execute(["op": "sketch.create", "args": ["name": "Export sheet"]]).isOK)
             let actualSketch = try #require(document.session.document.sketches.last?.id.raw.uuidString)
-            _ = document.execute(["op": "sketch.addEntities", "args": ["sketchID": actualSketch,
-                "entities": [["kind": "line", "a": [0, 0], "b": [50, 0]]]]])
-            _ = sketchID
+            try #require(document.execute(["op": "sketch.addEntities", "args": ["sketchID": actualSketch,
+                "entities": [["kind": "line", "a": [0, 0], "b": [50, 0]]]]]).isOK)
             let pageReply = CADDrawingService(document: document).handle(action: "addPage", args: ["kind": "front"])
             #expect(pageReply["ok"] as? Bool == true)
             let page = try #require(pageReply["page"] as? [String: Any])
@@ -297,12 +280,51 @@ import FloePersistence
             let legacy = try await call("studio.run", ["projectID": id.uuidString, "action": "render",
                 "inputJSON": String(decoding: legacyInput, as: UTF8.self)], context)
             #expect((legacy["width"] as? Int ?? 0) > 0 && (legacy["height"] as? Int ?? 0) > 0)
+            let actualID = try #require(UUID(uuidString: actualSketch))
+            let expectedBytes: Data
+            switch document.nativeSketchDXFData(sketchID: actualID) {
+            case .success(let data, _): expectedBytes = data
+            case .failure(let error): throw error
+            }
+            #expect(String(decoding: expectedBytes, as: UTF8.self).contains("LINE"))
+            let exported = try await call("studio.run", ["projectID": id.uuidString, "action": "export",
+                "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"format\":\"dxf\",\"sketchID\":\"\(actualSketch)\"}"], context)
+            let output = try #require(exported["outputFile"] as? [String: Any])
+            #expect(output["byteCount"] as? Int == expectedBytes.count)
+            #expect(exported["sha256"] as? String == StudioToolOutput.hash(expectedBytes))
+            #expect(exported["format"] as? String == "dxf")
+            #expect(document.hasUnsavedChanges == false)
+        }
+        // The 3D engineering route keeps its exact B-rep source requirement.
+        // A real extruded body with explicit bodyIDs must export successfully;
+        // an empty page must still refuse instead of claiming completeness.
+        try await withWork(kind: "cad3D") { id, _, document, context, _ in
+            let created = try await edit(id, try await read(id, context), "sketch.create", ["name": "Projection body"], context)
+            let result = try #require(created["operationResult"] as? [String: Any])
+            let sketchID = try #require(result["sketchID"] as? String)
+            _ = try await edit(id, try await read(id, context), "sketch.addEntities", ["sketchID": sketchID,
+                "entities": [["kind": "rect", "min": [0, 0], "max": [10, 5]]]], context)
+            _ = try await edit(id, try await read(id, context), "feature.extrude", ["sketchID": sketchID,
+                "seedPoint": [5, 2.5], "distance": 3], context)
+            let body = try #require(document.session.document.bodies.first)
+            let drawings = CADDrawingService(document: document)
+            let empty = drawings.handle(action: "addPage", args: ["kind": "front"])
+            try #require(empty["ok"] as? Bool == true)
+            let emptyPage = try #require((empty["page"] as? [String: Any])?["id"] as? String)
+            let prepared = drawings.handle(action: "addPage", args: ["kind": "front", "bodyIDs": [body.id.raw.uuidString]])
+            try #require(prepared["ok"] as? Bool == true)
+            let pageID = try #require((prepared["page"] as? [String: Any])?["id"] as? String)
+            try #require((await document.save()).succeeded)
+            let state = try await read(id, context)
+            await refuses("incomplete_projection") {
+                _ = try await call("studio.run", ["projectID": id.uuidString, "action": "export",
+                    "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"format\":\"dxf\",\"pageID\":\"\(emptyPage)\"}"], context)
+            }
             let exported = try await call("studio.run", ["projectID": id.uuidString, "action": "export",
                 "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"format\":\"dxf\",\"pageID\":\"\(pageID)\"}"], context)
             let output = try #require(exported["outputFile"] as? [String: Any])
-            #expect((output["byteCount"] as? Int ?? 0) > 0)
-            #expect(exported["format"] as? String == "dxf")
-            #expect(document.hasUnsavedChanges == false)
+            #expect((output["byteCount"] as? Int ?? 0) > 0 && exported["format"] as? String == "dxf")
+            #expect(!document.hasUnsavedChanges)
         }
     }
 
