@@ -118,7 +118,12 @@ public actor EDALibraryStore {
             let record = EDALibraryInstalledVersion(packageID: package.id, version: package.version, sha256: hash,
                 title: package.title, partCount: package.parts.count)
             if !index.installed.contains(record) { index.installed.append(record) }
-            if activate { index.activeVersions[package.id] = package.version }
+            if activate {
+                var prospective = index
+                prospective.activeVersions[package.id] = package.version
+                try validateCatalogBudget(prospective, replacing: package, in: directory)
+                index.activeVersions[package.id] = package.version
+            }
             if let deliveredContentSHA256 { index.consumedContentSHA256 = (index.consumedContentSHA256 ?? [:]).merging([package.id: deliveredContentSHA256]) { _, new in new } }
             guard !cancelled(), !Task.isCancelled else { throw EDAError.cancelled }
             try saveInventory(&index, in: directory)
@@ -144,6 +149,33 @@ public actor EDALibraryStore {
             var index = try readInventory(directory); try change(&index.preferences)
             guard index.preferences.favorites.count <= 10_000 else { throw EDAError.invalid("favorite limit") }
             try saveInventory(&index, in: directory)
+        }
+    }
+    /// The catalog aggregates every active package under fixed budgets. A new
+    /// remote part with a large retained original must not activate an index
+    /// that makes every previously usable library unreadable. The prospective
+    /// check runs under the store lock/CAS before the active index is saved.
+    private func validateCatalogBudget(_ index: EDALibraryInventory, replacing package: EDALibraryPackage,
+                                       in directory: Int32) throws {
+        var sourceBytes = 0, partCount = 0
+        for (id, version) in index.activeVersions.sorted(by: { $0.key < $1.key }) {
+            let bytes: Int, parts: Int
+            if id == package.id, version == package.version {
+                bytes = package.sourcePayloads.values.reduce(0) { $0 + $1.count }
+                parts = package.parts.count
+            } else {
+                guard let record = index.installed.first(where: { $0.packageID == id && $0.version == version }) else {
+                    throw EDAError.invalid("active library version")
+                }
+                let value = try readPackage(record, in: directory)
+                bytes = value.sourcePayloads.values.reduce(0) { $0 + $1.count }
+                parts = value.parts.count
+            }
+            guard bytes <= 128 * 1_024 * 1_024 - sourceBytes,
+                  parts <= 100_000 - partCount else {
+                throw EDAError.invalid("active library catalog budget")
+            }
+            sourceBytes += bytes; partCount += parts
         }
     }
     private func readInventory(_ directory: Int32) throws -> EDALibraryInventory {

@@ -139,6 +139,41 @@ import FloeHeavyEditorSupport
         } catch { await session.presentationEnded(); throw error }
         await session.presentationEnded()
     }
+    @Test func unchangedCloseKeepsRevisionAndACameraOnlyChangeStillPersists() async throws {
+        let (record, directory) = try await sessionFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // An untouched close must not append a bare document.save revision.
+        let first = try await GISProjectSession.open(id: record.id, directory: directory)
+        try first.beginPresentation()
+        #expect(try GISProjectOriginal.read(id: record.id, directory: directory).document.revision == 0)
+        #expect(await first.flushForClose())
+        #expect(try GISProjectOriginal.read(id: record.id, directory: directory).document.revision == 0)
+
+        // A real content edit already committed once; closing again is a no-op.
+        let second = try await GISProjectSession.open(id: record.id, directory: directory)
+        try second.beginPresentation()
+        _ = try await second.controller.execute("layer.create", arguments: .object(["name": .string("No extra save")]), expectedRevision: 0)
+        #expect(second.controller.document.revision == 1)
+        #expect(await second.flushForClose())
+        #expect(try GISProjectOriginal.read(id: record.id, directory: directory).document.revision == 1)
+
+        // A real camera move is still a view change worth committing.
+        let third = try await GISProjectSession.open(id: record.id, directory: directory)
+        try third.beginPresentation()
+        _ = try await third.controller.webView.evaluateJavaScript("window.FloeEditor.liveView={center:[-7.3334,20],zoom:3}; 'ok'")
+        try await third.controller.refreshPresentation()
+        #expect(await third.flushForClose())
+        let saved = try GISProjectOriginal.read(id: record.id, directory: directory)
+        #expect(saved.document.revision == 2)
+        let view = saved.state["view"]
+        #expect(abs((view["center"].array.first?.number ?? 0) - (-7.3334)) < 1e-9)
+        #expect(view["zoom"].number == 3)
+        // The existing CAS still rejects an old writer.
+        let stale = try HeavyEditorProjectStore(directory: GISProjectOriginal.root(in: directory), documentID: record.id, kind: .gis)
+        do { _ = try await stale.commit(content: saved.document.content, expectedRevision: 1); Issue.record("Stale view commit replaced the original") }
+        catch HeavyEditorError.revisionConflict { }
+        catch { throw error }
+    }
     @Test func secondPresentationIsRefusedWithoutClosingTheFirstController() async throws {
         let (record, directory) = try await sessionFixture()
         defer { try? FileManager.default.removeItem(at: directory) }

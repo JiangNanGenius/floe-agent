@@ -347,6 +347,12 @@ public struct ProviderStreamRequest: Sendable {
     /// request still reaches the provider normally — this is a local cache
     /// directive, not a provider zero-retention promise.
     public var ephemeralTransport: Bool
+    /// Diagnostic-only run identity for correlating provider request/rejection
+    /// log records with the durable run that produced them. Never serialized
+    /// to the wire, persisted in a checkpoint or used for authority: the
+    /// runtime sets it at dispatch time so a later rejected request can be
+    /// matched to its run without recovering user content or credentials.
+    public var diagnosticRunID: String?
 
     public init(
         provider: ProviderProfile,
@@ -361,7 +367,8 @@ public struct ProviderStreamRequest: Sendable {
         allToolNames: [String] = [],
         reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
         onToolArgumentsProgress: (@Sendable () async -> Void)? = nil,
-        ephemeralTransport: Bool = false
+        ephemeralTransport: Bool = false,
+        diagnosticRunID: String? = nil
     ) {
         self.provider = provider
         self.model = model
@@ -376,6 +383,7 @@ public struct ProviderStreamRequest: Sendable {
         self.reasoningPolicy = reasoningPolicy
         self.onToolArgumentsProgress = onToolArgumentsProgress
         self.ephemeralTransport = ephemeralTransport
+        self.diagnosticRunID = diagnosticRunID
     }
 
     public var effectiveMessages: [ProviderMessage] {
@@ -601,66 +609,86 @@ struct SSEBytePump: Sendable {
         self.session = session
     }
 
-    func events(cancellation: SSEPumpCancellation? = nil) -> AsyncThrowingStream<SSEEvent, Error> {
+    func events(cancellation: SSEPumpCancellation? = nil,
+                retryUnsupportedThinking: Bool = false) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    #if os(Linux)
-                    var parser = SSEParser()
-                    // FoundationNetworking does not expose URLSession.bytes(for:).
-                    // Linux is a build/test target, not an app runtime, so use a
-                    // bounded-lifetime buffered fallback to keep wire parsing and
-                    // contract tests portable. Apple platforms remain truly streaming.
-                    let (data, response) = try await session.data(for: urlRequest)
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        let body = String(decoding: data.prefix(4096), as: UTF8.self)
-                        continuation.yield(SSEEvent(
-                            event: "__http_error__",
-                            data: "\(http.statusCode)\n\(body)"
-                        ))
-                        continuation.finish()
-                        return
-                    }
-                    try Task.checkCancellation()
-                    for event in parser.feed(data) {
-                        continuation.yield(event)
-                    }
-                    for event in try parser.finish() {
-                        continuation.yield(event)
-                    }
-                    continuation.finish()
-                    #else
-                    let (bytes, response) = try await session.bytes(for: urlRequest)
-                    cancellation?.installNetworkTask(bytes.task)
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        var body = ""
-                        for try await byte in bytes {
-                            body.append(Character(UnicodeScalar(byte)))
-                            if body.count > 4096 { break }
-                        }
-                        continuation.yield(SSEEvent(
-                            event: "__http_error__",
-                            data: "\(http.statusCode)\n\(body)"
-                        ))
-                        continuation.finish()
-                        return
-                    }
-                    var framer = SSEByteFramer()
-                    for try await byte in bytes {
+                    var currentRequest = urlRequest
+                    var compatibility = ThinkingFieldCompatibility()
+                    responseAttempt: while true {
                         try Task.checkCancellation()
-                        for event in framer.feed(byte) { continuation.yield(event) }
+                        #if os(Linux)
+                        var parser = SSEParser()
+                        // FoundationNetworking has no bytes(for:). Apple
+                        // platforms keep the existing actual streaming path.
+                        let (data, response) = try await session.data(for: currentRequest)
+                        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                            let body = String(decoding: data.prefix(4096), as: UTF8.self)
+                            try Task.checkCancellation()
+                            if retryUnsupportedThinking,
+                               let replacement = compatibility.replacementRequest(currentRequest, status: http.statusCode, body: body) {
+                                try Task.checkCancellation()
+                                FloeLogger(category: .providers).info("providerCompatibilityRetry field=thinking httpStatus=\(http.statusCode)")
+                                currentRequest = replacement
+                                continue responseAttempt
+                            }
+                            continuation.yield(SSEEvent(event: "__http_error__", data: "\(http.statusCode)\n\(body)"))
+                            continuation.finish()
+                            return
+                        }
+                        try Task.checkCancellation()
+                        for event in parser.feed(data) {
+                            compatibility.observeStreamEvent()
+                            continuation.yield(event)
+                        }
+                        for event in try parser.finish() {
+                            compatibility.observeStreamEvent()
+                            continuation.yield(event)
+                        }
+                        #else
+                        let (bytes, response) = try await session.bytes(for: currentRequest)
+                        cancellation?.installNetworkTask(bytes.task)
+                        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                            var body = ""
+                            for try await byte in bytes {
+                                body.append(Character(UnicodeScalar(byte)))
+                                if body.count > 4096 { break }
+                            }
+                            try Task.checkCancellation()
+                            if retryUnsupportedThinking,
+                               let replacement = compatibility.replacementRequest(currentRequest, status: http.statusCode, body: body) {
+                                bytes.task.cancel()
+                                try Task.checkCancellation()
+                                FloeLogger(category: .providers).info("providerCompatibilityRetry field=thinking httpStatus=\(http.statusCode)")
+                                currentRequest = replacement
+                                continue responseAttempt
+                            }
+                            continuation.yield(SSEEvent(event: "__http_error__", data: "\(http.statusCode)\n\(body)"))
+                            continuation.finish()
+                            return
+                        }
+                        var framer = SSEByteFramer()
+                        for try await byte in bytes {
+                            try Task.checkCancellation()
+                            for event in framer.feed(byte) {
+                                compatibility.observeStreamEvent()
+                                continuation.yield(event)
+                            }
+                        }
+                        for event in try framer.finish() {
+                            compatibility.observeStreamEvent()
+                            continuation.yield(event)
+                        }
+                        #endif
+                        break responseAttempt
                     }
-                    for event in try framer.finish() { continuation.yield(event) }
                     continuation.finish()
-                    #endif
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
-                    if Task.isCancelled {
-                        continuation.finish()
-                    } else {
-                        continuation.finish(throwing: error)
-                    }
+                    if Task.isCancelled { continuation.finish() }
+                    else { continuation.finish(throwing: error) }
                 }
             }
             cancellation?.install(task)
@@ -714,19 +742,19 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                     urlRequest.httpBody = body
                     let host = request.provider.baseURL.host ?? "unknown"
                     logger.info(
-                        "providerRequestStarted protocol=responses provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
+                        "providerRequestStarted protocol=responses run=\(request.diagnosticRunID ?? "none") provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
                     )
                     let pump = SSEBytePump(
                         urlRequest: urlRequest,
                         session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
                     )
                     let decoder = JSONDecoder()
-                    for try await sseEvent in pump.events() {
+                    for try await sseEvent in pump.events(retryUnsupportedThinking: true) {
                         if let errorEvent = httpErrorEvent(from: sseEvent) {
                             if case .error(let error) = errorEvent {
                                 let status = error.httpStatus.map(String.init) ?? "none"
                                 logger.warning(
-                                    "providerRequestRejected protocol=responses provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(request.ephemeralTransport ? "redacted" : String(error.providerMessage.prefix(500)))"
+                                    "providerRequestRejected protocol=responses run=\(request.diagnosticRunID ?? "none") provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) message=\(request.ephemeralTransport ? "redacted" : String(error.providerMessage.prefix(500)))"
                                 )
                             }
                             continuation.yield(errorEvent)
@@ -797,6 +825,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             provider: request.provider,
             model: request.model
         )
+        let requiresReasoning = ReasoningCompatibility.requiresMissingReasoningFallback(provider: request.provider, model: request.model)
         let nameTable = CompatToolNames.wireTable(for: request)
         let context = request.cacheContext
         var input: [ResponsesRequest.InputItem] = []
@@ -804,7 +833,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             let reasoning = replaysReasoning && message.role == "assistant"
                 ? nonEmptyReasoning(message.reasoningContent)
                 : nil
-            if replaysReasoning, message.role == "assistant", reasoning == nil,
+            if requiresReasoning, message.role == "assistant", reasoning == nil,
                !request.toolSchemas.isEmpty {
                 // Legacy assistant history without captured reasoning: keep it
                 // as explicitly non-authoritative context instead of an
@@ -838,7 +867,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         for pair in request.replayedToolPairs {
             let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider, table: nameTable)
             let pairReasoning = nonEmptyReasoning(pair.assistantReasoning)
-            if replaysReasoning, pairReasoning == nil {
+            if requiresReasoning, pairReasoning == nil {
                 input.append(.message(
                     role: "system",
                     content: "[Historical tool call; protocol reasoning unavailable] \(pairName) -> \(String(pair.result.outputSummary.prefix(2_000)))"
@@ -895,12 +924,12 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             input: input,
             tools: tools,
             maxOutputTokens: request.model.limits.configuredMaxOutputTokens,
-            reasoning: ReasoningCompatibility.responsesEffort(
+            reasoning: request.model.effectiveOmitReasoningParameters ? nil : ReasoningCompatibility.responsesEffort(
                 provider: request.provider,
                 model: request.model,
                 policy: request.reasoningPolicy
             ).map(ResponsesRequest.Reasoning.init(effort:)),
-            thinking: ReasoningCompatibility.responsesThinkingType(
+            thinking: request.model.effectiveOmitReasoningParameters ? nil : ReasoningCompatibility.responsesThinkingType(
                 provider: request.provider,
                 model: request.model,
                 policy: request.reasoningPolicy
@@ -941,9 +970,9 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     urlRequest.httpBody = prepared.data
                     let host = request.provider.baseURL.host ?? "unknown"
                     logger.info(
-                        "providerRequestStarted protocol=chat requestID=\(requestID) provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(prepared.data.count)"
+                        "providerRequestStarted protocol=chat requestID=\(requestID) run=\(request.diagnosticRunID ?? "none") provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(prepared.data.count)"
                     )
-                    logger.info("providerRequestShape protocol=chat requestID=\(requestID) \(prepared.diagnosticSummary)")
+                    logger.info("providerRequestShape protocol=chat requestID=\(requestID) run=\(request.diagnosticRunID ?? "none") \(prepared.diagnosticSummary)")
                     let pump = SSEBytePump(
                         urlRequest: urlRequest,
                         session: session
@@ -963,13 +992,13 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     var emittedUsageReports = Set<AgentEvent.UsageReport>()
                     do {
                         try await withTaskCancellationHandler {
-                            chatEvents: for try await sseEvent in pump.events(cancellation: responseCancellation) {
+                            chatEvents: for try await sseEvent in pump.events(cancellation: responseCancellation, retryUnsupportedThinking: true) {
                                 try Task.checkCancellation()
                                 if let errorEvent = httpErrorEvent(from: sseEvent) {
                                     if case .error(let error) = errorEvent {
                                         let status = error.httpStatus.map(String.init) ?? "none"
                                         logger.warning(
-                                            "providerRequestRejected protocol=chat requestID=\(requestID) stage=http provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) \(ChatRequestContract.rejectionFields(error.providerMessage)) \(prepared.diagnosticSummary)"
+                                            "providerRequestRejected protocol=chat requestID=\(requestID) run=\(request.diagnosticRunID ?? "none") stage=http provider=\(request.provider.id.uuidString) model=\(request.model.remoteModelID) kind=\(error.kind.rawValue) httpStatus=\(status) \(ChatRequestContract.rejectionFields(error.providerMessage)) \(prepared.diagnosticSummary)"
                                         )
                                     }
                                     continuation.yield(errorEvent)
@@ -1034,7 +1063,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     continuation.finish()
                 } catch let violation as ChatRequestContract.Violation {
                     if !Task.isCancelled {
-                        logger.warning("providerRequestRejected protocol=chat requestID=\(requestID) stage=wireValidation code=\(violation.code.rawValue) path=\(violation.path)")
+                        logger.warning("providerRequestRejected protocol=chat requestID=\(requestID) run=\(request.diagnosticRunID ?? "none") stage=wireValidation code=\(violation.code.rawValue) path=\(violation.path)")
                         continuation.yield(.error(.init(kind: .malformed, providerMessage: FloeL10n.isChinese
                             ? "此轮请求格式不完整，无法发送。对话和工具结果已保留，请查看诊断详情。"
                             : "This request is incomplete and could not be sent. Conversation and tool results are retained; see diagnostics for details.")))
@@ -1097,13 +1126,14 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
 
     func buildBody(from request: ProviderStreamRequest) -> ChatRequest {
         let replaysReasoning = ReasoningCompatibility.requiresAssistantReasoningReplay(provider: request.provider, model: request.model)
+        let requiresReasoning = ReasoningCompatibility.requiresMissingReasoningFallback(provider: request.provider, model: request.model)
         let nameTable = CompatToolNames.wireTable(for: request)
         let context = request.cacheContext
         var messages: [ChatRequest.Message] = context.messages.map { message in
             // Older app versions (and other providers) did not save this field.
             // Do not invent missing reasoning or submit an invalid assistant turn.
             // Preserve its text as explicitly non-authoritative historical context.
-            if replaysReasoning, !request.toolSchemas.isEmpty,
+            if requiresReasoning, !request.toolSchemas.isEmpty,
                message.role == "assistant", nonEmptyReasoning(message.reasoningContent) == nil {
                 let text = message.content.compactMap { part -> String? in
                     if case .text(let text) = part { return text }
@@ -1132,7 +1162,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
         for pair in request.replayedToolPairs {
             let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider, table: nameTable)
             let pairReasoning = nonEmptyReasoning(pair.assistantReasoning)
-            if replaysReasoning, pairReasoning == nil {
+            if requiresReasoning, pairReasoning == nil {
                 // Legacy checkpoint: the assistant turn was recorded before
                 // reasoning capture existed. DeepSeek rejects tool_calls
                 // without reasoning_content, so preserve the evidence as
@@ -1206,7 +1236,9 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             return ChatRequest.ToolDefinition(
                 name: wireName,
                 description: $0.description,
-                parameters: $0.parametersJSON
+                parameters: CompatToolNames.requiresArkNames(request.provider)
+                    ? ArkToolSchemaProjection.parameters($0.parametersJSON, toolName: $0.name)
+                    : $0.parametersJSON
             )
         }
         let reasoning = ReasoningCompatibility.chatOptions(
@@ -1224,11 +1256,12 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             tools: explicitNoTools ? [] : (tools.isEmpty ? nil : tools),
             toolChoice: explicitNoTools ? "none" : (tools.isEmpty ? nil : "auto"),
             maxTokens: request.model.limits.configuredMaxOutputTokens,
-            thinking: reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
-            reasoningEffort: reasoning.reasoningEffort,
-            enableThinking: reasoning.enableThinking,
+            thinking: request.model.effectiveOmitReasoningParameters ? nil : reasoning.thinkingType.map(ChatRequest.Thinking.init(type:)),
+            reasoningEffort: request.model.effectiveOmitReasoningParameters ? nil : reasoning.reasoningEffort,
+            enableThinking: request.model.effectiveOmitReasoningParameters ? nil : reasoning.enableThinking,
             stream: true,
-            streamOptions: .init(includeUsage: true)
+            streamOptions: .init(includeUsage: true),
+            reasoning: request.model.effectiveOmitReasoningParameters ? nil : reasoning.reasoning
         )
     }
 
@@ -1422,10 +1455,10 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
             messages: messages,
             system: system?.isEmpty == false ? system : nil,
             tools: tools,
-            thinking: reasoning.thinkingType.map {
+            thinking: request.model.effectiveOmitReasoningParameters ? nil : reasoning.thinkingType.map {
                 AnthropicRequest.Thinking(type: $0, budgetTokens: reasoning.budgetTokens)
             },
-            outputConfig: reasoning.effort.map(AnthropicRequest.OutputConfig.init(effort:)),
+            outputConfig: request.model.effectiveOmitReasoningParameters ? nil : reasoning.effort.map(AnthropicRequest.OutputConfig.init(effort:)),
             stream: true
         )
     }

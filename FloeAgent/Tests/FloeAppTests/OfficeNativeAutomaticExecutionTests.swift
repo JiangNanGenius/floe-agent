@@ -39,6 +39,7 @@
 import Foundation
 import Testing
 import ZIPFoundation
+import PDFKit
 import FloeCore
 import FloeDocuments
 import FloeExecution
@@ -519,6 +520,121 @@ struct OfficeNativeAutomaticExecutionTests {
         }
         #expect(!reason.isEmpty)
         await gate.resetForTesting()
+    }
+
+    /// Defect closure: an ordinary chat can propose `excel.recalculate` on a
+    /// saved workbook with NO live editor. The runtime-authorized apply then
+    /// opens the isolated service copy, saves/reopens it and verifies the real
+    /// persisted caches while the source stays byte-identical.
+    @Test("saved-package recalc proposes without a live editor and persists real caches")
+    @MainActor
+    func savedPackageRecalculationWithoutLiveEditor() async throws {
+        let root = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workbook = root.appendingPathComponent("saved-recalc.xlsx")
+        try OfficeDocumentBuilder.createWorkbook(at: workbook, sheets: [
+            OfficeWorkbookSheet(name: "Data", rows: [
+                ["B", "C", "D"],
+                ["3", "5", "=B2*C2"],
+                ["1", "2", "=B3*C3"],
+                ["4", "3", "=B4*C4"],
+                ["", "", "=SUM(D2:D4)"]
+            ])
+        ])
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: workbook)
+        let commandAccess = access(root)
+        let center = OfficeCommandCenter()
+
+        let proposal = try await center.prepareProposal(
+            documentID: "saved-recalc.xlsx", baseSHA256: sourceSHA,
+            summary: "Recalculate all formulas",
+            commandsJSON: try OfficeCommandCodec.encode([.excelRecalculate]),
+            access: commandAccess)
+        #expect(proposal.selectionFingerprint == nil)
+        #expect(proposal.documentID == "saved-recalc.xlsx")
+        try await center.storeProposal(proposal)
+
+        let receipt = try await center.applyAutomatic(
+            proposal: proposal,
+            authorization: try await authorization(
+                binding: binding(document: "saved-recalc.xlsx", root: root)),
+            relativeOutput: "saved-recalc.edited.xlsx",
+            requestID: "saved-recalc-without-live-editor",
+            access: commandAccess)
+
+        #expect(receipt.saved && receipt.sourceUnchanged && !receipt.replay)
+        #expect(try FloeDigest.sha256Hex(ofFileAt: workbook) == sourceSHA,
+                "the original workbook must be byte-identical")
+        #expect(receipt.formulaSummary?.contains("verified=") == true)
+
+        let output = root.appendingPathComponent(receipt.outputRelativePath)
+        let snapshot = try OfficeOutputSnapshot.capture(url: output)
+        let cells = try #require(snapshot.cachedCellsBySheet["xl/worksheets/sheet1.xml"])
+        // D2 = B2*C2 -> 15; D5 = SUM(D2:D4) -> 29. Read only from real
+        // persisted `<v>` caches in the reopened package.
+        #expect(cells["D2"]?.type == .number)
+        #expect(Double(cells["D2"]?.value ?? "") == 15)
+        #expect(Double(cells["D5"]?.value ?? "") == 29)
+        let formulaCells = Set(snapshot.formulaCells.map(\.cell))
+        #expect(formulaCells.isSuperset(of: ["D2", "D3", "D4", "D5"]))
+        #expect(receipt.verified.contains { $0.contains("formulaSet=preserved(4)") })
+    }
+
+    /// Defect closure: the real bundled DOCX executor (Mammoth in the pinned
+    /// conversion shell) must preserve the semantic Word Title as Markdown H1.
+    @Test("DOCX Title converts to a semantic Markdown H1 through the bundled executor")
+    @MainActor
+    func docxTitleConvertsToMarkdownHeading() async throws {
+        let root = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("title.docx")
+        try OfficeDocumentBuilder.createWord(at: source, title: "Quarterly Review",
+                                             paragraphs: ["Body paragraph."])
+        let original = try Data(contentsOf: source)
+        let context = ToolContext(runID: UUID(), workspaceRootURL: root,
+                                  cancellation: CancellationToken())
+        let args = DocumentConversionArguments(
+            inputPath: "title.docx", outputPath: "title.md", format: "markdown",
+            pages: nil, includeInk: nil)
+        let output = try await DocumentFileConverter.convert(
+            args, context: context, producerTool: "document.convert")
+        #expect(output.exitStatus == 0)
+        let markdown = try String(
+            contentsOf: root.appendingPathComponent("title.md"), encoding: .utf8)
+        #expect(markdown.contains("# Quarterly Review"),
+                "the Title paragraph must become a level-1 Markdown heading: \(output.summary)")
+        #expect(markdown.contains("Body paragraph."))
+        #expect(try Data(contentsOf: source) == original)
+    }
+
+    /// Defect closure: a controlled, own-fixture DOCX→PDF through the existing
+    /// native PDF service with a NEW output name. This deliberately does not
+    /// touch the historical unknown/interrupted records or replay their call.
+    @Test("a fresh DOCX fixture produces a new readable PDF through the native service")
+    @MainActor
+    func freshDocxPDFExportProducesReadablePDF() async throws {
+        let root = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("fresh-pdf.docx")
+        try OfficeDocumentBuilder.createWord(at: source, title: "Fresh PDF Fixture",
+                                             paragraphs: ["Independent export check."])
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let outputName = "fresh-pdf-\(UUID().uuidString.prefix(8)).pdf"
+        let context = ToolContext(runID: UUID(), workspaceRootURL: root,
+                                  cancellation: CancellationToken())
+        let args = DocumentConversionArguments(
+            inputPath: "fresh-pdf.docx", outputPath: outputName, format: "pdf",
+            pages: nil, includeInk: nil)
+        let output = try await DocumentFileConverter.convert(
+            args, context: context, producerTool: "document.pdf.convert")
+        #expect(output.exitStatus == 0)
+        let url = root.appendingPathComponent(outputName)
+        let pdf = try #require(PDFDocument(url: url))
+        #expect(pdf.pageCount >= 1)
+        let text = (0..<pdf.pageCount).compactMap { pdf.page(at: $0)?.string }
+            .joined(separator: "\n")
+        #expect(text.contains("Fresh PDF Fixture"))
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
     }
 }
 

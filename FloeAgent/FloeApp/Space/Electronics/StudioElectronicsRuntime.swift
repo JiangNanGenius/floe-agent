@@ -166,14 +166,35 @@ import FloeElectronicsUI
         }
         if action == "eda.forwardAnnotation" {
             guard let boardID else { throw FloeError.validationFailed("This original has no PCB board") }
+            let source = saved, cancellation = context.cancellation
+            let plan: EDAForwardAnnotationPlan
+            do {
+                plan = try await personalPreviewOffMain {
+                    try EDAForwardAnnotation.plan(source.project, boardID: boardID, cancelled: { cancellation.isCancelled })
+                }
+            } catch {
+                throw FloeError.validationFailed("PCB synchronization could not be planned: "
+                    + ((error as? LocalizedError)?.errorDescription ?? String(describing: error)))
+            }
+            try context.cancellation.throwIfCancelled(); try await validateOwner(); try source.validate()
+            guard plan.canApply else {
+                throw FloeError.validationFailed(forwardAnnotationBlocker(plan, project: source.project))
+            }
             let session = try await ElectronicsProjectSession.open(id: record.id, directory: directory)
             try context.cancellation.throwIfCancelled(); try await validateOwner(); try saved.validate()
-            try await session.workbench.forwardAnnotation(boardID: boardID, expectedRevision: saved.project.revision)
+            try await session.workbench.forwardAnnotation(plan: plan)
             await session.awaitPublication()
             saved = try await personalPreviewOffMain { try ElectronicsSavedSnapshot(id: record.id, directory: directory) }
             try context.cancellation.throwIfCancelled(); try await validateOwner()
+            guard saved.project.revision == session.workbench.revision,
+                  saved.project.boards.first(where: { $0.id == boardID }) == plan.updatedBoard else {
+                throw PersonalContentError.changedDocument
+            }
             return try StudioToolOutput.make(Receipt(projectID: record.id, action: action, revision: String(saved.project.revision),
-                sourceSHA256: saved.digest, summary: ["boardID": boardID.uuidString, "footprints": String(saved.project.boards.first { $0.id == boardID }?.footprints.count ?? 0)],
+                sourceSHA256: saved.digest, summary: ["boardID": boardID.uuidString,
+                    "footprints": String(plan.updatedBoard.footprints.count),
+                    "addedComponents": String(plan.addedComponentIDs.count),
+                    "orphanedFootprints": String(plan.orphanedFootprintIDs.count)],
                 resultJSON: nil, limitations: ["Routed physical objects are retained; inspect the actual synchronization result and DRC."],
                 openURL: "floe://work/" + record.id.uuidString.lowercased()))
         }
@@ -322,6 +343,30 @@ import FloeElectronicsUI
                 .init(code: $0.code, blocking: $0.blocking, componentID: $0.componentID, footprintID: $0.footprintID)
             }
         }
+    }
+    private static func forwardAnnotationBlocker(_ plan: EDAForwardAnnotationPlan, project: EDAProject) -> String {
+        let chinese = FloeL10n.isChinese
+        func labels(_ ids: [UUID], reference: (UUID) -> String?) -> String {
+            let names = ids.prefix(12).map { id in
+                let value = reference(id)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return String((value?.isEmpty == false ? value! : id.uuidString).prefix(120))
+            }.joined(separator: ", ")
+            return names + (ids.count > 12 ? (chinese ? " 等\(ids.count)项" : " (\(ids.count) total)") : "")
+        }
+        var reasons: [String] = []
+        if !plan.missingFootprintComponentIDs.isEmpty {
+            let names = labels(plan.missingFootprintComponentIDs) { id in project.components.first { $0.id == id }?.reference }
+            reasons.append((chinese ? "请先为这些元件选择封装：" : "Assign footprints to: ") + names)
+        }
+        if !plan.conflictingNetIDs.isEmpty {
+            let names = plan.conflictingNetIDs.prefix(12).map { String($0.prefix(120)) }.joined(separator: ", ")
+            reasons.append((chinese ? "请先处理已有布线的网络冲突：" : "Resolve routed net conflicts: ") + names)
+        }
+        if !plan.lockedFootprintIDs.isEmpty {
+            let names = labels(plan.lockedFootprintIDs) { id in plan.updatedBoard.footprints.first { $0.id == id }?.reference }
+            reasons.append((chinese ? "请先解锁需要更改的封装：" : "Unlock footprints that need changes: ") + names)
+        }
+        return (chinese ? "PCB同步尚未完成。" : "PCB synchronization is not ready. ") + reasons.joined(separator: "; ")
     }
     private static func annotationBoolean(_ input: [String: Any], _ key: String) throws -> Bool {
         guard let raw = input[key] else { return true }

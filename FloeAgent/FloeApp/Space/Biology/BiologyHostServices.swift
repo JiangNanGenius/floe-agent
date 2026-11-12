@@ -6,6 +6,7 @@ import FloeCore
 import FloeTools
 import FloePersistence
 import FloeExecution
+import FloeEnvironments
 import FloeBiologyCore
 import FloeBiologyEngine
 import FloeBiologyHostAdapter
@@ -58,7 +59,11 @@ import FloeBiologyHostAdapter
         let contexts = BiologyExecutionContexts()
         let service = try BiologyService(store: store, fileAccess: files, authorize: { operation in try await access.permit(operation) })
         let scientific = BiologyScientificJobs(jobs: jobs, registry: registry,
-            environments: environment.environmentRegistry, contexts: contexts, files: files)
+            environments: environment.environmentRegistry, contexts: contexts, files: files,
+            resolveEnvironment: { [weak environment] context in
+                guard let environment else { throw BiologyHostError.unavailable }
+                return try await environment.executionSelectedTaskLease(context)
+            })
         self.access = access; self.store = store; self.files = files; self.contexts = contexts
         self.service = service; scientificJobs = scientific
         bridge = BiologyToolBridge(service: service, contexts: contexts, scientificJobs: scientific,

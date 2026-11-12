@@ -18,6 +18,17 @@ enum EDWorkspaceTab: String, CaseIterable, Identifiable {
         case .threeD: edText("三维", "3D")
         }
     }
+    var image: String {
+        switch self {
+        case .schematic: return "square.on.circle"
+        case .board: return "square.grid.3x3"
+        case .symbols: return "function"
+        case .footprints: return "square.grid.2x2"
+        case .checks: return "checklist"
+        case .outputs: return "square.and.arrow.up"
+        case .threeD: return "cube"
+        }
+    }
 }
 
 enum EDCanvasTool: String, CaseIterable, Identifiable {
@@ -105,11 +116,13 @@ public struct EDWorkbenchView: View {
     let onAssistant: (() -> Void)?
     let onExportPreview: ((EDAExchangeFile, UInt64) -> Void)?
     let onLibraryUpdates: (() -> Void)?
+    let onRemoteLibrary: (() -> Void)?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var tab = EDWorkspaceTab.schematic
     @State private var panel: EDWorkbenchPanel?
-    @State private var inspectorVisible = false
+    @State private var inspectorVisible = true
     @State private var navigatorVisible = true
+    @State private var inspectorDrafts = EDInspectorDraftStore()
     @State private var sheetID: UUID?
     @State private var boardID: UUID?
     @State private var symbolID: UUID?
@@ -143,11 +156,21 @@ public struct EDWorkbenchView: View {
     @State private var showingBackAnnotation = false
 
     public init(session: EDWorkbenchSession, onAssistant: (() -> Void)? = nil,
-                onExportPreview: ((EDAExchangeFile, UInt64) -> Void)? = nil, onLibraryUpdates: (() -> Void)? = nil) {
-        self.session = session; self.onAssistant = onAssistant; self.onExportPreview = onExportPreview; self.onLibraryUpdates = onLibraryUpdates
+                onExportPreview: ((EDAExchangeFile, UInt64) -> Void)? = nil, onLibraryUpdates: (() -> Void)? = nil,
+                onRemoteLibrary: (() -> Void)? = nil) {
+        self.session = session; self.onAssistant = onAssistant; self.onExportPreview = onExportPreview
+        self.onLibraryUpdates = onLibraryUpdates; self.onRemoteLibrary = onRemoteLibrary
     }
-    private var compactPanels: Bool { sizeClass == .compact || viewportWidth < 1_000 }
+    private var layout: EDWorkbenchLayout {
+        EDWorkbenchLayout(width: viewportWidth, horizontalSizeClass: sizeClass)
+    }
+    private var showsNavigator: Bool { layout.canShowSideNavigator && navigatorVisible }
+    private var showsInspector: Bool { layout.sideInspectorKeepsCanvas(showingNavigator: showsNavigator) && inspectorVisible }
+    private var copperLayers: [EDALayer] { currentBoard?.layers.filter { $0.kind == .copper } ?? [] }
     private var currentBoard: EDABoard? { session.project.boards.first { $0.id == boardID } ?? session.project.boards.first }
+    private var currentSheet: EDASheet? { session.project.sheets.first { $0.id == sheetID } ?? session.project.sheets.first }
+    private var currentSymbol: EDASymbolDefinition? { session.project.symbols.first { $0.id == symbolID } ?? session.project.symbols.first }
+    private var currentFootprint: EDAFootprintDefinition? { session.project.footprints.first { $0.id == footprintID } ?? session.project.footprints.first }
     private var context: EDADocumentContext? {
         switch tab {
         case .schematic: (sheetID ?? session.project.sheets.first?.id).map { .schematic(sheetID: $0) }
@@ -167,10 +190,10 @@ public struct EDWorkbenchView: View {
     }
     private var canvasTitle: String {
         switch tab {
-        case .schematic: session.project.sheets.first { $0.id == sheetID }?.name ?? session.project.sheets.first?.name ?? tab.title
+        case .schematic: currentSheet?.name ?? tab.title
         case .board: currentBoard?.name ?? "PCB"
-        case .symbols: session.project.symbols.first { $0.id == symbolID }?.name ?? tab.title
-        case .footprints: session.project.footprints.first { $0.id == footprintID }?.name ?? tab.title
+        case .symbols: currentSymbol?.name ?? tab.title
+        case .footprints: currentFootprint?.name ?? tab.title
         default: tab.title
         }
     }
@@ -184,8 +207,65 @@ public struct EDWorkbenchView: View {
     }
     private var partName: String {
         if let libraryPlacement { return libraryPlacement.snapshot.part.name }
-        if tab == .board { return session.project.footprints.first { $0.id == footprintID }?.name ?? edText("选择封装", "Choose footprint") }
-        return session.project.symbols.first { $0.id == symbolID }?.name ?? edText("选择元件", "Choose part")
+        if tab == .board { return currentFootprint?.name ?? edText("选择封装", "Choose footprint") }
+        return currentSymbol?.name ?? edText("选择元件", "Choose part")
+    }
+
+    private var editorSubtitle: String {
+        switch tab {
+        case .board:
+            let copper = copperLayers.count
+            return edText("PCB", "PCB") + " · " + String(copper) + edText(" 个铜层", copper == 1 ? " copper layer" : " copper layers")
+        case .schematic:
+            let count = currentSheet?.symbols.count ?? 0
+            return edText("原理图", "Schematic") + " · " + String(count) + edText(" 个元件", count == 1 ? " part" : " parts")
+        case .symbols:
+            let pins = currentSymbol?.pins.count ?? 0
+            return edText("符号库", "Symbols") + " · " + String(pins) + edText(" 个引脚", pins == 1 ? " pin" : " pins")
+        case .footprints:
+            let pads = currentFootprint?.pads.count ?? 0
+            return edText("封装库", "Footprints") + " · " + String(pads) + edText(" 个焊盘", pads == 1 ? " pad" : " pads")
+        default: return tab.title
+        }
+    }
+    private var selectionSummary: String? {
+        guard let context, session.selection.context == context, !session.selection.objectIDs.isEmpty else { return nil }
+        if session.selection.objectIDs.count > 1 {
+            return String(session.selection.objectIDs.count) + edText(" 个对象", " selected")
+        }
+        guard let object = session.selection.objectIDs.first else { return nil }
+        switch context {
+        case .board(let id):
+            guard let board = session.project.boards.first(where: { $0.id == id }) else { return edText("布线", "Board") }
+            if let value = board.footprints.first(where: { $0.id == object }) {
+                return value.reference.isEmpty ? edText("封装", "Footprint") : value.reference
+            }
+            if board.tracks.contains(where: { $0.id == object }) { return edText("走线", "Track") }
+            if board.vias.contains(where: { $0.id == object }) { return edText("过孔", "Via") }
+            if board.holes.contains(where: { $0.id == object }) { return edText("孔", "Hole") }
+            if board.zones.contains(where: { $0.id == object }) { return edText("铜区", "Copper zone") }
+            return edText("PCB 对象", "Board object")
+        case .schematic(let id):
+            guard let sheet = session.project.sheets.first(where: { $0.id == id }) else { return edText("图页", "Sheet") }
+            if let placement = sheet.symbols.first(where: { $0.id == object }),
+               let component = session.project.components.first(where: { $0.id == placement.componentID }) {
+                return component.reference.isEmpty ? edText("元件", "Component") : component.reference
+            }
+            if sheet.buses.contains(where: { $0.id == object }) { return edText("总线", "Bus") }
+            if sheet.buses.contains(where: { ($0.entries ?? []).contains { $0.id == object } }) { return edText("总线引出", "Bus entry") }
+            if sheet.wires.contains(where: { $0.id == object }) { return edText("导线", "Wire") }
+            if sheet.labels.contains(where: { $0.id == object }) { return edText("网络标签", "Net label") }
+            return edText("原理图对象", "Schematic object")
+        case .symbol(let id):
+            return session.project.symbols.first(where: { $0.id == id })?.name ?? edText("符号", "Symbol")
+        case .footprint(let id):
+            return session.project.footprints.first(where: { $0.id == id })?.name ?? edText("封装", "Footprint")
+        }
+    }
+    private var canLocateCrossProbe: Bool {
+        !locatingComponent && !session.busy && !session.isClosed
+            && session.selection.context == context
+            && EDACrossProbe.isComponentSelection(session.project, selection: session.selection)
     }
 
     public var body: some View {
@@ -201,7 +281,8 @@ public struct EDWorkbenchView: View {
                 }.padding(8).background(.orange.opacity(0.12))
             }
             workspace
-            status
+            EDWorkbenchStatusBar(session: session, tab: tab, activeLayer: activeLayer,
+                                 selectionSummary: selectionSummary, compact: layout.isCompact)
         }
         .accessibilityIdentifier("electronics.workbench")
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { viewportWidth = $0 }
@@ -222,10 +303,16 @@ public struct EDWorkbenchView: View {
         }) { item in
             NavigationStack {
                 panelContent(item)
-                    .navigationTitle(item == .parts ? edText("放置元件", "Place part") : item == .navigator ? edText("项目", "Project") : edText("属性", "Properties"))
+                    .navigationTitle(item == .parts ? edText("放置元件", "Place part")
+                                     : item == .navigator ? edText("项目", "Project")
+                                     : item == .boardSettings ? edText("PCB 设置", "Board setup")
+                                     : edText("属性", "Properties"))
                     .edInlineNavigationTitle()
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button(item == .properties || item == .boardSettings ? edText("关闭", "Close") : edText("完成", "Done")) { panel = nil } } }
             }
+            // The compact properties sheet and the inline side panel resolve
+            // unapplied drafts from this same workbench-scoped store.
+            .environment(\.edInspectorDraftStore, inspectorDrafts)
             .presentationDetents(item == .parts ? [.large] : [.medium, .large])
             .presentationBackground(.background)
         }
@@ -265,18 +352,34 @@ public struct EDWorkbenchView: View {
             default: break
             }
         }
+        .onChange(of: currentBoard?.id, initial: true) { _, _ in normalizeActiveLayer() }
+        .onChange(of: session.project.id) { _, _ in inspectorDrafts.removeAll() }
+        .onChange(of: session.isClosed) { _, closed in if closed { inspectorDrafts.removeAll() } }
     }
 
     private var workspaceTabs: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 ForEach(EDWorkspaceTab.allCases) { item in
-                    Button(item.title) { tab = item }
-                        .buttonStyle(.bordered).tint(tab == item ? .accentColor : .secondary)
-                        .frame(minHeight: 44).accessibilityIdentifier("electronics.tab." + item.rawValue)
+                    let selected = tab == item
+                    Button { tab = item } label: {
+                        Label(item.title, systemImage: item.image)
+                            .font(.subheadline.weight(.medium))
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 44)
+                            .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityIdentifier("electronics.tab." + item.rawValue)
                 }
             }.padding(.horizontal, 8)
-        }.scrollIndicators(.hidden)
+        }
+        .scrollIndicators(.hidden)
+        .background(.bar)
     }
     @ViewBuilder private var workspace: some View {
         switch tab {
@@ -285,184 +388,273 @@ public struct EDWorkbenchView: View {
         case .outputs:
             EDAOutputsView(session: session, onExportPreview: onExportPreview)
         case .threeD:
-            EDABoard3DView(project: session.project, boardID: currentBoard?.id)
+            EDABoard3DView(project: session.project, boardID: currentBoard?.id,
+                          renderer: session.board3DRenderer, modelLoader: session.board3DModelLoader)
         default:
             VStack(spacing: 0) {
                 editorHeader
                 Divider()
-                HStack(spacing: 0) {
-                    if !compactPanels && navigatorVisible { navigator.frame(width: 200); Divider() }
-                    toolRail
+                if layout.isCompact {
+                    EDToolStrip(tab: tab, tool: tool, libraryTool: libraryTool,
+                                fingerDrawingEnabled: session.fingerDrawingEnabled,
+                                onTool: { tool = $0 }, onPlace: { panel = .parts },
+                                onLibraryTool: { libraryTool = $0 },
+                                onToggleFingerDrawing: { session.fingerDrawingEnabled.toggle() })
                     Divider()
-                    VStack(spacing: 0) {
-                        toolOptions
-                        if let context {
-                            EDCanvasEditor(session: session, context: context, mode: mode,
-                                           symbolID: symbolID, footprintID: footprintID, labelName: labelName,
-                                           layer: activeLayer, width: wireWidth, netID: netID, holeDiameter: holeDiameter,
-                                           showGrid: showGrid, placementAngle: $placementAngle, placementFlipped: $placementFlipped,
-                                           onCancel: { tool = .select; libraryTool = .select }, onProperties: showProperties,
-                                           onWireToolRequested: { tool = .wire }, graphicStroke: graphicStroke,
-                                           graphicLayer: tab == .footprints ? EDAGraphicLayers.standardAssignments.first { $0.layerID == graphicLayerID } : nil,
-                                           arcClockwise: arcClockwise, libraryPlacement: libraryPlacement)
-                        } else { ContentUnavailableView(edText("选择图页或库项目", "Select a sheet or library item"), systemImage: "square.dashed") }
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if !compactPanels && inspectorVisible {
-                        Divider(); EDAInspector(session: session, context: context, onReplaceLibrary: libraryReplacementAction).frame(width: 270)
+                }
+                contextBar
+                Divider()
+                HStack(spacing: 0) {
+                    if showsNavigator {
+                        navigator.frame(width: EDWorkbenchLayout.navigatorWidth)
+                        Divider()
+                    }
+                    if !layout.isCompact {
+                        EDToolRail(tab: tab, tool: tool, libraryTool: libraryTool,
+                                   fingerDrawingEnabled: session.fingerDrawingEnabled,
+                                   onTool: { tool = $0 }, onPlace: { panel = .parts },
+                                   onLibraryTool: { libraryTool = $0 },
+                                   onToggleFingerDrawing: { session.fingerDrawingEnabled.toggle() })
+                        Divider()
+                    }
+                    canvasArea
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if showsInspector {
+                        Divider()
+                        EDAInspector(session: session, context: context,
+                                     onReplaceLibrary: libraryReplacementAction,
+                                     activeLayer: $activeLayer,
+                                     onBoardSetup: { panel = .boardSettings },
+                                     onUpdateBoard: updateBoard,
+                                     onRefillCopper: refillBoard)
+                            // Same scoped store as the compact properties sheet.
+                            .environment(\.edInspectorDraftStore, inspectorDrafts)
+                            .frame(width: EDWorkbenchLayout.inspectorWidth)
                     }
                 }
             }
+        }
+    }
+    @ViewBuilder private var canvasArea: some View {
+        if let context {
+            EDCanvasEditor(session: session, context: context, mode: mode,
+                           symbolID: symbolID, footprintID: footprintID, labelName: labelName,
+                           layer: activeLayer, width: wireWidth, netID: netID, holeDiameter: holeDiameter,
+                           showGrid: showGrid, placementAngle: $placementAngle, placementFlipped: $placementFlipped,
+                           onCancel: { tool = .select; libraryTool = .select }, onProperties: showProperties,
+                           onWireToolRequested: { tool = .wire }, graphicStroke: graphicStroke,
+                           graphicLayer: tab == .footprints ? EDAGraphicLayers.standardAssignments.first { $0.layerID == graphicLayerID } : nil,
+                           arcClockwise: arcClockwise, libraryPlacement: libraryPlacement,
+                           compactLayout: layout.isCompact)
+        } else {
+            ContentUnavailableView(edText("选择图页或库项目", "Select a sheet or library item"), systemImage: "square.dashed")
         }
     }
     private var editorHeader: some View {
-        HStack(spacing: 8) {
-            Button { if compactPanels { panel = .navigator } else { navigatorVisible.toggle() } } label: { Image(systemName: "sidebar.left").frame(width:44,height:44).contentShape(Rectangle()) }
-                .accessibilityLabel(edText("项目导航", "Project navigator"))
-            Text(canvasTitle).font(.subheadline.weight(.medium)).lineLimit(1)
-            Spacer(minLength: 0)
-            if session.canReturnFromCrossProbe {
-                Button { returnFromCrossProbe() } label: { Image(systemName: "arrow.uturn.backward.circle").frame(width:44,height:44).contentShape(Rectangle()) }
-                    .accessibilityLabel(edText("返回定位前的位置", "Return to previous location"))
-                    .accessibilityIdentifier("electronics.crossProbe.return").disabled(locatingComponent)
+        HStack(spacing: 2) {
+            Button {
+                if layout.canShowSideNavigator { navigatorVisible.toggle() } else { panel = .navigator }
+            } label: {
+                Image(systemName: "sidebar.left").frame(width: 44, height: 44).contentShape(Rectangle())
             }
-            if tab == .schematic || tab == .board {
-                Button { beginCrossProbe() } label: { Image(systemName: "arrow.left.arrow.right.square").frame(width:44,height:44).contentShape(Rectangle()) }
-                    .accessibilityLabel(tab == .schematic ? edText("在 PCB 中定位", "Select on PCB") : edText("在原理图中定位", "Select on schematic"))
-                    .help(tab == .schematic ? edText("在 PCB 中定位", "Select on PCB") : edText("在原理图中定位", "Select on schematic"))
-                    .accessibilityIdentifier("electronics.crossProbe.locate")
-                    .disabled(locatingComponent || session.busy || session.isClosed || session.selection.context != context || !EDACrossProbe.isComponentSelection(session.project, selection: session.selection))
+            .foregroundStyle(showsNavigator ? Color.accentColor : Color.primary)
+            .accessibilityLabel(edText("项目导航", "Project navigator"))
+            .accessibilityValue(showsNavigator ? edText("已显示", "Shown") : "")
+            .accessibilityIdentifier("electronics.navigator")
+            VStack(alignment: .leading, spacing: 0) {
+                Text(canvasTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(editorSubtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
-            Button(action: showProperties) { Image(systemName: "slider.horizontal.3").frame(width:44,height:44).contentShape(Rectangle()) }
-                .accessibilityLabel(edText("所选对象属性", "Selection properties"))
-                .disabled(session.selection.objectIDs.isEmpty)
-                .accessibilityIdentifier("electronics.selectionProperties")
-            Menu {
-                Toggle(edText("显示网格", "Show grid"), isOn: $showGrid)
-                Toggle(edText("吸附网格", "Snap to grid"), isOn: $session.snapToGrid)
-                Menu(edText("网格间距", "Grid spacing")) {
-                    ForEach([0.1, 0.25, 0.5, 1.0, 1.27, 2.54], id: \.self) { step in
-                        Button { session.gridSizeMillimetres = step } label: {
-                            if session.gridSizeMillimetres == step { Label(String(format: "%g mm", step), systemImage: "checkmark") }
-                            else { Text(String(format: "%g mm", step)) }
-                        }
-                    }
-                }
-                if tab == .board {
-                    Divider()
-                    Button(edText("PCB 设置", "Board setup"), systemImage: "gearshape") { panel = .boardSettings }
-                    Button(edText("从原理图更新 PCB", "Update PCB from schematic"), systemImage: "arrow.triangle.2.circlepath") { updateBoard() }
-                    Button(edText("重填铜区", "Refill copper zones"), systemImage: "square.dashed.inset.filled") { refillBoard() }
-                        .disabled(session.busy || session.isFilling)
+            Spacer(minLength: 4)
+            if !layout.isCompact {
+                if session.canReturnFromCrossProbe {
+                    Button { returnFromCrossProbe() } label: { Image(systemName: "arrow.uturn.backward.circle").frame(width: 44, height: 44).contentShape(Rectangle()) }
+                        .accessibilityLabel(edText("返回定位前的位置", "Return to previous location"))
+                        .accessibilityIdentifier("electronics.crossProbe.return")
+                        .disabled(locatingComponent)
                 }
                 if tab == .schematic || tab == .board {
-                    Button(edText("从 PCB 更新原理图", "Update schematic from PCB"), systemImage: "arrow.triangle.2.circlepath") {
-                        showingBackAnnotation = true
-                    }
-                    .disabled(currentBoard == nil || session.busy || session.isClosed || session.isRouting || session.isFilling)
-                    .accessibilityIdentifier("electronics.backAnnotation.open")
+                    Button { beginCrossProbe() } label: { Image(systemName: "arrow.left.arrow.right.square").frame(width: 44, height: 44).contentShape(Rectangle()) }
+                        .accessibilityLabel(tab == .schematic ? edText("在 PCB 中定位", "Select on PCB") : edText("在原理图中定位", "Select on schematic"))
+                        .help(tab == .schematic ? edText("在 PCB 中定位", "Select on PCB") : edText("在原理图中定位", "Select on schematic"))
+                        .accessibilityIdentifier("electronics.crossProbe.locate")
+                        .disabled(!canLocateCrossProbe)
                 }
-            } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44).contentShape(Rectangle()) }
-            .accessibilityLabel(edText("画布选项", "Canvas options"))
-        }.padding(.horizontal, 4)
+            }
+            libraryMenu
+            propertiesButton
+            optionsMenu
+        }
+        .padding(.horizontal, 4)
+        .frame(minHeight: 44)
+        .background(.bar)
+        .accessibilityIdentifier("electronics.editorHeader")
     }
-    private var toolRail: some View {
-        VStack(spacing: 2) {
-            ScrollView(.vertical) {
-                VStack(spacing: 2) {
-                    if tab == .schematic || tab == .board {
-                        ForEach(tab == .board ? EDCanvasTool.boardTools : EDCanvasTool.schematicTools) { item in
-                            railButton(title: item.title(on: tab), image: item.image, selected: tool == item, id: item.rawValue) {
-                                if item == .place { panel = .parts } else { tool = item }
-                            }
-                        }
-                    } else {
-                        ForEach(tab == .symbols ? EDLibraryTool.symbolTools : EDLibraryTool.footprintTools) { item in
-                            railButton(title: item.title, image: item.image, selected: libraryTool == item, id: item.rawValue) { libraryTool = item }
-                        }
+    private var libraryMenu: some View {
+        Menu {
+            Button(edText("放置元件…", "Place part…"), systemImage: "plus.square") { panel = .parts }
+            if let onRemoteLibrary {
+                Button(edText("在线元件库", "Online library"), systemImage: "globe") { onRemoteLibrary() }
+                    .accessibilityIdentifier("electronics.library.online")
+            }
+            if let onLibraryUpdates {
+                Divider()
+                Button(edText("内容更新…", "Library updates…"), systemImage: "arrow.triangle.2.circlepath") { onLibraryUpdates() }
+                    .accessibilityIdentifier("electronics.library.updates")
+            }
+        } label: {
+            Image(systemName: "books.vertical").frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .accessibilityLabel(edText("元件库", "Library"))
+        .accessibilityIdentifier("electronics.library.menu")
+    }
+    private var propertiesButton: some View {
+        Button(action: showProperties) {
+            Image(systemName: showsInspector ? "sidebar.right" : "slider.horizontal.3")
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .foregroundStyle(showsInspector ? Color.accentColor : Color.primary)
+        .accessibilityLabel(edText("属性检查器", "Properties inspector"))
+        .accessibilityValue(showsInspector ? edText("已显示", "Shown") : "")
+        .accessibilityAddTraits(showsInspector ? .isSelected : [])
+        .accessibilityIdentifier("electronics.selectionProperties")
+    }
+    private var optionsMenu: some View {
+        Menu {
+            Toggle(edText("显示网格", "Show grid"), isOn: $showGrid)
+            Toggle(edText("吸附网格", "Snap to grid"), isOn: $session.snapToGrid)
+            Toggle(edText("手指绘图", "Finger drawing"), isOn: $session.fingerDrawingEnabled)
+            Menu(edText("网格间距", "Grid spacing")) {
+                ForEach([0.1, 0.25, 0.5, 1.0, 1.27, 2.54], id: \.self) { step in
+                    Button { session.gridSizeMillimetres = step } label: {
+                        if session.gridSizeMillimetres == step { Label(String(format: "%g mm", step), systemImage: "checkmark") }
+                        else { Text(String(format: "%g mm", step)) }
                     }
                 }
-            }.scrollIndicators(.hidden)
-            Divider().padding(.horizontal, 6)
-            railButton(title: edText("手指绘图", "Finger drawing"), image: "hand.draw", selected: session.fingerDrawingEnabled, id: "fingerDrawing") { session.fingerDrawingEnabled.toggle() }
-        }.padding(.vertical, 4).frame(width: 52).background(.bar)
+            }
+            if layout.isCompact {
+                Divider()
+                if session.canReturnFromCrossProbe {
+                    Button(edText("返回定位前的位置", "Return to previous location"), systemImage: "arrow.uturn.backward.circle") { returnFromCrossProbe() }
+                        .disabled(locatingComponent)
+                }
+                if tab == .schematic || tab == .board {
+                    Button(tab == .schematic ? edText("在 PCB 中定位", "Select on PCB") : edText("在原理图中定位", "Select on schematic"),
+                           systemImage: "arrow.left.arrow.right.square") { beginCrossProbe() }
+                        .disabled(!canLocateCrossProbe)
+                }
+            }
+            if tab == .board {
+                Divider()
+                Button(edText("PCB 设置", "Board setup"), systemImage: "gearshape") { panel = .boardSettings }
+                Button(edText("从原理图更新 PCB", "Update PCB from schematic"), systemImage: "arrow.triangle.2.circlepath") { updateBoard() }
+                Button(edText("重填铜区", "Refill copper zones"), systemImage: "square.dashed.inset.filled") { refillBoard() }
+                    .disabled(session.busy || session.isFilling)
+            }
+            if tab == .schematic || tab == .board {
+                Button(edText("从 PCB 更新原理图", "Update schematic from PCB"), systemImage: "arrow.triangle.2.circlepath") {
+                    showingBackAnnotation = true
+                }
+                .disabled(currentBoard == nil || session.busy || session.isClosed || session.isRouting || session.isFilling)
+                .accessibilityIdentifier("electronics.backAnnotation.open")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle").frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .accessibilityLabel(edText("画布选项", "Canvas options"))
+        .accessibilityIdentifier("electronics.options")
     }
-    private func railButton(title: String, image: String, selected: Bool, id: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: image).font(.system(size: 18)).frame(width: 44, height: 44)
-                .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                .background(selected ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 8))
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).help(title).accessibilityLabel(title)
-            .accessibilityAddTraits(selected ? .isSelected : [])
-            .accessibilityIdentifier("electronics.tool." + id)
-    }
-    @ViewBuilder private var toolOptions: some View {
-        if tab == .schematic || tab == .board {
+    @ViewBuilder private var contextBar: some View {
+        if tab == .schematic || tab == .board || tab == .symbols || tab == .footprints {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { optionControls; Spacer(minLength: 0) }
-                ScrollView(.horizontal) { HStack(spacing: 8) { optionControls } }.scrollIndicators(.hidden)
-            }.padding(.horizontal, 10).frame(minHeight: 44).background(.bar)
-        } else if libraryTool == .arc {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { arcControls; Spacer(minLength: 0) }
-                ScrollView(.horizontal) { HStack(spacing: 8) { arcControls } }.scrollIndicators(.hidden)
-            }.padding(.horizontal, 10).frame(minHeight: 44).background(.bar)
+                HStack(spacing: 8) { contextControls; Spacer(minLength: 0) }
+                ScrollView(.horizontal) { HStack(spacing: 8) { contextControls } }.scrollIndicators(.hidden)
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 48)
+            .background(.bar)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("electronics.contextBar")
         }
     }
-    @ViewBuilder private var arcControls: some View {
-        Button { arcClockwise.toggle() } label: {
-            Label(arcClockwise ? edText("顺时针", "Clockwise") : edText("逆时针", "Counterclockwise"), systemImage: arcClockwise ? "arrow.clockwise" : "arrow.counterclockwise")
-        }.frame(minHeight: 44).accessibilityIdentifier("electronics.arc.direction")
-        TextField(edText("线宽（毫米）", "Stroke width in millimetres"), value: $graphicStroke, format: .number)
-            .textFieldStyle(.roundedBorder).frame(width: 64).accessibilityIdentifier("electronics.arc.width")
-        Text("mm").font(.caption).foregroundStyle(.secondary)
-        if tab == .footprints {
-            Picker(edText("图层", "Layer"), selection: $graphicLayerID) {
-                ForEach(EDAGraphicLayers.standardAssignments, id: \.layerID) { Text($0.layerID).tag($0.layerID) }
-            }.fixedSize().accessibilityIdentifier("electronics.arc.layer")
+    @ViewBuilder private var contextControls: some View {
+        if tab == .schematic || tab == .board {
+            if tab == .board, !copperLayers.isEmpty {
+                EDCopperLayerStrip(layers: copperLayers, selection: $activeLayer)
+                Rectangle().fill(.quaternary).frame(width: 1, height: 24).padding(.horizontal, 2)
+            }
+            optionControls
+        } else {
+            libraryControls
         }
     }
     @ViewBuilder private var optionControls: some View {
         if tool == .place {
             Button { panel = .parts } label: { Label(partName, systemImage: "plus.square").lineLimit(1) }
+                .frame(minHeight: 44)
             Button { placementAngle = (placementAngle + 90).truncatingRemainder(dividingBy: 360) } label: { Image(systemName: "rotate.right") }
                 .frame(minWidth: 44, minHeight: 44).accessibilityLabel(edText("旋转 90°", "Rotate 90°"))
             Button { placementFlipped.toggle() } label: { Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right") }
                 .frame(minWidth: 44, minHeight: 44).accessibilityLabel(tab == .board ? edText("翻到另一面", "Flip board side") : edText("镜像", "Mirror"))
             if tab == .board { Text(placementFlipped ? "B.Cu" : "F.Cu").font(.caption).foregroundStyle(.secondary) }
         } else if tool == .label {
-            TextField(edText("网络名称", "Net name"), text: $labelName).textFieldStyle(.roundedBorder).frame(width: 150)
+            TextField(edText("网络名称", "Net name"), text: $labelName)
+                .textFieldStyle(.roundedBorder).frame(width: 150).frame(minHeight: 36)
+                .accessibilityIdentifier("electronics.label.name")
         } else if tool == .hole {
             Text(edText("孔径", "Diameter")).font(.caption)
-            TextField("mm", value: $holeDiameter, format: .number).textFieldStyle(.roundedBorder).frame(width: 64).accessibilityLabel(edText("孔径（毫米）", "Hole diameter in millimetres"))
+            TextField("mm", value: $holeDiameter, format: .number).textFieldStyle(.roundedBorder)
+                .frame(width: 64).frame(minHeight: 36)
+                .accessibilityLabel(edText("孔径（毫米）", "Hole diameter in millimetres"))
             Text("mm").font(.caption).foregroundStyle(.secondary)
-        } else { Text(tool.title(on: tab)).font(.subheadline) }
-        if tab == .board && [.wire, .via, .zone].contains(tool) {
-            Picker(edText("铜层", "Copper layer"), selection: $activeLayer) {
-                ForEach(currentBoard?.layers.filter { $0.kind == .copper } ?? [], id: \.id) { Text($0.id).tag($0.id) }
-            }.fixedSize()
-            if tool == .wire {
-                TextField(edText("线宽（毫米）", "Track width in millimetres"), value: $wireWidth, format: .number)
-                    .textFieldStyle(.roundedBorder).frame(width: 60)
-                Text("mm").font(.caption).foregroundStyle(.secondary)
-            } else {
-                Picker(edText("网络", "Net"), selection: $netID) {
-                    Text(edText("未连接", "Unconnected")).tag("")
-                    ForEach((try? session.netlist().nets) ?? []) { Text($0.name).tag($0.id) }
-                }.frame(maxWidth: 210)
-            }
+        } else if tab == .board, tool == .wire {
+            EDTrackWidthControl(width: $wireWidth)
+        } else if tab == .board, tool == .via || tool == .zone {
+            netPicker
+        } else if tool == .select {
+            Text(edText("选择对象以编辑属性", "Select an object to edit properties"))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        } else {
+            Text(tool.title(on: tab)).font(.subheadline).foregroundStyle(.secondary)
         }
     }
-    private var status: some View {
-        HStack(spacing: 6) {
-            Text(session.busy || session.isCommittingCopperFill ? edText("正在保存…", "Saving…") : session.isFilling ? edText("正在重填铜区…", "Refilling copper zones…") : session.isRouting ? edText("正在布线…", "Routing…") : session.isDirty ? edText("有未保存的修改", "Unsaved changes") : edText("已保存", "Saved"))
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            if session.isFilling { Button(edText("停止", "Stop")) { session.cancelFilling() }.disabled(!session.canCancelFilling) }
-            else if session.isRouting { Button(edText("停止", "Stop")) { session.cancelRouting() } }
-            Text(String(format: "%g mm", session.gridSizeMillimetres))
-            if session.busy || session.isRouting || session.isFilling { ProgressView().controlSize(.small) }
-        }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 5)
+    private var netPicker: some View {
+        Picker(edText("网络", "Net"), selection: $netID) {
+            Text(edText("未连接", "Unconnected")).tag("")
+            ForEach((try? session.netlist().nets) ?? []) { Text($0.name).tag($0.id) }
+        }
+        .fixedSize()
+        .frame(maxWidth: 230)
+        .accessibilityIdentifier("electronics.net")
+    }
+    @ViewBuilder private var libraryControls: some View {
+        if libraryTool == .arc {
+            Button { arcClockwise.toggle() } label: {
+                Label(arcClockwise ? edText("顺时针", "Clockwise") : edText("逆时针", "Counterclockwise"),
+                      systemImage: arcClockwise ? "arrow.clockwise" : "arrow.counterclockwise")
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("electronics.arc.direction")
+        }
+        if [EDLibraryTool.line, .rectangle, .circle, .arc].contains(libraryTool) {
+            TextField(edText("线宽（毫米）", "Stroke width in millimetres"), value: $graphicStroke, format: .number)
+                .textFieldStyle(.roundedBorder).frame(width: 64).frame(minHeight: 36)
+                .accessibilityIdentifier(libraryTool == .arc ? "electronics.arc.width" : "electronics.graphic.width")
+            Text("mm").font(.caption).foregroundStyle(.secondary)
+            if tab == .footprints {
+                Picker(edText("图层", "Layer"), selection: $graphicLayerID) {
+                    ForEach(EDAGraphicLayers.standardAssignments, id: \.layerID) { Text($0.layerID).tag($0.layerID) }
+                }
+                .fixedSize()
+                .accessibilityIdentifier(libraryTool == .arc ? "electronics.arc.layer" : "electronics.graphic.layer")
+            }
+        } else {
+            Text(libraryTool.title).font(.subheadline).foregroundStyle(.secondary)
+        }
+    }
+    private func normalizeActiveLayer() {
+        guard let first = copperLayers.first else { return }
+        if !copperLayers.contains(where: { $0.id == activeLayer }) { activeLayer = first.id }
     }
     private func showLibraryReplacement() {
         guard selectedComponentID != nil else { return }
@@ -473,7 +665,7 @@ public struct EDWorkbenchView: View {
         return { showLibraryReplacement() }
     }
     private func showProperties() {
-        if compactPanels { panel = .properties } else { inspectorVisible.toggle() }
+        if layout.isCompact { panel = .properties } else { inspectorVisible.toggle() }
     }
     @ViewBuilder private func panelContent(_ item: EDWorkbenchPanel) -> some View {
         switch item {
@@ -490,7 +682,12 @@ public struct EDWorkbenchView: View {
                 do { pendingReplacement = try EDALibraryProject.planReplacement(snapshot, componentID: component, project: session.project); panel = nil }
                 catch { session.report(error) }
             } }, onUpdates: onLibraryUpdates.map { _ in { pendingLibraryUpdates = true; panel = nil } })
-        case .properties: EDAInspector(session: session, context: context, onReplaceLibrary: libraryReplacementAction)
+        case .properties:
+            EDAInspector(session: session, context: context, onReplaceLibrary: libraryReplacementAction,
+                         activeLayer: $activeLayer,
+                         onBoardSetup: { panel = .boardSettings },
+                         onUpdateBoard: updateBoard,
+                         onRefillCopper: refillBoard)
         case .boardSettings:
             if let board = currentBoard { EDBoardProperties(session: session, value: board).id(board.id) }
         }

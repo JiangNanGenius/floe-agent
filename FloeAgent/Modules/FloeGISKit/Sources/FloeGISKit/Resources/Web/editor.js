@@ -45723,9 +45723,9 @@ northing meters` + mgrsString;
       return e2.state.view = e2.liveView = { center: [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2], zoom: 2, extent: [...p5, ...q2], fit: !0 }, { bounds };
     }, t3("\u5DE5\u7A0B", "Project")), add5("project.bookmark", t3("\u4FDD\u5B58\u89C6\u56FE\u4E66\u7B7E", "Bookmark view"), [field("name", t3("\u540D\u79F0", "Name"))], (a3) => {
       e2.state.bookmarks.push({ ...clone2(e2.liveView ?? e2.state.view), id: uid(), name: a3.name || t3("\u89C6\u56FE", "View") });
-    }, t3("\u5DE5\u7A0B", "Project")), add5("project.bookmarkOpen", t3("\u6253\u5F00\u89C6\u56FE\u4E66\u7B7E", "Open bookmark"), [field("bookmark", t3("\u4E66\u7B7E", "Bookmark"), "select", { options: (e3) => e3.state.bookmarks.map((b3) => ({ value: b3.id, label: b3.name })) })], (a3) => {
+    }, t3("\u5DE5\u7A0B", "Project")), e2.register({ id: "project.bookmarkOpen", title: t3("\u6253\u5F00\u89C6\u56FE\u4E66\u7B7E", "Open bookmark"), group: t3("\u5DE5\u7A0B", "Project"), access: "read", sideEffecting: !0, fields: [field("bookmark", t3("\u4E66\u7B7E", "Bookmark"), "select", { options: (e3) => e3.state.bookmarks.map((b3) => ({ value: b3.id, label: b3.name })) })] }, (a3) => {
       e2.liveView = { ...clone2(required(e2.state.bookmarks.find((b3) => b3.id === a3.bookmark), "Unknown bookmark")), fit: !0 };
-    }, t3("\u5DE5\u7A0B", "Project"), "read"), add5("project.bookmarkDelete", t3("\u5220\u9664\u89C6\u56FE\u4E66\u7B7E", "Delete bookmark"), [field("bookmark", t3("\u4E66\u7B7E", "Bookmark"), "select", { options: (e3) => e3.state.bookmarks.map((b3) => ({ value: b3.id, label: b3.name })) })], (a3) => {
+    }), add5("project.bookmarkDelete", t3("\u5220\u9664\u89C6\u56FE\u4E66\u7B7E", "Delete bookmark"), [field("bookmark", t3("\u4E66\u7B7E", "Bookmark"), "select", { options: (e3) => e3.state.bookmarks.map((b3) => ({ value: b3.id, label: b3.name })) })], (a3) => {
       e2.state.bookmarks = e2.state.bookmarks.filter((b3) => b3.id !== a3.bookmark);
     }, t3("\u5DE5\u7A0B", "Project")), add5("layer.create", t3("\u65B0\u5EFA\u77E2\u91CF\u56FE\u5C42", "New vector layer"), [field("name", t3("\u540D\u79F0", "Name"), "text", { default: t3("\u65B0\u56FE\u5C42", "New layer") }), field("crs", t3("\u5750\u6807\u7CFB", "CRS"), "text", { default: (e3) => e3.state.crs })], (a3) => {
       let layer = vectorLayer(a3.name, [], defineCRS(a3.crs || e2.state.crs));
@@ -45766,12 +45766,12 @@ northing meters` + mgrsString;
       });
       for (let c5 of changes) c5.feature.geometry = c5.geometry;
       return { count: changes.length };
-    }), e2.commands.get("feature.geometries").descriptor.hidden = !0, add5("feature.select", t3("\u9009\u62E9\u8981\u7D20", "Select features"), [layerField(), field("features", t3("\u8981\u7D20\u7F16\u53F7\u5217\u8868", "Feature IDs"), "textarea", { default: "[]" })], (a3) => {
+    }), e2.commands.get("feature.geometries").descriptor.hidden = !0, e2.register({ id: "feature.select", title: t3("\u9009\u62E9\u8981\u7D20", "Select features"), group: t3("\u67E5\u8BE2", "Query"), access: "read", sideEffecting: !0, fields: [layerField(), field("features", t3("\u8981\u7D20\u7F16\u53F7\u5217\u8868", "Feature IDs"), "textarea", { default: "[]" })] }, (a3) => {
       let layer = getLayer(e2, a3.layer, "vector"), ids = typeof a3.features == "string" ? JSON.parse(a3.features) : a3.features;
       if (!Array.isArray(ids)) throw new Error("Feature IDs must be an array");
       let available = new Set(layer.data.features.map((f3) => String(f3.id)));
       return e2.selection = { layer: layer.id, features: ids.filter((id) => available.has(String(id))) }, e2.selection;
-    }, t3("\u67E5\u8BE2", "Query"), "read"), add5("feature.delete", t3("\u5220\u9664\u9009\u4E2D\u8981\u7D20", "Delete selected features"), [layerField()], (a3) => {
+    }), add5("feature.delete", t3("\u5220\u9664\u9009\u4E2D\u8981\u7D20", "Delete selected features"), [layerField()], (a3) => {
       let { layer, features } = chosen(a3);
       editable(layer);
       let ids = new Set(features.map((f3) => String(f3.id)));
@@ -45829,8 +45829,19 @@ northing meters` + mgrsString;
       let layer = editable(getLayer(e2, a3.layer, "vector"));
       layer.style = { ...layer.style, ...a3, width: Math.max(0, finite(a3.width, 2)), radius: Math.max(1, finite(a3.radius, 5)), classes: Math.max(2, Math.min(16, Math.trunc(finite(a3.classes, 5)))) }, delete layer.style.layer;
     }), add5("query.attributes", t3("\u6309\u5C5E\u6027\u67E5\u8BE2", "Query attributes"), [layerField(), field("field", t3("\u5B57\u6BB5", "Field")), field("operator", t3("\u5173\u7CFB", "Operator"), "select", { options: ["equals", "contains", "greater", "less", "notEqual", "isNull"], default: "equals" }), field("value", t3("\u503C", "Value")), field("sort", t3("\u6392\u5E8F\u5B57\u6BB5", "Sort field"))], (a3) => {
-      let layer = getLayer(e2, a3.layer, "vector"), compare2 = (v5) => ({ equals: () => String(v5) === String(a3.value), contains: () => String(v5 ?? "").includes(a3.value), greater: () => Number(v5) > Number(a3.value), less: () => Number(v5) < Number(a3.value), notEqual: () => String(v5) !== String(a3.value), isNull: () => v5 == null })[a3.operator](), matches = layer.data.features.filter((f3) => compare2(f3.properties[a3.field]));
-      return a3.sort && matches.sort((x3, y3) => String(x3.properties[a3.sort] ?? "").localeCompare(String(y3.properties[a3.sort] ?? ""), void 0, { numeric: !0 })), e2.selection = { layer: layer.id, features: matches.map((f3) => f3.id) }, matches.map((f3) => ({ id: f3.id, ...f3.properties }));
+      let layer = getLayer(e2, a3.layer, "vector"), name = propertyName(a3.field), hasField = (key2) => layer.fields.some((f3) => f3.name === key2) || layer.data.features.some((f3) => Object.hasOwn(f3.properties, key2));
+      if (!hasField(name)) throw new Error(t3("\u56FE\u5C42\u91CC\u6CA1\u6709\u8FD9\u4E2A\u5B57\u6BB5\u3002", "This layer has no such field."));
+      let operator = String(a3.operator ?? "equals");
+      if (!["equals", "contains", "greater", "less", "notEqual", "isNull"].includes(operator)) throw new Error(t3("\u4E0D\u652F\u6301\u7684\u67E5\u8BE2\u5173\u7CFB\u3002", "Unsupported query operator."));
+      if (operator !== "isNull" && (a3.value === void 0 || a3.value === null)) throw new Error(t3("\u8BF7\u63D0\u4F9B\u4E00\u4E2A\u67E5\u8BE2\u503C\u3002", "Provide a value for this operator."));
+      let number = operator === "greater" || operator === "less" ? Number(a3.value) : null;
+      if (number !== null && (a3.value === "" || !Number.isFinite(number))) throw new Error(t3("\u8FD9\u4E2A\u5173\u7CFB\u9700\u8981\u6570\u5B57\u503C\u3002", "This operator requires a numeric value."));
+      let text3 = String(a3.value ?? ""), compare2 = { equals: (v5) => v5 != null && String(v5) === text3, contains: (v5) => v5 != null && String(v5).includes(text3), greater: (v5) => v5 != null && Number.isFinite(Number(v5)) && Number(v5) > number, less: (v5) => v5 != null && Number.isFinite(Number(v5)) && Number(v5) < number, notEqual: (v5) => String(v5 ?? "") !== text3, isNull: (v5) => v5 == null }[operator], matches = layer.data.features.filter((f3) => compare2(f3.properties[name])), sort = null;
+      if (a3.sort) {
+        if (sort = propertyName(a3.sort), !hasField(sort)) throw new Error(t3("\u6392\u5E8F\u5B57\u6BB5\u4E0D\u5B58\u5728\u3002", "The sort field does not exist."));
+        matches.sort((x3, y3) => String(x3.properties[sort] ?? "").localeCompare(String(y3.properties[sort] ?? ""), void 0, { numeric: !0 }));
+      }
+      return matches.map((f3) => ({ id: f3.id, ...f3.properties }));
     }, t3("\u67E5\u8BE2", "Query"), "read"), add5("query.measure", t3("\u6D4B\u91CF\u9009\u4E2D\u8981\u7D20", "Measure selection"), [layerField()], (a3) => {
       let layer = getLayer(e2, a3.layer, "vector"), ids = new Set((e2.selection?.layer === layer.id ? e2.selection.features : []).map(String));
       return inGeographic(layer).features.filter((f3) => f3.geometry && (!ids.size || ids.has(String(f3.id)))).map((f3) => ({ id: f3.id, areaSquareMeters: turf.area(f3), lengthMeters: ["LineString", "MultiLineString", "Polygon", "MultiPolygon"].includes(f3.geometry.type) ? turf.length(f3, { units: "meters" }) : 0, centroid: turf.centroid(f3).geometry.coordinates }));
@@ -62506,9 +62517,7 @@ NODATA_value ${layer.nodata}
       if (statementCount !== 1) throw new Error("Use a single SELECT query");
       let result = db.exec(query);
       if (result.length > 1) throw new Error("Use a single SELECT query");
-      if (!result.length) return [];
-      let rows = result[0].values.map((values2) => Object.fromEntries(result[0].columns.map((c5, i4) => [c5, values2[i4]])));
-      return result[0].columns.includes("_id") && (e2.selection = { layer: layer.id, features: rows.map((r2) => r2._id) }), rows;
+      return result.length ? result[0].values.map((values2) => Object.fromEntries(result[0].columns.map((c5, i4) => [c5, values2[i4]]))) : [];
     } finally {
       db.close();
     }
@@ -62832,8 +62841,8 @@ NODATA_value ${layer.nodata}
       });
       return analysisLayer(e2, layer.name + " joined", featureCollection2(result));
     }), add5("query.spatial", t3("\u6309\u7A7A\u95F4\u5173\u7CFB\u9009\u62E9", "Select by location"), [layerField(), targetField(), field("predicate", t3("\u5173\u7CFB", "Relation"), "select", { options: ["intersects", "within", "contains", "disjoint"], default: "intersects" })], (a3) => {
-      let layer = getLayer(e2, a3.layer, "vector"), targets = inGeographic(getLayer(e2, a3.target, "vector")).features.filter((f3) => f3.geometry), matches = inGeographic(layer).features.filter((f3) => f3.geometry && (a3.predicate === "disjoint" ? targets.every((g2) => turf.booleanDisjoint(f3, g2)) : targets.some((g2) => ({ intersects: () => turf.booleanIntersects(f3, g2), within: () => turf.booleanWithin(f3, g2), contains: () => turf.booleanContains(f3, g2) })[a3.predicate]())));
-      return e2.selection = { layer: layer.id, features: matches.map((f3) => f3.id) }, matches.map((f3) => ({ id: f3.id, ...f3.properties }));
+      let layer = getLayer(e2, a3.layer, "vector"), targets = inGeographic(getLayer(e2, a3.target, "vector")).features.filter((f3) => f3.geometry);
+      return inGeographic(layer).features.filter((f3) => f3.geometry && (a3.predicate === "disjoint" ? targets.every((g2) => turf.booleanDisjoint(f3, g2)) : targets.some((g2) => ({ intersects: () => turf.booleanIntersects(f3, g2), within: () => turf.booleanWithin(f3, g2), contains: () => turf.booleanContains(f3, g2) })[a3.predicate]()))).map((f3) => ({ id: f3.id, ...f3.properties }));
     }, t3("\u67E5\u8BE2", "Query"), "read"), add5("query.nearest", t3("\u6700\u8FD1\u8981\u7D20\uFF0F\u8DDD\u79BB", "Nearest features / distances"), [layerField(), targetField()], (a3) => {
       let source = inGeographic(getLayer(e2, a3.layer, "vector")), target = inGeographic(getLayer(e2, a3.target, "vector")).features.filter((f3) => f3.geometry);
       if (!target.length) throw new Error("Reference layer is empty");
@@ -107793,6 +107802,23 @@ void main() {
     });
   }
 
+  // FloeAgent/Modules/FloeGISKit/Web/readonly.js
+  function installGISReadOnlyRenderPolicy(engine2) {
+    let execute = engine2.execute.bind(engine2), render2 = engine2.render.bind(engine2);
+    return engine2.execute = async (request) => {
+      let descriptor = engine2.commands.get(request?.command)?.descriptor;
+      engine2.gisPureRead = !!(descriptor && descriptor.access === "read" && descriptor.sideEffecting !== !0);
+      try {
+        return await execute(request);
+      } finally {
+        engine2.gisPureRead = !1;
+      }
+    }, engine2.render = async function(...args) {
+      if (!this.gisPureRead)
+        return render2(...args);
+    }, engine2;
+  }
+
   // FloeAgent/Modules/FloeGISKit/Web/main.js
   var view, engine = new EditorEngine({ kind: "gis", title: t3("\u5730\u7406\u4FE1\u606F", "GIS"), create: createGIS, normalize: normalizeGIS, nativeSnapshot: gisNativeSnapshot, nativeChromeChanged: async (e2) => {
     view && await view.render();
@@ -107810,6 +107836,7 @@ void main() {
   registerAnalysis(engine);
   registerViewCommands(engine);
   registerGISUI(engine, () => view);
+  installGISReadOnlyRenderPolicy(engine);
   engine.commands.get("document.save").handler = () => (engine.state.view = { ...engine.liveView ?? engine.state.view }, { saved: !0 });
   engine.register({ id: "layout.export", title: t3("\u5BFC\u51FA\u5730\u56FE", "Export map"), group: t3("\u5236\u56FE", "Layout"), access: "exportFile", fields: [field("format", t3("\u683C\u5F0F", "Format"), "select", { options: ["svg", "png", "pdf"], default: "pdf" }), field("width", t3("\u5BBD\u5EA6\uFF08\u50CF\u7D20\uFF09", "Width (pixels)"), "number", { default: (e2) => Math.round(paperSize(e2.state.layout)[0] * 96 / 25.4), min: 200 }), field("height", t3("\u9AD8\u5EA6\uFF08\u50CF\u7D20\uFF09", "Height (pixels)"), "number", { default: (e2) => Math.round(paperSize(e2.state.layout)[1] * 96 / 25.4), min: 200 })] }, async (a3) => {
     let width = Math.max(200, Math.min(1e4, a3.width)), height = Math.max(200, Math.min(1e4, a3.height)), svg2 = await makeMapSVG(engine, { width, height }), name = engine.state.title.replace(/[\\/:]/g, "_");

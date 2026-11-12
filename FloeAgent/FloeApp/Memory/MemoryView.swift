@@ -133,6 +133,7 @@ final class MemoryCenter: ObservableObject {
     func load() async {
         let token = publication.begin(.memories)
         do {
+            try await environment.intelligenceStore.maintainMemoryLifecycle()
             var result: [MemoryEntry] = []
             result += try await environment.intelligenceStore.memories(scope: .userProfile, status: nil)
             result += try await environment.intelligenceStore.memories(scope: .agentGlobal, status: nil)
@@ -278,7 +279,7 @@ final class MemoryCenter: ObservableObject {
             return
         }
         do {
-            let results = try await environment.globalSourceMemory.recallMemories(query,
+            let results = try await environment.globalSourceMemory.browseMemories(query,
                 context: .init(workspaceID: environment.workspaceCenter.currentWorkspace?.id,
                     conversationID: environment.browserCenter.conversationID, limit: 20))
             guard canPublish(token, in: .search) else { return }
@@ -787,7 +788,7 @@ struct MemoryView: View {
             HStack {
                 Text(scope(entry.scope))
                 if entry.isPinned { Image(systemName: "pin.fill") }
-                Text(statusLabel(entry.status))
+                Text(memoryStatusLabel(entry.status))
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -811,13 +812,14 @@ struct MemoryView: View {
     private func scope(_ scope: MemoryScope) -> String {
         switch scope { case .userProfile: FloeL10n.l("hosts.user"); case .agentGlobal: "Agent"; case .workspace: FloeL10n.l("settings.all_workspaces_files_view.workspace"); case .task: FloeL10n.l("background.task.name_fallback") }
     }
-    private func statusLabel(_ status: MemoryEntryStatus) -> String {
-        switch status {
-        case .pending: FloeL10n.l("memory.memory_view.pending_confirmation")
-        case .active: FloeL10n.l("memory.memory_view.in_use")
-        case .rejected: FloeL10n.l("memory.memory_view.ignored")
-        case .superseded: FloeL10n.l("settings.all_workspaces_files_view.archived")
-        }
+}
+
+private func memoryStatusLabel(_ status: MemoryEntryStatus) -> String {
+    switch status {
+    case .pending: FloeL10n.l("memory.memory_view.pending_confirmation")
+    case .active: FloeL10n.isChinese ? "已保留" : "Retained"
+    case .rejected: FloeL10n.l("memory.memory_view.ignored")
+    case .superseded: FloeL10n.l("settings.all_workspaces_files_view.archived")
     }
 }
 
@@ -834,7 +836,7 @@ private struct MemoryEntryDetailView: View {
             }
             Section("workspace.workspace_canvas_view.properties") {
                 LabeledContent("approval.scope", value: scopeTitle)
-                LabeledContent("memory.memory_view.status", value: entry.status.rawValue)
+                LabeledContent("memory.memory_view.status", value: memoryStatusLabel(entry.status))
                 LabeledContent("memory.memory_view.importance", value: entry.importance, format: .percent)
                 LabeledContent("memory.memory_view.confidence", value: entry.confidence, format: .percent)
                 if let taskID = entry.originConversationID {

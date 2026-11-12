@@ -37,6 +37,12 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
 @MainActor @Observable public final class EDWorkbenchSession {
     public var library: EDLibraryController?
     public let store: EDAProjectStore
+    /// One stable 3D scene owner per open workbench. Re-entering the 3D tab
+    /// reuses this object; closing the session cancels and joins its work.
+    public let board3DRenderer = EDBoard3DRenderer()
+    /// Injected by the App layer that owns the verified remote model cache.
+    /// UI stays independent of FloeCAD and filesystem locations.
+    public var board3DModelLoader: (any EDBoard3DModelLoading)?
     private var editing: EDAEditingSession
     public var project: EDAProject { editing.project }
     public var revision: UInt64 { project.revision }
@@ -191,7 +197,9 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
             if let exportTask{exportTask.cancel();_ = try? await exportTask.value;self.exportTask=nil;isExporting=false}
             if let ownedFill { _ = try? await ownedFill.value }
             finishFillForClose()
-            _ = try await saveBound(); isClosed = true; selection = .none
+            _ = try await saveBound()
+            await board3DRenderer.close()
+            isClosed = true; selection = .none
             return true
         } catch { report(error, operation: "close"); return false }
     }
@@ -207,6 +215,7 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
         if let ownedFill { _ = try? await ownedFill.value }
         finishFillForClose()
         guard !busy, !isDirty else { return }
+        await board3DRenderer.close()
         isClosed = true; selection = .none
     }
     private func fenceFillForClose() -> Task<EDACopperFillPlan, Error>? {
@@ -244,6 +253,13 @@ public struct EDWorkbenchFailure: Error, Hashable, Sendable {
     public func forwardAnnotation(boardID: UUID, expectedRevision: UInt64? = nil) async throws {
         try await perform("synchronize", expectedRevision: expectedRevision) { candidate in
             let plan = try EDAForwardAnnotation.plan(candidate.project, boardID: boardID)
+            try EDAForwardAnnotation.apply(plan, to: &candidate)
+        }
+    }
+    /// Commit a plan that the caller already validated and reported. The
+    /// existing CAS, revision fence and undo path remain authoritative.
+    public func forwardAnnotation(plan: EDAForwardAnnotationPlan) async throws {
+        try await perform("synchronize", expectedRevision: plan.revision) { candidate in
             try EDAForwardAnnotation.apply(plan, to: &candidate)
         }
     }

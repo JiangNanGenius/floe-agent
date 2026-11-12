@@ -254,6 +254,21 @@ public enum OfficeEngineCommand: Equatable, Sendable {
         }
     }
 
+    /// True when this command is meaningful against a SAVED package with no
+    /// live editor selection, cursor or viewport. Exact-target commands carry
+    /// their own immutable identity; workbook recalculation acts on the whole
+    /// workbook. Every other catalog command depends on live document state
+    /// (the current paragraph, cell, slide or shape selection), so it is not
+    /// accepted for the service-owned automatic copy.
+    public var supportsSavedCopyExecution: Bool {
+        switch self {
+        case .explicit, .excelRecalculate:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// The explicit target shown in proposals/receipts.
     public var targetSummary: String {
         switch self {
@@ -391,6 +406,24 @@ public enum OfficeEngineCommand: Equatable, Sendable {
 }
 
 public enum OfficeEngineCommandCatalog {
+    /// True when this batch may be proposed for the saved-package automatic
+    /// copy without a live editor session. A batch that contains an
+    /// exact-target command keeps the established exact-target path (which
+    /// already refuses live-selection commands); a batch without one is
+    /// accepted only when EVERY command is independently executable against
+    /// the saved package. This is deliberately narrower than
+    /// `!requiresSelectionFingerprint`: commands such as `word.insertTable`
+    /// or `pptx.duplicateSlide` have no selection fingerprint but still need
+    /// a live cursor/current slide.
+    public static func supportsSavedCopyExecution(_ commands: [OfficeEngineCommand]) -> Bool {
+        guard !commands.isEmpty,
+              !commands.contains(where: \.requiresSelectionFingerprint) else { return false }
+        if commands.contains(where: { if case .explicit = $0 { return true }; return false }) {
+            return true
+        }
+        return commands.allSatisfy(\.supportsSavedCopyExecution)
+    }
+
     /// Programmatic Writer paragraph style names exposed by the engine's
     /// `.uno:StyleApply` command values (the same names the pinned style
     /// combobox applies via `map.applyStyle(name, "ParagraphStyles")`).

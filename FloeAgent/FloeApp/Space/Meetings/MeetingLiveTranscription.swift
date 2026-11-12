@@ -4,6 +4,7 @@ import Foundation
 import AVFoundation
 import CoreMedia
 import Observation
+import FloeCore
 import FloeMeetings
 import FloeMeetingsAV
 
@@ -107,11 +108,26 @@ struct MeetingChunkTranscript: Sendable {
             // and local engines honestly return no labels.
             let result = try await audio.transcribe(fileURL: file, language: .automatic, serviceID: route,
                                                     requiresTiming: true, enableSpeakerAttribution: true, onPartial: { relay?.offer($0) })
-            return MeetingChunkTranscript(segments: result.segments, language: result.language)
+            return try await transcript(result, from: file)
         } catch AssistantAudioError.noSpeechRecognized {
             // Silence is a completed observation, not a broken recording.
             return MeetingChunkTranscript(segments: [], language: nil)
         }
+    }
+
+    /// A text-only cloud service still produced a real transcript. Anchor it
+    /// to the measured source interval; do not fabricate word timestamps or
+    /// mark the chunk complete while silently discarding the text.
+    static func transcript(_ result: AssistantAudioTranscriptionResult, from file: URL) async throws -> MeetingChunkTranscript {
+        guard result.segments.isEmpty else {
+            return .init(segments: result.segments, language: result.language)
+        }
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return .init(segments: [], language: result.language) }
+        let interval = try await AudioFileProbe.durationRange(file)
+        try Task.checkCancellation()
+        FloeLogger(category: .providers).info("meetingTranscriptionTiming kind=sourceInterval")
+        return .init(segments: [.init(start: interval.start, end: interval.end, text: text, words: [])], language: result.language)
     }
 
     init(meetingID: MeetingID, root: URL, service: MeetingService,
@@ -256,6 +272,7 @@ struct MeetingChunkTranscript: Sendable {
                     }
                     self.chunks[failed].state = .failed; self.chunks[failed].error = error.localizedDescription
                     self.requiresRetry = true
+                    FloeLogger(category: .providers).warning("meetingTranscriptionQueue state=needsRetry code=\((error as NSError).code)")
                     self.diagnostic = error.localizedDescription; try? self.save()
                     await self.onChange()
                     // Retain the rest on disk. Missing configuration/busy

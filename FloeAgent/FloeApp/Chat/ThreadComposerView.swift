@@ -172,6 +172,9 @@ struct ThreadComposerView: View {
     /// separate action and never sends a transcript automatically.
     var onContinuousVoice: (() -> Void)? = nil
     var onManualCompact: (() -> Void)? = nil
+    /// Existing goals edit the same durable identity instead of entering a
+    /// second goal-creation flow. Home/new-task composers leave this nil.
+    var onEditGoal: (() -> Void)? = nil
     /// Fires after a user model choice has been applied to this composer's
     /// conversation, with the previous selection. The thread owner uses it to
     /// run the recoverable pre-switch history cleanup for smaller-context
@@ -1738,13 +1741,18 @@ struct ThreadComposerView: View {
     private var modePicker: some View {
         Menu {
             ForEach(AgentExecutionMode.allCases) { mode in
-                Button {
-                    agentMode = mode
-                } label: {
-                    if agentMode == mode {
-                        Label(mode.title, systemImage: "checkmark")
-                    } else {
-                        Label(mode.title, systemImage: mode.systemImage)
+                if mode == .goal, let onEditGoal {
+                    Button(IDELanguageRunText.t("编辑目标", "Edit goal"), systemImage: "target", action: onEditGoal)
+                        .accessibilityIdentifier("composer.goal.edit")
+                } else {
+                    Button {
+                        agentMode = mode
+                    } label: {
+                        if agentMode == mode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Label(mode.title, systemImage: mode.systemImage)
+                        }
                     }
                 }
             }

@@ -27,10 +27,35 @@ public actor BiologyScientificJobs {
     private let contexts:BiologyExecutionContexts
     private let environments:EnvironmentRegistry
     private let files:(any BiologyFileAccessing)?
+    private let resolveEnvironment:(@Sendable (ToolContext) async throws -> SelectedTaskEnvironmentLease)?
     private var active:[UUID:Set<UUID>]=[:]
     private var stopped:Set<UUID>=[]
     private var unconfirmed:Set<UUID>=[]
-    public init(jobs:BackgroundJobService,registry:ToolRunnerRegistry = .shared,environments:EnvironmentRegistry,contexts:BiologyExecutionContexts,files:(any BiologyFileAccessing)?=nil) {self.jobs=jobs;self.registry=registry;self.environments=environments;self.contexts=contexts;self.files=files}
+    public init(jobs:BackgroundJobService,registry:ToolRunnerRegistry = .shared,environments:EnvironmentRegistry,contexts:BiologyExecutionContexts,files:(any BiologyFileAccessing)?=nil,resolveEnvironment:(@Sendable (ToolContext) async throws -> SelectedTaskEnvironmentLease)?=nil) {self.jobs=jobs;self.registry=registry;self.environments=environments;self.contexts=contexts;self.files=files;self.resolveEnvironment=resolveEnvironment}
+    /// Only scientific operations need this materialization. Native reads
+    /// keep their original biology tool identity and ordinary routing.
+    private func withSelectedEnvironment<Value:Sendable>(_ original:ToolContext,
+        operation:@Sendable (ToolContext) async throws -> Value) async throws -> Value {
+        guard let resolveEnvironment else {throw BiologyError.unavailable(FloeL10n.isChinese
+            ? "当前编辑器尚未连接任务的运行环境。请检查任务设置。"
+            : "This editor is not connected to the task's execution environment. Check the task settings.")}
+        let lease=try await resolveEnvironment(original)
+        do {
+            let context=lease.context
+            guard context.runID==original.runID,context.conversationID==original.conversationID,
+                  context.environmentID==original.environmentID,context.toolCallID==original.toolCallID,
+                  context.executionToolName==original.executionToolName,
+                  context.executionBindingGeneration==original.executionBindingGeneration,
+                  let id=context.environmentID,let record=await environments.record(id:id),
+                  record.effectiveExecutionBackend==lease.backend else {throw BiologyError.unavailable(FloeL10n.isChinese
+                    ? "所选科学计算运行位置已更改，请检查任务设置后重试。"
+                    : "The selected scientific execution location changed. Check the task settings and retry.")}
+            try await validateEnvironment(context)
+            let value=try await operation(context)
+            await lease.finish()
+            return value
+        } catch {await lease.finish();throw error}
+    }
     private func validateEnvironment(_ context:ToolContext) async throws {
         guard let id=context.environmentID,context.environment?.id==id,let record=await environments.record(id:id),record.state != .deleting,!record.requiresRebuild,record.pendingRuntimeResetID==nil else {throw BiologyError.unavailable("The selected execution environment is missing, rebuilding or being deleted.")}
         guard record.effectiveExecutionBackend == .linuxVM || (record.effectiveExecutionBackend == .remoteSSH && record.operatingSystem?.lowercased()=="linux") else {throw BiologyError.unavailable("Select a Linux execution environment for these scientific packages.")}
@@ -43,6 +68,9 @@ public actor BiologyScientificJobs {
     }
     private func markUnconfirmed(_ id:UUID){unconfirmed.insert(id)}
     public func probe(context:ToolContext) async throws -> BiologyScientificQualification {
+        try await withSelectedEnvironment(context) { [self] resolved in try await probeResolved(context:resolved) }
+    }
+    private func probeResolved(context:ToolContext) async throws -> BiologyScientificQualification {
         try await validateEnvironment(context)
         guard let environment=context.environmentID,context.environment?.id==environment,context.conversationID != nil,context.workspaceRootURL != nil,!context.temporaryReadOnly,!context.publicWebOnly,context.allowedToolNames?.contains("exec.shell") != false,let runner=registry.runner(named:"exec.shell") else {throw BiologyError.unavailable("Resolve a task-owned execution environment before probing biology engines.")}
         try context.cancellation.throwIfCancelled()
@@ -81,8 +109,15 @@ public actor BiologyScientificJobs {
         return true
     }
     private func execute(_ request:BiologyTransportRequest) async throws -> BiologyTransportReceipt {
+        guard let runID=UUID(uuidString:request.identity.runID) else {throw BiologyError.invalid("Invalid scientific execution identity.")}
+        let entry=try await contexts.entry(runID)
+        return try await withSelectedEnvironment(entry.context) { [self] resolved in
+            try await executeResolved(request,entry:.init(context:resolved,binding:entry.binding))
+        }
+    }
+    private func executeResolved(_ request:BiologyTransportRequest,entry:BiologyExecutionContexts.Entry) async throws -> BiologyTransportReceipt {
         guard let runID=UUID(uuidString:request.identity.runID),let projectID=UUID(uuidString:request.identity.projectID) else {throw BiologyError.invalid("Invalid scientific execution identity.")}
-        let entry=try await contexts.entry(runID),context=entry.context
+        let context=entry.context
         try await validateEnvironment(context)
         guard context.runID.uuidString.lowercased()==request.identity.hostRunID,context.conversationID?.uuidString.lowercased()==request.identity.taskID,context.environmentID==request.identity.environmentID,context.environment?.id==request.identity.environmentID,context.workspaceRootURL != nil,context.allowedToolNames?.contains("exec.shell") != false else {throw BiologyError.unavailable("Scientific execution must use this task's resolved Linux environment and workspace.")}
         let relative=".floe-biology/"+request.identity.projectID+"/"+request.identity.runID+"/"+request.identity.attemptID

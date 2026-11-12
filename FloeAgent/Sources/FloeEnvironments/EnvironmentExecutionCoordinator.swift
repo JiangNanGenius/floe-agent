@@ -2,6 +2,18 @@ import Foundation
 import FloeCore
 import FloeTools
 
+/// A native service's lease on the task's explicitly selected execution
+/// environment. Backend identity comes from the registry, never shell labels.
+public struct SelectedTaskEnvironmentLease: Sendable {
+    public let context: ToolContext
+    public let backend: EnvironmentExecutionBackend
+    public let finish: @Sendable () async -> Void
+
+    init(_ lease: ToolEnvironmentLease, backend: EnvironmentExecutionBackend) {
+        context = lease.context; self.backend = backend; finish = lease.finish
+    }
+}
+
 /// Resolves task-owned layers and tracks executions until cooperative cleanup completes.
 public actor EnvironmentExecutionCoordinator {
     private let roots: EnvironmentRoots
@@ -54,6 +66,69 @@ public actor EnvironmentExecutionCoordinator {
             } else { record = project }
         }
         return try await lease(original, record: record)
+    }
+
+    /// Native scientific services prepare work for the task's frozen target.
+    /// Ordinary native tools still bypass command routing through `acquire`.
+    /// This explicit path preserves the real tool name and all call authority;
+    /// it never creates a default container, starts a guest or executes a tool.
+    public func acquireSelectedTaskEnvironment(_ original: ToolContext) async throws -> SelectedTaskEnvironmentLease {
+        try original.cancellation.throwIfCancelled(); try Task.checkCancellation()
+        guard !original.temporaryReadOnly, !original.publicWebOnly,
+              let taskID = original.conversationID, let workspace = original.workspaceRootURL,
+              let id = original.environmentID, !id.isEmpty else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "请先为当前任务选择运行环境，再检查科学计算能力。"
+                : "Choose an execution environment for this task before checking scientific capabilities.")
+        }
+        try await registry.prepare()
+        guard let record = await registry.record(id: id),
+              record.kind.isWritableLayer, record.state == .active,
+              !record.requiresRebuild, record.pendingRuntimeResetID == nil,
+              record.isCompatible(withLayerFormat: ContainerRecord.currentLayerFormat) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "所选运行环境不可用。请在任务设置中检查其状态，完成恢复后重试。"
+                : "The selected environment is unavailable. Check its status in task settings and finish restoring it before retrying.")
+        }
+        guard try await registry.ownsExecutionLocation(containerID: id, conversationID: taskID, taskRoot: workspace) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "所选环境不属于当前任务或工作目录。请重新选择当前任务的运行位置。"
+                : "The selected environment belongs to another task or workspace. Choose this task's execution location again.")
+        }
+        switch original.scope {
+        case .local: break
+        case .host(let hostID), .hostPath(let hostID, _):
+            guard record.effectiveExecutionBackend == .remoteSSH, record.remoteHostID == hostID else {
+                throw FloeError.validationFailed(FloeL10n.isChinese
+                    ? "已批准的主机与所选运行环境不一致。请检查任务的运行位置后重试。"
+                    : "The approved host does not match the selected environment. Check this task's execution location before retrying.")
+            }
+        }
+        // Reuse the actual layer/root, rebuild, inherited-layer and migration
+        // fences; its tracked lease is also what stopAndWait joins.
+        let acquired = try await lease(original, record: record)
+        do {
+            let stillOwned = try await registry.ownsExecutionLocation(containerID: id, conversationID: taskID, taskRoot: workspace)
+            let current = await registry.record(id: id)
+            try original.cancellation.throwIfCancelled(); try Task.checkCancellation()
+            guard let current, stillOwned, current.state == .active,
+                  acquired.context.environmentID == id, acquired.context.environment?.id == id,
+                  !current.requiresRebuild, current.pendingRuntimeResetID == nil,
+                  current.effectiveExecutionBackend == record.effectiveExecutionBackend,
+                  current.runtimeGeneration == record.runtimeGeneration,
+                  current.remoteHostID == record.remoteHostID,
+                  current.remoteRootPath == record.remoteRootPath,
+                  current.parentID == record.parentID, current.layerFormat == record.layerFormat,
+                  !stopping.contains(id), !migrationFences.contains(id) else {
+                throw FloeError.validationFailed(FloeL10n.isChinese
+                    ? "运行环境在准备期间发生变化。请检查当前任务的运行位置后重试。"
+                    : "The execution environment changed during preparation. Check this task's current location before retrying.")
+            }
+            return SelectedTaskEnvironmentLease(acquired, backend: current.effectiveExecutionBackend)
+        } catch {
+            await acquired.finish()
+            throw error
+        }
     }
 
     /// Explicit user-selected environment for the dependency manager, independent of the active chat.

@@ -77,7 +77,12 @@ private final class FileDecodeBox: @unchecked Sendable {
 /// API key or cloud vendor SDK is needed. Each decoder retains at most 25 seconds.
 actor FileSpeechTranscriber {
     static let shared = FileSpeechTranscriber()
+    private let runtime: SpeechRecognitionRuntime
     private var active = false
+
+    init(runtime: SpeechRecognitionRuntime = .live) {
+        self.runtime = runtime
+    }
 
     func transcribe(url: URL, language: VoiceRecognitionLanguage,
                     progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> [TimedSpeechSegment] {
@@ -117,7 +122,7 @@ actor FileSpeechTranscriber {
 
         var lease: SpeechRecognitionLease?
         do {
-            lease = try await SpeechRecognitionRuntime.live.acquireForTimedTranscription()
+            lease = try await runtime.acquireForTimedTranscription()
         } catch is CancellationError {
             throw CancellationError()
         } catch SpeechRecognitionRuntime.Failure.busy where !allowAppleFallback {
@@ -201,6 +206,11 @@ actor FileSpeechTranscriber {
             await lease?.sessionEnded(healthy: !decoderFault)
             return FileSpeechResult(segments: segments, engine: engine)
         case .failure(let error, let decoderFault):
+            if case .empty = error, !decoderFault {
+                FloeLogger(category: .providers).debug("fileSpeechDecodeFinished category=noSpeech")
+            } else {
+                FloeLogger(category: .providers).error("fileSpeechDecodeFailed category=\(String(describing: error)) decoderFault=\(decoderFault)")
+            }
             await lease?.sessionEnded(healthy: !decoderFault)
             throw error
         case .cancelled(let decoderFault):
@@ -254,7 +264,8 @@ actor FileSpeechTranscriber {
                                     languageCode: language.recognitionCode,
                                     detectLanguage: language.recognitionCode == nil),
                                 onPartial: onPartial)
-                            guard !decoded.isEmpty else { throw FileSpeechError.empty }
+                            // A successful empty decode is no-speech, not an
+                            // unavailable decoder or permission to fall back.
                             segments = decoded.map { segment in
                                 let value = segment.offsetting(by: offset)
                                 return TimedSpeechSegment(
@@ -274,6 +285,8 @@ actor FileSpeechTranscriber {
                             // model directly.
                             if let speechError = error as? FileSpeechError,
                                case .empty = speechError {
+                                segments = []
+                                usedEngine = .enhanced
                                 decoderFault = false
                             } else {
                                 decoderFault = true

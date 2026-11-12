@@ -120,6 +120,7 @@ import WebKit
     }
     public func commandForm(_ name: String, arguments: EditorJSON = .object([:]), discovery: HeavyEditorDiscoveryPage? = nil, authorization: HeavyEditorOperationAuthorizer? = nil) async throws -> EditorJSON {
         try await waitUntilReady()
+        try await waitUntilIdle()
         guard allowedCommands.contains(name) else { throw HeavyEditorError.invalidCommand }
         try await authorize(.read, "document.parameters", using: authorization)
         return try await call("return JSON.stringify(window.FloeEditor.formDescription(value.command,value.arguments,value.discovery));",
@@ -172,9 +173,26 @@ import WebKit
             try await Task.sleep(for: .milliseconds(50))
         }
     }
+    /// describe/form reads run outside the operation queue. Wait for real
+    /// queue/explicit-command work to settle instead of reporting an
+    /// unavailable editor, but never join or cancel that work. The caller's
+    /// cancellation ends the wait before any late page read.
+    private func waitUntilIdle(timeout: Duration = .seconds(30)) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while isWorking || queuedOperationCount > 0 {
+            try Task.checkCancellation()
+            if !isReady, let errorMessage { throw HeavyEditorError.engine(errorMessage) }
+            guard ContinuousClock.now < deadline else { throw HeavyEditorError.unavailable }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard isReady else {
+            if let errorMessage { throw HeavyEditorError.engine(errorMessage) }
+            throw HeavyEditorError.unavailable
+        }
+    }
     public func describe(command: String? = nil, arguments: EditorJSON = .object([:]), discovery: HeavyEditorDiscoveryPage = .init(), authorization: HeavyEditorOperationAuthorizer? = nil) async throws -> EditorJSON {
         try await waitUntilReady()
-        guard !isWorking else { throw HeavyEditorError.unavailable }
+        try await waitUntilIdle()
         let revision = document.revision
         try await authorize(.read, "document.describe", using: authorization)
         let details = try await call("return JSON.stringify({commands:window.FloeEditor.commandIndex().filter(command=>!command.hidden),selection:window.FloeEditor.selection??null});", value: .null)
@@ -191,7 +209,11 @@ import WebKit
             }
             value["form"] = .object(form)
         }
-        guard !isWorking, document.revision == revision else { throw HeavyEditorError.revisionConflict }
+        // Re-capture only after the same live page is idle again; a real edit
+        // that raced this read invalidates the revision rather than letting a
+        // schema be paired with another document state.
+        try await waitUntilIdle()
+        guard document.revision == revision else { throw HeavyEditorError.revisionConflict }
         let result = EditorJSON.object(value)
         guard try result.data().count <= 512 * 1024 else { throw HeavyEditorError.engine("Use a narrower command or selection for parameter discovery.") }
         return result
@@ -443,6 +465,12 @@ import WebKit
             throw HeavyEditorError.engine(EditorText.t("请重新打开作品后继续。", "Reopen the work to continue."))
         } catch HeavyEditorOperationStateError.queueFull {
             throw HeavyEditorError.engine(EditorText.t("操作正在排队，请稍后再试。", "Several operations are queued. Try again shortly."))
+        } catch let error as NSError where error.domain == "WKErrorDomain" {
+            // callAsyncJavaScript wraps a page exception in a generic NSError;
+            // keep the actual bound-editor message for schema/query failures.
+            var message = (error.userInfo["WKJavaScriptExceptionMessage"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if message?.hasPrefix("Error: ") == true { message?.removeFirst("Error: ".count) }
+            throw HeavyEditorError.engine(message?.isEmpty == false ? message! : error.localizedDescription)
         }
     }
     private func invalidatePage(ifOwned owner: UUID?) {

@@ -142,6 +142,22 @@ import FloeHeavyEditorSupport
         guard !isRefreshing else { throw PersonalFileActionError.busy }
         let token = UUID(); modelUses.insert(token); return token
     }
+    /// Single-command describe runs outside the controller's operation queue.
+    /// Wait for a presentation refresh or another command to settle instead of
+    /// failing the schema read as "editor not ready", but keep the wait bounded
+    /// and never adopt work for a closed/replaced original.
+    func retainModelUseWhenSettled(timeout: Duration = .seconds(8)) async throws -> UUID {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while true {
+            guard !isClosed else { throw PersonalContentError.changedDocument }
+            try Task.checkCancellation()
+            if !isRefreshing, !controller.isWorking {
+                let token = UUID(); modelUses.insert(token); return token
+            }
+            guard ContinuousClock.now < deadline else { throw HeavyEditorError.unavailable }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
     func releaseModelUse(_ token: UUID) { modelUses.remove(token); closeIfUnused() }
     func beginPresentation() throws {
         guard !isClosed else { throw PersonalContentError.changedDocument }
@@ -183,11 +199,29 @@ import FloeHeavyEditorSupport
             throw error
         }
     }
+    /// The current live camera as the same presentation projection the native
+    /// view reads. Only an actual center/zoom change needs a view-committing
+    /// document.save on close; content commits already refreshed the source pin.
+    private func presentationViewMatchesSaved() -> Bool {
+        let content = controller.document.content
+        let current = controller.presentation["view"], saved = (content["data"] == .null ? content : content["data"])["view"]
+        let center = current["center"].array.compactMap(\.number), savedCenter = saved["center"].array.compactMap(\.number)
+        guard center.count == 2, center.allSatisfy(\.isFinite) else { return false }
+        let zoom = current["zoom"].number ?? 2, savedZoom = saved["zoom"].number ?? 2
+        let base = savedCenter.count == 2 ? savedCenter : [0, 20]
+        return abs(center[0] - base[0]) < 1e-9 && abs(center[1] - base[1]) < 1e-9 && abs(zoom - savedZoom) < 1e-9
+    }
     func flushForClose() async -> Bool {
         if isClosed { await controller.endPresentation(); return true }
         guard !isRefreshing, !controller.isWorking, modelUses.isEmpty else { return false }
         do {
-            try await controller.save()
+            // Closing an untouched map must not append a bare revision. Ask
+            // the live page for its current camera first; a moved view still
+            // commits exactly as before, and the CAS/source pin remain.
+            try await controller.refreshPresentation()
+            if controller.document.revision != sourceRevision || !presentationViewMatchesSaved() {
+                try await controller.save()
+            }
             try await requireOriginal()
             guard !controller.isWorking, modelUses.isEmpty else { return false }
             await controller.endPresentation()

@@ -40,6 +40,11 @@ extension HomeTaskStarting {
     }
 }
 
+struct HomeTaskModeSelection: Sendable {
+    let mode: AgentExecutionMode
+    fileprivate let generation: Int
+}
+
 @MainActor
 final class HomeLaunchpadViewModel: ObservableObject {
 
@@ -643,18 +648,23 @@ final class HomeLaunchpadViewModel: ObservableObject {
 
     // MARK: - Task creation
 
+    func captureTaskMode() -> HomeTaskModeSelection {
+        HomeTaskModeSelection(mode: agentMode, generation: modeSelectionGeneration)
+    }
+
     /// Creates exactly one conversation for the draft and starts its run.
     /// Returns the new conversation ID so Home can open the thread.
     /// On failure nothing is created: the draft stays, the error shows,
     /// and no blank/eternally-timed thread exists.
     @discardableResult
-    func sendNewTask() async -> UUID? {
+    func sendNewTask(modeSelection: HomeTaskModeSelection? = nil) async -> UUID? {
         guard canSend,
               center.providerAndModel(modelID: selectedModelID) != nil
         else { return nil }
         let goal = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let executionModeAtSend = agentMode
-        let modeSelectionAtSend = modeSelectionGeneration
+        let selection = modeSelection ?? captureTaskMode()
+        let executionModeAtSend = selection.mode
+        let modeSelectionAtSend = selection.generation
         let stagedAttachments = attachments
         let sentText = draft
         // Identity of this send's claim on the field and the stored draft.
@@ -689,7 +699,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
             }
             // The accepted task retains .goal. Only reset this send's input
             // choice, preserving a newer selection made during launch.
-            if executionModeAtSend == .goal, modeSelectionGeneration == modeSelectionAtSend {
+            if executionModeAtSend == .goal, agentMode == .goal, modeSelectionGeneration == modeSelectionAtSend {
                 agentMode = .agent
             }
             // Clear only what this send consumed: text typed while the task

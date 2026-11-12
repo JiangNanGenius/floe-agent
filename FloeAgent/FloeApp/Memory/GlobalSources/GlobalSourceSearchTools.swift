@@ -37,7 +37,9 @@ nonisolated struct GlobalMemorySearchTool: AgentTool {
         async let sources = service.search(args.query, context: target)
         async let memories = service.recallMemories(args.query, context: target)
         struct Output: Encodable { var untrusted = true; var sources: [GlobalSourceHit]; var memories: [HybridMemoryRecallItem] }
-        let data = try await JSONEncoder().encode(Output(sources: sources, memories: memories))
+        let recalled = try await memories
+        await service.recordMemoryUse(recalled.map(\.id), runID: context.runID)
+        let data = try await JSONEncoder().encode(Output(sources: sources, memories: recalled))
         guard data.count <= 128 * 1_024 else { throw FloeError.validationFailed("Recall output exceeds budget") }
         return ToolExecutionOutput(digesting: String(decoding: data, as: UTF8.self), exitStatus: 0)
     }

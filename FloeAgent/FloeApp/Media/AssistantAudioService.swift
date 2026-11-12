@@ -156,6 +156,11 @@ enum AssistantAudioError: Error, LocalizedError, Equatable {
     case transcriptionUnavailable
     case transcriptionBusy
     case noSpeechRecognized
+    case transcriptionTimedOut
+    case transcriptionAudioUnreadable
+    case transcriptionAuthenticationFailed
+    case transcriptionRateLimited
+    case transcriptionNetworkFailed
     case transcriptionFailed
     case synthesisFailed
 
@@ -192,13 +197,23 @@ enum AssistantAudioError: Error, LocalizedError, Equatable {
         case .timedOutputUnavailable:
             return "The service returned no segment timing, so SRT/VTT output is unavailable."
         case .transcriptionUnavailable:
-            return "The selected transcription service is not ready."
+            return IDELanguageRunText.t("转写服务暂不可用，请检查转写设置后重试。", "Transcription is unavailable. Check transcription settings and try again.")
         case .transcriptionBusy:
             return IDELanguageRunText.t("转写服务正在处理其他音频，请稍后重试。", "The transcription service is processing other audio. Try again shortly.")
         case .noSpeechRecognized:
             return IDELanguageRunText.t("这段音频没有识别到语音。", "No speech was recognized in this audio.")
+        case .transcriptionTimedOut:
+            return IDELanguageRunText.t("转写等待超时，请稍后重试。", "Transcription timed out. Try again shortly.")
+        case .transcriptionAudioUnreadable:
+            return IDELanguageRunText.t("暂时无法读取这段录音，请稍后重试。", "This recording could not be read. Try again shortly.")
+        case .transcriptionAuthenticationFailed:
+            return IDELanguageRunText.t("转写服务验证失败，请检查已保存的密钥。", "Transcription authentication failed. Check the saved key.")
+        case .transcriptionRateLimited:
+            return IDELanguageRunText.t("转写服务暂时繁忙或额度不足，请稍后重试或检查账户。", "Transcription is busy or out of quota. Try later or check your account.")
+        case .transcriptionNetworkFailed:
+            return IDELanguageRunText.t("暂时无法连接转写服务，请检查网络后重试。", "Could not connect to transcription. Check your connection and try again.")
         case .transcriptionFailed:
-            return "Transcription failed."
+            return IDELanguageRunText.t("这段录音的转写未完成，可稍后重试。", "Transcription is unfinished. Try again shortly.")
         case .synthesisFailed:
             return "Speech synthesis failed."
         }
@@ -523,7 +538,7 @@ final class AssistantAudioService: ObservableObject {
             } catch FileSpeechError.empty {
                 throw AssistantAudioError.noSpeechRecognized
             } catch {
-                throw AssistantAudioError.transcriptionFailed
+                throw Self.mapFileTranscriptionError(error, route: "enhanced")
             }
             return AssistantAudioTranscriptionResult(
                 text: SpeechCaptionExport.plainText(segments: result.segments),
@@ -548,7 +563,7 @@ final class AssistantAudioService: ObservableObject {
             } catch FileSpeechError.empty {
                 throw AssistantAudioError.noSpeechRecognized
             } catch {
-                throw AssistantAudioError.transcriptionFailed
+                throw Self.mapFileTranscriptionError(error, route: "system")
             }
             return AssistantAudioTranscriptionResult(
                 text: SpeechCaptionExport.plainText(segments: result.segments),
@@ -652,6 +667,7 @@ final class AssistantAudioService: ObservableObject {
             }
             try Task.checkCancellation()
             if let asr = error as? ASRTranscriptionError { throw Self.mapASRError(asr) }
+            FloeLogger(category: .providers).warning("fileTranscriptionFailed route=cloud kind=unknown code=\((error as NSError).code)")
             throw AssistantAudioError.transcriptionFailed
         }
     }
@@ -972,12 +988,39 @@ final class AssistantAudioService: ObservableObject {
 
     // MARK: - Errors
 
-    private static func mapASRError(_ error: ASRTranscriptionError) -> AssistantAudioError {
+    /// Keep actionable categories without copying a recognizer's message,
+    /// recording path, transcript or provider response into diagnostics.
+    static func mapFileTranscriptionError(_ error: any Error, route: String) -> AssistantAudioError {
+        let result: AssistantAudioError
+        let kind: String
+        if let fileError = error as? FileSpeechError {
+            switch fileError {
+            case .empty: result = .noSpeechRecognized; kind = "noSpeech"
+            case .unavailable: result = .transcriptionUnavailable; kind = "unavailable"
+            case .timedOut: result = .transcriptionTimedOut; kind = "timeout"
+            case .invalidAudio: result = .transcriptionAudioUnreadable; kind = "invalidAudio"
+            }
+        } else {
+            result = .transcriptionFailed; kind = "unknown"
+        }
+        // The route is supplied only by the two fixed native call sites.
+        let safeRoute = route == "system" ? "system" : "enhanced"
+        FloeLogger(category: .providers).warning("fileTranscriptionFailed route=\(safeRoute) kind=\(kind) code=\((error as NSError).code)")
+        return result
+    }
+
+    static func mapASRError(_ error: ASRTranscriptionError) -> AssistantAudioError {
         switch error {
         case .invalidConfiguration(let reason): return .invalidConfiguration(reason)
         case .credentialMissing: return .credentialMissing
-        case .authentication, .quotaOrRateLimited, .httpStatus, .transport,
-             .providerRejected, .emptyResult, .responseTooLarge:
+        case .authentication: return .transcriptionAuthenticationFailed
+        case .quotaOrRateLimited: return .transcriptionRateLimited
+        case .transport: return .transcriptionNetworkFailed
+        case .emptyResult: return .noSpeechRecognized
+        case .httpStatus(let code):
+            FloeLogger(category: .providers).warning("fileTranscriptionFailed route=cloud kind=http status=\(code)")
+            return .transcriptionFailed
+        case .providerRejected, .responseTooLarge:
             return .transcriptionFailed
         }
     }

@@ -65,10 +65,15 @@ public struct OfficeLiveStatus: Codable, Sendable, Equatable {
     public var readOnlyReason: String?
     /// True when the live session holds edits not yet written to disk.
     public var hasUnsavedChanges: Bool?
+    /// True when this host can execute selection-independent commands
+    /// (`excel.recalculate` and exact-target batches) against the saved
+    /// package as a verified copy without a live editor session.
+    public var savedCopyExecutionAvailable: Bool
 
     public init(documentID: String, format: String, revisionSHA256: String,
                 liveSession: Bool, editable: Bool, readOnlyReason: String? = nil,
-                hasUnsavedChanges: Bool? = nil) {
+                hasUnsavedChanges: Bool? = nil,
+                savedCopyExecutionAvailable: Bool = false) {
         self.documentID = documentID
         self.format = format
         self.revisionSHA256 = revisionSHA256
@@ -76,6 +81,28 @@ public struct OfficeLiveStatus: Codable, Sendable, Equatable {
         self.editable = editable
         self.readOnlyReason = readOnlyReason
         self.hasUnsavedChanges = hasUnsavedChanges
+        self.savedCopyExecutionAvailable = savedCopyExecutionAvailable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case documentID, format, revisionSHA256, liveSession, editable
+        case readOnlyReason, hasUnsavedChanges, savedCopyExecutionAvailable
+    }
+
+    /// Older receipts/status payloads predate `savedCopyExecutionAvailable`.
+    /// Decode them with the conservative `false` instead of failing the whole
+    /// status object; only fields this version actually wrote are required.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        documentID = try container.decode(String.self, forKey: .documentID)
+        format = try container.decode(String.self, forKey: .format)
+        revisionSHA256 = try container.decode(String.self, forKey: .revisionSHA256)
+        liveSession = try container.decode(Bool.self, forKey: .liveSession)
+        editable = try container.decode(Bool.self, forKey: .editable)
+        readOnlyReason = try container.decodeIfPresent(String.self, forKey: .readOnlyReason)
+        hasUnsavedChanges = try container.decodeIfPresent(Bool.self, forKey: .hasUnsavedChanges)
+        savedCopyExecutionAvailable = try container.decodeIfPresent(
+            Bool.self, forKey: .savedCopyExecutionAvailable) ?? false
     }
 }
 
@@ -584,7 +611,9 @@ public struct OfficeEditTool: AgentTool {
     (verified, atomic): formula cell updates via document.office.updateText, image \
     replacement (action=replaceImage, same image format), formula-error cell locations \
     (action=errors). propose binds the exact sha256 and changes nothing; it returns \
-    status=proposed with the proposal_id. For an already-authorized task, call apply \
+    status=proposed with the proposal_id. excel.recalculate and the exact-target \
+    commands can be proposed from a saved file even when it is NOT open in the \
+    editor: they carry no live selection/cursor. For an already-authorized task, call apply \
     with that proposal_id and the SAME path and NO grant_id: the runtime authorizes \
     this exact call and the apply runs a service-owned engine session on an isolated \
     copy and publishes a verified <name>.edited.<ext> COPY — the original document is \

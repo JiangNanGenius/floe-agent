@@ -27,6 +27,11 @@ nonisolated struct StudioMediaSelectionObservation: Codable, Sendable {
     let selectedClipID: UUID?
     let playheadSeconds: Double
     let imageRegion: StudioImageRegionObservation?
+    /// Actual native palette state, not an assertion that a sample succeeded.
+    /// Optional so historical observations without this field still decode.
+    let paletteColorHex: String?
+    /// A real native image preview exists for the palette sampler.
+    let previewReady: Bool?
 }
 nonisolated struct StudioMusicSelectionObservation: Codable, Sendable {
     let projectID: UUID
@@ -67,7 +72,7 @@ nonisolated struct StudioSelectionObservation: Encodable, Sendable {
     static func media(_ session: MediaV2Session) throws -> StudioMediaSelectionObservation {
         let document = session.document
         let layerID = session.selectedLayerID.flatMap { document.layer($0)?.id }
-        let layers = session.selectedLayerIDs.filter { document.layer($0) != nil }.sorted { $0.uuidString < $1.uuidString }
+        let layers = session.selectedLayerSet.filter { document.layer($0) != nil }.sorted { $0.uuidString < $1.uuidString }
         let trackID = session.selectedTrackID.flatMap { document.trackGraph.track($0)?.id }
         let clipID = session.selectedClipID.flatMap { id in
             document.trackGraph.clip(id: id).flatMap { $0.track.id == trackID ? id : nil }
@@ -92,7 +97,8 @@ nonisolated struct StudioSelectionObservation: Encodable, Sendable {
             revision: document.revision, layer: layerID, layers: layers, track: trackID, clip: clipID, playhead: session.playhead, region: region)))
         return .init(projectID: session.id, revision: document.revision, selectionFence: token, selectedLayerID: layerID,
             selectedLayerIDs: Array(layers.prefix(256)), selectedLayerCount: layers.count, selectedLayerIDsTruncated: layers.count > 256,
-            selectedTrackID: trackID, selectedClipID: clipID, playheadSeconds: session.playhead, imageRegion: region)
+            selectedTrackID: trackID, selectedClipID: clipID, playheadSeconds: session.playhead, imageRegion: region,
+            paletteColorHex: session.colorHex, previewReady: document.kind == .image && session.preview != nil)
     }
 
     static func music(_ session: MusicProjectSession) throws -> StudioMusicSelectionObservation {

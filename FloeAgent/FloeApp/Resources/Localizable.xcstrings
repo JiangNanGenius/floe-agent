@@ -59992,6 +59992,40 @@
         }
       }
     },
+    "model.reasoning.omit_parameters": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Omit thinking parameters"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不要发送思考参数"
+          }
+        }
+      }
+    },
+    "model.reasoning.omit_parameters.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No thinking controls are sent. Whether and how much the model thinks follows the service’s defaults."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不发送任何思考控制参数，是否思考及思考深度由服务默认设置决定。"
+          }
+        }
+      }
+    },
     "model.remote_id": {
       "extractionState": "manual",
       "localizations": {

@@ -160,8 +160,6 @@
 	<string>Floe uses motion and pressure sensors when you open the corresponding instruments in the toolbox.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Floe saves generated or edited images only when you ask it to save them to Photos.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Floe opens your photo library only when you choose an image for a task.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Floe accesses reminders only when you ask the agent to read or edit them.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

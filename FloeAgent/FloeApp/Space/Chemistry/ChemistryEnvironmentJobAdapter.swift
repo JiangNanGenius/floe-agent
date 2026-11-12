@@ -220,19 +220,35 @@ nonisolated struct ChemistryNativeRunMetadata: Codable, Sendable {
               let run = try await environment.runStore.run(id: context.runID), run.conversationID == taskID,
               let pin = run.executionBinding, pin.conversationID == taskID, pin.target.environmentID == id,
               context.executionBindingGeneration == nil || pin.generation == context.executionBindingGeneration else {
-            throw FloeError.validationFailed("Use this saved task's resolved execution environment")
+            FloeLogger(category: .app).warning("chemistryEnvironmentRejected stage=binding reason=taskPinMismatch")
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "请在当前作品助手的主任务中选择运行位置，再检查环境能力。",
+                "Choose an execution location in this work assistant's main task before checking its capabilities."))
         }
         try await environment.environmentRegistry.prepare()
         guard let record = await environment.environmentRegistry.record(id: id), record.state == .active,
               record.effectiveExecutionBackend.rawValue == pin.target.backend.rawValue else {
-            throw FloeError.validationFailed("The selected execution environment is unavailable")
+            FloeLogger(category: .app).warning("chemistryEnvironmentRejected stage=binding reason=selectedEnvironmentUnavailable")
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "所选运行环境不可用或已更改。请检查当前任务的运行位置后重试。",
+                "The selected execution environment is unavailable or changed. Check this task's execution location before retrying."))
         }
-        let lease = try await ToolEnvironmentRouting.shared.acquire(context)
+        let lease: SelectedTaskEnvironmentLease
+        do {
+            lease = try await environment.executionSelectedTaskLease(context)
+        } catch {
+            let reason = error is CancellationError || context.cancellation.isCancelled ? "cancelled" : "resolutionRejected"
+            FloeLogger(category: .app).warning("chemistryEnvironmentRejected stage=environmentResolution reason=\(reason)")
+            throw error
+        }
         let routed = lease.context
         await lease.finish()
-        guard routed.environmentID == id,
-              routed.environment?.variables["FLOE_EXECUTION_BACKEND"] == pin.target.backend.rawValue else {
-            throw FloeError.unauthorized
+        guard routed.environmentID == id, routed.environment?.id == id,
+              lease.backend.rawValue == pin.target.backend.rawValue else {
+            FloeLogger(category: .app).warning("chemistryEnvironmentRejected stage=environmentResolution reason=backendMismatch")
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "运行位置与任务已保存的环境不一致。请检查任务设置后重试。",
+                "The resolved environment does not match this task's saved location. Check task settings before retrying."))
         }
         return pin
     }

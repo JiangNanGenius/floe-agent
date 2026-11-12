@@ -389,8 +389,11 @@ struct HomeLaunchpadView: View {
 
     /// Sends the draft and opens the new thread on Home's own stack.
     private func sendTask() {
+        // Both inline and expanded-editor sends freeze the visible choice
+        // at the UI action, before the unstructured launch task can suspend.
+        let modeSelection = viewModel.captureTaskMode()
         Task {
-            if let conversationID = await viewModel.sendNewTask() {
+            if let conversationID = await viewModel.sendNewTask(modeSelection: modeSelection) {
                 if let onTaskCreated {
                     onTaskCreated(conversationID)
                 } else {

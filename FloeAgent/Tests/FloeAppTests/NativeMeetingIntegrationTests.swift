@@ -3,6 +3,7 @@
 import Foundation
 import Testing
 import AVFoundation
+import FloeCore
 import FloeMeetings
 import FloeMeetingsAV
 @testable import FloeApp
@@ -154,6 +155,67 @@ struct MeetingLiveTranscriptionRecoveryTests {
         await queue.waitUntilIdle()
         #expect(queue.chunks.first?.state == .complete && queue.diagnostic == nil && !queue.requiresRetry)
         #expect(try await fixture.service.transcript(meeting: fixture.meetingID).isEmpty)
+    }
+
+    @Test func noSpeechChunkDoesNotBlockLaterSpeechOrReplayAfterReopen() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var calls = 0
+        let queue = try MeetingLiveTranscription(meetingID: fixture.meetingID, root: fixture.root, service: fixture.service,
+            transcribeChunk: { _, _ in
+                calls += 1
+                if calls == 1 { return .init(segments: [], language: nil) }
+                return .init(segments: [.init(start: 0, end: 0.5, text: "Speech after the pause", words: [])], language: "en")
+            }, onChange: {})
+        for chunk in fixture.chunks { queue.enqueue(session: fixture.original, file: chunk.file, range: chunk.range) }
+        await queue.waitUntilIdle()
+        #expect(calls == fixture.chunks.count && calls == 2)
+        #expect(queue.unfinishedCount == 0 && !queue.requiresRetry && queue.diagnostic == nil)
+        let rows = try await fixture.service.transcript(meeting: fixture.meetingID)
+        #expect(rows.count == 1)
+        let row = try #require(rows.first)
+        #expect(row.text == "Speech after the pause" && row.range.start == 3)
+        var replayed = 0
+        let reopened = try MeetingLiveTranscription(meetingID: fixture.meetingID, root: fixture.root, service: fixture.service,
+            transcribeChunk: { _, _ in replayed += 1; throw AssistantAudioError.transcriptionFailed }, onChange: {})
+        reopened.configure(enabled: true, serviceID: nil, resumeUnfinished: true)
+        await reopened.waitUntilIdle()
+        #expect(replayed == 0 && !reopened.requiresRetry && reopened.unfinishedCount == 0)
+        #expect(try await fixture.service.transcript(meeting: fixture.meetingID).count == 1)
+        #expect(fixture.chunks.allSatisfy { FileManager.default.fileExists(atPath: $0.file.path) })
+    }
+
+    @Test func transcriptionFailuresKeepActionableCategoriesWithoutRawErrorText() {
+        #expect(AssistantAudioService.mapFileTranscriptionError(FileSpeechError.empty, route: "enhanced") == .noSpeechRecognized)
+        #expect(AssistantAudioService.mapFileTranscriptionError(FileSpeechError.unavailable, route: "enhanced") == .transcriptionUnavailable)
+        #expect(AssistantAudioService.mapFileTranscriptionError(FileSpeechError.timedOut, route: "system") == .transcriptionTimedOut)
+        #expect(AssistantAudioService.mapFileTranscriptionError(FileSpeechError.invalidAudio, route: "system") == .transcriptionAudioUnreadable)
+        let raw = NSError(domain: "Synthetic", code: 12, userInfo: [NSLocalizedDescriptionKey: "private provider response"])
+        let mapped = AssistantAudioService.mapFileTranscriptionError(raw, route: "enhanced")
+        #expect(mapped == .transcriptionFailed)
+        #expect(!mapped.localizedDescription.contains("private provider response"))
+        #expect(AssistantAudioService.mapASRError(.authentication) == .transcriptionAuthenticationFailed)
+        #expect(AssistantAudioService.mapASRError(.quotaOrRateLimited) == .transcriptionRateLimited)
+        #expect(AssistantAudioService.mapASRError(.emptyResult) == .noSpeechRecognized)
+        #expect(AssistantAudioService.mapASRError(.httpStatus(500)) == .transcriptionFailed)
+    }
+
+    @Test func textOnlyCloudResultKeepsTextWithMeasuredSourceIntervalAndNoInventedWordTimes() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let file = try #require(fixture.chunks.first?.file)
+        let measured = try await AudioFileProbe.durationRange(file)
+        let result = AssistantAudioTranscriptionResult(text: " Actual cloud text ", segments: [],
+            service: .init(id: "fixture-cloud", capability: .transcription, title: "Fixture", provider: "fixture",
+                local: false, ready: true, requiresCredential: false), engine: "cloud", language: "en")
+        let decoded = try await MeetingLiveTranscription.transcript(result, from: file)
+        #expect(decoded.segments.count == 1 && decoded.language == "en")
+        let segment = try #require(decoded.segments.first)
+        #expect(segment.text == "Actual cloud text" && segment.start == measured.start && segment.end == measured.end)
+        #expect(segment.words.isEmpty && segment.speaker == nil)
+        let empty = AssistantAudioTranscriptionResult(text: " \n ", segments: [], service: result.service, engine: "cloud", language: nil)
+        let silent = try await MeetingLiveTranscription.transcript(empty, from: file)
+        #expect(silent.segments.isEmpty)
     }
 }
 #endif

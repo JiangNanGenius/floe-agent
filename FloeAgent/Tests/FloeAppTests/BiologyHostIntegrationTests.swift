@@ -8,8 +8,10 @@ import FloePersistence
 import FloeTools
 import FloeBiologyCore
 import FloeBiologyEngine
+import FloeBiologyUI
 import FloeBiologyHostAdapter
 import FloeEnvironments
+import FloeExecution
 @testable import FloeApp
 
 @Suite("Biology original/task/registered-tool host contracts", .serialized)
@@ -118,6 +120,158 @@ import FloeEnvironments
             authority: authority, authorityRoot: authorityRoot, library: library, store: store,
             access: access, taskID: taskID, runID: runID, projectID: projectID, registry: registry, service: service)
     }
+    @Test func savedToolAssetsAndResultsReachTheVisibleModelAndColdReopen() async throws {
+        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let visible = BiologyWorkbenchModel(service: f.service, projectID: f.projectID)
+        await visible.refresh()
+        #expect(visible.project?.assets.isEmpty == true && visible.selected == nil)
+        var changes = try await f.service.changes(f.projectID).makeAsyncIterator()
+        _ = await changes.next() // The production stream's initial snapshot.
+        let importer = try #require(f.registry.runner(named: "biology.import"))
+        let bytes = Data(">tiny\nATGGCCATT\n".utf8)
+        let imported = try await importer.execute(argumentsJSON: BiologyCoding.encode(BiologyJSON.object([
+            "projectID": .string(f.projectID.uuidString), "title": .string("Synthetic tiny FASTA"),
+            "format": .string("fasta"), "base64": .string(bytes.base64EncodedString())])), context: f.context("biology.import"))
+        #expect(imported.exitStatus == 0)
+        let change = await changes.next()
+        #expect(change != nil)
+        await visible.refresh()
+        let source = try #require(visible.selected)
+        guard case .sequence(let records) = source.payload else { Issue.record("Saved FASTA has no native sequence payload"); return }
+        #expect(records.first?.sequence == "ATGGCCATT")
+        let analyze = try #require(f.registry.runner(named: "biology.analyze"))
+        let analyzed = try await analyze.execute(argumentsJSON: BiologyCoding.encode(BiologyJSON.object([
+            "projectID": .string(f.projectID.uuidString), "assetID": .string(source.id.uuidString),
+            "expectedRevision": .number(Double(source.revision)), "method": .string("sequence.translate")
+        ])), context: f.context("biology.analyze"))
+        #expect(analyzed.exitStatus == 0)
+        let started = try #require(try await f.service.project(f.projectID).runs.last)
+        let completed = try await f.service.wait(f.projectID, runID: started.id)
+        #expect(completed.status == .succeeded && completed.result != nil)
+        var derivedChanges = try await f.service.changes(f.projectID).makeAsyncIterator()
+        _ = await derivedChanges.next()
+        let derive = try #require(f.registry.runner(named: "biology.derive"))
+        let derived = try await derive.execute(argumentsJSON: BiologyCoding.encode(BiologyJSON.object([
+            "projectID": .string(f.projectID.uuidString), "runID": .string(completed.id.uuidString),
+            "expectedRevision": .number(Double(source.revision))])), context: f.context("biology.derive"))
+        #expect(derived.exitStatus == 0)
+        let derivedChange = await derivedChanges.next()
+        #expect(derivedChange != nil)
+        await visible.refresh()
+        #expect(visible.project?.assets.count == 2 && visible.selectedID == source.id)
+        #expect(visible.selectRun(completed.id))
+        #expect(visible.selectedRunID == completed.id && visible.runSource?.id == source.id)
+        let saved = try await f.store.load(f.projectID)
+        let derivedAsset = try #require(saved.assets.first { $0.id != source.id })
+        guard case .sequence(let protein) = derivedAsset.payload else { Issue.record("Derived protein has no native sequence"); return }
+        #expect(protein.first?.sequence == "MAI")
+        let coldStore = try BiologyProjectStore(root: f.store.root)
+        let coldService = try BiologyService(store: coldStore, authorize: { try await f.access.permit($0) })
+        let reopened = BiologyWorkbenchModel(service: coldService, projectID: f.projectID)
+        await reopened.refresh()
+        #expect(reopened.project?.assets.map(\.id) == saved.assets.map(\.id))
+        #expect(reopened.project?.runs.map(\.id) == saved.runs.map(\.id))
+        #expect(reopened.selectRun(completed.id) && reopened.run?.result == completed.result)
+        reopened.selectedID = derivedAsset.id
+        await reopened.refresh()
+        #expect(reopened.selected?.id == derivedAsset.id)
+    }
+
+    @Test func backgroundSelectionAndEditsKeepTheVisibleAssetAndRefuseStaleDraftSave() async throws {
+        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let first = try await f.service.importAsset(f.projectID, title: "Draft source", format: "fasta", data: Data(">a\nATGGCCATT\n".utf8))
+        let visible = BiologyWorkbenchModel(service: f.service, projectID: f.projectID)
+        await visible.refresh()
+        let editing = try #require(visible.selected) // Same immutable snapshot captured by the editor sheet.
+        #expect(editing.id == first.id)
+        guard case .sequence(var draft) = editing.payload else { Issue.record("Missing fixture sequence"); return }
+        draft[0].sequence = "ATGAAA"
+        let second = try await f.service.importAsset(f.projectID, title: "Background dataset", format: "fasta", data: Data(">b\nATGTTT\n".utf8))
+        _ = try await f.service.select(f.projectID, assetID: second.id, selection: .object([:]), expectedAssetRevision: second.revision)
+        await visible.refresh()
+        #expect(visible.selectedID == first.id && visible.project?.assets.count == 2)
+        guard case .sequence(var background) = editing.payload else { return }
+        background[0].sequence = "ATGCCC"
+        try await f.service.replacePayload(f.projectID, assetID: first.id, expectedAssetRevision: editing.revision, payload: .sequence(background))
+        await visible.refresh()
+        #expect(visible.selectedID == first.id && visible.selected?.revision != editing.revision)
+        do {
+            try await visible.savePayload(.sequence(draft), for: editing)
+            Issue.record("An unsaved old-revision draft overwrote the newer original")
+        } catch { }
+        let saved = try await f.store.load(f.projectID)
+        let keptAsset = try #require(saved.assets.first { $0.id == first.id })
+        guard case .sequence(let kept) = keptAsset.payload else { Issue.record("Source disappeared"); return }
+        #expect(kept[0].sequence == "ATGCCC" && draft[0].sequence == "ATGAAA")
+        #expect(!visible.canUndo)
+    }
+
+    private func scientificProbeFixture(_ f:Fixture, failure:Bool? = nil) async throws
+        -> (coordinator:EnvironmentExecutionCoordinator, transport:BiologyScientificJobs, context:ToolContext, environmentID:String) {
+        let roots = EnvironmentRoots(rootURL: f.root.appendingPathComponent("ScienceEnvironments"))
+        let environments = EnvironmentRegistry(roots: roots, baseRevision: "biology-science-routing-fixture")
+        let workspaceID = FloeDigest.sha256Hex(Data(f.root.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
+        let record = try await environments.ensureSessionContainer(conversationID: f.taskID.uuidString,
+            workspaceID: workspaceID, workspaceRootPath: f.root.path, executionBackend: .linuxVM)
+        let coordinator = EnvironmentExecutionCoordinator(roots: roots, registry: environments)
+        var original = f.context("biology.methods")
+        original.environmentID = record.id
+        original.environment = nil
+        original.allowedToolNames = BiologyHostServices.names.union(["exec.shell"])
+        original.frozenEffectiveCatalogNames = BiologyHostServices.names.union(["exec.shell"])
+        let expected = original
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(descriptor: .init(name: "exec.shell", parametersJSON: LocalShellTool.parametersJSON,
+            riskLabels: [.executesLocalCode], isSideEffecting: true), run: { _, resolved in
+                #expect(await coordinator.activeLeaseCount(environmentID: record.id) == 1)
+                #expect(resolved.environment?.id == record.id && resolved.executionToolName == "exec.shell")
+                #expect(resolved.runID == expected.runID && resolved.conversationID == expected.conversationID)
+                #expect(resolved.toolCallID == expected.toolCallID && resolved.approvalGrantID == expected.approvalGrantID)
+                #expect(resolved.allowedToolNames == expected.allowedToolNames && resolved.workspaceRootURL == expected.workspaceRootURL)
+                #expect(resolved.environment?.variables["FLOE_EXECUTION_BACKEND"] == nil)
+                if let failure {
+                    if failure { resolved.cancellation.cancel(); throw CancellationError() }
+                    throw BiologyError.unavailable("Synthetic downstream probe failure")
+                }
+                // Only the downstream scientific process is substituted. The
+                // native resolver/lease/owner checks are real; no engine claim.
+                let receipt = BiologyJSON.object(["protocol": .string("floe.biology.worker"), "version": .number(1),
+                    "methods": .array([]), "engines": .object([:]), "unavailable": .object([:])])
+                return .init(digesting: "BIOLOGY_RECEIPT " + (try BiologyCoding.encode(receipt)).base64EncodedString(), exitStatus: 0)
+            }, routing: ToolEnvironmentRouting()))
+        let jobs = BackgroundJobService(store: BackgroundJobStore(database: f.database), registry: registry)
+        let transport = BiologyScientificJobs(jobs: jobs, registry: registry, environments: environments,
+            contexts: BiologyExecutionContexts(), resolveEnvironment: { context in
+                #expect(context.executionToolName == "biology.methods" && context.environment == nil)
+                return try await coordinator.acquireSelectedTaskEnvironment(context)
+            })
+        return (coordinator, transport, original, record.id)
+    }
+
+    @Test func scientificProbeMaterializesSelectedContextAndReleasesItsLease() async throws {
+        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let science = try await scientificProbeFixture(f)
+        #expect(science.context.environment == nil)
+        let result = try await science.transport.probe(context: science.context)
+        #expect(result.environmentID == science.environmentID && result.methods.isEmpty)
+        #expect(await science.coordinator.activeLeaseCount(environmentID: science.environmentID) == 0)
+        #expect(await science.coordinator.fenceMigrationIfIdle(environmentID: science.environmentID))
+        await science.coordinator.releaseMigrationFence(environmentID: science.environmentID)
+    }
+
+    @Test func scientificProbeThrowAndCancellationStillReleaseSelectedLease() async throws {
+        let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        for cancellation in [false, true] {
+            let science = try await scientificProbeFixture(f, failure: cancellation)
+            do {
+                _ = try await science.transport.probe(context: science.context)
+                Issue.record("The synthetic failed/cancelled probe unexpectedly succeeded")
+            } catch { }
+            #expect(await science.coordinator.activeLeaseCount(environmentID: science.environmentID) == 0)
+            #expect(science.context.cancellation.isCancelled == cancellation)
+        }
+    }
+
     @Test func actualRegisteredFamilyReadsWritesAndRejectsStaleRevision() async throws {
         let f = try await fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         #expect(Set(f.registry.allDescriptors.map(\.name)) == BiologyHostServices.names)

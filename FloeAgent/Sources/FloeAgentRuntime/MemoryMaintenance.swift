@@ -1,5 +1,125 @@
 import Foundation
 
+/// Only a real run resource owner can hold this protection. Goal status and
+/// memory availability are deliberately unrelated to ownership.
+public final class MemoryRunUseLease: @unchecked Sendable {
+    private let registry: MemoryUseRegistry
+    private let token: UUID
+
+    init(registry: MemoryUseRegistry, token: UUID) {
+        self.registry = registry
+        self.token = token
+    }
+
+    public func include(_ memoryIDs: [UUID]) { registry.include(memoryIDs, token: token) }
+    func withUse<T>(_ ids: [UUID], _ body: () throws -> T) rethrows -> T? {
+        try registry.withUse(ids, token: token, body)
+    }
+    public func finish() { registry.release(token) }
+    deinit { finish() }
+}
+
+/// Synchronous fencing lets the maintenance writer recheck ownership in the
+/// same critical section as its mutation. No timer or background task is owned
+/// here, and a late release cannot remove another owner's protection.
+final class MemoryUseRegistry: @unchecked Sendable {
+    private struct Owner {
+        var runID: UUID
+        var memoryIDs: Set<UUID>
+    }
+    private let lock = NSLock()
+    private var owners: [UUID: Owner] = [:]
+
+    func begin(runID: UUID) -> MemoryRunUseLease {
+        let token = UUID()
+        lock.withLock { owners[token] = Owner(runID: runID, memoryIDs: []) }
+        return MemoryRunUseLease(registry: self, token: token)
+    }
+
+    func include(_ ids: [UUID], token: UUID) {
+        lock.withLock {
+            guard owners[token] != nil else { return }
+            owners[token]?.memoryIDs.formUnion(ids)
+        }
+    }
+
+    func record(_ ids: [UUID], runID: UUID) {
+        lock.withLock {
+            // Tools extend an existing real owner; a search cannot create a
+            // permanent protection after its run has already ended.
+            for token in Array(owners.keys) where owners[token]?.runID == runID {
+                owners[token]?.memoryIDs.formUnion(ids)
+            }
+        }
+    }
+
+    func release(_ token: UUID) { lock.withLock { _ = owners.removeValue(forKey: token) } }
+
+    func withUse<T>(_ ids: [UUID], token: UUID, _ body: () throws -> T) rethrows -> T? {
+        try lock.withLock {
+            guard owners[token] != nil else { return nil }
+            owners[token]?.memoryIDs.formUnion(ids)
+            return try body()
+        }
+    }
+
+    func withProtectedIDs<T>(_ body: (Set<UUID>) throws -> T) rethrows -> T {
+        try lock.withLock {
+            try body(owners.values.reduce(into: Set<UUID>()) { $0.formUnion($1.memoryIDs) })
+        }
+    }
+}
+
+public enum MemoryForgettingPolicy {
+    public static let importanceHalfLife: TimeInterval = 30 * 86_400
+    public static let recallRetention: TimeInterval = 90 * 86_400
+    public static let archiveAfter: TimeInterval = 90 * 86_400
+    public static let releaseVectorsAfter: TimeInterval = 180 * 86_400
+
+    /// Shared by the SQLite lifecycle and App's later compaction pass. A
+    /// failed deletion (owner still present) must never start forgetting.
+    public static let deletedOwnerSQL = """
+        CASE WHEN m.scope = 'task' THEN
+            COALESCE(m.conversation_id, m.origin_conversation_id) IS NOT NULL
+            AND NOT EXISTS(SELECT 1 FROM conversations c
+                WHERE c.id = COALESCE(m.conversation_id, m.origin_conversation_id))
+        WHEN m.scope = 'workspace' THEN
+            COALESCE(m.workspace_id, m.origin_workspace_id) IS NOT NULL
+            AND NOT EXISTS(SELECT 1 FROM workspaces w
+                WHERE w.id = COALESCE(m.workspace_id, m.origin_workspace_id))
+        ELSE (m.origin_conversation_id IS NOT NULL
+            AND NOT EXISTS(SELECT 1 FROM conversations c WHERE c.id = m.origin_conversation_id))
+            OR (m.origin_conversation_id IS NULL AND m.origin_workspace_id IS NOT NULL
+            AND NOT EXISTS(SELECT 1 FROM workspaces w WHERE w.id = m.origin_workspace_id)) END
+        """
+
+    /// A task-local explicit fact is not automatically a lifelong preference.
+    /// Explicit expiry remains authoritative even for a preference.
+    public static func isLongTerm(_ memory: MemoryEntry) -> Bool {
+        if memory.isPinned { return true }
+        guard memory.expiresAt == nil else { return false }
+        if memory.scope == .userProfile { return true }
+        return memory.scope == .agentGlobal && memory.sourceKind == .explicitUserRequest
+    }
+
+    /// Unconditional prompt context must not renew unrelated automatic facts
+    /// from older tasks. They remain available to query-based recall.
+    public static func isDefaultContext(_ memory: MemoryEntry, conversationID: UUID,
+                                        workspaceID: UUID?) -> Bool {
+        if isLongTerm(memory) { return true }
+        switch memory.scope {
+        case .task(let owner): return owner == conversationID
+        case .workspace(let owner): return owner == workspaceID
+        case .agentGlobal: return memory.originConversationID == conversationID
+        case .userProfile: return false
+        }
+    }
+
+    public static func relevanceWeight(since anchor: Date, now: Date) -> Double {
+        pow(0.5, max(0, now.timeIntervalSince(anchor)) / importanceHalfLife)
+    }
+}
+
 /// Stable identity for a mutable fact. Content changes over time, while the
 /// subject/attribute slot remains stable (for example host:hk4h4g + address).
 public struct MemoryFactIdentity: Sendable, Codable, Hashable {

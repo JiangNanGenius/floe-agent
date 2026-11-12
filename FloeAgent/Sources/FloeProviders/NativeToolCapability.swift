@@ -58,6 +58,11 @@ public enum ModelCatalogMerger {
                     .subtracting(local.explicitCapabilities ?? [])
                 local.capabilities.formUnion(repairable)
                 local.isEnabled = local.isEnabled && remote.isEnabled
+                // Refresh only reported facts for this exact provider/model.
+                // Manual effort, explicit capability choices and identity stay local.
+                if local.providerID == remote.providerID, let metadata = remote.reasoningMetadata {
+                    local.reasoningMetadata = metadata
+                }
                 byRemoteID[remote.remoteModelID] = local
             } else {
                 byRemoteID[remote.remoteModelID] = remote

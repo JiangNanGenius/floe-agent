@@ -19,6 +19,11 @@ public extension FloeCADDocument {
     /// Kernel build string (OCCT version) for capability discovery.
     static var kernelVersion: String { OCCTKernel.version }
 
+    /// Public undo/redo availability for host tool discovery. The command
+    /// stack itself stays private to the native session.
+    var nativeCanUndo: Bool { session.undoStack.canUndo }
+    var nativeCanRedo: Bool { session.undoStack.canRedo }
+
     /// The typed native operation vocabulary this build advertises as
     /// executable. Guaranteed-refusal operations are not part of this list.
     static var nativeOperationNames: [String] { AgentExec.opNames }
@@ -41,6 +46,14 @@ public extension FloeCADDocument {
         let document = session.document
         let limit = min(max(payload["limit"] as? Int ?? 200, 1), 500)
         let offset = max(payload["offset"] as? Int ?? 0, 0)
+        // Sketch/entity reads are independently pageable so a large drawing
+        // never has to be assembled into one model-visible JSON object.
+        let sketchOffset = max(payload["sketchOffset"] as? Int ?? 0, 0)
+        let sketchLimit = min(max(payload["sketchLimit"] as? Int ?? Int.max, 1), 4_096)
+        let entityOffset = max(payload["entityOffset"] as? Int ?? 0, 0)
+        let entityLimit = min(max(payload["entityLimit"] as? Int ?? 512, 1), 512)
+        let sketchFilter = (payload["sketchID"] as? String)
+            .flatMap { UUID(uuidString: $0) }
 
         func gatedDiscovery(_ value: Any) -> Any {
             if let fields = value as? [String: Any] {
@@ -143,9 +156,16 @@ public extension FloeCADDocument {
                     usedBySketch[sketchID, default: []].append(node.id.raw.uuidString)
                 }
             }
-            let entityRowLimit = 512
-            let rows: [[String: Any]] = document.sketches.map { sketch in
-                let entityRows: [[String: Any]] = sketch.entities.prefix(entityRowLimit).map { entity in
+            let allSketches = document.sketches.filter {
+                sketchFilter == nil || $0.id.raw == sketchFilter
+            }
+            let sketchStart = min(sketchOffset, allSketches.count)
+            let sketchEnd = min(sketchStart + min(sketchLimit, allSketches.count - sketchStart), allSketches.count)
+            let entityRowLimit = entityLimit
+            let rows: [[String: Any]] = allSketches[sketchStart..<sketchEnd].map { sketch in
+                let entityStart = min(entityOffset, sketch.entities.count)
+                let entityEnd = min(entityStart + min(entityLimit, sketch.entities.count - entityStart), sketch.entities.count)
+                let entityRows: [[String: Any]] = sketch.entities[entityStart..<entityEnd].map { entity in
                     var row: [String: Any] = [
                         "id": entity.id.uuidString,
                         "construction": sketch.constructionEntityIDs.contains(entity.id),
@@ -306,8 +326,12 @@ public extension FloeCADDocument {
                     "hidden": sketch.isHidden,
                     "entities": sketch.entities.count,
                     "entityRows": entityRows,
+                    "entityTotal": sketch.entities.count,
+                    "entityOffset": entityStart,
                     "entityRowLimit": entityRowLimit,
-                    "entityRowsTruncated": sketch.entities.count > entityRowLimit,
+                    "entityRowsTruncated": entityEnd < sketch.entities.count,
+                    "entityRowsComplete": entityEnd >= sketch.entities.count,
+                    "nextEntityOffset": entityEnd < sketch.entities.count ? entityEnd : NSNull(),
                     "constructionEntities": sketch.constructionEntityIDs.count,
                     "constraints": sketch.constraints.count,
                     "dimensions": sketch.dimensions.count,
@@ -360,7 +384,10 @@ public extension FloeCADDocument {
                 }
                 return row
             }
-            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+            return ok(["ok": true, "scope": scope, "total": allSketches.count,
+                       "offset": sketchStart, "limit": sketchLimit,
+                       "rows": rows, "sketchesComplete": sketchEnd >= allSketches.count,
+                       "nextSketchOffset": sketchEnd < allSketches.count ? sketchEnd : NSNull(),
                        "revision": revision, "change_count": session.changeCount])
 
         case "planes":
@@ -387,7 +414,7 @@ public extension FloeCADDocument {
             // dimension can be changed/removed through the parameter actions
             // this same service advertises.
             var rows: [[String: Any]] = []
-            for sketch in document.sketches {
+            for sketch in document.sketches where sketchFilter == nil || sketch.id.raw == sketchFilter {
                 let definition = SketchSolverBridge.definitionReport(sketch)
                 let blame = definition.conflicting
                     ? SketchSolverBridge.conflictAttribution(sketch) : nil
@@ -413,6 +440,11 @@ public extension FloeCADDocument {
                     rows.append(row)
                 }
                 for dimension in sketch.dimensions {
+                    guard rows.count < 50_000 else {
+                        return fail("constraint_budget",
+                                    "This sketch exceeds the bounded 50,000 constraint/dimension read budget. "
+                                    + "Measure a smaller sketch or page the model query by sketchID.")
+                    }
                     var row = Self.encodedObject(dimension) ?? [:]
                     row["sketchID"] = sketch.id.raw.uuidString
                     row["sketchName"] = sketch.name
@@ -441,6 +473,8 @@ public extension FloeCADDocument {
                 }
             }
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+                       "offset": offset, "limit": limit,
+                       "complete": offset >= rows.count || offset + window(rows).count >= rows.count,
                        "editable_count": rows.filter { $0["editable"] as? Bool == true }.count,
                        "revision": revision, "change_count": session.changeCount])
 
@@ -628,11 +662,254 @@ public extension FloeCADDocument {
             }
             return ok(detail)
 
+        case "measure":
+            return nativeMeasureJSON(payload, offset: offset, limit: limit)
+
+        case "check":
+            return nativeCheckJSON(payload)
+
         default:
             return fail("unsupported_scope",
                         "Scope '\(scope)' is not served by the model query; use bodies, sketches, "
                         + "planes, axes, datumPoints, constraints, features, edges, faces, variables, "
-                        + "materials, assembly, drawings, detail or snapshot.")
+                        + "materials, assembly, drawings, measure, check, detail or snapshot.")
+        }
+    }
+
+    // MARK: Measure
+
+    /// Deterministic measurements over the ACTUAL document graph. Body,
+    /// point-distance and bounds requests share `measureJSON`; entity, angle,
+    /// area and geometric check requests add the sketch-level exact values the
+    /// UI reads. Nothing here consults a rendered image, selection or cache.
+    func nativeMeasureJSON(_ payload: [String: Any], offset: Int, limit: Int) -> CADCommandOutcome {
+        let document = session.document
+        let kind = (payload["kind"] as? String ?? "body").lowercased()
+        func fail(_ code: String, _ message: String) -> CADCommandOutcome {
+            Self.jsonOutcome(status: 400,
+                             object: ["ok": false, "error": code, "message": message])
+        }
+        func uuid(_ keys: [String]) -> UUID? {
+            for key in keys {
+                if let raw = payload[key] as? String, let value = UUID(uuidString: raw) { return value }
+            }
+            return nil
+        }
+        func sketch() -> Sketch? {
+            guard let id = uuid(["sketchID", "sketch_id", "sketch"]) else { return nil }
+            return document.sketches.first { $0.id.raw == id }
+        }
+        func number(_ value: Any?) -> Double? {
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite else { return nil }
+            return number.doubleValue
+        }
+        func point(_ value: [Double]) -> SIMD2<Double>? {
+            guard value.count == 2, value.allSatisfy(\.isFinite) else { return nil }
+            return SIMD2(value[0], value[1])
+        }
+        func polygonArea(_ points: [SIMD2<Double>]) -> Double {
+            guard points.count >= 3 else { return 0 }
+            var sum = 0.0
+            for index in points.indices {
+                let a = points[index], b = points[(index + 1) % points.count]
+                sum += a.x * b.y - b.x * a.y
+            }
+            return abs(sum) / 2
+        }
+        func entityArea(_ entity: SketchEntity) -> Double? {
+            switch entity {
+            case let .circle(_, _, radius): return .pi * radius * radius
+            case let .rect(_, low, high): return abs(high.x - low.x) * abs(high.y - low.y)
+            case let .polygon(_, _, radius, sides, _):
+                return 0.5 * Double(sides) * radius * radius * sin(2 * .pi / Double(sides))
+            case let .ellipse(_, _, radiusX, radiusY, _): return .pi * radiusX * radiusY
+            case let .spline(_, points, closed):
+                return closed ? polygonArea(SketchEntity.splinePoints(points, closed: true)) : nil
+            case let .exactCurve(_, definition):
+                guard definition.interval.periodic else { return nil }
+                return polygonArea((try? definition.tessellatedPoints()) ?? [])
+            case .line, .arc: return nil
+            }
+        }
+        func entityRow(_ entity: SketchEntity, sketch: Sketch) -> [String: Any] {
+            var row: [String: Any] = [
+                "kind": "entity",
+                "sketchID": sketch.id.raw.uuidString,
+                "entityID": entity.id.uuidString,
+                "construction": sketch.constructionEntityIDs.contains(entity.id),
+                "lengthMM": MeasureKit.length(of: entity),
+            ]
+            if let area = entityArea(entity) { row["areaMM2"] = area }
+            switch entity {
+            case let .line(_, a, b):
+                row["entityKind"] = "line"
+                row["start"] = [a.x, a.y]; row["end"] = [b.x, b.y]
+                row["bounds"] = [[min(a.x, b.x), min(a.y, b.y)], [max(a.x, b.x), max(a.y, b.y)]]
+            case let .rect(_, low, high):
+                row["entityKind"] = "rect"
+                row["min"] = [low.x, low.y]; row["max"] = [high.x, high.y]
+                row["widthMM"] = abs(high.x - low.x); row["heightMM"] = abs(high.y - low.y)
+                row["bounds"] = [[low.x, low.y], [high.x, high.y]]
+            case let .circle(_, center, radius):
+                row["entityKind"] = "circle"
+                row["center"] = [center.x, center.y]; row["radiusMM"] = radius; row["diameterMM"] = radius * 2
+                row["bounds"] = [[center.x - radius, center.y - radius], [center.x + radius, center.y + radius]]
+            case let .arc(_, center, radius, startAngle, endAngle):
+                row["entityKind"] = "arc"
+                row["center"] = [center.x, center.y]; row["radiusMM"] = radius; row["diameterMM"] = radius * 2
+                row["startAngleDegrees"] = startAngle * 180 / .pi
+                row["endAngleDegrees"] = endAngle * 180 / .pi
+                row["sweepAngleDegrees"] = SketchEntity.arcSweep(startAngle: startAngle, endAngle: endAngle) * 180 / .pi
+                row["sectorAreaMM2"] = 0.5 * radius * radius
+                    * SketchEntity.arcSweep(startAngle: startAngle, endAngle: endAngle)
+            case let .ellipse(_, center, radiusX, radiusY, rotation):
+                row["entityKind"] = "ellipse"
+                row["center"] = [center.x, center.y]; row["radiusXMM"] = radiusX; row["radiusYMM"] = radiusY
+                row["rotationDegrees"] = rotation * 180 / .pi
+            case let .polygon(_, center, radius, sides, rotation):
+                row["entityKind"] = "polygon"
+                row["center"] = [center.x, center.y]; row["radiusMM"] = radius
+                row["sides"] = sides; row["rotationDegrees"] = rotation * 180 / .pi
+            case let .spline(_, points, closed):
+                row["entityKind"] = "spline"
+                row["closed"] = closed; row["pointCount"] = points.count
+            case let .exactCurve(_, definition):
+                row["entityKind"] = definition.sourceKind.rawValue
+                row["closed"] = definition.interval.periodic
+            }
+            return row
+        }
+
+        switch kind {
+        case "body", "distance", "bounds":
+            return measureJSON(payload)
+        case "check":
+            return nativeCheckJSON(payload)
+        case "entity":
+            guard let sketch = sketch(),
+                  let entityID = uuid(["entityID", "entity_id", "id"]),
+                  let entity = sketch.entities.first(where: { $0.id == entityID }) else {
+                return fail("unknown_entity",
+                            "measure kind=entity needs sketchID and entityID from query kind=sketches.")
+            }
+            return Self.jsonOutcome(status: 200, object: {
+                var object = entityRow(entity, sketch: sketch)
+                object["ok"] = true
+                return object
+            }())
+        case "angle":
+            if let rows = payload["points"] as? [[Double]] {
+                let values: [SIMD2<Double>]
+                if rows.count == 3 {
+                    guard let a = point(rows[0]), let b = point(rows[1]), let c = point(rows[2]) else {
+                        return fail("bad_points", "points must be three finite [x,y] rows; the second is the vertex.")
+                    }
+                    values = [a, b, c]
+                } else if rows.count == 2 {
+                    guard let a = point(rows[0]), let b = point(rows[1]) else {
+                        return fail("bad_points", "points must be two finite [x,y] rows.")
+                    }
+                    values = [a, .zero, b]
+                } else {
+                    return fail("bad_points", "points must be two [x,y] rows or three with the vertex second.")
+                }
+                let first = values[0] - values[1], second = values[2] - values[1]
+                let lengths = simd_length(first) * simd_length(second)
+                guard lengths > 1e-12 else { return fail("degenerate_angle", "The measured points are coincident.") }
+                let cosine = min(max(simd_dot(first, second) / lengths, -1), 1)
+                let degrees = acos(cosine) * 180 / .pi
+                return Self.jsonOutcome(status: 200, object: [
+                    "ok": true, "kind": "angle", "angleDegrees": degrees,
+                    "acuteAngleDegrees": min(degrees, 180 - degrees),
+                    "vertex": [values[1].x, values[1].y],
+                ])
+            }
+            guard let sketch = sketch() else {
+                return fail("missing_sketch", "measure kind=angle needs sketchID and entityIDs for two lines.")
+            }
+            let ids = (payload["entityIDs"] as? [String] ?? payload["entity_ids"] as? [String] ?? [])
+                .compactMap { UUID(uuidString: $0) }
+            guard ids.count == 2 else {
+                return fail("bad_entities", "measure kind=angle needs two line entity IDs from query kind=sketches.")
+            }
+            let lines = ids.compactMap { id in
+                sketch.entities.first { $0.id == id }
+            }
+            guard lines.count == 2 else { return fail("unknown_entity", "Both angle entities must exist in this sketch.") }
+            func direction(_ entity: SketchEntity) -> SIMD2<Double>? {
+                guard case let .line(_, a, b) = entity else { return nil }
+                let value = b - a
+                return simd_length(value) > 1e-12 ? value : nil
+            }
+            guard let first = direction(lines[0]), let second = direction(lines[1]) else {
+                return fail("unsupported_entity", "measure kind=angle supports two line entities.")
+            }
+            let denominator = simd_length(first) * simd_length(second)
+            let cosine = min(max(simd_dot(first, second) / denominator, -1), 1)
+            let degrees = acos(cosine) * 180 / .pi
+            return Self.jsonOutcome(status: 200, object: [
+                "ok": true, "kind": "angle", "entityIDs": ids.map(\.uuidString),
+                "angleDegrees": degrees, "acuteAngleDegrees": min(degrees, 180 - degrees),
+            ])
+        case "area":
+            guard let sketch = sketch() else {
+                return fail("missing_sketch", "measure kind=area needs sketchID from query kind=sketches.")
+            }
+            let selected = Set((payload["entityIDs"] as? [String]
+                ?? payload["entity_ids"] as? [String] ?? []).compactMap { UUID(uuidString: $0) })
+            let profiles = ProfileDetector.detectProfiles(in: sketch)
+            guard profiles.count <= 512 else {
+                return fail("area_too_large", "This sketch has more than 512 closed profiles; measure a selected profile.")
+            }
+            var rows: [[String: Any]] = []
+            for profile in profiles {
+                guard selected.isEmpty || selected.isSubset(of: profile.sourceEntityIDs)
+                        || profile.sourceEntityIDs.isSubset(of: selected) else { continue }
+                var row: [String: Any] = [
+                    "centroid": [profile.centroid.x, profile.centroid.y],
+                    "sourceEntityIDs": profile.sourceEntityIDs.map(\.uuidString).sorted(),
+                ]
+                // A single primitive has an exact area; a connected loop is
+                // bounded by its current tessellated boundary, not a guessed
+                // analytic shape. Report which one the caller received.
+                if profile.sourceEntityIDs.count == 1,
+                   let entityID = profile.sourceEntityIDs.first,
+                   let entity = sketch.entities.first(where: { $0.id == entityID }),
+                   let exact = entityArea(entity) {
+                    row["areaMM2"] = exact
+                    row["areaMethod"] = "exact_primitive"
+                } else {
+                    row["areaMM2"] = abs(profile.area)
+                    row["areaMethod"] = "tessellated_boundary"
+                }
+                switch profile.kind {
+                case .polygonal: row["profileKind"] = "polygonal"
+                case let .circle(center, radius):
+                    row["profileKind"] = "circle"
+                    row["center"] = [center.x, center.y]; row["radiusMM"] = radius
+                case let .ellipse(center, radiusX, radiusY, rotation):
+                    row["profileKind"] = "ellipse"
+                    row["center"] = [center.x, center.y]
+                    row["radiusXMM"] = radiusX; row["radiusYMM"] = radiusY
+                    row["rotationDegrees"] = rotation * 180 / .pi
+                }
+                rows.append(row)
+            }
+            guard !rows.isEmpty else {
+                return fail("no_closed_profile",
+                            "No closed profile in this sketch matches the requested entities. Select a closed boundary.")
+            }
+            let page = Array(rows[offset..<min(offset + limit, rows.count)])
+            return Self.jsonOutcome(status: 200, object: [
+                "ok": true, "kind": "area", "total": rows.count,
+                "offset": offset, "limit": limit, "rows": page,
+                "complete": offset + page.count >= rows.count,
+            ])
+        default:
+            return fail("unsupported_measure",
+                        "kind must be body, distance, bounds, entity, angle, area or check.")
         }
     }
 

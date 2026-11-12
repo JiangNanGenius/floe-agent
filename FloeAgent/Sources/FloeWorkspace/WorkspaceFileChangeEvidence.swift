@@ -67,6 +67,21 @@ enum WorkspaceFileChangeEvidence {
         return [.init(id: UUID(), relativePath: relative, mimeType: "application/vnd.floe.file-preview+json", byteCount: data.count, sha256: digest)]
     }
 
+    /// Run only AFTER an acknowledged commit. Optional presentation failures
+    /// must not turn a saved mutation into a retryable write failure.
+    static func savedOutput(_ summary: String, artifactBuilder: () throws -> [ToolArtifactReference]) -> ToolExecutionOutput {
+        do {
+            let artifacts = try artifactBuilder()
+            return WorkspaceToolSupport.output(summary + " saved=true preview=\(artifacts.isEmpty ? "unavailable" : "available")", artifacts: artifacts)
+        } catch {
+            return WorkspaceToolSupport.output(summary + " saved=true preview=unavailable\nThe file is saved. Its optional preview is unavailable; do not repeat the write.")
+        }
+    }
+
+    static func savedOutput(_ summary: String, original: String?, modified: String, path: String, runID: UUID) -> ToolExecutionOutput {
+        savedOutput(summary) { try artifacts(original: original, modified: modified, path: path, runID: runID) }
+    }
+
     /// Called inside the existing recursive mutation lock. A failed optional
     /// baseline is explicit comparison-unavailable; cancellation still wins.
     static func localBaseline(service: WorkspaceFileService, path: String, cancellation: CancellationToken) throws -> String? {
@@ -108,4 +123,52 @@ extension WorkspaceFileService {
         let baseline = try WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation)
         return (try writeFile(path, content: content, expectedMtime: expectedMtime, expectedSHA256: expectedSHA256, cancellation: cancellation), baseline)
     }
+
+    /// Verify the real on-disk digest as well as the decoded text. An encoding
+    /// that does not round-trip byte-exactly is rejected, never normalized.
+    func verifiedSourceText(_ path: String, expectedSHA256: String, cancellation: CancellationToken) throws -> String {
+        try cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        let text = try readFileForEditing(path, cancellation: cancellation).text
+        let current = try metadata(path)
+        let digest = Self.sha256Hex(of: Data(text.utf8))
+        guard current.size == text.utf8.count, current.sha256 == digest else {
+            throw WorkspaceToolError.conflict(expected: "stable byte-exact UTF-8 source", actual: "source changed or encoding does not round-trip")
+        }
+        try WorkspaceTextEdit.check(expectedSHA256, actual: current.sha256)
+        try cancellation.throwIfCancelled()
+        return text
+    }
+
+    /// Finalize a verified local/mounted draft without a second model-sized
+    /// JSON body. The source remains intact. The existing shared recursive
+    /// mutation lock and target writer retain CAS, freeze, path and size checks.
+    func writeFileFromSourceWithChangeBaseline(
+        _ path: String, sourcePath: String, expectedSourceSHA256: String,
+        expectedMtime: Double?, expectedSHA256: String?, cancellation: CancellationToken
+    ) throws -> (WriteOutcome, String?, String) {
+        let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        lock.lock(); defer { lock.unlock() }
+        try cancellation.throwIfCancelled()
+        guard try guardResolver.resolve(path) != guardResolver.resolve(sourcePath) else {
+            throw WorkspaceToolError.invalidArguments("sourcePath and path must identify different files")
+        }
+        let content = try verifiedSourceText(sourcePath, expectedSHA256: expectedSourceSHA256, cancellation: cancellation)
+        let prior = try WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation)
+        // Revalidate after optional baseline I/O and before the target writer.
+        _ = try verifiedSourceText(sourcePath, expectedSHA256: expectedSourceSHA256, cancellation: cancellation)
+        try cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        let outcome: WriteOutcome
+        if expectedMtime != nil || expectedSHA256 != nil {
+            outcome = try writeFile(path, content: content, expectedMtime: expectedMtime,
+                expectedSHA256: expectedSHA256, cancellation: cancellation)
+        } else {
+            // No target precondition means create-only for source finalization.
+            // A retry cannot replace a target whose version was never observed.
+            outcome = try createFile(path, content: content, overwrite: false, cancellation: cancellation)
+        }
+        return (outcome, prior, content)
+    }
+
 }

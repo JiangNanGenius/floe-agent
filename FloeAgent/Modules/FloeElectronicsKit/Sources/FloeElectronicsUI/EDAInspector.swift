@@ -6,7 +6,22 @@ struct EDAInspector: View {
     @Bindable var session: EDWorkbenchSession
     let context: EDADocumentContext?
     var onReplaceLibrary: (() -> Void)? = nil
-    @ViewBuilder var body: some View {
+    var activeLayer: Binding<String> = .constant("F.Cu")
+    var onBoardSetup: (() -> Void)? = nil
+    var onUpdateBoard: (() -> Void)? = nil
+    var onRefillCopper: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+        }
+        .background(.background)
+        .accessibilityIdentifier("eda.inspector")
+    }
+
+    @ViewBuilder private var content: some View {
         switch context {
         case .schematic(let sheetID):
             if let placement = session.project.sheets.first(where: { $0.id == sheetID })?.symbols.first(where: { session.selection.objectIDs.contains($0.id) }),
@@ -17,8 +32,10 @@ struct EDAInspector: View {
                 case .bus(let bus):EDBusProperties(session:session,sheetID:sheetID,value:bus).id(bus.id)
                 case .entry(let busID,let entry):EDBusEntryProperties(session:session,sheetID:sheetID,busID:busID,value:entry).id(entry.id)
                 }
+            } else if let sheet = session.project.sheets.first(where: { $0.id == sheetID }) {
+                EDSchematicOverview(session: session, sheet: sheet)
             } else {
-                ContentUnavailableView(edText("未选择对象", "No selection"), systemImage: "cursorarrow", description: Text(edText("在画布上选择元件、总线或引出线以编辑属性。", "Select a component, bus or entry on the canvas to edit its properties.")))
+                ContentUnavailableView(edText("未找到图页", "Sheet unavailable"), systemImage: "doc")
             }
         case .board(let boardID):
             if let board = session.project.boards.first(where: { $0.id == boardID }) {
@@ -33,15 +50,256 @@ struct EDAInspector: View {
                 } else if let zone = board.zones.first(where: { session.selection.objectIDs.contains($0.id) }) {
                     EDCopperZoneProperties(session: session, boardID: boardID, value: zone).id(zone.id)
                 } else {
-                    ContentUnavailableView(edText("未选择对象", "No selection"), systemImage: "cursorarrow", description: Text(edText("在画布上点选元件、走线、孔或铜区。PCB 设置位于画布选项。", "Select a component, track, hole or zone on the canvas. Board setup is in Canvas options.")))
+                    EDBoardOverview(session: session, board: board, activeLayer: activeLayer,
+                                    onSetup: onBoardSetup, onUpdate: onUpdateBoard, onRefill: onRefillCopper)
                 }
+            } else {
+                ContentUnavailableView(edText("未找到 PCB", "Board unavailable"), systemImage: "square.dashed")
             }
         case .symbol(let id):
             if let value = session.project.symbols.first(where: { $0.id == id }) { EDSymbolProperties(session: session, value: value).id(id) }
         case .footprint(let id):
             if let value = session.project.footprints.first(where: { $0.id == id }) { EDLibraryFootprintProperties(session: session, value: value).id(id) }
-        case nil: EmptyView()
+        case nil:
+            EmptyView()
         }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: headerIcon)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(headerTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(headerDetail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if selectionCount > 1 {
+                Text(String(selectionCount))
+                    .font(.caption2.weight(.semibold)).monospacedDigit()
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(.quaternary, in: Capsule())
+                    .accessibilityLabel(String(selectionCount) + edText(" 个所选对象", " selected"))
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .background(.bar)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("eda.inspector.header")
+    }
+
+    private var selectionCount: Int {
+        session.selection.context == context ? session.selection.objectIDs.count : 0
+    }
+
+    private var headerIcon: String {
+        switch context {
+        case .board: return "rectangle.3.group"
+        case .schematic: return "square.on.circle"
+        case .symbol: return "function"
+        case .footprint: return "square.grid.2x2"
+        case nil: return "slider.horizontal.3"
+        }
+    }
+
+    private var headerDetail: String {
+        switch context {
+        case .board: return edText("PCB", "PCB")
+        case .schematic: return edText("原理图", "Schematic")
+        case .symbol: return edText("符号", "Symbol")
+        case .footprint: return edText("封装", "Footprint")
+        case nil: return edText("属性", "Properties")
+        }
+    }
+
+    private var headerTitle: String {
+        guard let context else { return edText("属性", "Properties") }
+        switch context {
+        case .board(let id):
+            guard let board = session.project.boards.first(where: { $0.id == id }) else { return "PCB" }
+            guard selectionCount == 1, let object = session.selection.objectIDs.first else {
+                return selectionCount > 1 ? String(selectionCount) + edText(" 个对象", " selected") : board.name
+            }
+            if let value = board.footprints.first(where: { $0.id == object }) {
+                return value.reference.isEmpty ? edText("封装", "Footprint") : value.reference
+            }
+            if board.tracks.contains(where: { $0.id == object }) { return edText("走线", "Track") }
+            if board.vias.contains(where: { $0.id == object }) { return edText("过孔", "Via") }
+            if board.holes.contains(where: { $0.id == object }) { return edText("孔", "Hole") }
+            if board.zones.contains(where: { $0.id == object }) { return edText("铜区", "Copper zone") }
+            return board.name
+        case .schematic(let id):
+            guard let sheet = session.project.sheets.first(where: { $0.id == id }) else { return edText("原理图", "Schematic") }
+            guard selectionCount == 1, let object = session.selection.objectIDs.first else {
+                return selectionCount > 1 ? String(selectionCount) + edText(" 个对象", " selected") : sheet.name
+            }
+            if let placement = sheet.symbols.first(where: { $0.id == object }),
+               let component = session.project.components.first(where: { $0.id == placement.componentID }) {
+                return component.reference.isEmpty ? edText("元件", "Component") : component.reference
+            }
+            if sheet.buses.contains(where: { $0.id == object }) { return edText("总线", "Bus") }
+            if sheet.buses.contains(where: { ($0.entries ?? []).contains { $0.id == object } }) { return edText("总线引出", "Bus entry") }
+            if sheet.wires.contains(where: { $0.id == object }) { return edText("导线", "Wire") }
+            if sheet.labels.contains(where: { $0.id == object }) { return edText("网络标签", "Net label") }
+            return sheet.name
+        case .symbol(let id):
+            return session.project.symbols.first(where: { $0.id == id })?.name ?? edText("符号", "Symbol")
+        case .footprint(let id):
+            return session.project.footprints.first(where: { $0.id == id })?.name ?? edText("封装", "Footprint")
+        }
+    }
+}
+
+private struct EDSchematicOverview: View {
+    let session: EDWorkbenchSession
+    let sheet: EDASheet
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Canvas { context, size in
+                    let projection = EDAProjection(bounds: EDAPlot.bounds(session.project, context: .schematic(sheetID: sheet.id)), size: size, padding: 12)
+                    EDAPlot.draw(project: session.project, context: .schematic(sheetID: sheet.id), projection: projection, in: &context)
+                }
+                .frame(height: 132)
+                .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel(edText("原理图预览", "Schematic preview"))
+                .allowsHitTesting(false)
+
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    metric(edText("元件", "Parts"), String(sheet.symbols.count))
+                    metric(edText("导线", "Wires"), String(sheet.wires.count))
+                    metric(edText("总线", "Buses"), String(sheet.buses.count))
+                    metric(edText("标签", "Labels"), String(sheet.labels.count))
+                }
+
+                Text(edText("在画布上选择元件、总线或导线以编辑属性。", "Select a component, bus or wire on the canvas to edit its properties."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+        }
+    }
+
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.caption.weight(.semibold)).monospacedDigit().lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 8)
+        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct EDBoardOverview: View {
+    let session: EDWorkbenchSession
+    let board: EDABoard
+    @Binding var activeLayer: String
+    let onSetup: (() -> Void)?
+    let onUpdate: (() -> Void)?
+    let onRefill: (() -> Void)?
+
+    private var copperLayers: [EDALayer] { board.layers.filter { $0.kind == .copper } }
+    private var busy: Bool { session.busy || session.isCommittingCopperFill || session.isClosed || session.isRouting || session.isFilling }
+    private var outlineSize: String {
+        let xs = board.outline.map(\.x), ys = board.outline.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { return "—" }
+        return String(format: "%.1f × %.1f mm", maxX - minX, maxY - minY)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Canvas { context, size in
+                    let projection = EDAProjection(bounds: EDAPlot.bounds(session.project, context: .board(boardID: board.id)), size: size, padding: 12)
+                    EDAPlot.draw(project: session.project, context: .board(boardID: board.id), projection: projection, in: &context)
+                }
+                .frame(height: 132)
+                .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityLabel(edText("PCB 预览", "PCB preview"))
+                .allowsHitTesting(false)
+
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    metric(edText("板尺寸", "Board size"), outlineSize)
+                    metric(edText("铜层", "Copper"), String(copperLayers.count))
+                    metric(edText("元件", "Parts"), String(board.footprints.count))
+                    metric(edText("走线", "Tracks"), String(board.tracks.count))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(edText("铜层", "Copper layers"))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(copperLayers) { layer in
+                        layerRow(layer)
+                    }
+                }
+
+                VStack(spacing: 8) {
+                    if let onSetup {
+                        Button(action: onSetup) {
+                            Label(edText("PCB 设置", "Board setup"), systemImage: "gearshape")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    if let onUpdate {
+                        Button(action: onUpdate) {
+                            Label(edText("从原理图更新 PCB", "Update PCB from schematic"), systemImage: "arrow.triangle.2.circlepath")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(busy)
+                    }
+                    if let onRefill {
+                        Button(action: onRefill) {
+                            Label(edText("重填铜区", "Refill copper zones"), systemImage: "square.dashed.inset.filled")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(busy)
+                    }
+                }
+
+                Text(edText("在画布上选择元件、走线、过孔或铜区以编辑属性。", "Select a part, track, via or zone on the canvas to edit its properties."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+        }
+    }
+
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.caption.weight(.semibold)).monospacedDigit().lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 8)
+        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func layerRow(_ layer: EDALayer) -> some View {
+        let active = layer.id == activeLayer
+        return Button { activeLayer = layer.id } label: {
+            HStack(spacing: 8) {
+                Circle().fill(edCopperTint(layer.id)).frame(width: 8, height: 8)
+                Text(layer.id).font(.caption.monospacedDigit())
+                Spacer(minLength: 0)
+                if active { Image(systemName: "checkmark").font(.caption.weight(.semibold)) }
+            }
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(edText("铜层 ", "Copper layer ") + layer.id)
+        .accessibilityValue(active ? edText("当前", "Active") : "")
+        .accessibilityAddTraits(active ? .isSelected : [])
+        .accessibilityIdentifier("eda.inspector.layer." + layer.id)
     }
 }
 

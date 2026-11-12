@@ -33,12 +33,12 @@ struct RemoteImageInspectTool: AgentTool {
 
     static let name = "image.inspect"
     static let toolDescription =
-        "Use the configured AI vision model to understand an image semantically. Use this instead of OCR for photos, diagrams, charts, UI state, browser/VNC screenshots, CAD viewport/animation frames, or images extracted from PDFs. Accepts a workspace-relative image/PDF path, or a BrowserArtifacts/VNCArtifacts/GeneratedImages/CADViewportArtifacts/CADAnimationFrames/EngineeringObservations path plus the sha256 returned by the producing tool. A retained CAD image describes that captured state, not subsequent edits; capture again to inspect a newer revision. For PDFs, page is 1-based. OCR remains available when exact text transcription is the only goal."
+        "Use the configured AI vision model to understand an image semantically. Use this instead of OCR for photos, diagrams, charts, UI state, browser/VNC screenshots, CAD viewport/animation frames, or images extracted from PDFs. Accepts a workspace-relative image/PDF path, an absolute Mac path when this task runs on the paired Mac (including a file outside the task workspace), or a BrowserArtifacts/VNCArtifacts/GeneratedImages/CADViewportArtifacts/CADAnimationFrames/EngineeringObservations path plus the sha256 returned by the producing tool. A retained CAD image describes that captured state, not subsequent edits; capture again to inspect a newer revision. For PDFs, page is 1-based. OCR remains available when exact text transcription is the only goal."
     static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative image/PDF path, or BrowserArtifacts/VNCArtifacts/GeneratedImages/CADViewportArtifacts/CADAnimationFrames/EngineeringObservations artifact path"},
+        "path": {"type": "string", "description": "Workspace-relative image/PDF path, an absolute Mac path when this task runs on the paired Mac, or a BrowserArtifacts/VNCArtifacts/GeneratedImages/CADViewportArtifacts/CADAnimationFrames/EngineeringObservations artifact path"},
         "question": {"type": "string", "description": "What visual facts the agent needs from this image"},
         "page": {"type": "integer", "minimum": 1, "description": "1-based PDF page; omit for ordinary images"},
         "sha256": {"type": "string", "description": "Required for app-stored tool artifacts; copy the image digest from the producing tool result, not the CAD document digest"}
@@ -59,8 +59,9 @@ struct RemoteImageInspectTool: AgentTool {
 
     private let inspect: InspectHandler
     private let artifactRootProvider: @Sendable () -> URL?
+    private let macAbsoluteReader: (any MacAbsoluteFileReading)?
 
-    init(center: FilesCenter) {
+    init(center: FilesCenter, macAbsoluteReader: (any MacAbsoluteFileReading)? = nil) {
         self.inspect = { [weak center] base64, mimeType, prompt in
             guard let center else { return .failure(.noConfiguredModel) }
             return await center.environment.conversationCenter.describeImageResult(
@@ -70,25 +71,35 @@ struct RemoteImageInspectTool: AgentTool {
             )
         }
         self.artifactRootProvider = Self.applicationSupportRoot
+        self.macAbsoluteReader = macAbsoluteReader
     }
 
     /// Injectable seam for deterministic simulator/unit tests.
     init(
         inspect: @escaping InspectHandler,
-        artifactRootProvider: @escaping @Sendable () -> URL? = Self.applicationSupportRoot
+        artifactRootProvider: @escaping @Sendable () -> URL? = Self.applicationSupportRoot,
+        macAbsoluteReader: (any MacAbsoluteFileReading)? = nil
     ) {
         self.inspect = inspect
         self.artifactRootProvider = artifactRootProvider
+        self.macAbsoluteReader = macAbsoluteReader
     }
 
     func validate(_ args: Arguments) throws {
         let path = args.path.trimmingCharacters(in: .whitespacesAndNewlines)
         let question = args.question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~") else {
-            throw FloeError.validationFailed("path must be a workspace-relative or tool-artifact path")
-        }
-        guard !path.split(separator: "/").contains("..") else {
-            throw FloeError.validationFailed("path must not contain traversal components")
+        if MacAbsolutePath.isAbsolute(path) {
+            guard macAbsoluteReader != nil else {
+                throw FloeError.validationFailed("path must be a workspace-relative or tool-artifact path")
+            }
+            try MacAbsolutePath.validate(path)
+        } else {
+            guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~") else {
+                throw FloeError.validationFailed("path must be a workspace-relative or tool-artifact path")
+            }
+            guard !path.split(separator: "/").contains("..") else {
+                throw FloeError.validationFailed("path must not contain traversal components")
+            }
         }
         guard !question.isEmpty, question.utf8.count <= 2_000 else {
             throw FloeError.validationFailed("question must contain 1-2000 UTF-8 bytes")
@@ -117,8 +128,10 @@ struct RemoteImageInspectTool: AgentTool {
         )
         do {
             try context.cancellation.throwIfCancelled()
-            let source = try Self.resolve(path: path, expectedSHA256: args.sha256, context: context,
-                                          artifactRootProvider: artifactRootProvider)
+            let source = try await Self.resolve(
+                path: path, expectedSHA256: args.sha256, context: context,
+                artifactRootProvider: artifactRootProvider,
+                macAbsoluteReader: macAbsoluteReader)
             FloeLogger(category: .tools).info(
                 "imageInspectResolved run=\(context.runID.uuidString) source=\(sourceID) bytes=\(source.data.count)"
             )
@@ -174,12 +187,37 @@ struct RemoteImageInspectTool: AgentTool {
         }
     }
 
+    fileprivate static let maximumVisualBytes = 20 * 1_024 * 1_024
+
     fileprivate static func resolve(
         path: String,
         expectedSHA256: String?,
         context: ToolContext,
-        artifactRootProvider: @Sendable () -> URL?
-    ) throws -> (data: Data, url: URL) {
+        artifactRootProvider: @Sendable () -> URL?,
+        macAbsoluteReader: (any MacAbsoluteFileReading)? = nil
+    ) async throws -> (data: Data, url: URL) {
+        if MacAbsolutePath.isAbsolute(path) {
+            // The absolute branch is only reachable with the app-injected,
+            // trusted-environment reader. Its canonical target has already
+            // passed the companion's regular-file and secret-path checks.
+            guard let macAbsoluteReader else {
+                throw FloeError.validationFailed("path must be a workspace-relative or tool-artifact path")
+            }
+            try MacAbsoluteReadAuthorization.authorize(path, context: context)
+            guard let file = try await macAbsoluteReader.readMacAbsoluteFileWhole(
+                path: path, maximumBytes: Self.maximumVisualBytes, context: context) else {
+                throw FloeError.validationFailed(
+                    "Absolute Mac paths are available only when this task's selected execution target is the currently paired Mac.")
+            }
+            guard !file.data.isEmpty, file.data.count <= Self.maximumVisualBytes else {
+                throw FloeError.validationFailed("Visual input must be between 1 byte and 20 MiB")
+            }
+            if let expectedSHA256,
+               FloeDigest.sha256Hex(file.data) != expectedSHA256.lowercased() {
+                throw FloeError.validationFailed("The source file does not match the expected digest")
+            }
+            return (file.data, URL(fileURLWithPath: path))
+        }
         let url: URL
         let usesArtifactStore: Bool
         if Self.isVisualToolArtifact(path) {
@@ -372,12 +410,12 @@ struct LocalImageViewTool: AgentTool {
     }
 
     static let name = "image.view"
-    static let toolDescription = "View an image or a chosen region using the current model's visual input. Local, read-only: no second AI model or paid request. Returns a real lossless image attachment, source dimensions, exact crop pixels and scale. Use an overview first, then request a region from the ORIGINAL path for small text, CAD details or charts. region uses normalized 0...1 coordinates in the EXIF-oriented image, origin TOP LEFT. Cropping happens before resizing; maxDimension defaults to 2048 and never enlarges pixels. Tool-artifact paths require their producing sha256. A CAD capture remains tied to its captured revision; capture again after edits. Raster images only; render PDF pages first."
+    static let toolDescription = "View an image or a chosen region using the current model's visual input. Local, read-only: no second AI model or paid request. Returns a real lossless image attachment, source dimensions, exact crop pixels and scale. Use an overview first, then request a region from the ORIGINAL path for small text, CAD details or charts. region uses normalized 0...1 coordinates in the EXIF-oriented image, origin TOP LEFT. Cropping happens before resizing; maxDimension defaults to 2048 and never enlarges pixels. On a task running on the paired Mac, an absolute Mac image path is also accepted, including a file outside the task workspace. Tool-artifact paths require their producing sha256. A CAD capture remains tied to its captured revision; capture again after edits. Raster images only; render PDF pages first."
     static let parametersJSON = #"""
     {
       "type":"object",
       "properties":{
-        "path":{"type":"string","description":"Workspace-relative raster image, or retained tool image artifact path"},
+        "path":{"type":"string","description":"Workspace-relative raster image, retained tool image artifact path, or an absolute Mac path when this task runs on the paired Mac"},
         "sha256":{"type":"string","description":"Digest from the producing result, required for retained tool artifacts"},
         "region":{"type":"object","description":"Optional region of the ORIENTED ORIGINAL image; normalized coordinates, top-left origin","properties":{"x":{"type":"number","minimum":0,"maximum":1},"y":{"type":"number","minimum":0,"maximum":1},"width":{"type":"number","exclusiveMinimum":0,"maximum":1},"height":{"type":"number","exclusiveMinimum":0,"maximum":1}},"required":["x","y","width","height"],"additionalProperties":false},
         "maxDimension":{"type":"integer","minimum":256,"maximum":4096,"description":"Maximum output side length; default 2048. No upscaling."}
@@ -390,19 +428,31 @@ struct LocalImageViewTool: AgentTool {
     static let toolEffect: ToolEffect = .readOnly
 
     private let artifactRootProvider: @Sendable () -> URL?
+    private let macAbsoluteReader: (any MacAbsoluteFileReading)?
 
-    init(artifactRootProvider: @escaping @Sendable () -> URL? = RemoteImageInspectTool.applicationSupportRoot) {
+    init(
+        artifactRootProvider: @escaping @Sendable () -> URL? = RemoteImageInspectTool.applicationSupportRoot,
+        macAbsoluteReader: (any MacAbsoluteFileReading)? = nil
+    ) {
         self.artifactRootProvider = artifactRootProvider
+        self.macAbsoluteReader = macAbsoluteReader
     }
 
     func validate(_ args: Arguments) throws {
         let path = args.path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty, !path.hasPrefix("/"), !path.hasPrefix("~"),
-              !path.contains("\\"), !path.contains("\0"),
-              path.split(separator: "/", omittingEmptySubsequences: false)
-                .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
-              (256...4096).contains(args.maxDimension ?? 2048) else {
-            throw FloeError.validationFailed("Use a relative image path and maxDimension between 256 and 4096")
+        if MacAbsolutePath.isAbsolute(path) {
+            guard macAbsoluteReader != nil, (256...4096).contains(args.maxDimension ?? 2048) else {
+                throw FloeError.validationFailed("Use a relative image path and maxDimension between 256 and 4096")
+            }
+            try MacAbsolutePath.validate(path)
+        } else {
+            guard !path.isEmpty, !path.hasPrefix("~"),
+                  !path.contains("\\"), !path.contains("\0"),
+                  path.split(separator: "/", omittingEmptySubsequences: false)
+                    .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  (256...4096).contains(args.maxDimension ?? 2048) else {
+                throw FloeError.validationFailed("Use a relative image path and maxDimension between 256 and 4096")
+            }
         }
         if let r = args.region {
             guard [r.x, r.y, r.width, r.height].allSatisfy(\.isFinite),
@@ -417,8 +467,10 @@ struct LocalImageViewTool: AgentTool {
         try validate(args)
         try context.cancellation.throwIfCancelled()
         let path = args.path.trimmingCharacters(in: .whitespacesAndNewlines)
-        let source = try RemoteImageInspectTool.resolve(path: path, expectedSHA256: args.sha256,
-            context: context, artifactRootProvider: artifactRootProvider)
+        let source = try await RemoteImageInspectTool.resolve(
+            path: path, expectedSHA256: args.sha256,
+            context: context, artifactRootProvider: artifactRootProvider,
+            macAbsoluteReader: macAbsoluteReader)
         if let expected = args.sha256,
            FloeDigest.sha256Hex(source.data) != expected.lowercased() {
             throw FloeError.validationFailed("The source image changed; inspect its current digest before viewing it")
@@ -1855,11 +1907,16 @@ enum PDFToolSupport {
     }
 }
 
-func registerRemoteImageTools(center: FilesCenter, registry: ToolRunnerRegistry = .shared) {
+func registerRemoteImageTools(
+    center: FilesCenter,
+    macAbsoluteReader: (any MacAbsoluteFileReading)? = nil,
+    registry: ToolRunnerRegistry = .shared
+) {
     ToolCatalog.register(LocalImageViewTool.self)
-    registry.register(LocalImageViewTool())
+    registry.register(LocalImageViewTool(macAbsoluteReader: macAbsoluteReader))
     ToolCatalog.register(RemoteImageInspectTool.self)
-    registry.register(RemoteImageInspectTool(center: center))
+    registry.register(RemoteImageInspectTool(center: center,
+        macAbsoluteReader: macAbsoluteReader))
     ToolCatalog.register(RemoteImageModelsTool.self)
     registry.register(RemoteImageModelsTool(center: center))
     ToolCatalog.register(RemoteImageGenerateTool.self)

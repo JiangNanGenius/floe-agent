@@ -737,6 +737,9 @@ final class AppEnvironment: ObservableObject {
     func executionManagementLease(_ id: String, cancellation: CancellationToken) async throws -> ToolEnvironmentLease {
         try await environmentExecutions.acquireManagement(environmentID: id, cancellation: cancellation)
     }
+    func executionSelectedTaskLease(_ context: ToolContext) async throws -> SelectedTaskEnvironmentLease {
+        try await environmentExecutions.acquireSelectedTaskEnvironment(context)
+    }
     func executionLeaseCount(_ id: String) async -> Int { await environmentExecutions.activeLeaseCount(environmentID: id) }
     func fenceExecutionForMigration(_ id: String) async -> Bool { await environmentExecutions.fenceMigrationIfIdle(environmentID: id) }
     func releaseExecutionMigrationFence(_ id: String) async { await environmentExecutions.releaseMigrationFence(environmentID: id) }
@@ -1849,10 +1852,39 @@ final class AppEnvironment: ObservableObject {
         linuxSharedPower: LinuxSharedPowerService
     ) {
         let credentialVault = self.credentialVault
+        // Read-only absolute Mac-path reads are authorized only by the run's
+        // persisted frozen execution binding plus the live active registry
+        // record. This seam never selects a backend from model arguments,
+        // tool output or command environment, and a nil context.environment
+        // (all native-apple file/image tools) is valid.
+        let macRunPins = SQLiteRunStore(database: database)
+        let macAbsoluteFileReader = MacBridgeAbsoluteFileReader(
+            isMacEnvironment: { [environmentRegistry] id in
+                guard let record = await environmentRegistry.record(id: id) else { return false }
+                return record.state == .active && !record.requiresRebuild
+                    && record.effectiveExecutionBackend == .macBridge
+            },
+            frozenSelectionIsMac: { [macRunPins] context in
+                do {
+                    let runID = context.childExecution?.identity.parentRunID ?? context.runID
+                    guard let run = try await macRunPins.run(id: runID),
+                          let pin = run.executionBinding,
+                          pin.target.backend == .macBridge,
+                          let environmentID = context.environmentID,
+                          pin.target.environmentID == environmentID,
+                          context.executionBindingGeneration == nil
+                            || context.executionBindingGeneration == pin.generation else {
+                        return false
+                    }
+                    return true
+                } catch { return false }
+            }
+        )
         // Workspace file tools (T04/T05).
         registerWorkspaceTools(
             rootProvider: WorkspaceCenter.toolRootProvider,
-            compressedArchiveHandler: localPythonService.map(ArchiveCompressedBridge.makeHandler)
+            compressedArchiveHandler: localPythonService.map(ArchiveCompressedBridge.makeHandler),
+            macAbsoluteReader: macAbsoluteFileReader
         )
         registerWorkspaceImportOutputTool(conversations: conversationStore, runs: runStore)
         // Native local Git and GitHub repository tools. Credentials are read
@@ -2062,7 +2094,8 @@ final class AppEnvironment: ObservableObject {
         // Provider-backed semantic visual inspection plus generation through
         // the independently configured auxiliary models. These must be in
         // the agent catalog, not UI-only.
-        registerRemoteImageTools(center: filesCenter)
+        registerRemoteImageTools(center: filesCenter,
+            macAbsoluteReader: macAbsoluteFileReader)
         registerAppleImagePlaygroundTool(service: appleImagePlaygroundService)
         // Provider-backed durable video generation (Google Veo/Omni, Ark
         // Seedance, DashScope Wan) for ordinary chat. Submissions become

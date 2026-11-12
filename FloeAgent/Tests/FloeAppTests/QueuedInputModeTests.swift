@@ -224,6 +224,16 @@ struct GoalComposerTests {
         return Fixture(environment: environment, center: center, modelID: model.id)
     }
 
+    private func waitForStopped(_ f: Fixture, runID: UUID) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while ContinuousClock.now < deadline {
+            if let run = try await f.environment.runStore.run(id: runID), run.endedAt != nil,
+               !f.center.hasLiveOwner(runID: runID) { return }
+            await Task.yield()
+        }
+        throw FloeError.validationFailed("The selected owned round did not stop")
+    }
+
     @Test("Goal setup resets only the composer; pause/resume preserves the same durable goal")
     func successfulSetupThenPauseResumeKeepsGoalAndAgentComposer() async throws {
         let f = try await fixture()
@@ -258,10 +268,16 @@ struct GoalComposerTests {
         let nextRun = try #require(try await f.environment.runStore.run(id: nextRunID))
         #expect(resumed.id == goal.id && resumed.conversationID == conversation.id && resumed.status == .active)
         #expect(resumed.steps == goal.steps && resumed.evidence == goal.evidence)
-        #expect(nextRunID != firstRunID && nextRun.conversationID == conversation.id)
+        #expect(nextRunID == firstRunID && nextRun.conversationID == conversation.id && nextRun.endedAt == nil)
+        #expect(f.center.hasLiveOwner(runID: firstRunID))
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
         #expect(nextRun.conversationMode == AgentExecutionMode.goal.conversationMode.rawValue)
         #expect(view.agentMode == .agent && view.draft == "Keep this separate unsent draft")
-        await view.pauseActiveGoal()
+        await view.cancel()
+        try await waitForStopped(f, runID: firstRunID)
+        #expect(try await f.environment.intelligenceStore.goal(id: goal.id)?.status == .paused)
+        #expect(try await f.environment.runStore.run(id: firstRunID)?.state == "cancelled")
+        #expect(view.agentMode == .agent && view.draft == "Keep this separate unsent draft")
     }
 
     @Test("A saved goal whose launch fails keeps its draft and retries the same goal identity")
@@ -301,8 +317,11 @@ struct GoalComposerTests {
             #expect(view.selectedRun?.conversationMode == AgentExecutionMode.goal.conversationMode.rawValue)
             await view.pauseActiveGoal()
             let pausedRunID = try #require(view.selectedRunID)
-            #expect(!f.center.hasLiveOwner(runID: pausedRunID))
-            #expect(try await f.environment.runStore.run(id: pausedRunID)?.endedAt != nil)
+            #expect(f.center.hasLiveOwner(runID: pausedRunID))
+            #expect(try await f.environment.runStore.run(id: pausedRunID)?.endedAt == nil)
+            #expect(try await f.environment.intelligenceStore.goal(id: original.id)?.status == .paused)
+            await view.cancel()
+            try await waitForStopped(f, runID: pausedRunID)
             #expect(try await f.environment.intelligenceStore.goal(id: original.id)?.status == .paused)
 
             // A terminal stored fixture isolates pending-composer cleanup;
@@ -335,11 +354,12 @@ struct GoalComposerTests {
             await view.load()
             #expect(view.activeGoal?.id == next.id && view.activeGoal?.status == .active)
             #expect(view.agentMode == .agent)
-            await view.pauseActiveGoal()
+            await view.cancel()
+            try await waitForStopped(f, runID: try #require(view.selectedRunID))
         }
     }
 
-    @Test("A blocked goal stays blocked on load and offers explicit goal resume")
+    @Test("Load never rearms a blocked Goal; explicit Continue resumes only the same round")
     func blockedGoalDoesNotResumeWhenComposerLoads() async throws {
         for status in [GoalStatus.blocked, .paused] {
             let f = try await fixture()
@@ -359,18 +379,24 @@ struct GoalComposerTests {
             let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
             view.selectedRunID = prior.id
             await view.load()
-            #expect(view.activeGoal?.status == status && view.canResumeGoal && !view.canContinue)
+            #expect(view.activeGoal?.status == status && view.canResumeGoal && view.canContinue)
+            #expect(!f.center.hasLiveOwner(runID: prior.id))
+            #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
             if status == .blocked {
                 #expect(view.goalBlockedReason(goal)?.isEmpty == false)
                 #expect(view.goalBlockedReason(goal)?.contains("user-condition:") == false)
             }
-            // Exercise the real VM action that historical error rows used,
-            // with a real failed/interrupted run selected (not a nil no-op).
+            // Continue is an explicit same-run action, not Goal Resume.
+            // It must not create a cycle or reactivate long-term advancement.
             await view.retry()
             #expect(view.actionError == nil)
             let runs = try await f.environment.runStore.recentRuns(conversationID: conversation.id, limit: 10)
-            #expect(runs.count == 1 && runs.first?.id == prior.id && runs.first?.state == prior.state)
+            #expect(runs.count == 1 && runs.first?.id == prior.id && runs.first?.goal == prior.goal)
+            #expect(view.selectedRunID == prior.id && f.center.hasLiveOwner(runID: prior.id))
             #expect(try await f.environment.intelligenceStore.goal(id: goal.id)?.status == status)
+            await view.cancel()
+            try await waitForStopped(f, runID: prior.id)
+            #expect(try await f.environment.intelligenceStore.goal(id: goal.id)?.status == .paused)
         }
     }
 

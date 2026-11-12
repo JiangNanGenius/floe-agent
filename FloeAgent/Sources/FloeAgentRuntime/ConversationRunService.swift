@@ -188,7 +188,6 @@ public actor ConversationRunService {
     private var unflushedReasoningText = ""
     private var unpublishedReasoningText = ""
     private var reasoningPushTask: Task<Void, Never>?
-    private var recoveryPointTask: Task<Void, Never>?
     /// Set when a completion-critical write still fails after bounded retry.
     /// The runtime may already have reached `.completed`, but the service
     /// projects a recoverable failure instead of publishing a false success.
@@ -243,15 +242,13 @@ public actor ConversationRunService {
     /// runtime transitions to `.completed` after this callback returns, so
     /// this is the service's precise quiescent commit window.
     private var providerCompletionBoundaryReached = false
-    /// Optimistic ownership token for a Goal cycle. A completed run may only
-    /// advance the exact Goal revision and cycle it reserved before provider
-    /// I/O. This prevents an older resumed run from overwriting a newer user
-    /// edit or another run's progress.
+    /// Exact admitted run identity. Long-term status/definition/budget edits
+    /// never replace this round's original binding or admission fingerprint.
     private struct GoalRunReservation: Sendable, Hashable {
         var goalID: UUID
-        var expectedRevision: Int
-        var round: Int
         var runID: UUID
+        var admissionRevision: Int?
+        var definitionFingerprint: String?
     }
     private var goalRunReservation: GoalRunReservation?
     /// Per-call queue-origin instants captured when the `toolRequest` event
@@ -1277,7 +1274,7 @@ public actor ConversationRunService {
             } else {
                 reason = ""
             }
-            _ = await appendEventReliably(
+            let terminalStatusSaved = await appendEventReliably(
                 runID: runID,
                 kind: .status,
                 payloadJSON: Self.jsonPayload([
@@ -1287,6 +1284,7 @@ public actor ConversationRunService {
                 boundary: "terminalStatus",
                 completionCritical: true
             )
+            if terminalStatusSaved { await settleAdmittedGoalRun(completed: false) }
         }
         switch projectedState {
         case .completed:
@@ -1368,7 +1366,12 @@ public actor ConversationRunService {
             } else if !delta.text.isEmpty {
                 streamedTextCapped = true
             }
-            scheduleRecoveryPoint()
+            // Streaming text is deliberately not checkpointed (see
+            // AgentRuntime.writeCheckpoint): a provider turn's uncommitted
+            // fragment is not a recovery boundary. Full snapshot saves here
+            // were re-encoding the same committed graph several times per
+            // second for every active run, adding avoidable peak memory/IO
+            // without preserving any additional resumable state.
         case .reasoningSummary(let summary):
             protocolReasoningText += summary.text
             let remaining = max(0, streamedTextLimitBytes - reasoningText.utf8.count)
@@ -1378,7 +1381,9 @@ public actor ConversationRunService {
                 unflushedReasoningText += delta
                 unpublishedReasoningText += delta
                 scheduleReasoningPush()
-                scheduleRecoveryPoint()
+                // Reasoning is uncommitted provider output too. The bounded
+                // turn reasoning is captured by the next real checkpoint
+                // (tool settlement, dispatch, cancel or app suspension).
             }
         case .toolRequest(let call):
             let safeArguments = modelInputProjection?.redactedJSON(call.argumentsJSON) ?? call.argumentsJSON
@@ -1751,7 +1756,7 @@ public actor ConversationRunService {
                     : streamedText
                 await persistPlanDraft(from: planText)
             } else if conversationMode == .goal || goalRunReservation != nil {
-                await moveGoalToVerification()
+                await moveGoalToVerification(completed: completion.stopReason != .cancelled)
             }
             providerCompletionBoundaryReached = false
         }
@@ -1991,16 +1996,6 @@ public actor ConversationRunService {
         eventChannel.yield(.reasoningDelta(TextDelta(text: delta)))
     }
 
-    private func scheduleRecoveryPoint() {
-        guard recoveryPointTask == nil else { return }
-        recoveryPointTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard let self else { return }
-            await self.persistRecoveryPointReliably(boundary: "streamRecoveryPoint")
-            await self.clearRecoveryPointTask()
-        }
-    }
-
     /// Recovery points protect already-committed provider/tool progress. A
     /// failed save is therefore a visible durability failure, never a silent
     /// best-effort optimization that can later make a task appear stuck or
@@ -2085,10 +2080,6 @@ public actor ConversationRunService {
         )
     }
 
-    private func clearRecoveryPointTask() {
-        recoveryPointTask = nil
-    }
-
     private func persistPlanDraft(from text: String) async {
         guard let intelligenceStore, !receivedStructuredPlan, !text.isEmpty else { return }
         let text = modelInputProjection?.redacted(text) ?? text
@@ -2164,122 +2155,127 @@ public actor ConversationRunService {
     }
 
     private func adoptModelCreatedGoal() async {
-        guard let intelligenceStore, !isTerminal(latestState),
-              let run = try? await runStore.run(id: runID), run.endedAt == nil, run.conversationID == conversationID,
-              let goalID = run.goalID,
-              let goal = try? await intelligenceStore.goal(id: goalID),
-              goal.conversationID == conversationID, goal.status == .active else { return }
-        reserveGoal(goal)
+        guard let intelligenceStore,
+              let run = try? await runStore.run(id: runID), run.conversationID == conversationID,
+              let id = run.goalID, let goal = try? await intelligenceStore.goal(id: id),
+              goal.conversationID == conversationID else { return }
+        if let reservation = goalRunReservation {
+            guard reservation.goalID == id, reservation.runID == runID else {
+                logger.warning("goalAdoptionBindingChanged run=\(runID.uuidString)")
+                return
+            }
+        } else {
+            guard let events = try? await runStore.events(runID: runID) else { return }
+            reserveGoal(goal, events: events)
+        }
         eventChannel.yield(.goalChanged(GoalSnapshot(id: goal.id, status: goal.status,
             completedSteps: goal.steps.filter { $0.status == .completed }.count, totalSteps: goal.steps.count)))
     }
 
     private func ensureDurableGoal(objective: String) async -> Bool {
         guard let intelligenceStore else { return true }
-        let existing: [ConversationGoal]
-        do { existing = try await intelligenceStore.goals(conversationID: conversationID) }
-        catch {
-            durabilityFailure = "The task's existing goal could not be read; no replacement was created."
-            return false
-        }
-        if let active = existing.first(where: { !$0.status.isTerminal }) {
-            guard active.status == .active else {
-                durabilityFailure = "The goal needs explicit user resume before another cycle can start."
+        do {
+            guard let run = try await runStore.run(id: runID), run.conversationID == conversationID else {
+                durabilityFailure = "The admitted run is unavailable; no Goal was created or rebound."
                 return false
             }
-            guard await assignGoalReliably(active.id) else { return false }
-            reserveGoal(active)
+            if let id = run.goalID {
+                guard let goal = try await intelligenceStore.goal(id: id), goal.conversationID == conversationID else {
+                    durabilityFailure = "The run's exact Goal binding is unavailable; no replacement was created."
+                    return false
+                }
+                guard reserveGoal(goal, events: try await runStore.events(runID: runID)) else {
+                    durabilityFailure = "The admitted run's Goal identity changed; no rebinding was performed."
+                    return false
+                }
+                return true // prepare already admitted this round, even if paused/deleted/edited later.
+            }
+            // Direct-start legacy compatibility only. Never pick the first
+            // Goal or silently attach to someone else's unfinished definition.
+            let events = try await runStore.events(runID: runID)
+            guard !events.contains(where: { event in
+                guard event.kind == .status,
+                      let admission = try? JSONDecoder().decode(GoalRunAdmissionPayload.self, from: Data(event.payloadJSON.utf8)) else { return false }
+                return admission.isNativeAdmission && admission.hasGoalIdentity
+            }) else {
+                durabilityFailure = "The admitted Goal binding was removed; no replacement was created."
+                return false
+            }
+            guard !(try await intelligenceStore.goals(conversationID: conversationID)).contains(where: { !$0.status.isTerminal }) else {
+                durabilityFailure = "This run needs its exact durable Goal binding before another cycle can start."
+                return false
+            }
+            let goal = ConversationGoal(conversationID: conversationID, objective: objective,
+                acceptanceCriteria: [GoalCriterion(text: "The objective is satisfied with inspectable evidence")],
+                steps: [GoalStep(title: "Work toward the objective", status: .inProgress, order: 0)],
+                status: .active, progress: .init(startedAt: run.startedAt))
+            guard await saveGoalReliably(goal),
+                  let bound = try await runStore.run(id: runID), bound.goalID == goal.id,
+                  let saved = try await intelligenceStore.goal(id: goal.id) else { return false }
+            guard reserveGoal(saved, events: try await runStore.events(runID: runID)) else { return false }
+            eventChannel.yield(.goalChanged(GoalSnapshot(id: saved.id, status: saved.status,
+                completedSteps: saved.steps.filter { $0.status == .completed }.count, totalSteps: saved.steps.count)))
             return true
+        } catch {
+            durabilityFailure = "Unable to read the admitted run's durable Goal: \(error.localizedDescription)"
+            return false
         }
-        let criterion = GoalCriterion(
-            text: "The objective is satisfied with inspectable evidence",
-            requiresUserConfirmation: false
-        )
-        let goal = ConversationGoal(
-            conversationID: conversationID,
-            objective: objective,
-            acceptanceCriteria: [criterion],
-            steps: [GoalStep(title: "Work toward the objective", status: .inProgress, order: 0)],
-            status: .active,
-            progress: GoalProgress(startedAt: Date())
-        )
-        guard await saveGoalReliably(goal) else { return false }
-        eventChannel.yield(.goalChanged(GoalSnapshot(
-            id: goal.id, status: goal.status,
-            completedSteps: goal.steps.filter { $0.status == .completed }.count,
-            totalSteps: goal.steps.count
-        )))
-        guard await assignGoalReliably(goal.id) else { return false }
-        reserveGoal(goal)
-        return true
     }
 
-    private func moveGoalToVerification() async {
-        guard providerCompletionBoundaryReached, durabilityFailure == nil else {
-            logger.warning("goalAdvanceSkipped run=\(runID.uuidString) reason=runNotQuiescentOrDurabilityFailed")
-            return
+    private func moveGoalToVerification(completed: Bool = true) async {
+        guard providerCompletionBoundaryReached, durabilityFailure == nil else { return }
+        await settleAdmittedGoalRun(completed: completed)
+    }
+
+    /// Accounting is independent from rearming the long-term Goal. It is
+    /// safe after Stop/join and idempotent across resume or unknown replies.
+    private func settleAdmittedGoalRun(completed: Bool) async {
+        guard let intelligenceStore else { return }
+        do {
+            guard let run = try await runStore.run(id: runID), run.conversationID == conversationID,
+                  let id = run.goalID else { return }
+            let events = try await runStore.events(runID: runID)
+            if goalRunReservation == nil {
+                guard let goal = try await intelligenceStore.goal(id: id), goal.conversationID == conversationID else { return }
+                reserveGoal(goal, events: events)
+            }
+            guard let reservation = goalRunReservation,
+                  reservation.runID == runID, reservation.goalID == id else {
+                logger.warning("goalSettlementBindingRetired run=\(runID.uuidString)")
+                return
+            }
+            var calls = 0, iterations = 0
+            var inputs: [String:String] = [:]
+            for event in events {
+                let fields = try? JSONDecoder().decode(GoalRunEventPayload.self, from: Data(event.payloadJSON.utf8))
+                if event.kind == .status, fields?.kind == "providerAttempt", fields?.status == "started" { calls += 1 }
+                if event.kind == .toolRequest {
+                    iterations += 1
+                    if let call = fields?.id, inputs[call] == nil { inputs[call] = fields?.input ?? "" }
+                }
+            }
+            var evidence: [GoalEvidence] = []
+            for event in events where event.kind == .toolResult {
+                guard let fields = try? JSONDecoder().decode(GoalRunEventPayload.self, from: Data(event.payloadJSON.utf8)),
+                      (fields.status == ToolResult.Status.ok.rawValue || fields.status == "success"),
+                      fields.dispatched, !GoalEvidenceReviewContract.isPreparationTool(fields.tool ?? "") else { continue }
+                let summary = String((fields.summary ?? fields.tool ?? "Successful tool result").prefix(1_000))
+                let material = (fields.tool ?? "") + "|" + (inputs[fields.id ?? ""] ?? "") + "|" + (fields.outputDigest.flatMap { $0.isEmpty ? nil : $0 } ?? fields.summary ?? "")
+                evidence.append(.init(kind: .toolResult, reference: "run:\(runID.uuidString):event:\(event.sequence)",
+                    summary: summary, capturedAt: event.createdAt, fingerprint: FloeDigest.sha256Hex(Data(material.utf8))))
+            }
+            let input = GoalRunSettlementInput(runID: runID, conversationID: conversationID, goalID: id,
+                admissionRevision: reservation.admissionRevision, admissionDefinitionFingerprint: reservation.definitionFingerprint,
+                modelCallCount: calls, toolIterationCount: iterations, evidence: evidence, completed: completed)
+            guard let result = await saveGoalReliably(input) else { return }
+            if result.didRecordChange {
+                eventChannel.yield(.goalChanged(GoalSnapshot(id: result.goal.id, status: result.goal.status,
+                    completedSteps: result.goal.steps.filter { $0.status == .completed }.count, totalSteps: result.goal.steps.count)))
+            }
+        } catch {
+            durabilityFailure = "Unable to record this run's actual Goal usage: \(error.localizedDescription)"
+            logger.error("goalRunAccountingFailed run=\(runID.uuidString)")
         }
-        guard let intelligenceStore,
-              let reservation = goalRunReservation,
-              reservation.runID == runID else {
-            durabilityFailure = "The Goal reservation was unavailable when this run completed."
-            logger.error("goalReservationMissing run=\(runID.uuidString)")
-            return
-        }
-        guard let run = try? await runStore.run(id: runID),
-              run.goalID == reservation.goalID,
-              run.state == latestState.name else {
-            durabilityFailure = "The completed run no longer owns the reserved Goal."
-            logger.error("goalReservationRunMismatch run=\(runID.uuidString) goal=\(reservation.goalID.uuidString)")
-            return
-        }
-        guard var goal = try? await intelligenceStore.goal(id: reservation.goalID) else {
-            durabilityFailure = "The reserved Goal could not be read."
-            return
-        }
-        if goal.status == .paused || goal.status == .blocked || goal.status.isTerminal { return }
-        guard
-              (goal.revision ?? 1) == reservation.expectedRevision,
-              goal.progress.cycleCount + 1 == reservation.round else {
-            durabilityFailure = "The Goal changed before this run could publish its progress."
-            logger.warning("goalReservationRevisionMismatch run=\(runID.uuidString) goal=\(reservation.goalID.uuidString)")
-            return
-        }
-        let expectedRevision = reservation.expectedRevision
-        goal.status = .verifying
-        if goal.progress.startedAt == nil { goal.progress.startedAt = Date() }
-        goal.progress.cycleCount += 1
-        let runEvents = (try? await runStore.events(runID: runID)) ?? []
-        let dispatchedCalls = runEvents.filter { event in
-            guard event.kind == .status,
-                  let fields = try? JSONDecoder().decode([String: String].self, from: Data(event.payloadJSON.utf8)) else { return false }
-            return fields["kind"] == "providerAttempt" && fields["status"] == "started"
-        }.count
-        goal.progress.modelCallCount += dispatchedCalls
-        goal.progress.totalIterationCount += runEvents.filter { $0.kind == .toolRequest }.count
-        goal.progress.lastCheckpointAt = Date()
-        goal.updatedAt = Date()
-        guard await saveGoalReliably(goal, expectedRevision: expectedRevision) else { return }
-        guard let committed = try? await intelligenceStore.goal(id: goal.id),
-              committed.revision == expectedRevision + 1,
-              committed.status == .verifying,
-              committed.progress.cycleCount == reservation.round else {
-            durabilityFailure = "The Goal update could not be verified after commit."
-            logger.error("goalReservationCommitUnverified run=\(runID.uuidString) goal=\(goal.id.uuidString)")
-            return
-        }
-        goal = committed
-        goalRunReservation = GoalRunReservation(
-            goalID: goal.id,
-            expectedRevision: expectedRevision + 1,
-            round: reservation.round + 1,
-            runID: runID
-        )
-        eventChannel.yield(.goalChanged(GoalSnapshot(
-            id: goal.id, status: goal.status,
-            completedSteps: goal.steps.filter { $0.status == .completed }.count,
-            totalSteps: goal.steps.count
-        )))
     }
 
     private func savePlanReliably(_ plan: PlanDraft) async -> Bool {
@@ -2299,40 +2295,38 @@ public actor ConversationRunService {
         return false
     }
 
-    private func saveGoalReliably(
-        _ goal: ConversationGoal,
-        expectedRevision: Int? = nil
-    ) async -> Bool {
+    private func saveGoalReliably(_ goal: ConversationGoal) async -> Bool {
         guard let intelligenceStore else { return true }
         var lastError: Error?
         for attempt in 1...3 {
             do {
-                if let expectedRevision {
-                    let saved = try await intelligenceStore.saveGoalIfRevisionMatches(
-                        goal,
-                        expectedRevision: expectedRevision
-                    )
-                    guard saved else {
-                        if let latest = try await intelligenceStore.goal(id: goal.id), latest.status == .paused {
-                            return false // Explicit pause owns the newer revision.
-                        }
-                        durabilityFailure = "Goal changed while this run was finishing; the stale run was not allowed to overwrite it."
-                        logger.warning("durableGoalRevisionConflict run=\(runID.uuidString) goal=\(goal.id.uuidString)")
-                        return false
-                    }
-                    return true
-                } else {
-                    try await intelligenceStore.saveGoal(goal)
-                    return true
-                }
+                _ = try await intelligenceStore.bindNewGoalToRun(goal, runID: runID)
+                return true
             } catch {
                 lastError = error
                 if attempt < 3 { try? await Task.sleep(for: .milliseconds(25 * attempt)) }
             }
         }
-        durabilityFailure = "Unable to persist goal after retry: \(lastError?.localizedDescription ?? "unknown persistence error")"
-        logger.error("durableGoalFailed run=\(runID.uuidString) goal=\(goal.id.uuidString)")
+        durabilityFailure = "Unable to persist the exact new Goal after retry: \(lastError?.localizedDescription ?? "unknown persistence error")"
         return false
+    }
+
+    private func saveGoalReliably(_ input: GoalRunSettlementInput) async -> GoalRunSettlementResult? {
+        guard let intelligenceStore else { return nil }
+        var lastError: Error?
+        for attempt in 1...3 {
+            do {
+                // The original writer reads latest status/definition/budgets,
+                // merges cumulative deltas, and commits its native marker+CAS.
+                return try await intelligenceStore.settleGoalRun(input)
+            } catch {
+                lastError = error
+                if attempt < 3 { try? await Task.sleep(for: .milliseconds(25 * attempt)) }
+            }
+        }
+        durabilityFailure = "Unable to persist actual Goal usage after retry: \(lastError?.localizedDescription ?? "unknown persistence error")"
+        logger.error("durableGoalAccountingFailed run=\(runID.uuidString)")
+        return nil
     }
 
     private func assignGoalReliably(_ goalID: UUID) async -> Bool {
@@ -2354,39 +2348,39 @@ public actor ConversationRunService {
         return false
     }
 
-    private func reserveGoal(_ goal: ConversationGoal) {
-        goalRunReservation = GoalRunReservation(
-            goalID: goal.id,
-            expectedRevision: goal.revision ?? 1,
-            round: goal.progress.cycleCount + 1,
-            runID: runID
-        )
+    @discardableResult private func reserveGoal(_ goal: ConversationGoal, events: [RunEventRecord]) -> Bool {
+        if let prior = goalRunReservation { return prior.goalID == goal.id && prior.runID == runID }
+        var revision: Int?, fingerprint: String?
+        for event in events.sorted(by: { $0.sequence < $1.sequence }) where event.kind == .status {
+            guard let fields = try? JSONDecoder().decode(GoalRunAdmissionPayload.self, from: Data(event.payloadJSON.utf8)),
+                  fields.goalID == goal.id, fields.isNativeAdmission else { continue }
+            revision = fields.goalRevision.flatMap { $0 > 0 ? $0 : nil }
+            fingerprint = fields.goalDefinitionFingerprint
+            if revision == nil || fingerprint?.range(of: "^[a-f0-9]{64}$", options: .regularExpression) == nil { fingerprint = nil }
+            break // First native admission wins; never mint one from a later edited Goal.
+        }
+        goalRunReservation = .init(goalID: goal.id, runID: runID, admissionRevision: revision, definitionFingerprint: fingerprint)
+        return true
     }
 
     private func restoreGoalReservation(checkpointGoalID: UUID?) async -> Bool {
         guard let intelligenceStore else { return true }
-        let persistedRun: RunRecord?
         do {
-            persistedRun = try await runStore.run(id: runID)
-        } catch {
-            durabilityFailure = "Unable to read the run while restoring its Goal reservation."
-            return false
-        }
-        guard let goalID = checkpointGoalID ?? persistedRun?.goalID,
-              persistedRun?.goalID == goalID else {
-            durabilityFailure = "The checkpoint is not attached to the run's durable Goal."
-            return false
-        }
-        do {
-            guard let goal = try await intelligenceStore.goal(id: goalID),
-                  goal.status == .active else {
-                durabilityFailure = "The checkpoint's Goal is no longer active."
+            guard let run = try await runStore.run(id: runID), run.conversationID == conversationID,
+                  let id = run.goalID, checkpointGoalID == nil || checkpointGoalID == id,
+                  let goal = try await intelligenceStore.goal(id: id), goal.conversationID == conversationID else {
+                durabilityFailure = "The checkpoint is not attached to the run's exact durable Goal."
                 return false
             }
-            reserveGoal(goal)
+            // This restores the SAME admitted run, not permission for another
+            // Goal cycle. Pause/cancelled tombstones are valid history owners.
+            guard reserveGoal(goal, events: try await runStore.events(runID: runID)) else {
+                durabilityFailure = "The checkpoint cannot replace this run's admitted Goal identity."
+                return false
+            }
             return true
         } catch {
-            durabilityFailure = "Unable to restore the checkpoint's durable Goal."
+            durabilityFailure = "Unable to restore the checkpoint's durable Goal binding."
             return false
         }
     }

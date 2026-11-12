@@ -36,6 +36,9 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
     private static var sessions: [UUID: BiologyProjectSession] = [:]
     let projectID: UUID
     let host: BiologyHostServices
+    /// The native surface and host refreshes share this one visible model.
+    /// The service still owns all persisted data and calculation lifetimes.
+    let workbenchModel: BiologyWorkbenchModel
     private(set) var record: PersonalContentRecord
     private(set) var directory: URL
     private(set) var project: BiologyProject
@@ -89,6 +92,7 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
     private init(record: PersonalContentRecord, directory: URL, project: BiologyProject, host: BiologyHostServices) {
         self.record = record; self.directory = directory; self.project = project
         projectID = record.id; self.host = host
+        workbenchModel = BiologyWorkbenchModel(service: host.service, projectID: record.id)
     }
     static func open(id: UUID, directory: URL, host: BiologyHostServices) async throws -> BiologyProjectSession {
         let location = try await host.access.location(id)
@@ -106,6 +110,7 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         session.record = location.record; session.directory = location.url; session.project = project
         session.lease = try PersonalLibraryFileActions.acquireUse(id: id, directory: location.url)
         session.fence = BiologyPresentationFence(); session.active = true
+        await session.workbenchModel.refresh()
         session.observe()
         return session
     }
@@ -118,12 +123,22 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
                 let changes = try await host.service.changes(projectID)
                 for await _ in changes {
                     guard !Task.isCancelled, token.isOpen, self.fence === token else { return }
-                    let current = try await host.service.project(projectID)
-                    try await host.synchronizeMetadata([projectID])
-                    let mounted = try await host.access.location(projectID)
-                    guard token.isOpen, self.fence === token else { return }
-                    project = current; record = mounted.record
-                    NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: projectID)
+                    do {
+                        // Canonical content reaches the editor even if the
+                        // derived Files metadata projection is temporarily busy.
+                        try await refreshFromHost()
+                        guard token.isOpen, self.fence === token else { return }
+                        try await host.synchronizeMetadata([projectID])
+                        let mounted = try await host.access.location(projectID)
+                        guard token.isOpen, self.fence === token else { return }
+                        record = mounted.record
+                        NotificationCenter.default.post(name: .floeStudioDocumentDidChange, object: projectID)
+                    } catch is CancellationError { return }
+                    catch {
+                        if token.isOpen, self.fence === token { diagnostic = error.localizedDescription }
+                        // A failed metadata/read projection cannot retire the
+                        // subscription to later real commits.
+                    }
                 }
             } catch is CancellationError { }
             catch { if token.isOpen { diagnostic = error.localizedDescription } }
@@ -139,6 +154,8 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         let token = fence; try await requireCurrent(token)
         let saved = try await host.service.project(projectID)
         try await requireCurrent(token); project = saved
+        await workbenchModel.refresh()
+        try await requireCurrent(token)
     }
     func flushForClose() async -> Bool {
         do { try await refreshFromHost(); return true }

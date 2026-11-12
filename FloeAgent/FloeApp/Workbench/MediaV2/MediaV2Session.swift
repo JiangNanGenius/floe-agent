@@ -164,6 +164,45 @@ import FloeTools
         saving = true
         Task { defer { saving = false }; do { _ = try await coordinator.redoGroup(entry.id, in: id); try await reload(); restoreImageWarpSelection(groupID: entry.id, redo: true) } catch { diagnostic = error.localizedDescription } }
     }
+    var managedHistoryUnavailableReason: String? {
+        if saving || processingTool || rendering || canvasLayoutInProgress {
+            return WorkbenchText.t("请等待当前操作完成后再撤销或重做。", "Wait for the current operation before undoing or redoing.")
+        }
+        if imageWarpDraft != nil {
+            return WorkbenchText.t("请先应用或取消当前变形预览。", "Apply or cancel the current warp preview first.")
+        }
+        if compoundScopeID != nil || compoundEditorRoute != nil {
+            return WorkbenchText.t("请先返回主工程再操作历史。", "Return to the main project before changing its history.")
+        }
+        return nil
+    }
+    /// Saved-document history only: a draft's local undo stack is never
+    /// substituted for the original journal, and completion is awaited.
+    func restoreManagedHistory(redo: Bool, groupID: UUID?, expectedRevision: Int64,
+                               cancellation: CancellationToken,
+                               validateOwner: @escaping @MainActor @Sendable () async throws -> Void) async throws -> MediaPreparedCommit {
+        try Task.checkCancellation(); try cancellation.throwIfCancelled()
+        if let reason = managedHistoryUnavailableReason { throw MediaPreparedCoreError.invalidOperation(reason) }
+        saving = true
+        defer { saving = false }
+        try await reload()
+        try Task.checkCancellation(); try cancellation.throwIfCancelled()
+        guard document.revision == expectedRevision else { throw MediaPreparedCoreError.documentChanged }
+        let entry = redo ? project.preparedJournal?.nextRedo : project.preparedJournal?.nextUndo
+        guard let entry, groupID == nil || groupID == entry.id else { throw MediaPreparedCoreError.documentChanged }
+        try await validateOwner()
+        try Task.checkCancellation(); try cancellation.throwIfCancelled()
+        let check: @Sendable () throws -> Void = { try Task.checkCancellation(); try cancellation.throwIfCancelled() }
+        let commit = try await (redo
+            ? coordinator.redoGroup(entry.id, in: id, expectedRevision: expectedRevision, cancellationCheck: check)
+            : coordinator.undoGroup(entry.id, in: id, expectedRevision: expectedRevision, cancellationCheck: check))
+        try await reload()
+        guard project.preparedJournal?.entry(entry.id)?.status == (redo ? .committed : .undone) else {
+            throw MediaPreparedCoreError.documentChanged
+        }
+        restoreImageWarpSelection(groupID: entry.id, redo: redo)
+        return commit
+    }
     func select(_ layer: MediaPreparedLayer) {
         selectedLayerID = layer.id
         if multipleLayerSelection {

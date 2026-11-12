@@ -101,6 +101,31 @@ public enum ModelReasoningEffort: String, Sendable, Codable, CaseIterable, Hasha
     public var id: String { rawValue }
 }
 
+/// Optional provider-reported facts, independent from the user's selected
+/// effort. Absence stays unknown; neither a model name nor an effort token
+/// establishes a vendor-specific thinking protocol.
+public struct ModelReasoningMetadata: Sendable, Codable, Hashable {
+    public var supportsReasoning: Bool?
+    public var supportsReasoningEffort: Bool?
+    public var supportedEfforts: [String]?
+    public var defaultEffort: String?
+    public var canDisableThinking: Bool?
+
+    public init(
+        supportsReasoning: Bool? = nil,
+        supportsReasoningEffort: Bool? = nil,
+        supportedEfforts: [String]? = nil,
+        defaultEffort: String? = nil,
+        canDisableThinking: Bool? = nil
+    ) {
+        self.supportsReasoning = supportsReasoning
+        self.supportsReasoningEffort = supportsReasoningEffort
+        self.supportedEfforts = supportedEfforts
+        self.defaultEffort = defaultEffort
+        self.canDisableThinking = canDisableThinking
+    }
+}
+
 /// One selectable model exposed by a provider.
 public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     public var id: UUID
@@ -128,6 +153,13 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
     /// Optional keeps older CloudKit/config payloads source-compatible;
     /// `nil` has the same meaning as `.automatic`.
     public var reasoningEffort: ModelReasoningEffort?
+    /// Discovery facts only. Nil keeps older JSON/configuration payloads valid;
+    /// refresh must not replace `reasoningEffort` or explicit capability bits.
+    public var reasoningMetadata: ModelReasoningMetadata?
+    /// User preference, separate from provider facts. True takes precedence
+    /// over inferred, discovered and manually selected effort parameters.
+    /// Nil decodes older JSON as the default (do not omit).
+    public var omitReasoningParameters: Bool?
     public var isEnabled: Bool
     /// Independent presentation preference for the primary chat-model picker.
     ///
@@ -151,7 +183,9 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         // Trailing for source compatibility with existing labeled call sites
         // (the persistence codec appends it); the stored property stays
         // grouped with `capabilities`.
-        explicitCapabilities: ModelCapabilities? = nil
+        explicitCapabilities: ModelCapabilities? = nil,
+        reasoningMetadata: ModelReasoningMetadata? = nil,
+        omitReasoningParameters: Bool? = false
     ) {
         self.id = id
         self.providerID = providerID
@@ -163,12 +197,18 @@ public struct ModelProfile: Sendable, Codable, Identifiable, Hashable {
         self.explicitCapabilities = explicitCapabilities
         self.useSurfaces = useSurfaces
         self.reasoningEffort = reasoningEffort
+        self.reasoningMetadata = reasoningMetadata
+        self.omitReasoningParameters = omitReasoningParameters
         self.isEnabled = isEnabled
         self.isHiddenFromPrimaryPicker = isHiddenFromPrimaryPicker
     }
 
     public var effectiveReasoningEffort: ModelReasoningEffort {
         reasoningEffort ?? .automatic
+    }
+
+    public var effectiveOmitReasoningParameters: Bool {
+        omitReasoningParameters == true
     }
 
     public var effectiveUseSurfaces: ModelUseSurfaces {

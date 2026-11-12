@@ -136,6 +136,13 @@ actor GlobalSourceMemoryService {
         return try await memories.hybridRecall(.init(query: query, workspaceID: context.workspaceID, conversationID: context.conversationID,
             queryEmbedding: vector ?? nil, modelIdentifier: embedding?.modelIdentifier, modelRevision: embedding?.modelRevision, limit: context.limit))
     }
+    func browseMemories(_ query: String, context: GlobalSourceSearchContext) async throws -> [HybridMemoryRecallItem] {
+        let vector = try? await embedding?.embedding(for: query)
+        return try await memories.browseMemories(.init(query: query, workspaceID: context.workspaceID,
+            conversationID: context.conversationID, queryEmbedding: vector ?? nil,
+            modelIdentifier: embedding?.modelIdentifier, modelRevision: embedding?.modelRevision, limit: context.limit))
+    }
+    func recordMemoryUse(_ ids: [UUID], runID: UUID) { memories.recordMemoryUse(ids, runID: runID) }
     func readSource(_ id: String, offset: Int = 0, limit: Int = 4_000) async throws -> GlobalSourceHit {
         try await prepareIfNeeded()
         guard offset >= 0, let descriptor = try await index.source(id), !(try await index.isExcluded(id)), let provider = providers[descriptor.providerID] else { throw GlobalSourceJobError.unavailable }

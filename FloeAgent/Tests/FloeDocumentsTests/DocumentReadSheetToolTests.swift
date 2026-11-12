@@ -98,10 +98,20 @@ struct DocumentReadSheetToolTests {
         #expect(output.summary.contains("sheet=\"Data\" rows=2 shown=2"))
         #expect(output.summary.contains("Hello\t\tInline"))
         #expect(output.summary.contains("true\t42"))
-        // Formulas display as "=FORMULA" in both readers; cached values are
-        // not trusted (our own writer never emits them).
+        // readSheet shows the PERSISTED cached result when the saved package
+        // carries one; a formula without a cache keeps the honest marker.
+        // It never evaluates formulas itself.
         #expect(output.summary.contains("=SUM(B2:B2)"))
-        #expect(output.summary.contains("=B2*2"))
+        #expect(output.summary.contains("84"))
+        #expect(!output.summary.contains("=B2*2"))
+        #expect(output.summary.contains("formulaCached=1 formulaUncached=1"))
+        // inspect keeps the editable formula identity for updateText.
+        let inspect = try await OfficeInspectTool(rootProvider: { root }).execute(
+            .init(path: "sample.xlsx"),
+            context: ToolContext(runID: UUID(), workspaceRootURL: root,
+                                 cancellation: CancellationToken()))
+        #expect(inspect.exitStatus == 0)
+        #expect(inspect.summary.contains("=B2*2"))
     }
 
     @Test("both readers discover real Chinese tabs with stable part mapping, not tab indexes")

@@ -53,6 +53,7 @@ private struct ControllerFixture {
     window.FloeEditor = {
       commandIndex(){return entries},
       command(name){if(window.slowMetadata){const end=Date.now()+250;while(Date.now()<end){}}return entries.find(x=>x.id===name)},
+      formDescription(name){if(window.throwOnForm)throw Error('form exploded');const entry=entries.find(x=>x.id===name);return {...entry,fields:[{key:'amount',label:'Amount',type:'number',default:1}]}},
       async setNativeChrome(){},
       async load(value){this.payload=structuredClone(value.content);this.revision=value.revision;return {ready:true}},
       nativeSnapshot(){return {value:this.payload.data.value}},
@@ -123,6 +124,58 @@ struct ControllerLifecycleTests {
         _ = try await result(lastResult).get()
         #expect(try await fixture.store.read().revision == 1)
         #expect(try await fixture.store.read().content["data"]["value"] == .number(1))
+    }
+
+    @Test("Single-command describe waits for active work; cancellation never reads a late page")
+    func describeWaitsForActiveWorkAndCancellation() async throws {
+        let fixture = try await ControllerFixture()
+        defer { fixture.close() }
+        let controller = fixture.controller
+        let (active, activeResult) = start { try await controller.execute("block", expectedRevision: 0) }
+        defer { active.cancel(); controller.webView.evaluateJavaScript("window.releaseActive()", completionHandler: nil) }
+        try await until { controller.operationPhase == .running }
+
+        let (describe, describeResult) = start { try await controller.describe(command: "append") }
+        // The old route threw unavailable immediately while another command
+        // ran. The guarded route must still be waiting here.
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(describeResult.value == nil)
+        controller.webView.evaluateJavaScript("window.releaseActive()", completionHandler: nil)
+        _ = try await result(activeResult).get()
+        let form = try await result(describeResult).get()
+        #expect(form["form"]["id"].string == "append")
+        #expect(form["form"]["fields"].array.count == 1)
+        #expect(controller.isReady)
+
+        // A cancelled describe leaves the active command untouched and cannot
+        // publish a result from a page read after cancellation.
+        let (active2, active2Result) = start { try await controller.execute("block", expectedRevision: 0) }
+        defer { active2.cancel(); controller.webView.evaluateJavaScript("window.releaseActive()", completionHandler: nil) }
+        try await until { controller.operationPhase == .running }
+        let (cancelled, cancelledResult) = start { try await controller.describe(command: "append") }
+        try await Task.sleep(for: .milliseconds(80))
+        cancelled.cancel()
+        if case .failure(let error) = try await result(cancelledResult) { #expect(error is CancellationError) }
+        else { Issue.record("Cancelled describe succeeded") }
+        #expect(active2Result.value == nil)
+        controller.webView.evaluateJavaScript("window.releaseActive()", completionHandler: nil)
+        _ = try await result(active2Result).get()
+        #expect(controller.isReady)
+    }
+
+    @Test("A bundled schema exception keeps its actual message")
+    func schemaExceptionKeepsItsMessage() async throws {
+        let fixture = try await ControllerFixture()
+        defer { fixture.close() }
+        let controller = fixture.controller
+        controller.webView.evaluateJavaScript("window.throwOnForm=true", completionHandler: nil)
+        do {
+            _ = try await controller.describe(command: "append")
+            Issue.record("schema exception unexpectedly succeeded")
+        } catch let error as HeavyEditorError {
+            guard case .engine(let message) = error else { Issue.record("expected engine, got \(error)"); return }
+            #expect(message == "form exploded")
+        }
     }
 
     @Test("Actual cooperative cancellation restores the saved original and allows a subsequent edit")

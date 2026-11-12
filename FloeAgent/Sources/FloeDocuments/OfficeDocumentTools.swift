@@ -311,7 +311,15 @@ public struct OfficeUpdateTextTool: AgentTool {
             guard let digest = result.sha256 else {
                 throw FloeError.validationFailed("Office save could not confirm the resulting revision; inspect before retrying")
             }
-            return OfficeToolSupport.output("updated=\(args.path) sha256=\(digest) fields=\(args.updates.count) verifiedFields=\(result.fields.count)")
+            let formulaCount = args.updates.values.filter { $0.hasPrefix("=") }.count
+            var summary = "updated=\(args.path) sha256=\(digest) fields=\(args.updates.count) verifiedFields=\(result.fields.count)"
+            if formulaCount > 0 {
+                // No cache is invented at the package layer. A caller that
+                // needs persisted results must run the existing native engine
+                // recalculation route and read the verified copy.
+                summary += " formulaCells=\(formulaCount) formulaCached=none needsRecalculation=true"
+            }
+            return OfficeToolSupport.output(summary)
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
@@ -381,8 +389,17 @@ public struct DocumentCreateWorkbookTool: AgentTool {
         do {
             let url = try OfficeToolSupport.resolve(args.path, context: context, fallback: rootProvider, mustExist: false)
             try OfficeDocumentBuilder.createWorkbook(at: url, sheets: args.sheets)
+            let formulaCount = args.sheets.flatMap(\.rows).flatMap { $0 }
+                .filter { $0.hasPrefix("=") }.count
+            var summary = "created=\(args.path) format=xlsx sheets=\(args.sheets.count) verified=true"
+            if formulaCount > 0 {
+                // The package-level writer intentionally emits no fabricated
+                // cached result. Say so, and point at the real engine route
+                // that produces a verified copy with persisted caches.
+                summary += " formulaCells=\(formulaCount) formulaCached=none needsRecalculation=true"
+            }
             return try publishedCreateOutput(
-                summary: "created=\(args.path) format=xlsx sheets=\(args.sheets.count) verified=true",
+                summary: summary,
                 url: url, producerTool: Self.name, context: context)
         } catch {
             return OfficeToolSupport.output("status=error error=\(error.localizedDescription)", exitStatus: 2)

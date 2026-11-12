@@ -96,6 +96,20 @@ enum VoiceInputFailure: String, Equatable, Sendable {
     case interrupted
 }
 
+/// Bounded lifecycle reasons, separate from the recognizer's failure category.
+/// Existing `stop()` callers include both Stop buttons and navigation; do not
+/// mislabel those calls as an explicit user stop without a caller identity.
+enum VoiceInputEndReason: String, Equatable, Sendable {
+    case callerRequested
+    case sceneBackground
+    case audioInterruption
+    case inputRouteLost
+    case externalInterruption
+    case recognizerEnded
+    case preparationTimeout
+    case preparationFailed
+}
+
 /// How a transcriber produces visible text while the user is speaking.
 /// Streaming backends emit partials; per-utterance batch backends (for
 /// example a file-only cloud route) legitimately emit nothing until the
@@ -117,6 +131,7 @@ protocol VoiceInputDiagnostics: Sendable {
     func voiceInterrupted(reason: String)
     func voiceRouteChanged()
     func voiceListeningStopped()
+    func voiceSessionEnding(reason: VoiceInputEndReason, generation: UInt64)
     func voiceFailed(reason: VoiceInputFailure)
     func voiceAudioBufferAccepted(frameCount: AVAudioFrameCount)
     func voiceAnalyzerInputProduced(count: Int)
@@ -125,6 +140,7 @@ protocol VoiceInputDiagnostics: Sendable {
 }
 
 extension VoiceInputDiagnostics {
+    func voiceSessionEnding(reason: VoiceInputEndReason, generation: UInt64) {}
     func voiceAudioBufferAccepted(frameCount: AVAudioFrameCount) {}
     func voiceAnalyzerInputProduced(count: Int) {}
     func voiceConverterFlushed(count: Int) {}

@@ -22,6 +22,31 @@ struct OpenAIModelListResponse: Decodable {
         var maxInputTokens: Int?
         var maxOutputTokens: Int?
         var maxCompletionTokens: Int?
+        var modelSpec: ModelSpec?
+
+        struct ModelSpec: Decodable {
+            var capabilities: ReasoningCapabilities?
+
+            struct ReasoningCapabilities: Decodable {
+                var supportsReasoning: Bool?
+                var supportsReasoningEffort: Bool?
+                var reasoningEffortOptions: [String]?
+                var defaultReasoningEffort: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case supportsReasoning, supportsReasoningEffort
+                    case reasoningEffortOptions, defaultReasoningEffort
+                }
+
+                init(from decoder: any Decoder) throws {
+                    let fields = try decoder.container(keyedBy: CodingKeys.self)
+                    supportsReasoning = try? fields.decodeIfPresent(Bool.self, forKey: .supportsReasoning)
+                    supportsReasoningEffort = try? fields.decodeIfPresent(Bool.self, forKey: .supportsReasoningEffort)
+                    reasoningEffortOptions = try? fields.decodeIfPresent([String].self, forKey: .reasoningEffortOptions)
+                    defaultReasoningEffort = try? fields.decodeIfPresent(String.self, forKey: .defaultReasoningEffort)
+                }
+            }
+        }
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -31,6 +56,54 @@ struct OpenAIModelListResponse: Decodable {
             case maxInputTokens = "max_input_tokens"
             case maxOutputTokens = "max_output_tokens"
             case maxCompletionTokens = "max_completion_tokens"
+            case modelSpec = "model_spec"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            // Preserve every pre-existing identity/limit decoding contract.
+            id = try fields.decode(String.self, forKey: .id)
+            ownedBy = try fields.decodeIfPresent(String.self, forKey: .ownedBy)
+            contextLength = try fields.decodeIfPresent(Int.self, forKey: .contextLength)
+            maxContextLength = try fields.decodeIfPresent(Int.self, forKey: .maxContextLength)
+            maxInputTokens = try fields.decodeIfPresent(Int.self, forKey: .maxInputTokens)
+            maxOutputTokens = try fields.decodeIfPresent(Int.self, forKey: .maxOutputTokens)
+            maxCompletionTokens = try fields.decodeIfPresent(Int.self, forKey: .maxCompletionTokens)
+            // A malformed optional extension must not discard an otherwise
+            // usable legacy model or the rest of the provider's listing.
+            modelSpec = try? fields.decodeIfPresent(ModelSpec.self, forKey: .modelSpec)
+        }
+
+        /// These are the endpoint's native tokens, not Floe enum values.
+        /// Keep a bounded, inert list and do not infer a thinking dialect or
+        /// a disable capability from a token such as `none`.
+        var reasoningMetadata: ModelReasoningMetadata? {
+            guard let facts = modelSpec?.capabilities else { return nil }
+            let options = facts.reasoningEffortOptions.map { values in
+                var seen = Set<String>()
+                return values.prefix(32).filter { Self.isEffortToken($0) && seen.insert($0).inserted }
+            }
+            let defaultEffort = facts.defaultReasoningEffort.flatMap { value -> String? in
+                guard Self.isEffortToken(value), options?.contains(value) != false else { return nil }
+                return value
+            }
+            guard facts.supportsReasoning != nil || facts.supportsReasoningEffort != nil
+                    || options != nil || defaultEffort != nil else { return nil }
+            return ModelReasoningMetadata(
+                supportsReasoning: facts.supportsReasoning,
+                supportsReasoningEffort: facts.supportsReasoningEffort,
+                supportedEfforts: options,
+                defaultEffort: defaultEffort
+            )
+        }
+
+        private static func isEffortToken(_ value: String) -> Bool {
+            !value.isEmpty && value.utf8.count <= 32 && value.utf8.allSatisfy { byte in
+                switch byte {
+                case 45, 48...57, 65...90, 95, 97...122: true
+                default: false
+                }
+            }
         }
 
         /// First trusted context-window field that is actually positive. A
@@ -125,7 +198,8 @@ enum ModelDiscovery {
                 id: item.id,
                 displayName: item.id,
                 contextTokens: item.metadataContextTokens,
-                maxOutputTokens: item.metadataMaxOutputTokens
+                maxOutputTokens: item.metadataMaxOutputTokens,
+                reasoningMetadata: item.reasoningMetadata
             )
         }
     }
@@ -183,7 +257,8 @@ enum ModelDiscovery {
         id: String,
         displayName: String,
         contextTokens: Int?,
-        maxOutputTokens: Int?
+        maxOutputTokens: Int?,
+        reasoningMetadata: ModelReasoningMetadata? = nil
     ) -> ModelProfile? {
         mapItem(
             providerID: providerID,
@@ -191,7 +266,8 @@ enum ModelDiscovery {
             displayName: displayName,
             contextTokens: contextTokens,
             maxOutputTokens: maxOutputTokens,
-            defaultContextTokens: 128_000
+            defaultContextTokens: 128_000,
+            reasoningMetadata: reasoningMetadata
         )
     }
 
@@ -219,7 +295,8 @@ enum ModelDiscovery {
         displayName: String,
         contextTokens: Int?,
         maxOutputTokens: Int?,
-        defaultContextTokens: Int
+        defaultContextTokens: Int,
+        reasoningMetadata: ModelReasoningMetadata? = nil
     ) -> ModelProfile? {
         guard !id.isEmpty, id.utf8.count <= 256 else { return nil }
         let context = sanitizedContextTokens(contextTokens) ?? defaultContextTokens
@@ -231,7 +308,11 @@ enum ModelDiscovery {
                 contextTokens: context,
                 maxOutputTokens: 0
             ),
-            capabilities: [.text, .tools]
+            capabilities: [.text, .tools],
+            reasoningMetadata: reasoningMetadata,
+            // Discovery has no user preference. A direct canonical upsert
+            // must retain a saved choice rather than defaulting it to false.
+            omitReasoningParameters: nil
         )
     }
 

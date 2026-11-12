@@ -44,7 +44,7 @@ public struct DocumentReadSheetTool: AgentTool {
 
     public static let name = "document.readSheet"
     public static let toolDescription =
-        "Read XLSX saved cells or CSV/TSV literal records. CSV/TSV returns complete structured JSON with raw strings, source SHA256/encoding/BOM, record numbers and physical source lines, total row counts and nextOffset. Continuation requires expectedSHA256 on every page; maxRows and a whole-record byte budget bound each page without skipping records. hasHeader defaults false; no type/header/formula inference. Optional numericColumns prepare current-page-only data.analyze arguments (one column, or two for linearRegression); nonempty nonnumeric values remain raw and block these arguments. Typed arguments for existing document.presentation.createInline can save actual native tables/charts, but this read creates no artifact and computes no statistics. XLSX retains its tab-separated grid and worksheet catalog. Returns a bounded worksheets JSON catalog with exact tab names, section/part and visibility; use these names rather than guessing. Pass a workspace-relative path and optionally an exact sheet name (omitting it selects the first sheet; a missing name fails, never falls back). Row output is capped. For editable fields/formulas and stable updateText IDs, use document.office.inspect."
+        "Read XLSX saved cells or CSV/TSV literal records. CSV/TSV returns complete structured JSON with raw strings, source SHA256/encoding/BOM, record numbers and physical source lines, total row counts and nextOffset. Continuation requires expectedSHA256 on every page; maxRows and a whole-record byte budget bound each page without skipping records. hasHeader defaults false; no type/header/formula inference. Optional numericColumns prepare current-page-only data.analyze arguments (one column, or two for linearRegression); nonempty nonnumeric values remain raw and block these arguments. Typed arguments for existing document.presentation.createInline can save actual native tables/charts, but this read creates no artifact and computes no statistics. XLSX retains its tab-separated grid and worksheet catalog. XLSX formula cells show their persisted cached result when the saved package carries one (for example a native recalculated copy); a formula without a usable cache shows =FORMULA and has no computed value here. This reader never evaluates formulas. Returns a bounded worksheets JSON catalog with exact tab names, section/part and visibility; use these names rather than guessing. Pass a workspace-relative path and optionally an exact sheet name (omitting it selects the first sheet; a missing name fails, never falls back). Row output is capped. For editable fields/formulas and stable updateText IDs, use document.office.inspect."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -118,6 +118,10 @@ public struct DocumentReadSheetTool: AgentTool {
             let quotedName = OfficeWorksheetToolMetadata.quoted(grid.sheetName)
             let selectedSheet = quotedName.utf8.count <= 2_048 ? "sheet=\(quotedName)" : "sheetNameOmitted=true"
             var summary = "\(selectedSheet) rows=\(grid.rowCount) shown=\(grid.rows.count)\n"
+            if grid.formulaCellsWithCache > 0 || grid.formulaCellsWithoutCache > 0 {
+                summary += "formulaCached=\(grid.formulaCellsWithCache) "
+                    + "formulaUncached=\(grid.formulaCellsWithoutCache)\n"
+            }
             summary += grid.worksheetMetadata + "\n"
             summary += grid.rows.map { $0.joined(separator: "\t") }.joined(separator: "\n")
             return Self.output(summary, exitStatus: 0)
@@ -142,6 +146,8 @@ private struct XLSXGrid {
     let worksheetMetadata: String
     let rowCount: Int
     let rows: [[String]]
+    let formulaCellsWithCache: Int
+    let formulaCellsWithoutCache: Int
 }
 
 private enum XLSXReadError: LocalizedError {
@@ -226,7 +232,9 @@ private struct XLSXValueReader {
             sheetName: selected.name,
             worksheetMetadata: metadata,
             rowCount: worksheetParser.rowCount,
-            rows: worksheetParser.renderedRows()
+            rows: worksheetParser.renderedRows(),
+            formulaCellsWithCache: worksheetParser.formulaCellsWithCache,
+            formulaCellsWithoutCache: worksheetParser.formulaCellsWithoutCache
         )
     }
 
@@ -401,6 +409,8 @@ private final class WorksheetXMLParser: XMLCollector {
     private var collectingFormula = false
     private var collectingInlineText = false
     private(set) var rowCount = 0
+    private(set) var formulaCellsWithCache = 0
+    private(set) var formulaCellsWithoutCache = 0
 
     init(sharedStrings: [String], maximumRows: Int, maximumColumns: Int) {
         self.sharedStrings = sharedStrings
@@ -464,14 +474,20 @@ private final class WorksheetXMLParser: XMLCollector {
               row <= maximumRows,
               column < maximumColumns else { return }
         rowCount = max(rowCount, row)
-        // One shared decoder with office.inspect: formulas display as
-        // "=FORMULA" (cached values are not trusted) and shared strings,
+        if !currentFormula.isEmpty {
+            if currentValue.isEmpty { formulaCellsWithoutCache += 1 }
+            else { formulaCellsWithCache += 1 }
+        }
+        // One shared decoder with office.inspect: formulas keep their
+        // formula identity in inspect, while readSheet prefers the persisted
+        // cached result when the package actually carries one. Shared strings,
         // booleans and inline strings decode identically in both readers.
         cells[row, default: [:]][column] = OOXMLCellDecoder.displayValue(
             type: currentType,
             rawValue: currentValue,
             formula: currentFormula,
-            sharedStrings: sharedStrings
+            sharedStrings: sharedStrings,
+            preferCachedFormulaValue: true
         )
     }
 

@@ -39,7 +39,9 @@ public func toolArgumentsByteLimit(for toolName: String) -> Int {
         return Int.max
     case "document.createMarkdown", "document_createMarkdown",
          "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
-         "workspace_createFile", "workspace_writeFile", "workspace_applyPatch":
+         "workspace_createFile", "workspace_writeFile", "workspace_applyPatch",
+         "workspace.appendFile", "workspace.replaceText",
+         "workspace_appendFile", "workspace_replaceText":
         return 1_048_576
     default: return toolArgumentsMaxBytes
     }

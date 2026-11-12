@@ -11,6 +11,7 @@ enum ReasoningCompatibility {
         var thinkingType: String? = nil
         var reasoningEffort: String? = nil
         var enableThinking: Bool? = nil
+        var reasoning: ChatRequest.Reasoning? = nil
     }
 
     struct AnthropicOptions: Equatable {
@@ -24,6 +25,7 @@ enum ReasoningCompatibility {
         model: ModelProfile,
         policy: ProviderReasoningPolicy = .modelDefault
     ) -> String? {
+        guard !model.effectiveOmitReasoningParameters else { return nil }
         if policy == .disabled {
             if provider.traits(model: model).isGeminiThinkingFamily { return nil }
             if provider.kind == .alibabaStudio || isDashScope(provider) { return "none" }
@@ -49,11 +51,23 @@ enum ReasoningCompatibility {
         isDeepSeek(provider: provider, model: model)
     }
 
+    /// Captured reasoning is replayable without being mandatory. Venice can
+    /// return valid assistant/tool turns without it; do not demote these to
+    /// legacy system excerpts. Native DeepSeek's requirement stays intact.
+    static func requiresMissingReasoningFallback(provider: ProviderProfile, model: ModelProfile) -> Bool {
+        requiresAssistantReasoningReplay(provider: provider, model: model)
+            && !VeniceReasoningProjection.matchesEndpoint(provider)
+    }
+
     static func chatOptions(
         provider: ProviderProfile,
         model: ModelProfile,
         policy: ProviderReasoningPolicy = .modelDefault
     ) -> ChatOptions {
+        guard !model.effectiveOmitReasoningParameters else { return ChatOptions() }
+        if VeniceReasoningProjection.matches(provider) {
+            return ChatOptions(reasoning: VeniceReasoningProjection.controls(model: model, policy: policy))
+        }
         if policy == .disabled {
             // Modern Gemini thinking cannot be disabled with OpenAI's `none`.
             // Omit unsupported disable controls and retain the model default.
@@ -61,7 +75,7 @@ enum ReasoningCompatibility {
             if provider.kind == .alibabaStudio || isDashScope(provider) {
                 return ChatOptions(enableThinking: false)
             }
-            if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+            if provider.kind == .volcengineArk || usesNativeDeepSeekControls(provider) {
                 return ChatOptions(thinkingType: "disabled")
             }
             if isOpenAIReasoningFamily(provider: provider, model: model),
@@ -81,6 +95,13 @@ enum ReasoningCompatibility {
         }
 
         if isDeepSeek(provider: provider, model: model) {
+            // A model family or user-visible name does not define a gateway's
+            // JSON dialect. Keep native controls only for the native endpoint
+            // or an explicitly selected supplier contract; tools/replay and
+            // the user's saved capabilities remain independent.
+            guard provider.kind == .volcengineArk || usesNativeDeepSeekControls(provider) else {
+                return ChatOptions()
+            }
             // Official chat contract (api-docs.deepseek.com/api/create-chat-completion):
             // reasoning_effort accepts none/low/high/max. `minimal` is accepted
             // as a compatibility alias for low and `medium`/`xhigh` are
@@ -114,14 +135,15 @@ enum ReasoningCompatibility {
         model: ModelProfile,
         policy: ProviderReasoningPolicy = .modelDefault
     ) -> String? {
-        guard policy == .disabled else { return nil }
-        if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+        guard !model.effectiveOmitReasoningParameters, policy == .disabled else { return nil }
+        if provider.kind == .volcengineArk || usesNativeDeepSeekControls(provider) {
             return "disabled"
         }
         return nil
     }
 
     static func anthropicOptions(provider: ProviderProfile, model: ModelProfile) -> AnthropicOptions {
+        guard !model.effectiveOmitReasoningParameters else { return AnthropicOptions() }
         let effort = model.effectiveReasoningEffort
         guard effort != .automatic else { return AnthropicOptions() }
 
@@ -148,6 +170,11 @@ enum ReasoningCompatibility {
 
     private static func isDeepSeek(provider: ProviderProfile, model: ModelProfile) -> Bool {
         provider.traits(model: model).isDeepSeek
+    }
+
+    private static func usesNativeDeepSeekControls(_ provider: ProviderProfile) -> Bool {
+        provider.baseURL.host?.lowercased() == "api.deepseek.com"
+            || provider.presetID?.lowercased() == "deepseek"
     }
 
     /// DeepSeek's documented effort contract. There is no native `medium`
@@ -235,7 +262,7 @@ enum ReasoningCompatibility {
         provider: ProviderProfile,
         model: ModelProfile
     ) -> Bool {
-        guard provider.kind != .local else { return false }
+        guard !model.effectiveOmitReasoningParameters, provider.kind != .local else { return false }
         var probe = model
         probe.reasoningEffort = .high
         switch provider.wireProtocol {
@@ -246,6 +273,7 @@ enum ReasoningCompatibility {
             return options.reasoningEffort != nil
                 || options.thinkingType != nil
                 || options.enableThinking != nil
+                || options.reasoning?.effort != nil
         case .anthropicMessages:
             let options = anthropicOptions(provider: provider, model: probe)
             return options.effort != nil || options.thinkingType != nil
@@ -261,6 +289,10 @@ enum ReasoningCompatibility {
         provider: ProviderProfile,
         model: ModelProfile
     ) -> ModelReasoningEffort {
+        guard !model.effectiveOmitReasoningParameters else { return effort }
+        if VeniceReasoningProjection.matches(provider) {
+            return ReasoningEffortProjection.clamped(effort, options: VeniceReasoningProjection.effortOptions(model))
+        }
         let traits = provider.traits(model: model)
         if traits.isGeminiThinkingFamily, effort != .automatic {
             return ModelReasoningEffort(rawValue: geminiEffort(effort, modelID: model.remoteModelID)) ?? effort
@@ -300,13 +332,13 @@ enum ReasoningCompatibility {
     /// or nil when the mapping omits every reasoning field. Policy-independent:
     /// ordinary runs use `.modelDefault`.
     static func wireEffortValue(provider: ProviderProfile, model: ModelProfile) -> String? {
-        guard model.effectiveReasoningEffort != .automatic else { return nil }
+        guard !model.effectiveOmitReasoningParameters, model.effectiveReasoningEffort != .automatic else { return nil }
         switch provider.wireProtocol {
         case .openAIResponses:
             return responsesEffort(provider: provider, model: model)
         case .openAIChatCompletions:
             let options = chatOptions(provider: provider, model: model)
-            return options.reasoningEffort ?? options.thinkingType
+            return options.reasoning?.effort ?? options.reasoningEffort ?? options.thinkingType
         case .anthropicMessages:
             return anthropicOptions(provider: provider, model: model).effort
         }
@@ -329,11 +361,12 @@ enum ReasoningCompatibility {
         provider: ProviderProfile,
         model: ModelProfile
     ) -> Bool {
-        guard provider.kind != .local else { return false }
+        guard !model.effectiveOmitReasoningParameters, provider.kind != .local else { return false }
+        if VeniceReasoningProjection.matches(provider) { return VeniceReasoningProjection.canDisable(model) }
         let disableable: Bool
         if provider.kind == .alibabaStudio || isDashScope(provider) {
             disableable = true
-        } else if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+        } else if provider.kind == .volcengineArk || usesNativeDeepSeekControls(provider) {
             disableable = true
         } else if isOpenAIReasoningFamily(provider: provider, model: model) {
             disableable = supportsOpenAINone(model.remoteModelID)
@@ -375,6 +408,7 @@ enum ReasoningCompatibility {
         provider: ProviderProfile,
         model: ModelProfile
     ) -> (policy: ProviderReasoningPolicy, level: ModelReasoningEffort?) {
+        guard !model.effectiveOmitReasoningParameters else { return (.modelDefault, nil) }
         switch preference {
         case .fast:
             if documentsDisabledReasoning(provider: provider, model: model) {

@@ -24,9 +24,12 @@ import FloeTools
 public func registerWorkspaceTools(
     rootProvider: @escaping @Sendable () -> URL?,
     compressedArchiveHandler: ArchiveCompressedHandler? = nil,
+    macAbsoluteReader: (any MacAbsoluteFileReading)? = nil,
     registry: ToolRunnerRegistry = .shared
 ) -> WorkspaceToolEnvironment {
-    let environment = WorkspaceToolEnvironment(rootProvider: rootProvider)
+    let environment = WorkspaceToolEnvironment(
+        rootProvider: rootProvider,
+        macAbsoluteReader: macAbsoluteReader)
 
     // Compile-time catalog descriptors.
     ToolCatalog.register(WorkspaceListDirectoryTool.self)

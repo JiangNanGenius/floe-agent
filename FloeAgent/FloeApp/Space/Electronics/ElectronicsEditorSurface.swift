@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
+import FloeTools
 import FloeElectronicsCore
 import FloeElectronicsUI
 import FloeWorkspace
@@ -38,6 +40,8 @@ private struct ElectronicsExportPreviewRoute: Identifiable {
     let session: ElectronicsProjectSession
     @EnvironmentObject private var environment: AppEnvironment
     @State private var showingLibraryUpdates = false
+    @State private var showingRemoteLibrary = false
+    @State private var remoteLibrary: EDRemoteLibraryController?
     @State private var active = false
     @State private var generation: UUID?
     @State private var preview: ElectronicsExportPreviewRoute?
@@ -46,7 +50,13 @@ private struct ElectronicsExportPreviewRoute: Identifiable {
     var body: some View {
         EDWorkbenchView(session: session.workbench, onExportPreview: { file, revision in
             requestPreview(file, revision: revision)
-        }, onLibraryUpdates: { showingLibraryUpdates = true })
+        }, onLibraryUpdates: { showingLibraryUpdates = true },
+           onRemoteLibrary: { presentRemoteLibrary() })
+        .sheet(isPresented: $showingRemoteLibrary) {
+            if let remoteLibrary {
+                EDRemoteLibrarySheet(controller: remoteLibrary)
+            }
+        }
         .sheet(isPresented: $showingLibraryUpdates) {
             NavigationStack {
                 ContentUpdatesSettingsView(center: environment.contentUpdateCenter)
@@ -63,6 +73,27 @@ private struct ElectronicsExportPreviewRoute: Identifiable {
                 .id(route.id)
                 .onDisappear { cancelPreview(ifGeneration: route.id) }
         }
+    }
+
+    private func presentRemoteLibrary() {
+        if remoteLibrary == nil {
+            let service = ElectronicsRemoteLibraryService(
+                policyStore: environment.githubTransportMirrors,
+                cacheRootProvider: {
+                    try FloeArtifactStore.root().appendingPathComponent("ElectronicsRemote", isDirectory: true)
+                },
+                manifestDownload: {
+                    try await SourceControlCenter.downloadGitHubTransportManifest()
+                })
+            let value = EDRemoteLibraryController(service: service)
+            value.onInstalled = { _ in
+                guard let library = try? ElectronicsLibraryService.shared() else { return }
+                library.start()
+                Task { try? await library.refresh() }
+            }
+            remoteLibrary = value
+        }
+        showingRemoteLibrary = true
     }
 
     private func matches(_ source: ElectronicsProjectSession, projectID: UUID, revision: UInt64) -> Bool {

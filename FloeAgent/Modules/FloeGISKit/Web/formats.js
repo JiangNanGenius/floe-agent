@@ -354,7 +354,9 @@ export async function querySQL(e,args){
     try{for(const f of layer.data.features)insert.run([String(f.id),f.geometry?wkt.writeGeometry(geojson.readGeometry(f.geometry)):null,...fields.map(k=>{const v=f.properties[k];return v==null?null:typeof v==='object'?JSON.stringify(v):typeof v==='boolean'?Number(v):v;})]);}finally{insert.free();}
     db.run('PRAGMA query_only=ON');const query=String(args.sql??'SELECT * FROM features LIMIT 100');if(!/^\s*(SELECT|WITH)\b/i.test(query))throw new Error('Use a SELECT query');
     let statementCount=0;for(const statement of db.iterateStatements(query)){void statement;statementCount++;}if(statementCount!==1)throw new Error('Use a single SELECT query');const result=db.exec(query);if(result.length>1)throw new Error('Use a single SELECT query');if(!result.length)return [];const rows=result[0].values.map(values=>Object.fromEntries(result[0].columns.map((c,i)=>[c,values[i]])));
-    if(result[0].columns.includes('_id'))e.selection={layer:layer.id,features:rows.map(r=>r._id)};return rows;
+    // SQL is a pure read. Rows echo `_id`; selection remains an explicit
+    // feature.select/gis.ui.selection decision and is never changed here.
+    return rows;
   }finally{db.close();}
 }
 export function registerFormats(e) {

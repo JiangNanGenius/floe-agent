@@ -7,9 +7,14 @@ import { createGIS, normalizeGIS, registerModelCommands, field } from './model.j
 import { registerFormats } from './formats.js';
 import { registerAnalysis } from './analysis.js';
 import { GISView, registerViewCommands, makeMapSVG, paperSize } from './view.js';
+import { installGISReadOnlyRenderPolicy } from './readonly.js';
 let view;
 export const engine=new EditorEngine({kind:'gis',title:t('地理信息','GIS'),create:createGIS,normalize:normalizeGIS,nativeSnapshot:gisNativeSnapshot,nativeChromeChanged:async e=>{if(view)await view.render();},render:async e=>{view??=new GISView(e);const hint=e.gisRenderHint;e.gisRenderHint=null;if(e.nativeChrome&&['selection','canvas','table'].includes(hint)){if(hint==='selection')view.refreshSelection();return;}await view.render();}});
 registerModelCommands(engine);registerFormats(engine);registerAnalysis(engine);registerViewCommands(engine);registerGISUI(engine,()=>view);
+// Pure reads (access=read, sideEffecting!=true) must not rebuild the map or
+// let captureView replace the requested viewport/liveView. Explicit selection,
+// bookmark navigation and gis.ui.* stay side-effecting and still redraw.
+installGISReadOnlyRenderPolicy(engine);
 engine.commands.get('document.save').handler=()=>{engine.state.view={...(engine.liveView??engine.state.view)};return {saved:true};};
 engine.register({id:'layout.export',title:t('导出地图','Export map'),group:t('制图','Layout'),access:'exportFile',fields:[field('format',t('格式','Format'),'select',{options:['svg','png','pdf'],default:'pdf'}),field('width',t('宽度（像素）','Width (pixels)'),'number',{default:e=>Math.round(paperSize(e.state.layout)[0]*96/25.4),min:200}),field('height',t('高度（像素）','Height (pixels)'),'number',{default:e=>Math.round(paperSize(e.state.layout)[1]*96/25.4),min:200})]},async a=>{
   const width=Math.max(200,Math.min(10000,a.width)),height=Math.max(200,Math.min(10000,a.height)),svg=await makeMapSVG(engine,{width,height}),name=engine.state.title.replace(/[\\/:]/g,'_');

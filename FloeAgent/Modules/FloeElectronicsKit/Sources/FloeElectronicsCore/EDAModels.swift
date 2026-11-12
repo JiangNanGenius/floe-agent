@@ -7,6 +7,22 @@ public enum EDAError: Error, Equatable, Sendable {
     case readOnly, cancelled
 }
 
+/// A concrete reason instead of the opaque `EDAError error 0` produced by
+/// `localizedDescription` for an enum without LocalizedError.
+extension EDAError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .invalid(let detail): "The electronics operation is invalid: " + detail
+        case .missing(let detail): "The electronics item is missing: " + detail
+        case .duplicate(let detail): "The electronics item already exists: " + detail
+        case .unsupported(let detail): "This electronics capability is not supported: " + detail
+        case .staleRevision(let expected, let actual): "The electronics original changed (expected revision \(expected), actual \(actual))."
+        case .readOnly: "This electronics original is read-only."
+        case .cancelled: "The electronics operation was cancelled."
+        }
+    }
+}
+
 /// All public geometry is measured in millimetres; angles are degrees.
 public struct EDAPoint: Codable, Hashable, Sendable {
     public var x: Double
@@ -240,12 +256,18 @@ public struct EDAFootprintDefinition: Codable, Hashable, Identifiable, Sendable 
     public var graphicLayers: [EDAGraphicLayerAssignment?]?
     public var fields: [String: String]
     public var modelReference: String?
+    /// Nil is omitted from canonical encoding so unchanged bundled/library
+    /// packages keep their exact hashes. New remote footprints carry only
+    /// source-bound references; model bytes remain lazy.
+    public var modelReferences: [EDAFootprintModelReference]?
     public init(id: UUID = UUID(), name: String, pads: [EDAPad] = [], graphics: [EDAGraphic] = [],
                 graphicLayers: [EDAGraphicLayerAssignment?]? = nil,
-                fields: [String: String] = [:], modelReference: String? = nil) {
+                fields: [String: String] = [:], modelReference: String? = nil,
+                modelReferences: [EDAFootprintModelReference]? = nil) {
         self.id = id; self.name = name; self.pads = pads; self.graphics = graphics
         self.graphicLayers = graphicLayers
         self.fields = fields; self.modelReference = modelReference
+        self.modelReferences = modelReferences
     }
 }
 

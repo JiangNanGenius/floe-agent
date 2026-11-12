@@ -468,12 +468,15 @@ public actor MediaPreparedCoordinator {
     /// validation runs before the first mutation; later edits to a DIFFERENT
     /// object survive, a later edit to a TOUCHED object refuses the whole undo.
     @discardableResult
-    public func undoGroup(_ groupID: UUID, in documentID: UUID) async throws -> MediaPreparedCommit {
-        if let scope=compoundScope { return try await undoCompound(scope:scope,groupID:groupID,documentID:documentID,redo:false) }
+    public func undoGroup(_ groupID: UUID, in documentID: UUID, expectedRevision: Int64? = nil,
+                          cancellationCheck: (@Sendable () throws -> Void)? = nil) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope { return try await undoCompound(scope:scope,groupID:groupID,documentID:documentID,redo:false,expectedRevision:expectedRevision,cancellationCheck:cancellationCheck) }
         await acquireDocument(documentID)
         defer { releaseDocument(documentID) }
         try Task.checkCancellation()
         let project = try await envelope(for: documentID)
+        try Task.checkCancellation(); try cancellationCheck?()
+        if let expectedRevision, project.revision != expectedRevision { throw MediaPreparedCoreError.documentChanged }
         guard var prepared = project.prepared else {
             throw MediaPreparedCoreError.notPrepared(documentID)
         }
@@ -514,7 +517,7 @@ public actor MediaPreparedCoordinator {
         draft.revision = prepared.revision
         draft.updatedAt = now
         do {
-            try await store.save(draft, expectedRevision: project.revision)
+            try Task.checkCancellation(); try cancellationCheck?(); try await store.save(draft, expectedRevision: project.revision)
         } catch {
             envelopes.removeValue(forKey: documentID)
             processedOperations.removeValue(forKey: documentID)
@@ -533,12 +536,15 @@ public actor MediaPreparedCoordinator {
     /// Replays the most recently undone group against exact post-undo object
     /// generations. The forward content, branch and CAS are durable together.
     @discardableResult
-    public func redoGroup(_ groupID: UUID, in documentID: UUID) async throws -> MediaPreparedCommit {
-        if let scope=compoundScope { return try await undoCompound(scope:scope,groupID:groupID,documentID:documentID,redo:true) }
+    public func redoGroup(_ groupID: UUID, in documentID: UUID, expectedRevision: Int64? = nil,
+                          cancellationCheck: (@Sendable () throws -> Void)? = nil) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope { return try await undoCompound(scope:scope,groupID:groupID,documentID:documentID,redo:true,expectedRevision:expectedRevision,cancellationCheck:cancellationCheck) }
         await acquireDocument(documentID)
         defer { releaseDocument(documentID) }
         try Task.checkCancellation()
         let project = try await envelope(for: documentID)
+        try Task.checkCancellation(); try cancellationCheck?()
+        if let expectedRevision, project.revision != expectedRevision { throw MediaPreparedCoreError.documentChanged }
         guard var prepared = project.prepared else { throw MediaPreparedCoreError.notPrepared(documentID) }
         var journal = project.preparedJournal ?? .init()
         guard var entry = journal.entry(groupID) else { throw MediaPreparedCoreError.unknownGroup(groupID) }
@@ -562,7 +568,7 @@ public actor MediaPreparedCoordinator {
         journal.rebaseRedoBoundary(changed: Set(entry.touched), document: prepared, excluding: groupID)
         var draft = project; draft.prepared = prepared; draft.canvas = prepared.canvas; draft.preparedJournal = journal
         draft.revision = prepared.revision; draft.updatedAt = Date()
-        do { try await store.save(draft, expectedRevision: project.revision) }
+        do { try Task.checkCancellation(); try cancellationCheck?(); try await store.save(draft, expectedRevision: project.revision) }
         catch { envelopes.removeValue(forKey: documentID); processedOperations.removeValue(forKey: documentID); throw error }
         envelopes[documentID] = draft
         return .init(groupID: groupID, documentID: documentID, revision: prepared.revision,

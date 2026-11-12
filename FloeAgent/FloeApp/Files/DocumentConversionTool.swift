@@ -209,11 +209,26 @@ enum DocumentFileConverter {
             throw FloeError.validationFailed("pages applies only to an Office DOCX/XLSX/PPTX to PDF conversion")
         }
         try guarder.assertReadableSize(sourceURL)
-        let input = try Data(floeContentsOf: sourceURL)
+        var input = try Data(floeContentsOf: sourceURL)
         guard input.count <= maximumBytes else { throw FloeError.validationFailed("Conversion input exceeds 16 MiB") }
         if format(args.inputPath) == "docx" { _ = try OfficeDocumentService.inspect(url: sourceURL) }
-        let result = try await render(input, sourceFormat: format(args.inputPath)!, target: args.format,
+        // The bundled DOCX executor is Mammoth. Its default map does not know
+        // Word's semantic Title style, so add the pinned library's own
+        // embedded style map to the in-memory input for a Markdown target.
+        // The workspace source stays byte-identical.
+        var preparedTitleMap = false
+        if format(args.inputPath) == "docx", args.format == "markdown" {
+            let prepared = try OfficeMarkdownStyleMap.addingTitleHeadingMap(
+                to: input, maximumBytes: maximumBytes)
+            input = prepared.data
+            preparedTitleMap = prepared.titleMappingPresent
+        }
+        var result = try await render(input, sourceFormat: format(args.inputPath)!, target: args.format,
                                       sourceURL: sourceURL, root: root, context: context)
+        if preparedTitleMap {
+            result.warnings.append(
+                "Word Title is mapped to Markdown H1; other page layout and unsupported styles remain semantic, not exact.")
+        }
         try context.cancellation.throwIfCancelled()
         guard !result.data.isEmpty, result.data.count <= maximumBytes else { throw FloeError.validationFailed("Conversion produced empty or oversized output") }
         try PDFToolSupport.write(result.data, to: args.outputPath, context: context)

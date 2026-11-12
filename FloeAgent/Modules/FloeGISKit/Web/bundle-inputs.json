@@ -1973,7 +1973,7 @@
   },
   {
     "source": "FloeGISKit/Web/model.js",
-    "bytes": 40607
+    "bytes": 41900
   },
   {
     "source": "FloeGISKit/Web/symbology.js",
@@ -2613,11 +2613,11 @@
   },
   {
     "source": "FloeGISKit/Web/formats.js",
-    "bytes": 53144
+    "bytes": 53199
   },
   {
     "source": "FloeGISKit/Web/analysis.js",
-    "bytes": 34879
+    "bytes": 34820
   },
   {
     "source": "npm/ol/CollectionEventType.js",
@@ -3168,8 +3168,12 @@
     "bytes": 51439
   },
   {
+    "source": "FloeGISKit/Web/readonly.js",
+    "bytes": 935
+  },
+  {
     "source": "FloeGISKit/Web/main.js",
-    "bytes": 3110
+    "bytes": 3445
   },
   {
     "source": "npm/@sqlite.org/sqlite-wasm/dist/index.mjs",

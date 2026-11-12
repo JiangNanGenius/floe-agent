@@ -54,7 +54,12 @@ nonisolated struct ChemistryEnvironmentTool: AgentTool {
     }
     @MainActor private func perform(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        guard context.approvalGrantID != nil else { throw FloeError.unauthorized }
+        guard context.approvalGrantID != nil else {
+            FloeLogger(category: .app).warning("chemistryEnvironmentRejected stage=approval reason=missingGrant")
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "环境检查会准备计算文件，需要当前任务批准。请在作品助手的主任务中批准后重试。",
+                "An environment check prepares calculation files and needs this task's approval. Approve it in the work assistant's main task before retrying."))
+        }
         let location = try await environment.studioCoordinator.location(args.projectID, context: context,
             editing: true, allowedNames: ChemistryEnvironmentJobAdapter.toolNames)
         guard location.record.kind.rawValue == "chemistry" else { throw PersonalContentError.invalidProject }
@@ -65,10 +70,14 @@ nonisolated struct ChemistryEnvironmentTool: AgentTool {
         let output: ChemistryEnvironmentResult
         switch args.action {
         case .probe:
-            guard context.toolCallID?.isEmpty == false else { throw FloeError.unauthorized }
+            guard context.toolCallID?.isEmpty == false else {
+                throw missingCallIdentity()
+            }
             output = try await adapter.prepareProbe(projectID: args.projectID, root: location.url, context: context)
         case .prepare:
-            guard context.toolCallID?.isEmpty == false else { throw FloeError.unauthorized }
+            guard context.toolCallID?.isEmpty == false else {
+                throw missingCallIdentity()
+            }
             let options = try args.optionsJSON.map { try JSONDecoder().decode(FloeChemistryCore.JSONValue.self, from: Data($0.utf8)) } ?? .object([:])
             output = try await adapter.prepareRun(service: session.service, projectID: args.projectID,
                 root: location.url, objectID: args.objectID!, expectedRevision: args.expectedObjectRevision!,
@@ -87,6 +96,13 @@ nonisolated struct ChemistryEnvironmentTool: AgentTool {
         await session.editor.refreshCapabilities()
         await adapter.refreshDisplayNames(session)
         return try StudioToolOutput.make(output)
+    }
+
+    @MainActor private func missingCallIdentity() -> FloeError {
+        FloeLogger(category: .app).warning("chemistryEnvironmentRejected stage=callIdentity reason=missingCallID")
+        return .validationFailed(IDELanguageRunText.t(
+            "缺少已批准的调用记录。请从作品助手的主任务重新发起环境检查。",
+            "The approved call record is missing. Start the environment check again from the work assistant's main task."))
     }
 }
 

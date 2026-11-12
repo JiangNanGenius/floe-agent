@@ -51,7 +51,7 @@ nonisolated enum MeshImportError: Error, Equatable {
 /// package stays independent of FloeTools while the tool/UI token remains the
 /// single authority.
 public protocol MeshImportCancellationChecking: Sendable {
-    var isCancelled: Bool { get }
+    nonisolated var isCancelled: Bool { get }
 }
 
 /// One import's cancellation token. It can observe an outer token (the
@@ -72,7 +72,7 @@ public nonisolated final class MeshImportCancellation: MeshImportCancellationChe
         lock.unlock()
     }
 
-    public var isCancelled: Bool {
+    public nonisolated var isCancelled: Bool {
         if observed?.isCancelled == true { return true }
         lock.lock()
         defer { lock.unlock() }

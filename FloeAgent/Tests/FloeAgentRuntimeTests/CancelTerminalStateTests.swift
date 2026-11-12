@@ -217,6 +217,25 @@ private func awaitTrue(
 
 // MARK: - Suite
 
+/// Sink that parks the exhausted-provider-attempt publish so a user cancel
+/// can race the failure transition deterministically. It records every event
+/// the runtime emits, so an illegal-transition error cannot be hidden.
+private final class FailureDuringCancelSink: AgentEventSink, @unchecked Sendable {
+    let parked = StreamCounter()
+    let gate = AsyncGate()
+    private let storage = AsyncLock<[AgentEvent]>([])
+    var events: [AgentEvent] { storage.withLock { $0 } }
+    func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {}
+    func agentRuntime(_ runtime: FloeAgentRuntime, didEmit event: AgentEvent) async {
+        storage.withLock { $0.append(event) }
+    }
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {
+        guard snapshot.status == .exhausted || snapshot.status == .failed else { return }
+        parked.increment()
+        await gate.wait()
+    }
+}
+
 private actor CancellingSinkBarrier: AgentEventSink {
     let entered: StreamCounter
     private var continuation: CheckedContinuation<Void, Never>?
@@ -232,6 +251,51 @@ private actor CancellingSinkBarrier: AgentEventSink {
 
 @Suite("Caller-stop terminal state")
 struct CancelTerminalStateTests {
+
+    @Test("A real failure winning during cancellation is never relabelled checkpointed")
+    @available(macOS 15.4, iOS 26.0, *)
+    func failureWinningCancelStaysFailed() async throws {
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://example.invalid")!, displayName: "Synthetic failure race")
+        let adapter = MockAdapter()
+        adapter.script = [[.error(.init(kind: .server, providerMessage: "synthetic provider failure"))]]
+        let sink = FailureDuringCancelSink()
+        let store = MockCheckpointStore()
+        let runtime = FloeAgentRuntime(
+            configuration: .init(
+                provider: provider,
+                model: cancelTerminalModel(providerID: provider.id),
+                allowedToolNames: [],
+                maxProviderRetries: 0,
+                providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0,
+                providerRetryJitterRatio: 0
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: TerminalStateNoExecution(),
+            checkpointStore: store,
+            sink: sink
+        )
+
+        let runner = Task { try await runtime.start(goal: "fail while being stopped") }
+        #expect(await awaitTrue { sink.parked.current == 1 })
+        // The failure is now parked inside its durable provider-attempt
+        // publish. Cancel moves the run to .cancelling; releasing the gate
+        // lets the real failure own the terminal transition first.
+        let stopper = Task { await runtime.cancel() }
+        await sink.gate.open()
+        await stopper.value
+        try await runner.value
+
+        #expect(await runtime.state.name == "failed")
+        #expect(!store.saved.isEmpty)
+        let illegalTransition = sink.events.contains { event in
+            guard case .error(let error) = event else { return false }
+            return error.providerMessage.contains("Illegal runtime transition")
+        }
+        #expect(!illegalTransition)
+    }
 
     @Test("Stop cancels the provider before a slow cancelling-state sink finishes")
     @available(macOS 15.4, iOS 26.0, *)

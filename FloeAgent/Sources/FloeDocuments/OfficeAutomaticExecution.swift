@@ -25,6 +25,11 @@
 // commits the user's own document through the live session CAS.
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import FloeCore
 import FloeTools
 import FloeWorkspace
@@ -335,7 +340,7 @@ public actor OfficeAutomaticExecutor {
                     "the prepared-job authorization does not carry the consumed submission binding")
             }
         }
-        let root = URL(fileURLWithPath: workspacePath).standardizedFileURL.resolvingSymlinksInPath()
+        let root = Self.canonicalFileURL(URL(fileURLWithPath: workspacePath))
         let documentURL = try resolveDocument(proposal.documentID, root: root)
         // The consumed authorization must be bound to the DOCUMENT this run
         // actually mutates: the stored proposal's canonical identity (`file:`)
@@ -390,9 +395,9 @@ public actor OfficeAutomaticExecutor {
             throw OfficeAutomaticExecutionError.sourceChanged
         }
         let outputURL = root.appendingPathComponent(outputRelative)
-        let outputParent = outputURL.deletingLastPathComponent()
-        guard outputParent.standardizedFileURL.path.hasPrefix(root.path + "/")
-            || outputParent.standardizedFileURL.path == root.path else {
+        let outputParent = Self.canonicalFileURL(outputURL.deletingLastPathComponent())
+        guard outputParent.path.hasPrefix(root.path + "/")
+            || outputParent.path == root.path else {
             throw OfficeAutomaticExecutionError.outputConflict(outputRelative)
         }
         try fileManager.createDirectory(at: outputParent, withIntermediateDirectories: true)
@@ -718,11 +723,51 @@ public actor OfficeAutomaticExecutor {
     /// the resolved document/root. Any other prefix (or a non-absolute
     /// identity such as `workspace:*`) is returned unchanged and can never
     /// match.
+    ///
+    /// `URL.resolvingSymlinksInPath()` does not resolve every platform alias
+    /// (for example macOS's `/var` firmlink on current SDKs), while the
+    /// workspace guard may return the real `/private/var` path. Both sides go
+    /// through `realpath(3)` so the CAS/ownership comparison can never fail
+    /// because of an alias spelling alone.
     static func canonicalizedTarget(_ target: String, prefix: String) -> String {
         guard target.hasPrefix(prefix) else { return target }
         let path = String(target.dropFirst(prefix.count))
         guard path.hasPrefix("/") else { return target }
-        return prefix + URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        return prefix + canonicalFileURL(URL(fileURLWithPath: path)).path
+    }
+
+    /// Filesystem-real canonical URL. Falls back to resolving the nearest
+    /// existing ancestor when the leaf does not exist yet (an output file or
+    /// a not-yet-created staging path), so a canonical parent and a canonical
+    /// future child compare consistently. A deleted absolute target that has
+    /// no existing ancestor keeps Foundation's standardization and is then
+    /// refused by the caller's own existence checks.
+    static func canonicalFileURL(_ url: URL) -> URL {
+        let path = url.standardizedFileURL.path
+        if let resolved = path.withCString({ realpath($0, nil) }) {
+            defer { free(resolved) }
+            return URL(fileURLWithPath: String(cString: resolved),
+                       isDirectory: url.hasDirectoryPath)
+        }
+        var ancestor = URL(fileURLWithPath: path).deletingLastPathComponent()
+        var components: [String] = [URL(fileURLWithPath: path).lastPathComponent]
+        while ancestor.path != "/",
+              !FileManager.default.fileExists(atPath: ancestor.path) {
+            components.insert(ancestor.lastPathComponent, at: 0)
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+        let base: URL
+        if let resolved = ancestor.path.withCString({ realpath($0, nil) }) {
+            defer { free(resolved) }
+            base = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        } else {
+            base = ancestor
+        }
+        var result = base
+        for component in components where !component.isEmpty {
+            result.appendPathComponent(component)
+        }
+        return result
     }
 
     private func resolveDocument(_ documentID: String, root: URL) throws -> URL {
@@ -731,13 +776,13 @@ public actor OfficeAutomaticExecutor {
                                                maxWriteBytes: maximumDocumentBytes)
         let url: URL
         if documentID.hasPrefix("/") {
-            let canonical = URL(fileURLWithPath: documentID).standardizedFileURL.resolvingSymlinksInPath()
+            let canonical = Self.canonicalFileURL(URL(fileURLWithPath: documentID))
             guard canonical.path.hasPrefix(root.path + "/") else {
                 throw OfficeAutomaticExecutionError.notFound(documentID)
             }
             url = canonical
         } else {
-            url = try guardResolver.resolve(documentID)
+            url = Self.canonicalFileURL(try guardResolver.resolve(documentID))
         }
         guard fileManager.fileExists(atPath: url.path) else {
             throw OfficeAutomaticExecutionError.notFound(documentID)
@@ -761,11 +806,11 @@ public actor OfficeAutomaticExecutor {
         } else {
             url = root.appendingPathComponent(relative)
         }
-        url = url.standardizedFileURL
+        url = Self.canonicalFileURL(url)
         guard url.path.hasPrefix(root.path + "/"), url.path != root.path else {
             throw OfficeAutomaticExecutionError.outputConflict(relative)
         }
-        guard url.standardizedFileURL != documentURL.standardizedFileURL else {
+        guard url != Self.canonicalFileURL(documentURL) else {
             throw OfficeAutomaticExecutionError.outputConflict(relative)
         }
         return String(url.path.dropFirst(root.path.count + 1))

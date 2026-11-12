@@ -1,0 +1,14 @@
+[
+  {
+    "path": "R_0603_1608Metric.step",
+    "repository": "https://gitlab.com/kicad/libraries/kicad-packages3D",
+    "revision": "8975715167d1a76f9b44be155ac02326f704cdbb",
+    "sourcePath": "Resistor_SMD.3dshapes/R_0603_1608Metric.step",
+    "gitBlobSHA1": "a885593ca3dd3dd354835d6f586626a712c61c2a",
+    "bytes": 40618,
+    "sha256": "1875571c326d0d9e96f36b4efeb8094068ef7619f0a449c781caf0b49c2e5861",
+    "license": "CC-BY-SA-4.0 with KiCad design exception",
+    "attribution": "KiCad library contributors",
+    "modifications": "None. Byte-exact STEP retained for native component-model rendering qualification."
+  }
+]

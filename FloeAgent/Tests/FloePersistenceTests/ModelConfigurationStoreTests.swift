@@ -1,10 +1,112 @@
 import Foundation
+import GRDB
 import Testing
 import FloeCore
 @testable import FloePersistence
 
 @Suite("FloePersistence.ModelConfigurationStore")
 struct ModelConfigurationStoreTests {
+    @Test("Reasoning facts and the omit choice survive an additive legacy migration, reload and stale writes")
+    func reasoningMetadataAndOmissionSurviveLegacyUpgradeAndCAS() async throws {
+        let queue = try DatabaseQueue()
+        var migrator = DatabaseMigrator()
+        migrator.registerMigration("legacy-models") { db in
+            try db.execute(sql: """
+                CREATE TABLE models(id TEXT PRIMARY KEY, remote_model_id TEXT NOT NULL,
+                    capabilities INTEGER NOT NULL DEFAULT 1) STRICT;
+                INSERT INTO models VALUES ('kept', 'legacy-model', 5);
+                PRAGMA user_version = 61;
+                """)
+        }
+        try migrator.migrate(queue)
+        let originalRoot = try queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='models'") }
+        V62ModelReasoningMetadata.register(into: &migrator)
+        try migrator.migrate(queue)
+        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='models'") } == originalRoot)
+        #expect(try queue.read { try String.fetchOne($0, sql: "SELECT remote_model_id FROM models WHERE id='kept'") } == "legacy-model")
+        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT capabilities FROM models WHERE id='kept'") } == 5)
+        #expect(try queue.read { try String.fetchOne($0, sql: "SELECT reasoning_metadata_json FROM models WHERE id='kept'") } == nil)
+        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT omit_reasoning_parameters FROM models WHERE id='kept'") } == 0)
+        #expect(try queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") } == 62)
+        #expect(throws: (any Error).self) { try queue.write { try $0.execute(sql: "UPDATE models SET omit_reasoning_parameters=2") } }
+
+        let store = try await makeStore()
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+                                       baseURL: try #require(URL(string: "https://metadata.example.test/v1")))
+        try await store.saveProvider(provider)
+        let facts = ModelReasoningMetadata(supportsReasoning: true, supportsReasoningEffort: false)
+        let model = ModelProfile(
+            providerID: provider.id, remoteModelID: "custom-fixed-reasoning", displayName: "Custom model",
+            limits: .init(contextTokens: 32_000, maxOutputTokens: 0), capabilities: [.text],
+            reasoningEffort: .high, explicitCapabilities: [.tools], reasoningMetadata: facts,
+            omitReasoningParameters: true
+        )
+        try await store.saveModel(model)
+        let originalValue = try await store.model(id: model.id)
+        let original = try #require(originalValue)
+        #expect(original.reasoningMetadata == facts)
+        #expect(original.effectiveOmitReasoningParameters)
+        #expect(original.reasoningEffort == .high && original.explicitCapabilities == [.tools])
+
+        // A legacy remote JSON has neither new property; saving it must not
+        // erase an existing opt-out or convert reasoning=true into effort=true.
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        object.removeValue(forKey: "reasoningMetadata")
+        object.removeValue(forKey: "omitReasoningParameters")
+        let legacy = try JSONDecoder().decode(ModelProfile.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(legacy.reasoningMetadata == nil && legacy.omitReasoningParameters == nil)
+        try await store.saveModel(legacy)
+        let retainedValue = try await store.model(id: model.id)
+        let retained = try #require(retainedValue)
+        #expect(retained.reasoningMetadata == facts)
+        #expect(retained.omitReasoningParameters == true)
+        // A discovery result may arrive with a new UUID but the same
+        // provider/remote identity. Exercise the real canonical upsert,
+        // without going through ModelCatalogMerger.
+        var discoveryAlias = retained
+        discoveryAlias.id = UUID()
+        discoveryAlias.omitReasoningParameters = nil
+        try await store.saveModel(discoveryAlias)
+        let aliasedValue = try await store.model(id: model.id)
+        let aliased = try #require(aliasedValue)
+        #expect(aliased == retained)
+        let aliasRow = try await store.model(id: discoveryAlias.id)
+        #expect(aliasRow == nil)
+        var enabled = retained
+        enabled.omitReasoningParameters = false
+        try await store.saveModel(enabled, expected: retained)
+        let currentValue = try await store.model(id: model.id)
+        let current = try #require(currentValue)
+        #expect(current.omitReasoningParameters == false)
+        #expect(current.reasoningMetadata == facts && current.reasoningEffort == .high)
+        await #expect(throws: FloeError.self) { try await store.saveModel(retained, expected: retained) }
+        let afterConflict = try await store.model(id: model.id)
+        #expect(afterConflict == current)
+
+        let localProvider = ProviderProfile(
+            id: ProviderProfile.onDeviceProviderID, kind: .local,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "http://127.0.0.1")), allowsPlainHTTP: true
+        )
+        let localDiscovery = ModelProfile(
+            id: try #require(UUID(uuidString: "A1480001-0000-4000-8000-000000000001")),
+            providerID: localProvider.id, remoteModelID: "local-omit-test", displayName: "Local test",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024)
+        )
+        #expect(localDiscovery.omitReasoningParameters == false)
+        let initialLocal = try await store.reconcileDeviceLocalProvider(provider: localProvider, availableModels: [localDiscovery])
+        var localChoice = try #require(initialLocal.first)
+        localChoice.omitReasoningParameters = true
+        try await store.saveModel(localChoice)
+        let refreshedLocal = try await store.reconcileDeviceLocalProvider(provider: localProvider, availableModels: [localDiscovery])
+        let refreshedChoice = try #require(refreshedLocal.first)
+        #expect(refreshedChoice.id == localChoice.id)
+        #expect(refreshedChoice.omitReasoningParameters == true)
+        let storedLocalValue = try await store.model(id: localChoice.id)
+        let storedLocal = try #require(storedLocalValue)
+        #expect(storedLocal.effectiveOmitReasoningParameters)
+    }
+
     private func makeStore() async throws -> ModelConfigurationStore {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()

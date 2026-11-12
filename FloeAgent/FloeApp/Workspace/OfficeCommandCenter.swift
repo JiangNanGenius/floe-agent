@@ -368,6 +368,7 @@ actor OfficeCommandCenter: OfficeCommandHost {
 
     func status(documentID: String, access: OfficeCommandAccess) async throws -> OfficeLiveStatus {
         let resolved = try resolve(documentID: documentID, access: access)
+        let savedCopy = OfficeServiceNativeSessionFactory.isAvailable
         if let session = try await liveSession(resolved, access: access) {
             do {
                 let live = try await session.liveEngineStatus()
@@ -377,7 +378,8 @@ actor OfficeCommandCenter: OfficeCommandHost {
                                         liveSession: true,
                                         editable: live.editable,
                                         readOnlyReason: live.unavailableReason,
-                                        hasUnsavedChanges: live.unsavedChanges)
+                                        hasUnsavedChanges: live.unsavedChanges,
+                                        savedCopyExecutionAvailable: savedCopy)
             } catch {
                 // Fall through to the file-only status below.
             }
@@ -388,8 +390,11 @@ actor OfficeCommandCenter: OfficeCommandHost {
                                 revisionSHA256: sha,
                                 liveSession: false,
                                 editable: false,
-                                readOnlyReason: "Open the document in the editor to apply engine edits",
-                                hasUnsavedChanges: nil)
+                                readOnlyReason: savedCopy
+                                    ? "Open the document in the editor for selection-relative edits; selection-independent commands (excel.recalculate and exact targets) can be proposed and applied as a verified copy"
+                                    : "Open the document in the editor to apply engine edits",
+                                hasUnsavedChanges: nil,
+                                savedCopyExecutionAvailable: savedCopy)
     }
 
     func prepareProposal(documentID: String, baseSHA256: String, summary: String,
@@ -402,12 +407,17 @@ actor OfficeCommandCenter: OfficeCommandHost {
         for command in commands where command.format != resolved.format {
             throw OfficeEngineCommandError.unsupportedFormat(command.id, resolved.format.rawValue)
         }
-        // Exact-target batches belong to the saved-package automatic-copy
-        // path. They never invent a visible editor or a selection fingerprint.
-        // Non-selection commands (e.g. recalculate) may be mixed in order.
-        if commands.contains(where: { if case .explicit = $0 { return true }; return false }) {
+        // Selection-independent batches belong to the saved-package
+        // automatic-copy path. Exact-target commands carry their own immutable
+        // identity; workbook recalculation acts on the whole saved workbook.
+        // Neither needs a live editor or a selection fingerprint, so an
+        // ordinary chat can propose them without opening the file first.
+        // Live-selection commands are still refused instead of being applied
+        // to an unknown target.
+        let savedCopyCommands = OfficeEngineCommandCatalog.supportsSavedCopyExecution(commands)
+        if savedCopyCommands {
             guard !commands.contains(where: \.requiresSelectionFingerprint) else {
-                throw FloeError.validationFailed("An exact-target copy cannot include a live-selection command")
+                throw FloeError.validationFailed("A saved-copy batch cannot include a live-selection command")
             }
             let current = try OfficeOutputSnapshot.capture(url: resolved.url)
             guard current.sha256.lowercased() == baseSHA256.lowercased() else { throw OfficeDocumentError.revisionConflict }
@@ -418,7 +428,7 @@ actor OfficeCommandCenter: OfficeCommandHost {
             }
             if let visible = try await liveSession(resolved, access: access) {
                 let status = try await visible.liveEngineStatus()
-                guard !status.unsavedChanges else { throw FloeError.validationFailed("Save the document before proposing an exact edited copy") }
+                guard !status.unsavedChanges else { throw FloeError.validationFailed("Save the document before proposing a saved-copy edit") }
             }
             let proposal = OfficeCommandProposal(documentID: resolved.relativePath,
                 format: resolved.format.rawValue, baseSHA256: baseSHA256.lowercased(),
@@ -471,8 +481,9 @@ actor OfficeCommandCenter: OfficeCommandHost {
     }
 
     func storeProposal(_ proposal: OfficeCommandProposal) async throws {
-        let exact = try OfficeCommandCodec.decode(proposal.commandsJSON).contains { if case .explicit = $0 { return true }; return false }
-        guard proposalAccess[proposal.id] != nil, exact || proposalBindings[proposal.id] != nil else {
+        let commands = try OfficeCommandCodec.decode(proposal.commandsJSON)
+        let savedCopy = OfficeEngineCommandCatalog.supportsSavedCopyExecution(commands)
+        guard proposalAccess[proposal.id] != nil, savedCopy || proposalBindings[proposal.id] != nil else {
             throw FloeError.unauthorized
         }
         proposals[proposal.id] = proposal
@@ -803,6 +814,17 @@ actor OfficeCommandCenter: OfficeCommandHost {
 /// factory so the executor reports an honest failure instead of a fabricated
 /// edit.
 enum OfficeServiceNativeSessionFactory {
+    /// True only when this build links the pinned engine and can actually
+    /// open a service-owned session. Status reports use this rather than
+    /// promising a saved-copy route the binary cannot perform.
+    static var isAvailable: Bool {
+        #if canImport(UIKit) && canImport(WebKit) && canImport(FloeOfficeNative)
+        return true
+        #else
+        return false
+        #endif
+    }
+
     static func makeDefault() -> any OfficeServiceEngineSessionFactory {
         #if canImport(UIKit) && canImport(WebKit) && canImport(FloeOfficeNative)
         return OfficeServiceNativeSessionFactoryImpl()

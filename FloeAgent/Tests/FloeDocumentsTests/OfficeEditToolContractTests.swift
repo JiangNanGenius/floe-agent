@@ -368,6 +368,21 @@ struct OfficeEditToolContractTests {
             // refusal (FloeError.validationFailed), never a silent success.
         }
     }
+
+    @Test("older status JSON without savedCopyExecutionAvailable decodes as unavailable")
+    func legacyStatusJSONDecodes() throws {
+        let digest = String(repeating: "a", count: 64)
+        let legacy = #"{"documentID":"brief.docx","format":"docx","revisionSHA256":"\#(digest)","liveSession":false,"editable":false,"readOnlyReason":"open the editor"}"#
+        let status = try JSONDecoder().decode(OfficeLiveStatus.self, from: Data(legacy.utf8))
+        #expect(status.savedCopyExecutionAvailable == false)
+        #expect(status.revisionSHA256 == digest)
+        // A current payload still round-trips the capability flag.
+        var current = status
+        current.savedCopyExecutionAvailable = true
+        let encoded = try JSONEncoder().encode(current)
+        #expect(try JSONDecoder().decode(OfficeLiveStatus.self, from: encoded)
+            .savedCopyExecutionAvailable == true)
+    }
 }
 
 private extension FakeOfficeHost {

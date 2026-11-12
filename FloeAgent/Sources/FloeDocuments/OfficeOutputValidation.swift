@@ -224,6 +224,11 @@ public enum OfficeOutputExpectation: Equatable, Sendable {
     /// dependency caches (bounded evaluator). "Requested" or "file changed"
     /// never satisfies this expectation.
     case excelFormulaResultsRecalculated
+    /// Recalculation must not replace formulas with their computed values or
+    /// drop one: every pre-recalculation formula cell must still be a formula
+    /// with the same expression (whitespace/case-normalized). This preserves
+    /// the dependency/source that the cached result is only a projection of.
+    case excelFormulaSetPreserved
     case pptSlideCountDelta(Int)
     case pptSlideOrder([Int])
     case pptText(String)
@@ -273,8 +278,10 @@ public enum OfficeOutputExpectation: Equatable, Sendable {
             // actually carries fresh cached formula results. The bounded
             // dependency checker verifies value/type/error against the
             // workbook's own persisted dependencies; it reports shapes it
-            // cannot evaluate instead of claiming them.
-            return [.excelFormulaResultsRecalculated]
+            // cannot evaluate instead of claiming them. The formula cells
+            // themselves must survive: a cached value may never replace the
+            // editable formula/dependency that produced it.
+            return [.excelFormulaSetPreserved, .excelFormulaResultsRecalculated]
         case .pptDuplicateSlide:
             return [.pptSlideCountDelta(1)]
         case .pptMoveSlide(let from, let to):
@@ -514,6 +521,33 @@ public enum OfficeOutputValidator {
                 facts.append(report.summary)
                 facts.append(contentsOf: report.facts.prefix(24))
 
+            case .excelFormulaSetPreserved:
+                let beforeFormulas = before?.formulaCells ?? []
+                guard !beforeFormulas.isEmpty else {
+                    facts.append("formulaSet=noFormulaCells")
+                    break
+                }
+                var afterByCell: [String: String] = [:]
+                for record in after.formulaCells {
+                    afterByCell["\(record.member)|\(record.cell)"] = record.formula
+                }
+                var changed: [String] = []
+                for record in beforeFormulas {
+                    let key = "\(record.member)|\(record.cell)"
+                    if let saved = afterByCell[key],
+                       Self.normalizedFormula(saved) == Self.normalizedFormula(record.formula) {
+                        continue
+                    }
+                    changed.append("\(record.sheet)!\(record.cell)")
+                    if changed.count >= 8 { break }
+                }
+                guard changed.isEmpty else {
+                    throw OfficeOutputValidationError.expectationFailed(
+                        "recalculation changed or removed formula cells: "
+                            + changed.joined(separator: ", "))
+                }
+                facts.append("formulaSet=preserved(\(beforeFormulas.count))")
+
             case .pptSlideCountDelta(let delta):
                 let beforeCount = before?.slideCount ?? 0
                 guard after.slideCount - beforeCount == delta else {
@@ -563,6 +597,43 @@ public enum OfficeOutputValidator {
 
     private static func normalizedStyle(_ value: String) -> String {
         value.replacingOccurrences(of: " ", with: "").lowercased()
+    }
+
+    /// Formula comparison ignores only presentation whitespace and ASCII case
+    /// OUTSIDE quoted regions. String literals (`"A B"`) and quoted worksheet
+    /// names (`'My Sheet'`) keep their exact characters, including doubled
+    /// quotes; those are semantic text, not formatting. It still detects a
+    /// formula being replaced by a literal value or a different expression.
+    static func normalizedFormula(_ value: String) -> String {
+        var result = ""
+        result.reserveCapacity(value.count)
+        var quote: Character?
+        var index = value.startIndex
+        while index < value.endIndex {
+            let character = value[index]
+            if let current = quote {
+                if character == current {
+                    let next = value.index(after: index)
+                    if next < value.endIndex, value[next] == current {
+                        // A doubled quote is an escaped literal quote; keep
+                        // both characters and stay inside the quoted region.
+                        result.append(character)
+                        result.append(character)
+                        index = value.index(after: next)
+                        continue
+                    }
+                    quote = nil
+                }
+                result.append(character)
+            } else if character == "\"" || character == "'" {
+                quote = character
+                result.append(character)
+            } else if !character.isWhitespace {
+                result.append(contentsOf: String(character).lowercased())
+            }
+            index = value.index(after: index)
+        }
+        return result
     }
 
     /// Whether a saved format code carries the marker of the requested format.

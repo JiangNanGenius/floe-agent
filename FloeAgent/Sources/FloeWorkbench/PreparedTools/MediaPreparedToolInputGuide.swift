@@ -12,7 +12,7 @@ public struct MediaPreparedToolInputExample: Codable,Sendable {
 /// Executable examples are derived from an actual document revision and real
 /// object IDs. This performs no editor selection, file read or mutation.
 public enum MediaPreparedToolInputGuide {
-    public static func make(document: MediaPreparedDocument,implementedToolIDs: Set<String>,selectionFence: String? = nil,hasImageRegion: Bool = false) throws -> [MediaPreparedToolInputExample] {
+    public static func make(document: MediaPreparedDocument,implementedToolIDs: Set<String>,selectionFence: String? = nil,hasImageRegion: Bool = false,hasRenderedImagePreview: Bool = false) throws -> [MediaPreparedToolInputExample] {
         var result = [MediaPreparedToolInputExample]()
         let layer = document.layers.first { !$0.isLocked && $0.isVisible && $0.parentID == nil && ![MediaPreparedLayerContentKind.group,.adjustment].contains($0.contentKind) }
         let visuals = document.trackGraph.tracks.filter{$0.kind == .visual && !$0.isLocked}.flatMap(\.clips)
@@ -26,18 +26,132 @@ public enum MediaPreparedToolInputGuide {
         let textPath=nativePaths.first{if case .vectorPaths(let path)=$0.content { path.subpaths.count==1 } else { false }}
         let providerIDs: Set<String> = ["image.inpaint","image.outpaint","video.transcribe","video.translate","video.voice-separate"]
         func encoded<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with:JSONEncoder().encode(value)) }
-        func add(_ id: String,_ values: [String:Any] = [:],target: UUID? = nil,requiresTarget: Bool = true,selection: Bool = false,unavailableReason: String? = nil,_ guidance: String) throws {
+        func add(_ id: String,_ values: [String:Any] = [:],target: UUID? = nil,requiresTarget: Bool = true,selection: Bool = false,fenceOnly: Bool = false,unavailableReason: String? = nil,_ guidance: String) throws {
             guard implementedToolIDs.contains(id),id.hasPrefix(document.kind == .image ? "image.":"video.") else { return }
             var object = values;object["expectedRevision"] = String(document.revision)
             if let target { object["objectID"] = target.uuidString }
-            if selection,let selectionFence { object["selectionFence"] = selectionFence }
+            let needsFence = selection || fenceOnly
+            if needsFence,let selectionFence { object["selectionFence"] = selectionFence }
             let missing = unavailableReason ?? (requiresTarget && target == nil ? "No editable matching source object. Unlock, import or create it, then read again."
-                : selection && (selectionFence == nil || !hasImageRegion) ? "Create the required native selection and read again for its actual selectionFence." : nil)
+                : selection && (selectionFence == nil || !hasImageRegion) ? "Create the required native selection and read again for its actual selectionFence."
+                : needsFence && selectionFence == nil ? "Read the existing native session for its current selectionFence before changing its selection state." : nil)
             let bytes = missing == nil ? try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys]) : nil
-            result.append(.init(toolID:id,executionTool:providerIDs.contains(id) ? "studio.media.provider":"studio.media",inputJSON:bytes.map{String(decoding:$0,as:UTF8.self)},requiresSelectionFence:selection,
+            result.append(.init(toolID:id,executionTool:providerIDs.contains(id) ? "studio.media.provider":"studio.media",inputJSON:bytes.map{String(decoding:$0,as:UTF8.self)},requiresSelectionFence:needsFence,
                 guidance:guidance+" Example IDs demonstrate the input shape; choose the actual object required by the user's task. Always use a fresh revision.",unavailableReason:missing))
         }
         let line: [[String:Double]] = [["x":0.3,"y":0.3],["x":0.55,"y":0.5],["x":0.7,"y":0.55]]
+        let strokeLayer = document.layers.first { !$0.isLocked && $0.isVisible && $0.parentID == nil && $0.contentKind == .strokes }
+        let rasterLayer = document.layers.first { candidate in
+            guard !candidate.isLocked, candidate.isVisible, candidate.parentID == nil,
+                  case .raster(let raster) = candidate.content, case .asset(let id) = raster.source else { return false }
+            return document.asset(id)?.kind == .image
+        }
+        let groupMembers = document.layers.filter { !$0.isLocked && $0.isVisible && $0.parentID == nil }.prefix(2)
+        try add("image.rectangle", ["points":[["x":0.2,"y":0.2],["x":0.7,"y":0.7]],"property":"replace"], requiresTarget:false,
+                "Creates a native rectangular selection, not new pixels or a layer. points are two user-chosen opposite corners in normalized top-left canvas coordinates. Replace needs no prior selection; add/subtract needs the actual current selectionFence. Example corners are only an input shape, never an inferred target.")
+        try add("image.brush", ["points":line,"number":12,"color":"#3366FF"], target:strokeLayer?.id, requiresTarget:false,
+                "points are the actual requested stroke in normalized canvas coordinates; number=diameter in canvas pixels. An explicit objectID must be a real unlocked strokes layer; omit it to create a new editable drawing layer. Never target a raster/text layer expecting destructive paint. Original layers remain unchanged.")
+        var eraserValues: [String:Any] = ["points":line,"number":12,"flag":false]
+        if hasImageRegion, let selectionFence { eraserValues["selectionFence"] = selectionFence }
+        try add("image.eraser", eraserValues, target:layer?.id,
+                "objectID is the actual editable layer. points are a normalized canvas stroke; number=diameter in canvas pixels; flag=false erases, true restores the existing mask. This is a non-destructive layer mask. The example includes selectionFence only when an actual native region exists; otherwise it affects the full stroke, not an invented selection.")
+        try add("image.crop", ["points":[["x":0.05,"y":0.05],["x":0.95,"y":0.95]]], target:rasterLayer?.id,
+                unavailableReason:rasterLayer == nil ? "Import an unlocked image asset layer before cropping; solid-color, vector and text layers are not crop sources." : nil,
+                "objectID is the real raster asset layer. Two points specify source-normalized opposite crop corners; these example corners do not identify an object. property=canvas instead uses normalized canvas coordinates. flag=false removes the crop. Source bytes remain intact, with journal undo.")
+        let savedText: ImageTextContent? = textLayer.flatMap { if case .text(let content) = $0.content { content } else { nil } }
+        try add("image.text", ["text":savedText?.text ?? "Text","number":savedText?.fontSize ?? 72,"color":savedText?.colorHex ?? "#3366FF"], target:textLayer?.id, requiresTarget:false,
+                "An actual text-layer objectID updates that layer while preserving its other style. Omit objectID to create a new text layer; never supply another layer type. text is content and number is font size in canvas pixels. Use the requested text, not this example's existing/default content.")
+        try add("image.shape", ["points":[["x":0.2,"y":0.2],["x":0.7,"y":0.2],["x":0.7,"y":0.7],["x":0.2,"y":0.7]],"number":3,"color":"#3366FF"], requiresTarget:false,
+                "Creates a new editable closed vector shape. Omit objectID; points are the requested normalized canvas vertices, number is stroke width in canvas pixels, color is fill and stroke. Example vertices demonstrate format only.")
+        try add("image.duplicate-layer", target:layer?.id,
+                "objectID is the real layer to duplicate. Copies editable content (and a group's descendants) to new layer IDs, retaining original source assets and one undo group. It does not modify the original.")
+        try add("image.group-layer", ["objectIDs":groupMembers.map { $0.id.uuidString }], target:groupMembers.first?.id,
+                unavailableReason:groupMembers.isEmpty ? "Create or unlock at least one actual layer before grouping it." : nil,
+                "objectIDs are the actual unlocked sibling layer IDs to group, not asset IDs. The example uses existing root layers; select the layers required by the user. flag=false with a real group objectID ungroups it. Grouping retains editable children and journal undo.")
+        for id in ["image.ellipse", "image.lasso", "image.polygon"] {
+            let points = id == "image.ellipse" ? [["x":0.2,"y":0.2],["x":0.7,"y":0.7]] : [["x":0.2,"y":0.2],["x":0.7,"y":0.3],["x":0.4,"y":0.7]]
+            try add(id, ["points":points,"property":"replace"], requiresTarget:false,
+                    "Creates native selection geometry, not pixels. Ellipse uses two normalized opposite corners; lasso/polygon need at least three normalized canvas points. property=replace/add/subtract; add/subtract requires the actual current selectionFence. Example points only show format, not a detected subject.")
+        }
+        try add("image.feather", ["number":12], requiresTarget:false, selection:true,
+                unavailableReason:document.canvas == nil ? "The original needs a valid canvas before feathering a selection." : nil,
+                "Feathers the actual native selection; number is radius in original canvas pixels. Keep its current selectionFence. This changes selection state only, not the stored source image.")
+        for id in ["image.inverse", "image.deselect"] {
+            try add(id, requiresTarget:false, fenceOnly:true,
+                    "Uses the actual current native selectionFence and changes selection state only. inverse toggles the region's inversion (an empty selection may become the full canvas); deselect clears it. A nonempty region is not required, but an actual native session fence is.")
+        }
+        try add("image.fill", ["color":"#3366FF"], requiresTarget:false, selection:hasImageRegion,
+                "Creates a new editable solid-color layer. With an actual native region, include its selectionFence to mask the fill; without a region this fills the canvas. Omit objectID; color is explicit RGB/RGBA, not an inferred palette value.")
+        try add("image.adjustment-layer", ["number":0], requiresTarget:false,
+                "Creates a new editable adjustment layer; number is its initial exposureEV (default0). Omit objectID. Later color controls update the actual new layer ID from a fresh read.")
+        for id in ["image.layer-mask", "image.vector-mask"] {
+            let remove = !hasImageRegion && layer?.mask != nil
+            try add(id, ["flag":!remove], target:layer?.id, selection:!remove,
+                    "Applies the actual native region as this layer's non-destructive mask with flag=true and its current selectionFence. flag=false removes an existing mask from the explicit target without requiring a region. The example removes only when there is no native region and this actual layer already has a mask.")
+        }
+        let roots = document.layers.filter { $0.parentID == nil }
+        let clipIndex = roots.indices.dropFirst().first { index in
+            !roots[index].isLocked && roots[index].isVisible && roots[index].contentKind != .adjustment &&
+                roots[index - 1].isVisible && roots[index - 1].contentKind != .adjustment
+        }
+        let clipLayer = clipIndex.map { roots[$0] }
+        try add("image.clip-mask", ["flag":true], target:clipLayer?.id,
+                unavailableReason:clipLayer == nil ? "Create an unlocked target above an actual sibling layer before enabling a clipping mask." : nil,
+                "objectID is the actual target; flag=true clips it to the immediately preceding saved sibling layer. Read current order before choosing the target. flag=false removes only the clipping link and does not need a base layer.")
+        let groupLayer = document.layers.first { !$0.isLocked && $0.isVisible && $0.contentKind == .group }
+        try add("image.blend-mode", ["property":"multiply"], target:groupLayer?.id,
+                unavailableReason:groupLayer == nil ? "Create or unlock a native group layer before changing its group blend mode." : nil,
+                "objectID must be a real group. property=normal/multiply/screen/overlay/darken/lighten. This route changes group compositing, not an arbitrary raster layer's blend mode.")
+        try add("image.align", ["property":"center"], target:layer?.id,
+                "Aligns the actual objectID in canonical canvas space. property=centerX/centerY/center; optional objectIDs is the complete real layer set to align. Source content and journal undo are preserved.")
+        let mergePair = document.layers.indices.dropLast().lazy.compactMap { index -> [MediaPreparedLayer]? in
+            let pair = [document.layers[index], document.layers[index + 1]]
+            let ids = Set(pair.map(\.id))
+            guard pair.allSatisfy({ $0.parentID == nil && !$0.isLocked && $0.isVisible && $0.contentKind != .group }),
+                  !document.layers.contains(where: { !ids.contains($0.id) && $0.clip.map { ids.contains($0.baseLayerID) } == true }) else { return nil }
+            return pair
+        }.first
+        try add("image.merge-layer", ["objectIDs":mergePair?.map { $0.id.uuidString } ?? []], requiresTarget:false,
+                unavailableReason:mergePair == nil ? "Select at least two adjacent unlocked top-level non-group layers with no outside clipping dependency before merging." : nil,
+                "objectIDs are actual contiguous unlocked top-level layer IDs, not arbitrary groups or asset IDs. Their sources must resolve. Renders this exact set into one new image layer through the existing native transaction; originals remain available by undo.")
+        try add("image.pen", ["points":line,"number":3,"color":"#3366FF"], requiresTarget:false,
+                "Creates a new editable open vector path from explicit normalized canvas points; number=stroke width in canvas pixels, color=stroke. Omit objectID. This is the existing straight-segment path route, not freehand raster paint or implicit Bezier fitting.")
+        let anchorLayer = nativePaths.first { candidate in
+            guard !candidate.isLocked, candidate.isVisible, case .vectorPaths(let path) = candidate.content,
+                  path.subpaths.count == 1, let subpath = path.subpaths.first,
+                  !subpath.isClosed, subpath.points.count >= 2, path.fillColorHex == nil,
+                  path.strokeColorHex != nil, path.strokeWidth > 0,
+                  path.lineCap == .round, path.lineJoin == .round, path.fillRule == .nonZero, path.opacity == 1 else { return false }
+            return subpath.points.allSatisfy { $0.controlIn == nil && $0.controlOut == nil }
+        }
+        let anchorPath: MediaVectorPath? = anchorLayer.flatMap { if case .vectorPaths(let path) = $0.content { path } else { nil } }
+        try add("image.anchor", ["points":anchorPath?.subpaths.first?.points.map { ["x":$0.point.x,"y":$0.point.y] } ?? [],"number":anchorPath?.strokeWidth ?? 3,"color":anchorPath?.strokeColorHex ?? "#3366FF"], target:anchorLayer?.id,
+                unavailableReason:anchorLayer == nil ? "This anchor route replaces a complete open straight path. Create or select that native path; it cannot preserve unmentioned closed contours or Bezier handles." : nil,
+                "objectID is the actual open straight path. Supply its COMPLETE normalized point list, including unchanged anchors, plus intended stroke width/color. This replaces its path content; it is not a one-anchor patch. The example copies real vertices and retains represented style rather than inventing a new shape.")
+        let styledPath = nativePaths.first { !$0.isLocked && $0.isVisible }
+        try add("image.stroke-fill", ["color":"#3366FF","number":3], target:styledPath?.id,
+                unavailableReason:styledPath == nil ? "Create or unlock an actual native vector path before changing its fill and stroke width." : nil,
+                "objectID is a real vectorPaths layer. color sets its fill; number sets stroke width in canvas pixels. Existing path geometry, stroke color and unrelated layer controls are retained.")
+        for id in ["image.rotate", "image.flip"] {
+            let values: [String:Any] = id == "image.rotate" ? ["number":90] : ["property":"horizontal"]
+            try add(id, values, target:layer?.id,
+                    "Uses an actual layer objectID. rotate adds number degrees (default90). flip toggles vertical when property=vertical, otherwise horizontal. This is a non-destructive layer transform, not a canvas resize.")
+        }
+        for id in ["image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw"] {
+            let values: [String:Any]
+            switch id {
+            case "image.exposure": values = ["number":0.5]
+            case "image.levels": values = ["number":0.05,"secondary":0.95]
+            case "image.hsl": values = ["number":1.1,"secondary":10]
+            case "image.white-balance": values = ["number":6500]
+            default: values = [:]
+            }
+            try add(id, values, target:layer?.id,
+                    "Updates real layer color controls. exposure: number=EV; levels: number=black, secondary=white, gamma stays1; hsl: number=saturation, secondary=hue degrees, no separate lightness in this route; white-balance: number=temperature; bw: saturation becomes0 without numeric parameters. Other controls and source pixels are preserved.")
+        }
+        try add("image.eyedropper", ["points":[["x":0.5,"y":0.5]]], requiresTarget:false, fenceOnly:true,
+                unavailableReason:!hasRenderedImagePreview ? "Wait for the existing native image preview, then read again before sampling its actual pixels." : nil,
+                "Samples the ACTUAL rendered preview at the requested normalized point, not a guessed color. After the call, studio.read returns the actual current palette as liveSelection.media.paletteColorHex. The native palette changes; the document and selectionFence do not. Example point only shows the input shape.")
         let unusedAsset = document.assets.first { MediaPreparedAssets.references(to: $0.id, in: document).isEmpty }
         try add(document.kind == .image ? "image.remove-asset" : "video.remove-asset", target: unusedAsset?.id,
                 unavailableReason: unusedAsset == nil ? "No unused project asset. Remove its layer, clip or compound uses first; original sources remain protected." : nil,
@@ -78,6 +192,10 @@ public enum MediaPreparedToolInputGuide {
         try add("image.inpaint",["text":"Replace the selected flowers with white daisies"],target:layer?.id,selection:true,"Cloud edit requires studio.media.provider authority, an existing selected area and prompt text. property optionally names an actual configured image model UUID; omission follows saved routing. Original pixels outside the mask are protected.")
         if let canvas=document.canvas,let layout=try? MediaOutpaintLayout(sourceWidth:canvas.width,sourceHeight:canvas.height,width:Int((Double(canvas.width)*1.25).rounded()),height:Int((Double(canvas.height)*1.25).rounded()),anchor:.init(x:0.5,y:0.5)) {
             try add("image.outpaint",["number":layout.width,"secondary":layout.height,"points":[["x":0.5,"y":0.5]],"text":"Extend the surrounding scene naturally"],requiresTarget:false,unavailableReason:document.layers.contains(where:{$0.parentID==nil && $0.isLocked}) ? "Unlock the protected root layer in the editor before requesting a model-driven canvas expansion.":nil,"Whole-image expansion: omit objectID. number=target width and secondary=height in integer pixels; neither may shrink and at least one must expand, up to8MP. points[0]=original-content top-leading anchor0...1. Requires studio.media.provider authority. Adds generated margins beneath intact original editable layers; a model with compatible output aspect ratio is required. property optionally names a configured image-model UUID.")
+        } else {
+            try add("image.outpaint", requiresTarget:false,
+                    unavailableReason:document.canvas == nil ? "The original needs a valid canvas before expansion." : "The proposed canvas expansion exceeds the existing8MP/8192px bounds or cannot expand an edge. Use a smaller source or a valid explicit target size.",
+                    "Uses the existing task-authorized image provider route. Target dimensions may not shrink and must expand at least one edge within8MP/8192px. No placeholder expansion or silent row omission is used when a safe example cannot be proposed.")
         }
         try add("video.reverse",["flag":true],target:video?.id,"Explicit source video clip. flag=true reverses, false restores forward playback; linked source audio follows.")
         try add("video.freeze",["start":video?.timelineRange.startSeconds ?? 0,"duration":2,"flag":true],target:video?.id,"start is absolute timeline seconds inside this video clip; duration is hold length seconds. flag=false restores ordinary source playback.")

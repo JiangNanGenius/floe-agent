@@ -850,9 +850,7 @@ struct FloeCADEditorView: View {
         .padding(.top, 8)
     }
 
-    @ViewBuilder
-    private func sketchDetailActions(_ viewModel: EditorViewModel) -> some View {
-        sketchStateChip(viewModel).fixedSize(horizontal: true, vertical: false)
+    private func currentSketchImportMenu(_ viewModel: EditorViewModel) -> some View {
         Menu {
             Button(CAD2DDraftingText.text("导入图纸（DXF/DWG）…", "Import Drawing (DXF/DWG)…")) {
                 presentFileImport(.dxf, intoCurrentSketch: true, viewModel: viewModel)
@@ -878,6 +876,12 @@ struct FloeCADEditorView: View {
         }
         .controlSize(.small)
         .accessibilityIdentifier("CurrentSketchImportMenu")
+    }
+
+    @ViewBuilder
+    private func sketchDetailActions(_ viewModel: EditorViewModel) -> some View {
+        sketchStateChip(viewModel).fixedSize(horizontal: true, vertical: false)
+        currentSketchImportMenu(viewModel)
         if viewModel.lookAtSketchAvailable {
             Button("Look at Sketch") { viewModel.lookAtSketch() }
                 .controlSize(.small)
@@ -1563,6 +1567,10 @@ struct FloeCADEditorView: View {
     /// Toolbar Import menu (STL/DXF files, inserted images).
     private func importMenu(_ viewModel: EditorViewModel) -> some View {
         Menu {
+            if draftingOnly, viewModel.mode.isSketching {
+                currentSketchImportMenu(viewModel)
+                Divider()
+            }
             if !draftingOnly {
                 Button(FloeCADStrings.label("cad.ui.import.stlFile", "STL File…")) {
                     presentFileImport(.stl, viewModel: viewModel)
@@ -2111,7 +2119,10 @@ struct FloeCADEditorView: View {
                             .padding(10)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                         }
-                        sketchStatusPill(viewModel)
+                        // Standalone drafting has no 3D sketch session to
+                        // exit. Keep its tool controls; import stays in the
+                        // existing toolbar menu instead of this floating bar.
+                        if !draftingOnly { sketchStatusPill(viewModel) }
                     }
                 } else if case .pickingSketchPlane = viewModel.mode {
                     statusPill(

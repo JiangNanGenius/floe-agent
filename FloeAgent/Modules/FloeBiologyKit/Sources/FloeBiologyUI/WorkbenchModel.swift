@@ -83,20 +83,48 @@ public enum BiologyLabels {
         return project?.runs.last{$0.assetID==selectedID}
     }
     public var activeRuns:[BiologyRun] {project?.runs.filter(\.isActive) ?? []}
+    public var runSource:BiologyAsset? {run.flatMap{r in project?.assets.first{$0.id==r.assetID}}}
+    public var hasPinnedResultForSelection:Bool {
+        guard let selectedRunID,let run=project?.runs.first(where:{$0.id==selectedRunID}) else{return false}
+        return run.assetID==selectedID || (selectedID==nil && !(project?.assets.contains{$0.id==run.assetID} ?? false))
+    }
+    @ObservationIgnored private var refreshGeneration:UInt64=0
     private var undo:[UUID:[BiologyAssetPayload]] = [:]
     private var redo:[UUID:[BiologyAssetPayload]] = [:]
     public var canUndo:Bool {selectedID.map{!(undo[$0] ?? []).isEmpty} ?? false}
     public var canRedo:Bool {selectedID.map{!(redo[$0] ?? []).isEmpty} ?? false}
     public init(service:BiologyService,projectID:UUID) {self.service=service;self.projectID=projectID}
     public func refresh() async {
+        refreshGeneration &+= 1
+        let generation=refreshGeneration
         do {
             let latest=try await service.project(projectID)
+            guard !Task.isCancelled,generation==refreshGeneration else{return}
             if let project,project.revision>latest.revision {return}
-            let activeChanged=project?.activeAssetID != latest.activeAssetID
             project=latest
-            if activeChanged || !latest.assets.contains(where:{$0.id==selectedID}) {selectedID=latest.activeAssetID ?? latest.assets.first?.id}
-            methods=if let selected {await service.capabilities(for:selected)} else {[:]}
-        } catch {self.error=error.localizedDescription}
+            if !latest.assets.contains(where:{$0.id==selectedID}) {
+                // A saved result can outlive its source. Keep its source nil,
+                // never label it with an unrelated dataset.
+                if let selectedRunID,let pinned=latest.runs.first(where:{$0.id==selectedRunID}),
+                   !latest.assets.contains(where:{$0.id==pinned.assetID}) {selectedID=nil}
+                else {selectedID=latest.activeAssetID ?? latest.assets.first?.id}
+            }
+            if selectedRunID != nil,!hasPinnedResultForSelection {selectedRunID=nil}
+            let asset=selected
+            let offered:[String:[String]]=if let asset {await service.capabilities(for:asset)} else {[:]}
+            guard !Task.isCancelled,generation==refreshGeneration,selectedID==asset?.id else{return}
+            methods=offered
+        } catch {
+            if !Task.isCancelled,generation==refreshGeneration {self.error=error.localizedDescription}
+        }
+    }
+    /// Explicit history selection follows its real input, independently of a
+    /// background tool's persisted activeAssetID.
+    @discardableResult public func selectRun(_ id:UUID)->Bool {
+        guard let run=project?.runs.first(where:{$0.id==id}) else{return false}
+        selectedID=project?.assets.first(where:{$0.id==run.assetID})?.id
+        selectedRunID=id
+        return true
     }
     public func perform(_ operation:@MainActor () async throws -> Void) async {
         busy=true;defer{busy=false}

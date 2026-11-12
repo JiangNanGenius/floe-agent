@@ -17,6 +17,9 @@ public enum EDALibraryDigest {
     public static func validSHA256(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
+    public static func validSHA1(_ value: String) -> Bool {
+        value.utf8.count == 40 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
 }
 
 public struct EDALibraryNotice: Codable, Hashable, Sendable {

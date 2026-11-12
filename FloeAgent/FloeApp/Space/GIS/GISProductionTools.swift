@@ -91,7 +91,10 @@ import FloeHeavyEditorsHostAdapter
         let usage = try PersonalLibraryFileActions.acquireUse(id: id, directory: value.url, libraryRoot: root)
         do {
             let session = try await GISProjectSession.open(id: id, directory: value.url)
-            let token = try session.retainModelUse()
+            // describe performs live schema reads outside the controller's
+            // operation queue; let a short presentation refresh/command finish
+            // first rather than reporting an unavailable editor.
+            let token = action == .describe ? try await session.retainModelUseWhenSettled() : try session.retainModelUse()
             let expectedDirectory = value.url
             let scoped: HeavyEditorOperationAuthorizer = { request in
                 try await authorize(); try context.cancellation.throwIfCancelled(); try Task.checkCancellation()
@@ -149,7 +152,6 @@ import FloeHeavyEditorsHostAdapter
         }
         guard case .object(var body) = result else { throw HeavyEditorError.invalidDocument }
         body["exports"] = .array(canonicalExports)
-        body["sourceSHA256"] = .string(try session.originalSHA256())
         let conversation = try await coordinator.savedConversation(context)
         let canEdit = try await coordinator.access.get().canAccess(conversationID: conversation, projectID: session.id, editing: true)
         body["access"] = .object(["canRead": .bool(true), "canEdit": .bool(canEdit)])
@@ -171,6 +173,17 @@ import FloeHeavyEditorsHostAdapter
         }
         try await authorize(); try await session.requireOriginal(); try context.cancellation.throwIfCancelled()
         _ = try await location(session.id, context: context, editing: !canonicalExports.isEmpty)
+        // Stamp the revision and source pin at the actual return boundary: a
+        // presentation save or refresh may legitimately finish while output
+        // receipts are published. CAS and the real ownership pins stay intact.
+        // A verified observation keeps the revision it was rendered for; if a
+        // save raced that render, reject instead of relabelling the image.
+        let returnedRevision = session.controller.document.revision
+        if !observationArtifacts.isEmpty, let rendered = body["result"]?["revision"].number, rendered != Double(returnedRevision) {
+            throw HeavyEditorError.revisionConflict
+        }
+        body["baseRevision"] = .number(Double(returnedRevision))
+        body["sourceSHA256"] = .string(try session.originalSHA256())
         let text = try EditorJSON.object(body).text()
         var output = ToolExecutionOutput(digesting: text, exitStatus: 0, capturedOutput: text)
         output.outputFiles = outputFiles

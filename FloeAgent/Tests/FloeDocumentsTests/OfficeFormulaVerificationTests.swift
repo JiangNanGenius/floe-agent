@@ -241,10 +241,55 @@ struct OfficeFormulaVerificationTests {
                                          expectations: [.excelFormulaResultsRecalculated])
     }
 
-    @Test("recalculation expectation replaces the old requested-only predicate")
+    @Test("recalculation expectations require the formulas themselves and real cached results")
     func expectationIsReal() {
         let expectations = OfficeOutputExpectation.forCommand(.excelRecalculate, before: nil)
-        #expect(expectations == [.excelFormulaResultsRecalculated])
+        #expect(expectations == [.excelFormulaSetPreserved, .excelFormulaResultsRecalculated])
+    }
+
+    @Test("formula preservation ignores layout whitespace but not string-literal text")
+    func formulaPreservationKeepsLiteralSemantics() throws {
+        // Outside quoted regions, spacing and case are presentation only.
+        #expect(OfficeOutputValidator.normalizedFormula("=SUM( A1 : A2 )")
+                == OfficeOutputValidator.normalizedFormula("=sum(A1:A2)"))
+        // Inside a string literal every character is semantic.
+        #expect(OfficeOutputValidator.normalizedFormula(#"=IF(A1>0,"A B","no")"#)
+                != OfficeOutputValidator.normalizedFormula(#"=IF(A1>0,"ab","no")"#))
+        #expect(OfficeOutputValidator.normalizedFormula(#"=IF(A1>0,"A","B")"#)
+                != OfficeOutputValidator.normalizedFormula(#"=IF(A1>0,"a","B")"#))
+        // Doubled quotes are escaped literal quotes, not a quote-region end.
+        #expect(OfficeOutputValidator.normalizedFormula(#"="A""B""#)
+                != OfficeOutputValidator.normalizedFormula(#"="a""b""#))
+        #expect(OfficeOutputValidator.normalizedFormula(#"="A""B""#)
+                == OfficeOutputValidator.normalizedFormula(#" = "A""B" "#))
+        // Quoted worksheet names are text too, not spacing/case formatting.
+        #expect(OfficeOutputValidator.normalizedFormula("='My Sheet'!A1")
+                != OfficeOutputValidator.normalizedFormula("='MySheet'!A1"))
+        #expect(OfficeOutputValidator.normalizedFormula("='My Sheet'!A1")
+                != OfficeOutputValidator.normalizedFormula("='my sheet'!a1"))
+
+        // Actual validator boundary: same cell/formula shape, one changed
+        // literal. The saved formula set must be refused, not false-passed.
+        let beforeURL = try workbook([(name: "Sheet1", data:
+            #"<row r="1"><c r="A1"><f>IF(B1&gt;0,"A B","no")</f><v>A B</v></c><c r="B1"><v>1</v></c></row>"#)])
+        defer { try? FileManager.default.removeItem(at: beforeURL.deletingLastPathComponent()) }
+        let afterURL = try workbook([(name: "Sheet1", data:
+            #"<row r="1"><c r="A1"><f>IF(B1&gt;0,"ab","no")</f><v>ab</v></c><c r="B1"><v>1</v></c></row>"#)])
+        defer { try? FileManager.default.removeItem(at: afterURL.deletingLastPathComponent()) }
+        let before = try OfficeOutputSnapshot.capture(url: beforeURL)
+        let after = try OfficeOutputSnapshot.capture(url: afterURL)
+        #expect(throws: OfficeOutputValidationError.self) {
+            try OfficeOutputValidator.verify(before: before, after: after,
+                                             expectations: [.excelFormulaSetPreserved])
+        }
+        // Layout-only differences in the same formula set are accepted.
+        let layoutURL = try workbook([(name: "Sheet1", data:
+            #"<row r="1"><c r="A1"><f>if( B1 &gt; 0 , "A B" , "no" )</f><v>A B</v></c><c r="B1"><v>1</v></c></row>"#)])
+        defer { try? FileManager.default.removeItem(at: layoutURL.deletingLastPathComponent()) }
+        let layout = try OfficeOutputSnapshot.capture(url: layoutURL)
+        let facts = try OfficeOutputValidator.verify(before: before, after: layout,
+                                                     expectations: [.excelFormulaSetPreserved])
+        #expect(facts.contains("formulaSet=preserved(1)"))
     }
 
     @Test("a truncated dependency context fails closed instead of guessing")

@@ -32,6 +32,8 @@ public actor MacBridgeClient {
     }
     private var pairing = BridgePairingSession()
     private var baseline: [String: [String: String]] = [:]
+    /// Authenticated capability names, cached for one trust generation.
+    private var negotiatedCapabilities: (generation: UUID, names: Set<String>)?
     private let session: URLSession
     public init() {
         let config = URLSessionConfiguration.ephemeral
@@ -179,6 +181,128 @@ public actor MacBridgeClient {
             guard let path = row["path"]?.string else { return false }
             return !BridgeWorkspaceTransferPolicy.excludes(path)
         }
+    }
+    /// Additive capability of the paired companion. An old companion simply
+    /// lacks the name; callers surface an explicit update message. Caching is
+    /// tied to the trust generation so re-pairing or revocation cannot reuse
+    /// a capability from a different trust epoch.
+    public func supportsAbsoluteFileRead() async throws -> Bool {
+        try requireSupportedPlatform()
+        guard serverKey != nil else { throw BridgeFailure.disconnected }
+        let generation = trustGeneration
+        if let negotiatedCapabilities, negotiatedCapabilities.generation == generation {
+            return negotiatedCapabilities.names.contains(BridgeAbsoluteFileRead.capability)
+        }
+        let response = try await call("ping")
+        let names = Set(response["capabilities"]?.array?.compactMap(\.string) ?? [])
+        if trustGeneration == generation {
+            negotiatedCapabilities = (generation, names)
+        }
+        return names.contains(BridgeAbsoluteFileRead.capability)
+    }
+    public struct AbsoluteFileChunk: Sendable {
+        public let data: Data
+        public let offset: Int64
+        public let totalBytes: Int64
+        public let identity: String
+        public let sha256: String?
+
+        public init(data: Data, offset: Int64, totalBytes: Int64,
+                    identity: String, sha256: String? = nil) {
+            self.data = data
+            self.offset = offset
+            self.totalBytes = totalBytes
+            self.identity = identity
+            self.sha256 = sha256
+        }
+    }
+    public struct AbsoluteFileData: Sendable {
+        public let data: Data
+        public let sha256: String
+
+        public init(data: Data, sha256: String) {
+            self.data = data
+            self.sha256 = sha256
+        }
+    }
+    /// One bounded authenticated chunk of an absolute Mac path. The path is
+    /// transported as data only; it is never interpolated into a command.
+    public func readAbsoluteFileChunk(
+        path: String,
+        offset: Int,
+        limit: Int,
+        expectedIdentity: String? = nil,
+        verifySHA256: Bool = false,
+        cancellation: CancellationToken? = nil
+    ) async throws -> AbsoluteFileChunk {
+        guard BridgeAbsoluteFileRead.validPath(path), offset >= 0,
+              (1...BridgeAbsoluteFileRead.maximumChunkBytes).contains(limit) else {
+            throw BridgeFailure.unsafePath
+        }
+        try Task.checkCancellation(); try cancellation?.throwIfCancelled()
+        guard try await supportsAbsoluteFileRead() else {
+            throw BridgeFailure.unsupportedAbsoluteRead
+        }
+        var payload: [String: BridgeValue] = [
+            "path": .string(path), "offset": .integer(Int64(offset)),
+            "limit": .integer(Int64(limit)),
+        ]
+        if let expectedIdentity { payload["expectedIdentity"] = .string(expectedIdentity) }
+        if verifySHA256 { payload["sha256"] = .bool(true) }
+        let response = try await call("file.readAbsolute", payload)
+        let chunk = try BridgeAbsoluteFileRead.validateChunk(
+            response, requestedOffset: Int64(offset), requestedLimit: limit,
+            expectedIdentity: expectedIdentity)
+        return AbsoluteFileChunk(data: chunk.data, offset: chunk.offset,
+            totalBytes: chunk.totalBytes, identity: chunk.identity, sha256: chunk.sha256)
+    }
+    /// Assemble a bounded whole file, reject replacement between chunks, and
+    /// verify the companion's whole-file receipt against the local digest.
+    public func readAbsoluteFileWhole(
+        path: String,
+        maximumBytes: Int,
+        cancellation: CancellationToken? = nil
+    ) async throws -> AbsoluteFileData {
+        guard BridgeAbsoluteFileRead.validPath(path), maximumBytes > 0,
+              maximumBytes <= BridgeAbsoluteFileRead.maximumReceiptBytes else {
+            throw BridgeFailure.unsafePath
+        }
+        var assembled = Data()
+        var identity: String?
+        var total: Int64?
+        let limit = BridgeAbsoluteFileRead.maximumChunkBytes
+        while true {
+            try Task.checkCancellation(); try cancellation?.throwIfCancelled()
+            let chunk = try await readAbsoluteFileChunk(
+                path: path, offset: assembled.count, limit: limit,
+                expectedIdentity: identity, cancellation: cancellation)
+            if let total, total != chunk.totalBytes {
+                throw BridgeFailure.remote("The Mac file changed during the read. Read it again.")
+            }
+            if total == nil {
+                total = chunk.totalBytes
+                guard chunk.totalBytes <= Int64(maximumBytes) else {
+                    throw BridgeFailure.remote(
+                        "This Mac file is \((chunk.totalBytes)) bytes; the supported limit for one visual read is \(maximumBytes) bytes.")
+                }
+            }
+            identity = chunk.identity
+            assembled.append(chunk.data)
+            if chunk.offset >= chunk.totalBytes { break }
+            guard !chunk.data.isEmpty else { throw BridgeFailure.invalidResponse }
+        }
+        let receipt = try await readAbsoluteFileChunk(
+            path: path, offset: assembled.count, limit: 1,
+            expectedIdentity: identity, verifySHA256: true, cancellation: cancellation)
+        guard receipt.data.isEmpty, receipt.totalBytes == total,
+              receipt.identity == identity, let expected = receipt.sha256 else {
+            throw BridgeFailure.remote("The Mac file changed during the read. Read it again.")
+        }
+        let actual = SHA256.hash(data: assembled).map { String(format: "%02x", $0) }.joined()
+        guard actual == expected else {
+            throw BridgeFailure.remote("The Mac file changed during the read. Read it again.")
+        }
+        return AbsoluteFileData(data: assembled, sha256: actual)
     }
     /// Shell script size is not a transport limit. Larger commands travel in
     /// bounded chunks to private, task-owned storage and never enter argv.

@@ -808,17 +808,41 @@ enum OOXMLCellDecoder {
         type: String?,
         rawValue: String,
         formula: String?,
-        sharedStrings: [String]
+        sharedStrings: [String],
+        preferCachedFormulaValue: Bool = false
     ) -> String {
-        if let formula, !formula.isEmpty { return "=" + formula }
+        if let formula, !formula.isEmpty {
+            // `document.readSheet` may show the PERSISTED cached result when
+            // the file actually carries one (a native recalculation copy).
+            // It never computes a formula itself; a missing/blank cache keeps
+            // the honest `=FORMULA` marker. `document.office.inspect` keeps
+            // the formula text for stable updateText identities.
+            if preferCachedFormulaValue,
+               let cached = cachedDisplayValue(type: type, rawValue: rawValue,
+                                               sharedStrings: sharedStrings) {
+                return cached
+            }
+            return "=" + formula
+        }
+        return cachedDisplayValue(type: type, rawValue: rawValue,
+                                  sharedStrings: sharedStrings) ?? ""
+    }
+
+    /// Decodes one persisted `<v>` value. Nil means "no usable cached result"
+    /// (absent, empty or unknown shared-string index), never zero.
+    private static func cachedDisplayValue(type: String?, rawValue: String,
+                                           sharedStrings: [String]) -> String? {
         switch type {
         case "s":
-            guard let index = Int(rawValue), sharedStrings.indices.contains(index) else { return "" }
+            guard let index = Int(rawValue), sharedStrings.indices.contains(index) else { return nil }
             return sharedStrings[index]
         case "b":
+            guard !rawValue.isEmpty else { return nil }
             return rawValue == "1" ? "true" : "false"
+        case "str", "inlineStr", "e":
+            return rawValue.isEmpty ? nil : rawValue
         default:
-            return rawValue
+            return rawValue.isEmpty ? nil : rawValue
         }
     }
 }

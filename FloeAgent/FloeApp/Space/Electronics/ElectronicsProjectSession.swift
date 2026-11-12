@@ -2,6 +2,8 @@
 #if canImport(UIKit)
 import Foundation
 import Observation
+import FloeCore
+import FloeTools
 import FloeElectronicsCore
 import FloeElectronicsUI
 
@@ -18,6 +20,9 @@ import FloeElectronicsUI
     private init(id: UUID, directory: URL, workbench: EDWorkbenchSession) {
         self.id = id; self.directory = directory; self.workbench = workbench
         workbench.library = try? ElectronicsLibraryService.shared()
+        workbench.board3DModelLoader = AppElectronicsBoard3DModelLoader(cacheRootProvider: {
+            try FloeArtifactStore.root().appendingPathComponent("ElectronicsRemote", isDirectory: true)
+        })
         workbench.onSaved = { [weak self] _ in self?.schedulePublication() }
     }
     static func open(id: UUID, directory: URL) async throws -> ElectronicsProjectSession {

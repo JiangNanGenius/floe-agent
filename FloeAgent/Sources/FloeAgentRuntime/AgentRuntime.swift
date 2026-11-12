@@ -346,9 +346,9 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputFiles: output.outputFiles,
                 // These tools enforce their own bounded JSON pages. A second 4K
                 // cut here destroys the JSON and its continuation cursor.
-                maximumSummaryCharacters: ["notes.read", "notes.search", "studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining"].contains(call.toolName) ? 196_608 :
+                maximumSummaryCharacters: ["workspace.readFile", "workspace_readFile", "notes.read", "notes.search", "studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.chemistry", "studio.machining", "studio.chemistry.environment"].contains(call.toolName) ? 196_608 :
                     (["user.ask", "skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
-                        (["conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control", "chat.content.list", "latex.create", "latex.inspect", "latex.edit", "latex.typeset", "latex.restore", "latex.export"].contains(call.toolName) ? 98_304 : 4096)),
+                        (["electronics.library", "conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control", "chat.content.list", "latex.create", "latex.inspect", "latex.edit", "latex.typeset", "latex.restore", "latex.export"].contains(call.toolName) ? 98_304 : 4096)),
                 capturedOutput: output.capturedOutput ?? output.summary,
                 capturedOutputTruncated: output.capturedOutput == nil
                     ? output.summaryTruncated : output.capturedOutputTruncated,
@@ -1726,17 +1726,43 @@ public actor FloeAgentRuntime {
         // turn later, leaving a provider tool_call without its required tool
         // result. Recovery then failed at the provider boundary with a 400.
         await activeRunTask?.value
-        // 5. Persist and park.
+        // 5. Persist and park. A provider/tool failure or a real completion can
+        // win while step 4 waits for the stream consumer. That outcome owns the
+        // run: never attempt `failed/completed -> checkpointed` (the observed
+        // illegal-transition red card), and never relabel a real failure as a
+        // clean user stop. A failed/completed run still gets a best-effort
+        // terminal snapshot so its last known state is durable.
         await releaseRunAuthorities()
-        do {
-            try await writeCheckpoint()
-            await transition(to: .checkpointed(AgentState.CheckpointRef(
-                reason: FloeL10n.l("runtime.agent_runtime.the_task_was_stopped_by_you")
-            )))
-        } catch {
-            await transition(to: .failed(AgentState.AgentFailure(
-                message: "Checkpoint write failed during cancel: \(error.localizedDescription)"
-            )))
+        switch state {
+        case .failed, .completed:
+            do {
+                try await writeCheckpoint()
+            } catch {
+                logger.error(
+                    "cancelTerminalCheckpointFailed run=\(runID.uuidString) state=\(state.name) error=\(PersistenceErrorIdentity.render(error))"
+                )
+            }
+        case .checkpointed:
+            break
+        default:
+            do {
+                try await writeCheckpoint()
+                if case .cancelling = state {
+                    await transition(to: .checkpointed(AgentState.CheckpointRef(
+                        reason: FloeL10n.l("runtime.agent_runtime.the_task_was_stopped_by_you")
+                    )))
+                }
+            } catch {
+                if case .cancelling = state {
+                    await transition(to: .failed(AgentState.AgentFailure(
+                        message: "Checkpoint write failed during cancel: \(error.localizedDescription)"
+                    )))
+                } else {
+                    logger.error(
+                        "cancelCheckpointFailed run=\(runID.uuidString) state=\(state.name) error=\(PersistenceErrorIdentity.render(error))"
+                    )
+                }
+            }
         }
         // 6. Release any model loop waiting in `quiesceCancellingRun`. The
         // loop can exit on `modelTurnContinuationRequested == false` while
@@ -1827,10 +1853,14 @@ public actor FloeAgentRuntime {
         guard case .paused = state else { return }
         do {
             try await writeCheckpoint()
+            // A failure/cancel may have won during the save. Only the still
+            // paused run may park; never force a terminal run to checkpointed.
+            guard case .paused = state else { return }
             await transition(to: .checkpointed(AgentState.CheckpointRef(
                 reason: FloeL10n.l("runtime.agent_runtime.the_paused_wait_timed_out_current")
             )))
         } catch {
+            guard case .paused = state else { return }
             await transition(to: .failed(AgentState.AgentFailure(
                 message: "Checkpoint write failed: \(error.localizedDescription)"
             )))
@@ -1860,6 +1890,13 @@ public actor FloeAgentRuntime {
     /// waitingApproval, waitingUserQuestion, paused. streamingModel/
     /// executingTool downgrade to preparing on disk (replay boundary).
     public func checkpoint() async throws {
+        // The App calls this on background/suspension. A real terminal outcome
+        // already owns the run: persist its snapshot, but never transition a
+        // failed/completed run to checkpointed (illegal red-card transition).
+        if Self.isTerminalState(state) {
+            _ = try await writeCheckpoint()
+            return
+        }
         if activeRuntimeWait != nil || runtimeWaitRecords.values.contains(where: { record in
             record.receipt == nil && pendingToolCalls.contains(where: { call in call.id == record.owner.callID })
         }) {
@@ -3497,6 +3534,10 @@ public actor FloeAgentRuntime {
         startProviderWatchdog(attempt: providerAttemptNumber)
         if providerWireRetryRequest == nil { providerWireRetryRequest = wireRequest }
         var dispatchRequest = wireRequest
+        // Diagnostic-only correlation: never on the wire, in a checkpoint or
+        // in authority decisions. A provider rejection log can then be tied
+        // to the exact durable run without retaining user content.
+        dispatchRequest.diagnosticRunID = runID.uuidString
         let attempt = providerAttemptNumber
         dispatchRequest.onToolArgumentsProgress = { [weak self] in
             await self?.handleToolArgumentsProgress(attempt: attempt)
@@ -3756,6 +3797,13 @@ public actor FloeAgentRuntime {
         // Suppressing the terminal event here is essential: persistence must
         // not close the run before the steer is inserted.
         if case .completed(let completion) = event {
+            // The provider turn is terminal here even though finalization can
+            // still await resumed children, dependency facts, a verification
+            // decision or durable completion writes. The stream idle watchdog
+            // only covers provider progress; leaving it armed across those
+            // waits let a successful turn be cancelled and failed as a
+            // "stalled network" response after the configured idle window.
+            stopProviderWatchdog()
             if malformedToolRepairRequested {
                 continueAfterMalformedToolArguments()
                 return
@@ -3912,6 +3960,11 @@ public actor FloeAgentRuntime {
             break // Providers never emit tool results; runtime owns them.
 
         case .error(let error):
+            // No further progress can be expected from this provider response.
+            // Stop the idle watchdog before any correction/retry/compaction
+            // handling; those paths own their own lifecycle and must not be
+            // cancelled by the previous attempt's timeout.
+            stopProviderWatchdog()
             // The final-answer self-review is a best-effort extra pass: the
             // conclusion is already sealed and delivered. A provider error
             // here (context overflow, output limit, transport) must never
@@ -6079,6 +6132,7 @@ public actor FloeAgentRuntime {
         if let needsUserResult {
             waitingForUserAction = true
             modelTurnContinuationRequested = false
+            guard !Self.isTerminalState(state), !cancellationToken.isCancelled else { return }
             do {
                 await transition(to: .checkpointed(AgentState.CheckpointRef(
                     reason: needsUserResult.outputSummary.isEmpty
@@ -7580,6 +7634,15 @@ public actor FloeAgentRuntime {
         await sink?.agentRuntime(self, didChangeProviderAttempt: snapshot)
     }
 
+    /// Stops the exact provider-progress watchdog. Safe when none is armed;
+    /// callers use it at a terminal stream outcome so post-completion waits
+    /// (children, dependencies, verification, persistence) are not governed
+    /// by the provider idle budget.
+    private func stopProviderWatchdog() {
+        providerWatchdogTask?.cancel()
+        providerWatchdogTask = nil
+    }
+
     private func startProviderWatchdog(attempt: Int) {
         providerWatchdogTask?.cancel()
         // On-device MLX generation yields no provider event until the whole
@@ -7845,6 +7908,7 @@ public actor FloeAgentRuntime {
                 role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
         }
         await releaseRunAuthorities()
+        guard !cancellationToken.isCancelled, !Self.isTerminalState(state) else { return }
         let reason = Self.dependencyWaitReasonPrefix + ":"
             + labels.map(\.identifier).joined(separator: ",")
         let parkedState = AgentState.checkpointed(AgentState.CheckpointRef(reason: reason))
@@ -7858,7 +7922,7 @@ public actor FloeAgentRuntime {
             )
             return
         }
-        guard !cancellationToken.isCancelled else { return }
+        guard !cancellationToken.isCancelled, !Self.isTerminalState(state) else { return }
         await transition(to: parkedState)
     }
 

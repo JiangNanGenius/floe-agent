@@ -87,6 +87,8 @@ struct ThreadDetailView: View {
     @State private var autoReadEnabled = false
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
+    @State private var editingGoal: ConversationGoal?
+    @State private var goalPendingDeletion: ConversationGoal?
     @State private var showingPermissionsSheet = false
     /// This task's execution-location sheet. Only a saved ordinary chat may
     /// open it; Notes, canvas-embedded threads and temporary chats never do.
@@ -406,14 +408,24 @@ struct ThreadDetailView: View {
                 }
             }
             .sheet(isPresented: $showingGoalBuilder) {
-                GoalBuilderSheet(errorMessage: viewModel.actionError) { objective, criteria, blockers, stops in
-                    await viewModel.createGoal(
-                        objective: objective,
-                        criteria: criteria,
-                        blockingConditions: blockers,
-                        stoppingConditions: stops
-                    )
+                GoalBuilderSheet(goal: editingGoal, errorMessage: viewModel.actionError) { objective, criteria, blockers, stops in
+                    if let editingGoal {
+                        return await viewModel.editGoal(editingGoal, objective: objective, criteria: criteria,
+                            blockingConditions: blockers, stoppingConditions: stops)
+                    }
+                    return await viewModel.createGoal(objective: objective, criteria: criteria,
+                        blockingConditions: blockers, stoppingConditions: stops)
                 }
+            }
+            .confirmationDialog(IDELanguageRunText.t("删除目标？", "Delete goal?"),
+                isPresented: Binding(get: { goalPendingDeletion != nil }, set: { if !$0 { goalPendingDeletion = nil } }),
+                titleVisibility: .visible, presenting: goalPendingDeletion) { goal in
+                Button(IDELanguageRunText.t("删除目标", "Delete goal"), role: .destructive) {
+                    Task { await viewModel.deleteGoal(goal) }
+                }
+            } message: { _ in
+                Text(IDELanguageRunText.t("目标将停止后续自动推进，本轮仍会继续。对话、文件和已有结果会保留。",
+                    "The Goal will stop advancing to future rounds. This round continues. Your conversation, files and results will be kept."))
             }
             .sheet(isPresented: $showingPermissionsSheet) {
                 NavigationStack {
@@ -609,19 +621,33 @@ struct ThreadDetailView: View {
         .accessibilityElement(children: .contain)
     }
 
+    private func openGoalBuilder(_ goal: ConversationGoal? = nil) {
+        editingGoal = goal ?? viewModel.activeGoal
+        showingGoalBuilder = true
+    }
+
     private func goalStatusRow(_ goal: ConversationGoal) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Label("goal.title", systemImage: "target").font(.subheadline.weight(.semibold))
-                        Spacer(minLength: 8)
-                        Text(viewModel.goalStatusTitle(goal.status))
-                            .font(.caption).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("thread.goal.status")
+                Button { openGoalBuilder(goal) } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Label("goal.title", systemImage: "target").font(.subheadline.weight(.semibold))
+                            Spacer(minLength: 8)
+                            Text(viewModel.goalStatusTitle(goal.status))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("thread.goal.status")
+                        }
+                        Text(goal.objective).font(.subheadline).lineLimit(2)
                     }
-                    Text(goal.objective).font(.subheadline).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(IDELanguageRunText.t("编辑目标", "Edit goal"))
+                .accessibilityValue(goal.objective)
+                .accessibilityIdentifier("thread.goal.editSummary")
+                .disabled(viewModel.isChangingGoal)
                 Group {
                     if viewModel.isChangingGoal {
                         ProgressView().controlSize(.small).accessibilityLabel("goal.updating")
@@ -640,6 +666,20 @@ struct ThreadDetailView: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .frame(minWidth: 44, minHeight: 44)
+                Menu {
+                    Button(IDELanguageRunText.t("编辑目标", "Edit goal"), systemImage: "pencil") {
+                        openGoalBuilder(goal)
+                    }.accessibilityIdentifier("thread.goal.edit")
+                    Button(IDELanguageRunText.t("删除目标", "Delete goal"), systemImage: "trash", role: .destructive) {
+                        goalPendingDeletion = goal
+                    }.accessibilityIdentifier("thread.goal.delete")
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel(IDELanguageRunText.t("目标操作", "Goal actions"))
+                .accessibilityIdentifier("thread.goal.actions")
+                .disabled(viewModel.isChangingGoal)
             }
             ProgressView(value: Double(goal.steps.filter { $0.status == .completed }.count),
                          total: Double(max(1, goal.steps.count)))
@@ -648,6 +688,11 @@ struct ThreadDetailView: View {
                 Text(reason).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("thread.goal.blockedReason")
+            }
+            if goal.status == .paused, viewModel.isRunning {
+                Text(IDELanguageRunText.t("长期目标已暂停，本轮继续执行。可用输入框的停止按钮结束本轮。",
+                    "Long-term advancement is paused; this round continues. Use Stop in the composer to end this round."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if goal.status == .verifying {
                 Button("goal.confirm_complete") {
@@ -1187,8 +1232,9 @@ struct ThreadDetailView: View {
                     }
                 }
                 .disabled(refreshingMediaJobs)
-                Button("chat.thread_detail_view.set_goal_directly", systemImage: "target") {
-                    showingGoalBuilder = true
+                Button(viewModel.activeGoal == nil ? FloeL10n.l("chat.thread_detail_view.set_goal_directly")
+                    : IDELanguageRunText.t("编辑目标", "Edit goal"), systemImage: "target") {
+                    openGoalBuilder()
                 }
                 Button(exporting ? "chat.thread_detail_view.exporting" : "chat.thread_detail_view.export_full_task_including_tool_results", systemImage: "doc.badge.gearshape") {
                     exporting = true
@@ -1581,6 +1627,7 @@ struct ThreadDetailView: View {
             },
             onContinuousVoice: threadContinuousVoiceAction,
             onManualCompact: { viewModel.requestManualCompaction() },
+            onEditGoal: viewModel.activeGoal == nil ? nil : { openGoalBuilder() },
             onModelApplied: { previous, incoming in
                 // Recoverable history cleanup BEFORE the smaller-context
                 // model's first dispatch. Silent when the history already
@@ -1934,8 +1981,18 @@ private struct GoalBuilderSheet: View {
     @State private var stops = ""
     @State private var isSubmitting = false
     @State private var hasSubmitted = false
+    let goal: ConversationGoal?
     let errorMessage: String?
     let onCreate: @MainActor (String, [String], [String], [String]) async -> Bool
+
+    init(goal: ConversationGoal? = nil, errorMessage: String?,
+        onCreate: @escaping @MainActor (String, [String], [String], [String]) async -> Bool) {
+        self.goal = goal; self.errorMessage = errorMessage; self.onCreate = onCreate
+        _objective = State(initialValue: goal?.objective ?? "")
+        _criteria = State(initialValue: goal?.acceptanceCriteria.map(\.text).joined(separator: "\n") ?? "")
+        _blockers = State(initialValue: goal?.blockingConditions?.joined(separator: "\n") ?? "")
+        _stops = State(initialValue: goal?.stoppingConditions?.joined(separator: "\n") ?? "")
+    }
 
     var body: some View {
         NavigationStack {
@@ -1952,20 +2009,27 @@ private struct GoalBuilderSheet: View {
                 Section("chat.thread_detail_view.stop_conditions_one_per_line") {
                     TextEditor(text: $stops).frame(minHeight: 80)
                 }
+                if goal != nil {
+                    Section {
+                        Text(IDELanguageRunText.t("保存修改会暂停后续推进，本轮按原目标继续执行。已有进度和结果会保留，可在目标条重新启用后续推进。",
+                            "Saving pauses future advancement. This round keeps its original objective. Progress and results are retained; Resume re-enables future advancement."))
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
                 if hasSubmitted, let errorMessage {
                     Text(errorMessage).font(.callout).foregroundStyle(.red)
                         .accessibilityIdentifier("goal.builder.error")
                 }
             }
             .disabled(isSubmitting)
-            .navigationTitle("chat.thread_detail_view.set_goal")
+            .navigationTitle(goal == nil ? FloeL10n.l("chat.thread_detail_view.set_goal") : IDELanguageRunText.t("编辑目标", "Edit goal"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("workspace.workspace_canvas_view.cancel") { dismiss() }
                         .disabled(isSubmitting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("chat.thread_detail_view.create_and_start") {
+                    Button(goal == nil ? FloeL10n.l("chat.thread_detail_view.create_and_start") : FloeL10n.l("workspace.workspace_canvas_view.save")) {
                         isSubmitting = true
                         hasSubmitted = true
                         Task {

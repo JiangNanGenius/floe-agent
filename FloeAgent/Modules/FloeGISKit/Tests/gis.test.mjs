@@ -7,6 +7,7 @@ import { createGIS,sampleGIS,normalizeGIS,registerModelCommands,proj4,defineCRS,
 import { registerAnalysis,compileRasterExpression,terrainRaster,contours,shortestPath,rasterStatistics,geometryDistanceMeters } from '../Web/analysis.js';
 import { writeWKB,readWKB,parseCSV,writeGeoPackage,readGeoPackage,writeGeoTIFF,readGeoTIFF,writeASCIIGrid,readASCIIGrid,exportGIS,importGIS,registerFormats,writeShapefile,writeMBTiles,readMBTiles,sql,readWorldFile,writeWorldFile,querySQL,csvCoordinateKind,zipWorldFileEntry,zipSidecarEntry,archiveImageCRS } from '../Web/formats.js';
 import { registerViewCommands, makeMapSVG, makeViewportMapSVG, viewportExtent, layoutExtent, GISView, mapObservationEvidence, OBSERVE_IMAGE_BUDGET } from '../Web/view.js';
+import { installGISReadOnlyRenderPolicy } from '../Web/readonly.js';
 import { gisUI,gisTable,gisNativeSnapshot,registerGISUI } from '../Web/native.js';
 import { vectorColor, legendEntries } from '../Web/symbology.js';
 import { engine as bundledEngine } from '../Web/main.js';
@@ -90,10 +91,10 @@ test('raster-to-MBTiles writes real PNG tiles with TMS rows and reloadable metad
   const layer=rasterLayer('NE quadrant',Array(16).fill(50),4,4,[0,0,180,85.05112878]);layer.style={palette:'gray',band:0,min:0,max:100};const bytes=await writeMBTiles(layer,{minZoom:1,maxZoom:1}),SQL=await sql(),db=new SQL.Database(bytes);try{const rows=db.exec('SELECT zoom_level,tile_column,tile_row,tile_data FROM tiles')[0].values;assert.equal(rows.length,1);assert.deepEqual(rows[0].slice(0,3),[1,1,1]);const image=pngPixels(rows[0][3]);assert.equal(image.width,256);assert.equal(image.rgba[0],128);assert.equal(image.rgba[3],255);}finally{db.close();}const loaded=await readMBTiles(bytes,'offline.mbtiles');assert.equal(loaded.tileCount,1);assert.equal(loaded.metadata.format,'png');
 });
 test('north-up world-file pixel centers round-trip and rotated grids are rejected explicitly',()=>{const layer=rasterLayer('grid',Array(6).fill(1),3,2,[100,200,130,220],'EPSG:3857');assert.deepEqual(readWorldFile(writeWorldFile(layer),3,2),layer.bounds);assert.throws(()=>readWorldFile('10\n1\n0\n-10\n105\n215',3,2),/north-up/);});
-test('read-only SQLite queries bind quoted field names, link selection and reject writes',async()=>{const e=make(),layer=e.state.layers[1];await run(e,'attribute.set',{layer:layer.id,feature:layer.data.features[0].id,field:'quote"name',value:'ok'});const rows=await querySQL(e,{layer:layer.id,sql:'SELECT _id, "quote""name" AS quoted FROM features WHERE value < 20'});assert.equal(rows.length,1);assert.equal(rows[0].quoted,'ok');assert.equal(e.selection.features[0],String(layer.data.features[0].id));assert.deepEqual(await querySQL(e,{layer:layer.id,sql:'SELECT * FROM features WHERE value > 1000'}),[]);await assert.rejects(querySQL(e,{layer:layer.id,sql:'SELECT 1; DELETE FROM features'}),/single SELECT|readonly|read-only/);assert.equal(e.state.layers[1].data.features.length,3);});
+test('read-only SQLite queries bind quoted field names without selecting or rejecting writes',async()=>{const e=make(),layer=e.state.layers[1];await run(e,'attribute.set',{layer:layer.id,feature:layer.data.features[0].id,field:'quote"name',value:'ok'});e.selection={layer:layer.id,features:[layer.data.features[1].id]};const before=JSON.stringify({selection:e.selection,view:e.state.view,live:e.liveView??null,revision:e.revision,state:e.state});const rows=await querySQL(e,{layer:layer.id,sql:'SELECT _id, "quote""name" AS quoted FROM features WHERE value < 20'});assert.equal(rows.length,1);assert.equal(rows[0].quoted,'ok');assert.deepEqual(await querySQL(e,{layer:layer.id,sql:'SELECT * FROM features WHERE value > 1000'}),[]);await assert.rejects(querySQL(e,{layer:layer.id,sql:'SELECT 1; DELETE FROM features'}),/single SELECT|readonly|read-only/);assert.equal(e.state.layers[1].data.features.length,3);assert.equal(JSON.stringify({selection:e.selection,view:e.state.view,live:e.liveView??null,revision:e.revision,state:e.state}),before,'a readonly SQL query never changes selection, view or document');});
 test('geometry distance uses nearest edges, disjoint excludes any intersection, and routing snaps within segments',async()=>{
   const polygon=turf.polygon([[[0,0],[1,0],[1,1],[0,1],[0,0]]]),point=turf.point([.5,1.001]);assert.ok(geometryDistanceMeters(point,polygon)<120);assert.equal(geometryDistanceMeters(turf.point([.5,.5]),polygon),0);
-  const e=make(),source=vectorLayer('source',[turf.point([.5,.5]),turf.point([5,5])]),targets=vectorLayer('targets',[polygon,turf.polygon([[[2,2],[3,2],[3,3],[2,3],[2,2]]])]);e.state.layers.push(source,targets);const result=await run(e,'query.spatial',{layer:source.id,target:targets.id,predicate:'disjoint'});assert.equal(result.result.length,1);assert.equal(e.selection.features[0],source.data.features[1].id);
+  const e=make(),source=vectorLayer('source',[turf.point([.5,.5]),turf.point([5,5])]),targets=vectorLayer('targets',[polygon,turf.polygon([[[2,2],[3,2],[3,3],[2,3],[2,2]]])]);e.state.layers.push(source,targets);e.selection={layer:source.id,features:[source.data.features[0].id]};const selectionBefore=JSON.stringify(e.selection);const result=await run(e,'query.spatial',{layer:source.id,target:targets.id,predicate:'disjoint'});assert.equal(result.result.length,1);assert.equal(result.result[0].id,source.data.features[1].id);assert.equal(JSON.stringify(e.selection),selectionBefore,'a spatial query does not implicitly select its matches');
   const route=shortestPath(featureCollection([turf.lineString([[0,0],[1,0]])]),[.2,.1],[.8,-.1]);assert.ok(Math.abs(route.geometry.coordinates[0][0]-.2)<.01);assert.ok(Math.abs(route.geometry.coordinates.at(-1)[0]-.8)<.01);assert.ok(route.properties.lengthMeters>60000&&route.properties.lengthMeters<70000);
 });
 test('topology operations create editable output layers and retain holes and attributes',async()=>{
@@ -295,6 +296,50 @@ test('viewport observations render the actual live view without print furniture 
   const selected=await makeViewportMapSVG(e,{width:800,height:600,selection:{layerID:district.id,ids:new Set([String(featureID)])}});
   assert.ok(selected.svg.includes('#e28a00'),'the current selection is visibly highlighted like the interactive map');
   const unselected=await makeViewportMapSVG(e,{width:800,height:600});assert.ok(!unselected.svg.includes('#e28a00'));
+});
+test('attribute queries accept an omitted operator, validate fields/operators, and never select',async()=>{
+  const e=make(),layer=vectorLayer('Sites',[
+    {type:'Feature',id:'s1',geometry:{type:'Point',coordinates:[151.2093,-33.8688]},properties:{name:'Sydney',value:5}},
+    {type:'Feature',id:'s2',geometry:{type:'Point',coordinates:[151.1,-33.9]},properties:{name:'Other',value:9}},
+    {type:'Feature',id:'s3',geometry:{type:'Point',coordinates:[151.3,-33.8]},properties:{name:null,value:1}},
+  ]);e.state.layers.push(layer);e.selection={layer:layer.id,features:['s2']};e.liveView={center:[151.2093,-33.8688],zoom:13};
+  const before=JSON.stringify({selection:e.selection,live:e.liveView,view:e.state.view,state:e.state,revision:e.revision});
+  // The reported ordinary name filter omitted operator; equals is the default.
+  assert.deepEqual((await run(e,'query.attributes',{layer:layer.id,field:'name',value:'Sydney'})).result.map(r=>r.id),['s1']);
+  assert.deepEqual((await run(e,'query.attributes',{layer:layer.id,field:'name',operator:'contains',value:'Syd'})).result.map(r=>r.id),['s1']);
+  assert.deepEqual((await run(e,'query.attributes',{layer:layer.id,field:'name',operator:'isNull'})).result.map(r=>r.id),['s3']);
+  assert.deepEqual((await run(e,'query.attributes',{layer:layer.id,field:'value',operator:'greater',value:'4',sort:'value'})).result.map(r=>r.id),['s1','s2']);
+  await assert.rejects(run(e,'query.attributes',{layer:layer.id,field:'name',operator:'bogus',value:'x'}),/Unsupported query operator/);
+  await assert.rejects(run(e,'query.attributes',{layer:layer.id,field:'nope',operator:'equals',value:'x'}),/no such field/);
+  await assert.rejects(run(e,'query.attributes',{layer:layer.id,field:'value',operator:'greater',value:'abc'}),/numeric value/);
+  await assert.rejects(run(e,'query.attributes',{layer:layer.id,field:'name',operator:'equals'}),/Provide a value/);
+  assert.equal(JSON.stringify({selection:e.selection,live:e.liveView,view:e.state.view,state:e.state,revision:e.revision}),before,'attribute reads leave selection, view and document untouched');
+});
+test('pure-read dispatch never rebuilds the presentation; explicit selection/bookmark claims still redraw',async()=>{
+  const engine={commands:new globalThis.Map([
+    ['read',{descriptor:{access:'read'}}],['ui',{descriptor:{access:'read',sideEffecting:true}}],['edit',{descriptor:{access:'edit'}}]
+  ]),renders:0,async execute(request){await this.render();return request.command;},async render(){this.renders++;}};
+  installGISReadOnlyRenderPolicy(engine);
+  assert.equal(await engine.execute({command:'read'}),'read');assert.equal(engine.renders,0,'a pure query does not rebuild the map or capture liveView');
+  assert.equal(await engine.execute({command:'ui'}),'ui');assert.equal(engine.renders,1);
+  assert.equal(await engine.execute({command:'edit'}),'edit');assert.equal(engine.renders,2);
+  assert.equal(await engine.execute({command:'unknown'}),'unknown');assert.equal(engine.renders,3,'an unknown command is not treated as a pure read');
+  const e=make(),layer=e.state.layers[1],id=layer.data.features[0].id;
+  assert.equal(e.command('feature.select').sideEffecting,true);assert.equal(e.command('project.bookmarkOpen').sideEffecting,true);
+  const selected=await run(e,'feature.select',{layer:layer.id,features:[id]});
+  assert.deepEqual(selected.result.features,[id]);assert.equal(e.selection.features[0],id,'explicit selection remains a real command');
+});
+test('an explicit view targets the Sydney marker and print framing uses the same extent',async()=>{
+  const e=make(),layer=vectorLayer('Sites',[{type:'Feature',id:'sydney',geometry:{type:'Point',coordinates:[151.2093,-33.8688]},properties:{name:'Sydney'}}]);
+  e.state.layers=[layer];e.liveView={center:[151.2093,-33.8688],zoom:13};
+  const observed=await makeViewportMapSVG(e,{width:800,height:600});
+  assert.ok(observed.extent[0]<151.2093&&151.2093<observed.extent[2]&&observed.extent[1]<-33.8688&&-33.8688<observed.extent[3],'the returned viewport extent actually contains Sydney');
+  const circle=/<circle cx="([-\d.]+)" cy="([-\d.]+)"/.exec(observed.svg);assert.ok(circle,'the marker is drawn in the observation SVG');
+  const x=Number(circle[1]),y=Number(circle[2]);assert.ok(x>=0&&x<=800&&y>=0&&y<=600,'the marker is inside the observed frame, not a false visual claim');
+  const print=await makeMapSVG(e,{width:800,height:600}),extent=print.match(/data-extent="([^"]+)"/)[1].split(',').map(Number);
+  assert.ok(extent[0]<151.2093&&151.2093<extent[2]&&extent[1]<-33.8688&&-33.8688<extent[3],'print framing uses the same explicit view');
+  const far=await makeViewportMapSVG(e,{width:800,height:600,view:{center:[-7.3334,20],zoom:2}}),farCircle=/<circle cx="([-\d.]+)" cy="([-\d.]+)"/.exec(far.svg);
+  if(farCircle){const fx=Number(farCircle[1]),fy=Number(farCircle[2]);assert.ok(fx<0||fx>800||fy<0||fy>600,'a far view leaves Sydney outside the frame');}
 });
 test('archived Shapefiles and world-file images never guess a missing CRS',async()=>{
   const collection=featureCollection([{type:'Feature',geometry:{type:'Point',coordinates:[1,2]},properties:{}}]),archive=unzipSync(writeShapefile(collection,'shape'));

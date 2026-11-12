@@ -647,7 +647,7 @@ struct RootView: View {
                 #endif
             }
             if newPhase != .active {
-                environment.voiceInput.handleInterruption(reason: .interrupted)
+                environment.voiceInput.handleScenePhase(newPhase)
                 if newPhase == .background {
                     Task { await environment.voiceRecognitionPreload.setForeground(false) }
                 }

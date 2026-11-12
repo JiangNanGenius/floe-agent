@@ -192,48 +192,40 @@ public struct EDAOutputsView:View {
 public struct EDABoard3DView:View {
     let project:EDAProject
     let boardID:UUID?
-    public init(project:EDAProject,boardID:UUID?=nil){self.project=project;self.boardID=boardID}
-    public var body:some View{VStack(spacing:0){
-        SceneView(scene:scene(),options:[.allowsCameraControl,.autoenablesDefaultLighting])
-        Text(edText("三维显示实际板形、开孔与厚度；尚未加载元件三维模型。","3D shows the actual board outline, holes and thickness. Component 3D models are not loaded.")).font(.caption).foregroundStyle(.secondary).padding(8)
-    }}
-    private func scene()->SCNScene {
-        let scene=SCNScene()
-        guard let board=project.boards.first(where:{$0.id==boardID}) ?? project.boards.first,!board.outline.isEmpty else{return scene}
-        let path=EDABezierPath()
-        func polygon(_ points:[EDAPoint]){guard let first=points.first else{return};path.move(to:.init(x:first.x,y:first.y));for p in points.dropFirst(){
-#if canImport(UIKit)
-            path.addLine(to:.init(x:p.x,y:p.y))
-#else
-            path.line(to:.init(x:p.x,y:p.y))
-#endif
-        };path.close()}
-        polygon(board.outline)
-        for points in board.cutouts{polygon(Array(points.reversed()))}
-        let holes=board.holes.filter{$0.endPosition == nil}.map{($0.position,$0.diameter)}+board.vias.map{($0.position,$0.drill)}+board.footprints.flatMap{fp -> [(EDAPoint,Double)] in
-            (project.footprints.first{$0.id==fp.definitionID}?.pads ?? []).compactMap{pad in pad.drill.map{(fp.point(pad.position),$0)}}
+    let modelLoader:(any EDBoard3DModelLoading)?
+    @State private var renderer: EDBoard3DRenderer
+    @State private var presentationOwnerID = UUID()
+    @State private var reloadID = UUID()
+    public init(project:EDAProject,boardID:UUID?=nil,renderer:EDBoard3DRenderer?=nil,modelLoader:(any EDBoard3DModelLoading)?=nil){
+        self.project=project;self.boardID=boardID;self.modelLoader=modelLoader
+        _renderer = State(initialValue: renderer ?? EDBoard3DRenderer())
+    }
+    private struct LoadKey:Hashable { let project:UUID; let revision:UInt64; let board:UUID?; let reload:UUID }
+    private var loadKey:LoadKey { .init(project:project.id,revision:project.revision,board:boardID,reload:reloadID) }
+    public var body:some View{
+        VStack(spacing:0){
+            SceneView(scene:renderer.scene,options:[.allowsCameraControl,.autoenablesDefaultLighting])
+                .accessibilityIdentifier("electronics.board3d.scene")
+            VStack(alignment:.leading,spacing:4){
+                if renderer.state == .loading { ProgressView().controlSize(.small) }
+                Text(renderer.state == .ready ? renderer.status : (renderer.state == .idle ? edText("三维显示实际板形、开孔与厚度。","3D shows the actual board outline, holes and thickness.") : renderer.state.text))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let detail=renderer.failureDetail, !detail.isEmpty {
+                    DisclosureGroup(edText("未显示的模型","Models not shown")){ Text(detail).font(.caption2).textSelection(.enabled) }.font(.caption)
+                }
+                if modelLoader != nil {
+                    Button { reloadID = UUID() } label: {
+                        Label(edText("重新加载","Reload"),systemImage:"arrow.clockwise")
+                            .frame(minHeight:44)
+                    }.buttonStyle(.borderless).disabled(renderer.state == .loading)
+                        .accessibilityIdentifier("electronics.board3d.reload")
+                }
+            }.frame(maxWidth:.infinity,alignment:.leading).padding(8)
         }
-        for (center,diameter) in holes{polygon((0..<48).reversed().map{let a=Double($0)*2*Double.pi/48;return center + .init(cos(a)*diameter/2,sin(a)*diameter/2)})}
-        for hole in board.holes {
-            guard let end=hole.endPosition else{continue}
-            let angle=atan2(end.y-hole.position.y,end.x-hole.position.x),r=hole.diameter/2
-            var contour:[EDAPoint]=[]
-            for i in 0...24 {let a=angle-Double.pi/2+Double(i)*Double.pi/24;contour.append(end + EDAPoint(cos(a)*r,sin(a)*r))}
-            for i in 0...24 {let a=angle+Double.pi/2+Double(i)*Double.pi/24;contour.append(hole.position + EDAPoint(cos(a)*r,sin(a)*r))}
-            polygon(Array(contour.reversed()))
+        .task(id:loadKey){ await renderer.load(project:project,boardID:boardID,loader:modelLoader,ownerID:presentationOwnerID) }
+        .onDisappear{
+            let owner = presentationOwnerID
+            Task { await renderer.stopAndJoin(ownerID:owner) }
         }
-        let thickness=board.layers.reduce(0){$0+$1.thickness}
-        let shape=SCNShape(path:path,extrusionDepth:CGFloat(max(0.01,thickness)))
-#if canImport(UIKit)
-        shape.firstMaterial?.diffuse.contents=UIColor.systemGreen
-#elseif canImport(AppKit)
-        shape.firstMaterial?.diffuse.contents=NSColor.systemGreen
-#endif
-        let node=SCNNode(geometry:shape);scene.rootNode.addChildNode(node)
-        let center=EDAPoint(board.outline.map(\.x).reduce(0,+)/Double(board.outline.count),board.outline.map(\.y).reduce(0,+)/Double(board.outline.count))
-        let camera=SCNNode();camera.camera=SCNCamera();camera.camera?.zFar=100_000
-        camera.position=SCNVector3(Float(center.x),Float(center.y-120),140);camera.look(at:SCNVector3(Float(center.x),Float(center.y),0));scene.rootNode.addChildNode(camera)
-        return scene
     }
 }
-

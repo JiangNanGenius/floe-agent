@@ -66,19 +66,30 @@ struct ModelEditorView: View {
                 }
                 if serviceRole == .conversation {
                     Section {
-                    Picker("model.reasoning.effort", selection: reasoningEffort) {
-                        ForEach(ModelReasoningEffort.allCases) { effort in
-                            Text(effort.localizedTitle).tag(effort)
+                        Toggle("model.reasoning.omit_parameters", isOn: Binding(
+                            get: { model.omitReasoningParameters == true },
+                            set: { model.omitReasoningParameters = $0 }
+                        ))
+                        .accessibilityIdentifier("model.omit_reasoning_parameters")
+                        Picker("model.reasoning.effort", selection: reasoningEffort) {
+                            ForEach(ModelReasoningEffort.allCases) { effort in
+                                Text(effort.localizedTitle).tag(effort)
+                            }
                         }
-                    }
-                    .accessibilityIdentifier("model.reasoning_effort")
+                        .disabled(model.omitReasoningParameters == true)
+                        .accessibilityIdentifier("model.reasoning_effort")
                     } header: {
                         Text("model.section.reasoning")
                     } footer: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("model.reasoning.hint")
-                            if model.remoteModelID.lowercased().contains("deepseek") {
-                                Text("providers.model_editor.reasoning.deepseek_medium_note")
+                            if model.omitReasoningParameters == true {
+                                Text("model.reasoning.omit_parameters.hint")
+                            } else {
+                                Text("model.reasoning.hint")
+                                if model.reasoningMetadata == nil,
+                                   model.remoteModelID.lowercased().contains("deepseek") {
+                                    Text("providers.model_editor.reasoning.deepseek_medium_note")
+                                }
                             }
                         }
                     }

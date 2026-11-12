@@ -52,12 +52,18 @@ public struct FileContent: Sendable, Equatable {
     public var totalLines: Int
     /// Byte offset of the returned window within the file.
     public var byteOffset: Int
+    /// Whole-file byte count, independent from this page's decoded text.
+    public var totalBytes: Int
+    public var bytesReturned: Int { text.utf8.count }
+    /// Exact UTF-8 byte boundary for the next page, nil at EOF.
+    public var nextOffset: Int? { truncated ? byteOffset + bytesReturned : nil }
 
-    public init(text: String, truncated: Bool, totalLines: Int, byteOffset: Int) {
+    public init(text: String, truncated: Bool, totalLines: Int, byteOffset: Int, totalBytes: Int? = nil) {
         self.text = text
         self.truncated = truncated
         self.totalLines = totalLines
         self.byteOffset = byteOffset
+        self.totalBytes = totalBytes ?? byteOffset + text.utf8.count
     }
 }
 
@@ -269,6 +275,7 @@ public struct WorkspaceFileService: Sendable {
     public func readFile(
         _ path: String,
         byteOffset: Int = 0,
+        limit: Int = WorkspaceFileService.readChunkBytes,
         cancellation: CancellationToken? = nil
     ) throws -> FileContent {
         try cancellation?.throwIfCancelled()
@@ -284,14 +291,16 @@ public struct WorkspaceFileService: Sendable {
 
         let data = try Data(floeContentsOf: url)
         let clampedOffset = max(0, min(byteOffset, data.count))
-        let end = min(clampedOffset + Self.readChunkBytes, data.count)
-        let slice = data[clampedOffset..<end]
-        let truncated = end < data.count
-
+        guard data.count <= guardResolver.maxReadBytes else {
+            throw WorkspaceToolError.tooLarge(limit: guardResolver.maxReadBytes)
+        }
+        let window = try WorkspaceTextPage.decode(
+            data: Data(data.dropFirst(clampedOffset).prefix(Self.readChunkBytes)),
+            offset: clampedOffset, totalBytes: data.count, limit: limit)
+        try cancellation?.throwIfCancelled()
         let whole = String(decoding: data, as: UTF8.self)
-        let totalLines = Self.lineCount(of: whole)
-        let text = String(decoding: slice, as: UTF8.self)
-        return FileContent(text: text, truncated: truncated, totalLines: totalLines, byteOffset: clampedOffset)
+        return FileContent(text: window.text, truncated: window.truncated,
+            totalLines: Self.lineCount(of: whole), byteOffset: clampedOffset, totalBytes: data.count)
     }
 
     /// Reads a complete UTF-8-compatible text file for interactive editing.
@@ -470,6 +479,8 @@ public struct WorkspaceFileService: Sendable {
             }
         }
         try assertNotFrozen(url)
+        try cancellation?.throwIfCancelled()
+        try Task.checkCancellation()
         return try performWrite(url, path: path, content: content)
     }
 
@@ -570,6 +581,8 @@ public struct WorkspaceFileService: Sendable {
             )
         }
         try assertNotFrozen(url)
+        try cancellation?.throwIfCancelled()
+        try Task.checkCancellation()
         return try performWrite(url, path: path, content: content)
     }
 

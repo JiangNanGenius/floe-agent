@@ -25,6 +25,13 @@ public struct RunLaunchRequest: Sendable, Hashable {
     public var attachments: [AttachmentRef]
     public var startedAt: Date
     public var conversationMode: String
+    /// A known Goal is bound in the same transaction as its preparing run.
+    /// Both fields are native launch metadata, never model arguments.
+    public var goalID: UUID?
+    public var expectedGoalRevision: Int?
+    /// Native definition admission proof; persistence deliberately does not
+    /// depend on the Runtime implementation of the canonical fingerprint.
+    public var goalDefinitionFingerprint: String?
     public var initialPolicy: DraftTaskPolicy
     /// `goalContinuation` is an internal cycle prompt. It is durable for
     /// audit/recovery, but is not rendered as a user-authored chat message.
@@ -49,6 +56,9 @@ public struct RunLaunchRequest: Sendable, Hashable {
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
         conversationMode: String = "chat",
+        goalID: UUID? = nil,
+        expectedGoalRevision: Int? = nil,
+        goalDefinitionFingerprint: String? = nil,
         initialPolicy: DraftTaskPolicy = DraftTaskPolicy(),
         messageRole: String = "user",
         providerID: UUID? = nil,
@@ -68,6 +78,9 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.workspaceID = workspaceID
         self.attachments = attachments
         self.conversationMode = conversationMode
+        self.goalID = goalID
+        self.expectedGoalRevision = expectedGoalRevision
+        self.goalDefinitionFingerprint = goalDefinitionFingerprint
         self.initialPolicy = initialPolicy
         self.messageRole = messageRole
         self.providerID = providerID
@@ -134,6 +147,15 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
         }
         guard ["user", "goalContinuation"].contains(request.messageRole) else {
             throw FloeError.validationFailed("Unknown launch message role")
+        }
+        guard (request.goalID == nil) == (request.expectedGoalRevision == nil),
+              (request.goalID == nil) == (request.goalDefinitionFingerprint == nil),
+              request.expectedGoalRevision.map({ $0 > 0 }) ?? true,
+              request.goalDefinitionFingerprint.map({ $0.utf8.count == 64 && $0.utf8.allSatisfy { ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102) } }) ?? true,
+              request.goalID == nil || (request.conversationID != nil && request.conversationMode == "goal") else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "目标启动信息不完整或不属于当前会话。请刷新目标后重试。"
+                : "The Goal launch binding is incomplete or does not belong to this conversation. Refresh the Goal before retrying.")
         }
 
         return try await database.writer { db in
@@ -317,7 +339,18 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 owningWorkspaceID = owner
             }
 
-            let run = RunRecord(
+            if let goalID = request.goalID, let revision = request.expectedGoalRevision {
+                guard try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(SELECT 1 FROM conversation_goals
+                        WHERE id = ? AND conversation_id = ? AND status = 'active'
+                        AND COALESCE(revision, 1) = ?)
+                    """, arguments: [goalID.uuidString, conversation.id.uuidString, revision]) == true else {
+                    throw FloeError.validationFailed(FloeL10n.isChinese
+                        ? "目标已改变或已停止，此次执行未启动。请刷新目标后重试。"
+                        : "The Goal changed or stopped, so this execution was not started. Refresh the Goal before retrying.")
+                }
+            }
+            var run = RunRecord(
                 id: request.runID,
                 conversationID: conversation.id,
                 state: request.initialState,
@@ -329,13 +362,14 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 modelName: request.modelName,
                 conversationMode: request.conversationMode
             )
+            run.goalID = request.goalID
             try db.execute(
                 sql: """
                     INSERT INTO runs (
                         id, conversation_id, state, goal, started_at, ended_at, goal_id,
                         provider_id, model_id, provider_name_snapshot, model_name_snapshot,
                         conversation_mode
-                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     run.id.uuidString,
@@ -343,6 +377,7 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                     run.state,
                     run.goal,
                     PersistenceCodec.encode(run.startedAt),
+                    run.goalID?.uuidString,
                     run.providerID?.uuidString,
                     run.modelID?.uuidString,
                     run.providerName,
@@ -419,6 +454,14 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 arguments: [PersistenceCodec.encode(now), conversation.id.uuidString]
             )
+            var admission = ["state": "preparing"]
+            if let goalID = request.goalID, let revision = request.expectedGoalRevision,
+               let fingerprint = request.goalDefinitionFingerprint {
+                admission["goalID"] = goalID.uuidString
+                admission["goalRevision"] = String(revision)
+                admission["goalDefinitionFingerprint"] = fingerprint
+            }
+            let admissionJSON = String(decoding: try JSONSerialization.data(withJSONObject: admission, options: [.sortedKeys]), as: UTF8.self)
             try db.execute(
                 sql: """
                     INSERT INTO run_events (id, run_id, sequence, kind, payload_json, created_at)
@@ -427,7 +470,7 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 arguments: [
                     UUID().uuidString,
                     run.id.uuidString,
-                    #"{"state":"preparing"}"#,
+                    admissionJSON,
                     PersistenceCodec.encode(now)
                 ]
             )

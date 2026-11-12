@@ -19,15 +19,21 @@ public struct WorkspaceToolEnvironment: Sendable {
     public var maxReadBytes: Int
     /// Maximum write size applied to every guard created from the root.
     public var maxWriteBytes: Int
+    /// App-injected read-only absolute Mac-path seam. Nil keeps the existing
+    /// relative-only workspace contract; it is never a fallback for another
+    /// execution backend.
+    public var macAbsoluteReader: (any MacAbsoluteFileReading)?
 
     public init(
         rootProvider: @escaping @Sendable () -> URL?,
         maxReadBytes: Int = 10 * 1024 * 1024,
-        maxWriteBytes: Int = 4 * 1024 * 1024
+        maxWriteBytes: Int = 4 * 1024 * 1024,
+        macAbsoluteReader: (any MacAbsoluteFileReading)? = nil
     ) {
         self.rootProvider = rootProvider
         self.maxReadBytes = maxReadBytes
         self.maxWriteBytes = maxWriteBytes
+        self.macAbsoluteReader = macAbsoluteReader
     }
 
     /// Builds a file service for the current workspace root. Agent
@@ -123,12 +129,14 @@ enum WorkspaceToolSupport {
 
     static func output(
         _ summary: String,
-        artifacts: [ToolArtifactReference] = []
+        artifacts: [ToolArtifactReference] = [],
+        maximumSummaryCharacters: Int = 4096
     ) -> ToolExecutionOutput {
         ToolExecutionOutput(
             summary: summary,
             fullOutputSHA256: WorkspaceFileService.sha256Hex(of: Data(summary.utf8)),
-            artifacts: artifacts
+            artifacts: artifacts,
+            maximumSummaryCharacters: maximumSummaryCharacters
         )
     }
 
@@ -299,13 +307,13 @@ public struct WorkspaceReadFileTool: AgentTool {
 
     public static let name = "workspace.readFile"
     public static let toolDescription =
-        "Read up to 64 KiB of a workspace file. When the file is larger, the result is marked truncated and reports total line count; continue with offset."
+        "Read up to 64 KiB of a workspace file. On a task running on the paired Mac, an absolute Mac path is also accepted, including a file outside the task workspace. Returns a complete UTF-8 page with bytes, totalBytes and nextOffset; pass nextOffset as offset until it is none. Do not guess offsets or count characters as bytes. Prefer this native tool for text reads rather than starting Linux."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative file path"},
-        "offset": {"type": "integer", "description": "Byte offset to start reading at (0-based)"},
+        "path": {"type": "string", "description": "Workspace-relative file path, or an absolute Mac path when this task runs on the paired Mac"},
+        "offset": {"type": "integer", "description": "UTF-8 byte boundary (0-based); use the previous nextOffset"},
         "limit": {"type": "integer", "description": "Maximum bytes to read; clamped to 65536"}
       },
       "required": ["path"],
@@ -338,37 +346,49 @@ public struct WorkspaceReadFileTool: AgentTool {
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
-        try context.authorizeWorkspacePath(args.path)
-        if let route = try await environment.networkRoute(path: args.path, context: context) {
+        try validate(args)
+        if MacAbsolutePath.isAbsolute(args.path) {
+            // Absolute Mac paths are routed only through the app-injected,
+            // task-environment-authorized reader; ordinary workspace
+            // resolution and its ceilings remain untouched.
+            guard let reader = environment.macAbsoluteReader else {
+                throw WorkspaceToolError.invalidArguments(
+                    "path must be relative to the workspace root: \(args.path)")
+            }
+            try MacAbsoluteReadAuthorization.authorize(args.path, context: context)
             let offset = args.offset ?? 0
-            let limit = min(args.limit ?? WorkspaceFileService.readChunkBytes, WorkspaceFileService.readChunkBytes)
-            let data = try await route.adapter.read(path: route.relativePath, offset: offset, limit: limit + 1)
-            let truncated = data.count > limit
-            let visible = truncated ? data.prefix(limit) : data[...]
-            let text = String(decoding: visible, as: UTF8.self)
-            let totalLines = text.reduce(into: 1) { if $1 == "\n" { $0 += 1 } }
-            return WorkspaceToolSupport.output("path=\(args.path) offset=\(offset) truncated=\(truncated) totalLines=\(totalLines) network=true\n\(text)")
+            let limit = min(args.limit ?? WorkspaceFileService.readChunkBytes,
+                            WorkspaceFileService.readChunkBytes)
+            guard let chunk = try await reader.readMacAbsoluteFileChunk(
+                path: args.path, offset: offset, limit: limit,
+                expectedIdentity: nil, verifySHA256: false, context: context) else {
+                throw FloeError.validationFailed(
+                    "Absolute Mac paths are available only when this task's selected execution target is the currently paired Mac. Choose that Mac for the task or use a workspace-relative path.")
+            }
+            try context.cancellation.throwIfCancelled()
+            let start = min(offset, chunk.totalBytes)
+            guard chunk.totalBytes >= 0, chunk.data.count <= limit,
+                  chunk.byteOffset == start + chunk.data.count,
+                  chunk.byteOffset <= chunk.totalBytes else {
+                throw WorkspaceToolError.invalidArguments("The Mac returned an invalid text page")
+            }
+            let page = try WorkspaceTextPage.decode(data: chunk.data, offset: start,
+                totalBytes: chunk.totalBytes, limit: limit)
+            return WorkspaceTextPage.output(path: args.path, content: page,
+                extra: " macBridge=true", totalLinesKnown: false)
+        }
+        try context.authorizeWorkspacePath(args.path)
+        let limit = min(args.limit ?? WorkspaceFileService.readChunkBytes, WorkspaceFileService.readChunkBytes)
+        if let route = try await environment.networkRoute(path: args.path, context: context) {
+            let page = try await WorkspaceTextPage.readNetwork(route: route,
+                offset: args.offset ?? 0, limit: limit, cancellation: context.cancellation)
+            return WorkspaceTextPage.output(path: args.path, content: page,
+                extra: " network=true", totalLinesKnown: false)
         }
         let service = try environment.makeService(context: context)
-        let content = try service.readFile(
-            args.path,
-            byteOffset: args.offset ?? 0,
-            cancellation: context.cancellation
-        )
-        // Honor a caller-supplied limit below the service chunk size.
-        let limit = args.limit ?? WorkspaceFileService.readChunkBytes
-        var text = content.text
-        var truncated = content.truncated
-        if limit < WorkspaceFileService.readChunkBytes {
-            let bytes = Data(text.utf8)
-            if bytes.count > limit {
-                text = String(decoding: bytes.prefix(limit), as: UTF8.self)
-                truncated = true
-            }
-        }
-        var summary = "path=\(args.path) offset=\(content.byteOffset) truncated=\(truncated) totalLines=\(content.totalLines)\n"
-        summary += text
-        return WorkspaceToolSupport.output(summary)
+        let content = try service.readFile(args.path, byteOffset: args.offset ?? 0,
+            limit: limit, cancellation: context.cancellation)
+        return WorkspaceTextPage.output(path: args.path, content: content)
     }
 }
 

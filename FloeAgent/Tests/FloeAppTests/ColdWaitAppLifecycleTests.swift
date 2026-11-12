@@ -389,59 +389,79 @@ struct GoalLifecycleTests {
         #expect(preflightPaused.evidence == persistedSeed.evidence && preflightPaused.progress == persistedSeed.progress)
         let started = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
             expectedRevision: preflightPaused.revision ?? 1, provider: provider, model: model)
+        let startedID = try #require(started.runID)
+        let startedRound = try #require(started.startedRun)
         let attached = await until {
-            (try? await environment.runStore.run(id: started.runID)?.goalID) == original.id && state.requestCount >= 1
+            (try? await environment.runStore.run(id: startedID)?.goalID) == original.id && state.requestCount >= 1
         }
         #expect(attached)
+        let admittedRun = try #require(try await environment.runStore.run(id: startedID))
         let beforePause = try #require(try await environment.intelligenceStore.goal(id: original.id))
         let paused = try await center.pauseGoal(conversationID: conversationID, expectedGoalID: original.id,
             expectedRevision: beforePause.revision ?? 1)
-        _ = await started.result.value
         #expect(paused.status == .paused)
         #expect(paused.evidence == beforePause.evidence && paused.progress == beforePause.progress,
-            "Pause must preserve the durable snapshot immediately before it, including legitimate execution progress")
+            "Long-term Pause preserves the durable progress at its CAS boundary")
         #expect(paused.budgets == beforePause.budgets && paused.budgets == persistedSeed.budgets)
-        #expect(persistedSeed.evidence.allSatisfy { paused.evidence.contains($0) }, "Prior evidence must not be lost")
-        let lateAttempted = await until { state.lateCompletionAttempts >= 1 }
-        #expect(lateAttempted)
+        let runningAfterPause = try #require(try await environment.runStore.run(id: startedID))
+        #expect(runningAfterPause.endedAt == nil && runningAfterPause.goal == admittedRun.goal && center.hasLiveOwner(runID: startedID),
+            "Long-term Pause must leave the accepted round executing its immutable objective")
+        let rearmed = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
+            expectedRevision: paused.revision ?? 1, provider: provider, model: model)
+        #expect(rearmed.runID == startedID && rearmed.startedRun == nil)
+        #expect(try await environment.runStore.runs(conversationID: conversationID).count == 1)
+        // Explicit composer Stop, unlike Goal Pause, ends this exact round
+        // and pauses its associated long-term Goal before cancellation.
+        try await center.stopRunFromComposer(runningAfterPause)
+        _ = await startedRound.result.value
+        #expect(await until { !center.hasLiveOwner(runID: startedID) })
+        #expect(try await environment.runStore.run(id: startedID)?.state == "cancelled")
+        #expect(await until { state.lateCompletionAttempts >= 1 })
         let afterLateCompletion = try #require(try await environment.intelligenceStore.goal(id: original.id))
-        #expect(afterLateCompletion == paused, "A late completion must not change any paused goal field or revision")
+        #expect(afterLateCompletion.status == .paused && afterLateCompletion.objective == original.objective)
+        #expect(afterLateCompletion.budgets == persistedSeed.budgets)
+        #expect(beforePause.evidence.allSatisfy { afterLateCompletion.evidence.contains($0) })
+        #expect(afterLateCompletion.progress.modelCallCount >= beforePause.progress.modelCallCount,
+            "Native Stop settlement may append legitimate usage but cannot discard progress or rearm the Goal")
         var stale = original; stale.status = .verifying
         let overwritten = try await environment.intelligenceStore.saveGoalIfRevisionMatches(stale, expectedRevision: 1)
         #expect(!overwritten, "A late completion must not overwrite the paused revision")
-        var blocked = paused
+        var blocked = afterLateCompletion
         blocked.status = .blocked; blocked.progress.repeatedBlockerKey = "no-inspectable-evidence"; blocked.progress.repeatedBlockerCount = 3
-        let blockedSaved = try await environment.intelligenceStore.saveGoalIfRevisionMatches(blocked, expectedRevision: paused.revision ?? 1)
+        let blockedSaved = try await environment.intelligenceStore.saveGoalIfRevisionMatches(blocked,
+            expectedRevision: afterLateCompletion.revision ?? 1)
         #expect(blockedSaved)
         let savedBlocked = try #require(try await environment.intelligenceStore.goal(id: original.id))
         #expect(center.goalBlockedReason(savedBlocked)?.isEmpty == false)
         let resumed = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
             expectedRevision: savedBlocked.revision ?? 1, provider: provider, model: model)
+        let resumedID = try #require(resumed.runID)
+        let resumedRound = try #require(resumed.startedRun)
         let reattached = await until {
-            (try? await environment.runStore.run(id: resumed.runID)?.goalID) == original.id && state.requestCount >= 2
+            (try? await environment.runStore.run(id: resumedID)?.goalID) == original.id && state.requestCount >= 2
         }
-        #expect(reattached && resumed.runID != started.runID)
+        #expect(reattached && resumedID != startedID)
         let active = try #require(try await environment.intelligenceStore.goal(id: original.id))
-        do {
-            _ = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
-                expectedRevision: active.revision ?? 1, provider: provider, model: model)
-            Issue.record("Resume re-entered an already-owned goal run")
-        } catch { }
+        let noDuplicate = try await center.resumeGoal(conversationID: conversationID, expectedGoalID: original.id,
+            expectedRevision: active.revision ?? 1, provider: provider, model: model)
+        #expect(noDuplicate.runID == resumedID && noDuplicate.startedRun == nil)
+        let current = try #require(try await environment.intelligenceStore.goal(id: original.id))
         let final = try await center.pauseGoal(conversationID: conversationID, expectedGoalID: original.id,
-            expectedRevision: active.revision ?? 1)
-        _ = await resumed.result.value
-        #expect(final.status == .paused)
-        #expect(final.evidence == active.evidence && final.progress == active.progress)
-        #expect(final.budgets == active.budgets && final.budgets == persistedSeed.budgets)
-        #expect(persistedSeed.evidence.allSatisfy { final.evidence.contains($0) }, "Explicit resume must retain prior evidence")
-        #expect(final.progress.cycleCount >= persistedSeed.progress.cycleCount
-            && final.progress.modelCallCount >= persistedSeed.progress.modelCallCount
-            && final.progress.totalIterationCount >= persistedSeed.progress.totalIterationCount,
+            expectedRevision: current.revision ?? 1)
+        #expect(final.status == .paused && center.hasLiveOwner(runID: resumedID))
+        #expect(final.evidence == current.evidence && final.progress == current.progress)
+        #expect(final.budgets == current.budgets && final.budgets == persistedSeed.budgets)
+        let stopping = try #require(try await environment.runStore.run(id: resumedID))
+        try await center.stopRunFromComposer(stopping)
+        _ = await resumedRound.result.value
+        #expect(await until { !center.hasLiveOwner(runID: resumedID) && state.lateCompletionAttempts >= 2 })
+        let settled = try #require(try await environment.intelligenceStore.goal(id: original.id))
+        #expect(settled.status == .paused && settled.budgets == final.budgets)
+        #expect(final.evidence.allSatisfy { settled.evidence.contains($0) }, "Explicit resume and Stop retain all prior evidence")
+        #expect(settled.progress.cycleCount >= persistedSeed.progress.cycleCount
+            && settled.progress.modelCallCount >= persistedSeed.progress.modelCallCount
+            && settled.progress.totalIterationCount >= persistedSeed.progress.totalIterationCount,
             "Execution may advance counters but cannot discard existing progress")
-        let secondLateAttempted = await until { state.lateCompletionAttempts >= 2 }
-        #expect(secondLateAttempted)
-        #expect(try await environment.intelligenceStore.goal(id: original.id) == final,
-            "The second late completion must leave the entire final paused snapshot unchanged")
         #expect(try await environment.intelligenceStore.goals(conversationID: conversationID).count == 1)
         #expect(try await environment.runStore.runs(conversationID: conversationID).count == 2)
         try await center.deleteConversation(id: conversationID)

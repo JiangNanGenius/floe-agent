@@ -205,6 +205,7 @@ public struct MemoryRecallTool: AgentTool {
                 if $0.importance != $1.importance { return $0.importance > $1.importance }
                 return $0.updatedAt > $1.updatedAt
             }
+            await store.recordMemoryUse(sorted.map(\.id), runID: context.runID)
             let body = sorted.isEmpty
                 ? "No active memories."
                 : sorted.map { "- \($0.content)" }.joined(separator: "\n")
@@ -246,6 +247,7 @@ public struct MemorySearchTool: AgentTool {
             query: args.query, workspaceID: args.workspaceID,
             conversationID: args.taskID, limit: args.limit ?? 10
         ))
+        await store.recordMemoryUse(items.map(\.id), runID: context.runID)
         let body = items.map {
             "id=\($0.id.uuidString) relevance=\(String(format: "%.3f", $0.relevance)) content=\($0.content)"
         }.joined(separator: "\n")

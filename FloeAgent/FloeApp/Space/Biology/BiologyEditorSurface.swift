@@ -18,7 +18,7 @@ struct BiologyEditorSurface: View {
         }
     }
     var body: some View {
-        BiologyWorkbench(service: session.host.service, projectID: session.projectID,
+        BiologyWorkbench(model: session.workbenchModel,
             onInsertInNotes: { project, asset, run in
                 guard let onInsertIntoNotes else { throw BiologyHostError.unavailable }
                 let payload = try await session.notePayload(projectID: project, assetID: asset, runID: run)

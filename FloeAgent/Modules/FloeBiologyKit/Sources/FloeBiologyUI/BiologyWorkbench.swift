@@ -9,6 +9,9 @@ import FloeBiologySamples
 @MainActor public struct BiologyWorkbench:View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var model:BiologyWorkbenchModel
+    private let observesServiceChanges:Bool
+    private struct AssetEditorContext {let asset:BiologyAsset;let recordIndex:Int}
+    @State private var assetEditorContext:AssetEditorContext?
     private let onAI:BiologyAIHandler?
     private let onInsertInNotes:BiologyNotesHandler?
     private let executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)?
@@ -53,7 +56,12 @@ import FloeBiologySamples
     @State private var showResult=false
     private enum Panel:String,Identifiable {case sequence,annotation,network,blankSequence,blankNetwork,history,notes,assistant,rename,tools;var id:String{rawValue}}
     public init(service:BiologyService,projectID:UUID,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil,onRunAnalysis:BiologyNativeAnalysisHandler? = nil,onImportFile:BiologyNativeFileImportHandler? = nil,onAuthorizeFile:BiologyNativeFileAuthorizationHandler? = nil,scientificEnvironmentID:String? = nil,assistantContent:(@MainActor (BiologyAIContext) -> AnyView)? = nil,prepareAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil,onPresentAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil) {
-        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID;self.assistantContent=assistantContent;self.prepareAssistant=prepareAssistant;self.onPresentAssistant=onPresentAssistant
+        _model=State(initialValue:BiologyWorkbenchModel(service:service,projectID:projectID));self.observesServiceChanges=true;self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID;self.assistantContent=assistantContent;self.prepareAssistant=prepareAssistant;self.onPresentAssistant=onPresentAssistant
+    }
+    /// A host-owned presentation reuses the same observable model its native
+    /// project/session refreshes. Standalone callers retain the original init.
+    public init(model:BiologyWorkbenchModel,onAI:BiologyAIHandler? = nil,onInsertInNotes:BiologyNotesHandler? = nil,executionOwner:(@MainActor @Sendable (UUID,UUID) async throws -> BiologyExecutionOwner)? = nil,makeTools:(@MainActor @Sendable (UUID) async throws -> BiologyToolSession)? = nil,onRunAnalysis:BiologyNativeAnalysisHandler? = nil,onImportFile:BiologyNativeFileImportHandler? = nil,onAuthorizeFile:BiologyNativeFileAuthorizationHandler? = nil,scientificEnvironmentID:String? = nil,assistantContent:(@MainActor (BiologyAIContext) -> AnyView)? = nil,prepareAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil,onPresentAssistant:(@MainActor (BiologyAIContext) async throws -> Void)? = nil) {
+        _model=State(initialValue:model);self.observesServiceChanges=false;self.onAI=onAI;self.onInsertInNotes=onInsertInNotes;self.executionOwner=executionOwner;self.makeTools=makeTools;self.onRunAnalysis=onRunAnalysis;self.onImportFile=onImportFile;self.onAuthorizeFile=onAuthorizeFile;self.scientificEnvironmentID=scientificEnvironmentID;self.assistantContent=assistantContent;self.prepareAssistant=prepareAssistant;self.onPresentAssistant=onPresentAssistant
     }
     public var body:some View {
         GeometryReader { geometry in
@@ -62,7 +70,7 @@ import FloeBiologySamples
                 VStack(spacing:0) {
                     header(compact:geometry.size.width<=850)
                     Divider()
-                    if showResult,let run=model.run {BiologyResultView(run:run,source:model.selected)}
+                    if showResult,let run=model.run {BiologyResultView(run:run,source:model.runSource)}
                     else {workspace}
                     if !model.activeRuns.isEmpty || model.run != nil {Divider();jobBar}
                 }.frame(maxWidth:.infinity,maxHeight:.infinity).background(BiologyStyle.background)
@@ -72,7 +80,7 @@ import FloeBiologySamples
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {toolbar}
         .inspector(isPresented:$showingAnalysis){properties.inspectorColumnWidth(min:280,ideal:320,max:360).presentationDetents([.large])}
-        .sheet(item:$sheet){panel in panelView(panel).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
+        .sheet(item:$sheet,onDismiss:{assetEditorContext=nil}){panel in panelView(panel).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
         .sheet(item:$renaming){asset in BiologyAssetRenameSheet(model:model,asset:asset).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
         .sheet(item:$transforming){request in BiologyStructureTransformSheet(model:model,request:request).presentationSizing(.page).presentationCornerRadius(24).presentationDragIndicator(.visible)}
         .sheet(item:$assistantContext){context in
@@ -94,12 +102,15 @@ import FloeBiologySamples
             }
         }
         .task {
+            guard observesServiceChanges else {configureSelection();applyStoredSelection();return}
             do {let changes=try await model.service.changes(model.projectID)
                 for await _ in changes {if Task.isCancelled{return};let previous=model.project?.selections;await model.refresh();configureSelection();if previous != model.project?.selections{applyStoredSelection()}}
             }catch{model.error=error.localizedDescription}
         }
+        .onChange(of:model.project?.revision){_,_ in configureSelection()}
         .onChange(of:model.selectedID){_,_ in
-            recordIndex=0;selectedAtoms=[];channel=0;slice=0;frame=0;chain="";selectedMethod="";model.selectedRunID=nil;showResult=false
+            recordIndex=0;selectedAtoms=[];channel=0;slice=0;frame=0;chain="";selectedMethod=""
+            if !model.hasPinnedResultForSelection {model.selectedRunID=nil;showResult=false}
             Task{
                 if let a=model.selected,model.project?.activeAssetID != a.id {
                     do{_=try await model.service.select(model.projectID,assetID:a.id,selection:model.project?.selections?[a.id.uuidString] ?? .object([:]),expectedAssetRevision:a.revision)}catch{model.error=error.localizedDescription}
@@ -113,9 +124,16 @@ import FloeBiologySamples
         HStack {
             if compact {
                 Menu {
-                    ForEach(model.project?.assets ?? []) {a in
-                        Button {model.selectedID=a.id}label:{Label(a.title,systemImage:BiologyLabels.icon(a.kind))}
-                            .accessibilityIdentifier(a.kind == .externalDataset ? "biology.assetFormat."+a.originalFormat:"biology.asset."+a.kind.rawValue)
+                    Section(biologyText("Research materials","研究资料")) {
+                        ForEach(model.project?.assets ?? []) {a in
+                            Button {model.selectedID=a.id}label:{Label(a.title,systemImage:BiologyLabels.icon(a.kind))}
+                                .accessibilityIdentifier(a.kind == .externalDataset ? "biology.assetFormat."+a.originalFormat:"biology.asset."+a.kind.rawValue)
+                        }
+                    }
+                    if let runs=model.project?.runs,!runs.isEmpty {
+                        Section(biologyText("Analysis history","分析历史")) {
+                            ForEach(runs.reversed()){run in historyEntry(run)}
+                        }
                     }
                 }label:{Image(systemName:"sidebar.left").frame(width:44,height:44)}
                     .buttonStyle(BiologyControlButtonStyle(compact:true))
@@ -130,7 +148,7 @@ import FloeBiologySamples
             Spacer()
             if model.busy {ProgressView().controlSize(.small)}
             if model.run != nil {
-                Picker(biologyText("View","视图"),selection:$showResult) {
+                Picker(biologyText("View","视图"),selection:Binding(get:{showResult},set:{value in if value {if let run=model.run{showRun(run.id)}}else{showResult=false}})) {
                     Text(biologyText("Data","数据")).tag(false);Text(biologyText("Result","结果")).tag(true)
                 }.pickerStyle(.segmented).frame(width:150).accessibilityIdentifier("biology.viewMode")
             }
@@ -151,13 +169,17 @@ import FloeBiologySamples
             if let runs=model.project?.runs,!runs.isEmpty {
                 Section(biologyText("Analysis history","分析历史")) {
                     ForEach(runs.reversed()){r in
-                        Button {model.selectedRunID=r.id;showResult=true} label:{
-                            Label(BiologyLabels.method(r.method),systemImage:r.status == .succeeded ? "checkmark.circle":r.isActive ? "hourglass":"exclamationmark.circle")
-                        }.frame(minHeight:44)
+                        historyEntry(r)
                     }
                 }
             }
         }.listStyle(.sidebar)
+    }
+    private func showRun(_ id:UUID) {if model.selectRun(id){showResult=true}}
+    private func historyEntry(_ run:BiologyRun)->some View {
+        Button {showRun(run.id)} label:{
+            Label(BiologyLabels.method(run.method),systemImage:run.status == .succeeded ? "checkmark.circle":run.isActive ? "hourglass":"exclamationmark.circle")
+        }.frame(minHeight:44).accessibilityIdentifier("biology.run."+run.id.uuidString)
     }
     @ViewBuilder private var workspace:some View {
         if let a=model.selected {
@@ -233,11 +255,11 @@ import FloeBiologySamples
                     }
                     Section(biologyText("Edit data","编辑数据")) {
                         if case .sequence = a.payload {
-                            Button(biologyText("Edit sequence","编辑序列"),systemImage:"pencil"){sheet = .sequence}.accessibilityIdentifier("biology.editSequence")
-                            Button(biologyText("Add annotation","添加注释"),systemImage:"tag"){sheet = .annotation}.accessibilityIdentifier("biology.addAnnotation")
+                            Button(biologyText("Edit sequence","编辑序列"),systemImage:"pencil"){assetEditorContext=AssetEditorContext(asset:a,recordIndex:recordIndex);sheet = .sequence}.accessibilityIdentifier("biology.editSequence")
+                            Button(biologyText("Add annotation","添加注释"),systemImage:"tag"){assetEditorContext=AssetEditorContext(asset:a,recordIndex:recordIndex);sheet = .annotation}.accessibilityIdentifier("biology.addAnnotation")
                         }
                         if case .biochemicalNetwork = a.payload {
-                            Button(biologyText("Edit network","编辑网络"),systemImage:"pencil"){sheet = .network}.accessibilityIdentifier("biology.editNetwork")
+                            Button(biologyText("Edit network","编辑网络"),systemImage:"pencil"){assetEditorContext=AssetEditorContext(asset:a,recordIndex:recordIndex);sheet = .network}.accessibilityIdentifier("biology.editNetwork")
                         }
                         if case .proteinStructure(let structure) = a.payload {
                             Button(biologyText("Move or rotate structure","移动或旋转结构"),systemImage:"move.3d") {
@@ -373,7 +395,7 @@ import FloeBiologySamples
                 if run.isActive {
                     Button(role:.destructive) {Task{await model.perform{try await model.service.cancel(model.projectID,runID:run.id)}}}label:{Text(biologyText("Stop","停止")).frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.stop")
                 } else {
-                    Button {showResult=true}label:{Text(biologyText("View result","查看结果")).frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.showResult")
+                    Button {if let run=model.run{showRun(run.id)}}label:{Text(biologyText("View result","查看结果")).frame(minWidth:44,minHeight:44).contentShape(Rectangle())}.buttonStyle(BiologyControlButtonStyle()).accessibilityIdentifier("biology.showResult")
                 }
             }
         }.frame(minHeight:44).padding(.horizontal).accessibilityElement(children:.contain)
@@ -461,9 +483,9 @@ import FloeBiologySamples
     }
     @ViewBuilder private func panelView(_ panel:Panel)->some View {
         switch panel {
-        case .sequence:if let a=model.selected {BiologySequenceEditor(model:model,asset:a,recordIndex:recordIndex)}
-        case .annotation:if let a=model.selected {BiologyAnnotationEditor(model:model,asset:a,recordIndex:recordIndex)}
-        case .network:if let a=model.selected,case .biochemicalNetwork(let n)=a.payload {BiologyNetworkEditor(model:model,asset:a,network:n)}
+        case .sequence:if let edit=assetEditorContext {BiologySequenceEditor(model:model,asset:edit.asset,recordIndex:edit.recordIndex)}
+        case .annotation:if let edit=assetEditorContext {BiologyAnnotationEditor(model:model,asset:edit.asset,recordIndex:edit.recordIndex)}
+        case .network:if let edit=assetEditorContext,case .biochemicalNetwork(let n)=edit.asset.payload {BiologyNetworkEditor(model:model,asset:edit.asset,network:n)}
         case .blankSequence:BiologyBlankAssetSheet(model:model,kind:.sequence)
         case .blankNetwork:BiologyBlankAssetSheet(model:model,kind:.biochemicalNetwork)
         case .history:BiologyHistorySheet(model:model)

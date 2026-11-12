@@ -537,9 +537,8 @@ final class ThreadDetailViewModel: ObservableObject {
 
     var canContinue: Bool {
         guard !isRunning, let state = selectedRun?.state else { return false }
-        // A persistent goal resumes through its revision-checked control,
-        // never through the generic failed/interrupted-run retry action.
-        guard activeGoal?.status.isTerminal != false else { return false }
+        // Continue resumes the exact round; long-term Goal Resume separately
+        // controls whether subsequent automatic cycles are admitted.
         // A run parked on required background work is NOT finished: Continue
         // must not resume it without the dependency (a user message still
         // steers/resumes it intentionally). It becomes continuable again if
@@ -1718,7 +1717,8 @@ final class ThreadDetailViewModel: ObservableObject {
 
     /// Cancels the selected run.
     func cancel() async {
-        guard let runID = selectedRun?.id else { return }
+        guard let run = selectedRun else { return }
+        let runID = run.id
         locallyStoppedRunIDs.insert(runID)
         animator.cancel()
         reasoningAnimator.cancel()
@@ -1727,7 +1727,8 @@ final class ThreadDetailViewModel: ObservableObject {
         // deliver the authoritative cancelled terminal state afterwards.
         isRunning = false
         actionError = nil
-        await center.cancel(runID: runID)
+        do { try await center.stopRunFromComposer(run) }
+        catch { actionError = error.localizedDescription }
     }
 
     /// Compact inline status for the selected live run (context compression)
@@ -2176,29 +2177,16 @@ final class ThreadDetailViewModel: ObservableObject {
         do {
             try await center.environment.intelligenceStore.savePlanRevision(accepted)
             self.latestPlan = accepted
+            let acceptedGoal: ConversationGoal?
             if selectedExecution == .goal {
                 var goal = try GoalFromPlanFactory.makeGoal(from: accepted)
                 goal.status = .active
                 goal.progress.startedAt = Date()
                 try await center.environment.intelligenceStore.saveGoal(goal)
                 activeGoal = goal
-            }
-            let ordered = accepted.sections.sorted { $0.order < $1.order }.map {
-                "## \($0.title)\n\($0.body)"
-            }.joined(separator: "\n\n")
-            let criteria = accepted.acceptanceCriteria.map {FloeL10n.l("chat.thread_detail_view_model.verified", $0.text, $0.verification)
-            }.joined(separator: "\n")
-            let prompt = """
-            Execute the accepted plan below. Preserve its ordering, verify each criterion with inspectable evidence, and continue until the safe in-scope work is complete.
-
-            # \(accepted.title)
-            \(accepted.summary)
-
-            \(ordered)
-
-            Acceptance criteria:
-            \(criteria)
-            """
+                acceptedGoal = goal
+            } else { acceptedGoal = nil }
+            let prompt = GoalFromPlanFactory.implementationPrompt(from: accepted)
             let started = try await center.startRun(
                 goal: prompt,
                 in: conversationID,
@@ -2206,6 +2194,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 model: model,
                 workspaceID: selectedProjectID,
                 executionMode: selectedExecution == .goal ? .goal : .agent,
+                expectedGoal: acceptedGoal.map { (id: $0.id, revision: $0.revision ?? 1) },
                 startOrigin: .explicitUserAction
             )
             if selectedExecution == .goal {
@@ -2277,6 +2266,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 model: model,
                 workspaceID: selectedProjectID,
                 executionMode: .goal,
+                expectedGoal: (goal.id, goal.revision ?? 1),
                 startOrigin: .explicitUserAction
             )
             finishPendingGoalSetup(goalID: goal.id)
@@ -2293,12 +2283,10 @@ final class ThreadDetailViewModel: ObservableObject {
     var canPauseGoal: Bool {
         guard !isChangingGoal, let goal = activeGoal else { return false }
         return [GoalStatus.active, .waitingApproval, .waitingUser, .verifying].contains(goal.status)
-            && (goal.status != .active || isRunning || center.hasLiveOwner(runID: selectedRun?.id))
     }
 
     var canResumeGoal: Bool {
-        guard !isChangingGoal, let goal = activeGoal,
-              !center.hasLiveOwner(runID: selectedRun?.id) else { return false }
+        guard !isChangingGoal, let goal = activeGoal else { return false }
         if [GoalStatus.paused, .blocked, .interrupted, .waitingUser].contains(goal.status) { return true }
         return goal.status == .active && !isRunning && !center.hasLiveOwner(runID: selectedRun?.id)
     }
@@ -2308,9 +2296,40 @@ final class ThreadDetailViewModel: ObservableObject {
     }
 
     private static func preferredGoal(_ goals: [ConversationGoal]) -> ConversationGoal? {
-        // Updated timestamps can tie at storage precision. A completed goal
-        // must not hide the unfinished goal that now owns the conversation.
-        goals.first(where: { !$0.status.isTerminal }) ?? goals.first
+        ConversationCenter.presentedGoal(goals)
+    }
+
+    @discardableResult
+    func editGoal(_ expected: ConversationGoal, objective: String, criteria: [String],
+        blockingConditions: [String], stoppingConditions: [String]) async -> Bool {
+        guard !isChangingGoal, activeGoal?.id == expected.id else { return false }
+        isChangingGoal = true; actionError = nil
+        defer { isChangingGoal = false }
+        do {
+            let saved = try await center.editGoal(conversationID: conversationID,
+                expectedGoalID: expected.id, expectedRevision: expected.revision ?? 1,
+                expectedDefinition: expected,
+                objective: objective, criteria: criteria,
+                blockingConditions: blockingConditions, stoppingConditions: stoppingConditions)
+            activeGoal = saved
+            pendingGoalSetupID = nil; pendingGoalSetupModeSelection = nil
+            await load()
+            return true
+        } catch { actionError = error.localizedDescription; return false }
+    }
+
+    func deleteGoal(_ expected: ConversationGoal) async {
+        guard !isChangingGoal, activeGoal?.id == expected.id else { return }
+        isChangingGoal = true; actionError = nil
+        defer { isChangingGoal = false }
+        do {
+            try await center.deleteGoal(conversationID: conversationID,
+                expectedGoalID: expected.id, expectedRevision: expected.revision ?? 1, expectedDefinition: expected)
+            activeGoal = nil
+            pendingGoalSetupID = nil; pendingGoalSetupModeSelection = nil
+            if agentMode == .goal { selectAgentMode(.agent) }
+            await load()
+        } catch { actionError = error.localizedDescription }
     }
 
     func goalBlockedReason(_ goal: ConversationGoal) -> String? {
@@ -2350,8 +2369,10 @@ final class ThreadDetailViewModel: ObservableObject {
                 provider: provider, model: model, workspaceID: selectedProjectID)
             guard activeGoal?.id == goal.id else { return }
             finishPendingGoalSetup(goalID: goal.id)
-            locallyStoppedRunIDs.remove(started.runID)
-            selectedRunID = started.runID
+            if let runID = started.runID {
+                if started.startedRun != nil { locallyStoppedRunIDs.remove(runID) }
+                selectedRunID = runID
+            }
             await load()
         } catch {
             let message = error.localizedDescription
@@ -2400,7 +2421,11 @@ final class ThreadDetailViewModel: ObservableObject {
         goal.status = .completed
         goal.updatedAt = Date()
         do {
-            try await center.environment.intelligenceStore.saveGoal(goal)
+            let revision = goal.revision ?? 1
+            guard try await center.environment.intelligenceStore.saveGoalIfRevisionMatches(goal, expectedRevision: revision) else {
+                throw FloeError.validationFailed(IDELanguageRunText.t("目标已改变，请刷新后重试。", "The goal changed. Refresh and try again."))
+            }
+            goal.revision = revision + 1
             activeGoal = goal
         } catch { actionError = error.localizedDescription }
     }

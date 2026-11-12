@@ -39,7 +39,8 @@ struct ProviderRecoveryTests {
     private func configuration(
         conversationID: UUID = UUID(),
         maxProviderRetries: Int = 2,
-        firstEventTimeout: TimeInterval = 30
+        firstEventTimeout: TimeInterval = 30,
+        outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil
     ) -> FloeAgentRuntime.Configuration {
         let provider = TestFixtures.localhostProvider()
         return .init(
@@ -51,7 +52,8 @@ struct ProviderRecoveryTests {
             providerStreamIdleTimeout: 30,
             providerRetryBaseDelay: 0,
             providerRetryMaxDelay: 0,
-            providerRetryJitterRatio: 0
+            providerRetryJitterRatio: 0,
+            outstandingDependencies: outstandingDependencies
         )
     }
 
@@ -203,6 +205,42 @@ struct ProviderRecoveryTests {
         }
         #expect(texts == ["answer after legitimate gap"])
         #expect(usageReports.map(\.outputTokens) == [1])
+    }
+
+    @Test("A completed provider turn is not failed by the idle watchdog during finalization")
+    func completedTurnSurvivesFinalizationWait() async throws {
+        // Reproduces the post-completion race: the provider has terminally
+        // completed, so the dispatch envelope is cleared, then the runtime
+        // legitimately awaits outstanding dependencies (which may include a
+        // long resumed-child or durable fact read). The provider idle watchdog
+        // must not remain armed across that non-provider wait; otherwise it
+        // turns the successful turn into a spurious "stalled"/failed run.
+        let adapter = MockAdapter()
+        adapter.script = [[.textDelta(.init(text: "answer")),
+                           .completed(.init(stopReason: .endTurn))]]
+        var config = configuration(
+            maxProviderRetries: 0,
+            firstEventTimeout: 1,
+            outstandingDependencies: {
+                try? await Task.sleep(for: .milliseconds(300))
+                return []
+            }
+        )
+        config.providerStreamIdleTimeout = 0.03
+        config.providerReasoningIdleTimeout = 0.03
+        let runtime = FloeAgentRuntime(
+            configuration: config,
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: MockExecutor(),
+            checkpointStore: MockCheckpointStore()
+        )
+
+        try await runtime.start(goal: "finish without a provider wait")
+
+        #expect(await runtime.liveness().phase == .completed)
+        #expect(await runtime.state.name == "completed")
+        #expect(adapter.requests.count == 1)
     }
 
     @Test("a missing first event triggers the watchdog and reconnects")

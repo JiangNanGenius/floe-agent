@@ -15,7 +15,8 @@
 //   state and the draft stays editable.
 // - Partial transcripts replace the staged value in arrival order, so
 //   text already dictated is never duplicated.
-// - Scene-phase and disappearance hooks stop the session safely.
+// - Actual backgrounding and audio interruptions stop the session safely;
+//   a temporary inactive scene does not revoke capture ownership.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -137,6 +138,7 @@ final class VoiceInputController: ObservableObject {
             guard !Task.isCancelled, let self, self.isCurrent(token), self.state == .preparing else { return }
             // A model load or capture setup can stall. End this attempt so the
             // composer leaves its gray preparation state and can be retried.
+            self.diagnostics?.voiceSessionEnding(reason: .preparationTimeout, generation: token)
             self.startToken &+= 1
             self.preparationTask?.cancel()
             self.preparationTask = nil
@@ -210,12 +212,21 @@ final class VoiceInputController: ObservableObject {
 
     /// Stops the session. Safe to call at any time, from any state.
     func stop() {
+        stop(reason: .callerRequested)
+    }
+
+    private func stop(reason: VoiceInputEndReason) {
+        // Several scene/audio notifications can describe the same stop.
+        // Keep the original drain task: cancelling/replacing it would call
+        // finishAudio again while that recognizer is still finalizing.
+        guard state != .stopping else { return }
         guard state.hasSession || state == .requestingPermission else {
             // Reset a leftover failure/unavailable state on explicit stop
             // so the microphone button returns to a clean affordance.
             if state != .idle { state = .idle }
             return
         }
+        diagnostics?.voiceSessionEnding(reason: reason, generation: startToken)
         let wasListening = state == .listening
         stoppingIntentionally = true
         preparationTask?.cancel()
@@ -272,17 +283,33 @@ final class VoiceInputController: ObservableObject {
         if let cleanupTask { await cleanupTask.value }
     }
 
-    /// External interruption: scene backgrounded, page disappeared, audio
-    /// interruption or route change. The session is stopped safely; the
-    /// state machine reports the reason for diagnostics only.
+    /// Temporary inactivity (system overlays and foreground transitions) is
+    /// not navigation or proof that the audio session was interrupted. A
+    /// genuine background transition stops capture; returning never starts it.
+    func handleScenePhase(_ phase: ScenePhase) {
+        guard phase == .background else { return }
+        interrupt(reason: .interrupted, stopReason: .sceneBackground)
+    }
+
+    /// Explicit external lifecycle stop. Audio/scene notifications below
+    /// carry their more precise bounded diagnostic reason.
     func handleInterruption(reason: VoiceInputFailure, routeChange: Bool = false) {
+        interrupt(reason: reason, routeChange: routeChange,
+                  stopReason: routeChange ? .inputRouteLost : .externalInterruption)
+    }
+
+    private func interrupt(
+        reason: VoiceInputFailure,
+        routeChange: Bool = false,
+        stopReason: VoiceInputEndReason
+    ) {
         guard state.hasSession || state == .requestingPermission else { return }
         if routeChange {
             diagnostics?.voiceRouteChanged()
         } else {
             diagnostics?.voiceInterrupted(reason: reason.rawValue)
         }
-        stop()
+        stop(reason: stopReason)
     }
 
     /// Filters system audio-session notifications before they reach the
@@ -293,7 +320,7 @@ final class VoiceInputController: ObservableObject {
         guard let rawValue = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawValue),
               Self.shouldInterruptForRouteChange(reason) else { return }
-        handleInterruption(reason: .interrupted, routeChange: true)
+        interrupt(reason: .interrupted, routeChange: true, stopReason: .inputRouteLost)
     }
 
     /// Only interruption-began tears capture down. The matching ended event
@@ -301,7 +328,7 @@ final class VoiceInputController: ObservableObject {
     func handleAudioInterruption(_ notification: Notification) {
         guard let rawValue = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? NSNumber)?.uintValue,
               AVAudioSession.InterruptionType(rawValue: rawValue) == .began else { return }
-        handleInterruption(reason: .interrupted)
+        interrupt(reason: .interrupted, stopReason: .audioInterruption)
     }
 
     static func shouldInterruptForRouteChange(
@@ -349,7 +376,7 @@ final class VoiceInputController: ObservableObject {
             if self.state == .listening, !self.stoppingIntentionally {
                 // Recognition service ended the session — stop cleanly and
                 // keep whatever transcript arrived.
-                self.stop()
+                self.stop(reason: .recognizerEnded)
             }
         }
     }
@@ -362,6 +389,7 @@ final class VoiceInputController: ObservableObject {
 
     private func fail(with failure: VoiceInputFailure, token: UInt64) {
         guard isCurrent(token) else { return }
+        diagnostics?.voiceSessionEnding(reason: .preparationFailed, generation: token)
         preparationWatchdog?.cancel()
         preparationWatchdog = nil
         teardown()

@@ -678,6 +678,14 @@ struct StartedConversationRun: Sendable {
     let result: Task<Result<Void, Error>, Never>
 }
 
+/// Rearming long-term advancement may retain an already-admitted round.
+/// Only a genuinely new round has a newly started execution task.
+struct GoalResumeResult: Sendable {
+    let goal: ConversationGoal
+    let runID: UUID?
+    let startedRun: StartedConversationRun?
+}
+
 /// A newly-created conversation and its already-durable first run.
 struct StartedConversationTask: Sendable {
     let conversationID: UUID
@@ -1312,6 +1320,11 @@ final class ConversationCenter: ObservableObject {
     /// a second cycle after the reservation has changed.
     private var goalContinuationReservations: [UUID: GoalContinuationReservation] = [:]
     private var goalControlConversations: Set<UUID> = []
+    /// Native composer Stop reservations are exact-Goal fences. A second
+    /// overlapping Stop cannot release the first one's admission barrier.
+    private var goalUserStopCounts: [UUID: Int] = [:]
+    /// Goal controls fence only Goal launches; ordinary work keeps its epoch.
+    private var goalLaunchFence = LaunchEpochFence()
     /// Snapshot polling tasks keyed by run ID.
     private var snapshotTasks: [UUID: Task<Void, Never>] = [:]
     private var snapshotTrackingOwners: [UUID: UUID] = [:]
@@ -1328,6 +1341,16 @@ final class ConversationCenter: ObservableObject {
     /// new launches, then waits for any transaction already in progress.
     private var launchCount = 0
     private var launchPreparations = DocumentAssistantPreparationOwnership()
+    private struct PendingRunPreparation {
+        let preparationID: UUID
+        var conversationID: UUID?
+    }
+    private var pendingRunPreparations: [UUID: PendingRunPreparation] = [:]
+    // Removed only on an exact invocation's handoff/cleanup. A service that
+    // was constructed but rejected before start must not strand its lease.
+    private var pendingRunResources: [UUID: ConversationRunResourceLease] = [:]
+    private let personalizationMaintenance = ConversationPersonalizationMaintenance()
+    var personalizationGeneratorTestOverride: (any PersonalizationGenerator)?
     private var launchWaiters: [CheckedContinuation<Void, Never>] = []
     private var launchFence = LaunchEpochFence()
 
@@ -1399,6 +1422,16 @@ final class ConversationCenter: ObservableObject {
         /// or service construction — a run that IS registered and owned but
         /// has not reached the provider yet.
         var deferredTaskBody: (@Sendable () async -> Void)?
+        /// After durable input/cadence recording, while the send still owns
+        /// its pre-deferred preparation. No network/model request here.
+        var afterRunPrepared: (@Sendable (UUID) async -> Void)?
+        /// After a long-term Goal control commits its advancement fence.
+        /// Tests can prepare another Goal in this exact suspension.
+        var afterGoalControlFence: (@Sendable (UUID) async -> Void)?
+        var afterTaskRootAcquired: (@Sendable (URL?) async throws -> Void)?
+        var didReleaseTaskRoot: (@Sendable () -> Void)?
+        /// Observe the actual native configuration passed to a new service.
+        var didConfigureGoalBudget: (@Sendable (UUID, GoalBudgets?) -> Void)?
     }
     var launchTestHooks = LaunchTestHooks()
 
@@ -1778,7 +1811,7 @@ final class ConversationCenter: ObservableObject {
         let goals = isTemporary ? [] : try await environment.intelligenceStore.goals(conversationID: conversationID)
         // Updates can share the same persisted second. A terminal goal must
         // never hide the next unfinished goal in a streamed UI snapshot.
-        let activeGoal = goals.first(where: { !$0.status.isTerminal }) ?? goals.first
+        let activeGoal = Self.presentedGoal(goals)
         let snapshot = ConversationSessionSnapshot(
             revision: revision,
             conversation: conversation,
@@ -3916,6 +3949,9 @@ final class ConversationCenter: ObservableObject {
         runSurface: AgentRunSurface = .ordinary,
         workspaceID: UUID? = nil,
         memoryQuery: String = "",
+        /// Native value verified by the successful prepare transaction. Later
+        /// long-term edits must not replace this admitted round's definition.
+        admittedGoal: ConversationGoal? = nil,
         /// Launch-frozen temporary authority. When nil the identity is
         /// derived from the live session (resume/foreground paths that
         /// rebuild a service for the CURRENT state); the launch pipeline
@@ -4114,6 +4150,22 @@ final class ConversationCenter: ObservableObject {
         } else {
             nil
         }
+        let releaseObserver = launchTestHooks.didReleaseTaskRoot
+        let taskRootResources = ConversationRunResourceLease {
+            taskRootLease?.release()
+            if taskRootLease != nil { releaseObserver?() }
+        }
+        let memoryUseLease = environment.intelligenceStore.beginMemoryUse(runID: runID)
+        var resourceOwnershipTransferred = false
+        defer {
+            if !resourceOwnershipTransferred {
+                taskRootResources.finish()
+                memoryUseLease.finish()
+            }
+        }
+        try Task.checkCancellation()
+        try await launchTestHooks.afterTaskRootAcquired?(taskRootLease?.url)
+        try Task.checkCancellation()
         let runWorkspaceRoot = taskRootLease?.url ?? notesScratchRoot
         var workspaceAttachmentPaths = taskRootLease.map {
             importRunAttachments(currentUserAttachments, into: $0.url)
@@ -4204,9 +4256,13 @@ final class ConversationCenter: ObservableObject {
             activeGoal = nil
             contentOverlay = .empty
         } else {
-            let installed = await environment.skillsCenter.runtimeSelection(runID: runID,
-                resourceContext: SkillResourceContext(environmentID: runExecutionEnvironmentID,
-                    workspaceRootURL: runWorkspaceRoot, cancellation: CancellationToken()))
+            let skillPreparationCancellation = CancellationToken()
+            let installed = await withTaskCancellationHandler {
+                await environment.skillsCenter.runtimeSelection(runID: runID,
+                    resourceContext: SkillResourceContext(environmentID: runExecutionEnvironmentID,
+                        workspaceRootURL: runWorkspaceRoot, cancellation: skillPreparationCancellation))
+            } onCancel: { skillPreparationCancellation.cancel() }
+            try Task.checkCancellation()
             if runExecutionBinding?.target.backend == .macBridge {
                 let originals = (try? await MacOriginalSkillsCenter.shared.runtimeSelection(runID: runID)) ?? .none
                 skills = SkillsCenter.mergedRuntimeSelection([installed, originals])
@@ -4214,12 +4270,28 @@ final class ConversationCenter: ObservableObject {
             personalization = await runtimePersonalizationContext(
                 query: memoryQuery,
                 workspaceID: canonicalWorkspaceID,
-                conversationID: conversationID
+                conversationID: conversationID,
+                memoryUseLease: memoryUseLease
             )
-            activePlan = try? await environment.intelligenceStore
-                .latestPlan(conversationID: conversationID)
-            activeGoal = try? await environment.intelligenceStore
-                .goals(conversationID: conversationID).first(where: { !$0.status.isTerminal })
+            let storedPlan = try? await environment.intelligenceStore.latestPlan(conversationID: conversationID)
+            if var executionPlan = storedPlan, executionPlan.status == .accepted,
+               effectiveExecutionMode.conversationMode != .plan {
+                // Prompt-only phase projection. The stored revision/digest and
+                // historical planning summary stay untouched; the active
+                // execution context uses the accepted implementation contract.
+                executionPlan.summary = GoalFromPlanFactory.implementationObjective(from: executionPlan)
+                activePlan = executionPlan
+            } else { activePlan = storedPlan }
+            if let admittedGoal {
+                guard admittedGoal.conversationID == conversationID else { throw FloeError.unauthorized }
+                activeGoal = admittedGoal
+            } else {
+                // Ordinary model-created Goals and legacy/direct service
+                // callers retain their existing resolution path. Same-run
+                // recovery still restores its own checkpoint below.
+                activeGoal = try? await environment.intelligenceStore
+                    .goals(conversationID: conversationID).first(where: { !$0.status.isTerminal })
+            }
             contentOverlay = await environment.contentUpdateCenter.runtimePromptOverlay(
                 runID: runID,
                 locale: FloeL10n.currentLanguageCode
@@ -4577,6 +4649,7 @@ final class ConversationCenter: ObservableObject {
         if effectiveExecutionMode.conversationMode == .goal, let activeGoal {
             configuration.goalBudgets = activeGoal.budgets
         }
+        launchTestHooks.didConfigureGoalBudget?(runID, configuration.goalBudgets)
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
                 provider: provider,
@@ -4694,7 +4767,8 @@ final class ConversationCenter: ObservableObject {
         )
         BrowserProviderTrustCoordinator.shared.setCurrentProvider(browserRecipient)
         let userInputProjection = modelInputProjection(for: runID, conversationID: conversationID)
-        return ConversationRunService(
+        try Task.checkCancellation()
+        let service = ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider, ownerRunID: runID),
             policy: await approvalPolicy(
@@ -4783,10 +4857,16 @@ final class ConversationCenter: ObservableObject {
                 workspaceID: canonicalWorkspaceID
             ),
             resourceAccessCleanup: {
-                taskRootLease?.release()
+                taskRootResources.finish()
+                memoryUseLease.finish()
                 userInputProjection.close()
             }
         )
+        resourceOwnershipTransferred = true
+        if runInvocationOwnership.hasOwner(runID) {
+            pendingRunResources[runID] = taskRootResources
+        }
+        return service
     }
 
     private nonisolated static func planChecklistProvider(
@@ -5230,6 +5310,7 @@ final class ConversationCenter: ObservableObject {
         // Capture BEFORE any await. Pause invalidates this same epoch even
         // while no run row or invocation exists yet; never mint a later one.
         let launchToken = launchFence.issue(scope: conversationID)
+        let goalLaunchToken = goalLaunchFence.issue(scope: expectedGoal?.id ?? conversationID)
         // FREEZE the temporary identity BEFORE the first await: the whole
         // pre-deferred launch span (secret capture, launch prepare, personal-
         // ization, design refresh) can interleave with End/Keep, and the
@@ -5253,16 +5334,18 @@ final class ConversationCenter: ObservableObject {
             await launchTestHooks.beforeGoalPreflight?()
             try validateLaunchEpoch(launchToken, conversationID: conversationID)
             if let expectedGoal {
-                goalReservation = GoalLaunchReservation(id: expectedGoal.id, revision: expectedGoal.revision)
+                guard let current = try await activeGoalLaunchReservation(conversationID: conversationID, goalID: expectedGoal.id),
+                      current.revision == expectedGoal.revision else { throw CancellationError() }
+                goalReservation = current
             } else {
                 goalReservation = try await activeGoalLaunchReservation(conversationID: conversationID)
             }
-            try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken)
+            try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken, goalToken: goalLaunchToken)
         } else { goalReservation = nil }
         try await environment.studioCoordinator.requireAssistantAvailable(conversationID: conversationID)
         try validateLaunchEpoch(launchToken, conversationID: conversationID)
         if executionMode == .goal {
-            try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken)
+            try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken, goalToken: goalLaunchToken)
         }
         guard !deletingConversationIDs.contains(conversationID), launchPreparations.mayExecute(preparationID) else {
             throw CancellationError()
@@ -5306,9 +5389,11 @@ final class ConversationCenter: ObservableObject {
             throw FloeError.validationFailed("Conversation ended during launch")
         }
         if executionMode == .goal {
-            try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken)
+            try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken, goalToken: goalLaunchToken)
         }
         let runID = newRunID ?? UUID()
+        try registerRunPreparation(runID: runID, conversationID: conversationID, preparationID: preparationID)
+        defer { finishRunPreparation(runID: runID, preparationID: preparationID) }
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
             conversationID: conversationID,
             runID: runID,
@@ -5317,6 +5402,9 @@ final class ConversationCenter: ObservableObject {
             workspaceID: workspaceID,
             attachments: attachments,
             conversationMode: executionMode.conversationMode.rawValue,
+            goalID: goalReservation?.id,
+            expectedGoalRevision: goalReservation?.revision,
+            goalDefinitionFingerprint: goalReservation?.definitionFingerprint,
             initialPolicy: DraftTaskPolicy(approvalMode: TaskApprovalMode(
                 rawValue: environment.settingsCenter.defaultAgentMode.taskApprovalModeName
             ) ?? .ask),
@@ -5334,9 +5422,6 @@ final class ConversationCenter: ObservableObject {
         }
         do {
             try validateLaunchEpoch(launchToken, conversationID: conversationID)
-            if executionMode == .goal {
-                try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken)
-            }
         } catch {
             try? await runStore(for: conversationID).updateRunState(id: runID, state: "cancelled", endedAt: Date())
             throw CancellationError()
@@ -5380,6 +5465,12 @@ final class ConversationCenter: ObservableObject {
                 conversationID: conversationID
             )
         }
+        await launchTestHooks.afterRunPrepared?(runID)
+        guard launchPreparations.mayExecute(preparationID), !Task.isCancelled else {
+            try? await runStore(for: conversationID).updateRunState(id: runID, state: "cancelled", endedAt: Date())
+            clearModelInputProjection(runID)
+            throw CancellationError()
+        }
         guard !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
             throw FloeError.validationFailed("Conversation was deleted during launch")
         }
@@ -5393,13 +5484,6 @@ final class ConversationCenter: ObservableObject {
                 endedAt: Date())
             if executionMode == .goal { throw CancellationError() }
             throw FloeError.validationFailed("Conversation ended during launch")
-        }
-        if executionMode == .goal {
-            do { try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken) }
-            catch {
-                try? await runStore(for: conversationID).updateRunState(id: runID, state: "cancelled", endedAt: Date())
-                throw CancellationError()
-            }
         }
         // Continuation of bound design work: re-establish the original-write
         // freeze BEFORE the deferred run can reach the provider or any tool
@@ -5420,9 +5504,6 @@ final class ConversationCenter: ObservableObject {
             conversationID: conversationID, environment: environment)
         do {
             try validateLaunchEpoch(launchToken, conversationID: conversationID)
-            if executionMode == .goal {
-                try await validateGoalLaunch(goalReservation, conversationID: conversationID, token: launchToken)
-            }
         } catch {
             try? await runStore(for: conversationID).updateRunState(id: runID, state: "cancelled", endedAt: Date())
             throw CancellationError()
@@ -5439,10 +5520,10 @@ final class ConversationCenter: ObservableObject {
             provider: provider,
             model: model,
             executionMode: executionMode,
+            admittedGoal: goalReservation?.snapshot,
             runSurface: runSurface,
             shouldGenerateTitle: false,
             startOrigin: startOrigin,
-            goalExpectation: executionMode == .goal ? .init(reservation: goalReservation) : nil,
             executionEnvironmentID: executionEnvironmentID
         )
     }
@@ -5500,6 +5581,8 @@ final class ConversationCenter: ObservableObject {
             owner: workspaceID.map(CredentialOwner.workspace) ?? .vault
         )
         let runID = newRunID ?? UUID()
+        try registerRunPreparation(runID: runID, conversationID: newConversationID, preparationID: preparationID)
+        defer { finishRunPreparation(runID: runID, preparationID: preparationID) }
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
             newConversationID: newConversationID,
             conversationTitle: title,
@@ -5520,6 +5603,7 @@ final class ConversationCenter: ObservableObject {
             modelProfile: model
         ))
         launchPreparations.bind(preparationID, conversationID: prepared.conversation.id)
+        pendingRunPreparations[runID]?.conversationID = prepared.conversation.id
         guard launchPreparations.mayExecute(preparationID) else {
             try? await runStore(for: prepared.conversation.id).updateRunState(id: runID, state: "cancelled", endedAt: Date())
             throw CancellationError()
@@ -5533,6 +5617,12 @@ final class ConversationCenter: ObservableObject {
             throw error
         }
         await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
+        await launchTestHooks.afterRunPrepared?(runID)
+        guard launchPreparations.mayExecute(preparationID), !Task.isCancelled else {
+            try? await runStore(for: prepared.conversation.id).updateRunState(id: runID, state: "cancelled", endedAt: Date())
+            clearModelInputProjection(runID)
+            throw CancellationError()
+        }
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
         }
@@ -5596,7 +5686,8 @@ final class ConversationCenter: ObservableObject {
         // round still executes as Chat, without persisting that temporary
         // ceiling over the Home selection. Other Chat launches keep their
         // existing first-round seed; ordinary Agent launches remain unchanged.
-        if let preferredMode = preferredModeForNewConversation ?? (executionMode == .chat ? .chat : nil) {
+        if let preferredMode = preferredModeForNewConversation
+            ?? ([AgentExecutionMode.chat, .plan].contains(executionMode) ? executionMode : nil) {
             do {
                 try await setPreferredExecutionMode(preferredMode, for: prepared.conversation.id)
             } catch {
@@ -5832,8 +5923,10 @@ final class ConversationCenter: ObservableObject {
     private func runtimePersonalizationContext(
         query: String,
         workspaceID: UUID?,
-        conversationID: UUID
+        conversationID: UUID,
+        memoryUseLease: MemoryRunUseLease
     ) async -> RuntimePersonalizationContext {
+        try? await environment.intelligenceStore.maintainMemoryLifecycle()
         async let activeDocuments = environment.personalizationStore.liveSnapshot(workspaceID: workspaceID)
         var entries = (try? await environment.intelligenceStore.memories(
             scope: .userProfile, status: .active
@@ -5862,6 +5955,7 @@ final class ConversationCenter: ObservableObject {
         }
         let selected = entries
             .filter { $0.expiresAt.map { $0 > now } ?? true }
+            .filter { MemoryForgettingPolicy.isDefaultContext($0, conversationID: conversationID, workspaceID: workspaceID) }
             .sorted {
                 if $0.isPinned != $1.isPinned { return $0.isPinned }
                 if $0.importance != $1.importance { return $0.importance > $1.importance }
@@ -5869,9 +5963,11 @@ final class ConversationCenter: ObservableObject {
             }
             .prefix(4)
         let recalledIDs = Set(recalled.map(\.id))
-        let memoryLines = recalled.map { "- \(String($0.content.prefix(500)))" }
-            + selected.filter { !recalledIDs.contains($0.id) }
-                .map { "- \(String($0.content.prefix(500)))" }
+        let projectedMemories = Array((recalled.map { ($0.id, $0.content) }
+            + selected.filter { !recalledIDs.contains($0.id) }.map { ($0.id, $0.content) }).prefix(8))
+        let retainedMemories = (try? await environment.intelligenceStore.retainRuntimeMemories(
+            projectedMemories.map { $0.0 }, useLease: memoryUseLease, alreadyRecalled: recalledIDs)) ?? []
+        let memoryLines = retainedMemories.map { "- \(String($0.content.prefix(500)))" }
         var credentialCards = (try? await environment.credentialStore.cards(
             owner: .conversation(conversationID)
         )) ?? []
@@ -6913,10 +7009,10 @@ final class ConversationCenter: ObservableObject {
         provider: ProviderProfile,
         model: ModelProfile,
         executionMode: AgentExecutionMode,
+        admittedGoal: ConversationGoal? = nil,
         runSurface: AgentRunSurface = .ordinary,
         shouldGenerateTitle: Bool,
         startOrigin: ContinuedProcessingStartOrigin,
-        goalExpectation: GoalLaunchExpectation? = nil,
         /// Trusted explicit environment binding (scheduled task record); nil
         /// keeps the standard session-container resolution.
         executionEnvironmentID: String? = nil
@@ -6983,17 +7079,6 @@ final class ConversationCenter: ObservableObject {
                     error: error
                 )
                 return .failure(error)
-            }
-            if let goalExpectation {
-                do {
-                    try await self.validateGoalLaunch(goalExpectation.reservation,
-                        conversationID: conversationID, token: launchToken)
-                } catch {
-                    let cancellation = CancellationError()
-                    await self.finishDeferredLaunchFailure(runID: runID,
-                        conversationID: conversationID, error: cancellation)
-                    return .failure(cancellation)
-                }
             }
             let assembled: [ConversationMessage]
             do {
@@ -7130,6 +7215,7 @@ final class ConversationCenter: ObservableObject {
                     runSurface: runSurface,
                     workspaceID: prepared.workspace.id,
                     memoryQuery: goal,
+                    admittedGoal: admittedGoal,
                     // Launch-frozen authority: a Keep that raced the pipeline
                     // keeps this run's restricted temporary privacy/context
                     // while the adopted stores forward; subsequent NEW ordinary
@@ -7184,20 +7270,6 @@ final class ConversationCenter: ObservableObject {
                 }
                 return .failure(error)
             }
-            if let goalExpectation {
-                do {
-                    try await self.validateGoalLaunch(goalExpectation.reservation,
-                        conversationID: conversationID, token: launchToken)
-                } catch {
-                    let cancellation = CancellationError()
-                    await self.finishDeferredLaunchFailure(runID: runID,
-                        conversationID: conversationID, error: cancellation)
-                    if usesResidentLocalModel {
-                        await self.environment.localModelRuntime.releaseForTask(taskID: runID, reason: "goalLaunchCancelled")
-                    }
-                    return .failure(cancellation)
-                }
-            }
             self.runServices[runID] = service
             FloeLogger(category: .runtime).info(
                 "deferredRunServiceReady run=\(runID.uuidString) conversation=\(conversationID.uuidString) provider=\(provider.id.uuidString) model=\(model.id.uuidString)"
@@ -7226,6 +7298,7 @@ final class ConversationCenter: ObservableObject {
         error: Error
     ) async {
         let cancelled = error is CancellationError || Task.isCancelled || runInvocationOwnership.isCancelled(runID)
+        pendingRunResources.removeValue(forKey: runID)?.finish()
         activeRuns[runID] = nil
         clearModelInputProjection(runID)
         runServices[runID] = nil
@@ -7351,7 +7424,9 @@ final class ConversationCenter: ObservableObject {
         let runID = service.runID
         let outcome: Result<Void, Error>
         var terminalState = "failed"
+        let unstartedResources = pendingRunResources.removeValue(forKey: runID)
         do {
+            try Task.checkCancellation()
             try await service.startPrepared(goal: goal, userMessageID: userMessageID)
             let snapshot = await service.snapshot()
             terminalState = snapshot.stateName
@@ -7401,6 +7476,10 @@ final class ConversationCenter: ObservableObject {
         } catch {
             await persistServiceFailure(service, error: error, stage: "performPreparedService")
             let settled = await service.snapshot()
+            // Only idle proves the runtime never accepted this handoff.
+            // Once execution has started, its terminal cleanup remains the
+            // authority; an error is not proof that owned workers stopped.
+            if settled.stateName == "idle" { unstartedResources?.finish() }
             // startPrepared may throw after the runtime has already committed
             // its answer or checkpoint. Preserve that settled result exactly
             // as persistServiceFailure does; cleanup must not announce failure.
@@ -7551,15 +7630,10 @@ final class ConversationCenter: ObservableObject {
             userMessages: userMessages,
             workspaceID: workspaceID
         )
-        if let generator = generalAuxiliaryPersonalizationGenerator() {
-            for kind in PersonalizationDocumentKind.allCases {
-                _ = try? await environment.personalizationService.generateIfDue(
-                    kind: kind,
-                    workspaceID: workspaceID,
-                    generator: generator
-                )
-            }
-        }
+        // Cadence counts remain recorded exactly once at the existing
+        // call sites. Auxiliary generation is independent maintenance; it
+        // must never sit between accepted input and its run owner.
+        if completedRuns > 0 { requestPersonalizationMaintenance(workspaceID: workspaceID) }
         // Post-run memory "dream": count the run, then distill durable
         // candidates from the just-completed exchange (cadence-gated, and
         // best-effort only — never breaks the run's completion path).
@@ -7578,12 +7652,53 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
+    var isPersonalizationMaintenanceIdle: Bool { personalizationMaintenance.isIdle }
+
+    /// One process-owned maintenance operation at a time. Repeated
+    /// completions for the same scope join it rather than paying twice.
+    func requestPersonalizationMaintenance(workspaceID: UUID?) {
+        guard !isClearingHistory else { return }
+        let generator: (any PersonalizationGenerator)?
+        if let override = personalizationGeneratorTestOverride { generator = override }
+        else { generator = generalAuxiliaryPersonalizationGenerator() }
+        guard let generator else { return }
+        let service = environment.personalizationService
+        let documents = environment.personalizationStore
+        let fenced = ConversationMaintenanceGenerator(base: generator, documents: documents)
+        personalizationMaintenance.enqueue(workspaceID: workspaceID) {
+            for kind in PersonalizationDocumentKind.allCases {
+                guard !Task.isCancelled else { return }
+                do {
+                    _ = try await service.generateIfDue(kind: kind, workspaceID: workspaceID, generator: fenced)
+                } catch is CancellationError { return }
+                catch {
+                    let diagnostic = error as NSError
+                    FloeLogger(category: .runtime).warning("personalizationMaintenanceFailed kind=\(kind.rawValue) domain=\(diagnostic.domain) code=\(diagnostic.code)")
+                }
+            }
+        }
+    }
+
+    private func registerRunPreparation(runID: UUID, conversationID: UUID?, preparationID: UUID) throws {
+        guard pendingRunPreparations[runID] == nil, !runInvocationOwnership.hasOwner(runID),
+              runTasks[runID] == nil, runServices[runID] == nil else {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "任务仍在准备或收尾，请稍后继续。", "The task is still preparing or finishing. Try again shortly."))
+        }
+        pendingRunPreparations[runID] = PendingRunPreparation(
+            preparationID: preparationID, conversationID: conversationID)
+    }
+
+    private func finishRunPreparation(runID: UUID, preparationID: UUID) {
+        guard pendingRunPreparations[runID]?.preparationID == preparationID else { return }
+        pendingRunPreparations[runID] = nil
+    }
+
     private struct GoalLaunchReservation: Sendable, Equatable {
         let id: UUID
         let revision: Int
-    }
-    private struct GoalLaunchExpectation: Sendable {
-        let reservation: GoalLaunchReservation?
+        let definitionFingerprint: String
+        let snapshot: ConversationGoal
     }
     private func validateLaunchEpoch(_ token: LaunchEpochFence.Token, conversationID: UUID) throws {
         try Task.checkCancellation()
@@ -7600,20 +7715,23 @@ final class ConversationCenter: ObservableObject {
                 .first(where: { !$0.status.isTerminal })
         }
         guard let goal else { return nil }
-        guard goal.conversationID == conversationID, goal.status == .active else { throw CancellationError() }
-        return GoalLaunchReservation(id: goal.id, revision: goal.revision ?? 1)
+        guard goal.conversationID == conversationID, goal.status == .active,
+              goalUserStopCounts[goal.id, default: 0] == 0 else { throw CancellationError() }
+        return GoalLaunchReservation(id: goal.id, revision: goal.revision ?? 1,
+            definitionFingerprint: try GoalRunDefinitionFingerprint.make(goal), snapshot: goal)
     }
     private func validateGoalLaunch(_ reservation: GoalLaunchReservation?, conversationID: UUID,
-        token: LaunchEpochFence.Token) async throws {
+        token: LaunchEpochFence.Token, goalToken: LaunchEpochFence.Token) async throws {
         try validateLaunchEpoch(token, conversationID: conversationID)
+        guard goalLaunchFence.isValid(goalToken) else { throw CancellationError() }
         let current = try await activeGoalLaunchReservation(conversationID: conversationID, goalID: reservation?.id)
-        guard current == reservation else { throw CancellationError() }
+        guard current == reservation, goalLaunchFence.isValid(goalToken) else { throw CancellationError() }
         try validateLaunchEpoch(token, conversationID: conversationID)
     }
 
     /// User control is revision-checked and independent of composer mode.
-    /// Persist/fence before stopping, so a late completion cannot reactivate
-    /// the paused goal. Progress, evidence and budgets are never reset.
+    /// Persist/fence future advancement. The admitted round keeps its frozen
+    /// objective, tools and lifecycle; only the composer's Stop cancels it.
     func pauseGoal(conversationID: UUID, expectedGoalID: UUID, expectedRevision: Int) async throws -> ConversationGoal {
         guard !isTemporaryConversation(conversationID), goalControlConversations.insert(conversationID).inserted else {
             throw FloeError.validationFailed(IDELanguageRunText.t("目标正在更新，请稍后重试。", "The goal is updating. Try again shortly."))
@@ -7626,25 +7744,7 @@ final class ConversationCenter: ObservableObject {
                 throw goalControlConflict()
             }
         }
-        goalContinuationReservations[goal.id] = nil
-        launchFence.invalidate(scope: conversationID)
-        let runs = try await environment.runStore.runs(conversationID: conversationID).filter {
-            $0.endedAt == nil && ($0.goalID == expectedGoalID || ($0.goalID == nil && $0.conversationMode == "goal"))
-        }
-        let tasks = runs.compactMap { runTasks[$0.id] }
-        for run in runs { await cancel(runID: run.id) }
-        for task in tasks { _ = await task.value }
-        for run in runs {
-            if let service = runServices[run.id], await service.snapshot().isTerminal {
-                runServices[run.id] = nil; activeRuns[run.id] = nil
-            }
-        }
-        for run in runs where !hasLiveOwner(runID: run.id) {
-            if let current = try await environment.runStore.run(id: run.id), current.endedAt == nil,
-               !["completed", "failed", "cancelled"].contains(current.state) {
-                try await environment.runStore.updateRunState(id: run.id, state: "cancelled", endedAt: Date())
-            }
-        }
+        await fenceGoalAdvancement(conversationID: conversationID, goalID: goal.id)
         guard let saved = try await environment.intelligenceStore.goal(id: expectedGoalID), saved.status == .paused else {
             throw goalControlConflict()
         }
@@ -7652,8 +7752,126 @@ final class ConversationCenter: ObservableObject {
         return saved
     }
 
+    /// Long-term controls invalidate future rounds, never an admitted run or
+    /// its workers. Whole-task/file deletion retains its separate strong fence.
+    private func fenceGoalAdvancement(conversationID: UUID, goalID: UUID) async {
+        goalContinuationReservations[goalID] = nil
+        goalLaunchFence.invalidate(scope: goalID)
+        // Legacy/unbound Goal launches reserve by conversation before their
+        // first await. Known new Goals use their own ID and remain unaffected.
+        goalLaunchFence.invalidate(scope: conversationID)
+        await launchTestHooks.afterGoalControlFence?(goalID)
+    }
+
+    /// Explicit user edits retain the exact goal, progress, files and budget.
+    /// A changed criterion receives a fresh identity; unchanged criteria keep
+    /// their satisfaction/evidence. Saving pauses future advancement until Resume.
+    func editGoal(conversationID: UUID, expectedGoalID: UUID, expectedRevision: Int,
+        expectedDefinition: ConversationGoal? = nil,
+        objective: String, criteria: [String], blockingConditions: [String], stoppingConditions: [String]) async throws -> ConversationGoal {
+        guard !isTemporaryConversation(conversationID), goalControlConversations.insert(conversationID).inserted else {
+            throw goalControlConflict()
+        }
+        defer { goalControlConversations.remove(conversationID) }
+        var goal = try await goalForDefinitionChange(conversationID: conversationID, id: expectedGoalID,
+            revision: expectedRevision, definition: expectedDefinition)
+        let unfinished = try await environment.intelligenceStore.goals(conversationID: conversationID)
+            .first(where: { !$0.status.isTerminal })
+        guard unfinished == nil || unfinished?.id == goal.id else { throw goalControlConflict() }
+        let clean = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let texts = criteria.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !clean.isEmpty, !texts.isEmpty else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("请填写目标和至少一条验收标准。", "Enter an objective and at least one acceptance criterion."))
+        }
+        // Pause future advancement, keeping the admitted round immutable. An editor
+        // opened before a progress-only revision keeps the fresh progress;
+        // an actual competing definition edit is rejected above and below.
+        if goal.status != .paused {
+            let revision = goal.revision ?? 1
+            goal.status = .paused; goal.updatedAt = Date()
+            guard try await environment.intelligenceStore.saveGoalIfRevisionMatches(goal, expectedRevision: revision) else {
+                throw goalControlConflict()
+            }
+        }
+        await fenceGoalAdvancement(conversationID: conversationID, goalID: goal.id)
+        for _ in 0..<3 {
+            guard var edited = try await environment.intelligenceStore.goal(id: goal.id), edited.status == .paused,
+                  Self.sameGoalDefinition(edited, goal) else { throw goalControlConflict() }
+            let revision = edited.revision ?? 1
+            var retained = edited.acceptanceCriteria
+            edited.objective = clean
+            edited.acceptanceCriteria = texts.map { text in
+                if let index = retained.firstIndex(where: { $0.text == text }) { return retained.remove(at: index) }
+                return GoalCriterion(text: text)
+            }
+            edited.blockingConditions = blockingConditions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            edited.stoppingConditions = stoppingConditions.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            edited.updatedAt = Date()
+            guard try await environment.intelligenceStore.saveGoalIfRevisionMatches(edited, expectedRevision: revision) else { continue }
+            guard let saved = try await environment.intelligenceStore.goal(id: edited.id), saved.status == .paused,
+                  Self.sameGoalDefinition(saved, edited) else { throw goalControlConflict() }
+            goalPresentationRevision &+= 1
+            publishSession(conversationID)
+            return saved
+        }
+        throw goalControlConflict()
+    }
+
+    /// Clearing a goal is a durable cancelled tombstone, never task/file
+    /// deletion. Keeping the history also makes old revisions fail closed.
+    func deleteGoal(conversationID: UUID, expectedGoalID: UUID, expectedRevision: Int,
+        expectedDefinition: ConversationGoal? = nil) async throws {
+        guard !isTemporaryConversation(conversationID), goalControlConversations.insert(conversationID).inserted else {
+            throw goalControlConflict()
+        }
+        defer { goalControlConversations.remove(conversationID) }
+        var goal = try await goalForDefinitionChange(conversationID: conversationID, id: expectedGoalID,
+            revision: expectedRevision, definition: expectedDefinition)
+        let unfinished = try await environment.intelligenceStore.goals(conversationID: conversationID)
+            .first(where: { !$0.status.isTerminal })
+        guard unfinished == nil || unfinished?.id == goal.id else { throw goalControlConflict() }
+        let revision = goal.revision ?? 1
+        goal.status = .cancelled; goal.updatedAt = Date()
+        guard try await environment.intelligenceStore.saveGoalIfRevisionMatches(goal, expectedRevision: revision) else {
+            throw goalControlConflict()
+        }
+        await fenceGoalAdvancement(conversationID: conversationID, goalID: goal.id)
+        goalPresentationRevision &+= 1
+        publishSession(conversationID)
+    }
+
+    private static func sameGoalDefinition(_ lhs: ConversationGoal, _ rhs: ConversationGoal) -> Bool {
+        guard let left = try? GoalRunDefinitionFingerprint.make(lhs),
+              let right = try? GoalRunDefinitionFingerprint.make(rhs) else { return false }
+        return lhs.id == rhs.id && lhs.conversationID == rhs.conversationID
+            && lhs.sourcePlanID == rhs.sourcePlanID && lhs.sourcePlanDigest == rhs.sourcePlanDigest
+            && left == right
+    }
+
+    private func goalForDefinitionChange(conversationID: UUID, id: UUID, revision: Int,
+        definition: ConversationGoal?) async throws -> ConversationGoal {
+        guard !isClearingHistory, !deletingConversationIDs.contains(conversationID),
+              let goal = try await environment.intelligenceStore.goal(id: id),
+              goal.conversationID == conversationID, goal.status != .cancelled else { throw goalControlConflict() }
+        if let definition {
+            guard (definition.revision ?? 1) == revision, Self.sameGoalDefinition(goal, definition) else { throw goalControlConflict() }
+        } else if (goal.revision ?? 1) != revision { throw goalControlConflict() }
+        return goal
+    }
+
+    static func presentedGoal(_ goals: [ConversationGoal]) -> ConversationGoal? {
+        let ordered = goals.sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id.uuidString > $1.id.uuidString
+        }
+        if let unfinished = ordered.first(where: { !$0.status.isTerminal }) { return unfinished }
+        guard let latest = ordered.first, latest.status != .cancelled else { return nil }
+        return latest
+    }
+
     func resumeGoal(conversationID: UUID, expectedGoalID: UUID, expectedRevision: Int,
-        provider: ProviderProfile, model: ModelProfile, workspaceID: UUID? = nil) async throws -> StartedConversationRun {
+        provider: ProviderProfile, model: ModelProfile, workspaceID: UUID? = nil) async throws -> GoalResumeResult {
         guard !isTemporaryConversation(conversationID), goalControlConversations.insert(conversationID).inserted else {
             throw FloeError.validationFailed(IDELanguageRunText.t("目标正在更新，请稍后重试。", "The goal is updating. Try again shortly."))
         }
@@ -7662,8 +7880,12 @@ final class ConversationCenter: ObservableObject {
         let runs = try await environment.runStore.runs(conversationID: conversationID)
         guard try await environment.intelligenceStore.goals(conversationID: conversationID)
             .first(where: { !$0.status.isTerminal })?.id == expectedGoalID else { throw goalControlConflict() }
-        guard !runs.contains(where: { hasLiveOwner(runID: $0.id) }) else {
-            throw FloeError.validationFailed(IDELanguageRunText.t("执行尚未停止，请稍后继续。", "Execution is still stopping. Continue shortly."))
+        let currentRound = runs.first {
+            $0.goalID == expectedGoalID && $0.endedAt == nil
+                && !["completed", "failed", "cancelled", "cancelling"].contains($0.state)
+        }
+        guard currentRound != nil || !runs.contains(where: { hasLiveOwner(runID: $0.id) }) else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("另一轮仍在执行或停止中，请稍后继续目标。", "Another round is running or stopping. Resume the Goal shortly."))
         }
         guard goal.status != .verifying, !goalBudgetExhausted(goal) else {
             throw FloeError.validationFailed(goalBlockedReason(goal) ??
@@ -7676,13 +7898,25 @@ final class ConversationCenter: ObservableObject {
             throw goalControlConflict()
         }
         goalContinuationReservations[goal.id] = nil
+        if let currentRound {
+            // Resuming the long-term goal does not restart or replace the
+            // already-running/parked round, and does not change its prompt.
+            let fresh = try await environment.runStore.run(id: currentRound.id)
+            if let fresh, fresh.endedAt == nil,
+               !["completed", "failed", "cancelled"].contains(fresh.state) {
+                goal.revision = expectedRevision + 1
+                publishSession(conversationID)
+                return GoalResumeResult(goal: goal, runID: fresh.id, startedRun: nil)
+            }
+        }
         do {
             let started = try await startRun(goal: "Continue the existing authorized task goal: \(goal.objective)",
                 in: conversationID, provider: provider, model: model, workspaceID: workspaceID,
                 executionMode: .goal, isGoalContinuation: true,
                 expectedGoal: (goal.id, expectedRevision + 1), startOrigin: .explicitUserAction)
             publishSession(conversationID)
-            return started
+            goal.revision = expectedRevision + 1
+            return GoalResumeResult(goal: goal, runID: started.runID, startedRun: started)
         } catch {
             // Only roll back this exact activation; a concurrent user edit
             // or completion keeps its own revision and evidence.
@@ -7739,7 +7973,7 @@ final class ConversationCenter: ObservableObject {
     /// evidence can satisfy the default criterion. No-progress cycles are
     /// allowed to continue, but the third identical blocker becomes a
     /// durable `.blocked` state instead of an endless harness loop.
-    private func evaluateAndContinueGoal(
+    func evaluateAndContinueGoal(
         completedRunID: UUID,
         conversationID: UUID,
         provider: ProviderProfile,
@@ -7747,11 +7981,13 @@ final class ConversationCenter: ObservableObject {
         workspaceID: UUID
     ) async {
         guard !goalControlConversations.contains(conversationID),
+              !runInvocationOwnership.isCancelled(completedRunID),
               let owner = try? await environment.runStore.run(id: completedRunID),
               owner.conversationID == conversationID,
               let goalID = owner.goalID,
               var goal = try? await environment.intelligenceStore.goal(id: goalID),
               goal.conversationID == conversationID,
+              goalUserStopCounts[goal.id, default: 0] == 0,
               goal.status == .active || goal.status == .verifying else { return }
 
         let expectedRevision = goal.revision ?? 1
@@ -7775,40 +8011,88 @@ final class ConversationCenter: ObservableObject {
               events.last?.kind == .terminal else {
             return
         }
-        let existingReferences = Set(goal.evidence.map(\.reference))
-        var knownFingerprints = Set(goal.evidence.compactMap(\.fingerprint))
+        struct AdmissionPayload: Decodable {
+            var goalID: String?
+            var goalDefinitionFingerprint: String?
+        }
+        let admission = events.lazy.filter { $0.kind == .status }.compactMap {
+            try? JSONDecoder().decode(AdmissionPayload.self, from: Data($0.payloadJSON.utf8))
+        }.first { $0.goalID == goalID.uuidString && $0.goalDefinitionFingerprint != nil }
+        let admittedFingerprint = admission?.goalDefinitionFingerprint
+        let currentFingerprint = try? GoalRunDefinitionFingerprint.make(goal)
+        let definitionMatches = admittedFingerprint != nil && currentFingerprint != nil
+            && admittedFingerprint == currentFingerprint
+        let runReferencePrefix = "run:\(completedRunID.uuidString):event:"
+        var existingByReference = Dictionary(goal.evidence.map { ($0.reference, $0) },
+            uniquingKeysWith: { first, _ in first })
+        // Core may already have durably appended THIS round's receipts. They
+        // still need review; only earlier rounds' fingerprints suppress new
+        // progress, otherwise settlement would erase every review candidate.
+        let historicalFingerprints = Set(goal.evidence.filter {
+            !$0.reference.hasPrefix(runReferencePrefix)
+        }.compactMap(\.fingerprint))
+        var roundFingerprints = Set<String>()
+        struct RequestPayload: Decodable {
+            var id: String
+            var input: String?
+        }
+        struct ResultPayload: Decodable {
+            var id: String
+            var tool: String
+            var status: String
+            var summary: String?
+            var outputDigest: String?
+            var dispatched: Bool
+            private enum CodingKeys: String, CodingKey { case id, tool, status, summary, outputDigest, dispatched }
+            init(from decoder: any Decoder) throws {
+                let fields = try decoder.container(keyedBy: CodingKeys.self)
+                id = try fields.decode(String.self, forKey: .id)
+                tool = try fields.decode(String.self, forKey: .tool)
+                status = try fields.decode(String.self, forKey: .status)
+                summary = try fields.decodeIfPresent(String.self, forKey: .summary)
+                outputDigest = try fields.decodeIfPresent(String.self, forKey: .outputDigest)
+                if let value = try? fields.decode(Bool.self, forKey: .dispatched) { dispatched = value }
+                else { dispatched = (try? fields.decode(String.self, forKey: .dispatched)) == "true" }
+            }
+        }
         let inputsByCallID = Dictionary(events.filter { $0.kind == .toolRequest }.compactMap { event -> (String, String)? in
-            let payload = Self.stringMap(from: event.payloadJSON)
-            guard let id = payload["id"] else { return nil }
-            return (id, payload["input"] ?? "")
-        }, uniquingKeysWith: { first, _ in first })
-        var newEvidence: [GoalEvidence] = []
+            guard let payload = try? JSONDecoder().decode(RequestPayload.self, from: Data(event.payloadJSON.utf8)) else { return nil }
+            return (payload.id, payload.input ?? "")
+        }, uniquingKeysWith: { _, last in last })
+        var reviewEvidence: [GoalEvidence] = []
         for event in events where event.kind == .toolResult {
-            let payload = Self.stringMap(from: event.payloadJSON)
-            guard payload["status"] == "success" else { continue }
+            guard let payload = try? JSONDecoder().decode(ResultPayload.self, from: Data(event.payloadJSON.utf8)),
+                  payload.dispatched, payload.status == "ok" || payload.status == "success",
+                  !payload.id.isEmpty, !payload.tool.isEmpty else { continue }
             // Discovery is preparation, not proof that the goal advanced.
-            guard !GoalEvidenceReviewContract.isPreparationTool(payload["tool"] ?? "") else { continue }
-            let reference = "run:\(completedRunID.uuidString):event:\(event.sequence)"
-            guard !existingReferences.contains(reference) else { continue }
-            let summary = String((payload["summary"] ?? payload["tool"] ?? "Successful tool result").prefix(1_000))
-            let material = (payload["tool"] ?? "") + "|" + (inputsByCallID[payload["id"] ?? ""] ?? "") + "|" + (payload["outputDigest"].flatMap { $0.isEmpty ? nil : $0 } ?? payload["summary"] ?? "")
+            guard !GoalEvidenceReviewContract.isPreparationTool(payload.tool) else { continue }
+            let reference = runReferencePrefix + String(event.sequence)
+            let summary = String((payload.summary ?? payload.tool).prefix(1_000))
+            // Match Core byte-for-byte: an absent or empty digest falls back
+            // to the summary; the original tool input is not normalized.
+            let material = payload.tool + "|" + (inputsByCallID[payload.id] ?? "") + "|" + (payload.outputDigest.flatMap { $0.isEmpty ? nil : $0 } ?? payload.summary ?? "")
             let fingerprint = FloeDigest.sha256Hex(Data(material.utf8))
-            guard knownFingerprints.insert(fingerprint).inserted else { continue }
-            newEvidence.append(GoalEvidence(
+            guard !historicalFingerprints.contains(fingerprint), roundFingerprints.insert(fingerprint).inserted else { continue }
+            let evidence = GoalEvidence(
+                id: existingByReference[reference]?.id ?? UUID(),
                 kind: .toolResult,
                 reference: reference,
                 summary: summary,
                 capturedAt: event.createdAt,
                 fingerprint: fingerprint
-            ))
+            )
+            if existingByReference[reference] == nil {
+                goal.evidence.append(evidence)
+                existingByReference[reference] = evidence
+            }
+            reviewEvidence.append(evidence)
         }
-        goal.evidence.append(contentsOf: newEvidence)
         goal.progress.lastCheckpointAt = Date()
 
-        if !newEvidence.isEmpty {
+        if definitionMatches && !reviewEvidence.isEmpty {
             let review = await reviewGoalEvidence(
                 goal: goal,
-                newEvidence: newEvidence,
+                newEvidence: reviewEvidence,
                 provider: provider,
                 model: model
             )
@@ -7889,7 +8173,7 @@ final class ConversationCenter: ObservableObject {
                   let started = goal.progress.startedAt,
                   Date().timeIntervalSince(started) >= seconds {
             goal.status = .budgetLimited
-        } else if newEvidence.isEmpty {
+        } else if definitionMatches && reviewEvidence.isEmpty {
             goal.recordBlocker(key: "no-inspectable-evidence")
             if goal.status != .blocked { goal.status = .active }
         }
@@ -7906,6 +8190,7 @@ final class ConversationCenter: ObservableObject {
         // Re-read after the durable flush. User edits or another cycle may
         // have advanced the Goal since this evaluator acquired its snapshot.
         guard goalContinuationReservations[goal.id] == reservation,
+              !runInvocationOwnership.isCancelled(completedRunID),
               let durableGoal = try? await environment.intelligenceStore.goal(id: goal.id),
               durableGoal.revision == committedRevision,
               durableGoal.status == .active else { return }
@@ -7932,7 +8217,8 @@ final class ConversationCenter: ObservableObject {
         expectedRevision: Int,
         reservation: GoalContinuationReservation
     ) async -> Int? {
-        guard !goalControlConversations.contains(goal.conversationID),
+        guard !goalControlConversations.contains(goal.conversationID), goalUserStopCounts[goal.id, default: 0] == 0,
+              !runInvocationOwnership.isCancelled(reservation.completedRunID),
               goalContinuationReservations[goal.id] == reservation else { return nil }
         do {
             let saved = try await environment.intelligenceStore.saveGoalIfRevisionMatches(
@@ -8072,12 +8358,85 @@ final class ConversationCenter: ObservableObject {
     }
 
     /// Cancels a live run. The runtime owns the terminal transition.
+    /// Explicit composer Stop is distinct from system/file cancellation:
+    /// pause only the selected round's actual Goal, then cancel that round.
+    /// A failed durable pause must never prevent the requested cancellation.
+    func stopRunFromComposer(_ snapshot: RunRecord) async throws {
+        var failure: Error?
+        var canCancel = true
+        var reserved: Set<UUID> = []
+        func reserve(_ id: UUID) {
+            guard reserved.insert(id).inserted else { return }
+            goalUserStopCounts[id, default: 0] += 1
+            goalContinuationReservations[id] = nil
+            goalLaunchFence.invalidate(scope: id)
+            goalLaunchFence.invalidate(scope: snapshot.conversationID)
+        }
+        defer {
+            for id in reserved {
+                let remaining = goalUserStopCounts[id, default: 1] - 1
+                goalUserStopCounts[id] = remaining > 0 ? remaining : nil
+            }
+        }
+        let wasActive = snapshot.endedAt == nil && !["completed", "failed", "cancelled"].contains(snapshot.state)
+        if wasActive {
+            // Fence the exact native owner before the first store await,
+            // including a model-created Goal not yet reflected in the UI row.
+            let identities = runInvocationOwnership.identities(conversationID: snapshot.conversationID)
+            if runInvocationOwnership.tokens(matching: identities).contains(where: { $0.runID == snapshot.id }) {
+                runInvocationOwnership.cancel(snapshot.id)
+            }
+            if let preparation = pendingRunPreparations[snapshot.id], preparation.conversationID == snapshot.conversationID {
+                launchPreparations.cancel([preparation.preparationID])
+            }
+            if let id = snapshot.goalID { reserve(id) }
+        }
+        do {
+            guard let run = try await runStore(for: snapshot.conversationID).run(id: snapshot.id) else {
+                throw FloeError.notFound("Run")
+            }
+            guard run.conversationID == snapshot.conversationID else {
+                canCancel = false
+                throw FloeError.unauthorized
+            }
+            if let expected = snapshot.goalID, run.goalID != expected { throw goalControlConflict() }
+            let actuallyActive = run.endedAt == nil && !["completed", "failed", "cancelled"].contains(run.state)
+            if wasActive || actuallyActive, let id = run.goalID, !isTemporaryConversation(run.conversationID) {
+                reserve(id)
+                var persisted = false
+                for _ in 0..<3 {
+                    guard var goal = try await environment.intelligenceStore.goal(id: id),
+                          goal.conversationID == run.conversationID else { throw goalControlConflict() }
+                    if goal.status.isTerminal || goal.status == .paused { persisted = true; break }
+                    let revision = goal.revision ?? 1
+                    goal.status = .paused; goal.updatedAt = Date()
+                    if try await environment.intelligenceStore.saveGoalIfRevisionMatches(goal, expectedRevision: revision) {
+                        persisted = true; break
+                    }
+                }
+                guard persisted else { throw goalControlConflict() }
+                goalPresentationRevision &+= 1
+                publishSession(run.conversationID)
+            }
+        } catch { failure = error }
+        if canCancel { await cancel(runID: snapshot.id) }
+        if let failure {
+            FloeLogger(category: .runtime).error("goalPauseOnComposerStopFailed type=\(String(reflecting: type(of: failure)))")
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "本轮已请求停止，但长期目标暂停状态未能保存。请刷新后重试暂停目标。",
+                "This round was asked to stop, but the long-term Goal pause could not be saved. Refresh and pause the Goal again."))
+        }
+    }
+
     func cancel(runID: UUID) async {
         // Fence cold wait recovery synchronously, including a reservation
         // still resolving file availability or the parking transaction.
         if let monitor = runtimeWaitRecoveryTasks[runID] {
             monitor.cancellation.cancel()
             monitor.task.cancel()
+        }
+        if let preparation = pendingRunPreparations[runID] {
+            launchPreparations.cancel([preparation.preparationID])
         }
         runInvocationOwnership.cancel(runID)
         // An explicit cancel releases this run's persistent local-device input
@@ -8507,6 +8866,7 @@ final class ConversationCenter: ObservableObject {
             throw FloeError.validationFailed("Conversation history is already being cleared")
         }
         isClearingHistory = true
+        personalizationMaintenance.cancel()
         launchFence.invalidateAll()
         defer { isClearingHistory = false }
         await waitForLaunches()
@@ -8828,8 +9188,8 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
-    /// Retries a terminal run by starting a fresh run with the same goal,
-    /// provider and model in the same conversation.
+    /// Continues the same durable round and checkpoint, without rearming
+    /// its long-term Goal or creating another run/user message.
     func retry(
         runID: UUID,
         startOrigin: ContinuedProcessingStartOrigin,
@@ -8852,10 +9212,8 @@ final class ConversationCenter: ObservableObject {
         if let expectedConversationID, record.conversationID != expectedConversationID {
             throw FloeError.validationFailed("The run belongs to another conversation")
         }
-        if !isTemporaryConversation(record.conversationID),
-           try await environment.intelligenceStore.goals(conversationID: record.conversationID).contains(where: { !$0.status.isTerminal }) {
-            throw FloeError.validationFailed(IDELanguageRunText.t("请在目标进度中继续，保留原目标和进度。", "Continue from the goal progress controls to keep the same goal and progress."))
-        }
+        // Continue below retains this exact runID/checkpoint. It does not
+        // reactivate a long-term Goal or create a new execution cycle.
         launchPreparations.bind(preparationID, conversationID: record.conversationID)
         guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         try await environment.studioCoordinator.requireAssistantAvailable(conversationID: record.conversationID)
@@ -8899,7 +9257,7 @@ final class ConversationCenter: ObservableObject {
 
     func hasLiveOwner(runID: UUID?) -> Bool {
         guard let runID else { return false }
-        return runInvocationOwnership.hasOwner(runID) || runTasks[runID] != nil || runServices[runID] != nil || activeRuns[runID] != nil
+        return pendingRunPreparations[runID] != nil || runInvocationOwnership.hasOwner(runID) || runTasks[runID] != nil || runServices[runID] != nil || activeRuns[runID] != nil
     }
 
     /// Called only after the native Notes/Studio store resolves this document's
@@ -8953,6 +9311,9 @@ final class ConversationCenter: ObservableObject {
 
     private func finishRunInvocation(_ invocation: ConversationRunInvocationOwnership.Token) {
         guard runInvocationOwnership.finish(invocation) else { return }
+        // A started service retains its own once-gated cleanup. Merely
+        // ending an invocation must not force-release its worker resources.
+        pendingRunResources[invocation.runID] = nil
         runTasks[invocation.runID] = nil
     }
 
@@ -8977,15 +9338,10 @@ final class ConversationCenter: ObservableObject {
         try Task.checkCancellation()
         guard !deletingConversationIDs.contains(record.conversationID) else { throw CancellationError() }
         try validateLaunchEpoch(launchToken, conversationID: record.conversationID)
-        let goalReservation: GoalLaunchReservation?
-        if let goalID = record.goalID {
-            goalReservation = try await activeGoalLaunchReservation(conversationID: record.conversationID, goalID: goalID)
-        } else { goalReservation = nil }
+        // This restores the SAME admitted run, not a new Goal cycle.
+        // Long-term pause/delete/edit never changes its frozen objective.
         func validateResumeLaunch() async throws {
             try validateLaunchEpoch(launchToken, conversationID: record.conversationID)
-            if let goalReservation {
-                try await validateGoalLaunch(goalReservation, conversationID: record.conversationID, token: launchToken)
-            }
         }
         try await validateResumeLaunch()
         let isTemporary = isTemporaryConversation(record.conversationID)
@@ -9184,9 +9540,6 @@ final class ConversationCenter: ObservableObject {
                 var executionStarted = false
                 do {
                     try self.validateLaunchEpoch(launchToken, conversationID: record.conversationID)
-                    if let goalReservation {
-                        try await self.validateGoalLaunch(goalReservation, conversationID: record.conversationID, token: launchToken)
-                    }
                     guard self.runInvocationOwnership.mayExecute(invocation) else { throw CancellationError() }
                     executionStarted = true
                     if let checkpoint {

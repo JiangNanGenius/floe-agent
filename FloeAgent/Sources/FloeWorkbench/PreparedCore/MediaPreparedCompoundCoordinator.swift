@@ -71,10 +71,11 @@ extension MediaPreparedCoordinator {
         do { let commit=try await applyCompound(scope:scope,operations:operations,instruction:handle);try await stopCompound(scope:scope,instruction:handle);return commit }
         catch { try? await stopCompound(scope:scope,instruction:handle);throw error }
     }
-    func undoCompound(scope:MediaPreparedCompoundCoordinatorScope,groupID:UUID,documentID:UUID,redo:Bool) async throws -> MediaPreparedCommit {
+    func undoCompound(scope:MediaPreparedCompoundCoordinatorScope,groupID:UUID,documentID:UUID,redo:Bool,expectedRevision:Int64? = nil,
+                      cancellationCheck:(@Sendable () throws -> Void)? = nil) async throws -> MediaPreparedCommit {
         guard documentID == scope.documentID else { throw MediaPreparedCoreError.invalidOperation("compound scope belongs to another original") }
         let project=try await scope.root.loadProjectSnapshot(id:documentID)
         guard project.preparedJournal?.entry(groupID)?.compoundScopeID == scope.clipID else { throw MediaPreparedCoreError.unknownGroup(groupID) }
-        return try await (redo ? scope.root.redoGroup(groupID,in:documentID) : scope.root.undoGroup(groupID,in:documentID))
+        return try await (redo ? scope.root.redoGroup(groupID,in:documentID,expectedRevision:expectedRevision,cancellationCheck:cancellationCheck) : scope.root.undoGroup(groupID,in:documentID,expectedRevision:expectedRevision,cancellationCheck:cancellationCheck))
     }
 }

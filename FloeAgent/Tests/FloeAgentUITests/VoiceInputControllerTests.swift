@@ -35,6 +35,7 @@ struct VoiceInputControllerTests {
         let transcripts: AsyncStream<String>
         private(set) var finishCount = 0
         var finalTextOnFinish: String?
+        var failure: VoiceInputFailure?
 
         init() {
             var c: AsyncStream<String>.Continuation!
@@ -107,6 +108,8 @@ struct VoiceInputControllerTests {
 
     private final class FakeDiagnostics: VoiceInputDiagnostics, @unchecked Sendable {
         private(set) var events: [String] = []
+        private(set) var endReasons: [VoiceInputEndReason] = []
+        private(set) var endedGenerations: [UInt64] = []
         func voicePermissionRequested() { events.append("permissionRequested") }
         func voicePermissionDenied(kind: String) { events.append("permissionDenied.\(kind)") }
         func voiceSessionPreparing() { events.append("sessionPreparing") }
@@ -114,6 +117,10 @@ struct VoiceInputControllerTests {
         func voiceInterrupted(reason: String) { events.append("interruption.\(reason)") }
         func voiceRouteChanged() { events.append("routeChanged") }
         func voiceListeningStopped() { events.append("listeningStopped") }
+        func voiceSessionEnding(reason: VoiceInputEndReason, generation: UInt64) {
+            endReasons.append(reason)
+            endedGenerations.append(generation)
+        }
         func voiceFailed(reason: VoiceInputFailure) { events.append("speechFailed.\(reason.rawValue)") }
     }
 
@@ -121,6 +128,7 @@ struct VoiceInputControllerTests {
     private final class DeferredTranscriberFactory {
         private var continuation: CheckedContinuation<any SpeechTranscribing, Never>?
         private let transcriber: any SpeechTranscribing
+        var isPending: Bool { continuation != nil }
 
         init(transcriber: any SpeechTranscribing) { self.transcriber = transcriber }
 
@@ -407,6 +415,98 @@ struct VoiceInputControllerTests {
         #expect(harness.controller.state == .idle)
     }
 
+    @Test("Temporary inactive scenes keep the owned capture and transcript stream")
+    @MainActor
+    func inactiveScenePreservesListening() async {
+        let harness = Harness()
+        await harness.controller.start()
+        harness.controller.handleScenePhase(.inactive)
+        harness.controller.handleScenePhase(.active)
+        harness.transcriber.emit("still listening")
+        for _ in 0..<100 where harness.controller.transcript != "still listening" {
+            await Task.yield()
+        }
+        #expect(harness.controller.state == .listening)
+        #expect(harness.controller.transcript == "still listening")
+        #expect(harness.capturer.startCount == 1)
+        #expect(harness.capturer.stopCount == 0)
+        #expect(harness.transcriber.finishCount == 0)
+        #expect(harness.diagnostics.endReasons.isEmpty)
+        await harness.controller.stopAndWait()
+    }
+
+    @Test("Background stops capture and foreground or late results cannot restart it")
+    @MainActor
+    func backgroundStopsWithoutAutomaticRestart() async {
+        let harness = Harness()
+        harness.transcriber.finalTextOnFinish = "final before background"
+        await harness.controller.start()
+        harness.controller.handleScenePhase(.background)
+        await harness.controller.stopAndWait()
+        #expect(harness.controller.state == .idle)
+        #expect(harness.controller.transcript == "final before background")
+        #expect(harness.capturer.stopCount == 1)
+        #expect(harness.transcriber.finishCount == 1)
+        #expect(harness.diagnostics.endReasons == [.sceneBackground])
+        #expect(harness.diagnostics.endedGenerations.count == 1)
+
+        harness.controller.handleScenePhase(.inactive)
+        harness.controller.handleScenePhase(.active)
+        harness.transcriber.emit("late result")
+        harness.transcriber.end()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(harness.controller.state == .idle)
+        #expect(harness.controller.transcript == "final before background")
+        #expect(harness.capturer.startCount == 1)
+    }
+
+    @Test("Background fences a pending start even if its recognizer arrives later")
+    @MainActor
+    func backgroundFencesPendingPreparation() async throws {
+        let transcriber = FakeTranscriber()
+        let capture = FakeCapturer()
+        let factory = DeferredTranscriberFactory(transcriber: transcriber)
+        let diagnostics = FakeDiagnostics()
+        let controller = VoiceInputController(
+            authorization: FakeAuthorization(),
+            makeTranscriber: { await factory.make() },
+            makeCapturer: { capture }, diagnostics: diagnostics
+        )
+        controller.requestStart()
+        for _ in 0..<100 where !factory.isPending { await Task.yield() }
+        try #require(factory.isPending)
+        controller.handleScenePhase(.inactive)
+        #expect(controller.state == .preparing)
+        #expect(diagnostics.endReasons.isEmpty)
+
+        controller.handleScenePhase(.background)
+        await controller.stopAndWait()
+        factory.resolve()
+        for _ in 0..<100 where transcriber.finishCount == 0 { await Task.yield() }
+        #expect(transcriber.finishCount == 1)
+        controller.handleScenePhase(.active)
+        #expect(controller.state == .idle)
+        #expect(capture.startCount == 0)
+        #expect(diagnostics.endReasons == [.sceneBackground])
+    }
+
+    @Test("Repeated stop notifications preserve a single final-result drain")
+    @MainActor
+    func repeatedStopKeepsOneFinalDrain() async {
+        let harness = Harness()
+        harness.transcriber.finalTextOnFinish = "preserved final"
+        await harness.controller.start()
+        harness.controller.stop()
+        harness.controller.stop()
+        harness.controller.handleScenePhase(.background)
+        await harness.controller.stopAndWait()
+        #expect(harness.controller.state == .idle)
+        #expect(harness.transcriber.finishCount == 1)
+        #expect(harness.capturer.stopCount == 1)
+        #expect(harness.controller.transcript == "preserved final")
+        #expect(harness.diagnostics.endReasons == [.callerRequested])
+    }
+
     @Test("Route changes stop the session and log the route change")
     @MainActor
     func routeChange() async {
@@ -416,6 +516,7 @@ struct VoiceInputControllerTests {
         await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
         #expect(harness.diagnostics.events.contains("routeChanged"))
+        #expect(harness.diagnostics.endReasons == [.inputRouteLost])
     }
 
     @Test("Self-induced audio category changes do not stop dictation")
@@ -443,6 +544,7 @@ struct VoiceInputControllerTests {
         await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
         #expect(harness.diagnostics.events.contains("routeChanged"))
+        #expect(harness.diagnostics.endReasons == [.inputRouteLost])
     }
 
     @Test("Only interruption began stops an active voice session")
@@ -468,6 +570,7 @@ struct VoiceInputControllerTests {
         ))
         await waitForIdle(harness.controller)
         #expect(harness.controller.state == .idle)
+        #expect(harness.diagnostics.endReasons == [.audioInterruption])
     }
 
     @Test("Partial transcripts arrive in order and never duplicate")
@@ -594,6 +697,24 @@ struct VoiceInputControllerTests {
         try? await Task.sleep(nanoseconds: 20_000_000)
         #expect(harness.controller.state == .idle)
         #expect(harness.controller.transcript == "final")
+        #expect(harness.diagnostics.endReasons == [.recognizerEnded])
+    }
+
+    @Test("A forced recognizer interruption remains a failure and never renews capture")
+    @MainActor
+    func recognizerInterruptionDoesNotRestart() async {
+        let harness = Harness()
+        await harness.controller.start()
+        harness.transcriber.failure = .interrupted
+        harness.transcriber.end()
+        for _ in 0..<100 where harness.controller.state != .failed(reason: .interrupted) {
+            await Task.yield()
+        }
+        #expect(harness.controller.state == .failed(reason: .interrupted))
+        #expect(harness.capturer.startCount == 1)
+        #expect(harness.capturer.stopCount == 1)
+        #expect(harness.diagnostics.endReasons == [.recognizerEnded])
+        #expect(harness.diagnostics.events.contains("speechFailed.interrupted"))
     }
 
     @Test("Real capture levels drive the published amplitude; silence is static")

@@ -34,10 +34,10 @@ struct MediaV2Workspace: View {
             VStack(spacing: 0) {
                 toolbar(wide: wide)
                 Divider()
-                toolCategories
+                toolCategories(wide: wide)
                 Divider()
                 HStack(alignment: .top, spacing: 0) {
-                    toolRail
+                    toolRail(wide: wide)
                     if wide && objectsVisible { objectPanel.frame(width: 190); Divider() }
                     VStack(spacing: 0) {
                         MediaV2Preview(session: session)
@@ -101,13 +101,23 @@ struct MediaV2Workspace: View {
             Menu {
                 if !wide { Button(WorkbenchText.t("导入素材", "Import media"), systemImage: "square.and.arrow.down") { beginImport() } }
                 if session.project.kind == .image {
-                    Button(WorkbenchText.t("绘画图层", "Drawing layer"), systemImage: "paintbrush") { session.addLayer(.strokes(.init()), name: WorkbenchText.t("绘图", "Drawing")) }
-                    Button(WorkbenchText.t("文字", "Text"), systemImage: "character.cursor.ibeam") { run("image.text") }
-                    Button(WorkbenchText.t("形状", "Shape"), systemImage: "square.on.circle") { run("image.shape") }
-                    Button(WorkbenchText.t("编组", "Group"), systemImage: "folder") { run("image.group-layer") }
-                    Button(WorkbenchText.t("调色调整层", "Color adjustment layer"), systemImage: "slider.horizontal.3") {
-                        session.addLayer(.adjustment(.init()), name: WorkbenchText.t("调色", "Color adjustment"))
-                        session.tool = "image.curves"
+                    Section(WorkbenchText.t("新增图层", "New layer")) {
+                        Button(WorkbenchText.t("绘画图层", "Drawing layer"), systemImage: "paintbrush") {
+                            session.addLayer(.strokes(.init()), name: WorkbenchText.t("绘图", "Drawing"))
+                            selectTool("image.brush", wide: wide)
+                        }
+                        Button(WorkbenchText.t("文字", "Text"), systemImage: "character.cursor.ibeam") { addTextLayer(wide: wide) }
+                        Button(WorkbenchText.t("形状", "Shape"), systemImage: "square.on.circle") {
+                            run("image.shape"); selectTool("image.shape", wide: wide)
+                        }
+                        Button(WorkbenchText.t("调色调整层", "Color adjustment layer"), systemImage: "slider.horizontal.3") {
+                            session.addLayer(.adjustment(.init()), name: WorkbenchText.t("调色", "Color adjustment"))
+                            selectTool("image.curves", wide: wide)
+                        }
+                    }
+                    Section(WorkbenchText.t("整理图层", "Organize layers")) {
+                        Button(WorkbenchText.t("编组所选图层", "Group selected layers"), systemImage: "folder") { run("image.group-layer") }
+                            .disabled(session.selectedLayerSet.isEmpty)
                     }
                 } else {
                     Button(WorkbenchText.t("视频轨", "Video track")) { session.addTrack(.visual) }
@@ -115,6 +125,8 @@ struct MediaV2Workspace: View {
                     Button(WorkbenchText.t("字幕", "Caption")) { run("video.caption") }
                 }
             } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
+                .accessibilityLabel(WorkbenchText.t("添加", "Add"))
+                .disabled(session.saving || session.processingTool)
             Divider().frame(height: 22).padding(.horizontal, 4)
             if wide { MusicIconButton("square.and.arrow.down", WorkbenchText.t("导入素材", "Import media")) { beginImport() } }
             Menu {
@@ -143,16 +155,20 @@ struct MediaV2Workspace: View {
             }
         }.padding(.horizontal, 10).background(Color(uiColor: .secondarySystemBackground))
     }
-    private var toolCategories: some View {
+    private func toolCategories(wide: Bool) -> some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(categories, id: \.self) { category in
                         Menu {
-                            ForEach(session.applicableTools.filter { $0.category == category }) { tool in
-                                Button { session.tool = tool.id; inspectorVisible = true } label: {
-                                    Text(tool.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en"))
-                                    if session.tool == tool.id { Image(systemName: "checkmark") }
+                            let tools = session.applicableTools.filter { $0.category == category }
+                            ForEach(tools.filter { !MediaV2Session.providerToolIDs.contains($0.id) }) { tool in
+                                toolMenuButton(tool, wide: wide)
+                            }
+                            let providerTools = tools.filter { MediaV2Session.providerToolIDs.contains($0.id) }
+                            if !providerTools.isEmpty {
+                                Section(WorkbenchText.t("AI 编辑", "AI editing")) {
+                                    ForEach(providerTools) { tool in toolMenuButton(tool, wide: wide) }
                                 }
                             }
                         } label: {
@@ -175,20 +191,49 @@ struct MediaV2Workspace: View {
     private var categories: [String] {
         var values: [String] = []
         for tool in session.applicableTools where tool.category != "assets" && !values.contains(tool.category) { values.append(tool.category) }
-        return values
+        guard session.project.kind == .image else { return values }
+        let order = ["selection", "paint", "vector", "mask", "transform", "repair", "adjust"]
+        return order.filter { values.contains($0) } + values.filter { !order.contains($0) }
+    }
+    private func toolMenuButton(_ tool: MediaPreparedToolDescriptor, wide: Bool) -> some View {
+        Button { selectTool(tool.id, wide: wide) } label: {
+            Text(tool.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en"))
+            if session.tool == tool.id { Image(systemName: "checkmark") }
+        }
+    }
+    private func selectTool(_ id: String, wide: Bool) {
+        session.tool = id
+        // Ink and selection stay on the canvas. Parameter tools reveal the
+        // same inspector in both layouts instead of leaving compact taps inert.
+        let directImageTool = session.project.kind == .image &&
+            (MediaV2Session.usesDirectStroke(id) || ["move", "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.eyedropper"].contains(id))
+        if wide { inspectorVisible = true }
+        else if session.project.kind == .image && !directImageTool { compactPanel = "properties" }
+    }
+    private func addTextLayer(wide: Bool) {
+        Task {
+            do {
+                _ = try await session.createImageTextLayer()
+                selectTool("image.text", wide: wide)
+            } catch { session.diagnostic = error.localizedDescription }
+        }
     }
     private func categoryTitle(_ category: String) -> String {
         let names: [String: (String, String)] = ["selection": ("选区", "Selection"), "paint": ("绘画", "Paint"), "mask": ("图层与蒙版", "Layers and masks"), "transform": ("几何与画布", "Geometry"), "vector": ("文字与路径", "Text and paths"), "repair": ("修复", "Retouch"), "adjust": ("调色", "Color"), "edit": ("剪辑", "Editing"), "composite": ("合成", "Compositing"), "animation": ("动画", "Animation"), "captions": ("字幕", "Captions"), "sound": ("声音", "Audio"), "video-color": ("调色", "Color")]
         let value = names[category] ?? (category, category)
         return WorkbenchText.t(value.0, value.1)
     }
-    private var toolRail: some View {
+    private func toolRail(wide: Bool) -> some View {
         VStack(spacing: 2) {
-            ForEach(railTools, id: \.0) { value in
-                Button { session.tool = value.0 } label: {
-                    Image(systemName: value.1).frame(width: 44, height: 44)
-                        .background(session.tool == value.0 ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 5))
-                }.buttonStyle(.plain).accessibilityLabel(value.2).help(value.2)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 2) {
+                    ForEach(railTools, id: \.0) { value in
+                        Button { selectTool(value.0, wide: wide) } label: {
+                            Image(systemName: value.1).frame(width: 44, height: 44)
+                                .background(session.tool == value.0 ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                        }.buttonStyle(.plain).accessibilityLabel(value.2).help(value.2)
+                    }
+                }
             }
             ColorPicker(WorkbenchText.t("颜色", "Color"), selection: $paintColor, supportsOpacity: false).labelsHidden().frame(width: 44, height: 44)
                 .onChange(of: paintColor) { _, color in
@@ -196,7 +241,6 @@ struct MediaV2Workspace: View {
                     UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
                     session.colorHex = String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
                 }
-            Spacer()
         }.frame(width: 48).padding(.top, 4).overlay(alignment: .trailing) { Divider() }
     }
     private var railTools: [(String, String, String)] {
@@ -478,6 +522,24 @@ struct MediaV2Workspace: View {
     }
     private func exchange(_ format: MediaV2ExchangeFormat) {
         Task { do { _ = try await session.exportInterchange(format) } catch { session.diagnostic = error.localizedDescription } }
+    }
+}
+
+extension MediaV2Session {
+    /// The Add menu creates a new object even while another text layer is
+    /// selected. Inspector edits still use the existing image.text command.
+    @discardableResult
+    func createImageTextLayer() async throws -> UUID {
+        guard project.kind == .image, !processingTool, !canvasLayoutInProgress, imageWarpDraft == nil else {
+            throw MediaV2CommandError.invalidInput
+        }
+        let content = ImageTextContent(text: WorkbenchText.t("文字", "Text"), fontSize: 72, colorHex: colorHex)
+        let layer = MediaPreparedLayer(name: content.text, content: .text(content))
+        _ = try await apply([.init(action: .insertLayer(layer: layer, parentID: nil, index: nil))], expectedRevision: document.revision)
+        selectedLayerID = layer.id
+        selectedLayerIDs = [layer.id]
+        multipleLayerSelection = false
+        return layer.id
     }
 }
 

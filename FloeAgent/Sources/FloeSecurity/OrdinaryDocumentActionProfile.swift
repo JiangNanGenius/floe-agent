@@ -119,7 +119,7 @@ public enum OrdinaryDocumentActionProfile {
         case "studio.run":
             guard let id = arguments["projectID"] as? String, UUID(uuidString:id) != nil,
                   Set(arguments.keys).isSubset(of:["projectID","action","inputJSON"]) else { return nil }
-            return ["inspectAudio", "inspectFrame"].contains(arguments["action"] as? String ?? "") ? .readOnly:nil
+            return ["history", "inspectAudio", "inspectFrame"].contains(arguments["action"] as? String ?? "") ? .readOnly:nil
         case "studio.machining":
             guard let id = arguments["projectID"] as? String,UUID(uuidString:id) != nil,let action = arguments["action"] as? String else { return nil }
             if action == "inspect" {

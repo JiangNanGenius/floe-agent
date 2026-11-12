@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import FloeCore
 @testable import FloeModels
@@ -1149,8 +1152,407 @@ struct RequestContractTests {
         }
     }
 
+    @Test("Plan steering followed by a goal tool pair keeps a valid ordered Chat replay")
+    func planSteeringGoalToolPairReplayShape() throws {
+        // Real 332 lead: a plan-execution run accepts steering that explicitly
+        // calls goal.create/goal.read, both settle, and the NEXT main request
+        // is rejected by Ark InvalidParameter/BadRequest with an empty param.
+        // The exact provider body/param is not available; this locks the local
+        // replay contract so a shape defect cannot hide behind "network":
+        // a steering user turn must stay ordinary history, the goal pair must
+        // be exactly one assistant tool_calls turn followed by the matching
+        // tool results, and no partial/duplicate/reordered pair is emitted.
+        // The provider consumes opaque JSON tool receipts. Keep this fixture
+        // independent of Runtime's goal model so the Providers target can
+        // verify the transport without adding a reverse module dependency.
+        let createResult = #"{"ok":true,"goal":{"id":"11111111-1111-1111-1111-111111111111","conversationID":"22222222-2222-2222-2222-222222222222","revision":0,"objective":"Deliver the accepted plan","status":"active","acceptanceCriteria":[{"id":"33333333-3333-3333-3333-333333333333","text":"The plan is implemented","isComplete":false}],"steps":[{"id":"44444444-4444-4444-4444-444444444444","title":"Implement","status":"inProgress","order":0}],"progress":{"startedAt":0}},"evidenceTotal":0,"projectionTruncated":false}"#
+        let readResult = createResult
+
+        let create = try ToolCall(
+            id: "goal_create_1",
+            toolName: "goal.create",
+            argumentsJSON: Data(#"{"objective":"Deliver the accepted plan","acceptanceCriteria":["The plan is implemented"],"steps":["Implement"]}"#.utf8),
+            scope: .local
+        )
+        let read = try ToolCall(
+            id: "goal_read_2",
+            toolName: "goal.read",
+            argumentsJSON: Data("{}".utf8),
+            scope: .local
+        )
+        var request = syntheticChatRequest(schemas: [
+            .init(name: "goal.create", description: "Create", parametersJSON: #"{"type":"object"}"#),
+            .init(name: "goal.read", description: "Read", parametersJSON: #"{"type":"object"}"#),
+            .init(name: "checklist.readPlan", description: "Plan", parametersJSON: #"{"type":"object"}"#)
+        ])
+        request.messages = [
+            (role: "system", content: "Runtime contract"),
+            (role: "user", content: "Execute the accepted plan"),
+            (role: "assistant", content: "Starting implementation."),
+            (role: "user", content: "Create the durable goal and read it before continuing.")
+        ]
+        request.pendingToolCalls = [create, read]
+        request.toolResults = [
+            (callID: create.id, output: createResult),
+            (callID: read.id, output: readResult)
+        ]
+        request.pendingAssistantReasoning = "I should create the goal, then read it."
+
+        // Exercise the exact Ark wire-name grammar, because the failed 332
+        // request used ark-code-latest. The canonical dotted names must map
+        // consistently in tool definitions, assistant tool_calls and the
+        // reverse table, without splitting the result pair.
+        request.provider = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://ark.cn-beijing.volces.com/api/v3")),
+            displayName: "Synthetic Ark"
+        )
+        let prepared = try OpenAIChatCompletionsAdapter().prepareBody(from: request)
+        let body = try #require(JSONSerialization.jsonObject(
+            with: prepared.data
+        ) as? [String: Any])
+        let messages = try #require(body["messages"] as? [[String: Any]])
+        let roles = messages.compactMap { $0["role"] as? String }
+        let toolCallsIndex = try #require(messages.firstIndex {
+            ($0["tool_calls"] as? [[String: Any]])?.isEmpty == false
+        })
+        let assistantCalls = try #require(messages[toolCallsIndex]["tool_calls"] as? [[String: Any]])
+        #expect(assistantCalls.compactMap { $0["id"] as? String } == [create.id, read.id])
+        let assistantNames = assistantCalls.compactMap {
+            ($0["function"] as? [String: Any])?["name"] as? String
+        }
+        #expect(assistantNames == ["goal_create", "goal_read"])
+        // The assistant tool-call turn must be followed immediately by both
+        // matching tool results; a steering user turn may not split the pair.
+        #expect(Array(roles[(toolCallsIndex + 1)...(toolCallsIndex + 2)]) == ["tool", "tool"])
+        let resultIDs = messages[(toolCallsIndex + 1)...(toolCallsIndex + 2)]
+            .compactMap { $0["tool_call_id"] as? String }
+        #expect(resultIDs == [create.id, read.id])
+        #expect(messages.compactMap { $0["tool_call_id"] as? String }.count == 2)
+        // Custom Ark endpoint: no DeepSeek reasoning replay field is invented.
+        #expect(messages.allSatisfy { $0["reasoning_content"] == nil })
+        // The steering turn stays one ordinary user message before the pair.
+        let steeringIndices = messages.indices.filter {
+            (messages[$0]["role"] as? String) == "user"
+                && (messages[$0]["content"] as? String)?.contains("Create the durable goal") == true
+        }
+        #expect(steeringIndices.count == 1)
+        let steeringIndex = try #require(steeringIndices.first)
+        #expect(steeringIndex < toolCallsIndex)
+        // Body validation passed in prepareBody; the goal tool definitions
+        // remained objects and unique.
+        let tools = try #require(body["tools"] as? [[String: Any]])
+        let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+        #expect(Set(names).count == names.count)
+        #expect(names.contains("goal_create") && names.contains("goal_read"))
+        #expect(assistantNames.allSatisfy(names.contains))
+        #expect(tools.allSatisfy {
+            ($0["function"] as? [String: Any])?["parameters"] is [String: Any]
+        })
+    }
+
+    @Test("Diagnostic run identity survives clock refresh but never reaches wire or checkpoint")
+    func diagnosticRunIdentityIsLogOnly() throws {
+        var request = syntheticChatRequest()
+        request.diagnosticRunID = "run-fixture-only"
+        let refreshed = request.refreshingRuntimeClock()
+        #expect(refreshed.diagnosticRunID == "run-fixture-only")
+        let body = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: refreshed))
+        let wire = String(decoding: try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]), as: UTF8.self)
+        #expect(!wire.contains("run-fixture-only"))
+        // The durable dispatch snapshot intentionally has no diagnostic field:
+        // it is correlation metadata for logs, not recovery or wire content.
+        let snapshot = ProviderDispatchRequestSnapshot(request: refreshed)
+        #expect(snapshot.request().diagnosticRunID == nil)
+    }
+
+    @Test("Official Ark preserves disjoint tagged unions, refs, constraints and opaque values")
+    func arkDisjointUnionProjectionIsLossless() throws {
+        let original = ##"{"type":"object","properties":{"chart":{"$ref":"#/$defs/Choice"},"oneOf":{"type":"string"},"opaque":{"type":"object","default":{"oneOf":[1,2]}}},"required":["chart"],"additionalProperties":false,"$defs":{"Choice":{"oneOf":[{"type":"object","properties":{"kind":{"type":"string","enum":["number"]},"value":{"type":"number","minimum":0}},"required":["kind","value"],"additionalProperties":false},{"type":"object","properties":{"kind":{"type":"string","enum":["category"]},"value":{"type":"string","minLength":2}},"required":["kind","value"],"additionalProperties":false}]}}}"##
+        let raw = try #require(JSONSerialization.jsonObject(with: Data(original.utf8)) as? [String: Any])
+        let definitions = try #require(raw["$defs"] as? [String: Any])
+        let choice = try #require(definitions["Choice"] as? [String: Any])
+        let originalBranches = try #require(choice["oneOf"] as? [[String: Any]])
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")))
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "ark-code-latest", displayName: "Fixture",
+            limits: .init(contextTokens: 1_048_576, maxOutputTokens: 0), capabilities: [.text, .tools])
+        let request = ProviderStreamRequest(provider: provider, model: model,
+            messages: [(role: "user", content: "Synthetic contract only")],
+            toolSchemas: [.init(name: "document.presentation.createInline", description: "Fixture", parametersJSON: original)])
+        func wire(_ request: ProviderStreamRequest) throws -> ([String: Any], [String: Any]) {
+            let prepared = try OpenAIChatCompletionsAdapter().prepareBody(from: request)
+            let body = try #require(JSONSerialization.jsonObject(with: prepared.data) as? [String: Any])
+            let tools = try #require(body["tools"] as? [[String: Any]])
+            let function = try #require(tools.first?["function"] as? [String: Any])
+            return (body, try #require(function["parameters"] as? [String: Any]))
+        }
+        let (body, projected) = try wire(request)
+        let projectedDefinitions = try #require(projected["$defs"] as? [String: Any])
+        let projectedChoice = try #require(projectedDefinitions["Choice"] as? [String: Any])
+        #expect(projectedChoice["oneOf"] == nil)
+        let alternatives = try #require(projectedChoice["anyOf"] as? [[String: Any]])
+        #expect(alternatives.count == originalBranches.count)
+        for index in alternatives.indices {
+            #expect(NSDictionary(dictionary: alternatives[index]).isEqual(to: originalBranches[index]))
+        }
+        #expect(NSDictionary(dictionary: try #require(projected["properties"] as? [String: Any]))
+            .isEqual(to: try #require(raw["properties"] as? [String: Any])))
+        #expect(projected["additionalProperties"] as? Bool == false)
+        #expect(projected["required"] as? [String] == ["chart"])
+        #expect(request.toolSchemas.first?.parametersJSON == original)
+        #expect(body["model"] as? String == "ark-code-latest" && body["max_tokens"] == nil)
+        #expect(body["thinking"] == nil && body["reasoning_effort"] == nil)
+
+        // Overlapping tags do not prove oneOf == anyOf. Leave them intact.
+        var overlapping = request
+        let ambiguous = original.replacingOccurrences(of: #""enum":["category"]"#, with: #""enum":["number"]"#)
+            .replacingOccurrences(of: #""type":"string","minLength":2"#, with: #""type":"number","minimum":0"#)
+        overlapping.toolSchemas[0].parametersJSON = ambiguous
+        let (_, unchanged) = try wire(overlapping)
+        let expected = try #require(JSONSerialization.jsonObject(with: Data(ambiguous.utf8)) as? [String: Any])
+        #expect(NSDictionary(dictionary: unchanged).isEqual(to: expected))
+
+        var otherProvider = request
+        otherProvider.provider.baseURL = try #require(URL(string: "https://ark.cn-beijing.volces.com.example.invalid/api/plan/v3"))
+        #expect(NSDictionary(dictionary: try wire(otherProvider).1).isEqual(to: raw))
+        var otherTool = request
+        otherTool.toolSchemas[0].name = "synthetic.otherTool"
+        #expect(NSDictionary(dictionary: try wire(otherTool).1).isEqual(to: raw))
+    }
+
+    @Test("Ark font-source projection keeps exact closed alternatives without weakening XOR")
+    func arkFontSourceProjectionPreservesExclusiveInputs() throws {
+        let original = #"{"type":"object","properties":{"url":{"type":"string","description":"Direct public HTTPS font URL"},"path":{"type":"string","description":"Workspace-relative font file"}},"additionalProperties":false,"oneOf":[{"required":["url"]},{"required":["path"]}]}"#
+        let expected = #"{"type":"object","anyOf":[{"type":"object","properties":{"url":{"type":"string","description":"Direct public HTTPS font URL"}},"required":["url"],"additionalProperties":false},{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative font file"}},"required":["path"],"additionalProperties":false}]}"#
+        var request = syntheticChatRequest(schemas: [.init(name: "font.install", description: "Fixture", parametersJSON: original)])
+        request.provider.baseURL = try #require(URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3"))
+        let prepared = try OpenAIChatCompletionsAdapter().prepareBody(from: request)
+        let body = try #require(JSONSerialization.jsonObject(with: prepared.data) as? [String: Any])
+        let tools = try #require(body["tools"] as? [[String: Any]])
+        let function = try #require(tools.first?["function"] as? [String: Any])
+        let parameters = try #require(function["parameters"] as? [String: Any])
+        let expectedObject = try #require(JSONSerialization.jsonObject(with: Data(expected.utf8)) as? [String: Any])
+        // Exact closed branches require a source and reject both sources,
+        // undeclared fields and wrong source types by JSON Schema semantics.
+        #expect(NSDictionary(dictionary: parameters).isEqual(to: expectedObject))
+        #expect(request.toolSchemas[0].parametersJSON == original)
+
+        // A future schema with another allowed field cannot be narrowed to
+        // those two closed branches by this bounded proof.
+        var extended = try #require(JSONSerialization.jsonObject(with: Data(original.utf8)) as? [String: Any])
+        var properties = try #require(extended["properties"] as? [String: Any])
+        properties["note"] = ["type": "string"]
+        extended["properties"] = properties
+        let extendedJSON = String(decoding: try JSONSerialization.data(withJSONObject: extended, options: [.sortedKeys]), as: UTF8.self)
+        let untouched = ArkToolSchemaProjection.parameters(extendedJSON, toolName: "font.install")
+        #expect(untouched == extendedJSON)
+    }
+
+
     private func jsonObject<T: Encodable>(_ value: T) throws -> [String: Any] {
         let data = try JSONEncoder().encode(value)
         return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+}
+
+
+// Each fixture owns a unique URL path; parallel tests cannot consume one
+// another's responses. No request is allowed to leave this URLProtocol.
+private final class ThinkingValidationURLProtocol: URLProtocol, @unchecked Sendable {
+    struct Reply: Sendable { let status: Int; let body: String; var holdBody = false }
+    private struct State { var replies: [Reply]; var requests: [URLRequest] = []; var stopped = false }
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var states: [String: State] = [:]
+    private static func key(_ request: URLRequest) -> String { request.url?.path.split(separator: "/").first.map(String.init) ?? "" }
+    static func install(_ key: String, replies: [Reply]) { lock.withLock { states[key] = .init(replies: replies) } }
+    static func remove(_ key: String) { lock.withLock { _ = states.removeValue(forKey: key) } }
+    static func requests(_ key: String) -> [URLRequest] { lock.withLock { states[key]?.requests ?? [] } }
+    static func stopped(_ key: String) -> Bool { lock.withLock { states[key]?.stopped == true } }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        var recorded = request
+        if recorded.httpBody == nil, let stream = recorded.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var data = Data(), buffer = [UInt8](repeating: 0, count: 4_096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }; data.append(buffer, count: count)
+            }
+            recorded.httpBody = data
+        }
+        let key = Self.key(request)
+        let reply = Self.lock.withLock { () -> Reply in
+            guard var state = Self.states[key] else { return .init(status: 500, body: "Missing owned fixture") }
+            state.requests.append(recorded)
+            let next = state.replies.isEmpty ? Reply(status: 500, body: "Fixture exhausted") : state.replies.removeFirst()
+            Self.states[key] = state; return next
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": reply.status == 200 ? "text/event-stream" : "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !reply.holdBody {
+            client?.urlProtocol(self, didLoad: Data(reply.body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {
+        let key = Self.key(request)
+        Self.lock.withLock { Self.states[key]?.stopped = true }
+    }
+}
+
+extension RequestContractTests {
+    private var rootThinkingRejection: String {
+        #"{"details":{"_errors":["Unrecognized key(s) in object: 'thinking'"]},"issues":[{"code":"unrecognized_keys","keys":["thinking"],"path":[] }]}"#
+    }
+    private func thinkingRequest(_ key: String, nativePreset: Bool = true) -> ProviderStreamRequest {
+        let provider = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://thinking-contract.invalid/\(key)/v1")!, displayName: "Synthetic DeepSeek gateway",
+            presetID: nativePreset ? "deepseek" : nil, nonSecretHeaders: ["X-Contract": "preserve"])
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "deepseek-synthetic-abliterated", displayName: "Synthetic model",
+            limits: .init(contextTokens: 16_384, maxOutputTokens: 1_024), capabilities: [.text, .tools, .vision], reasoningEffort: .high)
+        return .init(provider: provider, model: model, messages: [(role: "user", content: "Keep the literal thinking text and the tool history.")],
+            toolSchemas: [.init(name: "studio.read", description: "Read owned fixture", parametersJSON: #"{"type":"object","properties":{"thinking":{"type":"string"}}}"#)],
+            allToolNames: ["studio.read"], reasoningPolicy: .disabled)
+    }
+    private func thinkingSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ThinkingValidationURLProtocol.self]
+        configuration.timeoutIntervalForRequest = 3; configuration.timeoutIntervalForResource = 3
+        return URLSession(configuration: configuration)
+    }
+
+    @Test("Model or display names cannot authorize native thinking fields on an unknown gateway")
+    func thinkingControlsRequireAnEndpointDialect() throws {
+        for wire in [ModelProtocol.openAIChatCompletions, .openAIResponses] {
+            for policy in [ProviderReasoningPolicy.modelDefault, .disabled] {
+                var request = thinkingRequest(UUID().uuidString, nativePreset: false)
+                request.provider.wireProtocol = wire; request.reasoningPolicy = policy
+                let provider = request.provider, model = request.model
+                let body = wire == .openAIChatCompletions
+                    ? try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: request))
+                    : try jsonObject(OpenAIResponsesAdapter().buildBody(from: request))
+                #expect(body["thinking"] == nil)
+                #expect(body["reasoning_effort"] == nil)
+                #expect((body["tools"] as? [Any])?.count == 1)
+                #expect(request.provider == provider && request.model == model && request.model.capabilities.contains([.text,.tools,.vision]))
+                #expect(!ReasoningCompatibility.documentsDisabledReasoning(provider: provider, model: model))
+                #expect(ReasoningCompatibility.requiresAssistantReasoningReplay(provider: provider, model: model))
+            }
+        }
+        for endpoint in ["https://api.deepseek.com/v1", "https://thinking-contract.invalid/native/v1"] {
+            var native = thinkingRequest(UUID().uuidString)
+            native.provider.baseURL = URL(string: endpoint)!
+            if endpoint.contains("api.deepseek.com") { native.provider.presetID = nil }
+            native.reasoningPolicy = .modelDefault
+            let body = try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: native))
+            #expect((body["thinking"] as? [String: Any])?["type"] as? String == "enabled")
+            #expect(body["reasoning_effort"] as? String == "high")
+            native.reasoningPolicy = .disabled
+            #expect((try jsonObject(OpenAIChatCompletionsAdapter().buildBody(from: native))["thinking"] as? [String: Any])?["type"] as? String == "disabled")
+        }
+    }
+
+    @Test("Only an exact root thinking validation rejection has a one-use field projection")
+    func thinkingValidationRequiresAnExactRootAndOneAttempt() throws {
+        for status in [400,422] { #expect(ThinkingFieldCompatibility.rejectsRootThinking(status: status, body: rootThinkingRejection)) }
+        for status in [200,401,403,404,429,500] { #expect(!ThinkingFieldCompatibility.rejectsRootThinking(status: status, body: rootThinkingRejection)) }
+        let rejected = [
+            #"{"error":{"code":"InvalidParameter","type":"BadRequest","param":""}}"#,
+            #"{"issues":[{"code":"unrecognized_keys","keys":["thinking"],"path":["tools",0,"function","parameters"]}]}"#,
+            #"{"issues":[{"code":"unrecognized_keys","keys":["thinking","tools"],"path":[]}]}"#,
+            #"{"issues":[{"code":"invalid_type","keys":["thinking"],"path":[]}]}"#,
+            #"{"error":{"param":"thinking","code":"unsupported_parameter","path":["tools"]}}"#,
+            #"{"error":{"message":"An example mentioned thinking; actual problem is another field"}}"#
+        ]
+        for body in rejected { #expect(!ThinkingFieldCompatibility.rejectsRootThinking(status: 400, body: body)) }
+        let request = thinkingRequest(UUID().uuidString)
+        var url = try OpenAIChatCompletionsAdapter().buildURLRequest(request: request, credentials: .init())
+        url.httpBody = try OpenAIChatCompletionsAdapter().prepareBody(from: request).data
+        var recovery = ThinkingFieldCompatibility()
+        let replacement = try #require(recovery.replacementRequest(url, status: 400, body: rootThinkingRejection))
+        var before = try #require(JSONSerialization.jsonObject(with: url.httpBody!) as? [String: Any])
+        before["thinking"] = nil
+        let after = try #require(JSONSerialization.jsonObject(with: replacement.httpBody!) as? [String: Any])
+        #expect(NSDictionary(dictionary: before).isEqual(to: after))
+        #expect(replacement.url == url.url && replacement.httpMethod == url.httpMethod && replacement.value(forHTTPHeaderField: "X-Contract") == "preserve")
+        #expect(recovery.replacementRequest(url, status: 400, body: rootThinkingRejection) == nil)
+        var afterOutput = ThinkingFieldCompatibility(); afterOutput.observeStreamEvent()
+        #expect(afterOutput.replacementRequest(url, status: 400, body: rootThinkingRejection) == nil)
+    }
+
+    @Test("Actual Chat transport retries a rejected field once and preserves tool history and a single new call")
+    func thinkingHTTPRecoveryPreservesTheCompleteRequest() async throws {
+        for status in [400,422] {
+            let key = UUID().uuidString, session = thinkingSession()
+            defer { session.invalidateAndCancel(); ThinkingValidationURLProtocol.remove(key) }
+            let success = "data: " + #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"new-call","type":"function","function":{"name":"studio_read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"# + "\n\ndata: [DONE]\n\n"
+            ThinkingValidationURLProtocol.install(key, replies: [.init(status: status, body: rootThinkingRejection), .init(status: 200, body: success)])
+            var request = thinkingRequest(key)
+            let history = try ToolCall(id: "old-call", toolName: "studio.read", argumentsJSON: Data("{}".utf8), scope: .local)
+            request.pendingToolCalls = [history]; request.pendingAssistantReasoning = "Preserved original reasoning"
+            request.toolResults = [(callID: history.id, output: "Preserved original result")]
+            var events: [AgentEvent] = []
+            for try await event in OpenAIChatCompletionsAdapter().stream(request: request, credentials: .init(), session: session) { events.append(event) }
+            let requests = ThinkingValidationURLProtocol.requests(key)
+            #expect(requests.count == 2)
+            let first = try #require(requests.first?.httpBody), second = try #require(requests.last?.httpBody)
+            var original = try #require(JSONSerialization.jsonObject(with: first) as? [String: Any])
+            #expect(original.removeValue(forKey: "thinking") != nil)
+            let corrected = try #require(JSONSerialization.jsonObject(with: second) as? [String: Any])
+            #expect(NSDictionary(dictionary: original).isEqual(to: corrected))
+            let calls = events.compactMap { if case .toolRequest(let call) = $0 { call } else { nil } }
+            #expect(calls.map(\.id) == ["new-call"] && calls.first?.toolName == "studio.read")
+            #expect(!events.contains { if case .error = $0 { true } else { false } })
+        }
+    }
+
+    @Test("A repeated rejection is terminal and cancellation cannot start the compatibility request")
+    func thinkingHTTPRecoveryStopsAtTheErrorOrCancellationBoundary() async throws {
+        for exact in [true,false] {
+            let key = UUID().uuidString, session = thinkingSession()
+            defer { session.invalidateAndCancel(); ThinkingValidationURLProtocol.remove(key) }
+            let body = exact ? rootThinkingRejection : #"{"error":{"code":"InvalidParameter","param":""}}"#
+            ThinkingValidationURLProtocol.install(key, replies: [.init(status: 400, body: body), .init(status: 400, body: body)])
+            var errors: [AgentEvent.NormalizedError] = []
+            for try await event in OpenAIChatCompletionsAdapter().stream(request: thinkingRequest(key), credentials: .init(), session: session) {
+                if case .error(let error) = event { errors.append(error) }
+            }
+            #expect(ThinkingValidationURLProtocol.requests(key).count == (exact ? 2 : 1))
+            #expect(errors.count == 1 && errors.first?.httpStatus == 400)
+        }
+        // HTTP 200 SSE content is not request-level validation evidence,
+        // even if a later event repeats the same rejection wording.
+        do {
+            let streamKey = UUID().uuidString, streamSession = thinkingSession()
+            defer { streamSession.invalidateAndCancel(); ThinkingValidationURLProtocol.remove(streamKey) }
+            let body = "data: " + #"{"choices":[{"index":0,"delta":{"content":"Preserved partial text"}}]}"#
+                + "\n\nevent: __http_error__\ndata: 400\ndata: " + rootThinkingRejection + "\n\n"
+            ThinkingValidationURLProtocol.install(streamKey, replies: [.init(status: 200, body: body)])
+            var text = "", errors = 0
+            for try await event in OpenAIChatCompletionsAdapter().stream(request: thinkingRequest(streamKey), credentials: .init(), session: streamSession) {
+                if case .textDelta(let value) = event { text += value.text }
+                if case .error = event { errors += 1 }
+            }
+            #expect(ThinkingValidationURLProtocol.requests(streamKey).count == 1)
+            #expect(text == "Preserved partial text" && errors == 1)
+        }
+        let key = UUID().uuidString, session = thinkingSession()
+        defer { session.invalidateAndCancel(); ThinkingValidationURLProtocol.remove(key) }
+        ThinkingValidationURLProtocol.install(key, replies: [.init(status: 422, body: rootThinkingRejection, holdBody: true)])
+        let request = thinkingRequest(key)
+        let work = Task {
+            for try await _ in OpenAIChatCompletionsAdapter().stream(request: request, credentials: .init(), session: session) { }
+        }
+        defer { work.cancel() }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ThinkingValidationURLProtocol.requests(key).isEmpty && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(ThinkingValidationURLProtocol.requests(key).count == 1)
+        work.cancel()
+        do { try await work.value } catch is CancellationError { }
+        #expect(ThinkingValidationURLProtocol.requests(key).count == 1)
     }
 }

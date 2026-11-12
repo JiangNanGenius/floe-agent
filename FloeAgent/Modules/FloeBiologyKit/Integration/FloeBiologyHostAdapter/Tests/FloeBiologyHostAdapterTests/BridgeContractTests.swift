@@ -83,12 +83,13 @@ final class BiologyBridgeContractTests:XCTestCase,@unchecked Sendable {
             try db.execute(sql:"INSERT INTO runs(id,conversation_id,state,goal,started_at) VALUES (?, ?, 'running', 'Biology fixture', ?)",arguments:[hostRunID.uuidString,taskID.uuidString,now])
         }
         let environments=EnvironmentRegistry(roots:.init(rootURL:url.appendingPathComponent("env")),baseRevision:"contract-fixture")
-        let record=try await environments.ensureProjectContainer(workspaceID:UUID().uuidString,workspaceRootPath:url.path,executionBackend:.linuxVM)
+        let record=try await environments.ensureProjectContainer(workspaceID:FloeDigest.sha256Hex(Data(url.resolvingSymlinksInPath().standardizedFileURL.path.utf8)),workspaceRootPath:url.path,executionBackend:.linuxVM)
         let environment=ToolEnvironment(id:record.id,writableLayerURL:url,layerURLs:[url],variables:[:]),routing=ToolEnvironmentRouting()
         routing.configure{context in var c=context;c.environment=environment;return .init(context:c)}
         let fixture=ScientificShellFixture(),registry=ToolRunnerRegistry()
         registry.register(AnyAgentTool(descriptor:.init(name:"exec.shell",parametersJSON:LocalShellTool.parametersJSON,riskLabels:[.executesLocalCode],isSideEffecting:true),run:{data,context in try await fixture.run(data,context)},routing:routing))
-        let jobs=BackgroundJobService(store:BackgroundJobStore(database:db),registry:registry),contexts=BiologyExecutionContexts(),transport=BiologyScientificJobs(jobs:jobs,registry:registry,environments:environments,contexts:contexts)
+        let coordinator=EnvironmentExecutionCoordinator(roots:.init(rootURL:url.appendingPathComponent("env")),registry:environments)
+        let jobs=BackgroundJobService(store:BackgroundJobStore(database:db),registry:registry),contexts=BiologyExecutionContexts(),transport=BiologyScientificJobs(jobs:jobs,registry:registry,environments:environments,contexts:contexts,resolveEnvironment:{context in try await coordinator.acquireSelectedTaskEnvironment(context)})
         let backend=try await transport.backend(qualified:.init(environmentID:record.id,methods:["seq.translate"],engines:.object(["engine":.string("contract fixture")]),unavailable:.object([:]),resourceDigest:"fixture"))
         let service=try BiologyService(store:BiologyProjectStore(root:url.appendingPathComponent("projects")),backends:[backend],authorize:{_ in}),project=try await service.create(title:"Jobs"),asset=try await service.importAsset(project.id,title:"DNA",format:"fasta",data:Data(">A\nATGGCT\n".utf8))
         let context=ToolContext(runID:hostRunID,cancellation:CancellationToken(),environmentID:record.id,conversationID:taskID,environment:environment)

@@ -23,6 +23,7 @@ struct EDCanvasEditor:View {
     var graphicLayer:EDAGraphicLayerAssignment?=nil
     var arcClockwise=false
     var libraryPlacement:EDALibraryPlacementSelection?=nil
+    var compactLayout=false
     @State private var bounds:CGRect?
     @State private var center:EDAPoint?
     @State private var zoom=1.0
@@ -67,17 +68,13 @@ struct EDCanvasEditor:View {
     }
     static func hitTolerance(for projection:EDAProjection)->Double {max(0.05,min(6.0,14.0/projection.scale))}
     var body:some View {
-        VStack(spacing:0){
-            gestureStatus
-            drawing
-            if !session.selection.objectIDs.isEmpty && session.selection.context==context && customPadDrawing == nil {selectionActions}
-        }.popover(isPresented:$choosingBusMember){if let bus=selectedBus{EDBusMemberPicker(bus:bus){beginBusUnfold($0)}}}
-
+        drawing
+            .popover(isPresented:$choosingBusMember){if let bus=selectedBus{EDBusMemberPicker(bus:bus){beginBusUnfold($0)}}}
     }
     private var drawing:some View {
         GeometryReader{geometry in
             let projection=EDAProjection(bounds:bounds ?? EDAPlot.bounds(session.project,context:context),size:geometry.size,center:center,zoom:zoom)
-            ZStack(alignment:.bottomTrailing){
+            ZStack{
                 Canvas{canvas,_ in
                     if showGrid{EDAPlot.drawGrid(projection:projection,spacing:session.gridSizeMillimetres,in:&canvas)}
                     let offset=tool == .select && !movingIDs.isEmpty ? (dragEnd ?? .zero)-(dragStart ?? .zero):.zero
@@ -126,11 +123,12 @@ struct EDCanvasEditor:View {
                     if abs(value.translation.width)+abs(value.translation.height)<3{tap(projection.world(value.location),tolerance:Self.hitTolerance(for:projection))}else{move(projection.world(value.startLocation),projection.world(value.location),tolerance:Self.hitTolerance(for:projection))}
                 }).onContinuousHover{phase in if case .active(let point)=phase{pointer=snapped(projection.world(point))}}
 #endif
-                HStack(spacing:0){
-                    Button{zoom=max(0.05,zoom/1.5);rememberViewport()}label:{Image(systemName:"minus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("缩小","Zoom out"))
-                    Button{fit()}label:{Text(edText("适合画面","Fit")).frame(minWidth:56,minHeight:44).contentShape(Rectangle())}
-                    Button{zoom=min(50,zoom*1.5);rememberViewport()}label:{Image(systemName:"plus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("放大","Zoom in"))}
-                    .buttonStyle(.plain).background(.regularMaterial,in:RoundedRectangle(cornerRadius:10)).padding(8)
+                canvasTopOverlay
+                    .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+                    .padding(8)
+                canvasBottomOverlay
+                    .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.bottom)
+                    .padding(8)
             }
             .onAppear{restoreViewport();applyFocus(size:geometry.size)}
             .onChange(of:context){_,_ in resetGesture();restoreViewport();applyFocus(size:geometry.size)}
@@ -170,15 +168,33 @@ struct EDCanvasEditor:View {
         }
     }
     private var isBoard:Bool{if case .board=context{return true};return false}
-    private var gestureStatus:some View{
-        HStack(spacing:6){
+    private var canvasTopOverlay:some View{
+        HStack(alignment:.top,spacing:8){
             VStack(alignment:.leading,spacing:2){
                 Text(drawingInstruction)
+                    .lineLimit(2)
                 if !session.fingerDrawingEnabled && (tool != .select || libraryTool.map({$0 != .select}) == true){
-                    Text(edText("使用 Pencil／鼠标，或开启左下角手指绘图","Use Pencil or mouse, or enable finger drawing at the lower left"))
+                    Text(edText("使用 Pencil／鼠标，或开启手指绘图","Use Pencil or mouse, or enable finger drawing"))
+                        .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 }
-            }.font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            Spacer(minLength:0)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .layoutPriority(1)
+            if hasDraftActions{
+                draftActions
+            }
+        }
+        .padding(.horizontal,10).padding(.vertical,7)
+        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:12,style:.continuous))
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("electronics.canvas.instruction")
+    }
+    private var hasDraftActions:Bool{
+        customPadDrawing != nil || (arcDrawing?.points.isEmpty == false) || busDrawing != nil || !polygon.isEmpty
+            || tool != .select || libraryTool.map({$0 != .select}) == true
+    }
+    @ViewBuilder private var draftActions:some View{
+        HStack(spacing:2){
             if let draft=customPadDrawing{
                 Button{customPadDrawing?.undoLastPoint();customPadMessage=nil}label:{Image(systemName:"arrow.uturn.backward").frame(minWidth:44,minHeight:44).contentShape(Rectangle())}
                     .disabled(!editingEnabled || draft.points.isEmpty).accessibilityLabel(edText("撤销上一点","Undo last point")).accessibilityIdentifier("electronics.customPad.undoPoint")
@@ -200,28 +216,72 @@ struct EDCanvasEditor:View {
             if customPadDrawing != nil || tool != .select || libraryTool.map({$0 != .select}) == true{
                 Button{resetGesture();onCancel()}label:{Image(systemName:"xmark").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("取消当前工具","Cancel current tool")).disabled((tool == .bus || libraryTool == .arc || customPadDrawing != nil) && committing)
             }
-        }.padding(.horizontal,10).frame(minHeight:36).background(.bar)
+        }
+        .buttonStyle(.borderless)
+    }
+    private var canvasBottomOverlay:some View{
+        HStack(alignment:.bottom,spacing:8){
+            if !session.selection.objectIDs.isEmpty && session.selection.context==context && customPadDrawing == nil{
+                selectionActions
+            }
+            Spacer(minLength:4)
+            zoomControls
+        }
+    }
+    private var zoomControls:some View{
+        HStack(spacing:0){
+            Button{zoom=EDCanvasZoom.clamped(zoom/1.5);rememberViewport()}label:{Image(systemName:"minus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("缩小","Zoom out"))
+            Button{fit()}label:{Text(edText("适合画面","Fit")).frame(minWidth:56,minHeight:44).contentShape(Rectangle())}
+            Text("\(Int((zoom*100).rounded()))%")
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .frame(minWidth:52,minHeight:44)
+                .accessibilityLabel(edText("缩放比例","Zoom level"))
+            Button{zoom=EDCanvasZoom.clamped(zoom*1.5);rememberViewport()}label:{Image(systemName:"plus.magnifyingglass").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("放大","Zoom in"))
+        }
+        .buttonStyle(.plain)
+        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:10))
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("electronics.canvas.zoom")
     }
     private var selectionActions:some View{
         HStack(spacing:0){
-            Button(action:onProperties){Label(edText("属性","Properties"),systemImage:"slider.horizontal.3")}.frame(minHeight:44)
-            Spacer(minLength:4)
-            Button{editSelection(.rotate)}label:{Image(systemName:"rotate.right").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("旋转 90°","Rotate 90°"))
-                .disabled(!selectionCapabilities.contains(.rotate))
-            Button{editSelection(.flip)}label:{Image(systemName:"arrow.left.and.right.righttriangle.left.righttriangle.right").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("翻转","Flip"))
-                .disabled(!selectionCapabilities.contains(.flip))
+            if compactLayout{
+                Button(action:onProperties){Image(systemName:"slider.horizontal.3").frame(width:44,height:44).contentShape(Rectangle())}
+                    .accessibilityLabel(edText("所选对象属性","Selection properties"))
+                    .accessibilityIdentifier("electronics.selectionProperties.canvas")
+            }else{
+                Button(action:onProperties){Label(edText("属性","Properties"),systemImage:"slider.horizontal.3").frame(minHeight:44).padding(.horizontal,8)}
+                    .accessibilityLabel(edText("所选对象属性","Selection properties"))
+                    .accessibilityIdentifier("electronics.selectionProperties.canvas")
+                Button{editSelection(.rotate)}label:{Image(systemName:"rotate.right").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("旋转 90°","Rotate 90°"))
+                    .disabled(!selectionCapabilities.contains(.rotate))
+                Button{editSelection(.flip)}label:{Image(systemName:"arrow.left.and.right.righttriangle.left.righttriangle.right").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("翻转","Flip"))
+                    .disabled(!selectionCapabilities.contains(.flip))
+            }
             Menu{
                 if selectedLibraryPad != nil{
                     Button(edText("重绘自定义焊盘轮廓…","Redraw custom pad outline…"),systemImage:"point.topleft.down.to.point.bottomright.curvepath"){beginCustomPad()}
                         .accessibilityIdentifier("electronics.customPad.begin")
                 }
                 if selectedBus != nil{Button(edText("展开成员…","Unfold member…"),systemImage:"arrow.up.right"){choosingBusMember=true}.disabled(onWireToolRequested == nil)}
+                if compactLayout{
+                    Button(edText("旋转 90°","Rotate 90°"),systemImage:"rotate.right"){editSelection(.rotate)}
+                        .disabled(!selectionCapabilities.contains(.rotate))
+                    Button(edText("翻转","Flip"),systemImage:"arrow.left.and.right.righttriangle.left.righttriangle.right"){editSelection(.flip)}
+                        .disabled(!selectionCapabilities.contains(.flip))
+                }
                 Button(edText("复制","Duplicate"),systemImage:"plus.square.on.square"){editSelection(.duplicate)}
                     .disabled(!selectionCapabilities.contains(.duplicate))
                 Button(edText("删除","Delete"),systemImage:"trash",role:.destructive){editSelection(.delete)}
                     .disabled(!selectionCapabilities.contains(.delete))
             }label:{Image(systemName:"ellipsis.circle").frame(width:44,height:44).contentShape(Rectangle())}.accessibilityLabel(edText("所选对象操作","Selection actions"))
-        }.buttonStyle(.plain).padding(.horizontal,10).background(.bar).disabled(!editingEnabled)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal,4)
+        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:10))
+        .disabled(!editingEnabled)
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("electronics.selectionActions")
     }
     private var selectionCapabilities:Set<EDCanvasInteraction.Action>{EDCanvasInteraction.availableActions(project:session.project,context:context,objectIDs:session.selection.objectIDs)}
     private func canCommand(_ value:EDCanvasCommand)->Bool{

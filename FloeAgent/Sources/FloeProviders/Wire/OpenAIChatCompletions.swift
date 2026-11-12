@@ -19,6 +19,8 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     public var thinking: Thinking?
     public var reasoningEffort: String?
     public var enableThinking: Bool?
+    /// Endpoint-native nested controls. Omitted for other dialects.
+    public var reasoning: Reasoning?
     public var stream: Bool
     /// OpenAI-compatible providers only include usage in streamed responses
     /// when explicitly requested.
@@ -34,7 +36,8 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         reasoningEffort: String? = nil,
         enableThinking: Bool? = nil,
         stream: Bool = true,
-        streamOptions: StreamOptions? = StreamOptions(includeUsage: true)
+        streamOptions: StreamOptions? = StreamOptions(includeUsage: true),
+        reasoning: Reasoning? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -44,6 +47,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
         self.thinking = thinking
         self.reasoningEffort = reasoningEffort
         self.enableThinking = enableThinking
+        self.reasoning = reasoning
         self.stream = stream
         self.streamOptions = streamOptions
     }
@@ -57,6 +61,15 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     public struct Thinking: Sendable, Codable, Hashable {
         public var type: String
         public init(type: String) { self.type = type }
+    }
+
+    public struct Reasoning: Sendable, Codable, Hashable {
+        public var enabled: Bool?
+        public var effort: String?
+        public init(enabled: Bool? = nil, effort: String? = nil) {
+            self.enabled = enabled
+            self.effort = effort
+        }
     }
 
     public struct Message: Sendable, Codable, Hashable {
@@ -217,7 +230,7 @@ public struct ChatRequest: Sendable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case model, messages, tools, thinking, stream
+        case model, messages, tools, thinking, stream, reasoning
         case toolChoice = "tool_choice"
         case maxTokens = "max_tokens"
         case reasoningEffort = "reasoning_effort"
@@ -415,7 +428,14 @@ public struct ToolCallAggregator: Sendable {
         } else {
             return .ambiguousIndex
         }
-        var partial = partials[resolvedIndex] ?? Partial()
+        // Borrow the dictionary's value through its _modify accessor. Keeping
+        // a separate Partial while the dictionary still owns its String
+        // forces a full copy on every small arguments fragment.
+        Self.append(delta, to: &partials[resolvedIndex, default: Partial()])
+        return .accepted
+    }
+
+    private static func append(_ delta: ToolCallDelta, to partial: inout Partial) {
         // Compatible providers may repeat empty identity fields while streaming
         // arguments. Those placeholders must not erase the first real identity.
         // A call that never supplied an ID still reaches runtime validation empty.
@@ -425,9 +445,7 @@ public struct ToolCallAggregator: Sendable {
         if let name = delta.function?.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             partial.name = name
         }
-        if let arguments = delta.function?.arguments { partial.arguments += arguments }
-        partials[resolvedIndex] = partial
-        return .accepted
+        if let arguments = delta.function?.arguments { partial.arguments.append(arguments) }
     }
 
     /// Finalizes all accumulated calls, ordered by index.

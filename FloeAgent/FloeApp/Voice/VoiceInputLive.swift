@@ -799,6 +799,9 @@ struct FloeVoiceDiagnostics: VoiceInputDiagnostics {
     func voiceInterrupted(reason: String) { logger.info("interruption domain=voice reason=\(reason)") }
     func voiceRouteChanged() { logger.info("routeChanged domain=voice") }
     func voiceListeningStopped() { logger.info("listeningStopped domain=voice") }
+    func voiceSessionEnding(reason: VoiceInputEndReason, generation: UInt64) {
+        logger.info("sessionEnding domain=voice reason=\(reason.rawValue) generation=\(generation)")
+    }
     func voiceFailed(reason: VoiceInputFailure) { logger.warning("speechFailed reason=\(reason.rawValue)") }
     func voiceAudioBufferAccepted(frameCount: AVAudioFrameCount) {
         let count = Self.lock.withLock {

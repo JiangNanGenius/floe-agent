@@ -93,9 +93,11 @@ public protocol DurableMemoryStore: Sendable {
     func organizationPreview(limit: Int) async throws -> MemoryOrganizationProposal
     func applyMaintenanceBatch(_ batch: MemoryMaintenanceBatch) async throws -> MemoryMaintenanceBatchResult
     func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage
+    func recordMemoryUse(_ ids: [UUID], runID: UUID) async
 }
 
 public extension DurableMemoryStore {
+    func recordMemoryUse(_ ids: [UUID], runID: UUID) async {}
     /// Compatibility fallback for lightweight stores used by extensions and
     /// tests. Production SQLite storage overrides this with true SQL paging.
     func listMemories(_ request: MemoryListRequest) async throws -> MemoryListPage {
@@ -156,6 +158,19 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
     private let database: DatabaseManager
+    private nonisolated let memoryUseRegistry = MemoryUseRegistry()
+
+    public nonisolated func beginMemoryUse(runID: UUID) -> MemoryRunUseLease {
+        memoryUseRegistry.begin(runID: runID)
+    }
+
+    public nonisolated func recordMemoryUse(_ ids: [UUID], runID: UUID) {
+        memoryUseRegistry.record(ids, runID: runID)
+    }
+
+    public nonisolated func withMemoryUseProtection<T>(_ body: (Set<UUID>) throws -> T) rethrows -> T {
+        try memoryUseRegistry.withProtectedIDs(body)
+    }
 
     public init(database: DatabaseManager) {
         self.database = database
@@ -390,6 +405,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                 AND state NOT IN ('completed','failed','cancelled','canceled','aborted')
                 """, arguments: [goalID.uuidString, runID.uuidString, conversationID.uuidString])
             guard db.changesCount == 1 else { throw TaskGoalError.staleRun }
+            try Self.appendGoalRoundAdmission(goal, runID: runID, in: db)
             return goal
         }
     }
@@ -408,6 +424,109 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             return try Row.fetchOne(db, sql: """
                 SELECT * FROM conversation_goals WHERE conversation_id=? ORDER BY updated_at DESC LIMIT 1
                 """, arguments: [conversationID.uuidString]).map(Self.goal)
+        }
+    }
+
+    /// Native direct-start compatibility: create/bind once, never select a
+    /// different unfinished Goal or overwrite a later user's saved Goal.
+    public func bindNewGoalToRun(_ goal: ConversationGoal, runID: UUID) async throws -> ConversationGoal {
+        try await database.writer { db in
+            guard let run = try Row.fetchOne(db, sql: "SELECT * FROM runs WHERE id=? AND conversation_id=?",
+                arguments: [runID.uuidString, goal.conversationID.uuidString]),
+                  (run["ended_at"] as String?) == nil,
+                  !["completed","failed","cancelled","canceled","aborted"].contains(run["state"] as String) else { throw TaskGoalError.staleRun }
+            if let bound = run["goal_id"] as String? {
+                guard bound == goal.id.uuidString,
+                      let row = try Row.fetchOne(db, sql: "SELECT * FROM conversation_goals WHERE id=? AND conversation_id=?",
+                        arguments: [bound, goal.conversationID.uuidString]) else { throw TaskGoalError.staleRun }
+                return try Self.goal(row)
+            }
+            guard (run["conversation_mode"] as String?) == "goal",
+                  try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation_goals WHERE conversation_id=? AND status NOT IN ('completed','cancelled','failed')",
+                    arguments: [goal.conversationID.uuidString]) == 0,
+                  try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation_goals WHERE id=?", arguments: [goal.id.uuidString]) == 0 else {
+                throw TaskGoalError.activeGoalExists
+            }
+            try Self.writeGoal(goal, in: db)
+            try db.execute(sql: "UPDATE runs SET goal_id=? WHERE id=? AND conversation_id=? AND goal_id IS NULL",
+                arguments: [goal.id.uuidString, runID.uuidString, goal.conversationID.uuidString])
+            guard db.changesCount == 1 else { throw TaskGoalError.staleRun }
+            try Self.appendGoalRoundAdmission(goal, runID: runID, in: db)
+            return goal
+        }
+    }
+
+    private static func appendGoalRoundAdmission(_ goal: ConversationGoal, runID: UUID, in db: Database) throws {
+        let payload = try Self.json(["kind":"goalRoundAdmission", "goalID":goal.id.uuidString,
+            "goalRevision":String(goal.revision ?? 1), "goalDefinitionFingerprint":try GoalRunDefinitionFingerprint.make(goal)])
+        let sequence = try Int.fetchOne(db, sql: "SELECT COALESCE(MAX(sequence),0)+1 FROM run_events WHERE run_id=?",
+            arguments: [runID.uuidString]) ?? 1
+        try db.execute(sql: "INSERT INTO run_events(id,run_id,sequence,kind,payload_json,created_at) VALUES (?,?,?,'status',?,?)",
+            arguments: [UUID().uuidString, runID.uuidString, sequence, payload, Self.date(Date())])
+    }
+
+    /// One existing writer transaction records native accounting plus a CAS
+    /// on the CURRENT Goal. It never writes definition/criteria/steps/budgets.
+    /// Nil means the exact run/Goal binding was retired: no replacement or
+    /// arbitrary first Goal may be created or selected.
+    public func settleGoalRun(_ input: GoalRunSettlementInput) async throws -> GoalRunSettlementResult? {
+        guard input.modelCallCount >= 0, input.toolIterationCount >= 0 else { throw TaskGoalError.invalidArguments }
+        return try await database.writer { db in
+            guard let run = try Row.fetchOne(db, sql: "SELECT goal_id,started_at FROM runs WHERE id=? AND conversation_id=?",
+                    arguments: [input.runID.uuidString, input.conversationID.uuidString]),
+                  (run["goal_id"] as String?) == input.goalID.uuidString,
+                  let row = try Row.fetchOne(db, sql: "SELECT * FROM conversation_goals WHERE id=? AND conversation_id=?",
+                    arguments: [input.goalID.uuidString, input.conversationID.uuidString]) else { return nil }
+            var goal = try Self.goal(row)
+            let marker = try Row.fetchOne(db, sql: "SELECT payload_json FROM goal_events WHERE goal_id=? AND run_id=? AND kind='nativeRunAccounting.v1' ORDER BY sequence DESC LIMIT 1",
+                arguments: [input.goalID.uuidString, input.runID.uuidString])
+            let prior = try marker.map { try JSONDecoder().decode(GoalRunAccountingReceipt.self, from: Data(($0["payload_json"] as String).utf8)) }
+            guard prior == nil || (prior?.goalID == input.goalID && prior?.runID == input.runID) else { throw TaskGoalError.staleRun }
+            let admissionRevision = prior == nil ? input.admissionRevision : prior?.admissionRevision
+            let fingerprint = prior?.admissionDefinitionFingerprint ?? input.admissionDefinitionFingerprint
+            // A legacy nil fingerprint must remain unknown, even if a later
+            // caller offers the current edited definition as a replacement.
+            let originalFingerprint = prior == nil ? fingerprint : prior?.admissionDefinitionFingerprint
+            let currentFingerprint = try GoalRunDefinitionFingerprint.make(goal)
+            let matched = originalFingerprint.map { $0 == currentFingerprint } ?? false
+            let calls = max(prior?.modelCallCount ?? 0, input.modelCallCount)
+            let iterations = max(prior?.toolIterationCount ?? 0, input.toolIterationCount)
+            let callDelta = calls - (prior?.modelCallCount ?? 0)
+            let iterationDelta = iterations - (prior?.toolIterationCount ?? 0)
+            let countCycle = input.completed && prior?.cycleCounted != true
+            let cycleCounted = prior?.cycleCounted == true || input.completed
+            let known = Set(goal.evidence.map(\.reference))
+            let fresh = input.evidence.filter { !known.contains($0.reference) && $0.reference.hasPrefix("run:\(input.runID.uuidString):event:") }
+            guard callDelta > 0 || iterationDelta > 0 || countCycle || !fresh.isEmpty else {
+                return .init(goal: goal, definitionMatched: matched, didRecordChange: false, cycleCounted: cycleCounted)
+            }
+            let oldRevision = goal.revision ?? 1
+            let newCalls = goal.progress.modelCallCount.addingReportingOverflow(callDelta)
+            let newIterations = goal.progress.totalIterationCount.addingReportingOverflow(iterationDelta)
+            let newCycles = goal.progress.cycleCount.addingReportingOverflow(countCycle ? 1 : 0)
+            guard !newCalls.overflow, !newIterations.overflow, !newCycles.overflow else { throw TaskGoalError.invalidArguments }
+            goal.progress.modelCallCount = newCalls.partialValue
+            goal.progress.totalIterationCount = newIterations.partialValue
+            goal.progress.cycleCount = newCycles.partialValue
+            if goal.progress.startedAt == nil { goal.progress.startedAt = Self.parseDate(run["started_at"] as String) }
+            goal.progress.lastCheckpointAt = Date()
+            goal.evidence.append(contentsOf: fresh)
+            if countCycle && matched && goal.status == .active { goal.status = .verifying }
+            goal.revision = oldRevision + 1; goal.updatedAt = Date()
+            try db.execute(sql: """
+                UPDATE conversation_goals SET status=?,evidence_json=?,progress_json=?,revision=?,updated_at=?
+                WHERE id=? AND conversation_id=? AND revision=?
+                """, arguments: [goal.status.rawValue, try Self.json(goal.evidence), try Self.json(goal.progress),
+                    oldRevision + 1, Self.date(goal.updatedAt), input.goalID.uuidString, input.conversationID.uuidString, oldRevision])
+            guard db.changesCount == 1 else { throw TaskGoalError.staleRun }
+            let receipt = GoalRunAccountingReceipt(runID: input.runID, goalID: input.goalID,
+                admissionRevision: admissionRevision, admissionDefinitionFingerprint: originalFingerprint,
+                modelCallCount: calls, toolIterationCount: iterations, cycleCounted: cycleCounted)
+            let sequence = try Int.fetchOne(db, sql: "SELECT COALESCE(MAX(sequence),0)+1 FROM goal_events WHERE goal_id=?",
+                arguments: [input.goalID.uuidString]) ?? 1
+            try db.execute(sql: "INSERT INTO goal_events(id,goal_id,run_id,sequence,kind,payload_json,created_at) VALUES (?,?,?,?,'nativeRunAccounting.v1',?,?)",
+                arguments: [UUID().uuidString, input.goalID.uuidString, input.runID.uuidString, sequence, try Self.json(receipt), Self.date(Date())])
+            return .init(goal: goal, definitionMatched: matched, didRecordChange: true, cycleCounted: cycleCounted)
         }
     }
 
@@ -786,9 +905,10 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     /// after their owner has actually been deleted.
     public func preserveMemoriesBeforeConversationDeletion(
         conversationID: UUID,
-        ownerLabel: String
+        ownerLabel: String,
+        now: Date = Date()
     ) async throws {
-        let now = Self.date(Date())
+        let deletedAt = Self.date(now)
         try await database.writer { db in
             try db.execute(sql: """
                 UPDATE memory_entries SET
@@ -797,10 +917,11 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     owner_deleted_at = COALESCE(owner_deleted_at, ?),
                     conversation_id = NULL,
                     retained_until = COALESCE(retained_until, ?)
-                WHERE conversation_id = ?
-                """, arguments: [String(ownerLabel.prefix(120)), now,
-                    Self.date(Date().addingTimeInterval(90 * 86_400)),
-                    conversationID.uuidString])
+                WHERE conversation_id = ? OR (conversation_id IS NULL
+                    AND origin_conversation_id = ? AND scope IN ('task', 'user', 'agent'))
+                """, arguments: [String(ownerLabel.prefix(120)), deletedAt,
+                    Self.date(now.addingTimeInterval(MemoryForgettingPolicy.recallRetention)),
+                    conversationID.uuidString, conversationID.uuidString])
         }
     }
 
@@ -809,9 +930,10 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     /// ownership history instead of silently erasing durable memory.
     public func preserveMemoriesBeforeWorkspaceDeletion(
         workspaceID: UUID,
-        ownerLabel: String
+        ownerLabel: String,
+        now: Date = Date()
     ) async throws {
-        let now = Self.date(Date())
+        let deletedAt = Self.date(now)
         try await database.writer { db in
             try db.execute(sql: """
                 UPDATE memory_entries SET
@@ -820,10 +942,11 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     owner_deleted_at = COALESCE(owner_deleted_at, ?),
                     workspace_id = NULL,
                     retained_until = COALESCE(retained_until, ?)
-                WHERE workspace_id = ?
-                """, arguments: [String(ownerLabel.prefix(120)), now,
-                    Self.date(Date().addingTimeInterval(90 * 86_400)),
-                    workspaceID.uuidString])
+                WHERE workspace_id = ? OR (workspace_id IS NULL
+                    AND origin_workspace_id = ? AND conversation_id IS NULL)
+                """, arguments: [String(ownerLabel.prefix(120)), deletedAt,
+                    Self.date(now.addingTimeInterval(MemoryForgettingPolicy.recallRetention)),
+                    workspaceID.uuidString, workspaceID.uuidString])
         }
     }
 
@@ -847,19 +970,13 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                     OR m.origin_workspace_id = ?
                   )
                   AND (m.expires_at IS NULL OR m.expires_at > ?)
-                  AND (
-                    m.owner_deleted_at IS NULL OR m.is_pinned = 1
-                    OR m.retained_until > ?
-                    OR m.owner_deleted_at > ?
-                  )
                 ORDER BY m.is_pinned DESC,
                     CASE WHEN m.conversation_id = ? THEN 0
                          WHEN m.owner_deleted_at IS NULL THEN 1 ELSE 2 END,
                     rank, m.importance DESC LIMIT ?
                 """, arguments: [
                     match, workspaceID?.uuidString, workspaceID?.uuidString,
-                    Self.date(Date()), Self.date(Date()),
-                    Self.date(Date().addingTimeInterval(-365 * 86_400)),
+                    Self.date(Date()),
                     conversationID?.uuidString, min(20, max(1, limit))
                 ])
                 .compactMap { row -> MemoryRecallItem? in
@@ -922,7 +1039,54 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
 
     public func hybridRecall(_ request: HybridMemoryRecallRequest) async throws
         -> [HybridMemoryRecallItem] {
-        try await maintainMemoryLifecycle()
+        try await hybridRecall(request, now: Date())
+    }
+
+    public func hybridRecall(_ request: HybridMemoryRecallRequest, now: Date) async throws
+        -> [HybridMemoryRecallItem] {
+        try await findMemories(request, reinforcing: true, now: now)
+    }
+
+    /// Opening or searching the memory library is observation, not model use.
+    public func browseMemories(_ request: HybridMemoryRecallRequest, now: Date = Date()) async throws
+        -> [HybridMemoryRecallItem] {
+        try await findMemories(request, reinforcing: false, now: now)
+    }
+
+    /// Revalidates the exact bounded prompt projection, not a stale list
+    /// snapshot. Ownership and real-use reinforcement commit together. A
+    /// finished owner cannot resurrect a deleted/archived memory or renew use.
+    public func retainRuntimeMemories(
+        _ ids: [UUID], useLease: MemoryRunUseLease,
+        alreadyRecalled: Set<UUID> = [], now: Date = Date()
+    ) async throws -> [MemoryRecallItem] {
+        try await maintainMemoryLifecycle(now: now)
+        var seen = Set<UUID>()
+        let selected = ids.prefix(20).filter { seen.insert($0).inserted }
+        return try await database.writer { db in
+            let entries = try selected.compactMap { id -> MemoryEntry? in
+                guard let row = try Row.fetchOne(db, sql: """
+                    SELECT * FROM memory_entries WHERE id=? AND status='active'
+                        AND (expires_at IS NULL OR julianday(expires_at)>julianday(?))
+                    """, arguments: [id.uuidString, Self.date(now)]) else { return nil }
+                return try Self.memory(row)
+            }
+            return try useLease.withUse(entries.map(\.id)) {
+                for entry in entries where !alreadyRecalled.contains(entry.id) {
+                    try db.execute(sql: """
+                        UPDATE memory_entries SET last_recalled_at=?,retained_until=?,
+                            recall_count=recall_count+1,importance=MIN(1.0,importance+0.05)
+                        WHERE id=?
+                        """, arguments: [Self.date(now), Self.date(now.addingTimeInterval(MemoryForgettingPolicy.recallRetention)), entry.id.uuidString])
+                }
+                return entries.map { MemoryRecallItem(id: $0.id, content: $0.content, relevance: 1) }
+            } ?? []
+        }
+    }
+
+    private func findMemories(_ request: HybridMemoryRecallRequest, reinforcing: Bool, now: Date) async throws
+        -> [HybridMemoryRecallItem] {
+        try await maintainMemoryLifecycle(now: now)
         let lexicalMatch = Self.ftsQuery(request.query)
         let lexicalRows: [HybridRecallDatabaseRow]
         if lexicalMatch.isEmpty {
@@ -930,23 +1094,20 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         } else {
             lexicalRows = try await database.reader { db in
                 try Row.fetchAll(db, sql: """
-                    SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at
+                    SELECT m.*, (\(Self.deletedMemoryOwnerPredicate)) AS owner_is_deleted
                     FROM memory_fts JOIN memory_entries m ON m.rowid = memory_fts.rowid
                     WHERE memory_fts MATCH ? AND m.status = 'active'
                       AND (m.scope IN ('user', 'agent', 'task', 'workspace')
                            OR m.workspace_id = ? OR m.origin_workspace_id = ?)
                       AND (m.expires_at IS NULL OR m.expires_at > ?)
-                      AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1
-                           OR m.retained_until > ? OR m.owner_deleted_at > ?)
                     ORDER BY CASE WHEN m.conversation_id = ? THEN 0
                                   WHEN m.owner_deleted_at IS NULL THEN 1 ELSE 2 END,
-                             bm25(memory_fts), m.is_pinned DESC, m.importance DESC
+                             bm25(memory_fts), m.is_pinned DESC, m.importance DESC, m.id
                     LIMIT 50
                     """, arguments: [lexicalMatch, request.workspaceID?.uuidString,
-                        request.workspaceID?.uuidString, Self.date(Date()), Self.date(Date()),
-                        Self.date(Date().addingTimeInterval(-365 * 86_400)),
+                        request.workspaceID?.uuidString, Self.date(now),
                         request.conversationID?.uuidString])
-                    .compactMap(Self.hybridRow)
+                    .compactMap { Self.hybridRow($0, now: now) }
             }
         }
 
@@ -958,7 +1119,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
            let modelRevision = request.modelRevision {
             let rows: [(HybridRecallDatabaseRow, Data, Int)] = try await database.reader { db in
                 try Row.fetchAll(db, sql: """
-                    SELECT m.id, m.content, m.importance, m.is_pinned, m.updated_at,
+                    SELECT m.*, (\(Self.deletedMemoryOwnerPredicate)) AS owner_is_deleted,
                            e.vector_blob, e.dimensions
                     FROM memory_embeddings e
                     JOIN memory_entries m ON m.id = e.memory_id
@@ -968,15 +1129,12 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
                       AND (m.scope IN ('user', 'agent', 'task', 'workspace')
                            OR m.workspace_id = ? OR m.origin_workspace_id = ?)
                       AND (m.expires_at IS NULL OR m.expires_at > ?)
-                      AND (m.owner_deleted_at IS NULL OR m.is_pinned = 1
-                           OR m.retained_until > ? OR m.owner_deleted_at > ?)
                     LIMIT 2000
                     """, arguments: [request.modality.rawValue, modelIdentifier, modelRevision,
                         queryVector.count, request.workspaceID?.uuidString,
-                        request.workspaceID?.uuidString, Self.date(Date()), Self.date(Date()),
-                        Self.date(Date().addingTimeInterval(-365 * 86_400))])
+                        request.workspaceID?.uuidString, Self.date(now)])
                     .compactMap { row in
-                        guard let candidate = Self.hybridRow(row) else { return nil }
+                        guard let candidate = Self.hybridRow(row, now: now) else { return nil }
                         let blob: Data = row["vector_blob"]
                         let dimensions: Int = row["dimensions"]
                         return (candidate, blob, dimensions)
@@ -1005,20 +1163,19 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
             candidate.semanticSimilarity = similarity
             fused[row.id] = candidate
         }
-        let results = MemoryReciprocalRankFusion.fuse(Array(fused.values), limit: request.limit)
-        try await reinforceMemories(results.map(\.id))
+        let results = MemoryReciprocalRankFusion.fuse(Array(fused.values), limit: request.limit, now: now)
+        if reinforcing { try await reinforceMemories(results.map(\.id), now: now) }
         return results
     }
 
     /// Recall temporarily strengthens orphaned memories. Active task and
     /// workspace memories are intentionally unlimited and never enter this
     /// aging path; only memories whose owner was deleted are compacted.
-    private func reinforceMemories(_ ids: [UUID]) async throws {
+    private func reinforceMemories(_ ids: [UUID], now: Date = Date()) async throws {
         guard !ids.isEmpty else { return }
-        let now = Date()
         let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
         var mutableArguments = StatementArguments([
-            Self.date(now), Self.date(now.addingTimeInterval(90 * 86_400))
+            Self.date(now), Self.date(now.addingTimeInterval(MemoryForgettingPolicy.recallRetention))
         ])
         for id in ids {
             mutableArguments += [id.uuidString]
@@ -1035,31 +1192,54 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
-    /// Forgetting curve for deleted owners: vectors are released after 180
-    /// days without reinforcement, and unpinned memories become search-only
-    /// superseded records after one year. Text is retained for audit and can
-    /// still be restored manually instead of being destructively erased.
+    /// A missing origin is positive evidence of a deleted owner, including old
+    /// global memories that the former FK-only preservation hook missed.
+    private static var deletedMemoryOwnerPredicate: String { MemoryForgettingPolicy.deletedOwnerSQL }
+
+    /// Archive is reversible: this lifecycle never deletes memory text. A
+    /// real run lease, a manual pin or a lasting preference prevents aging.
     public func maintainMemoryLifecycle(now: Date = Date()) async throws {
-        let vectorCutoff = Self.date(now.addingTimeInterval(-180 * 86_400))
-        let archiveCutoff = Self.date(now.addingTimeInterval(-365 * 86_400))
         let nowText = Self.date(now)
+        let usage = memoryUseRegistry
         try await database.writer { db in
+            // Do not stamp a fresh "use" while repairing an older orphan.
+            // Its latest real write/recall is the conservative known anchor.
             try db.execute(sql: """
-                DELETE FROM memory_embeddings
-                WHERE memory_id IN (
-                    SELECT id FROM memory_entries
-                    WHERE owner_deleted_at IS NOT NULL AND is_pinned = 0
-                      AND owner_deleted_at < ?
-                      AND (retained_until IS NULL OR retained_until < ?)
-                )
-                """, arguments: [vectorCutoff, nowText])
-            try db.execute(sql: """
-                UPDATE memory_entries SET status = 'superseded'
-                WHERE owner_deleted_at IS NOT NULL AND is_pinned = 0
-                  AND owner_deleted_at < ?
-                  AND (retained_until IS NULL OR retained_until < ?)
-                  AND status = 'active'
-                """, arguments: [archiveCutoff, nowText])
+                UPDATE memory_entries AS m
+                SET owner_deleted_at = CASE
+                    WHEN julianday(last_recalled_at) > julianday(updated_at) THEN last_recalled_at
+                    ELSE COALESCE(updated_at, created_at) END
+                WHERE owner_deleted_at IS NULL AND (\(Self.deletedMemoryOwnerPredicate))
+                """)
+            try usage.withProtectedIDs { protected in
+                // One JSON value avoids SQLite's variable limit without
+                // loading every orphan's text into memory during a UI read.
+                let protectedJSON = String(decoding: try JSONEncoder().encode(protected.map(\.uuidString)), as: UTF8.self)
+                let eligible = """
+                    m.is_pinned = 0 AND (m.scope <> 'user' OR m.expires_at IS NOT NULL)
+                    AND NOT(m.scope = 'agent' AND m.source_kind = 'explicitUserRequest' AND m.expires_at IS NULL)
+                    AND NOT EXISTS(SELECT 1 FROM json_each(?) p WHERE p.value = m.id)
+                    """
+                try db.execute(sql: """
+                    UPDATE memory_entries AS m SET status = 'superseded'
+                    WHERE m.status = 'active' AND (\(eligible)) AND (
+                        (m.expires_at IS NOT NULL AND julianday(m.expires_at) <= julianday(?))
+                        OR (m.owner_deleted_at IS NOT NULL AND (\(Self.deletedMemoryOwnerPredicate))
+                            AND MAX(julianday(m.owner_deleted_at), COALESCE(julianday(m.last_recalled_at),0)) <= julianday(?)
+                            AND (m.retained_until IS NULL OR julianday(m.retained_until) <= julianday(?))))
+                    """, arguments: [protectedJSON, nowText,
+                        Self.date(now.addingTimeInterval(-MemoryForgettingPolicy.archiveAfter)), nowText])
+                try db.execute(sql: """
+                    DELETE FROM memory_embeddings WHERE memory_id IN (
+                        SELECT m.id FROM memory_entries m WHERE (\(eligible))
+                            AND ((m.owner_deleted_at IS NOT NULL AND (\(Self.deletedMemoryOwnerPredicate)))
+                                OR (m.expires_at IS NOT NULL AND julianday(m.expires_at) <= julianday(?)))
+                            AND MAX(julianday(COALESCE(m.owner_deleted_at,m.expires_at)),
+                                COALESCE(julianday(m.last_recalled_at),0)) <= julianday(?)
+                            AND (m.retained_until IS NULL OR julianday(m.retained_until) <= julianday(?)))
+                    """, arguments: [protectedJSON, nowText,
+                        Self.date(now.addingTimeInterval(-MemoryForgettingPolicy.releaseVectorsAfter)), nowText])
+            }
         }
     }
 
@@ -1773,11 +1953,19 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         )
     }
 
-    private static func hybridRow(_ row: Row) -> HybridRecallDatabaseRow? {
-        guard let id = UUID(uuidString: row["id"]) else { return nil }
-        return HybridRecallDatabaseRow(id: id, content: row["content"],
-            importance: row["importance"], isPinned: row["is_pinned"],
-            updatedAt: parseDate(row["updated_at"]))
+    private static func hybridRow(_ row: Row, now: Date) -> HybridRecallDatabaseRow? {
+        guard let entry = try? memory(row) else { return nil }
+        var importance = entry.importance
+        let deleted: String? = row["owner_deleted_at"]
+        let recalled: String? = row["last_recalled_at"]
+        let ownerIsDeleted: Bool = row["owner_is_deleted"]
+        if ownerIsDeleted, let deleted,
+           !MemoryForgettingPolicy.isLongTerm(entry) {
+            let anchor = max(parseDate(deleted), recalled.map(parseDate) ?? .distantPast)
+            importance *= MemoryForgettingPolicy.relevanceWeight(since: anchor, now: now)
+        }
+        return HybridRecallDatabaseRow(id: entry.id, content: entry.content,
+            importance: importance, isPinned: entry.isPinned, updatedAt: entry.updatedAt)
     }
 
     private static func floatValues(_ data: Data, dimensions: Int) -> [Float]? {

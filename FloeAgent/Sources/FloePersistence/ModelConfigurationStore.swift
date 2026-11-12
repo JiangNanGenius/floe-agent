@@ -251,12 +251,13 @@ public actor ModelConfigurationStore {
             try ConfigurationCodec.write(provider, to: db)
             let existingPreferences = try Row.fetchAll(
                 db,
-                sql: "SELECT remote_model_id, is_enabled, is_hidden_from_primary_picker FROM models WHERE provider_id = ?",
+                sql: "SELECT remote_model_id, is_enabled, is_hidden_from_primary_picker, omit_reasoning_parameters FROM models WHERE provider_id = ?",
                 arguments: [provider.id.uuidString]
-            ).reduce(into: [String: (enabled: Bool, hidden: Bool)]()) { values, row in
+            ).reduce(into: [String: (enabled: Bool, hidden: Bool, omitReasoning: Bool)]()) { values, row in
                 values[row["remote_model_id"]] = (
                     enabled: row["is_enabled"],
-                    hidden: row["is_hidden_from_primary_picker"]
+                    hidden: row["is_hidden_from_primary_picker"],
+                    omitReasoning: row["omit_reasoning_parameters"]
                 )
             }
             let saved = try availableModels.map { discovered in
@@ -267,6 +268,7 @@ public actor ModelConfigurationStore {
                 if let preferences = existingPreferences[model.remoteModelID] {
                     model.isEnabled = preferences.enabled
                     model.isHiddenFromPrimaryPicker = preferences.hidden
+                    model.omitReasoningParameters = preferences.omitReasoning
                 }
                 return try ConfigurationCodec.write(model, to: db)
             }
@@ -513,6 +515,19 @@ enum ConfigurationCodec {
             try db.execute(sql: "DELETE FROM models WHERE id = ?", arguments: [model.id.uuidString])
         }
         let pricingJSON = try canonical.pricing.map(encode)
+        // A pre-metadata client omits these fields. Preserve saved facts and
+        // the user's explicit omit choice rather than resetting them on sync.
+        if let previous = try Row.fetchOne(db, sql: "SELECT reasoning_metadata_json, omit_reasoning_parameters FROM models WHERE id = ?",
+                                          arguments: [canonical.id.uuidString]) {
+            if canonical.reasoningMetadata == nil, let json: String = previous["reasoning_metadata_json"] {
+                canonical.reasoningMetadata = try JSONDecoder().decode(ModelReasoningMetadata.self, from: Data(json.utf8))
+            }
+            if canonical.omitReasoningParameters == nil {
+                canonical.omitReasoningParameters = previous["omit_reasoning_parameters"] as Bool
+            }
+        }
+        let reasoningMetadataJSON = try canonical.reasoningMetadata.map(encode)
+        canonical.omitReasoningParameters = canonical.effectiveOmitReasoningParameters
         try db.execute(
             sql: """
                 INSERT INTO models (
@@ -520,8 +535,9 @@ enum ConfigurationCodec {
                     context_tokens, max_output_tokens, pricing_json,
                     capabilities, reasoning_effort, is_enabled,
                     is_hidden_from_primary_picker, use_surfaces,
-                    explicit_capabilities
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    explicit_capabilities, reasoning_metadata_json,
+                    omit_reasoning_parameters
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     provider_id = excluded.provider_id,
                     remote_model_id = excluded.remote_model_id,
@@ -537,7 +553,9 @@ enum ConfigurationCodec {
                     -- NULL never clears an owned mask: only an explicit
                     -- non-nil write (including a reviewed empty 0) updates it.
                     explicit_capabilities = COALESCE(
-                        excluded.explicit_capabilities, models.explicit_capabilities)
+                        excluded.explicit_capabilities, models.explicit_capabilities),
+                    reasoning_metadata_json = excluded.reasoning_metadata_json,
+                    omit_reasoning_parameters = excluded.omit_reasoning_parameters
                 """,
             arguments: [
                 canonical.id.uuidString, canonical.providerID.uuidString,
@@ -549,7 +567,9 @@ enum ConfigurationCodec {
                 canonical.useSurfaces?.rawValue,
                 // nil → SQL NULL keeps the legacy "no provenance" state
                 // distinct from a reviewed empty mask (0).
-                canonical.explicitCapabilities?.rawValue
+                canonical.explicitCapabilities?.rawValue,
+                reasoningMetadataJSON,
+                canonical.effectiveOmitReasoningParameters
             ]
         )
         return canonical
@@ -587,7 +607,11 @@ enum ConfigurationCodec {
             isHiddenFromPrimaryPicker: row["is_hidden_from_primary_picker"],
             // NULL → nil (legacy "no provenance"); 0 → empty reviewed mask.
             explicitCapabilities: (row["explicit_capabilities"] as Int?)
-                .map(ModelCapabilities.init(rawValue:))
+                .map(ModelCapabilities.init(rawValue:)),
+            reasoningMetadata: try (row["reasoning_metadata_json"] as String?).map {
+                try JSONDecoder().decode(ModelReasoningMetadata.self, from: Data($0.utf8))
+            },
+            omitReasoningParameters: row["omit_reasoning_parameters"]
         )
     }
 

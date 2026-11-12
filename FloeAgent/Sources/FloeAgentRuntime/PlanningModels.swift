@@ -1,4 +1,5 @@
 import Foundation
+import FloeCore
 
 /// The execution contract selected for a conversation turn.
 public enum ConversationMode: String, Sendable, Codable, Hashable, CaseIterable {
@@ -429,6 +430,38 @@ public enum PlanReadinessGate {
 }
 
 public enum GoalFromPlanFactory {
+    /// The execution objective is derived from the accepted implementation
+    /// structure. A planning-stage summary remains historical plan content;
+    /// it must not become the next stage's operative instructions.
+    public static func implementationObjective(from plan: PlanDraft) -> String {
+        let steps = plan.sections.sorted { $0.order < $1.order }.map { "- \($0.title)" }.joined(separator: "\n")
+        let criteria = plan.acceptanceCriteria.map { "- \($0.text) (\($0.verification))" }.joined(separator: "\n")
+        let title = FloeL10n.isChinese ? "实现并交付已确认计划：" : "Implement and deliver the accepted plan: "
+        let outcomes = FloeL10n.isChinese ? "实施结果：" : "Implementation outcomes:"
+        let verification = FloeL10n.isChinese ? "验收标准：" : "Verify completion against:"
+        return "\(title)\(plan.title)\n\(outcomes)\n\(steps)\n\(verification)\n\(criteria)"
+    }
+
+    public static func implementationPrompt(from plan: PlanDraft) -> String {
+        let ordered = plan.sections.sorted { $0.order < $1.order }
+            .map { "## \($0.title)\n\($0.body)" }.joined(separator: "\n\n")
+        let criteria = plan.acceptanceCriteria.map { "- \($0.text): \($0.verification)" }.joined(separator: "\n")
+        let assumptions = plan.assumptions.map { "- \($0.text)" }.joined(separator: "\n")
+        let risks = plan.risks.map { "- \($0.text)\($0.mitigation.map { ": " + $0 } ?? "")" }.joined(separator: "\n")
+        return """
+        Execute the accepted implementation plan below. Preserve its ordering and verify each criterion with inspectable evidence. Continue until safe in-scope implementation and delivery are complete.
+        # \(plan.title)
+        \(ordered)
+        Acceptance criteria:
+        \(criteria)
+        Accepted assumptions and constraints:
+        \(assumptions)
+        Risks and mitigations:
+        \(risks)
+        This is the implementation stage. The earlier planning summary describes the previous stage, not the current objective. Preserve the user's original explicit limits and existing task approvals. Plan acceptance does not authorize external sends or broader access.
+        """
+    }
+
     public static func makeGoal(
         from plan: PlanDraft,
         budgets: GoalBudgets = GoalBudgets()
@@ -446,7 +479,7 @@ public enum GoalFromPlanFactory {
             conversationID: plan.conversationID,
             sourcePlanID: plan.id,
             sourcePlanDigest: plan.digest,
-            objective: plan.summary,
+            objective: implementationObjective(from: plan),
             acceptanceCriteria: criteria,
             steps: steps,
             budgets: budgets
