@@ -212,9 +212,14 @@ struct ChatInlineContentContractTests {
             // A frozen pin cannot be cleared by saveRun's COALESCE upsert.
             // Read it back instead of mistaking a locally nil value for a
             // persisted missing binding (the original false counterexample).
-            var attemptedClear = try #require(try await runs.run(id: runID)); attemptedClear.executionBinding = nil
+            var attemptedClear = try #require(try await runs.run(id: runID))
+            let persistedPin = try #require(attemptedClear.executionBinding)
+            // Bindings use their existing millisecond JSON date codec. Check
+            // the exact persisted value before and after the rejected clear.
+            #expect(persistedPin == (try TaskExecutionBinding.decoded(binding.encoded())))
+            attemptedClear.executionBinding = nil
             try await runs.saveRun(attemptedClear)
-            #expect(try await runs.run(id: runID)?.executionBinding == binding)
+            #expect(try await runs.run(id: runID)?.executionBinding == persistedPin)
 
             // Construct a genuinely unbound run from its first INSERT, with
             // its own valid producer/receipt. The refusal must come from the
