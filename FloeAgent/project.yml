@@ -1870,6 +1870,7 @@ targets:
       - path: Tests/FloeWorkspaceTests/LargeTextFileToolsTests.swift
       - path: Tests/FloeAppTests/WorkspaceReadPageCatalogTests.swift
       - path: Tests/FloePersistenceTests/ModelConfigurationStoreTests.swift
+      - path: Tests/FloeAppTests/SetupGuideLaunchRegressionTests.swift
       - path: Tests/FloeProvidersTests/ModelDiscoveryMappingTests.swift
       - path: Tests/FloeProvidersTests/VeniceReasoningContractTests.swift
       - path: Tests/FloeProvidersTests/ToolStreamingLongTextTests.swift
