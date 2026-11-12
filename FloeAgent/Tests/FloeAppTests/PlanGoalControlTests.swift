@@ -36,6 +36,24 @@ struct PlanGoalControlTests {
         let requests: Requests
         var protocolKind: ModelProtocol { .openAIChatCompletions }
         func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+            // The automatic-effort hop is real but is not the admitted
+            // round. Answer its exact native contract instead of parking it
+            // or recording it as the Plan/Goal provider request.
+            if request.reasoningPolicy == .disabled, request.toolSchemas.isEmpty,
+               request.effectiveMessages.contains(ProviderMessage(role: "system",
+                   text: AutomaticReasoningEffortAuxiliaryClassifier.instructions)) {
+                return AsyncThrowingStream { continuation in
+                    continuation.yield(.textDelta(.init(text: #"{"effort":"low"}"#)))
+                    continuation.yield(.completed(.init(stopReason: .endTurn)))
+                    continuation.finish()
+                }
+            }
+            guard request.diagnosticRunID != nil else {
+                return AsyncThrowingStream { continuation in
+                    continuation.finish(throwing: FloeError.validationFailed(
+                        "Unexpected auxiliary request in the Plan/Goal fixture"))
+                }
+            }
             return AsyncThrowingStream { requests.append(request, stream: $0) }
         }
         func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
@@ -82,7 +100,16 @@ struct PlanGoalControlTests {
     private func waitForRequest(_ f: Fixture, after count: Int) async throws -> ProviderStreamRequest {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while f.requests.all.count <= count, ContinuousClock.now < deadline { await Task.yield() }
-        return try #require(f.requests.all.dropFirst(count).first, "The real runtime never reached the scripted provider")
+        let request = try #require(f.requests.all.dropFirst(count).first, "The real runtime never reached the scripted provider")
+        try #require(request.diagnosticRunID != nil, "An auxiliary request cannot stand in for the admitted round")
+        return request
+    }
+    private func systemText(_ request: ProviderStreamRequest) -> String {
+        request.effectiveMessages.filter { $0.role == "system" }
+            .flatMap(\.content).compactMap { part -> String? in
+                if case .text(let text) = part { return text }
+                return nil
+            }.joined(separator: "\n")
     }
     private func waitForGate(_ gate: Gate) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
@@ -97,7 +124,9 @@ struct PlanGoalControlTests {
                !f.center.hasLiveOwner(runID: runID) { return run }
             await Task.yield()
         }
-        throw FloeError.validationFailed("The real round did not terminate and release its owner")
+        let final = try await f.environment.runStore.run(id: runID)
+        throw FloeError.validationFailed(
+            "The real round did not terminate and release its owner (state=\(final?.state ?? "missing"), ended=\(final?.endedAt != nil), owned=\(f.center.hasLiveOwner(runID: runID)))")
     }
 
     @Test("Home inline and expanded sends persist Plan before navigation and really offer read-only tools")
@@ -172,7 +201,7 @@ struct PlanGoalControlTests {
         #expect(run.goal == GoalFromPlanFactory.implementationPrompt(from: accepted))
         #expect(run.goal.contains("Do not send files outside this task") && !run.goal.contains("PLANNING_ONLY_MARKER"))
         let request = try await waitForRequest(f, after: 0)
-        #expect(!request.messages.filter { $0.role == "system" }.contains { $0.content.contains("PLANNING_ONLY_MARKER") })
+        #expect(!systemText(request).contains("PLANNING_ONLY_MARKER"))
         await view.pauseActiveGoal()
         let paused = try #require(try await f.environment.intelligenceStore.goal(id: goal.id))
         let continuing = try #require(try await f.environment.runStore.run(id: runID))
@@ -254,7 +283,7 @@ struct PlanGoalControlTests {
             let started = try await launch.value
             #expect(started.runID == runID)
             let request = try await waitForRequest(f, after: 0)
-            let system = request.messages.filter { $0.role == "system" }.map(\.content).joined(separator: "\n")
+            let system = systemText(request)
             #expect(system.contains("ADMITTED_OBJECTIVE_A") && system.contains("ADMITTED_CRITERION_A"))
             #expect(!system.contains("EDITED_OBJECTIVE_A") && !system.contains("EDITED_CRITERION_A"))
             #expect(!system.contains("REPLACEMENT_OBJECTIVE_B") && !system.contains("REPLACEMENT_CRITERION_B"))
@@ -420,7 +449,7 @@ struct PlanGoalControlTests {
         // even though it now owns the conversation's long-term Goal bar.
         try await f.center.stopRunFromComposer(afterDeleteA)
         _ = await currentA.result.value
-        #expect(try await waitForEnd(f, runID: currentA.runID).state == "cancelled")
+        #expect(try await waitForEnd(f, runID: currentA.runID).state == "checkpointed")
         #expect(try await f.environment.intelligenceStore.goal(id: goalB.id)?.status == .active)
         f.center.launchTestHooks.afterGoalControlFence = nil
         await ordinaryGate.release()
@@ -470,7 +499,7 @@ struct PlanGoalControlTests {
             "Core must reuse the preparing run's existing Goal, not create another one")
         let bSnapshot = try #require(try await f.environment.runStore.run(id: runB))
         try await f.center.stopRunFromComposer(bSnapshot)
-        #expect(try await waitForEnd(f, runID: runB).state == "cancelled")
+        #expect(try await waitForEnd(f, runID: runB).state == "checkpointed")
         let stoppedB = try #require(try await f.environment.intelligenceStore.goal(id: goalB.id))
         #expect(stoppedB.status == .paused && stoppedB.objective == retainedB.objective)
         #expect(stoppedB.budgets == retainedB.budgets && retainedB.evidence.allSatisfy { stoppedB.evidence.contains($0) })

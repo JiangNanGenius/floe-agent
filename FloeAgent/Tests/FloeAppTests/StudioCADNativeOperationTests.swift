@@ -12,9 +12,10 @@ import FloePersistence
 
 @Suite("Managed CAD native Building and Mesh services", .serialized)
 @MainActor struct StudioCADNativeOperationTests {
+    private let registry = ToolRunnerRegistry()
     private struct Page { let revision: String; let state: [String: Any] }
     private func call(_ name: String, _ args: [String: Any], _ context: ToolContext) async throws -> [String: Any] {
-        let runner = try #require(ToolRunnerRegistry.shared.runner(named: name))
+        let runner = try #require(registry.runner(named: name))
         let output = try await runner.execute(argumentsJSON: JSONSerialization.data(withJSONObject: args), context: context)
         let bytes = Data((output.capturedOutput ?? output.summary).utf8)
         #expect(StudioToolOutput.hash(bytes) == output.fullOutputSHA256)
@@ -57,6 +58,7 @@ import FloePersistence
     }
     private func withWork(kind: String = "cad3D", _ body: @MainActor (UUID, URL, FloeCADDocument, ToolContext, ToolContext) async throws -> Void) async throws {
         let environment = FloeAgentApp.liveEnvironment; try await environment.ensureDurableAutomationReady()
+        registerStudioAgentTools(environment: environment, registry: registry)
         var conversations: [UUID] = [], contexts: [ToolContext] = []
         var ownedDirectory: URL?, document: FloeCADDocument?
         func cleanupFiles() { document?.close(); if let ownedDirectory { try? FileManager.default.removeItem(at: ownedDirectory) } }

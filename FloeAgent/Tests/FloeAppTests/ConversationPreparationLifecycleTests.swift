@@ -202,6 +202,64 @@ struct ConversationPreparationLifecycleTests {
         try await verifyUnhandedRootReleasedAndReacquirable(cancelled: true)
     }
 
+    @Test("Stop of a registered preparing run commits its terminal row despite cancelling the launch task", .timeLimit(.minutes(1)))
+    func cancelledRegisteredPreparationPersistsTerminalInItsOwnStore() async throws {
+        let f = try await fixture(), gate = Gate()
+        let conversation = try await f.center.createConversation(title: "Owned cancelled preparation")
+        f.center.launchTestHooks.deferredTaskBody = { await gate.hold() }
+        defer {
+            f.center.launchTestHooks.deferredTaskBody = nil
+            Task { await gate.release() }
+        }
+        let started = try await f.center.startRun(goal: "Preserve this accepted input", in: conversation.id,
+            provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        await gate.waitUntilEntered()
+        try #require(f.center.hasLiveOwner(runID: started.runID))
+        let preparing = try #require(try await f.environment.runStore.run(id: started.runID))
+        try #require(preparing.state == "preparing" && preparing.endedAt == nil)
+        try await f.center.stopRunFromComposer(preparing)
+        await gate.release()
+        if case .success = await started.result.value { Issue.record("A stopped preparation reached execution") }
+        let coldStore = SQLiteRunStore(database: f.environment.database)
+        let stopped = try #require(try await coldStore.run(id: started.runID))
+        #expect(stopped.state == "cancelled" && stopped.endedAt != nil)
+        #expect(stopped.conversationID == conversation.id && stopped.goal == preparing.goal)
+        #expect(!f.center.hasLiveOwner(runID: started.runID) && f.providerCalls.value() == 0)
+        #expect(try await f.environment.conversationStore.messages(conversationID: conversation.id)
+            .filter { $0.role == "user" }.map(\.content) == ["Preserve this accepted input"])
+    }
+
+    @Test("A cancelled destroyed temporary preparation cannot write through to durable storage or its replacement", .timeLimit(.minutes(1)))
+    func cancelledTemporaryPreparationKeepsItsFrozenTerminalAuthority() async throws {
+        let f = try await fixture(), gate = Gate()
+        let conversationID = try await f.center.startTemporarySession(initialDraft: "")
+        f.center.launchTestHooks.deferredTaskBody = { await gate.hold() }
+        defer {
+            f.center.launchTestHooks.deferredTaskBody = nil
+            Task { await gate.release() }
+        }
+        let started = try await f.center.startRun(goal: "Temporary owned input", in: conversationID,
+            provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        await gate.waitUntilEntered()
+        try #require(f.center.hasFrozenTemporaryRunAuthority(runID: started.runID, conversationID: conversationID))
+        #expect(await f.center.endTemporaryChat() == .newTask)
+        let frozen = f.center.runStoreForTerminalRun(runID: started.runID, conversationID: conversationID)
+        await #expect(throws: (any Error).self) {
+            try await frozen.updateRunState(id: started.runID, state: "failed", endedAt: Date())
+        }
+        let replacementID = try await f.center.startTemporarySession(initialDraft: "Replacement remains empty")
+        await gate.release()
+        _ = await started.result.value
+        #expect(!f.center.hasFrozenTemporaryRunAuthority(runID: started.runID, conversationID: conversationID))
+        #expect(!f.center.hasLiveOwner(runID: started.runID) && f.providerCalls.value() == 0)
+        #expect(try await f.environment.runStore.run(id: started.runID) == nil)
+        #expect(try await f.environment.conversationStore.conversation(id: conversationID) == nil)
+        #expect(try await f.environment.conversationStore.messages(conversationID: conversationID).isEmpty)
+        #expect(f.center.temporarySession?.conversation.id == replacementID)
+        #expect(try await f.center.runStore(for: replacementID).runs(conversationID: replacementID).isEmpty)
+        #expect(await f.center.endTemporaryChat() == .newTask)
+    }
+
     private func verifyUnhandedRootReleasedAndReacquirable(cancelled: Bool) async throws {
         let f = try await fixture(), gate = Gate(), releases = Counter(), acquisitions = Counter()
         let conversation = try await f.center.createConversation(title: "Owned lease fixture")

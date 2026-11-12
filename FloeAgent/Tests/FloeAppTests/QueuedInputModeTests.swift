@@ -231,7 +231,9 @@ struct GoalComposerTests {
                !f.center.hasLiveOwner(runID: runID) { return }
             await Task.yield()
         }
-        throw FloeError.validationFailed("The selected owned round did not stop")
+        let final = try await f.environment.runStore.run(id: runID)
+        throw FloeError.validationFailed(
+            "The selected owned round did not stop (state=\(final?.state ?? "missing"), ended=\(final?.endedAt != nil), owned=\(f.center.hasLiveOwner(runID: runID)))")
     }
 
     @Test("Goal setup resets only the composer; pause/resume preserves the same durable goal")
@@ -428,7 +430,19 @@ struct GoalComposerTests {
 private struct GoalComposerIdleProvider: ProviderAdapter {
     var protocolKind: ModelProtocol { .openAIChatCompletions }
     func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
-        AsyncThrowingStream { _ in }
+        // The automatic-effort hop is real but is not the admitted
+        // round. Answer its exact native contract instead of parking it
+        // or recording it as the Plan/Goal provider request.
+        if request.reasoningPolicy == .disabled, request.toolSchemas.isEmpty,
+           request.effectiveMessages.contains(ProviderMessage(role: "system",
+               text: AutomaticReasoningEffortAuxiliaryClassifier.instructions)) {
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.textDelta(.init(text: #"{"effort":"low"}"#)))
+                continuation.yield(.completed(.init(stopReason: .endTurn)))
+                continuation.finish()
+            }
+        }
+        return AsyncThrowingStream { _ in }
     }
     func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }

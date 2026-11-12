@@ -7307,18 +7307,25 @@ final class ConversationCenter: ObservableObject {
         // store mirrors to the durable row. Never the global current-session
         // lookup, which would reroute a destroyed temporary run to durable.
         let runStore = runStoreForTerminalRun(runID: runID, conversationID: conversationID)
-        try? await runStore.updateRunState(
-            id: runID,
-            state: cancelled ? "cancelled" : "failed",
-            endedAt: Date()
-        )
-        if !cancelled {
-            try? await runStore.recordError(RunErrorRecord(
-                runID: runID,
-                kind: "launch",
-                message: error.localizedDescription,
-                recoverable: true
-            ))
+        let terminalState = cancelled ? "cancelled" : "failed"
+        let endedAt = Date()
+        let launchError = cancelled ? nil : RunErrorRecord(
+            runID: runID, kind: "launch", message: error.localizedDescription, recoverable: true)
+        // Stop cancels the launch owner before it reaches this cleanup. A
+        // cancellable database await in that same task can then discard the
+        // terminal write and strand a durable row at "preparing". Finish only
+        // this run's already-frozen store in an independent task, and join it
+        // before releasing its authority. A destroyed temporary store still
+        // refuses; never reroute to a different session or the global store.
+        let terminalFlush = Task.detached {
+            try await runStore.updateRunState(id: runID, state: terminalState, endedAt: endedAt)
+            if let launchError { try await runStore.recordError(launchError) }
+        }
+        do { try await terminalFlush.value }
+        catch {
+            let failure = error as NSError
+            FloeLogger(category: .persistence).error(
+                "deferredLaunchTerminalSaveFailed run=\(runID.uuidString) domain=\(failure.domain) code=\(failure.code)")
         }
         clearFrozenTemporaryRun(runID: runID)
         await automaticReasoningEffortCoordinator.cancelAndForget(runID: runID)

@@ -40,6 +40,9 @@ import FloeWorkbench
                 let captions=MediaPreparedTrack(kind:.caption,name:"Caption",clips:[.init(timelineRange:range,sourceRange:range,captionText:"Hello",captionSource:.manual)])
                 _ = try await coordinator.applyUserOperations([.init(action:.insertAsset(image)),.init(action:.insertAsset(audio)),.init(action:.insertTrack(track:visual,index:nil)),.init(action:.insertTrack(track:reference,index:nil)),.init(action:.insertTrack(track:sound,index:nil)),.init(action:.insertTrack(track:narration,index:nil)),.init(action:.insertTrack(track:captions,index:nil))],to:project.id)
             }
+            // The remove-asset example requires a real unreferenced asset.
+            let unused = try imageAsset(at: root, filename: "unused.png")
+            _ = try await coordinator.applyUserOperations([.init(action: .insertAsset(unused))], to: project.id)
             let document=try await coordinator.loadDocument(id:project.id)
             let examples=try MediaPreparedToolInputGuide.make(document:document,implementedToolIDs:MediaV2Session.localToolIDs.union(MediaV2Session.providerToolIDs),selectionFence:String(repeating:"a",count:64),hasImageRegion:true,hasRenderedImagePreview:renderedImagePreview)
             #expect(!examples.isEmpty)
@@ -48,7 +51,12 @@ import FloeWorkbench
                 let decoded=try StudioMediaToolContract.decode(json)
                 #expect(decoded.expectedRevision == document.revision)
                 if let object=decoded.objectID {
-                    #expect(document.layer(object) != nil || document.trackGraph.clip(id:object) != nil || document.trackGraph.track(object) != nil)
+                    if example.toolID == "image.remove-asset" || example.toolID == "video.remove-asset" {
+                        #expect(document.asset(object) != nil)
+                        #expect(MediaPreparedAssets.references(to: object, in: document).isEmpty)
+                    } else {
+                        #expect(document.layer(object) != nil || document.trackGraph.clip(id:object) != nil || document.trackGraph.track(object) != nil)
+                    }
                 }
             }
             let missing=try MediaPreparedToolInputGuide.make(document:document,implementedToolIDs:MediaV2Session.localToolIDs,selectionFence:nil)
@@ -83,12 +91,15 @@ import FloeWorkbench
         let saved = try #require(try await coldStore.loadProject(id: project.id))
         #expect(saved.prepared?.layer(firstID) == first && saved.prepared?.layer(secondID) != nil)
 
+        // Reopen the persisted journal rather than using the upgrade-only
+        // coordinator, whose cached envelope predates the session's edits.
+        let coldCoordinator = MediaPreparedCoordinator(store: coldStore)
         let group = try #require(saved.preparedJournal?.nextUndo)
-        _ = try await coordinator.undoGroup(group.id, in: project.id)
+        _ = try await coldCoordinator.undoGroup(group.id, in: project.id)
         try await session.reload()
         #expect(session.document.layer(secondID) == nil && session.document.layer(firstID) == first)
         let redo = try #require(session.project.preparedJournal?.nextRedo)
-        _ = try await coordinator.redoGroup(redo.id, in: project.id)
+        _ = try await coldCoordinator.redoGroup(redo.id, in: project.id)
         try await session.reload()
         #expect(session.document.layer(secondID) != nil && session.document.layer(firstID) == first)
     }
@@ -286,15 +297,15 @@ import FloeWorkbench
         _ = try #require(session.preview)
     }
 
-    private func imageAsset(at root: URL, color: UIColor = .gray) throws -> MediaAssetReference {
+    private func imageAsset(at root: URL, color: UIColor = .gray, filename: String = "source.png") throws -> MediaAssetReference {
         let directory = root.appendingPathComponent("Assets")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 48)).pngData { context in
             color.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 64, height: 48))
         }
-        try data.write(to: directory.appendingPathComponent("source.png"), options: .atomic)
-        return .init(kind: .image, relativePath: "Assets/source.png", originalName: "source.png", byteCount: Int64(data.count), metadata: .init(width: 64, height: 48))
+        try data.write(to: directory.appendingPathComponent(filename), options: .atomic)
+        return .init(kind: .image, relativePath: "Assets/" + filename, originalName: filename, byteCount: Int64(data.count), metadata: .init(width: 64, height: 48))
     }
 
     @Test func colorMatchingWithoutADistinctReferenceHasNoRunnableExample() throws {

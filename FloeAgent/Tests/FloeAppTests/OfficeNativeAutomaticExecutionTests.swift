@@ -534,11 +534,13 @@ struct OfficeNativeAutomaticExecutionTests {
         let workbook = root.appendingPathComponent("saved-recalc.xlsx")
         try OfficeDocumentBuilder.createWorkbook(at: workbook, sheets: [
             OfficeWorkbookSheet(name: "Data", rows: [
-                ["B", "C", "D"],
-                ["3", "5", "=B2*C2"],
-                ["1", "2", "=B3*C3"],
-                ["4", "3", "=B4*C4"],
-                ["", "", "=SUM(D2:D4)"]
+                // The builder maps column index 0 to column A; preserve the
+                // intended B/C inputs and D formula/cache addresses.
+                ["", "B", "C", "D"],
+                ["", "3", "5", "=B2*C2"],
+                ["", "1", "2", "=B3*C3"],
+                ["", "4", "3", "=B4*C4"],
+                ["", "", "", "=SUM(D2:D4)"]
             ])
         ])
         let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: workbook)

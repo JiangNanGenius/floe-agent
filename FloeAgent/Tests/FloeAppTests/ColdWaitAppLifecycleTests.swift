@@ -415,7 +415,16 @@ struct GoalLifecycleTests {
         try await center.stopRunFromComposer(runningAfterPause)
         _ = await startedRound.result.value
         #expect(await until { !center.hasLiveOwner(runID: startedID) })
-        #expect(try await environment.runStore.run(id: startedID)?.state == "cancelled")
+        let stoppedRun = try #require(try await environment.runStore.run(id: startedID))
+        #expect(stoppedRun.state == "checkpointed" && stoppedRun.endedAt != nil,
+            "Composer Stop parks the admitted round with saved progress for deliberate same-round Continue")
+        #expect(stoppedRun.id == startedID && stoppedRun.conversationID == conversationID
+            && stoppedRun.goalID == original.id && stoppedRun.goal == admittedRun.goal)
+        // Read the canonical SQLite checkpoint through a fresh store, rather
+        // than accepting a stopped in-memory owner without recoverable data.
+        let stoppedCheckpoint = try #require(try await SQLiteRunCheckpointStore(
+            database: environment.database, legacyDirectory: nil).load(runID: startedID))
+        #expect(stoppedCheckpoint.runID == startedID && stoppedCheckpoint.conversationID == conversationID)
         #expect(await until { state.lateCompletionAttempts >= 1 })
         let afterLateCompletion = try #require(try await environment.intelligenceStore.goal(id: original.id))
         #expect(afterLateCompletion.status == .paused && afterLateCompletion.objective == original.objective)

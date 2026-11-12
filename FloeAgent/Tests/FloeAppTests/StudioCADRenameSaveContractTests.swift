@@ -10,9 +10,10 @@ import FloeCAD
 
 @Suite("Managed native CAD rename and save", .serialized)
 @MainActor struct StudioCADRenameSaveContractTests {
+    private let registry = ToolRunnerRegistry()
     private struct Page { let revision: String; let state: [String: Any]; let guide: String }
     private func call(_ name: String, _ args: [String: Any], _ context: ToolContext) async throws -> [String: Any] {
-        let runner = try #require(ToolRunnerRegistry.shared.runner(named: name))
+        let runner = try #require(registry.runner(named: name))
         let output = try await runner.execute(argumentsJSON: JSONSerialization.data(withJSONObject: args), context: context)
         let bytes = Data((output.capturedOutput ?? output.summary).utf8)
         #expect(StudioToolOutput.hash(bytes) == output.fullOutputSHA256)
@@ -37,6 +38,7 @@ import FloeCAD
     }
     private func withTasks(_ body: @MainActor (ToolContext, ToolContext) async throws -> Void) async throws {
         let environment = FloeAgentApp.liveEnvironment; try await environment.ensureDurableAutomationReady()
+        registerStudioAgentTools(environment: environment, registry: registry)
         var ids: [UUID] = [], contexts: [ToolContext] = []
         do {
             for _ in 0..<2 {

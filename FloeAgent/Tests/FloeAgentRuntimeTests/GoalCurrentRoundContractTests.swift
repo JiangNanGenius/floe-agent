@@ -28,7 +28,7 @@ struct GoalCurrentRoundContractTests {
         let conversations = SQLiteConversationStore(database: db), runs = SQLiteRunStore(database: db)
         let goals = SQLiteIntelligenceStore(database: db)
         let conversationID = UUID(), runID = UUID(), now = Date()
-        try await conversations.saveConversation(.init(id: conversationID, title: "Owned Goal round", createdAt: now, updatedAt: now))
+        try await conversations.saveConversationWithCanonicalWorkspace(.init(id: conversationID, title: "Owned Goal round", createdAt: now, updatedAt: now))
         let goal = ConversationGoal(conversationID: conversationID, objective: "Original long-term definition",
             acceptanceCriteria: [.init(text: "Original criterion")], steps: [.init(title: "Original step", order: 0)], status: .active,
             budgets: .init(maxCycles: 5, maxModelCalls: 10, maxParentIterationsPerCycle: 8))

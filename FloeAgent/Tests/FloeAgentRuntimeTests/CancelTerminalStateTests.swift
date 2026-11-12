@@ -40,6 +40,20 @@ private final class StreamCounter: @unchecked Sendable {
     func increment() { lock.withLock { value += 1 } }
 }
 
+/// The cancellation fixture must reach a valid provider request, rather than
+/// accidentally relying on a disabled preflight check to enter its double.
+private func expectSyntheticRequestFits(_ request: ProviderStreamRequest) {
+    let size = ProviderRequestSizer.measure(
+        messages: request.effectiveMessages, schemas: request.toolSchemas,
+        replayedToolPairs: request.replayedToolPairs,
+        contextWindowTokens: request.model.limits.contextTokens,
+        reservedOutputTokens: request.model.limits.configuredMaxOutputTokens ?? 0
+    )
+    let fixed = size.messageTokens + size.schemaTokens + size.replayTokens
+        + size.reservedOutputTokens + size.safetyMarginTokens
+    #expect(fixed <= size.contextWindowTokens, "Synthetic stop request must fit its unchanged model window")
+}
+
 private final class CancelGatedAdapter: ProviderAdapter, @unchecked Sendable {
     let protocolKind: ModelProtocol = .openAIChatCompletions
     private let started: StreamCounter
@@ -68,11 +82,12 @@ private final class CancelGatedAdapter: ProviderAdapter, @unchecked Sendable {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
+        expectSyntheticRequestFits(request)
         // `unfolding` runs on the consuming task, so consumer cancellation
         // (the runtime's streamTask stop) terminates the stream promptly —
         // the exact contract the on-device adapter keeps when a stop lands
         // mid-prefill, while the underlying engine winds down later.
-        AsyncThrowingStream {
+        return AsyncThrowingStream {
             defer { self.onExit?() }
             self.started.increment()
             self.onStream?()
@@ -119,7 +134,8 @@ private final class ScriptedCloudAdapter: ProviderAdapter, @unchecked Sendable {
         request: ProviderStreamRequest,
         credentials: ProviderCredentials
     ) -> AsyncThrowingStream<AgentEvent, Error> {
-        AsyncThrowingStream { continuation in
+        expectSyntheticRequestFits(request)
+        return AsyncThrowingStream { continuation in
             self.streams.increment()
             continuation.yield(.textDelta(.init(text: answer)))
             continuation.yield(.completed(.init(stopReason: .endTurn)))
@@ -179,6 +195,10 @@ private func terminalStateService(
             ),
             model: model,
             allowedToolNames: [],
+            // This suite tests provider stop semantics; its executor forbids
+            // every tool. Do not reserve discovery schemas for an unused
+            // tool channel in the small synthetic model's 8K window.
+            toolsEnabled: false,
             maxProviderRetries: retries,
             providerRetryBaseDelay: 0.05,
             providerRetryMaxDelay: 0.1,

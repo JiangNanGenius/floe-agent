@@ -185,7 +185,14 @@ struct MacBridgeAbsoluteFileTests {
                 expectedIdentity: nil, verifySHA256: false, context: context())
             Issue.record("A legacy companion was treated as supporting absolute reads")
         } catch {
-            #expect(error.localizedDescription.contains("Update Floe Bridge"))
+            guard case BridgeFailure.unsupportedAbsoluteRead = error else {
+                Issue.record("The explicit companion update failure was replaced: \(error)")
+                return
+            }
+            #expect(error.localizedDescription == BridgeFailure.unsupportedAbsoluteRead.localizedDescription)
+            #expect(error.localizedDescription.contains("Floe Bridge"))
+            let calls = await transport.calls
+            #expect(calls.count == 1, "An unsupported read must not be replayed")
         }
     }
 }

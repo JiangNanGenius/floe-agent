@@ -25,12 +25,20 @@ private struct NativeGoalReceiptProvider: ProviderAdapter {
     var protocolKind: ModelProtocol { .openAIChatCompletions }
     func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
     func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
-        guard request.messages.contains(where: { $0.role == "system" && $0.content == GoalEvidenceReviewContract.instructions }),
-              let text = request.messages.last(where: { $0.role == "user" })?.content,
-              let input = try? JSONDecoder().decode(NativeGoalReviewInput.self, from: Data(text.utf8)) else {
+        let messages = request.effectiveMessages
+        func text(_ message: ProviderMessage) -> String {
+            message.content.compactMap { if case .text(let value) = $0 { value } else { nil } }.joined(separator: "\n")
+        }
+        guard messages.contains(where: { $0.role == "system" && text($0) == GoalEvidenceReviewContract.instructions }) else {
             // No provider/network/tools are executed by the fixture. A real
             // continuation can stay owned here until normal cancellation.
             return AsyncThrowingStream { _ in }
+        }
+        guard let message = messages.last(where: { $0.role == "user" }),
+              let input = try? JSONDecoder().decode(NativeGoalReviewInput.self, from: Data(text(message).utf8)) else {
+            // A malformed review fixture must fail promptly, not imitate an
+            // indefinitely running execution turn and hide its actual cause.
+            return AsyncThrowingStream { $0.finish(throwing: FloeError.validationFailed("Invalid owned Goal review fixture input")) }
         }
         spy.append(input)
         return AsyncThrowingStream { continuation in

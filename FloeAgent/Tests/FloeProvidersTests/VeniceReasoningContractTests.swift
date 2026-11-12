@@ -167,14 +167,22 @@ struct VeniceReasoningContractTests {
                 config.timeoutIntervalForRequest = 3; config.timeoutIntervalForResource = 3
                 let session = URLSession(configuration:config)
                 defer { session.invalidateAndCancel(); VeniceContractURLProtocol.remove(key) }
-                let body = "data: " + #"{"choices":[{"index":0,"delta":{"reasoning_content":"Preserved thinking output"}}]}"#
-                    + "\n\ndata: " + #"{"choices":[{"index":0,"delta":{"content":"Visible answer"}}]}"#
-                    + "\n\ndata: " + #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"new-owned-call","type":"function","function":{"name":"studio_read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#
-                    + "\n\ndata: [DONE]\n\n"
-                VeniceContractURLProtocol.install(key,body:body)
                 var input = request(); input.provider.nonSecretHeaders["X-Synthetic-Contract-ID"] = key
                 input.model.reasoningMetadata?.supportsReasoningEffort = effortSupported
                 input.model.omitReasoningParameters = omit
+                // The scripted provider echoes the actual advertised name.
+                // A gateway that accepts dotted names does not advertise the
+                // optional underscore compatibility spelling.
+                let wireName = CompatToolNames.wireName("studio.read", for: input.provider)
+                let callEnvelope: [String: Any] = ["choices": [["index": 0,
+                    "delta": ["tool_calls": [["index": 0, "id": "new-owned-call", "type": "function",
+                        "function": ["name": wireName, "arguments": "{}"]]]], "finish_reason": "tool_calls"]]]
+                let callJSON = try JSONSerialization.data(withJSONObject: callEnvelope)
+                let body = "data: " + #"{"choices":[{"index":0,"delta":{"reasoning_content":"Preserved thinking output"}}]}"#
+                    + "\n\ndata: " + #"{"choices":[{"index":0,"delta":{"content":"Visible answer"}}]}"#
+                    + "\n\ndata: " + String(decoding: callJSON, as: UTF8.self)
+                    + "\n\ndata: [DONE]\n\n"
+                VeniceContractURLProtocol.install(key,body:body)
                 var reasoning = "", answer = "", calls:[ToolCall] = [], errors = 0
                 for try await event in OpenAIChatCompletionsAdapter().stream(request:input,credentials:.init(),session:session) {
                     if case .reasoningSummary(let value) = event { reasoning += value.text }
