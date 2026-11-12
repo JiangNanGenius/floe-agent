@@ -188,14 +188,16 @@ final class LinuxShellConcurrentSlotsTests: XCTestCase {
     }
 
     private func engineSession(_ id: String, conversation: UUID?, owner: Bool?,
-                               released: Bool = false) -> AndroidLinuxShellBackend.EngineSession {
+                               released: Bool = false, generation: String? = nil,
+                               projectID: String? = nil) -> AndroidLinuxShellBackend.EngineSession {
         AndroidLinuxShellBackend.EngineSession(
             sessionKey: id, engineSessionID: id, environmentID: "env-shared",
             runID: nil, conversationID: conversation, cursor: 0, bytesRead: 0,
             bytesWritten: 0, state: released ? .terminated : .running,
             leaseReleased: released, cancelled: false, stopReason: nil,
             exitCode: nil, termSig: nil, stopRequested: false,
-            workspaceOwner: owner)
+            runtimeGeneration: generation, workspaceOwner: owner,
+            projectID: projectID)
     }
 
     /// The selection itself is order-independent: a participant record placed
@@ -365,5 +367,120 @@ final class LinuxShellConcurrentSlotsTests: XCTestCase {
         try await open("session-c", role: .run)
         XCTAssertNil(transport.starts.last?.workspaceReuse,
                      "the next open also omits the hint with no proven owner")
+    }
+
+    /// FS01/FS12: the ORIGINAL owner hint is selected from the runtime's own
+    /// live-session facts only. Opening an external viewer/backgrounding Floe
+    /// changes no Activity/foreground input in this backend; the next
+    /// exec.shell still names exactly the same live owner. (This is the
+    /// source-level assertion for the seq573/582 -> seq590 flow; the actual
+    /// viewer launch is owned by the separate device-artifact lane.)
+    func testOriginalOwnerHintSurvivesBackgroundingWithoutForegroundInput() async throws {
+        let (backend, transport) = makeBackend()
+        let workspace = try root()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let conversation = UUID()
+        transport.startReply = { request in
+            if request.hostLeaseRole == .agent {
+                return LinuxShellStartReply(sessionID: "engine-run", environmentID: "env-shared",
+                                            runtimeGeneration: "boot-1", workspaceOwner: false)
+            }
+            return LinuxShellStartReply(sessionID: "engine-a", environmentID: "env-shared",
+                                        runtimeGeneration: "boot-1", workspaceOwner: true)
+        }
+        transport.pollScript = { session, cursor, _ in
+            if session == "engine-run" {
+                return FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "ok\n",
+                                                    state: .terminated, released: true, exit: 0,
+                                                    workspaceStatus: "synced")
+            }
+            return FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "$ ")
+        }
+        _ = try await backend.openSession(ShellOpenRequest(
+            command: "", cwd: ".", rootURL: workspace, environment: [:], columns: 80, rows: 24,
+            gateTimeout: 2, sessionID: "session-a", runID: UUID(), toolEnvironment: nil,
+            conversationID: conversation, prepareLinuxIfMissing: false,
+            leaseRole: .interactive), cancellation: nil)
+        let outcome = await backend.run(ShellRunRequest(
+            command: "echo ok", cwd: ".", rootURL: workspace, environment: [:], stdin: nil,
+            timeout: 2, gateTimeout: 1, maxOutputBytes: 16 * 1024,
+            sessionID: "run-after-viewer", runID: UUID(), toolEnvironment: nil,
+            conversationID: conversation), cancellation: nil)
+        guard case .exited = outcome else {
+            return XCTFail("the post-viewer exec must still be admitted, got \(outcome)")
+        }
+        XCTAssertEqual(transport.starts.last?.workspaceReuse,
+                       LinuxShellWorkspaceReuse.shared(ownerSessionID: "engine-a"),
+                       "the original owner remains the hint; no Activity foreground state is consulted")
+    }
+
+    /// FS01/FS12: a record already handed to reconciliation (failed/timed-out
+    /// wait, stop request or fenced poll) is not a live owner. Naming it is
+    /// exactly how a settled seq590 owner kept poisoning every later
+    /// exec.shell with workspaceOwnerUnavailable.
+    func testReconcilingOrStoppedOwnersAreNeverReuseHints() {
+        let conversation = UUID()
+        let owner = engineSession("engine-owner", conversation: conversation, owner: true,
+                                  generation: "boot-1", projectID: "P-1")
+        XCTAssertEqual(AndroidLinuxShellBackend.observedWorkspaceReuse(
+            conversationID: conversation,
+            sessions: [owner],
+            projectID: "P-1",
+            currentGeneration: "boot-1"),
+            LinuxShellWorkspaceReuse.shared(ownerSessionID: "engine-owner"),
+            "the original live owner is still the one valid hint")
+        XCTAssertNil(AndroidLinuxShellBackend.observedWorkspaceReuse(
+            conversationID: conversation,
+            sessions: [owner],
+            projectID: "P-1",
+            currentGeneration: "boot-1",
+            reconcilingSessionKeys: ["engine-owner"]),
+            "a reconciling record is not proof of a live owner")
+        var stopped = owner
+        stopped.stopRequested = true
+        XCTAssertNil(AndroidLinuxShellBackend.observedWorkspaceReuse(
+            conversationID: conversation,
+            sessions: [stopped],
+            projectID: "P-1",
+            currentGeneration: "boot-1"),
+            "a stop-requested session is never named as the next owner")
+    }
+
+    /// A hint is scoped to the EXACT project and (when known) the CURRENT
+    /// measured runtime process generation. A live session from the same
+    /// conversation but another project or a retired generation must never be
+    /// used: the runtime would reject it or, worse, join the wrong tree.
+    func testReuseHintIsScopedToProjectAndRuntimeGeneration() {
+        let conversation = UUID()
+        let owner = engineSession("engine-owner", conversation: conversation, owner: true,
+                                  generation: "boot-2", projectID: "P-2")
+        XCTAssertNil(AndroidLinuxShellBackend.observedWorkspaceReuse(
+            conversationID: conversation,
+            sessions: [owner],
+            projectID: "P-1",
+            currentGeneration: "boot-2"),
+            "another project's owner is never shared implicitly")
+        XCTAssertNil(AndroidLinuxShellBackend.observedWorkspaceReuse(
+            conversationID: conversation,
+            sessions: [owner],
+            projectID: "P-2",
+            currentGeneration: "boot-3"),
+            "a session admitted by an older runtime process is not live")
+        XCTAssertEqual(AndroidLinuxShellBackend.observedWorkspaceReuse(
+            conversationID: conversation,
+            sessions: [owner],
+            projectID: "P-2",
+            currentGeneration: "boot-2"),
+            LinuxShellWorkspaceReuse.shared(ownerSessionID: "engine-owner"),
+            "the same project and process generation keeps the original owner")
+        // Legacy records without a project/generation stay excluded as soon
+        // as a real scope is requested; they can never widen the hint.
+        let legacy = engineSession("engine-legacy", conversation: conversation, owner: true)
+        XCTAssertNil(AndroidLinuxShellBackend.observedWorkspaceReuse(
+            conversationID: conversation,
+            sessions: [legacy],
+            projectID: "P-2",
+            currentGeneration: "boot-2"),
+            "unscoped legacy metadata is not a proven current owner")
     }
 }

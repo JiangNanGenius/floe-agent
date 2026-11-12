@@ -3,6 +3,7 @@ import Foundation
 /// Capability roles, deliberately independent of historical wire-name prefixes.
 public enum ToolCapabilityGroups {
     public static func group(_ name: String) -> String {
+        if ToolAliasTable.deviceInteractionRenames[name] != nil { return "device" }
         if ["ssh.execute", "ssh.taskStatus", "ssh.cancelTask"].contains(name) { return "executor" }
         if ["ssh.shellOpen", "ssh.shellExchange", "ssh.shellClose"].contains(name)
             || name.hasPrefix("remote.connection.") || name.hasPrefix("bluetooth.serial.") { return "terminal" }

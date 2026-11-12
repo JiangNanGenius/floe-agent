@@ -20,7 +20,7 @@ import FloeWorkspace
 /// broad storage permission, no operator chooser. An accepted launch is not a
 /// completed view, edit or calendar import: `saved`/`completed` stay false and
 /// the model must observe/read back the real target UI under the existing
-/// Phone grants.
+/// Device grants.
 struct G04ArtifactHandoffRouting: Sendable {
     let epoch: UInt64
     let isLive: @Sendable () -> Bool
@@ -41,7 +41,7 @@ struct G04ArtifactHandoffTool: AgentTool {
     }
 
     static let name = "workspace.artifactHandoff"
-    static let toolDescription = "Show a task-owned artifact in an installed, user-approved Android viewer or importer without exporting it through Downloads. Sources: workspace (a task workspace-relative file) or output (this run's published outputID). Actions: targets (list exact installed handlers and MIME; no launch), open (stage a verified read-only copy and launch one explicit permitted target), status, finish (revoke the read grant and remove the App copy), cancel. Supply the same source/path (or outputID) and returned sessionID for later actions. If open returns targetRequired, choose one exact component from targets; never use an Android chooser, app launcher, Downloads export or shell path. When this task is visible, open uses the ordinary foreground route; when Floe is backgrounded (for example a viewer is already foreground), open uses this task's already-armed Phone authorization to start only the typed read-only VIEW. If it returns phoneArmRequired, call device.observe for this task (or ask the user for the missing Settings > Device setup) and retry with the returned sessionID; do not create broader grants. Respect stoppedByUser, humanTakeover, deviceLocked and phonePausedByUser. foregroundRequired means this task is not the visible Floe conversation: bring it forward and retry. launchUnconfirmed means the OS launch outcome is unknown: observe the target, never repeat open; status/finish/cancel are the safe paths. A launched viewer/importer is NOT a completed view, edit or calendar save: observe the real target page, read back the saved item, then finish. Read-only handoff never grants write access to the original artifact."
+    static let toolDescription = "Show a task-owned artifact in an installed, user-approved Android viewer or importer without exporting it through Downloads. Sources: workspace (a task workspace-relative file) or output (this run's published outputID). Actions: targets (list exact installed handlers and MIME; no launch), open (stage a verified read-only copy and launch one explicit permitted target), status, finish (revoke the read grant and remove the App copy), cancel. Supply the same source/path (or outputID) and returned sessionID for later actions. If open returns targetRequired, choose one exact component from targets; never use an Android chooser, app launcher, Downloads export or shell path. When this task is visible, open uses the ordinary foreground route; when Floe is backgrounded (for example a viewer is already foreground), open uses this task's already-armed device authorization to start only the typed read-only VIEW. If it returns deviceArmRequired, call device.observe for this task (or ask the user for the missing Settings > Device setup) and retry with the returned sessionID; do not create broader grants. Respect stoppedByUser, humanTakeover, deviceLocked and devicePausedByUser. foregroundRequired means this task is not the visible Floe conversation: bring it forward and retry. launchUnconfirmed means the OS launch outcome is unknown: observe the target, never repeat open; status/finish/cancel are the safe paths. launchState=accepted means only that the OS accepted the start. viewerState=visible means the target window was actually observed in the foreground, which is still NOT proof that the viewer decoded, played or imported anything; viewerState=notVisible means an ordinary different window was foreground instead; viewerState=unknown means the check could not attribute the page. If viewerState is notVisible, do not repeat open: observe the device, then finish this session before trying another installed target. A launched viewer/importer is NOT a completed view, edit or calendar save: observe the real target page, read back the saved item, then finish. Read-only handoff never grants write access to the original artifact."
     static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["targets","open","status","finish","cancel"]},"source":{"type":"string","enum":["workspace","output"],"description":"workspace: a task workspace-relative file. output: this run's native-sealed outputID."},"path":{"type":"string","maxLength":1024,"description":"Workspace-relative path required for source=workspace. It must not be absolute or contain .., \\ or control characters."},"outputID":{"type":"string","maxLength":64,"description":"64-hex native outputID required for source=output. Get it from this run's output record; it cannot grant access to another run."},"sessionID":{"type":"string","maxLength":36,"description":"Returned handoff session UUID; required for status/finish/cancel and to resume an unlaunched open."},"targetPackage":{"type":"string","maxLength":255,"description":"Optional exact installed package from a targets result. If several permitted handlers exist, choose one explicitly."},"targetComponent":{"type":"string","maxLength":512,"description":"Optional exact flattened package/class from a targets result; same package must match targetPackage when both are supplied."}},"required":["action","source"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles]
     static let isSideEffecting = true
@@ -185,9 +185,17 @@ struct G04ArtifactHandoffTool: AgentTool {
             }
             await lease?.release()
             let value = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any]
+            // `accepted` is a real OS start, but a bounded post-dispatch read
+            // that observed a different ordinary window is NOT delivery. Keep
+            // the structured reply intact and mark the process status
+            // non-success so a caller cannot read "open accepted" as "viewer
+            // displayed"; finished/cancelled sessions and direct launches
+            // (unknown visibility) keep their ordinary status.
+            let ok = value?["ok"] as? Bool == true
+            let viewerNotVisible = (value?["viewerState"] as? String) == "notVisible"
             return ToolExecutionOutput(
                 digesting: String(decoding: reply, as: UTF8.self),
-                exitStatus: value?["ok"] as? Bool == true ? 0 : 1)
+                exitStatus: ok && !viewerNotVisible ? 0 : 1)
         } catch {
             await lease?.release()
             throw error

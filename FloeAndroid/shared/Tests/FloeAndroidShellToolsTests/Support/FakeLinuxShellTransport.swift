@@ -54,6 +54,9 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
     var pollScript: ((_ sessionID: String, _ cursor: UInt64, _ nth: Int) -> LinuxShellPollReply?)?
     var startReply: ((_ request: LinuxShellStartRequest) -> LinuxShellStartReply?)?
     var startError: Error?
+    var pollError: Error?
+    var runtimeStatus: LinuxShellRuntimeStatus?
+    var runtimeStatusError: Error?
     var inputError: Error?
     var releaseAfterCancel = true
 
@@ -115,6 +118,7 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
     private struct PollStep {
         let nth: Int
         let scripted: ((String, UInt64, Int) -> LinuxShellPollReply?)?
+        let error: Error?
         let isReleased: Bool
         let stopRequested: Bool
         let releaseAfterCancel: Bool
@@ -125,10 +129,19 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
         pollCount += 1
         let nth = (perSessionPolls[request.sessionID] ?? 0) + 1
         perSessionPolls[request.sessionID] = nth
-        return PollStep(nth: nth, scripted: pollScript,
+        return PollStep(nth: nth, scripted: pollScript, error: pollError,
                         isReleased: released.contains(request.sessionID),
                         stopRequested: cancels.contains { $0.sessionID == request.sessionID },
                         releaseAfterCancel: releaseAfterCancel)
+    }
+
+    func shellRuntimeStatus() async throws -> LinuxShellRuntimeStatus {
+        lock.lock()
+        let error = runtimeStatusError
+        let status = runtimeStatus
+        lock.unlock()
+        if let error { throw error }
+        return status ?? LinuxShellRuntimeStatus()
     }
 
     func shellPoll(_ request: LinuxShellPollRequest) async throws -> LinuxShellPollReply {
@@ -137,6 +150,7 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
         let scripted = step.scripted
         let isReleased = step.isReleased
         let stopRequested = step.stopRequested
+        if let error = step.error { throw error }
         if let scripted, let reply = scripted(request.sessionID, request.cursor, nth) {
             return reply
         }

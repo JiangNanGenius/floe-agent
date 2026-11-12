@@ -422,6 +422,15 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         guard !hasWorkers, !hasFirstEntryOwnership, !mailbox.hasLiveTickets,
               !C01ManagedServiceDomain.shared.hasLiveServices else { return false }
         guard let components else { return true }
+        // A drain checkpoint may be the only lifecycle observer left for a
+        // retained session whose runtime process was replaced. This requires
+        // the backend's measured boot-token AND successor-recovery proof;
+        // incomplete proof or same-generation work stays owned and keeps the
+        // checkpoint false.
+        _ = await components.backend.retireFencedSessionsIfRuntimeGenerationChanged()
+        // The generation probe itself is a transient READ-ONLY ticket; a
+        // drain checkpoint must not report empty while it is still claimed.
+        if mailbox.hasLiveTickets { return false }
         let owned = await components.backend.ownedSessions()
         let slotBusy = await components.backend.isEngineSlotBusy()
         return owned.isEmpty && !slotBusy
@@ -635,6 +644,18 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// lifecycle drain); idempotent and bounded by the ledger itself.
     @discardableResult
     public func reconcileLedger() async -> Int {
+        // A retained record whose runtime PROCESS generation was replaced can
+        // never be released by the old process. The backend may retire it only
+        // from a measured boot token PLUS runtimeRecoveryProven (the successor
+        // completed its original whole-UID recovery/census) — never a bare
+        // token, timer or status read. The record stays visible as
+        // unreconciled with leaseReleased=false.
+        let backends = withState { ledgerIndex.values.map(\.backend) }
+        var seenBackends = Set<ObjectIdentifier>()
+        for backend in backends {
+            guard seenBackends.insert(ObjectIdentifier(backend)).inserted else { continue }
+            _ = await backend.retireFencedSessionsIfRuntimeGenerationChanged()
+        }
         let snapshot = withState { ledgerIndex }
         var ended = 0
         for (workerID, entry) in snapshot {
@@ -668,12 +689,21 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         Task { [weak self] in
             guard let self else { return }
             defer { self.withState { _ = self.releaseReconcileScheduled.remove(workerID) } }
+            var probedGeneration = false
             while true {
                 let owned = self.withState { () -> LedgerEntry? in
                     guard let entry = self.ledgerIndex[workerID], entry.dispatchSettled else { return nil }
                     return entry
                 }
                 guard let owned else { return }
+                // ONE bounded generation proof per release-reconcile task.
+                // Release a completed owner only from a PROVEN process
+                // replacement with successor-recovery proof; same-generation
+                // or unproven records stay retained.
+                if !probedGeneration {
+                    _ = await owned.backend.retireFencedSessionsIfRuntimeGenerationChanged()
+                    probedGeneration = true
+                }
                 let leaseFree = await owned.backend.ownedSessions(runID: owned.runID).isEmpty
                 let ticketFree = !LinuxShellMailbox.shared.hasLiveTickets(runID: owned.runID)
                 if leaseFree && ticketFree {

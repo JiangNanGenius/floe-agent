@@ -54,6 +54,10 @@
 //   `leaseRole` and validated `workspaceReuse {mode:"shared", ownerSessionID}`
 //   hints (both omitted when nil); its reply carries the optional measured
 //   admission facts (runtimeGeneration/workspaceOwner/prepare*/import*).
+//   `status` is a READ-ONLY generation read (runtimePid/runtimeBootToken/
+//   active): it attaches no lease/grant/permit and starts no workload; the
+//   backend uses ONLY two differing measured boot tokens to retire a local
+//   record whose runtime process is provably gone (never a timer release).
 //   shell.poll replies carry `cancelled` plus the fixed `stopReason` service
 //   code alongside state/leaseReleased/exit fields; `workspaceStatus` may be
 //   `deferred` only for a released owner terminal.
@@ -910,18 +914,23 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         public var inputMillis: Int
         public var resizeMillis: Int
         public var cancelMillis: Int
+        /// READ-ONLY runtime generation read. Short and independent from any
+        /// workload lease; a timeout is an honest unknown, never a release.
+        public var statusMillis: Int
         public init(startMillis: Int = LinuxShellMailboxLimits.preparationBudgetMillis,
                     pollMillis: Int = LinuxShellMailboxLimits.pollBudgetMillis,
                     inputMillis: Int = LinuxShellMailboxLimits.inputBudgetMillis,
                     resizeMillis: Int = LinuxShellMailboxLimits.resizeBudgetMillis,
                     cancelMillis: Int = LinuxShellMailboxLimits.cancelBudgetMillis,
-                    transactionStartMillis: Int = LinuxShellMailboxLimits.transactionPreparationBudgetMillis) {
+                    transactionStartMillis: Int = LinuxShellMailboxLimits.transactionPreparationBudgetMillis,
+                    statusMillis: Int = 2_000) {
             self.startMillis = startMillis
             self.transactionStartMillis = transactionStartMillis
             self.pollMillis = pollMillis
             self.inputMillis = inputMillis
             self.resizeMillis = resizeMillis
             self.cancelMillis = cancelMillis
+            self.statusMillis = statusMillis
         }
     }
 
@@ -1165,13 +1174,34 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         return LinuxShellCancelReply(state: state)
     }
 
+    /// READ-ONLY process-generation facts. No lease, grant, command or
+    /// foreground permit is involved: the engine answers its own measured
+    /// `runtimePid`/`runtimeBootToken` (and `active`, diagnostics only).
+    /// Malformed fields fail closed; absent fields stay nil and can never
+    /// prove a generation change by themselves.
+    public func shellRuntimeStatus() async throws -> LinuxShellRuntimeStatus {
+        let reply = try await mailbox.submit(operation: "status",
+                                             payload: try Self.jsonData([:]),
+                                             timeoutMillis: budgets.statusMillis)
+        let object = try Self.jsonObject(reply)
+        let pid = try Self.optionalNonNegativeInt64(object, key: "runtimePid").map { Int($0) }
+        let token = try Self.optionalBoundedToken(object, key: "runtimeBootToken", maximumBytes: 128)
+        let active = try Self.optionalStrictBool(object, key: "active")
+        // Absent/malformed recovery proof stays nil. Retirement code must
+        // require `== true`; a token change alone is not quiescence proof.
+        let recovery = try Self.optionalStrictBool(object, key: "runtimeRecoveryProven")
+        return LinuxShellRuntimeStatus(runtimePid: pid, runtimeBootToken: token,
+                                       active: active, runtimeRecoveryProven: recovery)
+    }
+
     // MARK: JSON helpers (standard JSON only, bounded frames)
 
     /// Validates the SAME trusted same-workspace hint the runtime `start`
     /// accepts: the closed mode `shared` and, when present, a non-empty
     /// bounded owner identity. A malformed hint is REFUSED here instead of
-    /// being dropped — dropping it would silently start a fresh owner and
-    /// re-import over a live participant's guest tree.
+    /// being dropped, so no shape is silently reinterpreted. The runtime then
+    /// re-resolves its own live owner (or a retained deferred export, or a
+    /// normal fresh owner) and refuses a retained/unknown owner.
     static func workspaceReuseObject(_ reuse: LinuxShellWorkspaceReuse) throws -> [String: Any] {
         guard reuse.mode == "shared" else {
             throw LinuxShellTransportError.payloadTooLarge

@@ -25,7 +25,8 @@ enum ToolDiscovery {
     /// spelling utility. Compat-mode providers see dots as underscores on the
     /// wire, so cursors and exact queries may arrive underscored.
     static func canonicalSpelling(_ spelling: String, among descriptors: [ToolCatalog.Descriptor]) -> String {
-        ToolNameSpelling.canonical(spelling, among: descriptors.map(\.name)) ?? spelling
+        ToolNameSpelling.canonical(ToolAliasTable.canonical(spelling),
+                                   among: descriptors.map(\.name)) ?? spelling
     }
 
     static func wireSpelling(_ canonical: String, wireSafe: Bool) -> String {
@@ -42,7 +43,11 @@ enum ToolDiscovery {
         guard (1...100).contains(args.limit ?? 30) else {
             throw FloeError.validationFailed("Tool list limit must be 1–100")
         }
-        let rows = descriptors.filter { args.group == nil || group($0.name) == args.group }
+        let rows = descriptors.filter {
+            args.group == nil || group($0.name) == args.group
+                || (args.group == "phone"
+                    && ToolAliasTable.deviceInteractionRenames.values.contains($0.name))
+        }
             .sorted { $0.name < $1.name }
         let remaining = rows.filter { args.afterName == nil || $0.name > args.afterName! }
         let page = Array(remaining.prefix(args.limit ?? 30))
@@ -64,7 +69,7 @@ enum ToolDiscovery {
                   description: String($0.toolDescription.prefix(240)),
                   group: group($0.name), schemaLoaded: loaded.contains($0.name),
                   relatedSkillIDs: relatedSkills[$0.name, default: []],
-                  aliases: ToolAliasTable.aliases(of: $0.name))
+                  aliases: ToolAliasTable.discoveryAliases(of: $0.name))
         }, total: rows.count, nextAfterName: remaining.count > page.count
             ? page.last.map { wireSafeNames ? wireSpelling($0.name, wireSafe: true) : $0.name }
             : nil)

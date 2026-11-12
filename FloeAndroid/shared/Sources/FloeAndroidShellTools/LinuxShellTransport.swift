@@ -108,10 +108,13 @@ public enum LinuxShellLeaseRole: String, Sendable, Equatable, Hashable {
 
 /// A validated same-workspace participation hint. Only the trusted platform
 /// adapter produces it, and only after observing a live engine session for the
-/// SAME conversation. The runtime re-proves the named owner (live, same
-/// project) and then mounts the existing guest workspace WITHOUT a second
-/// import/export; an unprovable hint is refused, never silently treated as a
-/// fresh owner (which would swap files under a live terminal).
+/// SAME conversation/project. The runtime treats it as ADVISORY: it re-resolves
+/// the ONE authoritative live owner of the exact request project (or a retained
+/// deferred export) and mounts that guest workspace WITHOUT a second
+/// import/export. A stale hint whose named lease already settled/retired is
+/// never used as proof of ownership; when the project truly has no live or
+/// retained owner, the request becomes a normal fresh-owner import. A retained
+/// unknown owner still refuses, so files are never swapped under a live tree.
 public struct LinuxShellWorkspaceReuse: Sendable, Equatable {
     public var mode: String
     public var ownerSessionID: String?
@@ -270,6 +273,30 @@ public struct LinuxShellStartReply: Sendable, Equatable {
         self.prepareCopiedBytes = prepareCopiedBytes
         self.importMillis = importMillis
         self.importedEntries = importedEntries
+    }
+}
+
+/// Read-only runtime PROCESS generation facts. `runtimeBootToken` is the
+/// engine's measured per-process identity (the same value admitted on
+/// `shell.start`), so a comparison can prove that a retained local session
+/// belongs to a retired runtime process instead of a merely transient
+/// transport failure. This operation starts no workload, needs no lease and
+/// grants nothing.
+public struct LinuxShellRuntimeStatus: Sendable, Equatable {
+    public var runtimePid: Int?
+    public var runtimeBootToken: String?
+    public var active: Bool?
+    /// TRUE only after the successor runtime process completed its ORIGINAL
+    /// whole-UID recovery/census. A different boot token alone proves process
+    /// replacement, NOT that orphan guest processes are gone; ownership may
+    /// be retired only when this proof is also present.
+    public var runtimeRecoveryProven: Bool?
+    public init(runtimePid: Int? = nil, runtimeBootToken: String? = nil,
+                active: Bool? = nil, runtimeRecoveryProven: Bool? = nil) {
+        self.runtimePid = runtimePid
+        self.runtimeBootToken = runtimeBootToken
+        self.active = active
+        self.runtimeRecoveryProven = runtimeRecoveryProven
     }
 }
 
@@ -989,6 +1016,16 @@ public protocol LinuxShellTransport: Sendable {
     func shellInput(_ request: LinuxShellInputRequest) async throws -> LinuxShellInputReply
     func shellResize(_ request: LinuxShellResizeRequest) async throws -> LinuxShellResizeReply
     func shellCancel(_ request: LinuxShellCancelRequest) async throws -> LinuxShellCancelReply
+    /// READ-ONLY process-generation facts. The default refuses so every
+    /// existing transport (including test doubles) keeps its exact prior
+    /// semantics until it deliberately opts in to generation evidence.
+    func shellRuntimeStatus() async throws -> LinuxShellRuntimeStatus
+}
+
+public extension LinuxShellTransport {
+    func shellRuntimeStatus() async throws -> LinuxShellRuntimeStatus {
+        throw LinuxShellTransportError.notBound
+    }
 }
 
 // MARK: - Readiness (explicit injected qualification; default fail closed)

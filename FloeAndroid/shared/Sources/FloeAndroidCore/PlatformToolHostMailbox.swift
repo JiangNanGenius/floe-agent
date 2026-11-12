@@ -128,6 +128,50 @@ public struct PlatformToolOwner: Sendable, Equatable {
     }
 }
 
+/// Canonical device wire codes plus the exact bounded legacy spellings that
+/// older persisted/queued receipts can still carry. Only the platform
+/// mailbox uses this normalization: the Kotlin host now emits `device_*`,
+/// while `phone_*` remains readable so restored work is not silently lost.
+/// It never renames an internal Phone type, module, stored preference or the
+/// closed legacy `phone.observe/act/screenshot` tool aliases.
+enum PlatformDeviceWireCode {
+    private static let exactLegacy: [String: String] = [
+        "phone_presence_required": "device_presence_required",
+        "phone_unlock_required": "device_unlock_required",
+        "phone_unlock_needs_user": "device_unlock_needs_user",
+        "phone_unlock_state_unavailable": "device_unlock_state_unavailable",
+        "phone_paused_by_user": "device_paused_by_user",
+        "phone_stopped_by_user": "device_stopped_by_user",
+        "phone_arm_required": "device_arm_required",
+        "phone_target_required": "device_target_required",
+        "phone_service_not_ready": "device_service_not_ready",
+        "phone_timeout": "device_timeout",
+        "phone_interrupted": "device_interrupted",
+        "phone_finishing": "device_finishing",
+        "phone_busy": "device_busy",
+        "phone_unavailable": "device_unavailable",
+        "phone_pause_state_unavailable": "device_pause_state_unavailable",
+        "phone_observation_required": "device_observation_required",
+    ]
+
+    /// Canonical form of one host failure code. The prefix rule covers the
+    /// closed host-denial family (`phone_launch_target_unavailable`,
+    /// `phone_service_not_connected`, ...); it is used only for replies from
+    /// the device tool host, never for arbitrary model or file content.
+    static func canonical(_ code: String) -> String {
+        if let exact = exactLegacy[code] { return exact }
+        if code.hasPrefix("phone_") {
+            return "device_" + String(code.dropFirst("phone_".count))
+        }
+        return code
+    }
+
+    static func isPausePrompt(_ canonicalCode: String) -> Bool {
+        ["device_presence_required", "device_unlock_required",
+         "device_unlock_needs_user", "device_paused_by_user"].contains(canonicalCode)
+    }
+}
+
 public enum PlatformToolTransportError: Error, Sendable, Equatable {
     case hostUnbound
     case hostClosed
@@ -798,7 +842,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 result = try await submit(entry: entry, argumentsJSON: argumentsJSON,
                                           owner: owner, cancellation: context.cancellation)
             } catch PlatformToolTransportError.remoteFailed(let code, let detail)
-                where ["phone_presence_required", "phone_unlock_required", "phone_unlock_needs_user", "phone_paused_by_user"].contains(code)
+                where PlatformDeviceWireCode.isPausePrompt(PlatformDeviceWireCode.canonical(code))
                     && DeviceToolNames.allInteractionNames.contains(toolName) {
                 // Park through the SAME durable question coordinator, after
                 // the transport ticket has retired. Pause fences observations;
@@ -807,10 +851,11 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 guard let coordinator = UserQuestionHostAPI.shared.current(epoch: boundEpoch),
                       !owner.toolCallID.isEmpty else { throw PlatformToolTransportError.hostFenced }
                 let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
-                let paused = code == "phone_paused_by_user"
+                let canonicalCode = PlatformDeviceWireCode.canonical(code)
+                let paused = canonicalCode == "device_paused_by_user"
                 let pauseID = paused ? detail.flatMap(UUID.init(uuidString:)) : nil
                 if paused && pauseID == nil { throw PlatformToolTransportError.hostFenced }
-                let unlocking = !paused && code != "phone_presence_required"
+                let unlocking = !paused && canonicalCode != "device_presence_required"
                 let question = UserQuestionDraft(id: pauseID.map { "phone-control-paused-\($0.uuidString.lowercased())" } ?? "phone-control-presence",
                     question: paused
                         ? (chinese ? "设备操作已暂停。允许这个任务继续吗？" : "Device control is paused. Allow this task to continue?")
@@ -1482,7 +1527,8 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 "The device tool request or reply exceeded its bounded size")
         case .resultInvalid:
             return .internalError("The device returned an invalid tool result")
-        case .remoteFailed(let code, let detail):
+        case .remoteFailed(let rawCode, let detail):
+            let code = PlatformDeviceWireCode.canonical(rawCode)
             switch code {
             case "cancelled":
                 return .cancelled

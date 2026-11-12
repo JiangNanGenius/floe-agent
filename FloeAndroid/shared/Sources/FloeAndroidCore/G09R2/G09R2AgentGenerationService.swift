@@ -50,6 +50,27 @@
 //    `outcomeUnknown` row; a cancel that raced the commit keeps its real
 //    terminal state.
 //
+// Lifetime-repair authority (Full112 `expired/outcomeUnknown` evidence):
+//  * Image outputs use deterministic job-identified names
+//    (`image-<jobID>-<index>.<ext>`) AND an App-owned producer receipt
+//    recorded from the REAL provider-returned bytes BEFORE workspace
+//    publication (job/request/owner binding, count, MIME, size, SHA-256).
+//    Bytes written before a process/worker death are recoverable; a refresh/
+//    relaunch adopts them ONLY when every workspace byte matches that durable
+//    receipt, with the FULL requested batch, in the ORIGINAL pinned
+//    workspace. A filename, a valid PNG or a self-computed hash is never
+//    delivery authority. No provider call is made; a partial batch, a
+//    migrated/revoked owner, a missing/tampered receipt or an already-
+//    terminal row is never claimed.
+//  * A provider result that arrives before a local worker stop is still
+//    written and receipted: cancelling a local waiter is not proof the
+//    provider failed, and a paid result is never discarded.
+//  * A replayed tool call (same submitting-operation identity AND exact
+//    request) attaches to its ORIGINAL durable row even after that row is
+//    terminal. A lost reply or a replayed unknown/finished call therefore
+//    never triggers a second paid submission; a distinct request still
+//    creates a new job.
+//
 // Contract fidelity to the immutable iOS donors
 // (36f63bf400dfaa3a127259eac006b38d72516390:
 //  FloeApp/Files/RemoteImageTools.swift, FloeApp/Conversations/RemoteVideoTools.swift):
@@ -93,6 +114,84 @@ public struct G09R2AgentGenerationArtifact: Codable, Sendable, Equatable {
     }
 }
 
+/// One image in the App-owned producer receipt: the exact output identity
+/// the provider bytes had BEFORE any workspace publication. This record is
+/// persisted in the durable job row (not the model-writable workspace) and is
+/// the only authority a later recovery may verify workspace bytes against.
+public struct G09R2AgentGenerationProducerImage: Codable, Sendable, Equatable {
+    public var index: Int
+    public var relativePath: String
+    public var mimeType: String
+    public var byteCount: Int64
+    public var sha256: String
+
+    public init(index: Int, relativePath: String, mimeType: String,
+                byteCount: Int64, sha256: String) {
+        self.index = index
+        self.relativePath = relativePath
+        self.mimeType = mimeType
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+}
+
+/// App-owned proof that the provider returned this exact image batch for this
+/// exact durable request, recorded from the REAL returned bytes BEFORE any
+/// workspace publication. `requestDigest` binds the receipt to the immutable
+/// request identity (prompt/route/options/count/reference); the job/owner
+/// fields bind it to the durable row. A recovery may adopt a workspace file
+/// ONLY when its bytes match this receipt exactly; a filename, a valid PNG or
+/// a self-computed hash is never sufficient.
+public struct G09R2AgentGenerationProducerReceipt: Codable, Sendable, Equatable {
+    public var schemaVersion: Int
+    public var jobID: UUID
+    public var ownerKind: String
+    public var ownerID: UUID
+    public var requestDigest: String
+    public var providerID: UUID
+    public var modelID: UUID
+    public var remoteModelID: String
+    public var count: Int
+    public var images: [G09R2AgentGenerationProducerImage]
+    public var recordedAt: Date
+
+    public init(schemaVersion: Int = 1, jobID: UUID, ownerKind: String,
+                ownerID: UUID, requestDigest: String, providerID: UUID,
+                modelID: UUID, remoteModelID: String, count: Int,
+                images: [G09R2AgentGenerationProducerImage],
+                recordedAt: Date = Date()) {
+        self.schemaVersion = schemaVersion
+        self.jobID = jobID
+        self.ownerKind = ownerKind
+        self.ownerID = ownerID
+        self.requestDigest = requestDigest
+        self.providerID = providerID
+        self.modelID = modelID
+        self.remoteModelID = remoteModelID
+        self.count = count
+        self.images = images
+        self.recordedAt = recordedAt
+    }
+
+    /// Exact producer proof equality, excluding the recording timestamp (a
+    /// JSON Date round-trip must never be the reason a durable receipt is
+    /// considered missing).
+    func bindsSameProducerProof(
+        as other: G09R2AgentGenerationProducerReceipt
+    ) -> Bool {
+        schemaVersion == other.schemaVersion
+            && jobID == other.jobID
+            && ownerKind == other.ownerKind
+            && ownerID == other.ownerID
+            && requestDigest == other.requestDigest
+            && providerID == other.providerID
+            && modelID == other.modelID
+            && remoteModelID == other.remoteModelID
+            && count == other.count
+            && images == other.images
+    }
+}
+
 /// Exact request identity persisted BEFORE any provider call. Carried in the
 /// original `media_generation_jobs.request_json`; never contains secrets.
 public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
@@ -121,6 +220,10 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
     /// revocation fences the delivery instead of following the current root.
     public var targetWorkspaceID: UUID?
     public var targetWorkspaceRootPath: String?
+    /// App-owned producer receipt recorded from the REAL provider-returned
+    /// bytes BEFORE workspace publication. Recovery verifies workspace bytes
+    /// against this trusted record; it is never derived from the workspace.
+    public var producerReceipt: G09R2AgentGenerationProducerReceipt?
     /// Typed per-artifact delivery receipt (worker-set after the provider
     /// call). The authoritative delivery record for one OR many outputs.
     public var artifacts: [G09R2AgentGenerationArtifact]?
@@ -160,6 +263,7 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
         self.referenceRelativePath = referenceRelativePath
         self.targetWorkspaceID = targetWorkspaceID
         self.targetWorkspaceRootPath = targetWorkspaceRootPath
+        self.producerReceipt = nil
     }
 
     /// The durable replay identity: everything except the local delivery
@@ -175,7 +279,91 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
         right.deliveredByteCount = nil
         left.deliveredSHA256 = nil
         right.deliveredSHA256 = nil
+        left.producerReceipt = nil
+        right.producerReceipt = nil
         return left == right
+    }
+
+    /// The exact request identity used by the replay pre-check. The pinned
+    /// delivery target is deliberately excluded: a task/project move must not
+    /// turn a replayed tool call into a SECOND paid submission. The old
+    /// job's own delivery fence still decides where (or whether) its result
+    /// may be published.
+    func requestIdentityEquals(_ other: G09R2AgentGenerationPayload) -> Bool {
+        var left = self
+        var right = other
+        left.targetWorkspaceID = nil
+        right.targetWorkspaceID = nil
+        left.targetWorkspaceRootPath = nil
+        right.targetWorkspaceRootPath = nil
+        return left.replayIdentityEquals(right)
+    }
+
+    /// Deterministic digest of the immutable request identity, used by the
+    /// App-owned producer receipt. Delivery target and local delivery fields
+    /// are excluded exactly like `requestIdentityEquals`.
+    func requestDigest() -> String {
+        var copy = self
+        copy.targetWorkspaceID = nil
+        copy.targetWorkspaceRootPath = nil
+        copy.artifacts = nil
+        copy.workspaceRelativePath = nil
+        copy.deliveredByteCount = nil
+        copy.deliveredSHA256 = nil
+        copy.producerReceipt = nil
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(copy) else { return "" }
+        return FloeDigest.sha256Hex(data)
+    }
+
+    /// Whether this stored payload is the SAME image request as the new tool
+    /// arguments. Used before route resolution so a replayed call attaches to
+    /// the existing durable row even if the route was disabled/removed after
+    /// the original submission.
+    func matchesImageRequest(
+        prompt: String, selection: String?, legacyModelID: UUID?, count: Int,
+        size: String?, aspectRatio: String?, resolution: String?, quality: String?,
+        referenceRelativePath: String?
+    ) -> Bool {
+        guard self.prompt == prompt, self.count == count, self.size == size,
+              self.aspectRatio == aspectRatio, self.resolution == resolution,
+              self.quality == quality,
+              self.referenceRelativePath == referenceRelativePath else {
+            return false
+        }
+        if let legacyModelID {
+            return routeID == legacyModelID.uuidString.lowercased()
+        }
+        if let selection, !selection.isEmpty {
+            return remoteModelID.caseInsensitiveCompare(selection) == .orderedSame
+        }
+        return true
+    }
+
+    /// Whether this stored payload is the SAME video request as the new tool
+    /// arguments (see `matchesImageRequest`).
+    func matchesVideoRequest(
+        prompt: String, selection: String?, legacyModelID: UUID?,
+        aspectRatio: String?, resolution: String?, durationSeconds: Int?,
+        includeAudio: Bool?, watermark: Bool?, seed: Int?,
+        referenceRelativePath: String?
+    ) -> Bool {
+        guard self.prompt == prompt, self.aspectRatio == aspectRatio,
+              self.resolution == resolution,
+              self.durationSeconds == durationSeconds,
+              self.includeAudio == includeAudio, self.watermark == watermark,
+              self.seed == seed,
+              self.referenceRelativePath == referenceRelativePath else {
+            return false
+        }
+        if let legacyModelID {
+            return routeID == legacyModelID.uuidString.lowercased()
+        }
+        if let selection, !selection.isEmpty {
+            return remoteModelID.caseInsensitiveCompare(selection) == .orderedSame
+        }
+        return true
     }
 }
 
@@ -241,6 +429,11 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
 
     internal let platform: G09R2GenerationPlatform
     private let afterImageBytesWritten: (@Sendable () async -> Void)?
+    /// Deterministic crash seam for the post-write/pre-CAS recovery tests.
+    /// Production initialization leaves it false; when true the worker stops
+    /// after verified bytes are durable WITHOUT settling the row, exactly the
+    /// state a process death leaves behind.
+    private let abandonAfterImageWrite: Bool
     internal let environmentProvider: @Sendable (UInt64) async -> G09R2GenerationEnvironment?
 
     public convenience init() {
@@ -258,10 +451,12 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
 
     init(platform: G09R2GenerationPlatform,
          environmentProvider: @escaping @Sendable (UInt64) async -> G09R2GenerationEnvironment?,
-         afterImageBytesWritten: (@Sendable () async -> Void)? = nil) {
+         afterImageBytesWritten: (@Sendable () async -> Void)? = nil,
+         abandonAfterImageWrite: Bool = false) {
         self.platform = platform
         self.environmentProvider = environmentProvider
         self.afterImageBytesWritten = afterImageBytesWritten
+        self.abandonAfterImageWrite = abandonAfterImageWrite
     }
 
     // MARK: - Operation identity
@@ -363,6 +558,28 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         referenceRelativePath: String?
     ) async throws -> G09R2AgentSubmissionSummary {
         let env = try await requireEnvironment(epoch: epoch)
+        let store = MediaGenerationJobStore(database: env.database)
+        let owner = MediaJobOwner.conversation(conversationID)
+        // Replay boundary BEFORE route resolution and target pinning: a
+        // replayed tool call (same runID+toolCallID, or the same deterministic
+        // request digest) must attach to its ORIGINAL durable row even when
+        // that row is terminal, the route was later disabled, or the task
+        // workspace moved. Never a second paid submission; the stored row's
+        // own delivery fence still governs where its result may be published.
+        if let existing = try await replayOwnedJob(
+            store: store, owner: owner, idempotencyKey: idempotencyKey,
+            kind: .image,
+            matches: { payload in
+                payload.matchesImageRequest(
+                    prompt: prompt, selection: selection,
+                    legacyModelID: legacyModelID, count: count, size: size,
+                    aspectRatio: aspectRatio, resolution: resolution,
+                    quality: quality,
+                    referenceRelativePath: referenceRelativePath)
+            }) {
+            return await submissionSummary(
+                owned: existing, deduplicated: true, env: env)
+        }
         let (route, provider, model) = try await resolveRoute(
             epoch: epoch, kind: .image, selection: selection,
             legacyModelID: legacyModelID)
@@ -409,9 +626,17 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             credentialReference: provider.secretRef,
             sourceNodeIDs: [], resultNodeID: UUID(),
             requestJSON: try encoder().encode(payload))
-        let creation = try await MediaGenerationJobStore(database: env.database)
-            .createJob(job, owner: .conversation(conversationID),
-                       originRunID: runID, idempotencyKey: idempotencyKey)
+        let creation: MediaJobCreation
+        do {
+            creation = try await store.createJob(
+                job, owner: owner, originRunID: runID,
+                idempotencyKey: idempotencyKey)
+        } catch MediaGenerationJobStoreError.idempotencyConflict {
+            // The same submitting operation identity was reused for a
+            // DIFFERENT request. Refuse; never attach wrong data and never
+            // create a second paying job.
+            throw FloeError.validationFailed("idempotencyConflict")
+        }
         if !creation.deduplicated {
             // The SAME bounded shared worker table as the UI flow: a full or
             // stopping table refuses; the durable row fails honestly instead
@@ -424,11 +649,10 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                     token: token, epoch: epoch, jobID: creation.job.id,
                     referenceData: referenceData)
             }) else {
-                _ = try? await MediaGenerationJobStore(database: env.database)
-                    .transition(id: creation.job.id, to: .failed) {
-                        $0.lastError = "generationQueueFull"
-                        $0.nextPollAt = nil
-                    }
+                _ = try? await store.transition(id: creation.job.id, to: .failed) {
+                    $0.lastError = "generationQueueFull"
+                    $0.nextPollAt = nil
+                }
                 throw FloeError.invalidConfiguration("generationQueueFull")
             }
         }
@@ -492,51 +716,71 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                     selection: selection, count: payload.count,
                     modelRemoteID: model.remoteModelID),
                 provider: provider, credentials: credentials)
-            try throwIfCancelled(token: token)
             guard result.images.count == payload.count else {
                 throw FloeError.validationFailed("imageCountMismatch")
             }
-            // Deliver ONLY into the ORIGINAL validated target pinned at
-            // submission. A task/project move during the provider call fences
-            // the delivery — never a current-root or guessed-directory commit.
-            let deliveryRoot = try await resolvePinnedWorkspaceRoot(
-                env: env, payload: payload, conversationID: owned.owner.id)
-            try throwIfCancelled(token: token)
-            let artifacts = try writeGeneratedImages(
-                result.images, workspaceRootURL: deliveryRoot)
+            // The provider ALREADY returned the paid result. Record the
+            // App-owned producer proof from THOSE REAL BYTES before any
+            // workspace publication; a later recovery may only verify
+            // workspace files against this durable receipt (filename or a
+            // self-computed workspace hash is not trusted). Then write and
+            // commit in the non-cancelled hop; a local stop after the
+            // provider returned must not discard a paid result. The pinned
+            // ORIGINAL target is still revalidated; a task/project move
+            // fences delivery instead of choosing a new root.
+            let prepared = try prepareImageBatch(result.images, jobID: jobID)
+            let receipt = G09R2AgentGenerationProducerReceipt(
+                jobID: jobID,
+                ownerKind: owned.owner.kind.rawValue,
+                ownerID: owned.owner.id,
+                requestDigest: payload.requestDigest(),
+                providerID: payload.providerID,
+                modelID: payload.modelID,
+                remoteModelID: payload.remoteModelID,
+                count: payload.count,
+                images: prepared.map { image in
+                    G09R2AgentGenerationProducerImage(
+                        index: image.index,
+                        relativePath: image.relativePath,
+                        mimeType: image.mimeType,
+                        byteCount: image.byteCount,
+                        sha256: image.sha256)
+                })
+            var payloadWithReceipt = payload
+            payloadWithReceipt.producerReceipt = receipt
+            let receiptPayload = payloadWithReceipt
+            try await persistProducerReceipt(
+                store: store, jobID: jobID,
+                payload: receiptPayload, receipt: receipt)
+            let conversationID = owned.owner.id
+            let artifacts = try await finalizeDespiteCancellation { [self] in
+                let deliveryRoot = try await resolvePinnedWorkspaceRoot(
+                    env: env, payload: receiptPayload,
+                    conversationID: conversationID)
+                return try writePreparedImages(
+                    prepared, workspaceRootURL: deliveryRoot)
+            }
             // Internal fixture seam after durable bytes, before the receipt CAS.
             // Production initialization leaves it nil.
             await afterImageBytesWritten?()
+            if abandonAfterImageWrite {
+                // Test-only faithful crash window: the verified files and the
+                // App-owned producer receipt are durable, the row is still
+                // non-terminal. A later refresh must adopt them.
+                return
+            }
             // The verified bytes are already durable in the pinned workspace;
             // the receipt commit is the publish boundary. A local stop that
             // arrived after the write must NOT strand real delivered bytes
             // behind an `outcomeUnknown` row with no artifact (the poll
             // worker's ready commit uses the same CAS discipline): commit the
             // receipt even when the local stop already cancelled this worker
-            // task (see `finalizeDespiteCancellation`), and let a cancel that
-            // raced the commit keep its real terminal state via the store's
-            // transition guard.
+            // task, and let a cancel that raced the commit keep its real
+            // terminal state via the store's transition guard.
             do {
-                try await finalizeDespiteCancellation { [store, payload, artifacts] in
-                    try await store.transition(id: jobID, to: .ready) {
-                        var updated = payload
-                        updated.artifacts = artifacts
-                        // The legacy scalar view is honest: populated exactly for a
-                        // single-artifact result, nil for a multi-image batch.
-                        if artifacts.count == 1, let first = artifacts.first {
-                            updated.workspaceRelativePath = first.relativePath
-                            updated.deliveredByteCount = first.byteCount
-                            updated.deliveredSHA256 = first.sha256
-                        } else {
-                            updated.workspaceRelativePath = nil
-                            updated.deliveredByteCount = nil
-                            updated.deliveredSHA256 = nil
-                        }
-                        $0.requestJSON = (try? self.encoder().encode(updated)) ?? $0.requestJSON
-                        $0.lastError = nil
-                        $0.nextPollAt = nil
-                    }
-                }
+                try await commitImageReceipt(
+                    store: store, jobID: jobID, payload: receiptPayload,
+                    artifacts: artifacts)
             } catch MediaGenerationJobStoreError.invalidStateTransition {
                 // A cancel raced the receipt commit and already settled the
                 // real terminal state; keep it (ready-vs-cancel truth) and
@@ -614,11 +858,65 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         referenceRelativePath: String?
     ) async throws -> G09R2AgentSubmissionSummary {
         let env = try await requireEnvironment(epoch: epoch)
+        let store = MediaGenerationJobStore(database: env.database)
+        let owner = MediaJobOwner.conversation(conversationID)
+        // First replay check BEFORE route resolution: an exact replayed call
+        // still attaches when the original route was disabled/removed after
+        // submission. The post-validation check below also covers provider
+        // defaults/normalisation.
+        if let existing = try await replayOwnedJob(
+            store: store, owner: owner, idempotencyKey: idempotencyKey,
+            kind: .video,
+            matches: { payload in
+                payload.matchesVideoRequest(
+                    prompt: prompt, selection: selection,
+                    legacyModelID: legacyModelID,
+                    aspectRatio: aspectRatio, resolution: resolution,
+                    durationSeconds: durationSeconds,
+                    includeAudio: includeAudio, watermark: watermark,
+                    seed: seed, referenceRelativePath: referenceRelativePath)
+            }) {
+            return await submissionSummary(
+                owned: existing, deduplicated: true, env: env)
+        }
         let (route, provider, model) = try await resolveRoute(
             epoch: epoch, kind: .video, selection: selection,
             legacyModelID: legacyModelID)
         guard let adapter = platform.videoAdapter(provider) else {
             throw FloeError.invalidConfiguration("adapterUnavailable")
+        }
+        // Validate options against the REAL route contract from the SAME
+        // source the catalog uses. The catalog DTO is a lossy projection
+        // (its `codecs` list is always empty), so the contract is rebuilt
+        // here from the model/provider pair, never guessed back from the DTO.
+        let contract = VideoModelRegistry.contract(model: model, provider: provider)
+        let options = try VideoRequestValidator.validate(
+            VideoGenerationOptions(
+                aspectRatio: aspectRatio, resolution: resolution,
+                durationSeconds: durationSeconds, includeAudio: includeAudio,
+                seed: seed, watermark: watermark),
+            contract: contract, modelRemoteID: model.remoteModelID)
+        // Replay boundary BEFORE target pinning and job insertion: a replayed
+        // tool call attaches to its ORIGINAL durable row even when terminal,
+        // so a lost reply or an already-settled job never pays twice. The
+        // validated options are compared because the request validator may
+        // materialise provider defaults.
+        if let existing = try await replayOwnedJob(
+            store: store, owner: owner, idempotencyKey: idempotencyKey,
+            kind: .video,
+            matches: { payload in
+                payload.matchesVideoRequest(
+                    prompt: prompt, selection: selection,
+                    legacyModelID: legacyModelID,
+                    aspectRatio: options.aspectRatio,
+                    resolution: options.resolution,
+                    durationSeconds: options.durationSeconds,
+                    includeAudio: options.includeAudio,
+                    watermark: options.watermark, seed: options.seed,
+                    referenceRelativePath: referenceRelativePath)
+            }) {
+            return await submissionSummary(
+                owned: existing, deduplicated: true, env: env)
         }
         var referenceURLs: [URL] = []
         if let referenceRelativePath {
@@ -634,17 +932,6 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                 requireImageFacts: false)
             referenceURLs = [try VideoReferenceImagePolicy.inlineDataURL(data: data)]
         }
-        // Validate options against the REAL route contract from the SAME
-        // source the catalog uses. The catalog DTO is a lossy projection
-        // (its `codecs` list is always empty), so the contract is rebuilt
-        // here from the model/provider pair, never guessed back from the DTO.
-        let contract = VideoModelRegistry.contract(model: model, provider: provider)
-        let options = try VideoRequestValidator.validate(
-            VideoGenerationOptions(
-                aspectRatio: aspectRatio, resolution: resolution,
-                durationSeconds: durationSeconds, includeAudio: includeAudio,
-                seed: seed, watermark: watermark),
-            contract: contract, modelRemoteID: model.remoteModelID)
         // Pin the ORIGINAL validated delivery target BEFORE any provider call:
         // the durable conversation→workspace binding resolved through the
         // original store, cross-checked against the submitting context's root.
@@ -666,9 +953,14 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             credentialReference: provider.secretRef,
             sourceNodeIDs: [], resultNodeID: UUID(),
             requestJSON: try encoder().encode(payload))
-        let creation = try await MediaGenerationJobStore(database: env.database)
-            .createJob(job, owner: .conversation(conversationID),
-                       originRunID: runID, idempotencyKey: idempotencyKey)
+        let creation: MediaJobCreation
+        do {
+            creation = try await store.createJob(
+                job, owner: owner, originRunID: runID,
+                idempotencyKey: idempotencyKey)
+        } catch MediaGenerationJobStoreError.idempotencyConflict {
+            throw FloeError.validationFailed("idempotencyConflict")
+        }
         if !creation.deduplicated {
             guard startWorker(epoch: epoch,
                               jobID: creation.job.id.uuidString.lowercased(),
@@ -678,11 +970,10 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                     token: token, epoch: epoch, jobID: creation.job.id,
                     referenceURLs: referenceURLs)
             }) else {
-                _ = try? await MediaGenerationJobStore(database: env.database)
-                    .transition(id: creation.job.id, to: .failed) {
-                        $0.lastError = "generationQueueFull"
-                        $0.nextPollAt = nil
-                    }
+                _ = try? await store.transition(id: creation.job.id, to: .failed) {
+                    $0.lastError = "generationQueueFull"
+                    $0.nextPollAt = nil
+                }
                 throw FloeError.invalidConfiguration("generationQueueFull")
             }
         }
@@ -814,14 +1105,15 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         }
     }
 
-    /// Runs one bounded, awaited durable-write operation outside the current
+    /// Runs one bounded, awaited must-complete operation outside the current
     /// task's cancellation. Local worker cancellation must never silently
-    /// drop a must-persist settlement — an accepted provider handle, the
-    /// verified delivered bytes' receipt, or an honest terminal state: GRDB
-    /// refuses writes from a cancelled task (`SerializedDatabase.execute`
-    /// checks task cancellation before the block). The hop is awaited before
-    /// returning, so no untracked work survives the caller, and the store's
-    /// write transaction keeps its exact CAS/owner semantics.
+    /// drop a paid result or a must-persist settlement — an accepted provider
+    /// handle, verified delivered bytes and their receipt, or an honest
+    /// terminal state: GRDB refuses cancelled readers/writers
+    /// (`SerializedDatabase` checks task cancellation before the block). The
+    /// hop is awaited before returning, so no untracked work survives the
+    /// caller, and the store's write transaction keeps its exact CAS/owner
+    /// semantics.
     private func finalizeDespiteCancellation<T: Sendable>(
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
@@ -1031,7 +1323,23 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         }
         var current = try await requireOwnedJob(
             store: store, jobID: jobID, conversationID: conversationID)
-        if current.job.providerTaskID == nil,
+        // Background/foreground or relaunch reconciliation: a one-shot image
+        // whose worker died AFTER the verified bytes reached the pinned
+        // workspace can be adopted from its deterministic job-identified
+        // files — no provider call, no resubmission. This runs BEFORE the
+        // stale classification so real delivered bytes are never expired.
+        if refresh, current.job.mediaKind == .image,
+           current.job.providerTaskID == nil,
+           !current.job.state.isTerminal,
+           !engine.hasActiveWorker(jobID: jobID.uuidString.lowercased()),
+           let payload = try? decodePayload(current.job),
+           await reconcileImageDelivery(
+                env: env, conversationID: conversationID,
+                owner: current.owner, jobID: jobID, payload: payload) {
+            current = try await requireOwnedJob(
+                store: store, jobID: jobID, conversationID: conversationID)
+        }
+        if refresh, current.job.providerTaskID == nil,
            current.job.state == .preparing || current.job.state == .submitted,
            !engine.hasActiveWorker(jobID: jobID.uuidString.lowercased()),
            Date().timeIntervalSince(current.job.createdAt)
@@ -1120,8 +1428,10 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     /// non-terminal video jobs that lost their process. Called from the App's
     /// conversation run launch pump (the same relaunch moment that re-attaches
     /// a task to the runtime), so retained video jobs keep polling after a
-    /// process restart. Image jobs are single-shot: a preparing/submitted row
-    /// without a live worker is classified unknown, never resubmitted.
+    /// process restart. Image jobs are single-shot: a non-terminal row is
+    /// first checked for a FULL verified deterministic output batch in its
+    /// ORIGINAL pinned workspace and adopted; only a handle-less row without
+    /// recoverable verified outputs is classified unknown — never resubmitted.
     ///
     /// Freshness gate (device repair): the launch pump is a fire-and-forget
     /// task that can be scheduled while a brand-new submission is between its
@@ -1142,6 +1452,19 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         for job in jobs where !job.state.isTerminal {
             let key = job.id.uuidString.lowercased()
             guard !engine.hasActiveWorker(jobID: key) else { continue }
+            // A lost one-shot image worker may have died after committing
+            // verified bytes but before the receipt CAS. Adopt only the
+            // deterministic files in the ORIGINAL pinned workspace; a still
+            // incomplete batch is never claimed as delivered.
+            if job.mediaKind == .image, job.providerTaskID == nil,
+               job.state == .preparing || job.state == .submitted,
+               let payload = try? decodePayload(job),
+               await reconcileImageDelivery(
+                    env: env, conversationID: conversationID,
+                    owner: .conversation(conversationID), jobID: job.id,
+                    payload: payload) {
+                continue
+            }
             if job.mediaKind == .video, job.providerTaskID != nil {
                 // Same bounded shared table; a full/stopping table refuses and
                 // the next refresh/resume retries against the durable row.
@@ -1188,6 +1511,51 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     }
 
     // MARK: - Private helpers (shared G09R2 execution)
+
+    /// The exact durable job a replayed tool call already owns. The key is
+    /// the submitting operation identity (`runID:toolCallID`, or the
+    /// deterministic digest of the exact request), so a replay after a lost
+    /// reply, a crash or a terminal settlement attaches to the ORIGINAL row
+    /// instead of paying for a second provider request. Ownership and request
+    /// identity are both re-checked; a mismatched key never attaches.
+    private func replayOwnedJob(
+        store: MediaGenerationJobStore,
+        owner: MediaJobOwner,
+        idempotencyKey: String,
+        kind: MediaKind,
+        matches: (G09R2AgentGenerationPayload) -> Bool
+    ) async throws -> OwnedMediaGenerationJob? {
+        guard let existing = try await store.ownedJob(
+                idempotencyKey: idempotencyKey),
+              existing.owner == owner,
+              existing.job.mediaKind == kind,
+              let payload = try? decodePayload(existing.job),
+              matches(payload) else {
+            return nil
+        }
+        return existing
+    }
+
+    /// Replayed-request summary over the EXISTING durable row (including a
+    /// terminal one). It reports the stored truth; it never claims a new
+    /// submission or a delivered artifact.
+    private func submissionSummary(
+        owned: OwnedMediaGenerationJob, deduplicated: Bool,
+        env: G09R2GenerationEnvironment
+    ) async -> G09R2AgentSubmissionSummary {
+        let payload = try? decodePayload(owned.job)
+        let providers = (try? await env.configuration.providers()) ?? []
+        let provider = providers.first { $0.id == owned.job.providerID }
+        let providerName = provider?.displayName
+            ?? provider?.kind.rawValue ?? "provider"
+        return G09R2AgentSubmissionSummary(
+            jobID: owned.job.id, state: owned.job.state,
+            providerTaskID: owned.job.providerTaskID,
+            providerName: providerName,
+            remoteModelID: payload?.remoteModelID ?? "",
+            deduplicated: deduplicated,
+            estimatedCompletionAt: owned.job.estimatedCompletionAt)
+    }
 
     /// Registers work on the ONE bounded shared generation worker table. The
     /// boolean is returned to the caller: a stopping/full table never falls
@@ -1263,15 +1631,28 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         return owned
     }
 
-    private func writeGeneratedImages(
-        _ images: [Data], workspaceRootURL: URL
-    ) throws -> [G09R2AgentGenerationArtifact] {
-        let directory = workspaceRootURL.appendingPathComponent("GeneratedMedia", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    /// One fully validated provider image, still in memory and not yet
+    /// published. The producer receipt is built from exactly these values.
+    private struct PreparedImage: Sendable {
+        var index: Int
+        var data: Data
+        var relativePath: String
+        var mimeType: String
+        var byteCount: Int64
+        var sha256: String
+    }
+
+    /// Validates and names the provider-returned image batch BEFORE any
+    /// workspace publication. The names are deterministic and
+    /// job-identifiable (`GeneratedMedia/image-<jobID>-<index>.<ext>`), but
+    /// the name alone is never delivery authority: the App-owned producer
+    /// receipt below carries the exact MIME/count/size/hash of these bytes.
+    private func prepareImageBatch(
+        _ images: [Data], jobID: UUID
+    ) throws -> [PreparedImage] {
         var total: Int64 = 0
-        let written = try images.enumerated().map { index, data -> G09R2AgentGenerationArtifact in
-            // Enforce the provider-output bounds BEFORE committing bytes; the
-            // real format extension comes from sniffed facts, never a guess.
+        let jobKey = jobID.uuidString.lowercased()
+        return try images.enumerated().map { index, data in
             guard Int64(data.count) <= G09R2MediaProbe.maximumGeneratedImageBytes,
                   let facts = G09R2MediaProbe.imageFacts(data) else {
                 throw FloeError.validationFailed("generatedImageInvalid")
@@ -1280,18 +1661,252 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             guard total <= G09R2MediaProbe.maximumGeneratedImageBatchBytes else {
                 throw FloeError.validationFailed("generatedImageBatchTooLarge")
             }
-            let name = "image-\(UUID().uuidString.lowercased())-\(index + 1).\(G09R2MediaProbe.imageExtension(mimeType: facts.mimeType))"
-            let url = directory.appendingPathComponent(name)
-            try data.write(to: url, options: [])
-            try G09R2CandidateStore.flushFile(url)
-            return G09R2AgentGenerationArtifact(
-                relativePath: "GeneratedMedia/\(name)",
+            let ext = G09R2MediaProbe.imageExtension(mimeType: facts.mimeType)
+            return PreparedImage(
+                index: index + 1, data: data,
+                relativePath: "GeneratedMedia/image-\(jobKey)-\(index + 1).\(ext)",
                 mimeType: facts.mimeType,
                 byteCount: Int64(data.count),
                 sha256: FloeDigest.sha256Hex(data))
         }
-        try G09R2CandidateStore.flushDirectory(directory)
+    }
+
+    /// Publishes the prepared batch into the pinned task workspace. The
+    /// previous verified file is kept until its atomic replacement is in
+    /// place, and the committed file is read back against the prepared
+    /// digest before it can be receipted.
+    private func writePreparedImages(
+        _ images: [PreparedImage], workspaceRootURL: URL
+    ) throws -> [G09R2AgentGenerationArtifact] {
+        let resolvedRoot = workspaceRootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let directory = resolvedRoot.appendingPathComponent(
+            "GeneratedMedia", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        let resolvedDirectory = directory.standardizedFileURL.resolvingSymlinksInPath()
+        guard resolvedDirectory.path.hasPrefix(resolvedRoot.path + "/") else {
+            throw FloeError.invalidConfiguration("workspaceUnavailable")
+        }
+        var written: [G09R2AgentGenerationArtifact] = []
+        for image in images.sorted(by: { $0.index < $1.index }) {
+            let name = URL(fileURLWithPath: image.relativePath).lastPathComponent
+            let base = (name as NSString).deletingPathExtension
+            let url = resolvedDirectory.appendingPathComponent(name)
+            let temporary = resolvedDirectory.appendingPathComponent(
+                ".\(base).\(UUID().uuidString.lowercased()).part")
+            do {
+                try image.data.write(to: temporary, options: [])
+                try G09R2CandidateStore.flushFile(temporary)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    _ = try FileManager.default.replaceItemAt(
+                        url, withItemAt: temporary)
+                } else {
+                    try FileManager.default.moveItem(at: temporary, to: url)
+                }
+                try G09R2CandidateStore.flushFile(url)
+                guard G09R2CandidateStore.verifyCandidateFile(
+                    url, byteCount: image.byteCount, sha256: image.sha256) else {
+                    throw FloeError.validationFailed("generatedImageWriteMismatch")
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: temporary)
+                throw error
+            }
+            // A prior attempt may have produced another sniffed format for
+            // this same index. Keep exactly the receipted replacement.
+            if let names = try? FileManager.default.contentsOfDirectory(
+                atPath: resolvedDirectory.path) {
+                for other in names where other.hasPrefix("\(base).") && other != name {
+                    try? FileManager.default.removeItem(
+                        at: resolvedDirectory.appendingPathComponent(other))
+                }
+            }
+            written.append(G09R2AgentGenerationArtifact(
+                relativePath: image.relativePath,
+                mimeType: image.mimeType,
+                byteCount: image.byteCount,
+                sha256: image.sha256))
+        }
+        try G09R2CandidateStore.flushDirectory(resolvedDirectory)
         return written
+    }
+
+    /// Persists the App-owned producer receipt in the durable job row BEFORE
+    /// any workspace byte is published. The row re-read is the proof that the
+    /// receipt is actually durable; a terminal/cancelled row or a failed
+    /// write refuses publication instead of leaving unverifiable files.
+    private func persistProducerReceipt(
+        store: MediaGenerationJobStore, jobID: UUID,
+        payload: G09R2AgentGenerationPayload,
+        receipt: G09R2AgentGenerationProducerReceipt
+    ) async throws {
+        var updated = payload
+        updated.producerReceipt = receipt
+        let updatedPayload = updated
+        let persisted: Bool = try await finalizeDespiteCancellation {
+            [self, store, updatedPayload, receipt] in
+            try await store.transition(id: jobID, to: .submitted) {
+                var current = (try? JSONDecoder().decode(
+                    G09R2AgentGenerationPayload.self,
+                    from: $0.requestJSON)) ?? updatedPayload
+                guard current.requestIdentityEquals(updatedPayload) else { return }
+                current.producerReceipt = receipt
+                $0.requestJSON = (try? self.encoder().encode(current))
+                    ?? $0.requestJSON
+            }
+            guard let row = try await store.ownedJob(id: jobID),
+                  let stored = try? JSONDecoder().decode(
+                    G09R2AgentGenerationPayload.self,
+                    from: row.job.requestJSON),
+                  stored.producerReceipt?.bindsSameProducerProof(as: receipt)
+                    == true else {
+                return false
+            }
+            return true
+        }
+        guard persisted else {
+            throw FloeError.invalidConfiguration("producerReceiptNotPersisted")
+        }
+    }
+
+    /// Commits the typed delivery receipt for a verified image batch. The
+    /// whole CAS runs in a non-cancelled hop: a local stop that arrived after
+    /// the provider returned must not strand real bytes behind an
+    /// `outcomeUnknown` row. A cancel/terminal settlement that won the race
+    /// keeps its state (`invalidStateTransition`), and this method rethrows it
+    /// so the caller can stop without claiming delivery.
+    private func commitImageReceipt(
+        store: MediaGenerationJobStore, jobID: UUID,
+        payload: G09R2AgentGenerationPayload,
+        artifacts: [G09R2AgentGenerationArtifact]
+    ) async throws {
+        try await finalizeDespiteCancellation { [self, store, payload, artifacts] in
+            try await store.transition(id: jobID, to: .ready) {
+                // A late worker or another recovery already published this
+                // exact job; keep its existing receipt. (`ready -> ready` is
+                // a legal self-transition in the durable state machine.)
+                if $0.state == .ready { return }
+                var updated = payload
+                updated.artifacts = artifacts
+                // The legacy scalar view is honest: populated exactly for a
+                // single-artifact result, nil for a multi-image batch.
+                if artifacts.count == 1, let first = artifacts.first {
+                    updated.workspaceRelativePath = first.relativePath
+                    updated.deliveredByteCount = first.byteCount
+                    updated.deliveredSHA256 = first.sha256
+                } else {
+                    updated.workspaceRelativePath = nil
+                    updated.deliveredByteCount = nil
+                    updated.deliveredSHA256 = nil
+                }
+                $0.requestJSON = (try? self.encoder().encode(updated)) ?? $0.requestJSON
+                $0.lastError = nil
+                $0.nextPollAt = nil
+            }
+        }
+    }
+
+    /// Re-adopts an image batch ONLY when the durable App-owned producer
+    /// receipt proves the exact provider bytes for this exact job/request/
+    /// owner. The workspace is model-writable, so a deterministic filename, a
+    /// valid PNG or a hash computed from the workspace file is NOT delivery
+    /// authority. Every receipted output must exist with the receipted MIME,
+    /// byte count and SHA-256; the full requested count is required. No
+    /// provider call is ever made here, and a terminal row is never
+    /// resurrected.
+    private func reconcileImageDelivery(
+        env: G09R2GenerationEnvironment, conversationID: UUID,
+        owner: MediaJobOwner, jobID: UUID, payload: G09R2AgentGenerationPayload
+    ) async -> Bool {
+        guard payload.count > 0, payload.count <= 4,
+              let receipt = payload.producerReceipt,
+              receipt.schemaVersion == 1,
+              receipt.jobID == jobID,
+              receipt.ownerKind == owner.kind.rawValue,
+              receipt.ownerID == owner.id,
+              receipt.requestDigest.count == 64,
+              receipt.requestDigest == payload.requestDigest(),
+              receipt.providerID == payload.providerID,
+              receipt.modelID == payload.modelID,
+              receipt.remoteModelID == payload.remoteModelID,
+              receipt.count == payload.count,
+              receipt.images.count == payload.count else {
+            return false
+        }
+        let root: URL
+        do {
+            root = try await resolvePinnedWorkspaceRoot(
+                env: env, payload: payload, conversationID: conversationID)
+        } catch {
+            // A migrated/revoked owner or corrupt pinned target must never be
+            // repaired by choosing a current/guessed root.
+            return false
+        }
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let generated = resolvedRoot.appendingPathComponent(
+            "GeneratedMedia", isDirectory: true)
+        let resolvedGenerated = generated.standardizedFileURL.resolvingSymlinksInPath()
+        guard resolvedGenerated.path.hasPrefix(resolvedRoot.path + "/") else {
+            return false
+        }
+        let jobKey = jobID.uuidString.lowercased()
+        var artifacts: [G09R2AgentGenerationArtifact] = []
+        var total: Int64 = 0
+        var seenIndices = Set<Int>()
+        for image in receipt.images.sorted(by: { $0.index < $1.index }) {
+            guard (1...payload.count).contains(image.index),
+                  seenIndices.insert(image.index).inserted,
+                  image.mimeType == "image/png" || image.mimeType == "image/jpeg",
+                  image.byteCount > 0,
+                  image.byteCount <= G09R2MediaProbe.maximumGeneratedImageBytes,
+                  image.sha256.count == 64 else {
+                return false
+            }
+            let ext = G09R2MediaProbe.imageExtension(mimeType: image.mimeType)
+            let expectedPath =
+                "GeneratedMedia/image-\(jobKey)-\(image.index).\(ext)"
+            guard image.relativePath == expectedPath else { return false }
+            let url = resolvedRoot.appendingPathComponent(image.relativePath)
+            guard url.standardizedFileURL.resolvingSymlinksInPath()
+                    .deletingLastPathComponent().path == resolvedGenerated.path,
+                  let values = try? url.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let attributes = try? FileManager.default.attributesOfItem(
+                    atPath: url.path),
+                  let size = (attributes[.size] as? NSNumber)?.int64Value,
+                  size == image.byteCount else {
+                return false
+            }
+            total += image.byteCount
+            guard total <= G09R2MediaProbe.maximumGeneratedImageBatchBytes else {
+                return false
+            }
+            guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+                  let facts = G09R2MediaProbe.imageFacts(data),
+                  facts.mimeType == image.mimeType,
+                  FloeDigest.sha256Hex(data) == image.sha256 else {
+                return false
+            }
+            // The delivery receipt is the TRUSTED values, not values
+            // recomputed from the workspace.
+            artifacts.append(G09R2AgentGenerationArtifact(
+                relativePath: image.relativePath,
+                mimeType: image.mimeType,
+                byteCount: image.byteCount,
+                sha256: image.sha256))
+        }
+        guard seenIndices.count == payload.count else { return false }
+        let store = MediaGenerationJobStore(database: env.database)
+        do {
+            try await commitImageReceipt(
+                store: store, jobID: jobID, payload: payload,
+                artifacts: artifacts)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Commits one fully received provider video into the task workspace
@@ -1536,6 +2151,22 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             let store = MediaGenerationJobStore(database: env.database)
             guard let owned = try? await store.ownedJob(id: jobID),
                   !owned.job.state.isTerminal else { return }
+            // A trusted producer receipt means the provider already returned
+            // real bytes. Never terminalize a recoverable image result on a
+            // local delivery error: adopt the fully verified batch now, or
+            // leave the row non-terminal so a later refresh can verify it.
+            // The explicit target fence remains a definite failure (the
+            // original owner is gone; the result must not move).
+            if owned.job.mediaKind == .image,
+               let payload = try? self.decodePayload(owned.job),
+               payload.producerReceipt != nil {
+                if await self.reconcileImageDelivery(
+                    env: env, conversationID: owned.owner.id,
+                    owner: owned.owner, jobID: jobID, payload: payload) {
+                    return
+                }
+                if code != "targetChanged" { return }
+            }
             let state: MediaGenerationJobState = definite
                 ? (code == "cancelled" ? .cancelled : .failed)
                 : .expired

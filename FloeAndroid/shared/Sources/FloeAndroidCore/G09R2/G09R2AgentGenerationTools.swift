@@ -222,14 +222,14 @@ public struct G09R2AgentImageGenerateTool: AgentTool {
             quality: args.quality,
             referenceRelativePath: args.referenceImagePath)
         var lines = [
-            "status=\(summary.deduplicated ? "existing-active-job" : "submitted") jobID=\(summary.jobID.uuidString)",
+            "status=\(summary.deduplicated ? "existing-job" : "submitted") jobID=\(summary.jobID.uuidString)",
             "state=\(summary.state.rawValue) provider=\(summary.providerName) model=\(summary.remoteModelID)",
         ]
         if let estimate = summary.estimatedCompletionAt {
             lines.append("estimatedCompletionAt=\(ISO8601DateFormatter().string(from: estimate))")
         }
         lines.append(summary.deduplicated
-            ? "note=An identical active request already exists; no second paid submission was made."
+            ? "note=An identical request already exists (possibly already finished); no second paid submission was made. Track the returned jobID with video.status; never resubmit it."
             : "note=Generation runs in the background and delivers into the task workspace; track the jobID with video.status and do not resubmit.")
         return ToolExecutionOutput(digesting: lines.joined(separator: "\n"), exitStatus: 0)
     }
@@ -418,7 +418,7 @@ public struct G09R2AgentVideoGenerateTool: AgentTool {
             seed: args.seed,
             referenceRelativePath: args.referenceImagePath)
         var lines = [
-            "status=\(summary.deduplicated ? "existing-active-job" : "submitted") jobID=\(summary.jobID.uuidString)",
+            "status=\(summary.deduplicated ? "existing-job" : "submitted") jobID=\(summary.jobID.uuidString)",
             "state=\(summary.state.rawValue) provider=\(summary.providerName) model=\(summary.remoteModelID)",
         ]
         if let providerTaskID = summary.providerTaskID {
@@ -428,7 +428,7 @@ public struct G09R2AgentVideoGenerateTool: AgentTool {
             lines.append("estimatedCompletionAt=\(ISO8601DateFormatter().string(from: estimate))")
         }
         lines.append(summary.deduplicated
-            ? "note=An identical active request already exists; no second paid submission was made."
+            ? "note=An identical request already exists (possibly already finished); no second paid submission was made. Track the returned jobID with video.status; never resubmit it."
             : "note=Generation runs in the background; poll video.status only as needed and do not resubmit.")
         return ToolExecutionOutput(digesting: lines.joined(separator: "\n"), exitStatus: 0)
     }
@@ -510,9 +510,20 @@ public struct G09R2AgentVideoStatusTool: AgentTool {
         if let error = status.lastError {
             output["lastError"] = error
         }
-        output["note"] = status.ready
-            ? "The result is saved in the conversation workspace (GeneratedMedia) with measured bytes and SHA-256."
-            : "Do not resubmit; the durable job is polled automatically, including after a relaunch. A submitted or unknown job is not a delivered artifact."
+        if status.ready {
+            output["note"] = "The result is saved in the conversation workspace (GeneratedMedia) with measured bytes and SHA-256."
+        } else if status.state == .expired, status.lastError == "outcomeUnknown",
+                  status.mediaKind == "image" {
+            // A local interruption is not proof the provider failed. Keep the
+            // unknown outcome explicit and never invite a paid resubmission;
+            // verified image bytes already in the pinned workspace are
+            // reconciled by the durable refresh path.
+            output["note"] = "Do not resubmit. The provider outcome is unknown. Any verified output already written by this job is reconciled into the task workspace on refresh; an unknown job is not a delivered artifact."
+        } else if status.mediaKind == "image" {
+            output["note"] = "Do not resubmit; the durable image job is reconciled on refresh. A submitted or unknown job is not a delivered artifact."
+        } else {
+            output["note"] = "Do not resubmit; the durable job is polled automatically, including after a relaunch. A submitted or unknown job is not a delivered artifact."
+        }
         let text = String(decoding: try JSONSerialization.data(
             withJSONObject: output, options: [.sortedKeys]), as: UTF8.self)
         return ToolExecutionOutput(digesting: text, exitStatus: status.toolExitStatus)

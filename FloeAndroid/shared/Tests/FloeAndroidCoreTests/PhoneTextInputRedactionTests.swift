@@ -644,6 +644,65 @@ private struct FixturePhoneTextTool: AgentTool {
 /// admission so persisted task policies written under either spelling keep
 /// admitting the canonical device tools. Synthetic fixtures only.
 final class DeviceToolNamesAliasTests: XCTestCase {
+    func testPhoneAndTabletQueriesDiscoverOnlyTheCanonicalDeviceChain() throws {
+        let names = ["device.observe", "device.act", "device.screenshot"]
+        let descriptors = (names + ["workspace.readFile"]).map { name in
+            ToolCatalog.Descriptor(
+                name: name, toolDescription: "Synthetic tool",
+                parametersJSON: #"{"type":"object"}"#,
+                riskLabels: [], isSideEffecting: name == "device.act",
+                requiresHostScope: false)
+        }
+        for query in ["device", "phone", "tablet", "手机", "平板"] {
+            XCTAssertEqual(Set(ToolDiscovery.matches(query: query, descriptors: descriptors).map(\.name)),
+                           Set(names), query)
+        }
+        XCTAssertEqual(ToolDiscovery.matches(query: "phone.act", descriptors: descriptors).map(\.name),
+                       ["device.act"], "old exact lookup must still resolve")
+        for name in names {
+            XCTAssertEqual(ToolCapabilityGroups.group(name), "device")
+        }
+        XCTAssertEqual(ToolCapabilityGroups.group("phone.observe"), "device")
+        XCTAssertEqual(ToolCapabilityGroups.group("phone.teleport"), "phone")
+
+        let text = try ToolDiscovery.list(
+            arguments: Data(#"{"group":"device","limit":100}"#.utf8),
+            descriptors: descriptors, loaded: [])
+        let response = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        let entries = try XCTUnwrap(response["tools"] as? [[String: Any]])
+        XCTAssertEqual(Set(entries.compactMap { $0["name"] as? String }), Set(names))
+        for entry in entries {
+            XCTAssertEqual(entry["group"] as? String, "device")
+            XCTAssertEqual(entry["aliases"] as? [String], [], "new discovery must not reteach old phone names")
+        }
+        XCTAssertEqual(ToolAliasTable.discoveryAliases(of: "checklist.readPlan"), ["task.readPlan"],
+                       "the device migration must not hide unrelated compatibility aliases")
+
+        let legacyPage = try ToolDiscovery.list(
+            arguments: Data(#"{"group":"phone","afterName":"phone_act","limit":100}"#.utf8),
+            descriptors: descriptors, loaded: [])
+        let legacyResponse = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(legacyPage.utf8)) as? [String: Any])
+        let legacyEntries = try XCTUnwrap(legacyResponse["tools"] as? [[String: Any]])
+        XCTAssertEqual(legacyEntries.compactMap { $0["name"] as? String },
+                       ["device.observe", "device.screenshot"],
+                       "a persisted old directory group/cursor must not skip the device page")
+
+        let customPhoneTool = ToolCatalog.Descriptor(
+            name: "phone.custom", toolDescription: "Synthetic configured tool",
+            parametersJSON: #"{"type":"object"}"#,
+            riskLabels: [], isSideEffecting: false, requiresHostScope: false)
+        let mixedPage = try ToolDiscovery.list(
+            arguments: Data(#"{"group":"phone","limit":100}"#.utf8),
+            descriptors: descriptors + [customPhoneTool], loaded: [])
+        let mixedResponse = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(mixedPage.utf8)) as? [String: Any])
+        let mixedEntries = try XCTUnwrap(mixedResponse["tools"] as? [[String: Any]])
+        XCTAssertEqual(Set(mixedEntries.compactMap { $0["name"] as? String }),
+                       Set(names + ["phone.custom"]),
+                       "exact device compatibility must preserve unrelated configured tools")
+    }
+
     func testLegacyNamesResolveThroughTheActualRunnerRegistryWithoutDuplicateDiscovery() throws {
         let registry = ToolRunnerRegistry()
         for name in ["device.observe", "device.act", "device.screenshot"] {

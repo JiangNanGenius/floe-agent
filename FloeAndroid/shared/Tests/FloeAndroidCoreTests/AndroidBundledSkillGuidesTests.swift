@@ -33,7 +33,7 @@ final class AndroidBundledSkillGuidesTests: XCTestCase {
         "image.qr.", "video.inspect", "video.transcode", "video.remux", "audio.",
         "exec.localPython", "exec.javascript", "exec.compatEvaluator", "exec.wasm",
         "python.packages", "design.", "cad.", "PDFKit", "CoreText", " Vision ",
-        "Keychain", "UIKit",
+        "Keychain", "UIKit", "phone.observe", "phone.act", "phone.screenshot",
     ]
 
     /// Roots the Android registry can actually register today (the static
@@ -45,7 +45,7 @@ final class AndroidBundledSkillGuidesTests: XCTestCase {
         "preview", "memory", "conversation", "checklist", "calendar", "contacts",
         "todo", "mail", "font", "device", "nfc", "location", "health",
         "task", "user", "delegate", "tools", "skill", "ssh", "bluetooth",
-        "system", "phone",
+        "system",
     ]
 
     func testGuideSetIsNonEmptyAndIdentityStable() throws {
@@ -149,7 +149,7 @@ final class AndroidBundledSkillGuidesTests: XCTestCase {
     func testAndroidDeviceGuideTeachesBoundedPagingAndRealInputCommit() throws {
         let guide = try XCTUnwrap(
             AndroidBundledSkillGuides.definition(id: "floe-android-device"))
-        XCTAssertEqual(guide.version, "1.1.0")
+        XCTAssertEqual(guide.version, "1.1.1")
         for token in [
             "nextOffset", "observationId", "device.observe", "focus", "commit",
             "ACTION_CLICK", "field buffer", "dispatch=ACCEPTED", "scrollable region",

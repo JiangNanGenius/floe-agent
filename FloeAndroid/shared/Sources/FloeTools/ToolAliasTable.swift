@@ -66,6 +66,7 @@ public enum ToolAliasTable {
                          "以前", "之前", "上次", "earlier", "查找历史", "过往任务"],
         "skill": ["skill", "技能"],
         "browser": ["browser", "浏览器", "网页", "website"],
+        "device": ["device", "android", "phone", "tablet", "设备", "手机", "平板", "屏幕操作", "跨应用", "cross-app"],
         "web": ["web", "网页", "website", "搜索", "search", "查找"],
         "git": ["git", "仓库", "commit", "repository"],
         "mail": ["mail", "邮件", "邮箱", "收信", "发信", "imap", "pop3", "smtp"]
@@ -81,5 +82,11 @@ public enum ToolAliasTable {
     /// Aliases that currently resolve to `name`, sorted for deterministic output.
     public static func aliases(of name: String) -> [String] {
         renamed.compactMap { $0.value == name ? $0.key : nil }.sorted()
+    }
+
+    /// Device legacy spellings remain callable for old records, while new
+    /// model-facing directories teach only the phone/tablet-neutral names.
+    public static func discoveryAliases(of name: String) -> [String] {
+        aliases(of: name).filter { deviceInteractionRenames[$0] == nil }
     }
 }

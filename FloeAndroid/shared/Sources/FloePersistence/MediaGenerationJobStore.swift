@@ -8,6 +8,10 @@ public enum MediaGenerationJobStoreError: Error, Sendable, Equatable {
     /// `save(_:)` is the canvas-only legacy entry point; a job without a
     /// canvas identity cannot be persisted through it.
     case missingCanvasOwnership(UUID)
+    /// A conversation-owned submitting operation reused its idempotency key
+    /// for a DIFFERENT request. Refuse instead of silently attaching wrong
+    /// data or inserting a second paying job.
+    case idempotencyConflict(String)
 }
 
 /// The outcome of `createJob`: either a newly inserted durable job or the
@@ -67,12 +71,23 @@ public actor MediaGenerationJobStore {
         }
     }
 
-    /// Atomically returns the existing active job for this operation or inserts
-    /// a new `preparing` row. The dedupe lookup and the insert share one write
+    /// Atomically returns the existing job for this operation or inserts a
+    /// new `preparing` row. The lookup and the insert share ONE write
     /// transaction, so two concurrent identical submissions can never both
-    /// reach the provider. When `idempotencyKey` is present the key is the
-    /// operation identity; otherwise the legacy owner+model+request comparison
-    /// is used (canvas submits and pre-key rows).
+    /// reach the provider.
+    ///
+    /// Conversation-owned agent calls pass a non-nil `idempotencyKey` and are
+    /// deduplicated across EVERY state, including terminal: a replayed call
+    /// after a lost reply/expiry/completion attaches to its ORIGINAL row
+    /// instead of paying twice. The stored request identity is compared in
+    /// the same transaction (media kind, provider, model and the canonical
+    /// request JSON with local delivery fields removed); a reused key for a
+    /// DIFFERENT request is refused with `idempotencyConflict`, never
+    /// silently attached or duplicated.
+    ///
+    /// Canvas/document jobs (and key-less legacy callers) keep the original
+    /// active-only dedupe semantics exactly: terminal rows never match, so an
+    /// explicit UI retry is not merged into an old record.
     public func createJob(
         _ job: MediaGenerationJob,
         owner: MediaJobOwner,
@@ -80,6 +95,19 @@ public actor MediaGenerationJobStore {
         idempotencyKey: String? = nil
     ) async throws -> MediaJobCreation {
         try await database.writer { db in
+            if owner.kind == .conversation, let idempotencyKey,
+               let existing = try Self.findByKey(
+                    db, owner: owner, idempotencyKey: idempotencyKey) {
+                guard existing.job.mediaKind == job.mediaKind,
+                      existing.job.providerID == job.providerID,
+                      existing.job.modelID == job.modelID,
+                      Self.sameRequestIdentity(
+                        existing.job.requestJSON, job.requestJSON) else {
+                    throw MediaGenerationJobStoreError.idempotencyConflict(
+                        idempotencyKey)
+                }
+                return MediaJobCreation(owned: existing, deduplicated: true)
+            }
             if let existing = try Self.findActive(
                 db, owner: owner, modelID: job.modelID,
                 requestJSON: job.requestJSON, idempotencyKey: idempotencyKey
@@ -315,6 +343,54 @@ public actor MediaGenerationJobStore {
                 idempotencyKey: idempotencyKey
             )
         }
+    }
+
+    /// The newest row for one exact submitting-operation identity, in ANY
+    /// state (including terminal). Used by the conversation-owned replay path.
+    private static func findByKey(
+        _ db: Database, owner: MediaJobOwner, idempotencyKey: String
+    ) throws -> OwnedMediaGenerationJob? {
+        let row = try Row.fetchOne(db, sql: """
+            SELECT * FROM media_generation_jobs
+            WHERE owner_kind = ? AND owner_id = ? AND idempotency_key = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """, arguments: [
+                owner.kind.rawValue, owner.id.uuidString, idempotencyKey
+            ])
+        return try row.map { try decodeOwned($0, decoder: JSONDecoder()) }
+    }
+
+    /// Canonical request identity for the conversation replay decision. Local
+    /// delivery fields are added AFTER submission (producer receipt, final
+    /// artifact receipt, pinned target); they are not part of the request and
+    /// must not turn a replay into a conflict. A non-JSON or malformed body
+    /// falls back to the exact bytes.
+    private static func sameRequestIdentity(
+        _ lhs: Data, _ rhs: Data
+    ) -> Bool {
+        if lhs == rhs { return true }
+        guard let left = canonicalAgentRequest(lhs),
+              let right = canonicalAgentRequest(rhs) else {
+            return false
+        }
+        return left == right
+    }
+
+    private static func canonicalAgentRequest(_ data: Data) -> Data? {
+        guard var object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any] else {
+            return nil
+        }
+        for key in [
+            "producerReceipt", "artifacts", "workspaceRelativePath",
+            "deliveredByteCount", "deliveredSHA256",
+            "targetWorkspaceID", "targetWorkspaceRootPath",
+        ] {
+            object.removeValue(forKey: key)
+        }
+        return try? JSONSerialization.data(
+            withJSONObject: object, options: [.sortedKeys])
     }
 
     private static func findActive(

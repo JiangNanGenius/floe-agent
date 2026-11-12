@@ -151,6 +151,17 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         public var runtimeGeneration: String? = nil
         /// True when this session owns the workspace import/export.
         public var workspaceOwner: Bool? = nil
+        /// The runtime `shell.start` project identity this session was
+        /// admitted for (Swift canonical UUID text). A reuse hint may only
+        /// name an owner of the SAME project; nil keeps legacy records
+        /// unqualified for cross-project reuse.
+        public var projectID: String? = nil
+        /// True only when the engine's measured PROCESS generation proved
+        /// this retained record belongs to a retired runtime process. Such a
+        /// record is no longer a live session (it cannot be addressed), but
+        /// its real release was never observed and no terminal/workspace
+        /// success is invented for it.
+        public var generationRetired: Bool = false
         /// G07.3A measured preparation facts (rootfs reuse + real stage ms).
         public var prepareReused: Bool? = nil
         public var prepareMillis: Int64? = nil
@@ -199,6 +210,15 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     /// that fails BEFORE any phase was measured journals NO composition
     /// instead of a previous run's timing.
     private var lastRunPhaseReport: String?
+    /// The MOST RECENT measured runtime process generation observed from a
+    /// real start reply. Used only to keep older-generation records out of
+    /// new reuse hints; nil (legacy) never widens selection.
+    private var lastObservedRuntimeGeneration: String?
+    /// Bounded observational ring of sessions retired by a PROVEN runtime
+    /// process-generation change. These are NOT live sessions and never
+    /// block a drain; they stay visible to `unreconciledSessions()` so the
+    /// unobserved real release is not silently forgotten.
+    private var generationRetiredSessions: [String: EngineSession] = [:]
 
     public init(
         transport: any LinuxShellTransport,
@@ -223,10 +243,13 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         sessions.values.compactMap { record in
             record.reconcilingSince != nil && !record.engine.leaseReleased
                 ? record.engine : nil
-        }
+        } + generationRetiredSessions.values.filter { !$0.leaseReleased }
     }
 
     /// Includes active sessions as well as detached stop reconciliation.
+    /// A generation-retired record is deliberately NOT here: it cannot be
+    /// addressed by the live runtime, so it is not owned work. Its honest
+    /// "release not observed" fact remains in `unreconciledSessions()`.
     public func ownedSessions() -> [EngineSession] {
         sessions.values.map(\.engine).filter { !$0.leaseReleased }
     }
@@ -248,12 +271,24 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     /// session; the runtime then resolves shared/deferred ownership itself.
     static func observedWorkspaceReuse(
         conversationID: UUID?,
-        sessions: [EngineSession]
+        sessions: [EngineSession],
+        projectID: String? = nil,
+        currentGeneration: String? = nil,
+        reconcilingSessionKeys: Set<String> = []
     ) -> LinuxShellWorkspaceReuse? {
         guard let conversationID else { return nil }
         let owners = sessions.filter {
-            !$0.leaseReleased && $0.conversationID == conversationID &&
-                $0.workspaceOwner == true
+            !$0.leaseReleased && !$0.stopRequested &&
+                !$0.generationRetired &&
+                !reconcilingSessionKeys.contains($0.sessionKey) &&
+                $0.conversationID == conversationID &&
+                $0.workspaceOwner == true &&
+                // A hint must belong to the SAME project/workspace and (when
+                // the process generation is known) the SAME live runtime
+                // process. A stale record from a previous generation is
+                // never presented as a still-live owner.
+                (projectID == nil || $0.projectID == projectID) &&
+                (currentGeneration == nil || $0.runtimeGeneration == currentGeneration)
         }
         guard owners.count == 1, let owner = owners.first else { return nil }
         return .shared(ownerSessionID: owner.engineSessionID)
@@ -376,9 +411,21 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // ONLY a session whose own runtime reply proved workspaceOwner==true
         // may be named: an observed participant's lease id is refused by the
         // real runtime, and there is no dictionary-order/default fallback.
+        // A record already in reconciliation (a failed/timed-out waiter, a
+        // stop request or a fenced poll) is NOT proof of a live owner: it must
+        // never become the next dispatch's hint. The runtime re-resolves its
+        // own authoritative owner and refuses a stale grant separately.
+        let projectID = LinuxShellProjectMapping.projectID(
+            forCanonicalCoreWorkspaceRoot: request.rootURL)
+        let reconcilingKeys = Set(sessions.reduce(into: [String]()) { partial, entry in
+            if entry.value.reconcilingSince != nil { partial.append(entry.key) }
+        })
         let reuseHint = Self.observedWorkspaceReuse(
             conversationID: request.conversationID,
-            sessions: sessions.values.map(\.engine))
+            sessions: sessions.values.map(\.engine),
+            projectID: projectID.uuidString,
+            currentGeneration: lastObservedRuntimeGeneration,
+            reconcilingSessionKeys: reconcilingKeys)
         guard await acquireGate(heldBy: holdKey, role: .agent, timeout: request.gateTimeout,
                                 cancellation: cancellation) else {
             phases.mark(.gate, at: TerminalLatencyPhases.now())
@@ -393,7 +440,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         phases.mark(.gate, at: TerminalLatencyPhases.now())
 
         let start = LinuxShellStartRequest(
-            projectID: LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: request.rootURL),
+            projectID: projectID,
             runID: runID,
             conversationID: request.conversationID,
             environmentID: request.environmentID ?? request.toolEnvironment?.id,
@@ -449,6 +496,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // import / spawn is preparation, bounded separately above.
         let executionAdmittedAt = Date()
         phases.mark(.start, at: TerminalLatencyPhases.now())
+        observeRuntimeGeneration(reply.runtimeGeneration)
         var engine = EngineSession(sessionKey: holdKey,
                                    engineSessionID: reply.sessionID,
                                    environmentID: reply.environmentID,
@@ -460,6 +508,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                    exitCode: nil, termSig: nil, stopRequested: false,
                                    role: .agent, runtimeGeneration: reply.runtimeGeneration,
                                    workspaceOwner: reply.workspaceOwner,
+                                   projectID: projectID.uuidString,
                                    prepareReused: reply.prepareReused,
                                    prepareMillis: reply.prepareMillis,
                                    prepareCopiedBytes: reply.prepareCopiedBytes,
@@ -732,10 +781,20 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         // participant (`false`) or an absent legacy field never mints a hint,
         // and there is no dictionary-order/default fallback. With no proven
         // owner the hint is omitted and the runtime resolves shared/deferred
-        // ownership itself.
+        // ownership itself. Reconciling/fenced records and records from a
+        // different project or a previous runtime process generation are not
+        // live owners and are never named.
+        let projectID = LinuxShellProjectMapping.projectID(
+            forCanonicalCoreWorkspaceRoot: request.rootURL)
+        let reconcilingKeys = Set(sessions.reduce(into: [String]()) { partial, entry in
+            if entry.value.reconcilingSince != nil { partial.append(entry.key) }
+        })
         let reuseHint = Self.observedWorkspaceReuse(
             conversationID: request.conversationID,
-            sessions: sessions.values.map(\.engine))
+            sessions: sessions.values.map(\.engine),
+            projectID: projectID.uuidString,
+            currentGeneration: lastObservedRuntimeGeneration,
+            reconcilingSessionKeys: reconcilingKeys)
         guard await acquireGate(heldBy: request.sessionID, role: role, timeout: request.gateTimeout,
                                 cancellation: cancellation) else {
             try cancellation?.throwIfCancelled()
@@ -753,7 +812,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             throw FloeError.validationFailed(message)
         }
         let start = LinuxShellStartRequest(
-            projectID: LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: request.rootURL),
+            projectID: projectID,
             runID: runID,
             conversationID: request.conversationID,
             environmentID: request.environmentID ?? request.toolEnvironment?.id,
@@ -791,6 +850,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             releaseGate(heldBy: request.sessionID, role: role)
             throw mapBackendError(error)
         }
+        observeRuntimeGeneration(reply.runtimeGeneration)
         var engine = EngineSession(sessionKey: request.sessionID,
                                    engineSessionID: reply.sessionID,
                                    environmentID: reply.environmentID,
@@ -802,6 +862,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                    exitCode: nil, termSig: nil, stopRequested: false,
                                    role: role, runtimeGeneration: reply.runtimeGeneration,
                                    workspaceOwner: reply.workspaceOwner,
+                                   projectID: projectID.uuidString,
                                    prepareReused: reply.prepareReused,
                                    prepareMillis: reply.prepareMillis,
                                    prepareCopiedBytes: reply.prepareCopiedBytes,
@@ -1205,10 +1266,13 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                          cursor: page.cursor)
                     if page.leaseReleased { return }
                 } catch {
-                    // Fenced/unknown: keep the entry observable and free the
-                    // LOCAL slot only for a generation fence (below); this
-                    // retry loop stops and the facade/Main census owns the
-                    // long tail.
+                    // A failed read is NOT proof of release. Before keeping a
+                    // fenced record, ask the runtime for its MEASURED process
+                    // generation: a different boot token proves this record
+                    // belongs to a retired runtime process and can never be
+                    // addressed again. Same generation/unknown transport keeps
+                    // the original reconciliation retention (no timer release).
+                    if await retireIfRuntimeGenerationChanged(sessionKey: sessionKey) { return }
                     await markReconciledFenced(sessionKey: sessionKey)
                     return
                 }
@@ -1237,6 +1301,98 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         } else {
             sessions[sessionKey] = record
         }
+    }
+
+    /// Record the MOST RECENT measured runtime process generation from a
+    /// successful start reply, then retire local records that provably belong
+    /// to an OLDER process generation. The reply itself is the measurement:
+    /// the engine returns its per-process boot token (`runtimeGeneration`),
+    /// so any retained record with a different non-nil token can never be
+    /// addressed by the process that just admitted this start. This is
+    /// retirement, not a fabricated lease release: no terminal, exit or
+    /// workspace success is invented; the unmoved record stays visible to
+    /// `unreconciledSessions()` with `leaseReleased == false`.
+    private func observeRuntimeGeneration(_ generation: String?) {
+        guard let generation, !generation.isEmpty else { return }
+        lastObservedRuntimeGeneration = generation
+        for (key, record) in Array(sessions) {
+            guard !record.engine.leaseReleased,
+                  let admitted = record.engine.runtimeGeneration,
+                  admitted != generation else { continue }
+            retireSessionByGeneration(sessionKey: key, record: record)
+        }
+    }
+
+    /// Bounded proof pass for records already handed to reconciliation.
+    /// ONE read-only status call; retirement requires BOTH a real, different
+    /// measured boot token AND `runtimeRecoveryProven == true` (the successor
+    /// process completed its original whole-UID recovery/census). This lets
+    /// the facade/Main release a completed runtime-process owner at a
+    /// lifecycle drain without waiting for a later shell dispatch and without
+    /// a timer. Absent proof, same-generation records and unknown transports
+    /// stay retained (their real release is still unobserved).
+    @discardableResult
+    public func retireFencedSessionsIfRuntimeGenerationChanged() async -> Int {
+        let fenced = sessions.filter {
+            $0.value.reconcilingSince != nil && !$0.value.engine.leaseReleased &&
+                $0.value.engine.runtimeGeneration?.isEmpty == false
+        }
+        guard !fenced.isEmpty else { return 0 }
+        guard let status = try? await transport.shellRuntimeStatus(),
+              status.runtimeRecoveryProven == true,
+              let current = status.runtimeBootToken, !current.isEmpty else { return 0 }
+        var retired = 0
+        for (key, record) in fenced {
+            // The actor may have changed this record while the status call
+            // was suspended. Retire only the SAME admitted session/generation
+            // that is still retained and unreleased.
+            guard let currentRecord = sessions[key],
+                  currentRecord.reconcilingSince != nil,
+                  currentRecord.engine.engineSessionID == record.engine.engineSessionID,
+                  currentRecord.engine.runtimeGeneration == record.engine.runtimeGeneration,
+                  !currentRecord.engine.leaseReleased,
+                  let admitted = currentRecord.engine.runtimeGeneration,
+                  admitted != current else { continue }
+            retireSessionByGeneration(sessionKey: key, record: currentRecord)
+            retired += 1
+        }
+        return retired
+    }
+
+    /// READ-ONLY generation proof for a session whose poll just failed. Only
+    /// a real, bounded boot token from a fresh authenticated runtime status
+    /// read that DIFFERS from the session's admitted generation retires the
+    /// record. An unavailable/unknown status keeps the original retention.
+    private func retireIfRuntimeGenerationChanged(sessionKey: String) async -> Bool {
+        guard let record = sessions[sessionKey], record.reconcilingSince != nil,
+              !record.engine.leaseReleased,
+              let admitted = record.engine.runtimeGeneration, !admitted.isEmpty else { return false }
+        guard let status = try? await transport.shellRuntimeStatus(),
+              status.runtimeRecoveryProven == true,
+              let current = status.runtimeBootToken, !current.isEmpty,
+              current != admitted else { return false }
+        // Actor reentrancy: the status call suspended. Retire only if the
+        // exact same admitted session/generation is still retained.
+        guard let currentRecord = sessions[sessionKey],
+              currentRecord.reconcilingSince != nil,
+              currentRecord.engine.engineSessionID == record.engine.engineSessionID,
+              currentRecord.engine.runtimeGeneration == admitted,
+              !currentRecord.engine.leaseReleased else { return false }
+        retireSessionByGeneration(sessionKey: sessionKey, record: currentRecord)
+        return true
+    }
+
+    private func retireSessionByGeneration(sessionKey: String, record: SessionRecord) {
+        var retired = record.engine
+        retired.generationRetired = true
+        sessions.removeValue(forKey: sessionKey)
+        generationRetiredSessions[sessionKey] = retired
+        while generationRetiredSessions.count > 32 {
+            if let oldest = generationRetiredSessions.keys.first {
+                generationRetiredSessions.removeValue(forKey: oldest)
+            } else { break }
+        }
+        releaseGate(heldBy: sessionKey, role: record.engine.role)
     }
 
     private func markReconciledFenced(sessionKey: String) {
