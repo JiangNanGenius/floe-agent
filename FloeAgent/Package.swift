@@ -155,10 +155,21 @@ let package = Package(
             publicHeadersPath: "include"
         ),
 
+        // Public Darwin wrappers: punch holes, snapshot bounded ACL metadata,
+        // and restore the job-owned stage birthtime with fsetattrlist.
+        // No private API, no vendored code, no entitlement.
+        .target(
+            name: "CFloeSparseRewriteShim",
+            dependencies: [],
+            path: "Sources/CFloeSparseRewriteShim",
+            publicHeadersPath: "include"
+        ),
+
         .target(
             name: "FloeCore",
             dependencies: [
                 "CFloeExtentShim",
+                "CFloeSparseRewriteShim",
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeCore",
