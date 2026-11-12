@@ -1482,7 +1482,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 "The device tool request or reply exceeded its bounded size")
         case .resultInvalid:
             return .internalError("The device returned an invalid tool result")
-        case .remoteFailed(let code, _):
+        case .remoteFailed(let code, let detail):
             switch code {
             case "cancelled":
                 return .cancelled
@@ -1490,6 +1490,11 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 return .validationFailed("The device tool timed out")
             case "device_run_unavailable":
                 let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
+                if detail?.hasPrefix("snapshot_") == true {
+                    return .validationFailed(chinese
+                        ? "暂时无法读取此任务的运行状态，设备操作已停止。"
+                        : "Device control stopped because the task's running state could not be read.")
+                }
                 return .validationFailed(chinese
                     ? "无法确认此任务仍在运行，设备操作已停止。请打开任务查看状态。"
                     : "Device control stopped because this task is no longer confirmed running. Open the task to check its status.")

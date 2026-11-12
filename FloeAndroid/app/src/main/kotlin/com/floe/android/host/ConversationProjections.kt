@@ -128,8 +128,16 @@ class ThreadProjectionBuilder internal constructor(
      * prefix of the step. Bounded: oldest segments are dropped first and the
      * overlay then only replaces what the retained window proves.
      */
-    private val liveAssistantSegments = ArrayDeque<String>()
-    private val liveReasoningSegments = ArrayDeque<String>()
+    private data class LiveTextSegment(val sequence: Long, val text: String)
+    private val liveAssistantSegments = ArrayDeque<LiveTextSegment>()
+    private val liveReasoningSegments = ArrayDeque<LiveTextSegment>()
+    private var assistantDroppedThrough = 0L
+    private var reasoningDroppedThrough = 0L
+    private var snapshotTextRevision: Long? = null
+    private var snapshotAnswerBase: Long? = null
+    private var snapshotAnswerThrough: Long? = null
+    private var snapshotReasoningBase: Long? = null
+    private var snapshotReasoningThrough: Long? = null
     private var liveSegmentChars: Int = 0
     /** Run that owns the live tail buffers currently displayed. */
     private var liveTailRunId: String? = null
@@ -729,6 +737,13 @@ class ThreadProjectionBuilder internal constructor(
         liveReasoning = ""
         snapshotAnswerOverlay = null
         snapshotReasoningOverlay = null
+        snapshotTextRevision = null
+        snapshotAnswerBase = null
+        snapshotAnswerThrough = null
+        snapshotReasoningBase = null
+        snapshotReasoningThrough = null
+        assistantDroppedThrough = 0L
+        reasoningDroppedThrough = 0L
         liveAssistantSegments.clear()
         liveReasoningSegments.clear()
         liveSegmentChars = 0
@@ -757,8 +772,9 @@ class ThreadProjectionBuilder internal constructor(
                 val text = payload?.string("text")
                 if (text != null) {
                     if (!liveTailAccepts(frame.runID)) return
+                    if (liveAssistantSegments.lastOrNull()?.sequence?.let { it >= frame.sequence } == true) return
                     liveAssistant += text
-                    recordLiveSegment(text, reasoning = false)
+                    recordLiveSegment(text, frame.sequence, reasoning = false)
                 }
             }
             "reasoning" -> {
@@ -766,8 +782,9 @@ class ThreadProjectionBuilder internal constructor(
                 val text = payload?.string("text") ?: payload?.string("excerpt")
                 if (text != null) {
                     if (!liveTailAccepts(frame.runID)) return
+                    if (liveReasoningSegments.lastOrNull()?.sequence?.let { it >= frame.sequence } == true) return
                     liveReasoning += text
-                    recordLiveSegment(text, reasoning = true)
+                    recordLiveSegment(text, frame.sequence, reasoning = true)
                 }
             }
             "terminal" -> {
@@ -969,6 +986,13 @@ class ThreadProjectionBuilder internal constructor(
         liveReasoning = ""
         snapshotAnswerOverlay = null
         snapshotReasoningOverlay = null
+        snapshotTextRevision = null
+        snapshotAnswerBase = null
+        snapshotAnswerThrough = null
+        snapshotReasoningBase = null
+        snapshotReasoningThrough = null
+        assistantDroppedThrough = 0L
+        reasoningDroppedThrough = 0L
         liveAssistantSegments.clear()
         liveReasoningSegments.clear()
         liveSegmentChars = 0
@@ -1033,11 +1057,22 @@ class ThreadProjectionBuilder internal constructor(
         val answer = page.answerText
         val reasoning = page.reasoningText
         if (answer == null && reasoning == null) return
+        val revision = page.textRevision
+        val previousRevision = snapshotTextRevision
+        if (previousRevision != null && (revision == null || revision < previousRevision)) return
         liveTailRunId = page.runID
-        answer?.let { snapshotAnswerOverlay = it }
-        // Reasoning absence is honest absence: keep the last authoritative
-        // reasoning text rather than wiping it on a dropped member.
-        reasoning?.let { snapshotReasoningOverlay = it }
+        revision?.let { snapshotTextRevision = it }
+        answer?.let {
+            snapshotAnswerOverlay = it
+            snapshotAnswerBase = page.answerBaseSequence
+            snapshotAnswerThrough = page.answerDurableSequence
+        }
+        // Absence is unknown, not an empty stream or a new step.
+        reasoning?.let {
+            snapshotReasoningOverlay = it
+            snapshotReasoningBase = page.reasoningBaseSequence
+            snapshotReasoningThrough = page.reasoningDurableSequence
+        }
     }
 
     /** A durable frame may extend the tail only for the run that owns it. */
@@ -1055,25 +1090,29 @@ class ThreadProjectionBuilder internal constructor(
         return true
     }
 
-    private fun recordLiveSegment(text: String, reasoning: Boolean) {
+    private fun recordLiveSegment(text: String, sequence: Long, reasoning: Boolean) {
         if (text.isEmpty()) return
         val segments = if (reasoning) liveReasoningSegments else liveAssistantSegments
-        segments.addLast(text)
+        segments.addLast(LiveTextSegment(sequence, text))
         liveSegmentChars += text.length
         while (segments.size > LIVE_SEGMENT_LIMIT ||
             liveSegmentChars > LIVE_SEGMENT_CHAR_LIMIT
         ) {
             val dropped = segments.removeFirstOrNull() ?: break
-            liveSegmentChars -= dropped.length
+            liveSegmentChars -= dropped.text.length
+            if (reasoning) reasoningDroppedThrough = maxOf(reasoningDroppedThrough, dropped.sequence)
+            else assistantDroppedThrough = maxOf(assistantDroppedThrough, dropped.sequence)
         }
     }
 
     /** Display tails: durable segmented truth plus the authoritative overlay. */
     private fun assistantTailText(): String =
-        composeLiveTail(liveAssistant, liveAssistantSegments, snapshotAnswerOverlay)
+        composeLiveTail(liveAssistant, liveAssistantSegments, snapshotAnswerOverlay,
+            snapshotAnswerBase, snapshotAnswerThrough, assistantDroppedThrough)
 
     private fun reasoningTailText(): String =
-        composeLiveTail(liveReasoning, liveReasoningSegments, snapshotReasoningOverlay)
+        composeLiveTail(liveReasoning, liveReasoningSegments, snapshotReasoningOverlay,
+            snapshotReasoningBase, snapshotReasoningThrough, reasoningDroppedThrough)
 
     /**
      * The authoritative overlay already contains the current step's durable
@@ -1093,12 +1132,30 @@ class ThreadProjectionBuilder internal constructor(
      */
     private fun composeLiveTail(
         durable: String,
-        segments: ArrayDeque<String>,
+        segments: ArrayDeque<LiveTextSegment>,
         overlay: String?,
+        baseSequence: Long?,
+        throughSequence: Long?,
+        droppedThrough: Long,
     ): String {
         if (overlay == null) return durable
         if (overlay.isEmpty()) return durable
         if (durable.isEmpty()) return overlay
+        if (baseSequence != null && throughSequence != null &&
+            baseSequence >= 0 && throughSequence >= baseSequence
+        ) {
+            // The service pins the current step's durable range atomically
+            // with its text, rather than comparing repeated words. A later
+            // durable flush wins over an older snapshot; a new step may
+            // legitimately say exactly the same words as the previous step.
+            if (droppedThrough > baseSequence || segments.any { it.sequence > throughSequence }) {
+                return durable
+            }
+            val replaced = segments.filter { it.sequence > baseSequence }.sumOf { it.text.length }
+            // An inline continuation prefix cannot erase already known text.
+            if (replaced > overlay.length || replaced > durable.length) return durable
+            return durable.dropLast(replaced) + overlay
+        }
         if (overlay.length <= durable.length && durable.endsWith(overlay)) {
             return durable
         }
@@ -1106,7 +1163,7 @@ class ThreadProjectionBuilder internal constructor(
         val candidate = StringBuilder()
         var index = segments.size - 1
         while (index >= 0) {
-            candidate.insert(0, segments[index])
+            candidate.insert(0, segments[index].text)
             if (candidate.length >= overlay.length) {
                 // The durable tail already carries at least the overlay's
                 // characters: it is FRESHER than this (possibly stale) read,
@@ -1188,6 +1245,10 @@ class ThreadProjectionBuilder internal constructor(
      */
     fun eventStreamFailure(runID: String, code: String) {
         actionError = code
+    }
+
+    fun eventStreamRecovered(runID: String, code: String) {
+        if (selectedRunId == runID && actionError == code) actionError = null
     }
 
     // ------------------------------------------------ D04 run-output cards
@@ -1542,6 +1603,11 @@ internal object ConversationWire {
         val reasoningText: String? = null,
         val reasoningComplete: Boolean = false,
         val reasoningContinuationHandle: String? = null,
+        val answerBaseSequence: Long? = null,
+        val answerDurableSequence: Long? = null,
+        val reasoningBaseSequence: Long? = null,
+        val reasoningDurableSequence: Long? = null,
+        val textRevision: Long? = null,
         /** The durable task-policy CAS pair for `run.policy.update`
          * (`taskPolicy.<uuid>` / row `updatedAt`), computed by the native
          * snapshot builder from the persisted row. Null for a temporary run
@@ -2002,6 +2068,11 @@ internal object ConversationWire {
             reasoningText = root.string("reasoningText"),
             reasoningComplete = root.bool("reasoningComplete") ?: false,
             reasoningContinuationHandle = root.string("reasoningContinuationHandle"),
+            answerBaseSequence = root.long("answerBaseSequence"),
+            answerDurableSequence = root.long("answerDurableSequence"),
+            reasoningBaseSequence = root.long("reasoningBaseSequence"),
+            reasoningDurableSequence = root.long("reasoningDurableSequence"),
+            textRevision = root.long("textRevision"),
             // The native page emits `policyRevision` as an object OR an
             // explicit null (temporary run / no durable row). Only the
             // object form yields a CAS identity; JSON null and absence both

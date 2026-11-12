@@ -326,7 +326,9 @@ enum RunSnapshotWireBuilder {
                       query: SnapshotQuery,
                       ownership: RunOwnership?,
                       liveService: ConversationRunService?,
-                      readBundle: RunPersistenceBundle? = nil) async -> RunDomainReply {
+                      readBundle: RunPersistenceBundle? = nil,
+                      metadataOnly: Bool = false,
+                      snapshotRequestID: UUID? = nil) async -> RunDomainReply {
         // The RUN'S OWN stores answer every run-scoped read. An ordinary
         // run's bundle IS the durable cluster; a temporary run's bundle is
         // the session's ORIGINAL Ephemeral* set. The durable singleton is
@@ -341,6 +343,33 @@ enum RunSnapshotWireBuilder {
         }
         guard let record, record.conversationID == query.conversationID else {
             return RunDomainReply(.rejected(RunDomainError(.notFound, .runMissing)))
+        }
+        if metadataOnly {
+            // Read the durable cursor BEFORE live state. A terminal crossing
+            // this read is either visible here or is newer than this cursor
+            // and reaches the independent device observer. No text staging.
+            let watermark = (try? await stores.runs.recentEvents(
+                runID: record.id, limit: 1))?.last?.sequence ?? 0
+            let liveSnapshot = await liveService?.snapshot()
+            let stillOwned = await domain.ownsLiveService(liveService,
+                runID: record.id, conversationID: record.conversationID)
+            let terminal = !FacadeRunDomain.activeRunStates.contains(record.state)
+                || liveSnapshot?.isTerminal == true
+            let page: [String: SettingsDomainV1.JSONValue] = [
+                "schema": .string(BridgeV3.commandSchema),
+                "conversationID": .string(record.conversationID.uuidString),
+                "runID": .string(record.id.uuidString),
+                "durableState": .string(record.state),
+                "revision": .object([
+                    "resourceID": .string(RunWireRevision.runResourceID(record.id)),
+                    "version": .string(RunWireRevision.runVersion(state: record.state))]),
+                "isTerminal": .boolean(terminal),
+                "liveOwner": .boolean(stillOwned && liveSnapshot != nil),
+                "durableWatermark": .integer(Int64(watermark)),
+            ]
+            return RunDomainReply(.completedPage(
+                page: RunTypedPage(object: .object(page), pageBytes: measured(page)),
+                nextCursor: nil))
         }
         var snapshot: ConversationRunService.Snapshot?
         if let liveService { snapshot = await liveService.snapshot() }
@@ -560,7 +589,8 @@ enum RunSnapshotWireBuilder {
             if answer.utf8.count > RunDomainLimits.snapshotInlineBudgetBytes {
                 guard let handle = await domain.stageSnapshotText(
                     Data(answer.utf8), runID: record.id,
-                    conversationID: record.conversationID) else {
+                    conversationID: record.conversationID,
+                    snapshotRequestID: snapshotRequestID) else {
                     // Oversized live answer cannot be staged (reader
                     // saturated/refused) and cannot fit the frame inline:
                     // explicit typed refusal — NEVER a null-text page that
@@ -584,7 +614,8 @@ enum RunSnapshotWireBuilder {
             if reasoning.utf8.count > RunDomainLimits.snapshotInlineBudgetBytes / 2 {
                 guard let handle = await domain.stageSnapshotText(
                     Data(reasoning.utf8), runID: record.id,
-                    conversationID: record.conversationID) else {
+                    conversationID: record.conversationID,
+                    snapshotRequestID: snapshotRequestID) else {
                     // Same truth rule as the answer: no silent loss.
                     return RunDomainReply(.rejected(
                         RunDomainError(.payloadTooLarge, .payloadTooLarge)))
@@ -602,6 +633,11 @@ enum RunSnapshotWireBuilder {
                 reasoningInline = reasoning
             }
             fields["answerText"] = answerInline.map { .string($0) } ?? .null
+            fields["answerBaseSequence"] = .integer(Int64(snapshot.answerBaseSequence))
+            fields["answerDurableSequence"] = .integer(Int64(snapshot.answerDurableSequence))
+            fields["reasoningBaseSequence"] = .integer(Int64(snapshot.reasoningBaseSequence))
+            fields["reasoningDurableSequence"] = .integer(Int64(snapshot.reasoningDurableSequence))
+            fields["textRevision"] = .integer(Int64(snapshot.textRevision))
             // An inline non-empty answer is COMPLETE only at the real
             // terminal; mid-stream content is partial truth (the durable
             // events remain the correctness path) and must never report
@@ -630,7 +666,8 @@ enum RunSnapshotWireBuilder {
         // always re-measuring the COMPLETE encoded object.
         var page: [String: SettingsDomainV1.JSONValue] = fields
         let fit = await domain.fitSnapshotPage(&page, runID: record.id,
-                                               conversationID: record.conversationID)
+                                               conversationID: record.conversationID,
+                                               snapshotRequestID: snapshotRequestID)
         guard fit else {
             // Authoritative minimum frame cannot fit: typed failure beats
             // silent truncation. (The durable pages + cursor walk remain.)
@@ -837,19 +874,18 @@ extension FacadeRunDomain {
     /// per-generation reader and index the handle to its REAL owners. The
     /// per-generation reader makes handle expiry honest (a new generation
     /// answers typed notFound; handles never resurrect).
-    func stageSnapshotText(_ data: Data, runID: UUID, conversationID: UUID) -> String? {
+    func stageSnapshotText(_ data: Data, runID: UUID, conversationID: UUID,
+                           snapshotRequestID: UUID? = nil) -> String? {
         guard !data.isEmpty else { return nil }
         guard case .staged(let handle) = components.content.stage(data) else {
             return nil   // saturation: honest inline-only fallback below
         }
-        contentHandles[handle] = (runID: runID, conversationID: conversationID, epoch: epoch)
+        contentHandles[handle] = (runID: runID, conversationID: conversationID,
+                                 epoch: epoch, snapshotRequestID: snapshotRequestID)
         contentHandleOrder.append(handle)
-        while contentHandleOrder.count > 64,
-              let evictable = contentHandleOrder.first(where: { $0 != handle }) {
-            components.content.release(handle: evictable)
-            contentHandles.removeValue(forKey: evictable)
-            contentHandleOrder.removeAll { $0 == evictable }
-        }
+        // The reader's real limit is 32, not 64. Do not silently revoke
+        // in-use handles: the caller explicitly acknowledges obsolete text
+        // on its next snapshot; terminal/root retirement releases the rest.
         return handle
     }
 
@@ -860,16 +896,23 @@ extension FacadeRunDomain {
     /// loss).
     func fitSnapshotPage(_ page: inout [String: SettingsDomainV1.JSONValue],
                          runID: UUID,
-                         conversationID: UUID) async -> Bool {
+                         conversationID: UUID,
+                         snapshotRequestID: UUID? = nil) async -> Bool {
         var guardCount = 0
         while measured(page) > RunDomainLimits.pageBudgetBytes, guardCount < 24 {
             guardCount += 1
             if RunSnapshotWireBuilder.shrinkDroppable(&page) { continue }
             if case .string(let text)? = page["answerText"], !text.isEmpty {
+                if case .string? = page["answerContinuationHandle"] {
+                    page["answerText"] = .null
+                    page["answerComplete"] = .boolean(false)
+                    continue
+                }
                 guard page["answerContinuationHandle"] == nil
                         || page["answerContinuationHandle"] == .null,
                       let handle = stageSnapshotText(Data(text.utf8), runID: runID,
-                                                     conversationID: conversationID) else {
+                                                     conversationID: conversationID,
+                                                     snapshotRequestID: snapshotRequestID) else {
                     // Staging saturated/refused with text too big for the
                     // frame: NEVER null the only carrier and report success —
                     // the page fails typed instead.
@@ -881,10 +924,16 @@ extension FacadeRunDomain {
                 continue
             }
             if case .string(let text)? = page["reasoningText"], !text.isEmpty {
+                if case .string? = page["reasoningContinuationHandle"] {
+                    page["reasoningText"] = .null
+                    page["reasoningComplete"] = .boolean(false)
+                    continue
+                }
                 guard page["reasoningContinuationHandle"] == nil
                         || page["reasoningContinuationHandle"] == .null,
                       let handle = stageSnapshotText(Data(text.utf8), runID: runID,
-                                                     conversationID: conversationID) else {
+                                                     conversationID: conversationID,
+                                                     snapshotRequestID: snapshotRequestID) else {
                     return false
                 }
                 page["reasoningContinuationHandle"] = .string(handle)

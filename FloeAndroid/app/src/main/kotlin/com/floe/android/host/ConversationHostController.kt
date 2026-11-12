@@ -106,8 +106,8 @@ private const val QUESTION_DISCOVERY_ATTEMPTS = 8
 private const val QUESTION_DISCOVERY_INTERVAL_MILLIS = 400L
 // Full's device handler has a 25s operation budget. Discovery covers that
 // preparation window; it does not extend tool execution or approve takeover.
-private const val PHONE_QUESTION_DISCOVERY_ATTEMPTS = 32
-private const val PHONE_QUESTION_DISCOVERY_INTERVAL_MILLIS = 1_000L
+private const val DEVICE_QUESTION_DISCOVERY_ATTEMPTS = 32
+private const val DEVICE_QUESTION_DISCOVERY_INTERVAL_MILLIS = 1_000L
 /**
  * Run-event tool names that may carry a phone-control handover question.
  * The canonical device-namespace names are what the runtime emits today; the
@@ -116,7 +116,7 @@ private const val PHONE_QUESTION_DISCOVERY_INTERVAL_MILLIS = 1_000L
  * still discovered. Exact closed set — never a prefix match, so unknown
  * phone.* tools can never acquire question discovery.
  */
-private val PHONE_QUESTION_TOOLS = setOf(
+private val DEVICE_QUESTION_TOOLS = setOf(
     "device.observe", "device.act", "device.screenshot",
     "phone.observe", "phone.act", "phone.screenshot",
 )
@@ -2666,12 +2666,15 @@ class ConversationHostController internal constructor(
         if (eventPumps.containsKey(runID)) return
         val conversationId = session.conversationId
         val sessionEpoch = session.sessionEpoch
+        val delivered = java.util.concurrent.atomic.AtomicLong(afterSequence)
+        val rootGeneration = client().generation()
         val handle = client().openRunEventStream(
             taskID = conversationId,
             runID = runID,
             environmentID = null,
             jobID = null,
             onEvent = { frame ->
+                delivered.accumulateAndGet(frame.sequence) { previous, next -> maxOf(previous, next) }
                 onRunEvent(
                     entry, runID, frame, conversationId, sessionEpoch, streamGeneration,
                 )
@@ -2705,15 +2708,59 @@ class ConversationHostController internal constructor(
                 }
                 entry.builder.eventStreamFailure(runID, code)
                 entry.holder.applyHostSnapshot(entry.builder.build())
-                refreshRunSnapshot(
-                    entry,
-                    runID,
-                    reconcileTerminal = true,
-                    streamGeneration = streamGeneration,
-                )
+                recoverRunReadStream(entry, runID, conversationId, sessionEpoch,
+                    streamGeneration, rootGeneration, delivered.get(), code)
             },
         )
         eventPumps[runID] = handle
+    }
+
+    /** Recover the READ subscription only after a fresh native ownership
+     * proof. No model/tool is replayed and a missing owner never becomes a
+     * claim that the task is running. Repeated real active-state proofs may
+     * sustain observation across a long silent tool; retirement fences it. */
+    private fun recoverRunReadStream(
+        entry: ConversationFlowHolderEntry, runID: String, conversationId: String,
+        sessionEpoch: Long, streamGeneration: Long, rootGeneration: Long,
+        afterSequence: Long, failureCode: String,
+    ) {
+        if (failureCode == "eventProtocolMismatch") return
+        host.scope.launch(host.ioDispatcher) {
+            kotlinx.coroutines.delay(750)
+            fun current() = ownCurrentEntry(entry, conversationId, sessionEpoch) &&
+                currentRunStreamGeneration(conversationId, runID) == streamGeneration &&
+                client().generation() == rootGeneration
+            if (!current()) return@launch
+            host.trackOperation(HostCommandRequest(
+                command = "run.snapshot", scope = HostScope.TaskExecution(conversationId, runID),
+                stateful = false, correlationID = client().correlationID("run-read-recover"),
+                payload = JsonObject(mapOf("metadataOnly" to JsonPrimitive(true))),
+            )) { outcome ->
+                if (!current()) return@trackOperation
+                val page = (outcome as? HostOperationOutcome.Completed)?.value
+                    ?.let(ConversationWire::decodeSnapshotPage) ?: return@trackOperation
+                if (!sameUUIDIdentity(page.runID, runID) ||
+                    !sameUUIDIdentity(page.conversationID, conversationId)) return@trackOperation
+                if (page.durableState in ThreadProjectionBuilder.TERMINAL_STATES) {
+                    refreshRunSnapshot(entry, runID, reconcileTerminal = true,
+                        streamGeneration = streamGeneration)
+                } else if (page.liveOwner) {
+                    // A service may have finished just before its terminal
+                    // store write. Keep reading until the durable terminal
+                    // arrives; this never admits another device action.
+                    entry.builder.eventStreamRecovered(runID, failureCode)
+                    // An immediate native failure can precede publication of
+                    // its handle in this map. Remove only that closed handle,
+                    // never a replacement subscription installed meanwhile.
+                    eventPumps[runID]?.takeIf { it.isClosed }?.let { dead ->
+                        if (eventPumps[runID] === dead) eventPumps.remove(runID)
+                    }
+                    openRunEventStream(entry.holder.session, entry, runID,
+                        streamGeneration = streamGeneration, afterSequence = afterSequence)
+                    refreshRunSnapshot(entry, runID, streamGeneration = streamGeneration)
+                }
+            }
+        }
     }
 
     private fun onRunEvent(
@@ -2734,7 +2781,7 @@ class ConversationHostController internal constructor(
         if (frame.kind == "toolRequest") {
             val tool = frame.payload?.string("tool")
             val callID = frame.payload?.string("id") ?: frame.payload?.string("callID")
-            if ((tool == "user.ask" || tool in PHONE_QUESTION_TOOLS) && callID != null) {
+            if ((tool == "user.ask" || tool in DEVICE_QUESTION_TOOLS) && callID != null) {
                 // The coordinator registers and parks the durable question
                 // inside this tool execution, i.e. AFTER this frame. Start
                 // the bounded authoritative re-read window now; it is the
@@ -2742,7 +2789,7 @@ class ConversationHostController internal constructor(
                 // emits no further live frames.
                 beginQuestionDiscovery(
                     entry, runID, callID, conversationId, sessionEpoch, streamGeneration,
-                    phonePreparation = tool in PHONE_QUESTION_TOOLS,
+                    phonePreparation = tool in DEVICE_QUESTION_TOOLS,
                 )
             }
         } else if (frame.kind == "toolResult") {
@@ -2781,13 +2828,13 @@ class ConversationHostController internal constructor(
         } else if (frame.kind == "approval") {
             val tool = frame.payload?.string("tool")
             val callID = frame.payload?.string("callID") ?: frame.payload?.string("id")
-            if ((tool == "user.ask" || tool in PHONE_QUESTION_TOOLS) && callID != null) {
+            if ((tool == "user.ask" || tool in DEVICE_QUESTION_TOOLS) && callID != null) {
                 // Approval can take longer than the original discovery
                 // window. The question is created only AFTER approval, so
                 // start a fresh owned window at this durable boundary.
                 beginQuestionDiscovery(
                     entry, runID, callID, conversationId, sessionEpoch, streamGeneration,
-                    phonePreparation = tool in PHONE_QUESTION_TOOLS,
+                    phonePreparation = tool in DEVICE_QUESTION_TOOLS,
                     restart = true,
                 )
             }
@@ -2824,8 +2871,8 @@ class ConversationHostController internal constructor(
         if (restart) questionDiscoveryJobs.remove(key)?.cancel()
         if (questionDiscoveryJobs[key]?.isActive == true) return
         val job = host.scope.launch(host.ioDispatcher) {
-            val attempts = if (phonePreparation) PHONE_QUESTION_DISCOVERY_ATTEMPTS else QUESTION_DISCOVERY_ATTEMPTS
-            val interval = if (phonePreparation) PHONE_QUESTION_DISCOVERY_INTERVAL_MILLIS else QUESTION_DISCOVERY_INTERVAL_MILLIS
+            val attempts = if (phonePreparation) DEVICE_QUESTION_DISCOVERY_ATTEMPTS else QUESTION_DISCOVERY_ATTEMPTS
+            val interval = if (phonePreparation) DEVICE_QUESTION_DISCOVERY_INTERVAL_MILLIS else QUESTION_DISCOVERY_INTERVAL_MILLIS
             repeat(attempts) { attempt ->
                 if (attempt > 0) delay(interval)
                 if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@launch

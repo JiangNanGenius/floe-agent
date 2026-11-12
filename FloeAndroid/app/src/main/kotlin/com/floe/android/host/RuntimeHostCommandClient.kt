@@ -931,6 +931,8 @@ class EventPumpHandle internal constructor(
     /** Resume cursor: callers may open after a known durable watermark. */
     private var nextSequence = initialSequence
 
+    internal val isClosed: Boolean get() = disposed.get()
+
     fun close() {
         if (disposed.compareAndSet(false, true)) {
             job?.cancel()

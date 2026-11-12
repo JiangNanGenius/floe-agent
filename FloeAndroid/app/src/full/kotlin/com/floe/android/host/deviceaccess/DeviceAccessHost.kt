@@ -3301,7 +3301,8 @@ internal class DeviceAccessHost(
         // A native platform claim supplies this owner; the real run service,
         // rather than whether its chat was opened/selected, proves liveness.
         if (!deviceRunLiveness.confirm(owner, call.epoch))
-            return@withLock PlatformToolOutcome.Failure("device_run_unavailable")
+            return@withLock PlatformToolOutcome.Failure("device_run_unavailable",
+                deviceRunLiveness.refusalCode)
         if (closed || userStopped || !PlatformToolsNativeLive.isLive(call.claim) ||
             PlatformToolsNativeLive.shouldStop(call.claim)) {
             deviceRunLiveness.stop()

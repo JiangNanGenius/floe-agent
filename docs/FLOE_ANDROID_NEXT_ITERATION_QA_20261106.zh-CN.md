@@ -1147,3 +1147,16 @@ English: Independent G4 on6b9855a72/native43 displays the Linux update on the fi
 后续维护继续沿原编号接收真实反馈，并处理已登记的iOS增量。网站Android／共享帮助目录现已就绪，新增App原生文档页另作下一维护包，未进入这个不可变APK。真实笔、射频、USB配件、厂商Root与不同锁屏方式保持未验边界，不将硬件不足改称缺实现已通过。详见[1.0.0发行验收](releases/ANDROID_1_0_0_VERIFIED.md)。
 
 English: The agreed N01–N08 implementation and this delivery close with immutable1.0.0/code108. Exact public bytes, compiled legacy/current discovery and a real Samsung in-App full107→108 update pass, preserving UIDs and baseline data; Linux execution and report readback pass after upgrading. Cross-version delivery uses the full package by design. S2, G4, prior faults, device restoration and output retirement remain separately evidenced. This is bounded acceptance rather than every hardware/combination claim. New App documentation and additive iOS differences are independent subsequent maintenance, not changes to this frozen APK.
+
+
+## 2026-11-12 1.0.1 长任务维护候选（代码检查）
+
+长任务外测发现设备操作在任务仍继续输出时被拒绝，以及聊天出现重复段落、停止刷新后需重新进入。原运行及失败保留；完成状态不代表手机、媒体和日历操作均已成功。规范工具链继续统一为 `device.observe`、`device.act`、`device.screenshot`，注册、派发、审批、交互等待、恢复、敏感输入脱敏及指南一致；旧 `phone.*` 仅作精确历史兼容，不重复展示。
+
+修复将设备存活证明与大文本展示读取分开，仍验证真实任务、运行、根代际和终态；展示快照显式归还本任务已消费的续读句柄，失败构页仅回收其未交付分配。文本合并使用当前步骤对应的真实持久事件序号和文本修订，不靠删除相同句子消重。读取流丢失后，只有重新确认真实原生归属才能从已交付游标接续读取，不重放模型或设备动作，终态重新读取已有成果。
+
+实际 Swift 对象／测试编译及14项快照检查通过，包含96次连续读取、容量耗尽、失败清理及跨所有者隔离。Android Full Release Kotlin消费端及58项相关JVM检查通过，覆盖多步文本、合法重复、旧快照、读取恢复、终态、代际与规范目录。首轮编译和测试夹具错误均保留，修正后定向重验；没有真实云调用。已完成Mac验证scratch清理，原日志、源码、当前与必要回退包保留。
+
+待交付的是私有1.0.1/code109候选：仍需实际ARM64原生生产、签名Full包和三星保留数据升级。原场景接续由现有实机运行验收，不以测试夹具代替。另见原日志中的Linux工作区所有者不可用错误，当前不与设备证明失败合并归因，也未宣称已闭合。公开1.0.0标签、附件及更新渠道不因本维护改写。
+
+English: The canonical phone/tablet toolchain remains device.observe/act/screenshot throughout discovery, dispatch, approval, interaction waits, restoration and sensitive-input handling; exact old aliases preserve history only. This maintenance separates native device-run proof from display text allocation, acknowledges owned obsolete continuations, rolls back only undelivered page allocations, and merges live/durable text using actual step/event provenance. Read-stream recovery requires fresh native ownership and resumes at the delivered cursor without replaying models or actions. Actual Swift object compilation and14 focused cases, Full Release Kotlin and58 JVM cases pass. The private1.0.1/code109 still needs ARM64 production, signing and a data-preserving Samsung upgrade before the original-scene continuation. The independent Linux workspace-owner failure remains unproven and is not marked fixed. Public1.0.0 stays immutable.

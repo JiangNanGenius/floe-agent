@@ -682,7 +682,7 @@ public actor FacadeRunDomain {
     internal var liveServices: [UUID: ConversationRunService] = [:]
     /// Snapshot continuation handles owned by (run, conversation, epoch).
     internal var contentHandles: [String: (runID: UUID, conversationID: UUID,
-                                           epoch: UInt64)] = [:]
+                                           epoch: UInt64, snapshotRequestID: UUID?)] = [:]
     internal var contentHandleOrder: [String] = []
     internal var lastObservedState: [UUID: String] = [:]
     /// P8 feed operation leases: per-conversation exact tokens held until
@@ -3761,12 +3761,71 @@ public actor FacadeRunDomain {
             epoch: epoch, conversationID: owner.taskID) {
             readBundle = route.runBundle
         }
-        return await RunSnapshotWireBuilder.build(
+        let metadataOnly: Bool
+        do {
+            let supplied = envelope.payloadValue ?? .object([:])
+            let value: SettingsDomainV1.JSONValue
+            if case .null = supplied { value = .object([:]) }
+            else { value = supplied }
+            let payload = try RunPayloadReader.Object(value,
+                allowed: ["metadataOnly", "releaseTextHandles"])
+            metadataOnly = try payload.optionalBool("metadataOnly") ?? false
+            let values = try payload.optionalArray("releaseTextHandles", maxItems: 32) ?? []
+            let handles = try values.map { value -> String in
+                guard case .string(let handle) = value,
+                      handle.hasPrefix(FacadeContentReader.Limits.handlePrefix),
+                      handle.utf8.count == FacadeContentReader.Limits.handlePrefix.utf8.count
+                        + FacadeContentReader.Limits.handleHexLength else {
+                    throw RunDomainError(.invalidState, .payloadInvalid)
+                }
+                return handle
+            }
+            // Validate the ENTIRE acknowledgement before releasing any blob.
+            for handle in handles {
+                if let claimed = contentHandles[handle],
+                   claimed.runID != owner.runID || claimed.conversationID != owner.taskID
+                    || claimed.epoch != epoch {
+                    throw RunDomainError(.invalidState, .payloadInvalid)
+                }
+            }
+            for handle in handles where contentHandles[handle] != nil {
+                components.content.release(handle: handle)
+                contentHandles.removeValue(forKey: handle)
+            }
+            contentHandleOrder.removeAll { contentHandles[$0] == nil }
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+        }
+        let requestID = UUID()
+        let reply = await RunSnapshotWireBuilder.build(
             domain: self, components: components,
             query: SnapshotQuery(conversationID: owner.taskID, runID: owner.runID),
             ownership: owners[owner.runID],
             liveService: liveServices[owner.runID],
-            readBundle: readBundle)
+            readBundle: readBundle, metadataOnly: metadataOnly,
+            snapshotRequestID: requestID)
+        if case .completedPage = reply.outcome { return reply }
+        // Failed page construction must not strand handles never delivered
+        // to a client. The request token isolates concurrent reads/owners.
+        let abandoned = contentHandles.keys.filter {
+            contentHandles[$0]?.snapshotRequestID == requestID
+        }
+        for handle in abandoned {
+            components.content.release(handle: handle)
+            contentHandles.removeValue(forKey: handle)
+        }
+        contentHandleOrder.removeAll { contentHandles[$0] == nil }
+        return reply
+    }
+
+    func ownsLiveService(_ service: ConversationRunService?, runID: UUID,
+                         conversationID: UUID) -> Bool {
+        guard let service, let current = liveServices[runID], current === service,
+              let owner = owners[runID], owner.epoch == epoch,
+              owner.conversationID == conversationID else { return false }
+        return true
     }
 
     public func childList(envelope: RunCommandEnvelope) async -> RunDomainReply {

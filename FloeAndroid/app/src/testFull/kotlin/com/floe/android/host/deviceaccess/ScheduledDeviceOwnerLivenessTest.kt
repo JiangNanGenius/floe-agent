@@ -27,6 +27,7 @@ class ScheduledDeviceOwnerLivenessTest {
 
     private class Source(owner: PhoneControlOwner) : DeviceRunReadPort {
         var epoch: Long? = 7
+        var failure: String? = null
         var proof: DeviceRunProof? = DeviceRunProof(
             owner.taskID.toString().uppercase(), owner.runID.toString().uppercase(),
             terminal = false, liveOwner = true, watermark = 40,
@@ -37,6 +38,7 @@ class ScheduledDeviceOwnerLivenessTest {
         val subscriptions = mutableListOf<Subscription>()
         val watermarks = mutableListOf<Long>()
         override fun currentEpoch() = epoch
+        override fun snapshotFailureCode() = failure
         override suspend fun snapshot(owner: PhoneControlOwner): DeviceRunProof? {
             readCount++
             beforeRead?.invoke()
@@ -52,6 +54,23 @@ class ScheduledDeviceOwnerLivenessTest {
             subscriptions += it
             whileOpening?.invoke(it)
         }
+    }
+
+    @Test fun unreadableSnapshotAndActualTerminalKeepDifferentDiagnostics() = runBlocking {
+        val source = Source(owner)
+        val good = source.proof!!
+        val live = DeviceRunLiveness(source) {}
+        source.proof = null
+        source.failure = "snapshot_failed_payloadTooLarge"
+        assertFalse(live.confirm(owner, 7))
+        assertEquals("snapshot_failed_payloadTooLarge", live.refusalCode)
+        source.proof = good.copy(terminal = true)
+        assertFalse(live.confirm(owner, 7))
+        assertEquals("run_terminal", live.refusalCode)
+        source.proof = good
+        assertTrue(live.confirm(owner, 7))
+        assertNull(live.refusalCode)
+        live.stop()
     }
 
     @Test fun unopenedScheduledTaskUsesExactNativeOwnerAndSnapshotWatermark() = runBlocking {

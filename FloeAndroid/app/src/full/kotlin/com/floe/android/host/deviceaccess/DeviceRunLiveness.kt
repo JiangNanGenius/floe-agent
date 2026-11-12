@@ -14,6 +14,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 internal data class DeviceRunProof(
     val taskID: String?,
@@ -26,6 +28,7 @@ internal data class DeviceRunProof(
 /** Read-side projection of the existing native run service; grants stay with the device host. */
 internal interface DeviceRunReadPort {
     fun currentEpoch(): Long?
+    fun snapshotFailureCode(): String? = null
     suspend fun snapshot(owner: PhoneControlOwner): DeviceRunProof?
     fun observe(
         owner: PhoneControlOwner,
@@ -53,6 +56,8 @@ internal class DeviceRunLiveness(
     private val admission = Mutex()
     private val current = AtomicReference<Observation?>(null)
     private val stopFence = AtomicLong()
+    @Volatile var refusalCode: String? = null
+        private set
 
     /** Null means this owner has never been observed here; false also fences a retired proof. */
     fun answer(owner: PhoneControlOwner, epoch: Long?): Boolean? {
@@ -63,7 +68,10 @@ internal class DeviceRunLiveness(
     }
 
     suspend fun confirm(owner: PhoneControlOwner, epoch: Long): Boolean = admission.withLock {
-        if (epoch <= 0 || source.currentEpoch() != epoch) return@withLock false
+        if (epoch <= 0 || source.currentEpoch() != epoch) {
+            refusalCode = "epoch_changed"
+            return@withLock false
+        }
         if (answer(owner, epoch) == true) return@withLock true
         val fence = stopFence.get()
         val proof = try {
@@ -79,6 +87,15 @@ internal class DeviceRunLiveness(
             !owner.taskID.toString().equals(proof.taskID, ignoreCase = true) ||
             !owner.runID.toString().equals(proof.runID, ignoreCase = true)
         ) {
+            refusalCode = when {
+                stopFence.get() != fence -> "control_stopped"
+                source.currentEpoch() != epoch -> "epoch_changed"
+                proof == null -> source.snapshotFailureCode() ?: "snapshot_unavailable"
+                proof.terminal -> "run_terminal"
+                !proof.liveOwner -> "owner_unavailable"
+                proof.watermark < 0 -> "snapshot_invalid"
+                else -> "owner_mismatch"
+            }
             current.get()?.takeIf { it.owner == owner }?.let(::end)
             return@withLock false
         }
@@ -91,12 +108,18 @@ internal class DeviceRunLiveness(
                     // A retried run keeps its id; its old terminal is below the new snapshot.
                     if (sequence > observed.watermark && current.get() === observed) end(observed)
                 },
-                onLost = { if (current.get() === observed) end(observed) },
+                onLost = {
+                    if (current.get() === observed) {
+                        refusalCode = "observation_lost"
+                        end(observed)
+                    }
+                },
             )
         } catch (cancelled: CancellationException) {
             end(observed)
             throw cancelled
         } catch (_: Exception) {
+            refusalCode = "observation_unavailable"
             end(observed)
             return@withLock false
         }
@@ -104,10 +127,12 @@ internal class DeviceRunLiveness(
         if (current.get() !== observed || stopFence.get() != fence || source.currentEpoch() != epoch ||
             !observed.state.compareAndSet(State.CHECKING, State.LIVE)
         ) {
+            refusalCode = refusalCode ?: "observation_lost"
             observed.stream.getAndSet(null)?.let { runCatching { it.close() } }
             end(observed)
             return@withLock false
         }
+        refusalCode = null
         onChanged()
         answer(owner, epoch) == true
     }
@@ -126,25 +151,45 @@ internal class DeviceRunLiveness(
 }
 
 internal class HostDeviceRunReadPort(private val host: RuntimeHost) : DeviceRunReadPort {
+    private val failure = AtomicReference<String?>(null)
     override fun currentEpoch(): Long? = host.nativeRootEpoch()
+    override fun snapshotFailureCode(): String? = failure.get()
 
     override suspend fun snapshot(owner: PhoneControlOwner): DeviceRunProof? {
-        val result = CompletableDeferred<ConversationWire.SnapshotPage?>()
+        failure.set(null)
+        val result = CompletableDeferred<Pair<ConversationWire.SnapshotPage?, String?>>()
         host.trackOperation(
             HostCommandRequest(
                 command = "run.snapshot",
                 scope = HostScope.TaskExecution(owner.taskID.toString(), owner.runID.toString()),
                 stateful = false,
                 correlationID = host.commandClient.correlationID("device-run"),
+                // Input authority needs live identity/state, not a large
+                // display snapshot or a continuation-content allocation.
+                payload = JsonObject(mapOf("metadataOnly" to JsonPrimitive(true))),
             ),
         ) { outcome ->
-            result.complete((outcome as? HostOperationOutcome.Completed)?.value
-                ?.let(ConversationWire::decodeSnapshotPage))
+            val page = (outcome as? HostOperationOutcome.Completed)?.value
+                ?.let(ConversationWire::decodeSnapshotPage)
+            val code = when (outcome) {
+                is HostOperationOutcome.Completed -> if (page == null) "snapshot_invalid" else null
+                is HostOperationOutcome.Failed -> "snapshot_failed_" + safeCode(outcome.code)
+                is HostOperationOutcome.Rejected -> "snapshot_rejected_" + safeCode(outcome.code)
+                HostOperationOutcome.Cancelled -> "snapshot_cancelled"
+                HostOperationOutcome.Superseded -> "epoch_changed"
+            }
+            result.complete(page to code)
         }
-        val page = withTimeoutOrNull(5_000L) { result.await() } ?: return null
+        val reply = withTimeoutOrNull(5_000L) { result.await() }
+        failure.set(reply?.second ?: if (reply == null) "snapshot_timeout" else null)
+        val page = reply?.first ?: return null
         return DeviceRunProof(page.conversationID, page.runID, page.isTerminal,
             page.liveOwner, page.durableWatermark)
     }
+
+    private fun safeCode(value: String): String = value
+        .take(64).takeIf { it.isNotEmpty() && it.all { c -> c in 'a'..'z' ||
+            c in 'A'..'Z' || c in '0'..'9' || c == '_' || c == '-' } } ?: "unknown"
 
     override fun observe(
         owner: PhoneControlOwner,

@@ -1406,6 +1406,8 @@ class RuntimeHost internal constructor(
      * never presented as a domain receipt. Terminal-once delivery and
      * effect ownership are unchanged.
      */
+    private val snapshotTextHandles = SnapshotTextHandleRegistry()
+
     internal fun trackOperation(
         request: HostCommandRequest,
         onFrame: (HostEffectFrame) -> Unit = { },
@@ -1413,7 +1415,8 @@ class RuntimeHost internal constructor(
         onTerminal: (HostOperationOutcome) -> Unit,
     ) {
         scope.launch(ioDispatcher) {
-            when (val submitted = commandClient.submit(request)) {
+            val snapshotTicket = snapshotTextHandles.prepare(request, commandClient.generation())
+            when (val submitted = commandClient.submit(snapshotTicket.request)) {
                 is HostSubmitResult.Accepted -> {
                     onAccepted?.invoke(submitted.operationReceiptID)
                     commandClient.openEffectStream(
@@ -1423,7 +1426,9 @@ class RuntimeHost internal constructor(
                         onTerminal = { terminal ->
                             logRunFailureMetadata(request, terminal)
                             commandClient.closeCorrelation(request.correlationID)
-                            onTerminal(terminal.toOperationOutcome())
+                            val outcome = terminal.toOperationOutcome()
+                            snapshotTextHandles.settle(snapshotTicket, outcome)
+                            onTerminal(outcome)
                         },
                         onFailure = { failure ->
                             logRunPumpFailureMetadata(request, failure)

@@ -692,6 +692,55 @@ class ConversationLiveStreamSnapshotTest {
     // ------------------------------------------------- terminal reconciliation
 
     @Test
+    fun post100ActiveOwnerRecoversReadStreamWithoutReplayingToolsOrSkippingReceipts() =
+        kotlinx.coroutines.runBlocking {
+            val exchange = ScriptedExchange()
+            exchange.queueSnapshot(runSnapshot(answerText = ""))
+            val host = readyHost(exchange)
+            val holder = loadedHolder(host)
+            exchange.queueEvent("assistantText", """{"text":"Before"}""")
+            assertTrue(awaitCondition { holder.snapshot.value?.liveAssistantText == "Before" })
+            val deliveredCursor = exchange.eventPollCursors().maxOrNull() ?: 0
+            // A later snapshot cursor must not skip receipts that this UI
+            // has not received. Recovery starts at its delivered cursor.
+            exchange.queueSnapshot(runSnapshot(answerText = "").dropLast(1) +
+                ",\"durableWatermark\":500}")
+            exchange.windowState = "runGone"
+            assertTrue(awaitCondition(4_000) {
+                exchange.requests.any { it.contains("run-read-recover") }
+            })
+            exchange.windowState = "attached"
+            exchange.queueEvent("assistantText", """{"text":"After"}""")
+            assertTrue("same screen must resume receiving actual durable text", awaitCondition(6_000) {
+                holder.snapshot.value?.liveAssistantText == "BeforeAfter"
+            })
+            assertNull(holder.snapshot.value?.continuationDetail)
+            assertTrue(exchange.eventPollCursors().any { it == deliveredCursor })
+            assertFalse(exchange.eventPollCursors().contains(500L))
+            for (command in listOf("run.start", "run.retry", "device.act")) {
+                assertTrue("recovery must never dispatch $command", exchange.commandsOf(command).isEmpty())
+            }
+        }
+
+    @Test
+    fun post100MissingNativeOwnerDoesNotReopenTheReadStream() = kotlinx.coroutines.runBlocking {
+        val exchange = ScriptedExchange()
+        exchange.queueSnapshot(runSnapshot(answerText = "Before"))
+        val host = readyHost(exchange)
+        val holder = loadedHolder(host)
+        assertTrue(awaitCondition { holder.snapshot.value?.liveAssistantText == "Before" })
+        exchange.queueSnapshot(runSnapshot(liveOwner = false, answerText = null))
+        exchange.windowState = "runGone"
+        assertTrue(awaitCondition(4_000) { exchange.requests.any { it.contains("run-read-recover") } })
+        assertTrue(awaitCondition { exchange.snapshotPolls.get() >= 2 })
+        val polls = exchange.eventPollCursors().size
+        delay(400)
+        assertEquals("missing owner is never fabricated into a running subscription",
+            polls, exchange.eventPollCursors().size)
+        assertEquals("Before", holder.snapshot.value?.liveAssistantText)
+    }
+
+    @Test
     fun terminalSnapshotAfterPumpDeathReconcilesCommittedRowsExactlyOnce() =
         kotlinx.coroutines.runBlocking {
             val exchange = ScriptedExchange()

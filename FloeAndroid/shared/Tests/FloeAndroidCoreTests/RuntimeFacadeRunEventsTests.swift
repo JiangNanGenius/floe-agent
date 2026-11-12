@@ -361,6 +361,148 @@ final class RuntimeFacadeRunEventsTests: XCTestCase {
         XCTAssertEqual(outcome, .fencedByEpoch)
     }
 
+    private func heldLargeSnapshot(reasoning: Bool = false) async throws
+        -> (FacadeRunDomain, UUID, UUID, RunGateBox) {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let gate = RunGateBox()
+        let chunk = String(repeating: "汉字🚀\"\\ / ", count: 150)
+        var events: [AgentEvent] = []
+        if reasoning {
+            events += (0..<25).map { _ in .reasoningSummary(.init(text: chunk)) }
+        }
+        events += (0..<25).map { _ in .textDelta(.init(text: chunk)) }
+        let count = events.count
+        events.append(.completed(.init(stopReason: .endTurn)))
+        fixture.adapter.enqueue(script: .init(events: events, stallAfter: count, gate: gate),
+                                forRequest: fixture.adapter.requestCount)
+        let reply = await launch(domain, conversationID: conversationID, goal: "large live snapshot",
+                                 receipt: "op:v1:" + String(repeating: "e", count: 32),
+                                 correlation: "corr-large-live")
+        let runID = try runID(from: reply)
+        let ready = await pollFor(timeoutSeconds: 8) {
+            guard let page = await domain.liveService(runID)?.snapshot() else { return false }
+            return page.streamedText.utf8.count > RunDomainLimits.snapshotInlineBudgetBytes
+                && (!reasoning || page.reasoningText.utf8.count > RunDomainLimits.snapshotInlineBudgetBytes)
+        }
+        if !ready { gate.release() }
+        XCTAssertTrue(ready, "actual service text must cross the inline limit before testing")
+        return (domain, conversationID, runID, gate)
+    }
+
+    func testPost100MetadataProofSurvivesFullDisplayContentSaturation() async throws {
+        let (domain, conversationID, runID, gate) = try await heldLargeSnapshot()
+        defer { gate.release() }
+        for _ in 0..<FacadeContentReader.Limits.maximumLiveHandles {
+            guard case .staged = fixture.content.stage(Data("other reader".utf8)) else {
+                return XCTFail("must fill the real reader handle limit")
+            }
+        }
+        let display = await domain.snapshot(envelope: fixture.executionEnvelope(
+            command: "run.snapshot", conversationID: conversationID, runID: runID,
+            payload: nil, correlation: "corr-display-full"))
+        guard case .rejected(let error) = display.outcome else {
+            return XCTFail("full display must retain its typed saturation failure")
+        }
+        XCTAssertEqual(error.code, .payloadTooLarge)
+        let proof = await domain.snapshot(envelope: fixture.executionEnvelope(
+            command: "run.snapshot", conversationID: conversationID, runID: runID,
+            payload: ["metadataOnly": true], correlation: "corr-proof-full"))
+        guard case .completedPage(let page, _) = proof.outcome,
+              case .object(let fields) = page.object else { return XCTFail("live metadata proof required") }
+        XCTAssertEqual(fields["conversationID"], .string(conversationID.uuidString))
+        XCTAssertEqual(fields["runID"], .string(runID.uuidString))
+        XCTAssertEqual(fields["liveOwner"], .boolean(true))
+        XCTAssertEqual(fields["isTerminal"], .boolean(false))
+        XCTAssertNil(fields["answerText"])
+        XCTAssertNil(fields["answerContinuationHandle"])
+        XCTAssertEqual(fixture.content.statsSnapshot()["liveHandles"] as? Int, 32)
+        gate.release()
+        _ = await waitDurableTerminal(fixture: fixture, runID: runID)
+        let ended = await domain.snapshot(envelope: fixture.executionEnvelope(
+            command: "run.snapshot", conversationID: conversationID, runID: runID,
+            payload: ["metadataOnly": true], correlation: "corr-proof-ended"))
+        guard case .completedPage(let terminal, _) = ended.outcome,
+              case .object(let terminalFields) = terminal.object else { return XCTFail("terminal proof required") }
+        XCTAssertEqual(terminalFields["isTerminal"], .boolean(true))
+    }
+
+    func testPost100NinetySixAcknowledgedDisplaySnapshotsStayBounded() async throws {
+        let (domain, conversationID, runID, gate) = try await heldLargeSnapshot()
+        defer { gate.release() }
+        var previous: [String] = []
+        for n in 0..<96 {
+            let reply = await domain.snapshot(envelope: fixture.executionEnvelope(
+                command: "run.snapshot", conversationID: conversationID, runID: runID,
+                payload: ["releaseTextHandles": previous], correlation: "corr-long-\(n)"))
+            guard case .completedPage(let page, _) = reply.outcome,
+                  case .object(let fields) = page.object,
+                  case .string(let handle)? = fields["answerContinuationHandle"] else {
+                return XCTFail("snapshot \(n) must still return the actual large text")
+            }
+            XCTAssertLessThanOrEqual(fixture.content.statsSnapshot()["liveHandles"] as? Int ?? 100, 1)
+            for old in previous {
+                guard case .notFound = fixture.content.read(handle: old, offset: 0, maxBytes: 1) else {
+                    return XCTFail("only acknowledged old blobs must be released")
+                }
+            }
+            guard case .slice = fixture.content.read(handle: handle, offset: 0, maxBytes: 128) else {
+                return XCTFail("current continuation must remain readable")
+            }
+            previous = [handle]
+        }
+        gate.release()
+        _ = await waitDurableTerminal(fixture: fixture, runID: runID)
+    }
+
+    func testPost100FailedPageReleasesOnlyItsUndeliveredText() async throws {
+        let (domain, conversationID, runID, gate) = try await heldLargeSnapshot(reasoning: true)
+        defer { gate.release() }
+        var foreign: [String] = []
+        for _ in 0..<31 {
+            guard case .staged(let handle) = fixture.content.stage(Data("foreign".utf8)) else {
+                return XCTFail("foreign staging required")
+            }
+            foreign.append(handle)
+        }
+        let reply = await domain.snapshot(envelope: fixture.executionEnvelope(
+            command: "run.snapshot", conversationID: conversationID, runID: runID,
+            payload: nil, correlation: "corr-partial-allocation"))
+        guard case .rejected(let error) = reply.outcome else {
+            return XCTFail("two large streams cannot fit the one remaining handle")
+        }
+        XCTAssertEqual(error.code, .payloadTooLarge)
+        XCTAssertEqual(fixture.content.statsSnapshot()["liveHandles"] as? Int, 31)
+        for handle in foreign {
+            guard case .slice = fixture.content.read(handle: handle, offset: 0, maxBytes: 32) else {
+                return XCTFail("a failed page must preserve another reader's bytes")
+            }
+        }
+        gate.release()
+        _ = await waitDurableTerminal(fixture: fixture, runID: runID)
+    }
+
+    func testPost100MixedForeignAcknowledgementIsRejectedBeforeAnyRelease() async throws {
+        let (domain, conversationID, runID, gate) = try await heldLargeSnapshot()
+        defer { gate.release() }
+        let own = await domain.stageSnapshotText(Data("own".utf8), runID: runID,
+                                                 conversationID: conversationID)
+        let foreign = await domain.stageSnapshotText(Data("other".utf8), runID: UUID(),
+                                                     conversationID: UUID())
+        let handles = try [XCTUnwrap(own), XCTUnwrap(foreign)]
+        let reply = await domain.snapshot(envelope: fixture.executionEnvelope(
+            command: "run.snapshot", conversationID: conversationID, runID: runID,
+            payload: ["releaseTextHandles": handles], correlation: "corr-foreign-ack"))
+        guard case .rejected = reply.outcome else { return XCTFail("foreign acknowledgement must fail") }
+        for handle in handles {
+            guard case .slice = fixture.content.read(handle: handle, offset: 0, maxBytes: 32) else {
+                return XCTFail("whole acknowledgement must validate before any release")
+            }
+        }
+        gate.release()
+        _ = await waitDurableTerminal(fixture: fixture, runID: runID)
+    }
+
     func testOversizedAnswerWithSaturatedContentReaderFailsTyped() async throws {
         let conversationID = try await fixture.makeOrdinaryConversation()
         let domain = fixture.makeDomain()

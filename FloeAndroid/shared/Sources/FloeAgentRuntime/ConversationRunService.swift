@@ -41,6 +41,13 @@ public actor ConversationRunService {
         /// this value rather than reconstructing authority from an event.
         public var pendingApproval: AgentState.WaitingApproval?
         public var checkpointReason: String?
+        /// Exact durable range of the current text step; independent of the
+        /// later journal watermark read by a display snapshot.
+        public var answerBaseSequence: Int
+        public var answerDurableSequence: Int
+        public var reasoningBaseSequence: Int
+        public var reasoningDurableSequence: Int
+        public var textRevision: Int
 
         public init(
             runID: UUID,
@@ -57,7 +64,12 @@ public actor ConversationRunService {
             providerAttempt: ProviderAttemptSnapshot? = nil,
             isTerminal: Bool,
             pendingApproval: AgentState.WaitingApproval? = nil,
-            checkpointReason: String? = nil
+            checkpointReason: String? = nil,
+            answerBaseSequence: Int = 0,
+            answerDurableSequence: Int = 0,
+            reasoningBaseSequence: Int = 0,
+            reasoningDurableSequence: Int = 0,
+            textRevision: Int = 0
         ) {
             self.runID = runID
             self.conversationID = conversationID
@@ -70,6 +82,11 @@ public actor ConversationRunService {
             self.isTerminal = isTerminal
             self.pendingApproval = pendingApproval
             self.checkpointReason = checkpointReason
+            self.answerBaseSequence = answerBaseSequence
+            self.answerDurableSequence = answerDurableSequence
+            self.reasoningBaseSequence = reasoningBaseSequence
+            self.reasoningDurableSequence = reasoningDurableSequence
+            self.textRevision = textRevision
         }
     }
 
@@ -103,6 +120,11 @@ public actor ConversationRunService {
     private let dynamicApprovalPolicy: DynamicApprovalPolicy
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
+    private var answerBaseSequence = 0
+    private var lastAssistantTextSequence = 0
+    private var reasoningBaseSequence = 0
+    private var lastReasoningSequence = 0
+    private var textRevision = 0
     /// True once a provider text delta was dropped or shortened because
     /// `streamedTextLimitBytes` was full. The completion path persists an
     /// explicit truncation notice before the terminal event so lost output
@@ -412,7 +434,12 @@ public actor ConversationRunService {
             providerAttempt: providerAttempt,
             isTerminal: isTerminal(latestState),
             pendingApproval: pendingApproval,
-            checkpointReason: checkpointReason
+            checkpointReason: checkpointReason,
+            answerBaseSequence: answerBaseSequence,
+            answerDurableSequence: lastAssistantTextSequence,
+            reasoningBaseSequence: reasoningBaseSequence,
+            reasoningDurableSequence: lastReasoningSequence,
+            textRevision: textRevision
         )
     }
 
@@ -659,6 +686,9 @@ public actor ConversationRunService {
             // Drop it from the live projection before the exact dispatch
             // checkpoint is replayed, otherwise the recovered answer would
             // concatenate a partial prefix and appear twice.
+            answerBaseSequence = lastAssistantTextSequence
+            reasoningBaseSequence = lastReasoningSequence
+            textRevision &+= 1
             streamedText = ""
             streamedTextCapped = false
             unflushedAssistantSegment = ""
@@ -715,6 +745,9 @@ public actor ConversationRunService {
         ), boundary: "assistantStep")
         guard persisted else { return }
         lastCompletedAssistantStepText = text
+        answerBaseSequence = lastAssistantTextSequence
+        reasoningBaseSequence = lastReasoningSequence
+        textRevision &+= 1
         streamedText = ""
         reasoningText = ""
         eventChannel.yield(.stateChanged(Self.harnessState(latestState)))
@@ -1103,6 +1136,7 @@ public actor ConversationRunService {
             if remaining > 0 {
                 let accepted = Self.utf8Prefix(delta.text, maxBytes: remaining)
                 streamedText += accepted
+                textRevision &+= 1
                 unflushedAssistantSegment += accepted
                 unpublishedAnswerText += accepted
                 if accepted.utf8.count < delta.text.utf8.count {
@@ -1119,6 +1153,7 @@ public actor ConversationRunService {
             if remaining > 0 {
                 let delta = Self.utf8Prefix(summary.text, maxBytes: remaining)
                 reasoningText += delta
+                textRevision &+= 1
                 unflushedReasoningText += delta
                 unpublishedReasoningText += delta
                 scheduleReasoningPush()
@@ -1482,11 +1517,14 @@ public actor ConversationRunService {
         guard !unflushedReasoningText.isEmpty else { return }
         let text = unflushedReasoningText
         unflushedReasoningText = ""
-        _ = try? await runStore.appendEvent(
+        if let record = try? await runStore.appendEvent(
             runID: runID,
             kind: .reasoning,
             payloadJSON: Self.jsonPayload(["text": text])
-        )
+        ) {
+            lastReasoningSequence = max(lastReasoningSequence, record.sequence)
+            textRevision &+= 1
+        }
     }
 
     /// Durable interaction boundaries use a short bounded retry so a transient
@@ -1503,11 +1541,15 @@ public actor ConversationRunService {
         var lastError: Error?
         for attempt in 1...3 {
             do {
-                _ = try await runStore.appendEvent(
+                let record = try await runStore.appendEvent(
                     runID: runID,
                     kind: kind,
                     payloadJSON: payloadJSON
                 )
+                if kind == .assistantText {
+                    lastAssistantTextSequence = max(lastAssistantTextSequence, record.sequence)
+                    textRevision &+= 1
+                }
                 return true
             } catch {
                 lastError = error
