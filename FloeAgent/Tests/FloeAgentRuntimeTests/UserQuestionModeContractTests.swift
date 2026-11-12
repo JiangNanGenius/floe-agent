@@ -50,7 +50,15 @@ struct UserQuestionModeContractTests {
         #expect(!first.toolSchemas.contains { $0.name == "file.write" || $0.name == "checklist.updatePlan" })
         #expect(executor.executedCalls.map(\.toolName) == [UserAskTool.name])
         let returned = try #require(adapter.requests.dropFirst().first?.toolResults.first)
-        let saved = try JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(returned.output.utf8))
+        // The model receives the provenance envelope followed by the raw
+        // receipt; it is deliberately not a single JSON document.
+        let parts = returned.output.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        try #require(parts.count == 2)
+        let provenance = try #require(JSONSerialization.jsonObject(with: Data(parts[0].utf8)) as? [String: Any])
+        #expect(provenance["toolName"] as? String == UserAskTool.name)
+        #expect((provenance["trustedSourceID"] as? String)?.isEmpty == false)
+        let saved = try JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(parts[1].utf8))
+        #expect(saved.requestID == receipt.requestID)
         #expect(saved.status == .pending && saved.humanAnsweredQuestionIDs.isEmpty)
         #expect(saved.defaultedQuestionIDs.isEmpty)
     }
