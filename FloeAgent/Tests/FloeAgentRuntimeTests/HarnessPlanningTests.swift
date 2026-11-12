@@ -590,7 +590,7 @@ struct HarnessPlanningTests {
         #expect(prompt.contains("screenshot"))
     }
 
-    @Test("Plan policy exposes and executes read-only tools only")
+    @Test("Plan policy keeps ordinary reads allowed and file mutations denied")
     func planToolPolicy() async throws {
         let read = ToolCatalog.Descriptor(
             name: "file.read",

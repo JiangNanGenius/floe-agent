@@ -2010,6 +2010,10 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/NativeAuthoringGuidanceTests.swift
       - path: Tests/FloeAgentRuntimeTests/NativeAuthoringDiscoveryContractTests.swift
       - path: Tests/FloeAgentRuntimeTests/UserQuestionDefaultPolicyTests.swift
+      - path: Tests/FloeAgentRuntimeTests/UserQuestionModeContractTests.swift
+      - path: Tests/FloeAgentRuntimeTests/AgentPromptLayerTests.swift
+      - path: Tests/FloeAgentRuntimeTests/HarnessPlanningTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ToolLoopHardeningTests.swift
       - path: Tests/FloeAgentRuntimeTests/UserQuestionContinuingDeadlineTests.swift
       - path: Tests/FloeModelsTests/UserQuestionContinuingDeadlineModelTests.swift
       - path: Tests/FloeModelsTests/UserQuestionDefaultsTests.swift

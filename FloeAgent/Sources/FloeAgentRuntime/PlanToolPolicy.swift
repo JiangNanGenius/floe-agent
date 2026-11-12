@@ -12,24 +12,36 @@ public enum PlanToolDenialReason: String, Sendable, Codable, Hashable {
 /// Capability filter used both while constructing provider schemas and
 /// immediately before execution. It is deliberately independent of model
 /// instructions: a forged tool call still reaches `decision(for:)`.
+/// Native user questions are the one main-run interaction exception; they
+/// do not authorize execution or expose other internal draft mutations.
 public struct PlanToolPolicy: Sendable {
     public init() {}
 
     public func decision(for descriptor: ToolCatalog.Descriptor) -> Result<Void, PlanToolPolicyError> {
         switch descriptor.effect {
         case .readOnly:
-            .success(())
+            return .success(())
         case .internalState:
-            .failure(PlanToolPolicyError(reason: .internalStateNotModelCallable, toolName: descriptor.name))
+            if descriptor.name == UserAskTool.name,
+               descriptor.executionBoundary == .mainRunOnly,
+               !descriptor.isSideEffecting,
+               descriptor.riskLabels.isEmpty,
+               !descriptor.requiresHostScope {
+                return .success(())
+            }
+            return .failure(PlanToolPolicyError(reason: .internalStateNotModelCallable, toolName: descriptor.name))
         case .mutating:
-            .failure(PlanToolPolicyError(reason: .mutationNotAllowed, toolName: descriptor.name))
+            return .failure(PlanToolPolicyError(reason: .mutationNotAllowed, toolName: descriptor.name))
         }
     }
 
     public func allowedDescriptors(
         from descriptors: [ToolCatalog.Descriptor]
     ) -> [ToolCatalog.Descriptor] {
-        descriptors.filter { $0.effect.isAllowedInPlanMode }
+        descriptors.filter {
+            if case .success = decision(for: $0) { return true }
+            return false
+        }
     }
 
     public func denialResult(

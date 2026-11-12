@@ -303,6 +303,7 @@ final class StorageDiagnosticService: ObservableObject {
             "environments": (FloeL10n.l("settings.data_management_view.linux_environments"), "desktopcomputer"),
             "linuxDisks": (FloeL10n.l("settings.data_management_view.virtual_machine_disks"), "internaldrive"),
             "runtimeV2": (FloeL10n.l("settings.data_management_view.runtime_images"), "shippingbox.and.arrow.backward"),
+            "runtimeARM64": (FloeL10n.l("settings.data_management_view.runtime_images"), "shippingbox.and.arrow.backward"),
             "floeOther": (FloeL10n.l("settings.data_management_view.databases_configuration_and_other_data"), "cylinder"),
             "caches": (FloeL10n.l("settings.data_management_view.rebuildable_caches"), "internaldrive"),
             "temporary": (FloeL10n.l("settings.data_management_view.temporary_files_older_than_one_hour"), "clock.arrow.circlepath"),

@@ -318,6 +318,7 @@ struct StorageAccountingTests {
         let support = library.appendingPathComponent("Application Support", isDirectory: true)
         let floeAgent = support.appendingPathComponent("FloeAgent", isDirectory: true)
         let runtimeV2 = support.appendingPathComponent("Floe/Runtime/v2/images/blobs/aa", isDirectory: true)
+        let runtimeARM64 = support.appendingPathComponent("Floe/Runtime/arm64-v1/images/blobs/bb", isDirectory: true)
         let documents = root.appendingPathComponent("Documents", isDirectory: true)
         let caches = library.appendingPathComponent("Caches", isDirectory: true)
         let temporary = root.appendingPathComponent("tmp", isDirectory: true)
@@ -326,7 +327,7 @@ struct StorageAccountingTests {
             floeAgent.appendingPathComponent("LinuxGuest/images/i1", isDirectory: true),
             floeAgent.appendingPathComponent("Environments/env1", isDirectory: true),
             floeAgent.appendingPathComponent("PrivateTasks/task1", isDirectory: true),
-            runtimeV2, documents, caches,
+            runtimeV2, runtimeARM64, documents, caches,
             temporary.appendingPathComponent("floe-scratch", isDirectory: true)
         ] {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -336,6 +337,7 @@ struct StorageAccountingTests {
         _ = try write("rootfs.img", bytes: 65_536, at: floeAgent.appendingPathComponent("LinuxGuest/images/i1"))
         _ = try write("rootfs.img", bytes: 65_536, at: floeAgent.appendingPathComponent("Environments/env1"))
         _ = try write("blob.bin", bytes: 65_536, at: runtimeV2)
+        _ = try write("arm64-blob.bin", bytes: 65_536, at: runtimeARM64)
         _ = try write(".secret.bin", bytes: 1_024, at: floeAgent.appendingPathComponent("PrivateTasks/task1"))
         _ = try write("cache.bin", bytes: 4_096, at: caches)
         _ = try write("doc.bin", bytes: 2_048, at: documents)
@@ -373,19 +375,21 @@ struct StorageAccountingTests {
         // Library catch-all.
         let ids = Set(census.buckets.map(\.id))
         #expect(ids.isSuperset(of: [
-            "models", "linuxDisks", "environments", "runtimeV2",
+            "models", "linuxDisks", "environments", "runtimeV2", "runtimeARM64",
             "workspaces", "caches", "documents", "temporary", "floeOther"
         ]))
         #expect(census.bucket("models")?.fileCount == 1)
         #expect(census.bucket("linuxDisks")?.fileCount == 1)
         #expect(census.bucket("environments")?.fileCount == 1)
         #expect(census.bucket("runtimeV2")?.fileCount == 1)
+        #expect(census.bucket("runtimeARM64")?.fileCount == 1)
         #expect(census.bucket("documents")?.fileCount == 1)
 
         // Clone-capable roots carry the flag; the rest do not.
         #expect(census.bucket("linuxDisks")?.isCloneCapable == true)
         #expect(census.bucket("environments")?.isCloneCapable == true)
         #expect(census.bucket("runtimeV2")?.isCloneCapable == true)
+        #expect(census.bucket("runtimeARM64")?.isCloneCapable == true)
         #expect(census.bucket("models")?.isCloneCapable == false)
         #expect(census.bucket("documents")?.isCloneCapable == false)
 
@@ -395,6 +399,7 @@ struct StorageAccountingTests {
         let flagged = (census.bucket("linuxDisks")?.size.allocatedBytes ?? 0)
             + (census.bucket("environments")?.size.allocatedBytes ?? 0)
             + (census.bucket("runtimeV2")?.size.allocatedBytes ?? 0)
+            + (census.bucket("runtimeARM64")?.size.allocatedBytes ?? 0)
         #expect(census.cloneCapableAllocatedBytes == flagged)
 
         // Repeated scans of the same tree are stable (same snapshot semantics).

@@ -582,7 +582,7 @@ public actor FloeAgentRuntime {
         public var provider: ProviderProfile
         public var model: ModelProfile
         /// Determines the hard capability contract for this run. Plan mode
-        /// exposes and executes read-only tools only.
+        /// exposes and executes read-only tools plus the native user-question interaction.
         public var conversationMode: ConversationMode
         /// Installed instruction skills selected for this activation.
         public var activeSkillIDs: Set<String>

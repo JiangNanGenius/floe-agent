@@ -87,6 +87,15 @@ public enum FloeStorageLayout {
             .appendingPathComponent("v2", isDirectory: true)
     }
 
+    /// Current ARM64 production substrate. Keep the legacy v2 root above as
+    /// a separate bucket for upgraded installs; both live beneath Library.
+    public static func runtimeARM64Root(in base: FloeStorageBase) -> URL? {
+        base.applicationSupport?
+            .appendingPathComponent("Floe", isDirectory: true)
+            .appendingPathComponent("Runtime", isDirectory: true)
+            .appendingPathComponent("arm64-v1", isDirectory: true)
+    }
+
     public static let dataManagementMetricLabel = "storage.data_management.v2"
 
     /// Mutually-exclusive, deepest-match root list for the data-management
@@ -134,6 +143,8 @@ public enum FloeStorageLayout {
         // are counted in full (clones can hold unique blocks) but the total is
         // flagged as an upper estimate.
         add("runtimeV2", runtimeV2Root(in: base),
+            attribution: .shared, potentiallyCloned: true)
+        add("runtimeARM64", runtimeARM64Root(in: base),
             attribution: .shared, potentiallyCloned: true)
         // Everything else left under FloeAgent.
         add("floeOther", support)
