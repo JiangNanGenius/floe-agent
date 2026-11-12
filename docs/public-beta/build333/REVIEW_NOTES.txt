@@ -1,0 +1,25 @@
+Floe 1.8.11 (333)
+
+简体中文
+本次更新以现有功能修复和使用体验为主，改进会议录音与回放、目标控制、记忆保留、编辑器助手和原生文件读写，并加入三维元件库。
+
+建议检查：
+1. 打开会议录音，检查笔记与转写布局，以及已保存录音的播放、拖动时间轴和前后跳转。
+2. 从已确认的计划设置目标，检查编辑、暂停、继续和删除。暂停或删除目标只影响后续自动推进；输入框的停止会停止本轮并暂停对应目标。
+3. 打开二维 CAD、地图、电路设计或图片作品，检查助手操作、结果显示、保存和返回。独立二维图纸不显示三维草图会话栏；普通 PDF 手记不显示 LaTeX 编辑入口。
+4. 使用已配置的模型服务检查回复和工具调用。遇到不兼容的自定义接口，可在该模型设置中启用“不发送思考参数”。
+5. 检查旧任务记忆的保留状态，以及 iPhone Duo 展开布局和切换前后的草稿连续性。
+
+云端模型使用用户自行配置的服务。本次提交仅用于 TestFlight 测试，不替换现有正式 App Store 版本，不包含新的 Linux GPU 和视频硬解引擎。
+
+English
+This update focuses on fixes and usability for meeting recording and playback, goal controls, memory retention, editor assistants and native file operations, and adds a 3D component library.
+
+Suggested checks:
+1. Open a meeting and check the notes/transcript layout, then play a saved recording, scrub its timeline and use the skip controls.
+2. Set a goal from an accepted plan and check editing, pause, resume and delete. Pausing or deleting a goal affects future automatic progress; Stop beside the message box stops the current round and pauses its goal.
+3. Open a 2D CAD, map, circuit or image work and check assistant edits, visible results, saving and returning. Standalone 2D drawings omit the 3D sketch-session bar. Ordinary PDF Notes omit the LaTeX editor entry.
+4. Check replies and tool calls with a configured model service. For an incompatible custom endpoint, enable “Omit thinking parameters” in that model's settings.
+5. Check retention of memories from old tasks, and iPhone Duo's expanded layout and draft continuity.
+
+Cloud models use the user's own provider configuration. This submission is for TestFlight and does not replace the existing App Store release. It does not include the new Linux GPU or hardware video-decoding engines.
