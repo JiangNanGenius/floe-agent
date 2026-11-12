@@ -26,7 +26,8 @@
 | 1.8.10（332），标签 `v1.8.10` | 内部TestFlight可安装；GitHub stable/latest及awaited Feather已核验；公开审核保留待审快照 | 冻结源 `22f8c31e7cbe86febe150c24284d9fd2fdf50ee8`，标签对象 `9510c947b92534a3ad1e53bac1d9e3d8b49f6ab0`。交付时独立读回 Apple `VALID`、未过期、Floe QA `IN_BETA_TESTING`；publictest1仅提交一次，2026-11-11 `WAITING_FOR_BETA_REVIEW`，未刷新其当前审核状态。详见[332交付记录](releases/builds/FLOE_1.8.10_BUILD332_DELIVERY.md)。 |
 
 | 1.8.11（333），标签 `v1.8.11` | 内部TestFlight可安装；GitHub stable/latest及awaited Feather已核验；不提交公开TestFlight | 冻结源 `d797b5ebb28cd91c1a83fe07f0fc42d57fd3076c`。交付时独立Apple GET为 `VALID`、未过期、Floe QA `IN_BETA_TESTING`；原安装包及符号保留。用户要求容量／QA修复放到下一版，不改333产物。 |
-| 1.8.12（334） | 本轮候选，已核对版号未占用；正在实际整合验收，尚未归档／上传 | 保留旧Linux资料和恢复盘；不等待GPU新引擎，不在本线程提交正式App Store版。 |
+| 1.8.12（334），本地标签 `v1.8.12` | 未交付的本地预检尝试；许可证源代码提供说明仍指上一版，预检失败；未推送该标签、未归档／上传 | 保留源 `885f6e79e47b7fc8be2bc8b6d99641d26134eb4b` 和原标签，不替换为其他来源。 |
+| 1.8.13（334） | 同一中间构建的新候选；只更新发行版本元数据和许可证提供说明，功能源码沿用已通过候选 | 保留旧Linux资料和恢复盘；不等待GPU新引擎，先内部渠道，不在本线程提交正式App Store版。 |
 
 正式 App Store 构建 315 及其既有安排保持不变；本轮版本纠正不授权替换它。
 
