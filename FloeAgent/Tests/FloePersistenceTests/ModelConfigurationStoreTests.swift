@@ -19,15 +19,15 @@ struct ModelConfigurationStoreTests {
                 """)
         }
         try migrator.migrate(queue)
-        let originalRoot = try queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='models'") }
+        let originalRoot = try await queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='models'") }
         V62ModelReasoningMetadata.register(into: &migrator)
         try migrator.migrate(queue)
-        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='models'") } == originalRoot)
-        #expect(try queue.read { try String.fetchOne($0, sql: "SELECT remote_model_id FROM models WHERE id='kept'") } == "legacy-model")
-        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT capabilities FROM models WHERE id='kept'") } == 5)
-        #expect(try queue.read { try String.fetchOne($0, sql: "SELECT reasoning_metadata_json FROM models WHERE id='kept'") } == nil)
-        #expect(try queue.read { try Int.fetchOne($0, sql: "SELECT omit_reasoning_parameters FROM models WHERE id='kept'") } == 0)
-        #expect(try queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") } == 62)
+        #expect(try await queue.read { try Int.fetchOne($0, sql: "SELECT rootpage FROM sqlite_master WHERE name='models'") } == originalRoot)
+        #expect(try await queue.read { try String.fetchOne($0, sql: "SELECT remote_model_id FROM models WHERE id='kept'") } == "legacy-model")
+        #expect(try await queue.read { try Int.fetchOne($0, sql: "SELECT capabilities FROM models WHERE id='kept'") } == 5)
+        #expect(try await queue.read { try String.fetchOne($0, sql: "SELECT reasoning_metadata_json FROM models WHERE id='kept'") } == nil)
+        #expect(try await queue.read { try Int.fetchOne($0, sql: "SELECT omit_reasoning_parameters FROM models WHERE id='kept'") } == 0)
+        #expect(try await queue.read { try Int.fetchOne($0, sql: "PRAGMA user_version") } == 62)
         #expect(throws: (any Error).self) { try queue.write { try $0.execute(sql: "UPDATE models SET omit_reasoning_parameters=2") } }
 
         let store = try await makeStore()
