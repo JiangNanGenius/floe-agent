@@ -19,14 +19,19 @@ import FloeCAD
         #expect(StudioToolOutput.hash(bytes) == output.fullOutputSHA256)
         return try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
     }
-    private func read(_ id: UUID, _ context: ToolContext) async throws -> Page {
-        var offset = 0, text = "", revision: String?, guide = ""
+    private func read(_ id: UUID, _ context: ToolContext, cad: [String: Any]? = nil) async throws -> Page {
+        var offset = 0, text = "", revision: String?, contentHash: String?, guide = ""
         for _ in 0..<256 {
-            let page = try await call("studio.read", ["projectID": id.uuidString, "offset": offset, "limit": 1024], context)
+            var arguments: [String: Any] = ["projectID": id.uuidString, "offset": offset, "limit": 1024]
+            if let cad { arguments["cad"] = cad }
+            let page = try await call("studio.read", arguments, context)
             let current = try #require(page["revision"] as? String)
             if let revision { try #require(revision == current) } else { revision = current }
+            let currentHash = try #require(page["contentSHA256"] as? String)
+            if let contentHash { try #require(contentHash == currentHash) } else { contentHash = currentHash }
             text += try #require(page["contentJSON"] as? String); guide = try #require(page["editFormat"] as? String)
             guard let next = page["nextOffset"] as? Int else {
+                try #require(StudioToolOutput.hash(Data(text.utf8)) == currentHash)
                 return Page(revision: current, state: try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]), guide: guide)
             }
             try #require(next > offset); offset = next
@@ -151,7 +156,8 @@ import FloeCAD
             let (id, directory, document) = try await create("cad2D", context)
             let sketchID = try sketch(document, name: "2D rectangle", min: [0,0], max: [3.5,3])
             try #require((await document.save()).succeeded)
-            let before = try await read(id, context), initial = try rows(before, sketches: true)
+            let query: [String: Any] = ["sketchID": sketchID.uuidString]
+            let before = try await read(id, context, cad: query), initial = try rows(before, sketches: true)
             let authored = try #require(initial.first { $0["id"] as? String == sketchID.uuidString })
             #expect(authored["entityTotal"] as? Int == 1)
             let initialEntities = try #require((before.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
@@ -160,7 +166,7 @@ import FloeCAD
             #expect(before.guide.contains("CURRENT managed Space 2D sketch") && before.guide.contains("Do not guess"))
             let rename = try StudioTypedEditExamples.encode(StudioCADRenameCommand(op: .sketch, args: .init(id: sketchID, name: "Renamed drawing")))
             try await edit(id, revision: before.revision, command: rename, context: context)
-            let after = try await read(id, context)
+            let after = try await read(id, context, cad: query)
             try unchangedGeometry(initial, rows(after, sketches: true))
             let afterEntities = try #require((after.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
             try unchangedGeometry((initialEntities["rows"] as? [[String: Any]]) ?? [],
@@ -170,7 +176,7 @@ import FloeCAD
             try await edit(id, revision: after.revision, command: StudioTypedEditExamples.encode(StudioCADSaveCommand()), context: context)
             #expect(document.exchangeChangeCount == savedChangeCount)
             document.close(); let reopened = try await PersonalCADSessions.open(id: id, directory: directory)
-            let stored = try await read(id, context)
+            let stored = try await read(id, context, cad: query)
             #expect(try rows(stored, sketches: true).first(where: { $0["id"] as? String == sketchID.uuidString })?["name"] as? String == "Renamed drawing")
             try unchangedGeometry(initial, rows(stored, sketches: true)); reopened.close()
         }

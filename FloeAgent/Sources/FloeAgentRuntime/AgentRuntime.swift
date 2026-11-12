@@ -1897,6 +1897,12 @@ public actor FloeAgentRuntime {
             _ = try await writeCheckpoint()
             return
         }
+        // Cancellation owns join -> final snapshot -> terminal transition.
+        // A concurrent public checkpoint may save, but must not park it early.
+        if case .cancelling = state {
+            _ = try await writeCheckpoint()
+            return
+        }
         if activeRuntimeWait != nil || runtimeWaitRecords.values.contains(where: { record in
             record.receipt == nil && pendingToolCalls.contains(where: { call in call.id == record.owner.callID })
         }) {
@@ -1906,6 +1912,12 @@ public actor FloeAgentRuntime {
             return
         }
         try await writeCheckpoint()
+        // The checkpoint save publishes liveness and awaits its serialized
+        // store. A provider failure/completion may win during those awaits.
+        // Its terminal outcome must not be relabelled by this older caller.
+        guard !Self.isTerminalState(state) else { return }
+        // Stop may have acquired the terminal boundary while this save waited.
+        if case .cancelling = state { return }
         await transition(to: .checkpointed(AgentState.CheckpointRef(
             reason: FloeL10n.l("runtime.agent_runtime.task_checkpoint_saved_waiting_to_continue")
         )))

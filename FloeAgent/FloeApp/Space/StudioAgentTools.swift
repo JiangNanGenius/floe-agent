@@ -449,7 +449,9 @@ enum StudioToolOutput {
             snapshot["nativeCAD"] = try StudioCADToolContract.nativeState(document, kind: value.record.kind,
                 query: cadQuery, context: context)
             let data = try JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys])
-            return (data, StudioToolOutput.hash(data))
+            let revision = try StudioCADToolContract.revisionToken(
+                revision: cadRevision, changeCount: cadChanges, sha256: cadContent)
+            return (data, revision)
         case .canvas:
             let document = try await CanvasHostServices.snapshot(record: value.record, directory: value.url)
             return (try StudioToolOutput.data(document), String(document.revision))
@@ -848,7 +850,10 @@ enum StudioToolOutput {
         let input = try StudioCADRenderInput.decode(inputJSON)
         let document = try await PersonalCADSessions.open(id: value.record.id, directory: value.url)
         let revision = document.revision, changeCount = document.exchangeChangeCount, sourceSHA256 = document.contentSHA256
-        guard input.expectedRevision == Int64(revision), !document.hasUnsavedChanges else {
+        let observationRevision = try StudioCADToolContract.revisionToken(
+            revision: revision, changeCount: changeCount, sha256: sourceSHA256)
+        guard input.expectedRevision.matches(savedRevision: revision, observationRevision: observationRevision),
+              !document.hasUnsavedChanges else {
             throw FloeError.validationFailed("Save or re-read this CAD original first; render uses the exact saved revision "
                 + "\(revision) and never captures unsaved editor state.")
         }
@@ -956,7 +961,10 @@ enum StudioToolOutput {
         let input = try StudioCADExportInput.decode(inputJSON)
         let document = try await PersonalCADSessions.open(id: value.record.id, directory: value.url)
         let revision = document.revision, changeCount = document.exchangeChangeCount, sha = document.contentSHA256
-        guard input.expectedRevision == Int64(revision), !document.hasUnsavedChanges else {
+        let observationRevision = try StudioCADToolContract.revisionToken(
+            revision: revision, changeCount: changeCount, sha256: sha)
+        guard input.expectedRevision.matches(savedRevision: revision, observationRevision: observationRevision),
+              !document.hasUnsavedChanges else {
             throw FloeError.validationFailed("Save or re-read this CAD original first; export uses the exact saved revision "
                 + "\(revision) and never exports unsaved editor state.")
         }
@@ -1394,24 +1402,48 @@ private struct StudioRunReceipt: Encodable {
     var exportExcludedCount: Int? = nil
     var formatLoss: [String]? = nil
 }
+/// Current callers use the exact top-level studio.read token. Keep the
+/// original numeric saved-revision form for existing render/export callers.
+private enum StudioCADExpectedRevision: Decodable {
+    case observation(String)
+    case saved(Int64)
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let raw = try? container.decode(String.self) {
+            if raw.range(of: "^[A-Fa-f0-9]{64}$", options: .regularExpression) != nil {
+                self = .observation(raw.lowercased()); return
+            }
+            if raw.range(of: "^(0|[1-9][0-9]*)$", options: .regularExpression) != nil,
+               let value = Int64(raw) {
+                self = .saved(value); return
+            }
+        } else if let value = try? container.decode(Int64.self), value >= 0 {
+            self = .saved(value); return
+        }
+        throw FloeError.validationFailed("Use the exact revision from studio.read")
+    }
+
+    func matches(savedRevision: Int, observationRevision: String) -> Bool {
+        switch self {
+        case .observation(let value): value == observationRevision
+        case .saved(let value): value == Int64(savedRevision)
+        }
+    }
+}
 private struct StudioCADExportInput: Decodable {
-    let expectedRevision: Int64
+    let expectedRevision: StudioCADExpectedRevision
     let format: String
     let pageID: UUID?
     let acceptPartial: Bool?
     static func decode(_ json: String?) throws -> Self {
         guard let data = json?.data(using: .utf8),
-              var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys).isSubset(of: ["expectedRevision", "format", "pageID", "acceptPartial"]) else {
             throw FloeError.validationFailed("export requires {expectedRevision,format,pageID?,acceptPartial?}; no paths are accepted.")
         }
-        if let raw = object["expectedRevision"] as? String {
-            guard raw.range(of: "^(0|[1-9][0-9]*)$", options: .regularExpression) != nil,
-                  let value = Int64(raw) else { throw FloeError.validationFailed("Use the exact revision from studio.read") }
-            object["expectedRevision"] = value
-        }
         let value = try JSONDecoder().decode(Self.self, from: JSONSerialization.data(withJSONObject: object))
-        guard value.expectedRevision >= 0, !value.format.isEmpty,
+        guard !value.format.isEmpty,
               value.format.utf8.count <= 32,
               value.format.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else {
             throw FloeError.validationFailed("Invalid CAD export format")
@@ -1420,21 +1452,15 @@ private struct StudioCADExportInput: Decodable {
     }
 }
 private struct StudioCADRenderInput: Decodable {
-    let expectedRevision: Int64
+    let expectedRevision: StudioCADExpectedRevision
     let pageID: UUID?
     static func decode(_ json: String?) throws -> Self {
         guard let data = json?.data(using: .utf8),
-              var object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys).isSubset(of: ["expectedRevision", "pageID"]) else {
             throw FloeError.validationFailed("render/inspectFrame for a CAD original requires {expectedRevision,pageID?}; no paths are accepted.")
         }
-        if let raw = object["expectedRevision"] as? String {
-            guard raw.range(of: "^(0|[1-9][0-9]*)$", options: .regularExpression) != nil,
-                  let value = Int64(raw) else { throw FloeError.validationFailed("Use the exact revision from studio.read") }
-            object["expectedRevision"] = value
-        }
         let value = try JSONDecoder().decode(Self.self, from: JSONSerialization.data(withJSONObject: object))
-        guard value.expectedRevision >= 0 else { throw FloeError.validationFailed("Invalid CAD revision") }
         return value
     }
 }

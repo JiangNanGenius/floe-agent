@@ -9563,7 +9563,19 @@ final class ConversationCenter: ObservableObject {
                     )
                 } catch {
                     if !executionStarted, error is CancellationError {
-                        try? await routedRunStore.updateRunState(id: record.id, state: "cancelled", endedAt: Date())
+                        // This resumed owner was cancelled before Core took
+                        // over. Complete its frozen-store terminal write in
+                        // an independent task, as for a fresh deferred launch.
+                        let terminalFlush = Task.detached {
+                            try await routedRunStore.updateRunState(
+                                id: record.id, state: "cancelled", endedAt: Date())
+                        }
+                        do { try await terminalFlush.value }
+                        catch {
+                            let failure = error as NSError
+                            FloeLogger(category: .persistence).error(
+                                "runResumeTerminalSaveFailed run=\(record.id.uuidString) domain=\(failure.domain) code=\(failure.code)")
+                        }
                         return await self.finishResumedService(service,
                             localModelID: usesResidentLocalModel ? model.remoteModelID : nil,
                             invocationError: error, cancelledBeforeStart: true)
@@ -9609,10 +9621,38 @@ final class ConversationCenter: ObservableObject {
         invocationError: Error? = nil,
         cancelledBeforeStart: Bool = false
     ) async -> Result<Void, Error> {
-        let snapshot = await service.snapshot()
-        // The resumed invocation no longer owns execution, even if a terminal
-        // stream notification raced the observer. Releasing the service here
-        // keeps `hasLiveOwner` from disabling Continue on a parked run.
+        var snapshot = await service.snapshot()
+        if !cancelledBeforeStart, snapshot.stateName != "idle",
+           Task.isCancelled || runInvocationOwnership.isCancelled(service.runID) {
+            // The cancelled invocation can return while the runtime's Stop
+            // is still publishing its checkpoint. An interrupted presentation
+            // is not proof that cancellation, durability and cleanup settled.
+            // This independent task is not cancelled with the invocation.
+            let terminalJoin = Task.detached { [service] in
+                // Register before observing completion. A finished channel
+                // closes late subscriptions immediately, so neither ordering
+                // can miss the real terminal boundary.
+                let events = service.events()
+                for await _ in events { }
+                return await service.snapshot()
+            }
+            snapshot = await terminalJoin.value
+            guard snapshot.isTerminal else {
+                FloeLogger(category: .runtime).error(
+                    "runResumeTerminalUnconfirmed run=\(service.runID.uuidString) state=\(snapshot.stateName)")
+                // Keep the service and tracker: an ended stream without a
+                // terminal snapshot cannot release ownership of live work.
+                return .failure(FloeError.validationFailed(IDELanguageRunText.t(
+                    "任务仍在停止，请稍后查看。", "The task is still stopping. Check again shortly.")))
+            }
+        }
+        // The tracker can lose the race with this cleanup even after the
+        // terminal channel closes. Retire the exact proven terminal projection
+        // here, before cancelling that observer, rather than leaving its old
+        // interrupted row counted as a live owner.
+        if snapshot.isTerminal || cancelledBeforeStart {
+            activeRuns[service.runID] = nil
+        }
         clearModelInputProjection(service.runID)
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()

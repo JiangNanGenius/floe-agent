@@ -452,7 +452,7 @@ public actor SQLiteRunStore: RunStore {
                 db,
                 sql: """
                     SELECT * FROM runs
-                    WHERE state NOT IN ('completed', 'failed', 'checkpointed', 'interrupted')
+                    WHERE state NOT IN ('completed', 'failed', 'checkpointed', 'interrupted', 'cancelled', 'canceled')
                     ORDER BY started_at DESC, id DESC
                     """
             ).map(Self.run(from:))

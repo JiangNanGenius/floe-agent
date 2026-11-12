@@ -557,7 +557,7 @@ public actor EphemeralRunStore: RunStore {
 
     public func nonTerminalRuns() async throws -> [RunRecord] {
         runOrder.compactMap { runsByID[$0] }.filter {
-            !["completed", "failed", "checkpointed", "interrupted"].contains($0.state)
+            !["completed", "failed", "checkpointed", "interrupted", "cancelled", "canceled"].contains($0.state)
         }
     }
 

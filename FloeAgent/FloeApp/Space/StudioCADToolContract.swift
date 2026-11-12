@@ -20,6 +20,15 @@ struct StudioCADSaveCommand: Encodable {
 }
 @MainActor enum StudioCADToolContract {
     typealias ReadQuery = StudioCADNativeOperations.ReadQuery
+    /// A read projection (sketch/entity page, measurement or viewport) is not
+    /// a document edit. Bind the token only to the same real original identity
+    /// that guards native saves, independently of the requested projection.
+    static func revisionToken(revision: Int, changeCount: Int, sha256: String) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "savedRevision": revision, "changeCount": changeCount, "contentSHA256": sha256
+        ], options: [.sortedKeys])
+        return StudioToolOutput.hash(data)
+    }
     struct Identity {
         let revision: Int, changeCount: Int, sha256: String
         init(snapshot: Data) throws {
@@ -155,8 +164,21 @@ struct StudioCADSaveCommand: Encodable {
                     throw FloeError.validationFailed("Use nativeCAD.geometryOperations or nativeCAD.nativeOperations from studio.read, "
                         + "scene.object.rename, sketch.rename or document.save; unknown operations are not forwarded.")
                 }
+                let checkpoint = document.captureEditCheckpoint()
                 let outcome = await document.executeJSONAsync(data)
                 guard outcome.isOK else { throw FloeError.validationFailed(outcome.message ?? "CAD edit failed") }
+                nativeCheckpoint = checkpoint
+                nativeChangeCount = document.exchangeChangeCount
+                // Preserve the actual native IDs/result. The receipt is
+                // marked saved only below, after the real save and fences.
+                guard outcome.payload.count <= 64 * 1_024 else {
+                    throw FloeError.validationFailed("The actual native operation receipt exceeds the 64KiB result budget; this edit was not saved.")
+                }
+                guard !outcome.payload.isEmpty,
+                      let reply = try JSONSerialization.jsonObject(with: outcome.payload) as? [String: Any] else {
+                    throw FloeError.validationFailed("The native CAD operation did not return a structured receipt; this edit was not saved.")
+                }
+                nativeReply = reply
             }
             let editedChangeCount = document.exchangeChangeCount
             try await validateSource()

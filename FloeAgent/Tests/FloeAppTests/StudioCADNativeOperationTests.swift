@@ -21,14 +21,22 @@ import FloePersistence
         #expect(StudioToolOutput.hash(bytes) == output.fullOutputSHA256)
         return try #require(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
     }
-    private func read(_ id: UUID, _ context: ToolContext) async throws -> Page {
-        var text = "", offset = 0, revision: String?
-        for _ in 0..<128 {
-            let page = try await call("studio.read", ["projectID": id.uuidString, "offset": offset, "limit": 12_000], context)
+    private func read(_ id: UUID, _ context: ToolContext, cad: [String: Any]? = nil,
+                      firstPage: [String: Any]? = nil) async throws -> Page {
+        var text = "", offset = 0, revision: String?, contentHash: String?
+        for index in 0..<128 {
+            var arguments: [String: Any] = ["projectID": id.uuidString, "offset": offset, "limit": 12_000]
+            if let cad { arguments["cad"] = cad }
+            let page: [String: Any]
+            if index == 0, let firstPage { page = firstPage }
+            else { page = try await call("studio.read", arguments, context) }
             let current = try #require(page["revision"] as? String)
             if let revision { try #require(current == revision) } else { revision = current }
+            let currentHash = try #require(page["contentSHA256"] as? String)
+            if let contentHash { try #require(currentHash == contentHash) } else { contentHash = currentHash }
             text += try #require(page["contentJSON"] as? String)
             guard let next = page["nextOffset"] as? Int else {
+                try #require(StudioToolOutput.hash(Data(text.utf8)) == currentHash)
                 return Page(revision: current, state: try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]))
             }
             try #require(next > offset); offset = next
@@ -140,43 +148,48 @@ import FloePersistence
             let created = try await edit(id, first, "sketch.create", ["name": "Bounded 2D"], context)
             let receipt = try #require(created["operationResult"] as? [String: Any])
             let sketchID = try #require(receipt["sketchID"] as? String)
-            let withSketch = try await read(id, context)
+            #expect(receipt["saved"] as? Bool == true)
+            #expect(receipt["revision"] as? Int == document.revision)
+            #expect(receipt["content_sha256"] as? String == document.contentSHA256)
+            let storedIdentity = await FloeCADDocument.storedIdentity(at: document.url)
+            let committed = try #require(storedIdentity)
+            #expect(receipt["revision"] as? Int == committed.revision)
+            #expect(receipt["content_sha256"] as? String == committed.contentSHA256)
+            let query: [String: Any] = ["sketchID": sketchID]
+            let withSketch = try await read(id, context, cad: query)
             _ = try await edit(id, withSketch, "sketch.addEntities", ["sketchID": sketchID,
                 "entities": [["kind": "line", "a": [0, 0], "b": [100, 0]]]], context)
-            let withEntity = try await read(id, context)
+            let withEntity = try await read(id, context, cad: query)
             let entities = try #require((withEntity.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
             let entity = try #require((entities["rows"] as? [[String: Any]])?.first)
             let entityID = try #require(entity["id"] as? String)
             #expect(entity["lengthMM"] as? Double == 100)
-            let measured = try await call("studio.read", ["projectID": id.uuidString, "offset": 0, "limit": 12_000,
-                "cad": ["measure": ["kind": "entity", "sketchID": sketchID, "entityID": entityID]]], context)
-            let measuredContent = try #require(measured["contentJSON"] as? String)
-            let measuredState = try JSONSerialization.jsonObject(with: Data(measuredContent.utf8))
-            let measuredObject = try #require(measuredState as? [String: Any])
-            let measuredNative = try #require(measuredObject["nativeCAD"] as? [String: Any])
+            let measured = try await read(id, context, cad: ["sketchID": sketchID,
+                "measure": ["kind": "entity", "sketchID": sketchID, "entityID": entityID]])
+            let measuredNative = try #require(measured.state["nativeCAD"] as? [String: Any])
             let measuredResult = try #require(measuredNative["measureResult"] as? [String: Any])
             #expect(measuredResult["ok"] as? Bool == true && measuredResult["lengthMM"] as? Double == 100)
             _ = try await edit(id, withEntity, "updateSketchEntity", ["sketch_id": sketchID,
                 "entity_id": entityID, "a": [0, 0], "b": [120, 0]], context)
-            let edited = try await read(id, context)
+            let edited = try await read(id, context, cad: query)
             let editedRows = try #require((edited.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
             #expect(((editedRows["rows"] as? [[String: Any]])?.first)?["lengthMM"] as? Double == 120)
             _ = try await edit(id, edited, "addSketchConstraint", ["sketch_id": sketchID,
                 "kind": "horizontal", "refs": [["entity_id": entityID, "role": "whole"]]], context)
-            let constrained = try await read(id, context)
+            let constrained = try await read(id, context, cad: query)
             _ = try await edit(id, constrained, "setSketchDimension", ["sketch_id": sketchID,
                 "entity_id": entityID, "kind": "length", "value": 130], context)
-            let dimensioned = try await read(id, context)
+            let dimensioned = try await read(id, context, cad: query)
             let dimensions = try #require((dimensioned.state["nativeCAD"] as? [String: Any])?["constraints"] as? [String: Any])
             let dimensionRows = try #require(dimensions["rows"] as? [[String: Any]])
             #expect(dimensionRows.contains { $0["isDimension"] as? Bool == true && $0["kind"] as? String == "distance" })
             #expect(((dimensioned.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])?["rows"] != nil)
             _ = try await edit(id, dimensioned, "deleteSketchEntity", ["sketch_id": sketchID, "entity_id": entityID], context)
-            let deleted = try await read(id, context)
+            let deleted = try await read(id, context, cad: query)
             let deletedRows = try #require((deleted.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
             #expect((deletedRows["rows"] as? [[String: Any]])?.isEmpty == true)
             _ = try await edit(id, deleted, "undo", [:], context)
-            let restored = try await read(id, context)
+            let restored = try await read(id, context, cad: query)
             let restoredRows = try #require((restored.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
             #expect((restoredRows["rows"] as? [[String: Any]])?.count == 1)
             #expect(document.hasUnsavedChanges == false)
@@ -209,9 +222,10 @@ import FloePersistence
                 sourceBytes: bytes, snapshot: snapshot)
             document.drawingSketchDecoder = { _, _ in envelope }
             defer { document.drawingSketchDecoder = nil }
+            let query: [String: Any] = ["sketchID": sketchID]
             var taskContext = context
             taskContext.workspaceRootURL = root
-            let before = try await read(id, taskContext)
+            let before = try await read(id, taskContext, cad: query)
             let importJSON = try JSONSerialization.data(withJSONObject: ["op": "document.importDrawing", "args": [
                 "sketchID": sketchID,
                 "source": ["workspacePath": "Drawings/test.dxf", "expectedSHA256": digest],
@@ -219,7 +233,7 @@ import FloePersistence
             ]], options: [.sortedKeys])
             _ = try await call("studio.edit", ["projectID": id.uuidString, "expectedRevision": before.revision,
                 "operationsJSON": String(decoding: importJSON, as: UTF8.self)], taskContext)
-            let after = try await read(id, taskContext)
+            let after = try await read(id, taskContext, cad: query)
             let entities = try #require((after.state["nativeCAD"] as? [String: Any])?["entities"] as? [String: Any])
             #expect((entities["rows"] as? [[String: Any]])?.count == 1)
             #expect(((entities["rows"] as? [[String: Any]])?.first?["lengthMM"] as? Double) == 25)
@@ -228,17 +242,21 @@ import FloePersistence
 
     @Test func bounded2DReadPagesSketchesAndEntitiesWithoutClaimingCompleteness() async throws {
         try await withWork(kind: "cad2D") { id, _, document, context, _ in
+            try #require(document.session.document.sketches.count == 1)
+            let initialSketch = try #require(document.session.document.sketches.first)
             for index in 0..<3 {
-                _ = document.execute(["op": "sketch.create", "args": ["name": "Page \(index)"]])
-                let sketchID = try #require(document.session.document.sketches.last?.id.raw.uuidString)
-                _ = document.execute(["op": "sketch.addEntities", "args": ["sketchID": sketchID,
-                    "entities": [["kind": "circle", "center": [Double(index), 0], "radius": 5]]]])
+                let sketchID: String
+                if index == 0 { sketchID = initialSketch.id.raw.uuidString }
+                else {
+                    try #require(document.execute(["op": "sketch.create", "args": ["name": "Page \(index)"]]).isOK)
+                    sketchID = try #require(document.session.document.sketches.last?.id.raw.uuidString)
+                }
+                try #require(document.execute(["op": "sketch.addEntities", "args": ["sketchID": sketchID,
+                    "entities": [["kind": "circle", "center": [Double(index), 0], "radius": 5]]]]).isOK)
             }
             try #require((await document.save()).succeeded)
-            let page = try await call("studio.read", ["projectID": id.uuidString, "offset": 0, "limit": 12_000,
-                "cad": ["sketchLimit": 1, "sketchOffset": 0, "entityLimit": 1]], context)
-            let contentJSON = try #require(page["contentJSON"] as? String)
-            let object = try #require(JSONSerialization.jsonObject(with: Data(contentJSON.utf8)) as? [String: Any])
+            let page = try await read(id, context, cad: ["sketchLimit": 1, "sketchOffset": 0, "entityLimit": 1])
+            let object = page.state
             let native = try #require(object["nativeCAD"] as? [String: Any])
             let sketchQuery = try #require(native["sketchQuery"] as? [String: Any])
             #expect(sketchQuery["total"] as? Int == 3)
@@ -248,6 +266,11 @@ import FloePersistence
             let entities = try #require(native["entities"] as? [String: Any])
             #expect(entities["complete"] as? Bool == true)
             #expect((entities["rows"] as? [[String: Any]])?.count == 1)
+            let ordinaryProjection = try await read(id, context)
+            #expect(ordinaryProjection.revision == page.revision)
+            let unchangedCount = document.exchangeChangeCount
+            _ = try await edit(id, page, "document.save", [:], context)
+            #expect(document.exchangeChangeCount == unchangedCount)
         }
     }
 
@@ -269,6 +292,11 @@ import FloePersistence
                 "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"pageID\":\"\(pageID)\"}"], context)
             #expect((render["width"] as? Int ?? 0) > 0 && (render["height"] as? Int ?? 0) > 0)
             #expect(render["artifact"] is [String: Any])
+            let savedRevision = try #require((state.state["nativeCAD"] as? [String: Any])?["savedRevision"] as? Int)
+            let legacyInput = try JSONSerialization.data(withJSONObject: ["expectedRevision": savedRevision, "pageID": pageID])
+            let legacy = try await call("studio.run", ["projectID": id.uuidString, "action": "render",
+                "inputJSON": String(decoding: legacyInput, as: UTF8.self)], context)
+            #expect((legacy["width"] as? Int ?? 0) > 0 && (legacy["height"] as? Int ?? 0) > 0)
             let exported = try await call("studio.run", ["projectID": id.uuidString, "action": "export",
                 "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"format\":\"dxf\",\"pageID\":\"\(pageID)\"}"], context)
             let output = try #require(exported["outputFile"] as? [String: Any])
@@ -364,10 +392,8 @@ import FloePersistence
             #expect(current.state["machining"] != nil)
             let inspection = try await call("studio.machining", ["projectID": id.uuidString, "action": "inspect"], context)
             #expect(inspection["manufacturingCell"] != nil)
-            let content = try #require(inspection["contentJSON"] as? String)
-            let stateObject = try JSONSerialization.jsonObject(with: Data(content.utf8))
-            let state = try #require(stateObject as? [String: Any])
-            #expect(state["machining"] != nil)
+            let complete = try await read(id, context, firstPage: inspection)
+            #expect(complete.state["machining"] != nil)
         }
     }
 

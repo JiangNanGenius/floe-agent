@@ -224,6 +224,21 @@ struct ConversationPreparationLifecycleTests {
         let stopped = try #require(try await coldStore.run(id: started.runID))
         #expect(stopped.state == "cancelled" && stopped.endedAt != nil)
         #expect(stopped.conversationID == conversation.id && stopped.goal == preparing.goal)
+        // Cold reconciliation consumes this query. Both historical spellings
+        // of a deliberate Stop are terminal, along with the other outcomes.
+        let terminalStates = ["completed", "failed", "checkpointed", "interrupted", "cancelled", "canceled"]
+        var terminalIDs = Set([stopped.id])
+        for state in terminalStates {
+            let record = RunRecord(id: UUID(), conversationID: conversation.id, state: state,
+                goal: "Owned terminal fixture", startedAt: preparing.startedAt, endedAt: Date())
+            terminalIDs.insert(record.id)
+            try await coldStore.saveRun(record)
+        }
+        let active = RunRecord(id: UUID(), conversationID: conversation.id, state: "preparing",
+            goal: "Separate active fixture", startedAt: Date())
+        try await coldStore.saveRun(active)
+        let unfinished = Set(try await coldStore.nonTerminalRuns().map(\.id))
+        #expect(unfinished.isDisjoint(with: terminalIDs) && unfinished.contains(active.id))
         #expect(!f.center.hasLiveOwner(runID: started.runID) && f.providerCalls.value() == 0)
         #expect(try await f.environment.conversationStore.messages(conversationID: conversation.id)
             .filter { $0.role == "user" }.map(\.content) == ["Preserve this accepted input"])
@@ -242,6 +257,16 @@ struct ConversationPreparationLifecycleTests {
             provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
         await gate.waitUntilEntered()
         try #require(f.center.hasFrozenTemporaryRunAuthority(runID: started.runID, conversationID: conversationID))
+        let ramStore = f.center.runStore(for: conversationID)
+        var terminalIDs = Set<UUID>()
+        for state in ["completed", "failed", "checkpointed", "interrupted", "cancelled", "canceled"] {
+            let record = RunRecord(id: UUID(), conversationID: conversationID, state: state,
+                goal: "Owned RAM terminal fixture", startedAt: Date(), endedAt: Date())
+            terminalIDs.insert(record.id)
+            try await ramStore.saveRun(record)
+        }
+        let unfinished = Set(try await ramStore.nonTerminalRuns().map(\.id))
+        #expect(unfinished.isDisjoint(with: terminalIDs) && unfinished.contains(started.runID))
         #expect(await f.center.endTemporaryChat() == .newTask)
         let frozen = f.center.runStoreForTerminalRun(runID: started.runID, conversationID: conversationID)
         await #expect(throws: (any Error).self) {

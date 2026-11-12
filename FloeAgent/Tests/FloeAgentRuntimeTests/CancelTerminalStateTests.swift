@@ -243,6 +243,7 @@ private func awaitTrue(
 private final class FailureDuringCancelSink: AgentEventSink, @unchecked Sendable {
     let parked = StreamCounter()
     let gate = AsyncGate()
+    let checkpointStarts = StreamCounter()
     private let storage = AsyncLock<[AgentEvent]>([])
     var events: [AgentEvent] { storage.withLock { $0 } }
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {}
@@ -253,6 +254,30 @@ private final class FailureDuringCancelSink: AgentEventSink, @unchecked Sendable
         guard snapshot.status == .exhausted || snapshot.status == .failed else { return }
         parked.increment()
         await gate.wait()
+    }
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeLiveness snapshot: AgentLivenessSnapshot) async {
+        if snapshot.phase == .persisting { checkpointStarts.increment() }
+    }
+}
+
+/// Arms exactly one real checkpoint-store save AFTER the provider has
+/// reached its failure boundary. Other writes remain serialized by Runtime.
+private final class CheckpointSaveParkStore: CheckpointStore, @unchecked Sendable {
+    let parked = StreamCounter()
+    let gate = AsyncGate()
+    private let armed = AsyncLock<Bool>(false)
+    private let underlying = MockCheckpointStore()
+    var saved: [AgentCheckpoint] { underlying.saved }
+    func armNextSave() { armed.withLock { $0 = true } }
+    func save(_ checkpoint: AgentCheckpoint) async throws {
+        let park = armed.withLock { value in
+            let result = value; value = false; return result
+        }
+        if park { parked.increment(); await gate.wait() }
+        try await underlying.save(checkpoint)
+    }
+    func load(runID: UUID) async throws -> AgentCheckpoint? {
+        try await underlying.load(runID: runID)
     }
 }
 
@@ -315,6 +340,58 @@ struct CancelTerminalStateTests {
             return error.providerMessage.contains("Illegal runtime transition")
         }
         #expect(!illegalTransition)
+
+        // Reverse ordering: a public checkpoint has captured an active run
+        // and is parked in its real save. An external recovery save enters
+        // concurrently, then the provider failure wins BEFORE Stop arrives.
+        // The original cancel-first scenario above remains unchanged.
+        let parkedStore = CheckpointSaveParkStore()
+        let parkedSink = FailureDuringCancelSink()
+        let parkedAdapter = MockAdapter()
+        parkedAdapter.script = [[.error(.init(kind: .server, providerMessage: "synthetic save-park failure"))]]
+        let parkedRuntime = FloeAgentRuntime(
+            configuration: .init(provider: provider,
+                model: cancelTerminalModel(providerID: provider.id), allowedToolNames: [],
+                maxProviderRetries: 0, providerRetryBaseDelay: 0,
+                providerRetryMaxDelay: 0, providerRetryJitterRatio: 0),
+            adapter: parkedAdapter, policy: HumanApprovalPolicy(), executor: TerminalStateNoExecution(),
+            checkpointStore: parkedStore, sink: parkedSink)
+        let parkedRunner = Task { try await parkedRuntime.start(goal: "failure while an older checkpoint is saving") }
+        let reachedFailure = await awaitTrue { parkedSink.parked.current == 1 }
+        #expect(reachedFailure)
+        guard reachedFailure else {
+            parkedSink.gate.open(); try await parkedRunner.value; return
+        }
+        parkedStore.armNextSave()
+        let checkpointer = Task { try await parkedRuntime.checkpoint() }
+        let reachedSave = await awaitTrue { parkedStore.parked.current == 1 }
+        #expect(reachedSave)
+        guard reachedSave else {
+            parkedStore.gate.open(); parkedSink.gate.open()
+            try await checkpointer.value; try await parkedRunner.value; return
+        }
+        let recoveryStarts = parkedSink.checkpointStarts.current
+        let recovery = Task { try await parkedRuntime.persistRecoveryPoint() }
+        let recoveryEntered = await awaitTrue { parkedSink.checkpointStarts.current > recoveryStarts }
+        #expect(recoveryEntered)
+        // Opening the provider gate makes a real failRun transition while the
+        // old checkpoint is STILL parked, rather than failing after it saved.
+        parkedSink.gate.open()
+        try await parkedRunner.value
+        #expect(await parkedRuntime.state.name == "failed")
+        await parkedRuntime.cancel()
+        #expect(await parkedRuntime.state.name == "failed")
+        parkedStore.gate.open()
+        try await checkpointer.value
+        let recovered = try await recovery.value
+        #expect(recovered.persisted && recovered.stateName == "failed")
+        #expect(parkedStore.saved.last?.state.name == "failed")
+        #expect(await parkedRuntime.state.name == "failed")
+        let parkedIllegalTransition = parkedSink.events.contains { event in
+            guard case .error(let error) = event else { return false }
+            return error.providerMessage.contains("Illegal runtime transition")
+        }
+        #expect(!parkedIllegalTransition)
     }
 
     @Test("Stop cancels the provider before a slow cancelling-state sink finishes")

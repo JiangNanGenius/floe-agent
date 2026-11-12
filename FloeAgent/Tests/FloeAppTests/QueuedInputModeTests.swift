@@ -229,7 +229,7 @@ struct GoalComposerTests {
         while ContinuousClock.now < deadline {
             if let run = try await f.environment.runStore.run(id: runID), run.endedAt != nil,
                !f.center.hasLiveOwner(runID: runID) { return }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(2))
         }
         let final = try await f.environment.runStore.run(id: runID)
         throw FloeError.validationFailed(

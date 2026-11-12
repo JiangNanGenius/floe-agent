@@ -5,7 +5,7 @@ import Testing
 import FloeCore
 import FloeModels
 import FloePersistence
-import FloeAgentRuntime
+@testable import FloeAgentRuntime
 import FloeProviders
 import FloeTools
 @testable import FloeApp
@@ -99,7 +99,11 @@ struct PlanGoalControlTests {
     }
     private func waitForRequest(_ f: Fixture, after count: Int) async throws -> ProviderStreamRequest {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-        while f.requests.all.count <= count, ContinuousClock.now < deadline { await Task.yield() }
+        // A real suspension lets this MainActor launch and its native
+        // callbacks advance; Task.yield can immediately reschedule the poll.
+        while f.requests.all.count <= count, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
         let request = try #require(f.requests.all.dropFirst(count).first, "The real runtime never reached the scripted provider")
         try #require(request.diagnosticRunID != nil, "An auxiliary request cannot stand in for the admitted round")
         return request
@@ -122,7 +126,7 @@ struct PlanGoalControlTests {
         while ContinuousClock.now < deadline {
             if let run = try await f.environment.runStore.run(id: runID), run.endedAt != nil,
                !f.center.hasLiveOwner(runID: runID) { return run }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(2))
         }
         let final = try await f.environment.runStore.run(id: runID)
         throw FloeError.validationFailed(
@@ -158,9 +162,16 @@ struct PlanGoalControlTests {
             #expect(thread.effectiveAgentMode == .plan)
             let request = try await waitForRequest(f, after: previous)
             #expect(request.toolSchemas.contains { $0.name == PlanSubmission.toolName })
-            let descriptors = Dictionary(uniqueKeysWithValues: CatalogToolExecutor().allDescriptors.map { ($0.name, $0) })
+            var descriptors = Dictionary(uniqueKeysWithValues: CatalogToolExecutor().allDescriptors.map { ($0.name, $0) })
+            // These exact metadata tools are added by the runtime, outside
+            // CatalogToolExecutor. Their native effects still must be read-only;
+            // any other unknown offered schema remains a failing contract.
+            for descriptor in ToolDiscovery.runtimeDescriptors(publicWebOnly: false) {
+                descriptors[descriptor.name] = descriptor
+            }
             for schema in request.toolSchemas where schema.name != PlanSubmission.toolName {
-                let descriptor = try #require(descriptors[schema.name])
+                let descriptor = try #require(descriptors[schema.name],
+                    "No executable or native runtime descriptor for \(schema.name)")
                 #expect(descriptor.effect == .readOnly)
             }
             await f.center.cancel(runID: run.id)
