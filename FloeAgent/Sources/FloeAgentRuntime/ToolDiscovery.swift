@@ -122,15 +122,19 @@ enum ToolDiscovery {
             terms.contains(where: query.contains) ? group : nil
         })
         let tokens = query.split(whereSeparator: { $0.isWhitespace || "，,;；/".contains($0) }).map(String.init)
+        let tokenSet = Set(tokens)
+        // Spelling resolution scans the current filtered catalog. Resolve each
+        // query token once, not again for every candidate descriptor (D²×T).
+        // Reuse the native resolvers so case folding, first-match order and
+        // ambiguous wire spellings keep exactly the same matching semantics.
+        let resolvedTokens = Set(tokenSet.flatMap { token in
+            [ToolAliasTable.canonical(token).lowercased(),
+             canonicalSpelling(token, among: descriptors).lowercased()]
+        })
         let exact = descriptors.filter { descriptor in
-            let aliases = ToolAliasTable.aliases(of: descriptor.name)
-            return tokens.contains(descriptor.name.lowercased())
-                || aliases.contains(where: { tokens.contains($0.lowercased()) })
-                || tokens.contains(where: {
-                    let canonical = ToolAliasTable.canonical($0)
-                    return canonical.lowercased() == descriptor.name.lowercased()
-                        || canonicalSpelling($0, among: descriptors).lowercased() == descriptor.name.lowercased()
-                })
+            let name = descriptor.name.lowercased()
+            return tokenSet.contains(name) || resolvedTokens.contains(name)
+                || ToolAliasTable.aliases(of: descriptor.name).contains { tokenSet.contains($0.lowercased()) }
         }
         if !exact.isEmpty { return exact }
         // Guest topology is controlled by the host-side environment tools,

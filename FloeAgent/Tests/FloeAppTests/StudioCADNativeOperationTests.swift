@@ -265,18 +265,15 @@ import FloePersistence
             let actualSketch = try #require(document.session.document.sketches.last?.id.raw.uuidString)
             try #require(document.execute(["op": "sketch.addEntities", "args": ["sketchID": actualSketch,
                 "entities": [["kind": "line", "a": [0, 0], "b": [50, 0]]]]]).isOK)
-            let pageReply = CADDrawingService(document: document).handle(action: "addPage", args: ["kind": "front"])
-            #expect(pageReply["ok"] as? Bool == true)
-            let page = try #require(pageReply["page"] as? [String: Any])
-            let pageID = try #require(page["id"] as? String)
             try #require((await document.save()).succeeded)
             let state = try await read(id, context)
+            print("CAD drawing contract stage: 2D native-plane PNG")
             let render = try await call("studio.run", ["projectID": id.uuidString, "action": "render",
-                "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"pageID\":\"\(pageID)\"}"], context)
+                "inputJSON": "{\"expectedRevision\":\"\(state.revision)\"}"], context)
             #expect((render["width"] as? Int ?? 0) > 0 && (render["height"] as? Int ?? 0) > 0)
             #expect(render["artifact"] is [String: Any])
             let savedRevision = try #require((state.state["nativeCAD"] as? [String: Any])?["savedRevision"] as? Int)
-            let legacyInput = try JSONSerialization.data(withJSONObject: ["expectedRevision": savedRevision, "pageID": pageID])
+            let legacyInput = try JSONSerialization.data(withJSONObject: ["expectedRevision": savedRevision])
             let legacy = try await call("studio.run", ["projectID": id.uuidString, "action": "render",
                 "inputJSON": String(decoding: legacyInput, as: UTF8.self)], context)
             #expect((legacy["width"] as? Int ?? 0) > 0 && (legacy["height"] as? Int ?? 0) > 0)
@@ -294,6 +291,7 @@ import FloePersistence
             #expect(exported["sha256"] as? String == StudioToolOutput.hash(expectedBytes))
             #expect(exported["format"] as? String == "dxf")
             #expect(document.hasUnsavedChanges == false)
+            print("CAD drawing contract stage complete: 2D PNG and exact sketch DXF bytes/SHA")
         }
         // The 3D engineering route keeps its exact B-rep source requirement.
         // A real extruded body with explicit bodyIDs must export successfully;
@@ -304,9 +302,12 @@ import FloePersistence
             let sketchID = try #require(result["sketchID"] as? String)
             _ = try await edit(id, try await read(id, context), "sketch.addEntities", ["sketchID": sketchID,
                 "entities": [["kind": "rect", "min": [0, 0], "max": [10, 5]]]], context)
-            _ = try await edit(id, try await read(id, context), "feature.extrude", ["sketchID": sketchID,
+            let extruded = try await edit(id, try await read(id, context), "feature.extrude", ["sketchID": sketchID,
                 "seedPoint": [5, 2.5], "distance": 3], context)
-            let body = try #require(document.session.document.bodies.first)
+            let producedIDs = try #require((extruded["operationResult"] as? [String: Any])?["producedBodyIDs"] as? [String])
+            try #require(producedIDs.count == 1, "The positive control must use the body produced by this actual extrusion.")
+            let body = try #require(document.session.document.bodies.first { $0.id.raw.uuidString == producedIDs[0] })
+            try #require(body.brep != nil, "The 3D projection positive control must own an exact B-rep before drawing export.")
             let drawings = CADDrawingService(document: document)
             let empty = drawings.handle(action: "addPage", args: ["kind": "front"])
             try #require(empty["ok"] as? Bool == true)
@@ -320,6 +321,11 @@ import FloePersistence
                 _ = try await call("studio.run", ["projectID": id.uuidString, "action": "export",
                     "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"format\":\"dxf\",\"pageID\":\"\(emptyPage)\"}"], context)
             }
+            print("CAD drawing contract stage: 3D exact B-rep front-page PNG and DXF")
+            let rendered = try await call("studio.run", ["projectID": id.uuidString, "action": "render",
+                "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"pageID\":\"\(pageID)\"}"], context)
+            #expect((rendered["width"] as? Int ?? 0) > 0 && (rendered["height"] as? Int ?? 0) > 0)
+            #expect(rendered["artifact"] is [String: Any])
             let exported = try await call("studio.run", ["projectID": id.uuidString, "action": "export",
                 "inputJSON": "{\"expectedRevision\":\"\(state.revision)\",\"format\":\"dxf\",\"pageID\":\"\(pageID)\"}"], context)
             let output = try #require(exported["outputFile"] as? [String: Any])

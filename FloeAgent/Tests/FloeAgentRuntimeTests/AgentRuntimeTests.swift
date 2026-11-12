@@ -141,6 +141,44 @@ final class MockSink: AgentEventSink, @unchecked Sendable {
 
 @Suite("FloeAgentRuntime.StateMachine", .serialized)
 struct AgentRuntimeTests {
+    @Test("Long Goal activation resolves against a large catalog without changing exact discovery or authority")
+    func longGoalActivationKeepsDiscoverySemanticsWithoutQuadraticScan() {
+        func descriptor(_ name: String) -> ToolCatalog.Descriptor {
+            .init(name: name, toolDescription: "An available fixture capability.",
+                parametersJSON: #"{"type":"object","properties":{}}"#,
+                riskLabels: [], isSideEffecting: false)
+        }
+        let catalog = (0..<512).map { descriptor("workspace.tool\($0)") }
+            + [descriptor("exec.shell")]
+        let query = (0..<80).map { "constraint\($0)" }.joined(separator: " ") + " WORKSPACE_TOOL511"
+        let start = ContinuousClock.now
+        let activated = ExecutionExperienceActivation.toolNames(query: query, descriptors: catalog,
+            explicitlyActivated: ["exec.shell", "unavailable.hidden"])
+        let elapsed = start.duration(to: .now)
+        #expect(activated == ["workspace.tool511", "exec.shell"])
+        #expect(elapsed < .seconds(2),
+            "Current-catalog activation for one bounded Goal must not perform a full-catalog scan for every candidate/token: \(elapsed)")
+        let matched = ToolDiscovery.matches(query: query, descriptors: catalog)
+        #expect(matched.map(\.name) == ["workspace.tool511"])
+        #expect(matched.map(\.authorizationIdentity) == [catalog[511].authorizationIdentity],
+            "Discovery returns the real descriptor, without minting different authority")
+
+        let ordered = [descriptor("checklist.updatePlan"), descriptor("workspace.readFile"),
+            descriptor("exec.shell"), descriptor("exec.localPython")]
+        #expect(ToolDiscovery.matches(query: "WORKSPACE_READFILE task.updatePlan", descriptors: ordered)
+            .map(\.name) == ["checklist.updatePlan", "workspace.readFile"],
+            "Aliases and wire spellings preserve catalog order, independent of query order")
+        #expect(ToolDiscovery.matches(query: "exec.localPython", descriptors: ordered).isEmpty)
+        let ambiguous = [descriptor("surface.mesh_read"), descriptor("surface_mesh.read")]
+        #expect(ToolDiscovery.matches(query: "SURFACE_MESH_READ", descriptors: ambiguous).isEmpty)
+        #expect(ToolDiscovery.matches(query: "SURFACE_MESH_READ",
+            descriptors: ambiguous + [descriptor("surface_mesh_read")]).map(\.name) == ["surface_mesh_read"],
+            "An exact spelling still wins over ambiguous sanitized alternatives")
+        let folded = [descriptor("Sample.Read"), descriptor("sample.read")]
+        #expect(ToolDiscovery.matches(query: "SAMPLE.READ", descriptors: folded).map(\.name)
+            == ["Sample.Read", "sample.read"])
+    }
+
     /// Exercise production assembly and native tools.search, not a mirror of
     /// schema admission. Many discoverable groups make the late index alone
     /// exceed a 16k request while the unchanged task/system context fits.
