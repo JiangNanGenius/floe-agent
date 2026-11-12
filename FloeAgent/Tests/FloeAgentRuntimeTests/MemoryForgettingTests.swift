@@ -181,9 +181,14 @@ struct MemoryForgettingTests {
             confidence: 1, importance: 0.5, sourceKind: .automaticTurnReview, originConversationID: UUID(), createdAt: old, updatedAt: old)
         try await store.saveMemory(memory, evidence: [])
         let first = store.beginMemoryUse(runID: prepared.run.id)
-        first.include([memory.id])
         let second = store.beginMemoryUse(runID: prepared.run.id)
-        store.recordMemoryUse([memory.id], runID: prepared.run.id)
+        // Exercise the same existential async dispatch as MemoryTools before
+        // any direct include can hide an accidental default no-op witness.
+        let durable: any DurableMemoryStore = store
+        #expect(!store.withMemoryUseProtection { $0.contains(memory.id) })
+        await durable.recordMemoryUse([memory.id], runID: prepared.run.id)
+        #expect(store.withMemoryUseProtection { $0.contains(memory.id) })
+        first.include([memory.id])
         let current = MemoryEntry(scope: .agentGlobal, status: .active, content: "Current selected fallback",
             confidence: 1, importance: 0.5, sourceKind: .automaticTurnReview, createdAt: clock, updatedAt: clock)
         let expired = MemoryEntry(scope: .agentGlobal, status: .active, content: "Expired snapshot must not enter the prompt",
@@ -204,7 +209,8 @@ struct MemoryForgettingTests {
         #expect(try await store.memory(id: memory.id)?.status == .active)
         second.finish()
         // A late tool callback cannot recreate an owner after final cleanup.
-        store.recordMemoryUse([memory.id], runID: prepared.run.id)
+        await durable.recordMemoryUse([memory.id], runID: prepared.run.id)
+        #expect(!store.withMemoryUseProtection { $0.contains(memory.id) })
         try await store.maintainMemoryLifecycle(now: clock)
         #expect(try await store.memory(id: memory.id)?.status == .superseded)
         #expect(try await store.memory(id: memory.id)?.content == memory.content)

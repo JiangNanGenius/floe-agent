@@ -164,7 +164,7 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         memoryUseRegistry.begin(runID: runID)
     }
 
-    public nonisolated func recordMemoryUse(_ ids: [UUID], runID: UUID) {
+    public nonisolated func recordMemoryUse(_ ids: [UUID], runID: UUID) async {
         memoryUseRegistry.record(ids, runID: runID)
     }
 
