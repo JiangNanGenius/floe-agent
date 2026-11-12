@@ -21,6 +21,13 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- File viewers may have no launcher. This makes their installed
+             package metadata discoverable for an explicit target lookup;
+             it grants neither file access nor device-control permission. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="*/*" />
+        </intent>
     </queries>
     <application>
         <receiver android:name="com.floe.android.host.officecomponent.OfficeComponentInstallReceiver" android:exported="false" />

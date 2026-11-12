@@ -197,6 +197,9 @@ data class DeviceAccessTargetsUi(
     /** Pre-window launcher rows; larger than packages.size means the sheet is
      *  a window and must say so instead of truncating silently. */
     val installedCatalogTotal: Int = 0,
+    /** User-requested installed-package lookup; never changes selection. */
+    val targetLookupState: DeviceAccessLookupUiState = DeviceAccessLookupUiState.IDLE,
+    val targetLookupQuery: String = "",
     val catalogLoading: Boolean = false,
     val advancedCatalogReadFailed: Boolean = false,
     /** Merged advanced rows before the sheet window. */
@@ -339,6 +342,7 @@ class DeviceAccessCallbacks(
     /** Lightweight catalog re-read when a target sheet opens; the page never
      *  blocks on it and the host coalesces bursts. */
     val onTargetsRefresh: () -> Unit = {},
+    val onTargetLookup: (String) -> Unit = {},
     /** USER-ONLY: resolves one exact typed package name against the live
      *  service so targets outside the listed window stay discoverable. */
     val onAdvancedTargetLookup: (String) -> Unit = { },
@@ -710,6 +714,7 @@ fun DeviceAccessSettingsPage(
         onDismiss = { appChooserOpen = false },
         catalogTotal = state.targets.installedCatalogTotal,
         onCatalogRefresh = callbacks.onTargetsRefresh,
+        onLookup = callbacks.onTargetLookup,
     )
     // Compact permission/AppOps inspector over the SELECTED advanced
     // targets; user-initiated reads/changes only, durable ceilings enforced

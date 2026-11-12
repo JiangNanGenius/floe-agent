@@ -47,6 +47,7 @@ internal fun DeviceAccessAppChooser(
     onDismiss: () -> Unit,
     catalogTotal: Int = 0,
     onCatalogRefresh: () -> Unit = {},
+    onLookup: (String) -> Unit = {},
 ) = DeviceAccessAppChooserSheet(
     visible = visible,
     packages = targets.packages,
@@ -59,6 +60,10 @@ internal fun DeviceAccessAppChooser(
     catalogTotal = catalogTotal,
     catalogLoading = targets.catalogLoading,
     onCatalogRefresh = onCatalogRefresh,
+    lookupEnabled = true,
+    lookupState = targets.targetLookupState,
+    lookupQuery = targets.targetLookupQuery,
+    onLookup = onLookup,
 )
 
 /**

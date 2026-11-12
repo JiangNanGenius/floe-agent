@@ -13,12 +13,19 @@ object PhoneControlLimits {
     const val MAX_NODES = 400
     const val DEFAULT_NODES = 250
     const val MAX_DEPTH = 32
-    const val DEFAULT_DEPTH = 20
+    /**
+     * Ordinary dialogs can nest their actionable controls deeper than 20; a
+     * real inline date picker put its month header and prev/next controls at
+     * depth 21. The default therefore reaches the existing hard bound. This
+     * is a bounded presentation default, not a relaxation of [MAX_DEPTH],
+     * the observation TTL, grants or node validation.
+     */
+    const val DEFAULT_DEPTH = MAX_DEPTH
     /**
      * One capture reads at most this many nodes from the live window. The
-     * traversal splits the remaining budget across siblings, so a late
-     * fixed-screen control (toolbar/FAB) is still inspected in a wide or deep
-     * tree instead of being lost behind an earlier large subtree. This is a
+     * level-order traversal spends this one global budget across the tree, so
+     * a bounded form is read completely while a genuinely wide screen still
+     * inspects its shallow toolbar/FAB controls before deep content. This is a
      * runtime bound, never authorization; [MAX_NODES] still sizes the
      * returned observation after actionable-first selection.
      */

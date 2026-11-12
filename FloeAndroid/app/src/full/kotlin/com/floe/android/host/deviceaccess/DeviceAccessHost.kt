@@ -281,6 +281,12 @@ internal class DeviceAccessHost(
     private var busy: DeviceAccessBusyUi = DeviceAccessBusyUi.NONE
     private var error: DeviceAccessUiError? = null
     private var installedPackages: List<DeviceAccessPackageUi> = emptyList()
+    /** Verified exact-name rows, not an authorization or a saved grant. */
+    private val targetLookupExtras = ConcurrentHashMap<String, DeviceAccessPackageUi>()
+    @Volatile private var targetLookupState = DeviceAccessLookupUiState.IDLE
+    @Volatile private var targetLookupQuery = ""
+    @Volatile private var targetLookupBusy = false
+    private var targetLookupJob: Job? = null
 
     /** Pre-window launcher rows the ordinary chooser could not show; when
      *  larger than [installedPackages].size the sheet must say so. */
@@ -440,6 +446,7 @@ internal class DeviceAccessHost(
             if (closed) return
             if (intent.action == Intent.ACTION_PACKAGE_REMOVED) {
                 intent.data?.schemeSpecificPart?.let(advancedLookupExtras::remove)
+                intent.data?.schemeSpecificPart?.let(targetLookupExtras::remove)
             }
             scheduleCatalogRefresh()
         }
@@ -449,6 +456,7 @@ internal class DeviceAccessHost(
         onOpenAccessibilitySettings = ::openAccessibilitySettings,
         onRefresh = ::refreshFromUser,
         onTargetsRefresh = ::scheduleCatalogRefresh,
+        onTargetLookup = ::lookupInstalledTarget,
         onAdvancedTargetLookup = ::lookupAdvancedSystemTarget,
         onArmPhoneControl = ::armVisibleTask,
         onAutomaticControlChange = { enabled ->
@@ -692,6 +700,7 @@ internal class DeviceAccessHost(
         PairingNotificationRelay.detach(this)
         catalogRefreshJob?.cancel()
         advancedLookupJob?.cancel()
+        targetLookupJob?.cancel()
         runCatching { context.unregisterReceiver(packageChangeMonitor) }
         statusJobs.forEach { it.cancel() }
         statusJobs.clear()
@@ -1554,6 +1563,59 @@ internal class DeviceAccessHost(
         scheduleCatalogRefresh()
     }
 
+    /** Resolves metadata only; the user must still select the returned row. */
+    private fun installedTarget(name: String): DeviceAccessPackageUi {
+        val manager = context.packageManager
+        val info = if (Build.VERSION.SDK_INT >= 33) {
+            manager.getApplicationInfo(name, android.content.pm.PackageManager.ApplicationInfoFlags.of(0L))
+        } else {
+            @Suppress("DEPRECATION")
+            manager.getApplicationInfo(name, 0)
+        }
+        return DeviceAccessPackageUi(
+            packageName = info.packageName,
+            label = runCatching { info.loadLabel(manager).toString() }.getOrDefault(info.packageName),
+            selected = info.packageName in settings.allowedPackages,
+        )
+    }
+
+    private fun lookupInstalledTarget(rawName: String) {
+        if (closed || busy != DeviceAccessBusyUi.NONE || targetLookupBusy) return
+        val name = rawName.trim()
+        targetLookupQuery = name
+        if (!ADVANCED_LOOKUP_NAME.matches(name) || isFloeSelfPackage(name)) {
+            targetLookupState = DeviceAccessLookupUiState.MISSING
+            publish()
+            return
+        }
+        targetLookupBusy = true
+        targetLookupState = DeviceAccessLookupUiState.RUNNING
+        publish()
+        targetLookupJob = scope.launch(io) {
+            try {
+                val result = runCatching { installedTarget(name) }
+                if (closed) return@launch
+                val row = result.getOrNull()
+                targetLookupState = when {
+                    row != null && !isFloeSelfPackage(row.packageName) -> {
+                        targetLookupExtras[row.packageName] = row
+                        installedPackages = com.floe.android.mergeDeviceAccessAppCatalog(
+                            installedPackages, targetLookupExtras.values.toList(), settings.allowedPackages,
+                        )
+                        installedCatalogTotal = installedPackages.size
+                        DeviceAccessLookupUiState.FOUND
+                    }
+                    result.exceptionOrNull() is android.content.pm.PackageManager.NameNotFoundException ->
+                        DeviceAccessLookupUiState.MISSING
+                    else -> DeviceAccessLookupUiState.ERROR
+                }
+            } finally {
+                targetLookupBusy = false
+                if (!closed) publish()
+            }
+        }
+    }
+
     private suspend fun collectInstalledPackages(): List<DeviceAccessPackageUi> {
         val packages = try {
             val manager = context.packageManager
@@ -1584,7 +1646,10 @@ internal class DeviceAccessHost(
         } catch (_: Throwable) {
             emptyList()
         }
-        return packages
+        val exact = (targetLookupExtras.keys + settings.allowedPackages).mapNotNull { name ->
+            if (isFloeSelfPackage(name)) null else runCatching { installedTarget(name) }.getOrNull()
+        }
+        return com.floe.android.mergeDeviceAccessAppCatalog(packages, exact, settings.allowedPackages)
     }
 
     private fun registerPackageChangeMonitor() {
@@ -1625,8 +1690,12 @@ internal class DeviceAccessHost(
                     if (closed || generation != catalogRefreshGeneration) return@launch
                     val advanced = collectAdvancedCatalog(installed)
                     if (closed || generation != catalogRefreshGeneration) return@launch
-                    installedPackages = installed
-                    installedCatalogTotal = installed.size
+                    // A user lookup may finish while this refresh is in
+                    // flight. Merge its verified rows at publication time.
+                    installedPackages = com.floe.android.mergeDeviceAccessAppCatalog(
+                        installed, targetLookupExtras.values.toList(), settings.allowedPackages,
+                    )
+                    installedCatalogTotal = installedPackages.size
                     advancedDiscovered = advanced.packages
                     advancedCatalogServiceTruncated = advanced.serviceTruncated
                     advancedCatalogReadFailed = advanced.failed
@@ -1861,6 +1930,8 @@ internal class DeviceAccessHost(
                 it.copy(selected = it.packageName in settings.advancedSystemTargets)
             },
             installedCatalogTotal = installedCatalogTotal,
+            targetLookupState = targetLookupState,
+            targetLookupQuery = targetLookupQuery,
             catalogLoading = catalogLoading,
             advancedCatalogReadFailed = advancedCatalogReadFailed,
             advancedCatalogListed = advancedCatalogListed,

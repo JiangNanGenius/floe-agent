@@ -89,12 +89,9 @@ private fun navigationFingerprint(packageName: String?, windowId: Int): Long {
  */
 internal class PhoneControlSnapshotter(private val service: AccessibilityService) {
     private data class ReadStats(
-        var scanLimited: Boolean = false,
-        var depthLimited: Boolean = false,
         var textLimited: Boolean = false,
         var hasSensitiveField: Boolean = false,
         var obsoleteNode: Boolean = false,
-        var cancelled: Boolean = false,
     )
 
     @Suppress("DEPRECATION")
@@ -163,25 +160,36 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 minOf(req.maxNodes * 2, PhoneControlLimits.MAX_SCAN_NODES),
             )
             val stats = ReadStats()
-            readNode(
-                node = root,
-                path = emptyList(),
-                parentPath = null,
-                depth = 0,
-                redactAllText = preProtected,
-                request = req,
-                refreshFromSource = !cacheCleared,
-                ancestorScrollable = false,
-                budget = PhoneControlLimits.MAX_SCAN_NODES,
-                deadline = SystemClock.elapsedRealtime() +
+            // Level order spends one global node budget across the real tree:
+            // a deep form is read completely when it fits, while a genuinely
+            // wide screen still yields its shallow toolbar/FAB controls first.
+            // The walker retains at most one handle per level, not a queue of
+            // live AccessibilityNodeInfo objects.
+            val walk = PhoneControlCaptureWalk.walk(
+                root = root,
+                adapter = AccessibilityCaptureTreeAdapter,
+                maxNodes = PhoneControlLimits.MAX_SCAN_NODES,
+                maxDepth = req.maxDepth,
+                deadlineElapsedRealtimeMillis = SystemClock.elapsedRealtime() +
                     PhoneControlLimits.SCAN_TIME_BUDGET_MS,
+                nowElapsedRealtimeMillis = { SystemClock.elapsedRealtime() },
                 isCancelled = isCancelled,
-                out = raw,
-                stats = stats,
-            )
-            // An obsolete source is an unavailable capture, never a partial
-            // tree presented as the verified effect of the previous action.
-            if (stats.obsoleteNode || stats.cancelled) return null
+            ) { path, depth, node, insideScrollable ->
+                readNode(
+                    node = node,
+                    path = path,
+                    depth = depth,
+                    redactAllText = preProtected,
+                    refreshFromSource = !cacheCleared,
+                    insideScrollable = insideScrollable,
+                    stats = stats,
+                    out = raw,
+                )
+            }
+            // An obsolete or cancelled source is an unavailable capture, never
+            // a partial tree presented as the verified effect of the previous
+            // action. A time/node bound remains an honest bounded observation.
+            if (walk.obsolete || walk.cancelled || stats.obsoleteNode) return null
 
             val protectedWindow = PhoneControlPolicy.isProtectedWindow(
                 packageName = packageName,
@@ -195,8 +203,8 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 raw = raw,
                 request = req,
                 redactAllText = redactAllText,
-                depthLimited = stats.depthLimited,
-                nodeLimited = stats.scanLimited || stats.textLimited,
+                depthLimited = walk.depthLimited,
+                nodeLimited = walk.scanLimited || stats.textLimited,
             )
             val capturedActionables = shaped.nodes.count { node ->
                 node.visible && node.enabled &&
@@ -250,40 +258,31 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         }
     }
 
-    @Suppress("DEPRECATION")
+    /**
+     * Reads one live node into primitives. The walker owns traversal,
+     * budgeting, cancellation and recycling; this function owns the
+     * privacy/refresh checks and the raw field caps. It returns the node's
+     * child count from the same handle so the walker never needs to re-read a
+     * node merely to schedule it.
+     */
     private fun readNode(
         node: AccessibilityNodeInfo,
         path: List<Int>,
-        parentPath: List<Int>?,
         depth: Int,
         redactAllText: Boolean,
-        request: PhoneControlObserveRequest,
         refreshFromSource: Boolean,
-        ancestorScrollable: Boolean,
-        budget: Int,
-        deadline: Long,
-        isCancelled: () -> Boolean,
-        out: MutableList<PhoneControlRawNode>,
+        insideScrollable: Boolean,
         stats: ReadStats,
-    ): Int {
-        if (stats.obsoleteNode || stats.cancelled) return 0
-        if (budget <= 0 || out.size >= PhoneControlLimits.MAX_SCAN_NODES) {
-            stats.scanLimited = true
-            return 0
-        }
-        if (isCancelled()) {
-            stats.cancelled = true
-            return 0
-        }
-        if (SystemClock.elapsedRealtime() > deadline) {
-            stats.scanLimited = true
-            return 0
-        }
+        out: MutableList<PhoneControlRawNode>,
+    ): PhoneControlCaptureWalk.Visit {
         // The root was already refreshed before its identity/privacy checks.
         if (refreshFromSource && path.isNotEmpty() &&
-            !runCatching { node.refresh() }.getOrDefault(false)) {
+            !runCatching { node.refresh() }.getOrDefault(false)
+        ) {
             stats.obsoleteNode = true
-            return 0
+            return PhoneControlCaptureWalk.Visit(
+                state = PhoneControlCaptureWalk.VisitState.OBSOLETE,
+            )
         }
         val viewId = runCatching { node.viewIdResourceName }.getOrNull()
         val password = runCatching { node.isPassword }.getOrDefault(false)
@@ -310,9 +309,10 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         val bounds = Rect()
         runCatching { node.getBoundsInScreen(bounds) }
         val scrollable = runCatching { node.isScrollable }.getOrDefault(false)
+        val childCount = runCatching { node.childCount }.getOrDefault(0)
         out += PhoneControlRawNode(
             path = path,
-            parentPath = parentPath,
+            parentPath = if (path.isEmpty()) null else path.dropLast(1),
             depth = depth,
             className = node.className?.toString().orEmpty(),
             packageName = node.packageName?.toString(),
@@ -332,59 +332,23 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             checkable = runCatching { node.isCheckable }.getOrDefault(false),
             checked = runCatching { node.isChecked }.getOrDefault(false),
             password = password,
-            insideScrollable = ancestorScrollable,
+            insideScrollable = insideScrollable,
         )
+        return PhoneControlCaptureWalk.Visit(
+            childCount = childCount,
+            scrollable = scrollable,
+        )
+    }
 
-        if (depth >= request.maxDepth) {
-            if (runCatching { node.childCount }.getOrDefault(0) > 0) stats.depthLimited = true
-            return 1
+    /** Adapter is stateless: every acquired child is recycled by the walker. */
+    private object AccessibilityCaptureTreeAdapter :
+        PhoneControlCaptureTreeAdapter<AccessibilityNodeInfo> {
+        override fun child(node: AccessibilityNodeInfo, index: Int): AccessibilityNodeInfo? =
+            runCatching { node.getChild(index) }.getOrNull()
+
+        override fun recycle(node: AccessibilityNodeInfo) {
+            @Suppress("DEPRECATION")
+            runCatching { node.recycle() }
         }
-        val childCount = runCatching { node.childCount }.getOrDefault(0)
-        var used = 1
-        var available = budget - used
-        // Split the remaining budget across the remaining children. A large
-        // earlier subtree therefore cannot consume the whole scan and hide a
-        // later toolbar/FAB sibling; unused budget flows to later siblings.
-        for (index in 0 until childCount) {
-            // scanLimited also records a CHILD exhausting its local share.
-            // Keep scanning siblings until the global node/time bound is hit.
-            if (stats.obsoleteNode || stats.cancelled) return used
-            if (out.size >= PhoneControlLimits.MAX_SCAN_NODES ||
-                SystemClock.elapsedRealtime() > deadline
-            ) {
-                stats.scanLimited = true
-                return used
-            }
-            val remainingChildren = childCount - index
-            if (available <= 0) {
-                stats.scanLimited = true
-                return used
-            }
-            val share = maxOf(1, available / remainingChildren)
-            val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
-            try {
-                val consumed = readNode(
-                    node = child,
-                    path = path + index,
-                    parentPath = path,
-                    depth = depth + 1,
-                    redactAllText = redactAllText,
-                    request = request,
-                    refreshFromSource = refreshFromSource,
-                    ancestorScrollable = ancestorScrollable || scrollable,
-                    budget = minOf(share, available),
-                    deadline = deadline,
-                    isCancelled = isCancelled,
-                    out = out,
-                    stats = stats,
-                )
-                used += consumed
-                available -= consumed
-            } finally {
-                @Suppress("DEPRECATION")
-                runCatching { child.recycle() }
-            }
-        }
-        return used
     }
 }
