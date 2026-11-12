@@ -2129,6 +2129,7 @@ targets:
       - path: Modules/FloeCanvasKit/Tests/FloeCanvasCoreTests/FrameworkTextEnvelopeTests.swift
       - path: Qualification/Notes/Tests/NotesStoreTests.swift
       - path: Tests/FloeAgentRuntimeTests/AgentRuntimeTests.swift
+      - path: Tests/FloeLocalModelsTests/LocalPromptHarnessTests.swift
       - path: Tests/FloeAgentRuntimeTests/ActionClaimGateTests.swift
       - path: Tests/FloeAgentRuntimeTests/TaskClosureFlowTests.swift
       - path: Tests/FloeAgentRuntimeTests/RuntimeTestDoubles.swift

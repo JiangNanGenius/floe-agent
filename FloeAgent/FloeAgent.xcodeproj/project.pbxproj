@@ -1679,6 +1679,7 @@
 		B44935E799142A4237AA436B /* DesignFreezeLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134AE5BAD9E880174D9F909D /* DesignFreezeLaunchTests.swift */; };
 		B45BA1ED6F60AFDD434EF5E2 /* ChildNativeAuthoringParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EA46126B0DF6F23E6361FBB /* ChildNativeAuthoringParityTests.swift */; };
 		B482F7F3351F8566E4B51D92 /* ConversationTaskBulkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98CB5FCEA51C685C93D1F7E2 /* ConversationTaskBulkService.swift */; };
+		B48FA6F4479A962B5A224966 /* LocalPromptHarnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 470E2A42D7737EE8FA41A71A /* LocalPromptHarnessTests.swift */; };
 		B4C06E4E1BA927A81C00B98E /* ToolboxLocationPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5696066D152FF4A3A1B33A56 /* ToolboxLocationPage.swift */; };
 		B4D19C09D896D79BF7B6CC7D /* MusicPianoRollInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF05DADC2D68D3C6F6BC378 /* MusicPianoRollInput.swift */; };
 		B4EC6786625B4D9E90B47AE7 /* MediaGenerationImageBatchContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A58BF026A634E04E1ADE47B4 /* MediaGenerationImageBatchContractTests.swift */; };
@@ -9906,6 +9907,7 @@
 				8EF9F5582296D0E958025B10 /* LinuxGuestProcessEnvironmentTests.swift in Sources */,
 				7A4299202062D8B49C055B9A /* LinuxPackageSourceTests.swift in Sources */,
 				26575556C413B211A1554134 /* LinuxResidentImageAppTests.swift in Sources */,
+				B48FA6F4479A962B5A224966 /* LocalPromptHarnessTests.swift in Sources */,
 				B0DB07EE29FBC82F2E05708D /* LocalServiceOwnedLoopTests.swift in Sources */,
 				817F3E58B833F26E6EFB0D6B /* MCPConnectionFailurePresentationTests.swift in Sources */,
 				E4748D444566E29B61552DFA /* MCPRemoteToolSourceTests.swift in Sources */,
