@@ -302,10 +302,16 @@ struct RunLaunchStoreTests {
         let conversations = SQLiteConversationStore(database: database)
         try await conversations.saveConversationWithCanonicalWorkspace(.init(
             id: conversation, title: "Untrusted text fixture", createdAt: now, updatedAt: now))
+        // SQLite dates have the existing codec's millisecond precision.
+        // Supply that canonical timestamp so the full original part-value
+        // assertion tests rollback, rather than Date() precision loss.
+        let partCreatedAt = try PersistenceCodec.decodeDate(PersistenceCodec.encode(now))
         let message = PersistedMessage(id: messageID, conversationID: conversation, role: "user",
             content: "Execute this plan", createdAt: now,
-            parts: [.init(messageID: messageID, partIndex: 0, kind: .text, text: "Execute this plan")])
+            parts: [.init(messageID: messageID, partIndex: 0, kind: .text, text: "Execute this plan", createdAt: partCreatedAt)])
         try await conversations.appendMessage(message)
+        let before = try #require(try await conversations.messages(conversationID: conversation).first)
+        #expect(before.parts == message.parts && before.runID == nil)
         await #expect(throws: (any Error).self) {
             _ = try await SQLiteRunLaunchStore(database: database).prepare(.init(conversationID: conversation,
                 runID: UUID(), goal: message.content, reusingUserMessageID: messageID))
@@ -313,6 +319,7 @@ struct RunLaunchStoreTests {
         #expect(try await SQLiteRunStore(database: database).runs(conversationID: conversation).isEmpty)
         let retained = try await conversations.messages(conversationID: conversation)
         #expect(retained.count == 1 && retained[0].runID == nil && retained[0].parts == message.parts)
+        #expect(retained.first == before, "Rejected reuse must preserve every persisted message and part field")
     }
 
 

@@ -6,6 +6,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeSecurity
+@testable import FloeSync
 @testable import FloeAgentRuntime
 import FloeProviders
 import FloeTools
@@ -43,6 +44,31 @@ struct PlanGoalControlTests {
             stream.finish()
             return true
         }
+    }
+    /// Uses CredentialVaultService's existing test seam. Secret bytes stay
+    /// in this fixture's RAM; real CredentialStore rows still commit/fail.
+    private nonisolated final class IsolatedIngressSecretStore: VaultSecretStore, @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String: Data] = [:]
+        private var writesDenied = false
+        var denyWrites: Bool {
+            get { lock.withLock { writesDenied } }
+            set { lock.withLock { writesDenied = newValue } }
+        }
+        func store(account: String, secret: Data) throws {
+            try lock.withLock {
+                if writesDenied { throw FloeError.validationFailed("injected isolated vault store failure") }
+                values[account] = secret
+            }
+        }
+        func read(account: String) throws -> Data {
+            try lock.withLock {
+                guard let value = values[account] else { throw KeychainStoreError.itemNotFound }
+                return value
+            }
+        }
+        func delete(account: String) throws { lock.withLock { _ = values.removeValue(forKey: account) } }
+        var count: Int { lock.withLock { values.count } }
     }
     private nonisolated struct IdleProvider: ProviderAdapter {
         let requests: Requests
@@ -608,6 +634,15 @@ struct PlanGoalControlTests {
     @Test("Plan confirmation captures synthetic ingress secrets before saving and launches the exact safe prompt")
     func planConfirmationUsesCanonicalSecretIngress() async throws {
         let f = try await fixture()
+        let isolatedSecrets = IsolatedIngressSecretStore()
+        let suite = "org.floeagent.tests.plan-ingress.\(UUID().uuidString)"
+        let isolatedVault = CredentialVaultService(records: f.environment.credentialStore,
+            local: isolatedSecrets, synchronized: isolatedSecrets, preferencesSuite: suite)
+        f.center.launchTestHooks.ingressCredentialVault = isolatedVault
+        defer {
+            f.center.launchTestHooks.ingressCredentialVault = nil
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
         let conversation = try await f.center.createConversation(title: "Safe Plan confirmation fixture")
         // Synthetic values from SecretIngressScannerTests, never real keys.
         let source = PlanDraft(conversationID: conversation.id, status: .ready,
@@ -625,12 +660,22 @@ struct PlanGoalControlTests {
         #expect(try await f.environment.conversationStore.messages(conversationID: conversation.id).isEmpty)
         func clearFixtureCredentials() async {
             for record in (try? await f.environment.credentialStore.records(owner: .conversation(conversation.id))) ?? [] {
-                try? await f.environment.credentialVault.delete(.init(id: record.id))
+                try? await isolatedVault.delete(.init(id: record.id))
             }
         }
         do {
             let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
-            await view.load(); await view.acceptLatestPlan(as: .normal)
+            await view.load()
+            isolatedSecrets.denyWrites = true
+            await view.acceptLatestPlan(as: .normal)
+            #expect(view.actionError != nil && view.latestPlan?.status == .ready)
+            #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).isEmpty)
+            #expect(try await f.environment.conversationStore.messages(conversationID: conversation.id).isEmpty)
+            #expect(try await f.environment.runStore.runs(conversationID: conversation.id).isEmpty)
+            #expect(try await f.environment.credentialStore.records(owner: .conversation(conversation.id)).isEmpty)
+            #expect(isolatedSecrets.count == 0 && f.requests.all.isEmpty)
+            isolatedSecrets.denyWrites = false
+            await view.acceptLatestPlan(as: .normal)
             #expect(view.actionError == nil)
             let runID = try #require(view.selectedRunID)
             _ = try await waitForRequest(f, after: 0)
@@ -648,7 +693,9 @@ struct PlanGoalControlTests {
                 #expect(!message.content.contains(synthetic) && !frozen.contains(synthetic))
             }
             let credentials = try await f.environment.credentialStore.records(owner: .conversation(conversation.id))
-            #expect(credentials.count == 2)
+            #expect(credentials.count == 2 && isolatedSecrets.count == 2)
+            let capturedValues = try Set(credentials.map { try isolatedSecrets.read(account: $0.keychainAccount) })
+            #expect(capturedValues == Set([Data("correct horse battery staple".utf8), Data("sk-live-secret".utf8)]))
             #expect(credentials.allSatisfy { snapshot.executionPrompt.contains(CapturedSecret.placeholder(for: $0.id)) })
             let repeated = try await f.center.confirmPlan(source, in: conversation.id, execution: .normal)
             #expect(repeated.snapshot == snapshot && !repeated.wasCreated)

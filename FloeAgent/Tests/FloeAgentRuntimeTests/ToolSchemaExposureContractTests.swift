@@ -56,7 +56,25 @@ struct ToolSchemaExposureContractTests {
     }
     private static func rows(_ request: ProviderStreamRequest, callID: String) throws -> [[String: Any]] {
         let result = try #require(request.toolResults.first { $0.callID == callID })
-        let object = try #require(JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any])
+        let call = try #require(request.pendingToolCalls.first { $0.id == callID })
+        try #require(call.toolName == ToolDiscovery.listName)
+        // modelVisibleToolResult prepends one compact runtime provenance JSON
+        // line, then preserves the complete tool body after a single newline.
+        // Parse those two bounded sections independently; do not strip an
+        // arbitrary JSON prefix, remove evidence or accept a truncated body.
+        let sections = result.output.split(separator: "\n", maxSplits: 1,
+            omittingEmptySubsequences: false)
+        try #require(sections.count == 2)
+        try #require(sections[0].utf8.count <= 16_384 && sections[1].utf8.count <= 262_144)
+        let envelope = try #require(JSONSerialization.jsonObject(
+            with: Data(sections[0].utf8)) as? [String: Any])
+        try #require(envelope["toolName"] as? String == call.toolName)
+        let sourceID = try #require(envelope["trustedSourceID"] as? String)
+        try #require(sourceID.count == 64 && sourceID.allSatisfy { $0.isHexDigit })
+        let runID = try #require(envelope["runID"] as? String)
+        try #require(UUID(uuidString: runID) != nil && runID == request.diagnosticRunID)
+        let object = try #require(JSONSerialization.jsonObject(
+            with: Data(sections[1].utf8)) as? [String: Any])
         return try #require(object["tools"] as? [[String: Any]])
     }
     private func runtime(adapter: any ProviderAdapter, executor: MockExecutor, provider: ProviderProfile,

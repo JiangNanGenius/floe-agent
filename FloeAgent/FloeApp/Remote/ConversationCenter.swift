@@ -1418,6 +1418,11 @@ final class ConversationCenter: ObservableObject {
         /// After `beginLaunch()`, before the (temporary-gated) secret
         /// capture — the widest pre-deferred race window.
         var beforeCapture: (@Sendable () async -> Void)?
+        /// Hosted tests can use the vault's existing in-memory namespace
+        /// seam while retaining real capture, metadata transactions and
+        /// subsequent owned input-reference hydration.
+        /// Production leaves this nil and always uses its Keychain vault.
+        var ingressCredentialVault: CredentialVaultService?
         /// First statement of the deferred task body, before any store read
         /// or service construction — a run that IS registered and owned but
         /// has not reached the provider yet.
@@ -2654,7 +2659,8 @@ final class ConversationCenter: ObservableObject {
                 default: owned = false
                 }
                 guard owned else { throw FloeError.unauthorized }
-                let bytes = try await environment.credentialVault.resolveForApprovedUse(CredentialHandle(id: id))
+                let vault = launchTestHooks.ingressCredentialVault ?? environment.credentialVault
+                let bytes = try await vault.resolveForApprovedUse(CredentialHandle(id: id))
                 guard let value = String(data: bytes, encoding: .utf8) else { throw FloeError.storageCorrupted("User input is not text") }
                 values[id] = value
             }
@@ -6191,6 +6197,7 @@ final class ConversationCenter: ObservableObject {
         owner: CredentialOwner
     ) async throws {
         guard !captures.isEmpty else { return }
+        let vault = launchTestHooks.ingressCredentialVault ?? environment.credentialVault
         for capture in captures {
             let lower = capture.label.lowercased()
             let kind: CredentialKind
@@ -6207,7 +6214,7 @@ final class ConversationCenter: ObservableObject {
             } else {
                 kind = .genericToken
             }
-            _ = try await environment.credentialVault.capture(
+            _ = try await vault.capture(
                 capture.value,
                 kind: kind,
                 owner: owner,

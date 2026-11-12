@@ -209,13 +209,41 @@ struct ChatInlineContentContractTests {
             #expect(opened.source.byteLength == Int64(bytes.count))
             #expect(try opened.source.read(offset: Int64(bytes.count - 10), length: 10) == bytes.suffix(10))
             #expect(center.currentRootURL == nil)
-            var missingBinding = try #require(try await runs.run(id: runID)); missingBinding.executionBinding = nil
-            try await runs.saveRun(missingBinding)
+            // A frozen pin cannot be cleared by saveRun's COALESCE upsert.
+            // Read it back instead of mistaking a locally nil value for a
+            // persisted missing binding (the original false counterexample).
+            var attemptedClear = try #require(try await runs.run(id: runID)); attemptedClear.executionBinding = nil
+            try await runs.saveRun(attemptedClear)
+            #expect(try await runs.run(id: runID)?.executionBinding == binding)
+
+            // Construct a genuinely unbound run from its first INSERT, with
+            // its own valid producer/receipt. The refusal must come from the
+            // missing frozen pin, not a missing artifact or a wrong task.
+            let unboundRunID = UUID()
+            try await runs.saveRun(.init(id: unboundRunID, conversationID: task, state: "completed", goal: "Unbound saved file",
+                startedAt: now, endedAt: now))
+            let persistedUnbound = try #require(try await runs.run(id: unboundRunID))
+            try #require(persistedUnbound.executionBinding == nil)
+            let unboundArtifact = ToolArtifactReference(id: UUID(), relativePath: "ChangeArtifacts/\(unboundRunID.uuidString)/\(digest).preview.json",
+                mimeType: artifact.mimeType, byteCount: encoded.count, sha256: digest)
+            let unboundFile = scratchRoot.appendingPathComponent(unboundArtifact.relativePath)
+            try FileManager.default.createDirectory(at: unboundFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try encoded.write(to: unboundFile)
+            _ = try await runs.appendEvent(runID: unboundRunID, kind: .toolResult,
+                payloadJSON: eventPayload(unboundArtifact, tool: "workspace.writeFile"))
+            let unboundReference = try #require(ChatContentReference(kind: .artifact, ownerID: unboundRunID, contentID: unboundArtifact.id.uuidString))
+            let resolvedUnbound = try await ChatInlineContentResolver.resolve(unboundReference,
+                scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs)
+            #expect(resolvedUnbound == .artifact(unboundArtifact, runID: unboundRunID, tool: "workspace.writeFile"))
+            #expect(try VerifiedChatInlineArtifact.load(unboundArtifact, runID: unboundRunID, tool: "workspace.writeFile", root: scratchRoot).data == encoded)
             await #expect(throws: (any Error).self) {
-                try await SavedFileTextPreviewPolicy.ownedBytes(document: document, artifact: artifact,
+                try await SavedFileTextPreviewPolicy.ownedBytes(document: document, artifact: unboundArtifact,
                     scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs,
                     workspaces: workspaces, artifactRoot: scratchRoot,
-                    acquireRoot: { record in try await center.acquireMemorySourceRoot(record) })
+                    acquireRoot: { record in
+                        Issue.record("An unbound run must be refused before acquiring a workspace root")
+                        return try await center.acquireMemorySourceRoot(record)
+                    })
             }
         }
         #expect(try Data(contentsOf: nativeLease.url.appendingPathComponent("answer.txt")) == bytes)
