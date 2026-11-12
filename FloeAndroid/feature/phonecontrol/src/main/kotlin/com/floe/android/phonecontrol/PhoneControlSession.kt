@@ -453,7 +453,7 @@ internal class PhoneControlSession(
             .setDataAndType(uri, request.mimeType)
             .setClassName(request.packageName, request.className)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-            .setClipData(ClipData.newRawUri(request.displayName, uri))
+            .apply { clipData = ClipData.newRawUri(request.displayName, uri) }
         latest = null
         fence.onPageChanged()
         suppressOwnInput()
@@ -1161,9 +1161,8 @@ internal class PhoneControlSession(
                 // The IME action targets the focused editor. A field that
                 // advertises the action itself is a platform-declared
                 // capability even before it is focused; otherwise require real
-                // focus (API 33 also exposes the input-method target flag).
+                // input focus.
                 runCatching { node.isFocused }.getOrDefault(false) ||
-                    inputMethodTarget(node) ||
                     advertisedImeEnter(node) -> null
                 else -> PhoneControlDenial.NODE_NOT_FOCUSED
             }
@@ -1183,10 +1182,6 @@ internal class PhoneControlSession(
     private fun advertisedImeEnter(node: AccessibilityNodeInfo): Boolean =
         Build.VERSION.SDK_INT >= 30 &&
             advertised(node, AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-
-    private fun inputMethodTarget(node: AccessibilityNodeInfo): Boolean =
-        Build.VERSION.SDK_INT >= 33 &&
-            runCatching { node.isInputMethodTarget }.getOrDefault(false)
 
     /**
      * A coordinate swipe may only run inside a real scrollable region: the

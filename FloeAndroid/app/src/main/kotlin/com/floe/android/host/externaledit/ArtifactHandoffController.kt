@@ -523,7 +523,7 @@ internal class ArtifactHandoffController(
         val permittedHandlers = permitted(installedHandlers(facts.mime))
         val choice = ArtifactHandoffPolicy.selectTarget(
             permittedHandlers, targetPackage, targetComponent)
-        when (choice) {
+        return when (choice) {
             is ArtifactHandoffTargetChoice.None -> {
                 return failure("noPermittedTarget").put("targets", candidateArray(emptyList()))
             }
@@ -743,7 +743,7 @@ internal class ArtifactHandoffController(
                 .setDataAndType(uri, launch.mimeType)
                 .setClassName(launch.packageName, launch.className)
                 .addFlags(ArtifactHandoffPolicy.grantFlags(launch))
-                .setClipData(ClipData.newRawUri(launch.clipLabel, uri))
+                .apply { clipData = ClipData.newRawUri(launch.clipLabel, uri) }
             var started = false
             try {
                 withContext(Dispatchers.Main) {

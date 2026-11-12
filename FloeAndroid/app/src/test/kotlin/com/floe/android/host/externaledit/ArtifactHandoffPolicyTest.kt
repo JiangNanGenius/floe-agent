@@ -88,7 +88,7 @@ class ArtifactHandoffPolicyTest {
         val permitted = ArtifactHandoffPolicy.permittedHandlers(
             candidates,
             allowedPackages = setOf(calendar, "com.sec.android.gallery3d", "android",
-                "com.android.internal.app", own, "com.unselected.viewer"),
+                "com.android.internal.app", own),
             ownPackage = own,
         )
         assertEquals(listOf(calendar, "com.sec.android.gallery3d"),

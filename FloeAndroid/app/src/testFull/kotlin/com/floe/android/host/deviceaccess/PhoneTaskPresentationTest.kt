@@ -440,7 +440,6 @@ class PhoneTaskPresentationTest {
         assertTrue(PhoneTaskPresentation.selectedRunMatches(runUUID.toString(), runUUID))
         assertTrue(PhoneTaskPresentation.selectedRunMatches(nativeText(runUUID), runUUID))
     }
-}
 
     // ------------------------------------------------- candidate scan bounds
 
@@ -474,11 +473,11 @@ class PhoneTaskPresentationTest {
     }
 
     @Test
-    fun theRestoredLiveOwnerIsUniqueAcrossMixedSpellings() {
+    fun theRestoredLiveOwnerIsUniqueAcrossDifferentTitles() {
         val first = owner(1, 1)
         val second = owner(2, 2)
         val unique = PhoneTaskPresentation.uniqueLiveCandidate(
-            listOf(candidate(first), candidate(first.copy(title = "same owner"))),
+            listOf(candidate(first), candidate(first, title = "same owner")),
         )
         assertEquals(first, unique?.owner)
         assertNull(
@@ -491,3 +490,4 @@ class PhoneTaskPresentationTest {
             PhoneTaskPresentation.boundedCandidateIds(listOf("", " "), 8).isEmpty(),
         )
     }
+}
